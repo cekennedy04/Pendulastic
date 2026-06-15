@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Generated acquisition output
+Recordings/
+OptiTrack_Recordings/
+
+# Scratch / preview artifacts
+_pendulum_preview.png
+Untitled-*.yaml
+
+# Virtual environments
+.venv/
+venv/
+env/
