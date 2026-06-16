@@ -30,6 +30,11 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+# On Windows, the MSMF backend can hang for 30-120 seconds opening a USB camera
+# because of hardware Media Foundation Transforms. Disabling them makes camera
+# open near-instant. This MUST be set before OpenCV (cv2) is imported.
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 # OpenCV is the only third-party dependency. Guard the import so a missing
 # package produces a clear instruction instead of a raw traceback.
 try:
@@ -67,6 +72,7 @@ FRAME_HEIGHT = 720
 # it exactly the way the probe found it.
 CAMERA_BACKENDS = [("MSMF", cv2.CAP_MSMF), ("DSHOW", cv2.CAP_DSHOW)]
 MAX_CAMERA_INDEX = 5       # Probe indices 0..MAX_CAMERA_INDEX.
+PREVIEW_WINDOW = "Pendulastic Camera"   # Fixed window name for the live preview.
 
 
 def read_with_warmup(cap, attempts=15, delay=0.1):
@@ -123,11 +129,15 @@ class MasterApp:
         self.root.geometry("480x780")
         self.root.resizable(False, False)
 
-        # ---- Thread-safe recording state ----
-        self.recording_flag = threading.Event()   # set() = keep recording
-        self.capture_thread = None
+        # ---- Camera + recording state (thread-safe) ----
+        self.streaming_flag = threading.Event()   # preview thread runs while set
+        self.writing_flag = threading.Event()     # frames written to disk while set
+        self.cam_thread = None
         self.cap = None
         self.out = None
+        self.out_lock = threading.Lock()          # guards self.out across threads
+        self.frame_size = (FRAME_WIDTH, FRAME_HEIGHT)
+        self._codec_warmed = False                # XVID DLL pre-loaded once
 
         self._build_ui()
 
@@ -262,7 +272,12 @@ class MasterApp:
     # CAMERA SELECTION
     # ------------------------------------------------------------------
     def rescan_cameras(self):
-        """Detect the connected camera and update the label."""
+        """Detect the connected camera, then pre-open it so START is instant."""
+        if self.writing_flag.is_set():
+            return  # never rescan mid-recording
+        # Drop any existing stream before re-probing.
+        self._close_camera()
+
         self.var_status.set("Scanning for camera...")
         self.root.update_idletasks()
         try:
@@ -278,9 +293,8 @@ class MasterApp:
         self._active_cam = self._cameras[0] if self._cameras else None
         if self._active_cam is not None:
             self.var_cam.set(self._active_cam["label"])
-            extra = (f"  (+{len(self._cameras) - 1} more)"
-                     if len(self._cameras) > 1 else "")
-            self.var_status.set(f"Camera ready: {self._active_cam['label']}{extra}")
+            # Pre-open + start the live preview so pressing START is instant.
+            self._open_camera()
         else:
             self.var_cam.set("(none detected)")
             self.var_status.set(
@@ -386,7 +400,12 @@ class MasterApp:
     # START
     # ------------------------------------------------------------------
     def start_recording(self):
-        if self.recording_flag.is_set():
+        """Begin writing the already-streaming camera to disk + trigger the slave.
+
+        The camera is pre-opened and streaming, so this is near-instant: create
+        the writer, fire the UDP START, and flip the writing flag.
+        """
+        if self.writing_flag.is_set():
             return  # Already recording.
 
         try:
@@ -394,63 +413,32 @@ class MasterApp:
             participant_dir, video_path, rel_path = self._build_paths(pid)
             self._write_metadata(participant_dir, pid)
 
-            # ---- Open the selected camera BEFORE telling the slave to start ----
-            cam_index, cam_backend = self._selected_camera()
-            self.cap = cv2.VideoCapture(cam_index, cam_backend)
-            if not self.cap or not self.cap.isOpened():
-                raise RuntimeError(
-                    f"Could not open the selected camera (index {cam_index}).\n\n"
-                    "Click 'Rescan', and make sure the USB webcam is plugged in "
-                    "and not in use by another application (Zoom, Teams, Camera app)."
-                )
+            # Make sure the camera is live (it normally already is). Opening here
+            # is the slow path and only happens if pre-open failed earlier.
+            if self.cap is None or not self.streaming_flag.is_set():
+                if not self._open_camera():
+                    self.var_status.set("Idle - start failed (no camera).")
+                    return
 
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-            self.cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
-
-            # Warm up: MSMF can fail the first few reads right after opening.
-            # Confirm frames actually flow before we commit to recording.
-            warm_ok, _ = read_with_warmup(self.cap, attempts=20, delay=0.1)
-            if not warm_ok:
-                self.cap.release()
-                self.cap = None
-                raise RuntimeError(
-                    f"Camera (index {cam_index}) opened but returned no frames.\n\n"
-                    "It may be in use by another app, or still initializing. "
-                    "Close other camera apps and try again, or click 'Rescan'."
-                )
-
-            # Use the actual frame size the camera gave us.
-            actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or FRAME_WIDTH
-            actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or FRAME_HEIGHT
-
+            # Create the writer for this trial at the live frame size.
             fourcc = cv2.VideoWriter_fourcc(*"XVID")
-            self.out = cv2.VideoWriter(video_path, fourcc, TARGET_FPS,
-                                       (actual_w, actual_h))
-            if not self.out or not self.out.isOpened():
-                self.cap.release()
-                self.cap = None
+            writer = cv2.VideoWriter(video_path, fourcc, TARGET_FPS, self.frame_size)
+            if not writer or not writer.isOpened():
                 raise RuntimeError(
                     f"Could not open the video file for writing:\n{video_path}\n\n"
                     "The XVID codec may be missing, or the folder is not writable."
                 )
+            with self.out_lock:
+                self.out = writer
 
-            # ---- Tell the slave to start ----
+            # Tell the slave, then start writing (both near-instant).
             start_msg = (
                 f"START|id={pid}|position={self.var_pos.get()}|"
                 f"height={self.var_height.get()}|trial={self.var_trial.get()}|"
                 f"relpath={rel_path}"
             )
             self._send_udp(start_msg)
-
-            # ---- Launch the capture loop on a background thread ----
-            self.recording_flag.set()
-            self.capture_thread = threading.Thread(
-                target=self._capture_loop,
-                args=(video_path, actual_w, actual_h),
-                daemon=True,
-            )
-            self.capture_thread.start()
+            self.writing_flag.set()
 
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
@@ -458,11 +446,13 @@ class MasterApp:
             self.var_status.set(f"RECORDING -> {os.path.basename(video_path)}")
 
         except (ValueError, RuntimeError, OSError) as e:
-            self._cleanup_capture()
+            self.writing_flag.clear()
+            self._finalize_writer()
             messagebox.showerror("Cannot Start Recording", str(e))
             self.var_status.set("Idle - start failed.")
         except Exception as e:
-            self._cleanup_capture()
+            self.writing_flag.clear()
+            self._finalize_writer()
             messagebox.showerror(
                 "Unexpected Error",
                 f"An unexpected error occurred while starting:\n\n{type(e).__name__}: {e}"
@@ -470,67 +460,164 @@ class MasterApp:
             self.var_status.set("Idle - start failed.")
 
     # ------------------------------------------------------------------
-    # CAPTURE LOOP (runs on background thread)
+    # CAMERA STREAM (persistent preview; runs on a background thread)
     # ------------------------------------------------------------------
-    def _capture_loop(self, video_path, width, height):
-        """Read frames at ~30 fps and write them until the flag clears."""
-        frame_interval = 1.0 / TARGET_FPS
-        next_time = cv2.getTickCount() / cv2.getTickFrequency()
+    def _open_camera(self):
+        """Open the selected camera and start the live preview thread. Returns bool.
+
+        Slow path (~0.5-3 s on first MSMF open). Run from the main thread so the
+        camera is warm and streaming BEFORE the user presses START.
+        """
+        if self.cap is not None and self.streaming_flag.is_set():
+            return True
         try:
-            while self.recording_flag.is_set():
-                ret, frame = self.cap.read()
-                if not ret:
-                    # Camera was unplugged or stream ended.
-                    self.recording_flag.clear()
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "Camera Lost",
-                        "The webcam stopped returning frames mid-recording.\n"
-                        "The recording has been stopped and the file saved."
-                    ))
-                    break
+            cam_index, cam_backend = self._selected_camera()
+        except ValueError as e:
+            messagebox.showerror("No Camera", str(e))
+            return False
 
-                self.out.write(frame)
+        self.var_status.set(f"Opening camera (index {cam_index})...")
+        self.root.update_idletasks()
 
-                # Live preview window (closing it does not stop recording).
-                cv2.imshow("Recording Preview - close STOP button to end", frame)
-                if cv2.waitKey(1) & 0xFF == 27:  # ESC also stops.
-                    self.recording_flag.clear()
-                    break
+        cap = cv2.VideoCapture(cam_index, cam_backend)
+        if not cap.isOpened():
+            cap.release()
+            messagebox.showerror(
+                "Camera Error",
+                f"Could not open camera index {cam_index}.\n\n"
+                "Make sure the USB webcam is plugged in and not in use by another "
+                "app (Zoom, Teams, Camera), then click 'Rescan'."
+            )
+            self.var_status.set("Idle - camera failed to open.")
+            return False
 
-                # Simple pacing toward 30 fps.
-                next_time += frame_interval
-                now = cv2.getTickCount() / cv2.getTickFrequency()
-                sleep_for = next_time - now
-                if sleep_for > 0:
-                    cv2.waitKey(max(1, int(sleep_for * 1000)))
-        except Exception as e:
-            self.recording_flag.clear()
-            self.root.after(0, lambda: messagebox.showerror(
-                "Recording Error",
-                f"An error occurred during capture:\n\n{type(e).__name__}: {e}"
-            ))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+
+        warm_ok, _ = read_with_warmup(cap, attempts=20, delay=0.1)
+        if not warm_ok:
+            cap.release()
+            messagebox.showerror(
+                "Camera Error",
+                f"Camera index {cam_index} opened but returned no frames.\n\n"
+                "It may be in use by another app. Close it and click 'Rescan'."
+            )
+            self.var_status.set("Idle - camera returned no frames.")
+            return False
+
+        self.cap = cap
+        self.frame_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or FRAME_WIDTH,
+                           int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or FRAME_HEIGHT)
+        self.streaming_flag.set()
+        self.cam_thread = threading.Thread(target=self._stream_loop, daemon=True)
+        self.cam_thread.start()
+
+        # Pre-load the XVID codec once so the FIRST recording starts instantly
+        # (the codec DLL init otherwise adds ~1.5 s to the first START).
+        if not self._codec_warmed:
+            self.var_status.set("Warming up video codec...")
+            self.root.update_idletasks()
+            self._warmup_codec()
+            self._codec_warmed = True
+
+        self.var_status.set(f"Camera live: {self.var_cam.get()} - ready to record.")
+        return True
+
+    def _warmup_codec(self):
+        """Create and discard a throwaway XVID writer to pre-load the codec."""
+        tmp = os.path.join(ROOT_DIR, "._codec_warmup.avi")
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            w = cv2.VideoWriter(tmp, fourcc, TARGET_FPS, self.frame_size)
+            if w is not None:
+                w.release()
+        except Exception:
+            pass
         finally:
-            self._cleanup_capture()
-            # Re-enable the UI from the main thread.
-            self.root.after(0, self._reset_ui_after_stop)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+    def _stream_loop(self):
+        """Continuously read frames; preview always, write to disk while recording."""
+        miss = 0
+        try:
+            while self.streaming_flag.is_set():
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    miss += 1
+                    if miss > 30:                     # persistent failure
+                        self.streaming_flag.clear()
+                        self.root.after(0, self._on_camera_lost)
+                        break
+                    time.sleep(0.01)
+                    continue
+                miss = 0
+
+                # Write the clean frame to disk if we are recording.
+                if self.writing_flag.is_set():
+                    with self.out_lock:
+                        if self.out is not None:
+                            if (frame.shape[1], frame.shape[0]) != self.frame_size:
+                                self.out.write(cv2.resize(frame, self.frame_size))
+                            else:
+                                self.out.write(frame)
+                    cv2.putText(frame, "REC", (18, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                                1.0, (0, 0, 255), 2, cv2.LINE_AA)
+
+                cv2.imshow(PREVIEW_WINDOW, frame)
+                cv2.waitKey(1)
+        except Exception as e:
+            self.streaming_flag.clear()
+            self.root.after(0, lambda: self._on_camera_error(e))
+        finally:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
+
+    def _on_camera_lost(self):
+        """Handle the camera dropping out (called on the main thread)."""
+        was_recording = self.writing_flag.is_set()
+        self.writing_flag.clear()
+        self._finalize_writer()
+        if was_recording:
+            try:
+                self._send_udp("STOP")
+            except Exception:
+                pass
+        self._close_camera()
+        self._reset_ui_after_stop()
+        messagebox.showerror(
+            "Camera Lost",
+            "The camera stopped returning frames.\n"
+            + ("The recording was stopped and saved.\n" if was_recording else "")
+            + "Click 'Rescan' to reconnect."
+        )
+        self.var_status.set("Camera lost - click 'Rescan' to reconnect.")
+
+    def _on_camera_error(self, exc):
+        self._on_camera_lost()
+        messagebox.showerror(
+            "Camera Error",
+            f"The camera stream hit an error:\n\n{type(exc).__name__}: {exc}"
+        )
 
     # ------------------------------------------------------------------
     # STOP
     # ------------------------------------------------------------------
     def stop_recording(self):
-        if not self.recording_flag.is_set():
+        """Stop writing to disk and trigger the slave. Camera stays live."""
+        if not self.writing_flag.is_set():
             return
         try:
-            # 1) Flip the thread-safe flag so the loop exits.
-            self.recording_flag.clear()
-
-            # 2) Wait briefly for the capture thread to finish releasing.
-            if self.capture_thread is not None:
-                self.capture_thread.join(timeout=3.0)
-
-            # 3) Tell the slave to stop.
+            self.writing_flag.clear()     # stop writing frames immediately
+            self._finalize_writer()       # finalize and close the .avi
             self._send_udp("STOP")
-            self.var_status.set("Stopped - file saved.")
+            self.var_status.set("Stopped - file saved. Camera still live.")
         except OSError as e:
             messagebox.showerror("Network Error on Stop", str(e))
         except Exception as e:
@@ -539,7 +626,6 @@ class MasterApp:
                 f"An error occurred while stopping:\n\n{type(e).__name__}: {e}"
             )
         finally:
-            self._cleanup_capture()
             self._reset_ui_after_stop()
 
     # ------------------------------------------------------------------
@@ -547,7 +633,7 @@ class MasterApp:
     # ------------------------------------------------------------------
     def start_batch_evaluation(self):
         """Kick off the offline benchmarking pipeline on a background thread."""
-        if self.recording_flag.is_set():
+        if self.writing_flag.is_set():
             messagebox.showwarning(
                 "Recording In Progress",
                 "Please stop the current recording before running batch evaluation."
@@ -634,22 +720,29 @@ class MasterApp:
 
     def _reset_ui_after_evaluation(self):
         # Only re-enable if we are not mid-recording (defensive).
-        if not self.recording_flag.is_set():
+        if not self.writing_flag.is_set():
             self.btn_evaluate.config(state="normal")
             self.btn_start.config(state="normal")
 
     # ------------------------------------------------------------------
     # CLEANUP HELPERS
     # ------------------------------------------------------------------
-    def _cleanup_capture(self):
-        """Safely release camera + writer + preview windows. Idempotent."""
-        try:
+    def _finalize_writer(self):
+        """Release the VideoWriter (finalize the .avi). Idempotent, thread-safe."""
+        with self.out_lock:
             if self.out is not None:
-                self.out.release()
-        except Exception:
-            pass
-        finally:
-            self.out = None
+                try:
+                    self.out.release()
+                except Exception:
+                    pass
+                self.out = None
+
+    def _close_camera(self):
+        """Stop the preview thread and release the camera. Idempotent."""
+        self.streaming_flag.clear()
+        if self.cam_thread is not None:
+            self.cam_thread.join(timeout=2.0)
+            self.cam_thread = None
         try:
             if self.cap is not None:
                 self.cap.release()
@@ -657,17 +750,17 @@ class MasterApp:
             pass
         finally:
             self.cap = None
-        try:
-            cv2.destroyAllWindows()
-        except Exception:
-            pass
 
     def _reset_ui_after_stop(self):
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
         self._lock_inputs(False)
         if "RECORDING" in self.var_status.get():
-            self.var_status.set("Idle - ready to record.")
+            live = self.streaming_flag.is_set()
+            self.var_status.set(
+                "Camera live - ready to record." if live
+                else "Idle - click 'Rescan' to reconnect camera."
+            )
 
     def _lock_inputs(self, locked):
         state = "disabled" if locked else "normal"
@@ -682,18 +775,18 @@ class MasterApp:
         self.btn_evaluate.config(state=state)
 
     def on_close(self):
-        """Window-close handler: stop recording and release everything."""
+        """Window-close handler: stop recording and release the camera."""
         try:
-            if self.recording_flag.is_set():
-                self.recording_flag.clear()
-                if self.capture_thread is not None:
-                    self.capture_thread.join(timeout=3.0)
+            was_recording = self.writing_flag.is_set()
+            self.writing_flag.clear()
+            self._finalize_writer()
+            if was_recording:
                 try:
                     self._send_udp("STOP")
                 except Exception:
                     pass
         finally:
-            self._cleanup_capture()
+            self._close_camera()
             self.root.destroy()
 
 
