@@ -102,8 +102,12 @@ MP_SCORE_THRESHOLD = 0.10
 # =============================================================================
 def find_trial_pairs(root_dir):
     """
-    Recursively scan root_dir for matched (Trial_X.avi, Trial_X_optitrack.csv)
-    pairs living in a Participant_[ID]/Position_[X]/Height_[Y]/ folder.
+    Recursively scan root_dir for Trial_X.avi videos living in a
+    Participant_[ID]/Position_[X]/Height_[Y]/ folder.
+
+    Every video is returned. If a matching Trial_X_optitrack.csv sits next to it,
+    "csv_path" points at it; otherwise "csv_path" is None and the trial is still
+    processed (tracked without a reference, scored later when the CSV arrives).
     """
     pairs = []
 
@@ -127,9 +131,7 @@ def find_trial_pairs(root_dir):
             trial_num = match.group(1)
             trial_base = os.path.splitext(avi_name)[0]
             csv_name = f"{trial_base}{CSV_SUFFIX}"
-
-            if csv_name not in filenames:
-                continue
+            has_csv = csv_name in filenames
 
             pairs.append({
                 "participant_id": participant_id or "unknown",
@@ -138,7 +140,7 @@ def find_trial_pairs(root_dir):
                 "trial": trial_num,
                 "folder": dirpath,
                 "avi_path": os.path.join(dirpath, avi_name),
-                "csv_path": os.path.join(dirpath, csv_name),
+                "csv_path": os.path.join(dirpath, csv_name) if has_csv else None,
             })
 
     return pairs
@@ -707,10 +709,27 @@ def score_model_against_reference(ref_t, ref_y, test_t, test_y, proc_time_sec):
 # 7. PER-TRIAL PIPELINE
 # =============================================================================
 def process_trial(pair, model_functions=None):
-    """Run all 4 models on a single matched trial and score each against the reference."""
+    """
+    Run all 4 models on a single trial.
+
+    If an OptiTrack CSV is present and readable, each model is synchronized to it
+    and scored (RMSE / bias / LoA), status "ok". If the CSV is missing or cannot
+    be read, the trial is NOT skipped: every model still tracks the video and its
+    knee-angle trajectory (timestamps + angles) is exported with status
+    "tracked_no_reference", to be scored later once the reference is available.
+    """
     model_functions = model_functions or MODEL_FUNCTIONS
 
-    ref_t, ref_y = load_optitrack_csv(pair["csv_path"])
+    has_reference = pair.get("csv_path") is not None
+    ref_t = ref_y = None
+    reference_error = None
+    if has_reference:
+        try:
+            ref_t, ref_y = load_optitrack_csv(pair["csv_path"])
+        except Exception as e:
+            # CSV present but unreadable -> fall back to track-only, keep the note.
+            has_reference = False
+            reference_error = f"{type(e).__name__}: {e}"
 
     result = {
         "participant_id": pair["participant_id"],
@@ -719,16 +738,30 @@ def process_trial(pair, model_functions=None):
         "trial": pair["trial"],
         "folder": pair["folder"],
         "avi_path": pair["avi_path"],
-        "csv_path": pair["csv_path"],
+        "csv_path": pair.get("csv_path"),
+        "has_reference": has_reference,
         "models": {},
     }
+    if reference_error:
+        result["reference_error"] = reference_error
 
     for model_name, model_func in model_functions.items():
         t_start = time.perf_counter()
         try:
             test_t, test_y = model_func(pair["avi_path"])
             proc_time = time.perf_counter() - t_start
-            score = score_model_against_reference(ref_t, ref_y, test_t, test_y, proc_time)
+            if has_reference:
+                score = score_model_against_reference(
+                    ref_t, ref_y, test_t, test_y, proc_time)
+            else:
+                # No reference yet: export the raw tracking trajectory.
+                score = {
+                    "status": "tracked_no_reference",
+                    "proc_time_sec": proc_time,
+                    "n_frames": int(len(test_y)),
+                    "timestamps_sec": [round(float(t), 4) for t in test_t],
+                    "knee_angle_deg": [round(float(a), 3) for a in test_y],
+                }
         except Exception as e:
             proc_time = time.perf_counter() - t_start
             score = {
@@ -756,10 +789,13 @@ def run_batch_analysis(root_dir, model_functions=None, progress_callback=None):
         trial_results.append(process_trial(pair, model_functions=model_functions))
 
     aggregate = aggregate_results(trial_results)
+    with_ref = sum(1 for t in trial_results if t.get("has_reference"))
 
     return {
         "root_dir": root_dir,
         "num_trials_found": total,
+        "num_trials_with_reference": with_ref,
+        "num_trials_without_reference": total - with_ref,
         "trials": trial_results,
         "aggregate": aggregate,
     }
@@ -774,6 +810,7 @@ def aggregate_results(trial_results):
     buckets_model, buckets_position, buckets_height, buckets_combo = {}, {}, {}, {}
     error_count = 0
     ok_count = 0
+    tracked_count = 0
 
     def _add(bucket, key, rmse):
         bucket.setdefault(key, {"rmse_values": []})["rmse_values"].append(rmse)
@@ -782,7 +819,11 @@ def aggregate_results(trial_results):
         position = trial["position"]
         height = trial["height"]
         for model_name, score in trial["models"].items():
-            if score.get("status") != "ok":
+            status = score.get("status")
+            if status == "tracked_no_reference":
+                tracked_count += 1
+                continue
+            if status != "ok":
                 error_count += 1
                 continue
             ok_count += 1
@@ -820,6 +861,7 @@ def aggregate_results(trial_results):
         "best_overall": best_overall,
         "ok_comparisons": ok_count,
         "failed_comparisons": error_count,
+        "tracked_no_reference": tracked_count,
     }
 
 
@@ -836,10 +878,15 @@ def print_summary(results):
     print("=" * 70)
     print(" BATCH EVALUATION SUMMARY")
     print("=" * 70)
-    print(f" Trials found        : {results['num_trials_found']}")
+    print(f" Trials found        : {results['num_trials_found']}  "
+          f"(with ref: {results.get('num_trials_with_reference', 0)}, "
+          f"without: {results.get('num_trials_without_reference', 0)})")
     print(f" OK / failed compares: {agg['ok_comparisons']} / {agg['failed_comparisons']}")
+    if agg.get("tracked_no_reference"):
+        print(f" Tracked (no reference): {agg['tracked_no_reference']} "
+              f"model-runs - trajectories saved, awaiting OptiTrack CSVs.")
     if best is None:
-        print(" No successful model/reference comparisons were produced.")
+        print(" No reference-scored comparisons were produced.")
     else:
         print(f" Best Model          : {best['model']}")
         print(f" Best Position       : {best['position']}")

@@ -665,12 +665,11 @@ class MasterApp:
             output_path = os.path.join(ROOT_DIR, ap.EVAL_RESULTS_FILENAME)
             ap.export_results(results, output_path)
 
-            best = results["aggregate"]["best_overall"]
-            if best is None:
-                summary = ("No matching Trial_X.avi + Trial_X_optitrack.csv pairs "
-                           "produced a successful comparison.\n\n"
-                           "Make sure OptiTrack CSV exports sit next to each .avi.")
-            else:
+            agg = results["aggregate"]
+            best = agg["best_overall"]
+            tracked = agg.get("tracked_no_reference", 0)
+
+            if best is not None:
                 summary = (
                     f"Best Model: {best['model']}\n"
                     f"Best Position: {best['position']}\n"
@@ -678,10 +677,21 @@ class MasterApp:
                     f"Mean RMSE: {best['mean_rmse_deg']:.2f} deg "
                     f"(over {best['n_trials']} trial(s))"
                 )
+            elif tracked:
+                summary = (
+                    "No OptiTrack CSVs found yet, so no RMSE was computed.\n\n"
+                    "All videos were tracked and their knee-angle trajectories were "
+                    "saved to the results file. Drop the _optitrack.csv next to each "
+                    ".avi and re-run to score them."
+                )
+            else:
+                summary = ("No trials produced usable output.\n\n"
+                           "Make sure Trial_X.avi files exist under the "
+                           "Participant_/Position_/Height_ folders.")
 
-            agg = results["aggregate"]
             summary += (
-                f"\n\nSuccessful comparisons: {agg['ok_comparisons']}"
+                f"\n\nScored: {agg['ok_comparisons']}"
+                f"  |  Tracked (no ref): {tracked}"
                 f"  |  Failed: {agg['failed_comparisons']}"
             )
             if agg["failed_comparisons"]:
