@@ -5,3 +5,6 @@ scipy>=1.13.0
 pandas>=2.2.0
 matplotlib>=3.9.0
 scikit-learn>=1.5.0
+# CPU build of ONNX Runtime for RTMPose / MMPose inference (no CUDA / Nvidia GPU).
+# Do NOT install onnxruntime-gpu on the Surface Laptop 5 (Intel iGPU only).
+onnxruntime>=1.17.0

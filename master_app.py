@@ -66,7 +66,7 @@ class MasterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Biomechanics Master - Acquisition Control")
-        self.root.geometry("480x620")
+        self.root.geometry("480x720")
         self.root.resizable(False, False)
 
         # ---- Thread-safe recording state ----
@@ -126,12 +126,12 @@ class MasterApp:
                        font=("Segoe UI", 13, "bold"))
         cfg.grid(row=7, column=0, columnspan=2, pady=(0, 8))
 
-        # --- Camera Position 1-9 ---
+        # --- Camera Position 1-3 ---
         tk.Label(self.root, text="Camera Position:").grid(row=8, column=0, sticky="e", **pad)
         self.var_pos = tk.StringVar(value="1")
         self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
                                      state="readonly",
-                                     values=[str(i) for i in range(1, 10)])
+                                     values=["1", "2", "3"])
         self.drop_pos.grid(row=8, column=1, sticky="w", **pad)
 
         # --- Camera Height ---
@@ -167,11 +167,22 @@ class MasterApp:
                                   state="disabled")
         self.btn_stop.grid(row=12, column=1, padx=10, pady=12)
 
+        ttk.Separator(self.root, orient="horizontal").grid(
+            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+
+        # --- Batch evaluation (active only when not recording) ---
+        self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
+                                      bg="#1f3a93", fg="white",
+                                      font=("Segoe UI", 12, "bold"),
+                                      height=2, command=self.start_batch_evaluation)
+        self.btn_evaluate.grid(row=14, column=0, columnspan=2, sticky="ew",
+                               padx=10, pady=(0, 8))
+
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=13, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=15, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
 
         # Make sure resources are released if the window is closed.
@@ -412,6 +423,102 @@ class MasterApp:
             self._reset_ui_after_stop()
 
     # ------------------------------------------------------------------
+    # BATCH EVALUATION
+    # ------------------------------------------------------------------
+    def start_batch_evaluation(self):
+        """Kick off the offline benchmarking pipeline on a background thread."""
+        if self.recording_flag.is_set():
+            messagebox.showwarning(
+                "Recording In Progress",
+                "Please stop the current recording before running batch evaluation."
+            )
+            return
+
+        self.btn_evaluate.config(state="disabled")
+        self.btn_start.config(state="disabled")
+        self.var_status.set("Batch evaluation: scanning for trial pairs...")
+
+        eval_thread = threading.Thread(
+            target=self._batch_evaluation_worker,
+            daemon=True,
+        )
+        eval_thread.start()
+
+    def _batch_evaluation_worker(self):
+        """Runs in a background thread; never touches Tk widgets directly."""
+        try:
+            import analysis_pipeline as ap
+
+            def _progress(idx, total, pair):
+                self.root.after(0, lambda: self.var_status.set(
+                    f"[{idx}/{total}] Processing Trial_{pair['trial']} "
+                    f"(Pos {pair['position']}, {pair['height']})..."
+                ))
+
+            results = ap.run_batch_analysis(ROOT_DIR, progress_callback=_progress)
+            output_path = os.path.join(ROOT_DIR, ap.EVAL_RESULTS_FILENAME)
+            ap.export_results(results, output_path)
+
+            best = results["aggregate"]["best_overall"]
+            if best is None:
+                summary = ("No matching Trial_X.avi + Trial_X_optitrack.csv pairs "
+                           "produced a successful comparison.\n\n"
+                           "Make sure OptiTrack CSV exports sit next to each .avi.")
+            else:
+                summary = (
+                    f"Best Model: {best['model']}\n"
+                    f"Best Position: {best['position']}\n"
+                    f"Best Height: {best['height']}\n"
+                    f"Mean RMSE: {best['mean_rmse_deg']:.2f} deg "
+                    f"(over {best['n_trials']} trial(s))"
+                )
+
+            agg = results["aggregate"]
+            summary += (
+                f"\n\nSuccessful comparisons: {agg['ok_comparisons']}"
+                f"  |  Failed: {agg['failed_comparisons']}"
+            )
+            if agg["failed_comparisons"]:
+                summary += ("\n(Failures are per-model, e.g. a missing ONNX file "
+                            "or no person detected - see evaluation_results.json.)")
+
+            n_found = results["num_trials_found"]
+            self.root.after(0, lambda: self.var_status.set(
+                f"Batch evaluation complete: {n_found} trial pair(s)."
+            ))
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Batch Evaluation Complete",
+                f"{summary}\n\nFull results written to:\n{output_path}"
+            ))
+
+        except ImportError as e:
+            self.root.after(0, lambda: messagebox.showerror(
+                "Missing Dependency",
+                "Batch evaluation could not import its analysis dependencies.\n\n"
+                "Run:  pip install -r requirements.txt\n"
+                "(needs numpy, scipy, opencv-python, mediapipe, onnxruntime)\n\n"
+                f"Details: {e}"
+            ))
+            self.root.after(0, lambda: self.var_status.set(
+                "Idle - batch evaluation failed (missing dependency)."))
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror(
+                "Batch Evaluation Error",
+                f"An unexpected error occurred during batch evaluation:\n\n"
+                f"{type(e).__name__}: {e}"
+            ))
+            self.root.after(0, lambda: self.var_status.set(
+                "Idle - batch evaluation failed."))
+        finally:
+            self.root.after(0, self._reset_ui_after_evaluation)
+
+    def _reset_ui_after_evaluation(self):
+        # Only re-enable if we are not mid-recording (defensive).
+        if not self.recording_flag.is_set():
+            self.btn_evaluate.config(state="normal")
+            self.btn_start.config(state="normal")
+
+    # ------------------------------------------------------------------
     # CLEANUP HELPERS
     # ------------------------------------------------------------------
     def _cleanup_capture(self):
@@ -450,6 +557,8 @@ class MasterApp:
         for w in (self.drop_sex, self.drop_diag, self.drop_pos,
                   self.drop_height, self.drop_trial):
             w.config(state=ro_state)
+        # Batch evaluation is only available when not recording.
+        self.btn_evaluate.config(state=state)
 
     def on_close(self):
         """Window-close handler: stop recording and release everything."""

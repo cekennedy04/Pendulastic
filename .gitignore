@@ -10,9 +10,16 @@ dist/
 Recordings/
 OptiTrack_Recordings/
 
+# Downloaded model weights (large; fetched by download_models.py)
+models/
+
 # Scratch / preview artifacts
 _pendulum_preview.png
 Untitled-*.yaml
+_smoke_test.py
+_e2e_test.py
+_real_test.py
+_mp_diag.py
 
 # Virtual environments
 .venv/
