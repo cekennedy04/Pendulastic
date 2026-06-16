@@ -288,6 +288,46 @@ def _smooth(angles, fps, smoothing):
     return angles
 
 
+def _angles_right_with_left_fallback(timestamps, kpts_list, fps, smoothing="savgol",
+                                     score_thresh=SCORE_THRESHOLD):
+    """
+    Per-frame knee angle preferring the RIGHT leg, falling back to the LEFT.
+
+    Used for reference-less trajectory export. For each frame: if the Right
+    (hip, knee, ankle) confidence clears score_thresh, use the Right leg;
+    otherwise, if the Left leg clears it, use the Left leg; otherwise leave the
+    frame as NaN and interpolate. Unlike the scored path this never raises - a
+    sparse trajectory is still exported rather than skipped.
+
+    Returns (timestamps, angles_deg, leg_used) where leg_used[i] is
+    "right", "left", or None (interpolated) per frame.
+    """
+    n = len(kpts_list)
+    timestamps = np.asarray(timestamps, dtype=float)
+    angles = np.full(n, np.nan, dtype=float)
+    leg_used = [None] * n
+    rh, rk, ra = COCO_RIGHT
+    lh, lk, la = COCO_LEFT
+
+    for i, kp in enumerate(kpts_list):
+        if kp is None:
+            continue
+        if min(kp[rh, 2], kp[rk, 2], kp[ra, 2]) >= score_thresh:
+            angles[i] = compute_knee_angle(kp[rh, :2], kp[rk, :2], kp[ra, :2])
+            leg_used[i] = "right"
+        elif min(kp[lh, 2], kp[lk, 2], kp[la, 2]) >= score_thresh:
+            angles[i] = compute_knee_angle(kp[lh, :2], kp[lk, :2], kp[la, :2])
+            leg_used[i] = "left"
+
+    valid = ~np.isnan(angles)
+    if valid.any():
+        x = np.arange(n)
+        angles = np.interp(x, x[valid], angles[valid])
+        angles = _smooth(angles, fps, smoothing)
+    # If nothing was ever detected, angles stays all-NaN (exported as nulls).
+    return timestamps, angles, leg_used
+
+
 # =============================================================================
 # 3a. MEDIAPIPE  (real; CPU; modern Tasks PoseLandmarker API)
 # =============================================================================
@@ -557,6 +597,24 @@ MODEL_FUNCTIONS = {
     "fremocap": process_fremocap,
 }
 
+# Per-model keypoint backbone, trajectory smoothing, and per-joint confidence
+# floor. Used by the reference-less path so it can do per-frame Right/Left leg
+# selection on the raw keypoints (the process_* functions above collapse to a
+# single leg internally and only return angles).
+MODEL_BACKBONES = {
+    "mediapipe": ("mediapipe", "savgol", MP_SCORE_THRESHOLD),
+    "fremocap":  ("mediapipe", "butter", MP_SCORE_THRESHOLD),
+    "rtmpose":   ("rtmpose",   "savgol", SCORE_THRESHOLD),
+    "mmpose":    ("mmpose",    "savgol", SCORE_THRESHOLD),
+}
+
+
+def _extract_keypoints(backbone, video_path):
+    """Run a model backbone -> (timestamps, kpts_list, fps)."""
+    if backbone == "mediapipe":
+        return _mediapipe_keypoint_series(video_path)
+    return _onnx_keypoint_series(video_path, backbone)
+
 
 # =============================================================================
 # 4. OPTITRACK REFERENCE LOADER
@@ -709,14 +767,53 @@ def score_model_against_reference(ref_t, ref_y, test_t, test_y, proc_time_sec):
 # =============================================================================
 # 7. PER-TRIAL PIPELINE
 # =============================================================================
+def _track_only_trajectory(model_name, model_func, video_path):
+    """
+    Track a video with no reference and return its knee-angle trajectory.
+
+    Uses per-frame Right-leg-preferred / Left-leg-fallback angle computation on
+    the raw keypoints, and exports the result under "trajectories"."knee_angle".
+    """
+    backbone_info = MODEL_BACKBONES.get(model_name)
+    if backbone_info is not None:
+        backbone, smoothing, thresh = backbone_info
+        timestamps, kpts_list, fps = _extract_keypoints(backbone, video_path)
+        timestamps, angles, leg_used = _angles_right_with_left_fallback(
+            timestamps, kpts_list, fps, smoothing=smoothing, score_thresh=thresh)
+    else:
+        # Unknown/custom model: fall back to its own angle output.
+        timestamps, angles = model_func(video_path)
+        leg_used = [None] * len(angles)
+
+    finite = np.isfinite(angles)
+    leg_counts = {}
+    for lg in leg_used:
+        key = lg if lg is not None else "interpolated"
+        leg_counts[key] = leg_counts.get(key, 0) + 1
+
+    return {
+        "status": "tracked_no_reference",
+        "n_frames": int(len(angles)),
+        "n_valid_frames": int(finite.sum()),
+        "leg_frame_counts": leg_counts,
+        "trajectories": {
+            "timestamps_sec": [round(float(t), 4) for t in timestamps],
+            "knee_angle": [None if not np.isfinite(a) else round(float(a), 3)
+                           for a in angles],
+            "leg_used": leg_used,
+        },
+    }
+
+
 def process_trial(pair, model_functions=None):
     """
     Run all 4 models on a single trial.
 
     If an OptiTrack CSV is present and readable, each model is synchronized to it
     and scored (RMSE / bias / LoA), status "ok". If the CSV is missing or cannot
-    be read, the trial is NOT skipped: every model still tracks the video and its
-    knee-angle trajectory (timestamps + angles) is exported with status
+    be read, the trial is NOT skipped: every model still tracks the video with a
+    per-frame Right-leg-preferred (Left-leg-fallback) angle calculation, and the
+    trajectory is exported under "trajectories"."knee_angle" with status
     "tracked_no_reference", to be scored later once the reference is available.
     """
     model_functions = model_functions or MODEL_FUNCTIONS
@@ -749,20 +846,15 @@ def process_trial(pair, model_functions=None):
     for model_name, model_func in model_functions.items():
         t_start = time.perf_counter()
         try:
-            test_t, test_y = model_func(pair["avi_path"])
-            proc_time = time.perf_counter() - t_start
             if has_reference:
+                test_t, test_y = model_func(pair["avi_path"])
+                proc_time = time.perf_counter() - t_start
                 score = score_model_against_reference(
                     ref_t, ref_y, test_t, test_y, proc_time)
             else:
-                # No reference yet: export the raw tracking trajectory.
-                score = {
-                    "status": "tracked_no_reference",
-                    "proc_time_sec": proc_time,
-                    "n_frames": int(len(test_y)),
-                    "timestamps_sec": [round(float(t), 4) for t in test_t],
-                    "knee_angle_deg": [round(float(a), 3) for a in test_y],
-                }
+                # No reference yet: Right-leg-preferred (Left fallback) export.
+                score = _track_only_trajectory(model_name, model_func, pair["avi_path"])
+                score["proc_time_sec"] = time.perf_counter() - t_start
         except Exception as e:
             proc_time = time.perf_counter() - t_start
             score = {
