@@ -21,6 +21,7 @@
 """
 
 import os
+import time
 import json
 import socket
 import threading
@@ -68,6 +69,21 @@ CAMERA_BACKENDS = [("MSMF", cv2.CAP_MSMF), ("DSHOW", cv2.CAP_DSHOW)]
 MAX_CAMERA_INDEX = 5       # Probe indices 0..MAX_CAMERA_INDEX.
 
 
+def read_with_warmup(cap, attempts=15, delay=0.1):
+    """
+    Try to read a frame, retrying to absorb MSMF/USB warm-up latency.
+
+    The MSMF backend often fails the first read() right after opening a camera
+    (it returns before the stream is flowing). Returns (ok, frame).
+    """
+    for _ in range(attempts):
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            return True, frame
+        time.sleep(delay)
+    return False, None
+
+
 def enumerate_cameras():
     """
     Probe for working cameras across the preferred backends.
@@ -86,7 +102,8 @@ def enumerate_cameras():
             ok = cap.isOpened()
             ret = False
             if ok:
-                ret, _ = cap.read()
+                # Warm-up read so a flaky first frame doesn't hide a good camera.
+                ret, _ = read_with_warmup(cap, attempts=8, delay=0.05)
             cap.release()
             if ok and ret:
                 seen_indices.add(idx)
@@ -390,6 +407,18 @@ class MasterApp:
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
             self.cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+
+            # Warm up: MSMF can fail the first few reads right after opening.
+            # Confirm frames actually flow before we commit to recording.
+            warm_ok, _ = read_with_warmup(self.cap, attempts=20, delay=0.1)
+            if not warm_ok:
+                self.cap.release()
+                self.cap = None
+                raise RuntimeError(
+                    f"Camera (index {cam_index}) opened but returned no frames.\n\n"
+                    "It may be in use by another app, or still initializing. "
+                    "Close other camera apps and try again, or click 'Rescan'."
+                )
 
             # Use the actual frame size the camera gave us.
             actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or FRAME_WIDTH
