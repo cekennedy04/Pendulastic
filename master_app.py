@@ -54,19 +54,56 @@ except ImportError:
 # Configuration constants
 # -----------------------------------------------------------------------------
 ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Recordings")
-WEBCAM_INDEX = 0            # Change if your webcam is on a different index.
 TARGET_FPS = 30.0          # Forced capture/write rate.
 UDP_PORT = 5005            # Must match the slave listener.
 UDP_BROADCAST_IP = "255.255.255.255"   # Broadcast to the whole subnet.
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 
+# Capture backends to probe, in order. On Windows 11, MSMF often enumerates USB
+# UVC webcams (e.g. Logitech) that the older DSHOW backend misses; DSHOW is kept
+# as a fallback. The selected camera carries its own backend so recording opens
+# it exactly the way the probe found it.
+CAMERA_BACKENDS = [("MSMF", cv2.CAP_MSMF), ("DSHOW", cv2.CAP_DSHOW)]
+MAX_CAMERA_INDEX = 5       # Probe indices 0..MAX_CAMERA_INDEX.
+
+
+def enumerate_cameras():
+    """
+    Probe for working cameras across the preferred backends.
+
+    Returns a list of dicts: {"index", "backend", "backend_name", "label"}.
+    A camera index already found on an earlier (preferred) backend is not
+    re-listed for a later backend, so the Logitech shows up once.
+    """
+    found = []
+    seen_indices = set()
+    for backend_name, backend_flag in CAMERA_BACKENDS:
+        for idx in range(MAX_CAMERA_INDEX + 1):
+            if idx in seen_indices:
+                continue
+            cap = cv2.VideoCapture(idx, backend_flag)
+            ok = cap.isOpened()
+            ret = False
+            if ok:
+                ret, _ = cap.read()
+            cap.release()
+            if ok and ret:
+                seen_indices.add(idx)
+                found.append({
+                    "index": idx,
+                    "backend": backend_flag,
+                    "backend_name": backend_name,
+                    "label": f"Camera {idx} ({backend_name})",
+                })
+    return found
+
 
 class MasterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Biomechanics Master - Acquisition Control")
-        self.root.geometry("480x720")
+        self.root.geometry("480x780")
         self.root.resizable(False, False)
 
         # ---- Thread-safe recording state ----
@@ -126,67 +163,120 @@ class MasterApp:
                        font=("Segoe UI", 13, "bold"))
         cfg.grid(row=7, column=0, columnspan=2, pady=(0, 8))
 
+        # --- Camera (auto-detected; single-camera rig) ---
+        tk.Label(self.root, text="Camera:").grid(row=8, column=0, sticky="e", **pad)
+        cam_frame = tk.Frame(self.root)
+        cam_frame.grid(row=8, column=1, sticky="w", **pad)
+        self.var_cam = tk.StringVar(value="")
+        self.lbl_cam = tk.Label(cam_frame, textvariable=self.var_cam, width=18,
+                                relief="sunken", anchor="w", bg="white")
+        self.lbl_cam.pack(side="left", ipady=1)
+        self.btn_rescan = tk.Button(cam_frame, text="Rescan", command=self.rescan_cameras)
+        self.btn_rescan.pack(side="left", padx=(6, 0))
+
         # --- Camera Position 1-3 ---
-        tk.Label(self.root, text="Camera Position:").grid(row=8, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Position:").grid(row=9, column=0, sticky="e", **pad)
         self.var_pos = tk.StringVar(value="1")
         self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
                                      state="readonly",
                                      values=["1", "2", "3"])
-        self.drop_pos.grid(row=8, column=1, sticky="w", **pad)
+        self.drop_pos.grid(row=9, column=1, sticky="w", **pad)
 
         # --- Camera Height ---
-        tk.Label(self.root, text="Camera Height:").grid(row=9, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Height:").grid(row=10, column=0, sticky="e", **pad)
         self.var_height = tk.StringVar(value="Joint-Level")
         self.drop_height = ttk.Combobox(self.root, textvariable=self.var_height, width=25,
                                         state="readonly",
                                         values=["Low", "Joint-Level", "High"])
-        self.drop_height.grid(row=9, column=1, sticky="w", **pad)
+        self.drop_height.grid(row=10, column=1, sticky="w", **pad)
 
         # --- Trial Number ---
-        tk.Label(self.root, text="Trial Number:").grid(row=10, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Trial Number:").grid(row=11, column=0, sticky="e", **pad)
         self.var_trial = tk.StringVar(value="1")
         self.drop_trial = ttk.Combobox(self.root, textvariable=self.var_trial, width=25,
                                        state="readonly",
                                        values=["1", "2", "3"])
-        self.drop_trial.grid(row=10, column=1, sticky="w", **pad)
+        self.drop_trial.grid(row=11, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=11, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=12, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Control buttons ---
         self.btn_start = tk.Button(self.root, text="START RECORDING",
                                    bg="#1e7d34", fg="white",
                                    font=("Segoe UI", 11, "bold"),
                                    width=18, height=2, command=self.start_recording)
-        self.btn_start.grid(row=12, column=0, padx=10, pady=12)
+        self.btn_start.grid(row=13, column=0, padx=10, pady=12)
 
         self.btn_stop = tk.Button(self.root, text="STOP",
                                   bg="#a31515", fg="white",
                                   font=("Segoe UI", 11, "bold"),
                                   width=18, height=2, command=self.stop_recording,
                                   state="disabled")
-        self.btn_stop.grid(row=12, column=1, padx=10, pady=12)
+        self.btn_stop.grid(row=13, column=1, padx=10, pady=12)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Batch evaluation (active only when not recording) ---
         self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
                                       bg="#1f3a93", fg="white",
                                       font=("Segoe UI", 12, "bold"),
                                       height=2, command=self.start_batch_evaluation)
-        self.btn_evaluate.grid(row=14, column=0, columnspan=2, sticky="ew",
+        self.btn_evaluate.grid(row=15, column=0, columnspan=2, sticky="ew",
                                padx=10, pady=(0, 8))
 
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=15, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=16, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
+
+        # Detect the camera now that all widgets exist.
+        self._cameras = []
+        self._active_cam = None
+        self.rescan_cameras()
 
         # Make sure resources are released if the window is closed.
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # ------------------------------------------------------------------
+    # CAMERA SELECTION
+    # ------------------------------------------------------------------
+    def rescan_cameras(self):
+        """Detect the connected camera and update the label."""
+        self.var_status.set("Scanning for camera...")
+        self.root.update_idletasks()
+        try:
+            self._cameras = enumerate_cameras()
+        except Exception as e:
+            self._cameras = []
+            messagebox.showerror(
+                "Camera Scan Failed",
+                f"Could not scan for the camera:\n\n{type(e).__name__}: {e}"
+            )
+
+        # Single-camera rig: use the first camera found (MSMF is probed first).
+        self._active_cam = self._cameras[0] if self._cameras else None
+        if self._active_cam is not None:
+            self.var_cam.set(self._active_cam["label"])
+            extra = (f"  (+{len(self._cameras) - 1} more)"
+                     if len(self._cameras) > 1 else "")
+            self.var_status.set(f"Camera ready: {self._active_cam['label']}{extra}")
+        else:
+            self.var_cam.set("(none detected)")
+            self.var_status.set(
+                "No camera detected - check USB / close other apps, then Rescan."
+            )
+
+    def _selected_camera(self):
+        """Return (index, backend) for the active camera, or raise ValueError."""
+        if self._active_cam is None:
+            raise ValueError(
+                "No camera detected. Plug in the USB webcam and click 'Rescan'."
+            )
+        return self._active_cam["index"], self._active_cam["backend"]
 
     # ------------------------------------------------------------------
     # INPUT VALIDATION
@@ -287,13 +377,14 @@ class MasterApp:
             participant_dir, video_path, rel_path = self._build_paths(pid)
             self._write_metadata(participant_dir, pid)
 
-            # ---- Open webcam BEFORE telling the slave to start ----
-            self.cap = cv2.VideoCapture(WEBCAM_INDEX, cv2.CAP_DSHOW)
+            # ---- Open the selected camera BEFORE telling the slave to start ----
+            cam_index, cam_backend = self._selected_camera()
+            self.cap = cv2.VideoCapture(cam_index, cam_backend)
             if not self.cap or not self.cap.isOpened():
                 raise RuntimeError(
-                    f"Webcam not detected at index {WEBCAM_INDEX}.\n\n"
-                    "Check that the camera is plugged in and not in use by "
-                    "another application (Zoom, Teams, Camera app)."
+                    f"Could not open the selected camera (index {cam_index}).\n\n"
+                    "Click 'Rescan', and make sure the USB webcam is plugged in "
+                    "and not in use by another application (Zoom, Teams, Camera app)."
                 )
 
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
@@ -557,7 +648,8 @@ class MasterApp:
         for w in (self.drop_sex, self.drop_diag, self.drop_pos,
                   self.drop_height, self.drop_trial):
             w.config(state=ro_state)
-        # Batch evaluation is only available when not recording.
+        # Camera rescan and batch evaluation are only available when not recording.
+        self.btn_rescan.config(state=state)
         self.btn_evaluate.config(state=state)
 
     def on_close(self):
