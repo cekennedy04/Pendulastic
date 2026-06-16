@@ -5,7 +5,7 @@
  Heavy-lifting module for the Pendulastic / biomechanics benchmarking app.
 
  Given a matched pair of files for one trial:
-   * Trial_X.avi             - webcam video of the pendulum-test swing
+   * Trial_X.mp4 / .avi      - webcam video of the pendulum-test swing
    * Trial_X_optitrack.csv   - gold-standard knee angle time-series from Motive
 
  this module runs FOUR real pose-estimation engines over the webcam video,
@@ -63,7 +63,8 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(PROJECT_DIR, "models")
 
 MODEL_NAMES = ["mediapipe", "rtmpose", "mmpose", "fremocap"]
-AVI_PATTERN = re.compile(r"^Trial_(\d+)\.avi$", re.IGNORECASE)
+# Match Trial_<n>.mp4 or Trial_<n>.avi, case-insensitive (so trial_1.MP4 works too).
+VIDEO_PATTERN = re.compile(r"^Trial_(\d+)\.(?:mp4|avi)$", re.IGNORECASE)
 CSV_SUFFIX = "_optitrack.csv"
 EVAL_RESULTS_FILENAME = "evaluation_results.json"
 
@@ -102,7 +103,7 @@ MP_SCORE_THRESHOLD = 0.10
 # =============================================================================
 def find_trial_pairs(root_dir):
     """
-    Recursively scan root_dir for Trial_X.avi videos living in a
+    Recursively scan root_dir for Trial_X video files (.mp4 or .avi) living in a
     Participant_[ID]/Position_[X]/Height_[Y]/ folder.
 
     Every video is returned. If a matching Trial_X_optitrack.csv sits next to it,
@@ -112,8 +113,8 @@ def find_trial_pairs(root_dir):
     pairs = []
 
     for dirpath, _dirnames, filenames in os.walk(root_dir):
-        avi_files = [f for f in filenames if AVI_PATTERN.match(f)]
-        if not avi_files:
+        video_files = [f for f in filenames if VIDEO_PATTERN.match(f)]
+        if not video_files:
             continue
 
         parts = os.path.normpath(dirpath).split(os.sep)
@@ -126,10 +127,10 @@ def find_trial_pairs(root_dir):
             elif part.startswith("Height_"):
                 height = part[len("Height_"):]
 
-        for avi_name in avi_files:
-            match = AVI_PATTERN.match(avi_name)
+        for video_name in video_files:
+            match = VIDEO_PATTERN.match(video_name)
             trial_num = match.group(1)
-            trial_base = os.path.splitext(avi_name)[0]
+            trial_base = os.path.splitext(video_name)[0]
             csv_name = f"{trial_base}{CSV_SUFFIX}"
             has_csv = csv_name in filenames
 
@@ -139,7 +140,7 @@ def find_trial_pairs(root_dir):
                 "height": height or "unknown",
                 "trial": trial_num,
                 "folder": dirpath,
-                "avi_path": os.path.join(dirpath, avi_name),
+                "avi_path": os.path.join(dirpath, video_name),
                 "csv_path": os.path.join(dirpath, csv_name) if has_csv else None,
             })
 
