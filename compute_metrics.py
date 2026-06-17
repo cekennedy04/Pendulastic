@@ -161,10 +161,32 @@ def load_prediction(pred_csv):
 # =============================================================================
 # 2b. OPTITRACK / MOTIVE LOADER (multi-row header aware)
 # =============================================================================
-# Single-row-header aliases (used only by the simple fallback).
+# Name tokens that identify each biomechanical landmark in a Motive export.
+# Motive here tracks rigid bodies named Thigh and Shank (not joints directly):
+#   Thigh rigid body -> Hip track
+#   Shank rigid body -> Ankle track
+#   Knee centre      -> the boundary between Thigh and Shank (derived = midpoint)
+# Extra synonyms (femur/tibia/shin) are included so the string match is forgiving.
+JOINT_NAME_TOKENS = {
+    "hip":   ["hip", "thigh", "femur"],
+    "knee":  ["knee"],
+    "ankle": ["ankle", "shank", "tibia", "shin"],
+}
+_ALL_NAME_TOKENS = sorted({t for toks in JOINT_NAME_TOKENS.values() for t in toks})
+
+
+def _alias_list(tokens, ax):
+    names = []
+    for tok in tokens:
+        names += [f"{tok}_{ax}", f"{tok}{ax}", f"r{tok}_{ax}", f"l{tok}_{ax}",
+                  f"right_{tok}_{ax}", f"left_{tok}_{ax}", f"{tok} {ax}"]
+    return names
+
+
+# Single-row-header column aliases (used only by the simple fallback), built from
+# the same tokens so thigh_x / shank_y / rthigh_z etc. are recognised.
 _COORD_ALIASES = {
-    (j, ax): [f"{j}_{ax}", f"{j}{ax}", f"r{j}_{ax}", f"l{j}_{ax}",
-              f"right_{j}_{ax}", f"left_{j}_{ax}", f"{j} {ax}"]
+    (j, ax): _alias_list(JOINT_NAME_TOKENS[j], ax)
     for j in JOINTS for ax in AXES
 }
 _TIME_ALIASES = ["time", "timestamp", "time_s", "time_sec", "time (seconds)",
@@ -188,31 +210,38 @@ def _find_axis_header_row(rows):
 
 
 def _find_name_row(rows, header_idx):
-    """Row above the axis header that carries joint/marker names."""
+    """Row above the axis header that carries joint/segment names (incl. Thigh/Shank)."""
     for i in range(header_idx - 1, -1, -1):
         for cell in rows[i]:
             cl = cell.strip().lower()
-            if any(j in cl for j in JOINTS):
+            if any(tok in cl for tok in _ALL_NAME_TOKENS):
                 return i
     return None
 
 
-def _side_score(name, joint):
-    """Prefer right-side markers (to match the prediction's right-leg default)."""
+def _side_score(name):
+    """Prefer right-side segments/markers (matches the prediction's right-leg default)."""
     score = 0
     if "right" in name:
         score += 3
-    if re.search(r"(^|[^a-z])r[_: ]?" + joint, name):
+    elif "left" in name:
+        score -= 2
+    seg = r"(hip|knee|ankle|thigh|shank|shin|femur|tibia)"
+    if re.search(r"(^|[^a-z])r[_: ]?" + seg, name):
         score += 2
-    if "left" in name or re.search(r"(^|[^a-z])l[_: ]?" + joint, name):
+    if re.search(r"(^|[^a-z])l[_: ]?" + seg, name):
         score -= 2
     return score
 
 
 def _map_motive_columns(axis_row, name_row):
     """
-    Build {(joint, axis): column_index} + dim from the Motive Name row + axis row.
-    Returns (None, 0) if any joint is missing (caller falls back to simple header).
+    Build {(joint, axis): column_index}, dim, and a set of derived joints from the
+    Motive Name + axis rows. Hip<-Thigh, Ankle<-Shank; Knee is derived as the
+    midpoint of Hip and Ankle when there is no direct knee marker.
+
+    Returns (None, 0, set()) when Hip or Ankle can't be located (caller then falls
+    back to the simple single-row-header loader).
     """
     axis_l = [c.strip().lower() for c in axis_row]
     name_l = [(name_row[c].strip().lower() if name_row and c < len(name_row) else "")
@@ -224,7 +253,7 @@ def _map_motive_columns(axis_row, name_row):
             continue
         nm = name_l[c]
         for j in JOINTS:
-            if j in nm:
+            if any(tok in nm for tok in JOINT_NAME_TOKENS[j]):
                 joint_markers[j].setdefault(nm, {})[ax] = c
                 break
 
@@ -232,17 +261,25 @@ def _map_motive_columns(axis_row, name_row):
     for j in JOINTS:
         markers = joint_markers[j]
         if not markers:
-            return None, 0
-        best = sorted(markers, key=lambda nm: (-_side_score(nm, j), nm))[0]
+            continue   # missing -> maybe derived (knee), or fail below (hip/ankle)
+        best = sorted(markers, key=lambda nm: (-_side_score(nm), nm))[0]
         present = markers[best]
         if "x" not in present or "y" not in present:
-            return None, 0
+            continue
         col_map[(j, "x")] = present["x"]
         col_map[(j, "y")] = present["y"]
         if "z" in present:
             col_map[(j, "z")] = present["z"]
         dims.append(3 if "z" in present else 2)
-    return col_map, min(dims)
+
+    have = {j for (j, _ax) in col_map}
+    if "hip" not in have or "ankle" not in have:
+        return None, 0, set()      # need both anchor segments
+
+    derived = set()
+    if "knee" not in have:
+        derived.add("knee")        # Thigh/Shank boundary -> midpoint
+    return col_map, min(dims), derived
 
 
 def _data_block(path, header_idx):
@@ -279,7 +316,7 @@ def _load_optitrack_motive(rows, path):
     name_row_idx = _find_name_row(rows, header_idx)
     name_row = rows[name_row_idx] if name_row_idx is not None else None
 
-    col_map, dim = _map_motive_columns(axis_row, name_row)
+    col_map, dim, derived = _map_motive_columns(axis_row, name_row)
     if not col_map:
         return None
 
@@ -295,15 +332,25 @@ def _load_optitrack_motive(rows, path):
              else np.arange(n, dtype=float))
     pts = np.full((n, len(JOINTS), dim), np.nan)
     for ji, j in enumerate(JOINTS):
+        if j in derived:
+            continue
         for ai, ax in enumerate(axes):
             c = col_map.get((j, ax))
             if c is not None and c < data.shape[1]:
                 pts[:, ji, ai] = data[:, c]
+    # Knee centre = midpoint of the Thigh (hip) and Shank (ankle) segments.
+    hip_i, ankle_i = JOINTS.index("hip"), JOINTS.index("ankle")
+    for j in derived:
+        pts[:, JOINTS.index(j), :] = 0.5 * (pts[:, hip_i, :] + pts[:, ankle_i, :])
     return np.asarray(times, float), pts
 
 
 def _load_optitrack_simple(rows, path):
-    """Fallback: a single header row with hip_x / knee_y / ... columns."""
+    """
+    Fallback: a single header row with hip_x / knee_y / thigh_x / shank_z / ...
+    columns. Hip<-Thigh, Ankle<-Shank; Knee is derived as the Hip/Ankle midpoint
+    when no direct knee column exists.
+    """
     header = rows[0]
     header_lower = {h.strip().lower(): i for i, h in enumerate(header)}
 
@@ -314,24 +361,28 @@ def _load_optitrack_simple(rows, path):
         return None
 
     time_idx = find_col(_TIME_ALIASES)
-    has_z = all(find_col(_COORD_ALIASES[(j, "z")]) is not None for j in JOINTS)
+    has_z = all(find_col(_COORD_ALIASES[(j, "z")]) is not None for j in ("hip", "ankle"))
     dim = 3 if has_z else 2
     axes = AXES[:dim]
 
-    col_idx = {}
+    col_idx, derived = {}, set()
     for j in JOINTS:
-        for ax in axes:
-            idx = find_col(_COORD_ALIASES[(j, ax)])
-            if idx is None:
-                raise ValueError(
-                    f"Could not locate joint coordinates in {os.path.basename(path)}.\n"
-                    f"Columns present: {header}\n"
-                    "Need per-joint hip/knee/ankle x,y[,z] (Motive multi-row header "
-                    "or simple *_x/*_y columns). Adjust _COORD_ALIASES if needed."
-                )
-            col_idx[(j, ax)] = idx
+        joint_cols = {ax: find_col(_COORD_ALIASES[(j, ax)]) for ax in axes}
+        if all(joint_cols[ax] is not None for ax in axes):
+            for ax in axes:
+                col_idx[(j, ax)] = joint_cols[ax]
+        elif j == "knee":
+            derived.add("knee")          # derive from hip/ankle midpoint
+        else:
+            raise ValueError(
+                f"Could not locate the {j} (or thigh/shank) coordinates in "
+                f"{os.path.basename(path)}.\nColumns present: {header}\n"
+                "Need hip/ankle (or thigh/shank) x,y[,z]; knee may be derived. "
+                "Adjust _COORD_ALIASES / JOINT_NAME_TOKENS if needed."
+            )
 
-    times, pts = [], []
+    times = []
+    raw = {key: [] for key in col_idx}
     for r in rows[1:]:
         if not r:
             continue
@@ -339,18 +390,21 @@ def _load_optitrack_simple(rows, path):
             t = float(r[time_idx]) if time_idx is not None else float(len(times))
         except (ValueError, IndexError):
             t = float(len(times))
-        frame = []
-        for j in JOINTS:
-            coord = []
-            for ax in axes:
-                try:
-                    coord.append(float(r[col_idx[(j, ax)]]))
-                except (ValueError, IndexError):
-                    coord.append(np.nan)
-            frame.append(coord)
         times.append(t)
-        pts.append(frame)
-    return np.asarray(times, float), np.asarray(pts, float)
+        for key, ci in col_idx.items():
+            try:
+                raw[key].append(float(r[ci]))
+            except (ValueError, IndexError):
+                raw[key].append(np.nan)
+
+    n = len(times)
+    pts = np.full((n, len(JOINTS), dim), np.nan)
+    for (j, ax), vals in raw.items():
+        pts[:, JOINTS.index(j), axes.index(ax)] = vals
+    hip_i, ankle_i = JOINTS.index("hip"), JOINTS.index("ankle")
+    for j in derived:
+        pts[:, JOINTS.index(j), :] = 0.5 * (pts[:, hip_i, :] + pts[:, ankle_i, :])
+    return np.asarray(times, float), pts
 
 
 def load_optitrack(gt_csv):
