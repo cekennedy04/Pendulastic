@@ -571,7 +571,12 @@ def _onnx_keypoint_series(video_path, model_key):
     """Stream a video through an ONNX pose model -> (timestamps, kpts_list, fps)."""
     cfg = ONNX_MODELS[model_key]
     session_pair = _get_onnx_session(cfg["dir"])     # raises clearly if missing
-    dst_w, dst_h = cfg["input_w"], cfg["input_h"]
+    session, _ = session_pair
+    shape = session.get_inputs()[0].shape            # [batch, C, H, W]
+    try:
+        dst_h, dst_w = int(shape[2]), int(shape[3])  # read H,W from ONNX graph
+    except (TypeError, ValueError, IndexError):
+        dst_h, dst_w = cfg.get("input_h", 256), cfg.get("input_w", 192)  # fallback
 
     timestamps, kpts_list = [], []
     fps = _video_fps(video_path)
@@ -623,9 +628,33 @@ OPENPOSE_COCO18_TO_COCO17 = {
     13: 15,  # Left ankle
 }
 
+# BODY_25 keypoint index -> COCO-17 slot (lower-limb joints only).
+#   BODY_25: 9=RHip, 10=RKnee, 11=RAnkle, 12=LHip, 13=LKnee, 14=LAnkle
+OPENPOSE_BODY25_TO_COCO17 = {
+    9:  12,  # Right hip
+    10: 14,  # Right knee
+    11: 16,  # Right ankle
+    12: 11,  # Left hip
+    13: 13,  # Left knee
+    14: 15,  # Left ankle
+}
 
-def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h):
-    """Run one frame through an OpenPose ONNX model -> (17, 3) in original coords."""
+# Channel-count threshold separating COCO-18 exports (≤57 ch including PAFs)
+# from BODY_25 exports (≥78 ch). Used for auto-detection when no explicit
+# format is specified. Models that export only keypoint heatmaps (no PAFs) but
+# have ≤25 channels are also classified as COCO-18; explicit body25=True
+# overrides auto-detect for keypoint-only BODY_25 exports.
+_OPENPOSE_BODY25_MIN_C = 58
+
+
+def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h, body25=None):
+    """
+    Run one frame through an OpenPose ONNX model -> (17, 3) in original coords.
+
+    body25: True  -> force BODY_25 channel map
+            False -> force COCO-18 channel map
+            None  -> auto-detect by channel count (C >= _OPENPOSE_BODY25_MIN_C = BODY_25)
+    """
     session, input_name = session_pair
     canvas, scale, pad_x, pad_y = _letterbox(frame_bgr, dst_w, dst_h)
     # OpenPose preprocessing: BGR, scaled to [0, 1], no mean/std subtraction.
@@ -640,8 +669,12 @@ def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h):
     heat = heat[0]                       # (C, Hh, Wh)
     C, Hh, Wh = heat.shape
 
+    if body25 is None:
+        body25 = C >= _OPENPOSE_BODY25_MIN_C
+    channel_map = OPENPOSE_BODY25_TO_COCO17 if body25 else OPENPOSE_COCO18_TO_COCO17
+
     kp = np.zeros((17, 3), dtype=np.float32)
-    for op_idx, coco_idx in OPENPOSE_COCO18_TO_COCO17.items():
+    for op_idx, coco_idx in channel_map.items():
         if op_idx >= C:
             continue
         plane = heat[op_idx]
@@ -680,12 +713,54 @@ def process_openpose(video_path):
                                         score_thresh=OPENPOSE_SCORE_THRESHOLD)
 
 
+# -----------------------------------------------------------------------------
+# PosePipe ingest hook
+# -----------------------------------------------------------------------------
+# PosePipe is a DataJoint/Docker orchestration pipeline — not pip-installable and
+# not invoked inline. This hook ingests the CSV that PosePipe writes for a trial
+# (Trial_X_posepipe.csv, same column format as our own prediction CSVs) and
+# returns the knee-angle time-series exactly like the other process_* functions.
+POSEPIPE_SUFFIX = "_posepipe.csv"
+
+
+def _find_posepipe_csv(video_path):
+    """Return Trial_X_posepipe.csv next to the video, or None."""
+    folder = os.path.dirname(video_path)
+    m = VIDEO_PATTERN.match(os.path.basename(video_path))
+    if m:
+        cand = os.path.join(folder, f"Trial_{m.group(1)}{POSEPIPE_SUFFIX}")
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def process_posepipe(video_path):
+    """
+    PosePipe ingest -> (timestamps, knee_angles_deg).
+
+    Reads Trial_X_posepipe.csv sitting next to the video (time_sec + knee_angle_deg
+    columns, same schema as our own prediction CSVs). Raises FileNotFoundError when
+    the CSV is absent; the pipeline records that as "error" and moves on.
+    """
+    csv_path = _find_posepipe_csv(video_path)
+    if csv_path is None:
+        raise FileNotFoundError(
+            f"No PosePipe export for {os.path.basename(video_path)}.\n"
+            "Expected: Trial_X_posepipe.csv next to the video file.\n"
+            "Run PosePipe externally and place its CSV export there.")
+    t, a = _prediction_knee_angle_series(csv_path)
+    if len(t) < 2:
+        raise ValueError(f"PosePipe CSV has too few valid rows: {csv_path}")
+    return t, a
+
+
 MODEL_FUNCTIONS = {
     "mediapipe": process_mediapipe,
-    "rtmpose": process_rtmpose,
-    "mmpose": process_mmpose,
-    "fremocap": process_fremocap,
-    "openpose": process_openpose,
+    "rtmpose":   process_rtmpose,
+    "mmpose":    process_mmpose,
+    "fremocap":  process_fremocap,
+    "openpose":  process_openpose,
+    "posepipe":  process_posepipe,
 }
 
 # Per-model keypoint backbone, trajectory smoothing, and per-joint confidence
@@ -1137,7 +1212,9 @@ MODEL_GRID = {
                   "thresholds": [0.3, 0.6]},
     "mmpose":    {"variant_key": "backbone", "variants": ["s", "m", "l"],
                   "thresholds": [0.3, 0.6]},
-    "openpose":  {"variant_key": "variant", "variants": ["default"],
+    # "default" = any .onnx NOT named body25 (auto-detects COCO-18 / BODY_25 by C);
+    # "body25"  = file whose basename contains "body25" -> forced BODY_25 channel map.
+    "openpose":  {"variant_key": "variant", "variants": ["default", "body25"],
                   "thresholds": [0.3, 0.5]},
 }
 
@@ -1164,10 +1241,23 @@ def _resolve_grid_model(model, variant):
         raise FileNotFoundError(
             f"{model} backbone '{variant}' (rtmpose-{variant}*.onnx) not in {model_dir}")
     if model == "openpose":
-        files = sorted(glob.glob(os.path.join(OPENPOSE_DIR, "**", "*.onnx"),
-                                 recursive=True))
-        if files:
-            return files[0]
+        all_files = sorted(glob.glob(os.path.join(OPENPOSE_DIR, "**", "*.onnx"),
+                                     recursive=True))
+        if variant == "body25":
+            body25_files = [f for f in all_files
+                            if "body25" in os.path.basename(f).lower()]
+            if body25_files:
+                return body25_files[0]
+            raise FileNotFoundError(
+                f"OpenPose BODY_25 .onnx not in {OPENPOSE_DIR}.\n"
+                "Place an openpose BODY_25 .onnx with 'body25' in the filename there.")
+        # "default": prefer a non-body25 file, fall back to any .onnx
+        coco18_files = [f for f in all_files
+                        if "body25" not in os.path.basename(f).lower()]
+        if coco18_files:
+            return coco18_files[0]
+        if all_files:
+            return all_files[0]
         raise FileNotFoundError(f"OpenPose .onnx not in {OPENPOSE_DIR}")
     raise ValueError(f"Unknown grid model: {model}")
 
@@ -1203,10 +1293,18 @@ def _grid_keypoint_series(model, variant, video_path, mp_det_conf=0.3):
     session_pair = _get_onnx_session_for(model_file)
     if model == "openpose":
         dst_w, dst_h = OPENPOSE_INPUT
-        frame_fn = _openpose_keypoints_for_frame
+        _is_body25 = True if variant == "body25" else None  # None = auto-detect
+        def frame_fn(sp, f, dw, dh, _b25=_is_body25):
+            return _openpose_keypoints_for_frame(sp, f, dw, dh, body25=_b25)
     else:
-        cfg = ONNX_MODELS[model]
-        dst_w, dst_h = cfg["input_w"], cfg["input_h"]
+        # Read input spatial dimensions directly from the ONNX graph; fall back
+        # to the config default (256×192) for dynamic-axis or symbolic shapes.
+        _session, _ = session_pair
+        _shape = _session.get_inputs()[0].shape   # [batch, C, H, W]
+        try:
+            dst_h, dst_w = int(_shape[2]), int(_shape[3])
+        except (TypeError, ValueError, IndexError):
+            dst_h, dst_w = 256, 192
         frame_fn = _onnx_keypoints_for_frame
 
     timestamps, kpts_list = [], []
@@ -1422,6 +1520,15 @@ LOCAL_MODEL_DOWNLOADS = [
      "url": f"{_OMM_ONNX}/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip"},
     {"name": "rtmpose/l", "dir": ONNX_MODELS["rtmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-l",
      "url": f"{_OMM_ONNX}/rtmpose-l_simcc-body7_pt-body7_420e-256x192-4dba18fc_20230504.zip"},  # VERIFY
+    # mmpose: COCO-trained RTMPose (different training dataset than body7 above -> valid comparison).
+    # NOTE: these COCO-based URLs were not network-verified; if one 404s the downloader
+    # prints manual instructions and the grid simply skips that variant.
+    {"name": "mmpose/s", "dir": ONNX_MODELS["mmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-s",
+     "url": f"{_OMM_ONNX}/rtmpose-s_simcc-coco_pt-aic-coco_420e-256x192-56e77e9e_20230109.zip"},  # VERIFY
+    {"name": "mmpose/m", "dir": ONNX_MODELS["mmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-m",
+     "url": f"{_OMM_ONNX}/rtmpose-m_simcc-coco_pt-aic-coco_420e-256x192-d1cf0a12_20230109.zip"},  # VERIFY
+    {"name": "mmpose/l", "dir": ONNX_MODELS["mmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-l",
+     "url": f"{_OMM_ONNX}/rtmpose-l_simcc-coco_pt-aic-coco_420e-256x192-4dba18fc_20230109.zip"},  # VERIFY
 ]
 
 # Rigid-body name tokens for the Motive knee-angle reconstruction.
@@ -1799,10 +1906,13 @@ EXPECTED_MODEL_MATRIX = {
     "fremocap":  [("default", "Native")],
     "posepipe":  [("default", "Native")],
 }
-# Honest notes for cells the current tracking pipeline does not produce.
+# Informational notes for specific matrix cells.
 _MATRIX_NOTES = {
-    ("openpose", "body25"): "BODY_25 not produced (OpenPose decoder is COCO-18 only)",
-    ("posepipe", "default"): "PosePipe is not implemented in the tracking pipeline",
+    # openpose/body25: supported by the decoder; requires a .onnx with 'body25'
+    # in its filename placed in models/openpose/ (manual download, no auto-fetcher).
+    ("openpose", "body25"): "needs body25-named .onnx in models/openpose/ (no auto-download)",
+    # posepipe: ingest hook — reads Trial_X_posepipe.csv; no inline tracking.
+    ("posepipe", "default"): "place Trial_X_posepipe.csv next to the video; no inline tracking",
     ("fremocap", "default"): "FreMocap is a single config (MediaPipe-2D backbone)",
 }
 
