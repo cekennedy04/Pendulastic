@@ -23,12 +23,14 @@
 import os
 import time
 import json
-import socket
 import threading
 from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+# Local Motive control (same machine; replaces the old UDP slave listener).
+import motive_sync
 
 # On Windows, the MSMF backend can hang for 30-120 seconds opening a USB camera
 # because of hardware Media Foundation Transforms. Disabling them makes camera
@@ -61,8 +63,6 @@ except ImportError:
 # -----------------------------------------------------------------------------
 ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Recordings")
 TARGET_FPS = 30.0          # Forced capture/write rate.
-UDP_PORT = 5005            # Must match the slave listener.
-UDP_BROADCAST_IP = "255.255.255.255"   # Broadcast to the whole subnet.
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 
@@ -378,32 +378,14 @@ class MasterApp:
             json.dump(metadata, f, indent=4)
 
     # ------------------------------------------------------------------
-    # UDP BROADCAST
-    # ------------------------------------------------------------------
-    def _send_udp(self, message):
-        """Broadcast a UTF-8 string to the slave on UDP_PORT."""
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.sendto(message.encode("utf-8"), (UDP_BROADCAST_IP, UDP_PORT))
-        except OSError as e:
-            raise OSError(
-                f"Could not broadcast on UDP port {UDP_PORT}. The port may be "
-                f"blocked by the firewall or already in use.\n\nDetails: {e}"
-            )
-        finally:
-            if sock is not None:
-                sock.close()
-
-    # ------------------------------------------------------------------
     # START
     # ------------------------------------------------------------------
     def start_recording(self):
-        """Begin writing the already-streaming camera to disk + trigger the slave.
+        """Begin writing the already-streaming camera to disk + trigger Motive.
 
-        The camera is pre-opened and streaming, so this is near-instant: create
-        the writer, fire the UDP START, and flip the writing flag.
+        The camera is pre-opened and streaming, so the webcam side is near-instant:
+        create the writer and flip the writing flag, then drive Motive locally via
+        motive_sync (names the take + presses record on this same machine).
         """
         if self.writing_flag.is_set():
             return  # Already recording.
@@ -431,19 +413,33 @@ class MasterApp:
             with self.out_lock:
                 self.out = writer
 
-            # Tell the slave, then start writing (both near-instant).
             start_msg = (
                 f"START|id={pid}|position={self.var_pos.get()}|"
                 f"height={self.var_height.get()}|trial={self.var_trial.get()}|"
                 f"relpath={rel_path}"
             )
-            self._send_udp(start_msg)
-            self.writing_flag.set()
 
+            # Start the webcam immediately (the stream thread writes frames now)
+            # and lock the UI. Locking first disables the text entries, so the
+            # Motive keystrokes below can never land in them.
+            self.writing_flag.set()
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
             self._lock_inputs(True)
             self.var_status.set(f"RECORDING -> {os.path.basename(video_path)}")
+            self.root.update_idletasks()   # paint UI before Motive automation runs
+
+            # Drive Motive locally (mirror folder + name take + record). A Motive
+            # failure must NOT stop the webcam recording, so handle it separately.
+            try:
+                motive_sync.start_local_motive(start_msg)
+            except Exception as e:
+                messagebox.showwarning(
+                    "Motive Sync",
+                    "The webcam is recording, but Motive could not be triggered:\n\n"
+                    f"{type(e).__name__}: {e}\n\n"
+                    "Check that Motive is open and pyautogui is installed."
+                )
 
         except (ValueError, RuntimeError, OSError) as e:
             self.writing_flag.clear()
@@ -586,7 +582,7 @@ class MasterApp:
         self._finalize_writer()
         if was_recording:
             try:
-                self._send_udp("STOP")
+                motive_sync.stop_local_motive()
             except Exception:
                 pass
         self._close_camera()
@@ -610,21 +606,23 @@ class MasterApp:
     # STOP
     # ------------------------------------------------------------------
     def stop_recording(self):
-        """Stop writing to disk and trigger the slave. Camera stays live."""
+        """Stop writing to disk and stop Motive. Camera stays live."""
         if not self.writing_flag.is_set():
             return
+        # Stop the webcam first (instant), then stop Motive. A Motive failure
+        # must not lose the already-saved webcam file.
+        self.writing_flag.clear()     # stop writing frames immediately
+        self._finalize_writer()       # finalize and close the .avi
         try:
-            self.writing_flag.clear()     # stop writing frames immediately
-            self._finalize_writer()       # finalize and close the .avi
-            self._send_udp("STOP")
+            motive_sync.stop_local_motive()
             self.var_status.set("Stopped - file saved. Camera still live.")
-        except OSError as e:
-            messagebox.showerror("Network Error on Stop", str(e))
         except Exception as e:
-            messagebox.showerror(
-                "Error Stopping",
-                f"An error occurred while stopping:\n\n{type(e).__name__}: {e}"
+            messagebox.showwarning(
+                "Motive Sync",
+                "Webcam stopped + saved, but Motive could not be stopped:\n\n"
+                f"{type(e).__name__}: {e}"
             )
+            self.var_status.set("Stopped - file saved (Motive stop failed).")
         finally:
             self._reset_ui_after_stop()
 
@@ -792,7 +790,7 @@ class MasterApp:
             self._finalize_writer()
             if was_recording:
                 try:
-                    self._send_udp("STOP")
+                    motive_sync.stop_local_motive()
                 except Exception:
                     pass
         finally:
