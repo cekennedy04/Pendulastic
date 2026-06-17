@@ -31,6 +31,11 @@
  Usage:
      python compute_metrics.py [--root .] [--out metrics_summary.csv]
                                [--pck 25,50] [--detail per_pair_metrics.csv]
+                               [--midpoint-knee auto|on|off]
+
+ --midpoint-knee (default auto): when the OptiTrack knee is a derived Thigh/Shank
+ midpoint, also redefine the CV knee as its hip/ankle midpoint so both sides share
+ the same knee definition (removes the artificial knee error). 'on'/'off' force it.
 
  Requires:  numpy, scipy, pandas  (all in requirements.txt).
 ==============================================================================
@@ -342,7 +347,7 @@ def _load_optitrack_motive(rows, path):
     hip_i, ankle_i = JOINTS.index("hip"), JOINTS.index("ankle")
     for j in derived:
         pts[:, JOINTS.index(j), :] = 0.5 * (pts[:, hip_i, :] + pts[:, ankle_i, :])
-    return np.asarray(times, float), pts
+    return np.asarray(times, float), pts, ("knee" in derived)
 
 
 def _load_optitrack_simple(rows, path):
@@ -404,11 +409,16 @@ def _load_optitrack_simple(rows, path):
     hip_i, ankle_i = JOINTS.index("hip"), JOINTS.index("ankle")
     for j in derived:
         pts[:, JOINTS.index(j), :] = 0.5 * (pts[:, hip_i, :] + pts[:, ankle_i, :])
-    return np.asarray(times, float), pts
+    return np.asarray(times, float), pts, ("knee" in derived)
 
 
 def load_optitrack(gt_csv):
-    """Load OptiTrack joint coordinates -> (time[M], pts[M, 3, D]). Motive-aware."""
+    """
+    Load OptiTrack joint coordinates -> (time[M], pts[M, 3, D], knee_derived).
+
+    knee_derived is True when the knee was synthesised as the Thigh/Shank
+    (hip/ankle) midpoint rather than read from a dedicated knee marker.
+    """
     rows = _read_rows(gt_csv)
     if not rows:
         raise ValueError(f"Empty OptiTrack CSV: {gt_csv}")
@@ -479,9 +489,31 @@ def _gt_to_plane(pts):
 # =============================================================================
 # 5. METRICS
 # =============================================================================
-def evaluate_pair(pred_csv, gt_csv, pck_thresholds=(25.0, 50.0)):
+def evaluate_pair(pred_csv, gt_csv, pck_thresholds=(25.0, 50.0), midpoint_knee="auto"):
+    """
+    Score one prediction CSV against its OptiTrack ground truth.
+
+    midpoint_knee controls the knee definition for an apples-to-apples comparison:
+      "auto" (default) - redefine the CV knee as the midpoint of its predicted hip
+                         and ankle ONLY when the GT knee was itself derived
+                         (Thigh/Shank), so both sides use the same definition.
+      "on"             - always use the hip/ankle midpoint for the CV knee.
+      "off"            - keep the CV model's own (anatomical) knee prediction.
+    """
     t_pred, pred = load_prediction(pred_csv)
-    t_gt, gt = load_optitrack(gt_csv)
+    t_gt, gt, gt_knee_derived = load_optitrack(gt_csv)
+
+    if midpoint_knee in ("off", False):
+        use_midpoint_knee = False
+    elif midpoint_knee in ("on", True):
+        use_midpoint_knee = True
+    else:  # "auto"
+        use_midpoint_knee = bool(gt_knee_derived)
+
+    if use_midpoint_knee:
+        hip_i, knee_i, ankle_i = (JOINTS.index("hip"), JOINTS.index("knee"),
+                                  JOINTS.index("ankle"))
+        pred[:, knee_i, :] = 0.5 * (pred[:, hip_i, :] + pred[:, ankle_i, :])
 
     n = max(10, min(len(t_pred), len(t_gt)))
     pred_rs = resample_points(t_pred, pred, n)
@@ -510,6 +542,8 @@ def evaluate_pair(pred_csv, gt_csv, pck_thresholds=(25.0, 50.0)):
         "n_valid_joint_samples": int(valid.sum()),
         "scale_px_to_mm": scale, "gt_plane_axes": axes,
         "rmse_mm": overall, "rmse_per_joint_mm": per_joint, "pck": pck,
+        "knee_definition": "midpoint" if use_midpoint_knee else "direct",
+        "gt_knee_derived": bool(gt_knee_derived),
     }
 
 
@@ -611,6 +645,10 @@ def main():
                         help="Optional per-pair detail CSV output path.")
     parser.add_argument("--pck", default="25,50",
                         help="Comma-separated PCK thresholds in mm (default 25,50).")
+    parser.add_argument("--midpoint-knee", choices=["auto", "on", "off"], default="auto",
+                        help="Redefine the CV knee as the hip-ankle midpoint to match "
+                             "a derived (Thigh/Shank) OptiTrack knee. auto = apply only "
+                             "when the GT knee was derived; on/off force it (default auto).")
     args = parser.parse_args()
 
     pck_thresholds = tuple(float(x) for x in args.pck.split(",") if x.strip())
@@ -632,7 +670,8 @@ def main():
             skipped += 1
             continue
         try:
-            metrics = evaluate_pair(mt["pred_csv"], mt["gt_csv"], pck_thresholds)
+            metrics = evaluate_pair(mt["pred_csv"], mt["gt_csv"], pck_thresholds,
+                                    midpoint_knee=args.midpoint_knee)
         except Exception as e:
             metrics = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         if metrics.get("status") == "ok":
@@ -647,6 +686,12 @@ def main():
     export_summary(rows, args.out, pck_thresholds)
     if args.detail:
         export_detail(results, args.detail, pck_thresholds)
+
+    n_midpoint = sum(1 for r in results
+                     if r["metrics"].get("knee_definition") == "midpoint")
+    if n_midpoint:
+        print(f"Knee: CV knee redefined as hip-ankle midpoint for {n_midpoint} pair(s) "
+              f"to match the derived OptiTrack knee (--midpoint-knee={args.midpoint_knee}).")
 
     print_leaderboard(rows, pck_thresholds)
     print(f"\nScored {scored}/{n_pred} permutations. Leaderboard written to: {args.out}")
