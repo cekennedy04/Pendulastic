@@ -1,74 +1,67 @@
 """
 ==============================================================================
- motive_sync.py - Local Motive control (same-machine, no network)
+ motive_sync.py - Local Motive control via NatNet remote commands
 ==============================================================================
- The webcam capture app and Motive now run on the SAME Windows PC, so there is
- no UDP / listener anymore. Import this module directly from the master webcam
- recording script and call:
+ The webcam capture app and Motive run on the SAME Windows PC. This module
+ drives Motive's recording with the NatNet REMOTE COMMAND protocol over UDP
+ loopback (no keyboard automation), which lets us set the session directory and
+ take name programmatically and start/stop cleanly.
 
      import motive_sync
      motive_sync.start_local_motive(packet_string)   # on START
      motive_sync.stop_local_motive()                 # on STOP
 
  start_local_motive(packet_string):
-   1. Parses the START packet string (id / position / height / trial / relpath).
-   2. Mirrors the laptop folder tree under OptiTrack_Recordings/ using 'relpath'
-      (the post-processing pipeline expects the identical tree).
-   3. Builds a clean take name  P_{id}_Pos_{position}_H_{height}_T_{trial}.
-   4. Focuses Motive, opens the take-name field (Ctrl+Shift+N), types the name,
-      presses Enter to commit, then fires the record hotkey (F2).
+   1. Parse the START packet (id / position / height / trial / relpath).
+   2. Mirror the folder tree under OptiTrack_Recordings/ using 'relpath' (the
+      post-processing pipeline expects the identical tree) and SANITIZE that path
+      to forward slashes with no trailing separator - Motive can hard-freeze /
+      drop the record buffer if SetCurrentSession receives Windows backslashes.
+   3. Build a clean take name  P_{id}_Pos_{position}_H_{height}_T_{trial}.
+   4. Send the strict NatNet command sequence:
+        LiveMode  ->  SetCurrentSession,<unix_path>  ->
+        SetRecordTakeName,<take>  ->  StartRecording
+      (LiveMode first, with a settle delay, so the directory change lands while
+       Motive is live rather than in Edit mode.)
  stop_local_motive():
-   5. Focuses Motive and presses the record hotkey (F2) again to stop + save.
+   5. Send StopRecording, then wait ~0.5 s for Motive to flush the .take to disk
+      before the socket is dropped.
 
- Requires:   pip install pyautogui     (pygetwindow optional, for auto-focus)
- Both imports are soft: importing this module never crashes the host app; the
- functions raise a clear RuntimeError if pyautogui is missing.
+ Motive setup: enable NatNet streaming with remote commands; the Command port
+ must match MOTIVE_COMMAND_PORT below (Motive default 1510).
+
+ No third-party dependencies (socket/struct/os/time are stdlib), so importing
+ this module never crashes the host GUI app.
 ==============================================================================
 """
 
 import os
 import time
-
-# Soft imports: a missing pyautogui must NOT kill the importing GUI app. The
-# start/stop functions raise a clear error instead.
-try:
-    import pyautogui
-except Exception:
-    pyautogui = None
-
-try:
-    import pygetwindow as gw
-except Exception:
-    gw = None
+import socket
+import struct
 
 
 # -----------------------------------------------------------------------------
 # CONFIGURATION  --  edit these to match your rig.
 # -----------------------------------------------------------------------------
-RECORD_HOTKEY = "f2"                  # Motive start/stop recording hotkey.
-NAME_HOTKEY = ("ctrl", "shift", "n")  # Motive shortcut that focuses the take-name field.
-MOTIVE_WINDOW_TITLE = "Motive"        # Substring used to find/focus the Motive window.
+MOTIVE_IP = "127.0.0.1"          # Motive on the same PC -> NatNet loopback.
+MOTIVE_COMMAND_PORT = 1510       # NatNet command port (Motive default).
+NAT_REQUEST = 2                  # NatNet message id for a remote command.
 
 # Mirror the laptop's folder tree under here using the packet's 'relpath', so the
 # post-processing pipeline finds the identical Participant/Position/Height tree.
+# Motive's SetCurrentSession is pointed at the sanitized version of this path.
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "OptiTrack_Recordings")
 
-# Keyboard-automation timing (seconds). Bump up if Motive is slow to respond.
-NAME_FIELD_DELAY = 0.30   # after Ctrl+Shift+N, wait for the name field to focus
-COMMIT_DELAY = 0.20       # after Enter, before firing the record hotkey
-TYPE_INTERVAL = 0.02      # per-character typing delay (avoids dropped chars)
-
-# Unattended automation: disable pyautogui's mouse-corner fail-safe so a stray
-# cursor can't abort a trigger. Set True to re-enable.
-PYAUTOGUI_FAILSAFE = False
+# Command sequencing delays (seconds). Bump up if Motive is slow to switch modes.
+LIVEMODE_SETTLE_DELAY = 0.30     # after LiveMode, before changing the session dir
+INTER_COMMAND_DELAY = 0.15       # between the remaining sequenced commands
+STOP_FLUSH_DELAY = 0.50          # after StopRecording, to flush the .take to disk
+RESPONSE_TIMEOUT = 0.20          # best-effort read of Motive's command response
 
 # Characters illegal in Windows / Motive take names -> replaced with "_".
 _ILLEGAL_NAME_CHARS = '\\/:*?"<>|'
-
-if pyautogui is not None:
-    pyautogui.FAILSAFE = PYAUTOGUI_FAILSAFE
-    pyautogui.PAUSE = 0.03
 
 
 # -----------------------------------------------------------------------------
@@ -78,8 +71,8 @@ def parse_start_packet(packet_string):
     """
     Parse a packet string of the form:
         START|id=001|position=1|height=Joint-Level|trial=1|relpath=Participant_001\\...
-    into a dict of key=value fields. The leading 'START' token (and any token
-    without '=') is ignored, so a string with or without the prefix both work.
+    into a dict of key=value fields. Tokens without '=' (e.g. the leading
+    'START') are ignored, so a string with or without the prefix both work.
     """
     fields = {}
     for part in str(packet_string).split("|"):
@@ -108,11 +101,23 @@ def build_take_name(fields):
     return f"P_{p_id}_Pos_{pos}_H_{height}_T_{trial}"
 
 
+def sanitize_session_path(path):
+    """
+    Convert a session directory to the Unix-style absolute path Motive expects:
+    forward slashes only, no trailing separator. Motive can crash / silently drop
+    the record buffer if SetCurrentSession receives Windows backslashes.
+    """
+    if not path:
+        return ""
+    p = os.path.abspath(path).replace("\\", "/")
+    return p.rstrip("/\\ ")
+
+
 def mirror_relpath(fields):
     """
     Recreate the laptop's folder tree under LOCAL_ROOT using the 'relpath' field
     (e.g. Participant_001\\Position_1\\Height_Joint-Level). Returns the created
-    path, or None if no relpath was supplied. Errors are logged, not raised.
+    absolute path, or None if no relpath was supplied. Errors are logged, not raised.
     """
     rel_path = fields.get("relpath", "").strip()
     if not rel_path:
@@ -130,40 +135,38 @@ def mirror_relpath(fields):
 
 
 # -----------------------------------------------------------------------------
-# Motive keyboard automation
+# NatNet remote command transport
 # -----------------------------------------------------------------------------
-def _require_pyautogui():
-    if pyautogui is None:
-        raise RuntimeError(
-            "pyautogui is not installed - Motive automation unavailable. "
-            "Run:  pip install pyautogui"
-        )
+def _natnet_packet(command):
+    """Frame a NatNet remote command: <uint16 NAT_REQUEST><uint16 size><cmd\\0>."""
+    body = command.encode("utf-8") + b"\x00"
+    return struct.pack("<HH", NAT_REQUEST, len(body)) + body
 
 
-def focus_motive():
+def _send_command_sequence(commands):
     """
-    Best-effort: bring the Motive window to the foreground so keystrokes land in
-    Motive. Returns True if a Motive window was activated.
+    Send an ordered list of (command_string, post_delay) over one UDP socket to
+    Motive's command port. Best-effort: reads (and logs) any response without
+    blocking the sequence. Raises OSError only if the socket itself fails.
     """
-    if gw is None:
-        return False
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(RESPONSE_TIMEOUT)
     try:
-        candidates = [
-            w for w in gw.getAllWindows()
-            if MOTIVE_WINDOW_TITLE.lower() in (getattr(w, "title", "") or "").lower()
-        ]
-    except Exception:
-        return False
-    for w in candidates:
-        try:
-            if getattr(w, "isMinimized", False):
-                w.restore()
-            w.activate()
-            time.sleep(0.15)
-            return True
-        except Exception:
-            continue
-    return False
+        for command, delay in commands:
+            sock.sendto(_natnet_packet(command), (MOTIVE_IP, MOTIVE_COMMAND_PORT))
+            print(f"[motive_sync] -> {command}")
+            try:
+                resp, _ = sock.recvfrom(4096)
+                if len(resp) > 4:
+                    text = resp[4:].split(b"\x00", 1)[0].decode("utf-8", "replace")
+                    if text.strip():
+                        print(f"[motive_sync]    <- {text.strip()}")
+            except socket.timeout:
+                pass
+            if delay:
+                time.sleep(delay)
+    finally:
+        sock.close()
 
 
 # -----------------------------------------------------------------------------
@@ -171,7 +174,11 @@ def focus_motive():
 # -----------------------------------------------------------------------------
 def start_local_motive(packet_string):
     """
-    Mirror the folder tree, name the Motive take, and start recording locally.
+    Mirror the folder tree, point Motive at it, name the take, and start recording
+    via the NatNet remote-command state machine.
+
+    Sequence (strict): LiveMode -> SetCurrentSession,<unix_path> ->
+                        SetRecordTakeName,<take> -> StartRecording.
 
     Args:
         packet_string: the START packet, e.g.
@@ -179,51 +186,46 @@ def start_local_motive(packet_string):
 
     Returns:
         The take name that was set (e.g. "P_001_Pos_1_H_Joint-Level_T_1").
-
-    Raises:
-        RuntimeError: if pyautogui is unavailable.
     """
-    _require_pyautogui()
     fields = parse_start_packet(packet_string)
-    mirror_relpath(fields)
+    target_dir = mirror_relpath(fields)
     take_name = build_take_name(fields)
+    session_path = sanitize_session_path(target_dir) if target_dir else None
     print(f"[motive_sync] Take name: {take_name}")
 
-    if not focus_motive():
-        print("[motive_sync] WARN: Motive window not found/focused - make sure "
-              "Motive is open and frontmost (install 'pygetwindow' for auto-focus).")
+    # a) LiveMode first (settle), so the session change lands while Motive is live.
+    sequence = [("LiveMode", LIVEMODE_SETTLE_DELAY)]
+    # b) Point Motive at the (sanitized, forward-slash) session directory.
+    if session_path:
+        print(f"[motive_sync] Session path: {session_path}")
+        sequence.append((f"SetCurrentSession,{session_path}", INTER_COMMAND_DELAY))
+    else:
+        print("[motive_sync] WARN: no session path - leaving Motive's current session.")
+    # c) Set the take/file asset name.
+    sequence.append((f"SetRecordTakeName,{take_name}", INTER_COMMAND_DELAY))
+    # d) Start recording.
+    sequence.append(("StartRecording", 0.0))
 
-    # 1) Open the take-name field.
-    pyautogui.hotkey(*NAME_HOTKEY)
-    time.sleep(NAME_FIELD_DELAY)
-    # 2) Overwrite any existing text, type the name, commit it.
-    pyautogui.hotkey("ctrl", "a")
-    pyautogui.write(take_name, interval=TYPE_INTERVAL)
-    pyautogui.press("enter")
-    time.sleep(COMMIT_DELAY)
-    # 3) Start recording.
-    pyautogui.press(RECORD_HOTKEY)
+    _send_command_sequence(sequence)
     print(f"[motive_sync] Recording started: {take_name}")
     return take_name
 
 
 def stop_local_motive():
     """
-    Stop + save the current Motive take (presses the record hotkey again).
+    Stop recording and give Motive time to flush the .take to disk.
 
-    Raises:
-        RuntimeError: if pyautogui is unavailable.
+    Sequence: StopRecording -> sleep(STOP_FLUSH_DELAY) before the socket drops.
     """
-    _require_pyautogui()
-    focus_motive()
-    pyautogui.press(RECORD_HOTKEY)
+    _send_command_sequence([("StopRecording", STOP_FLUSH_DELAY)])
     print("[motive_sync] Recording stopped + saved.")
 
 
 if __name__ == "__main__":
     # Not a runnable app - this is a module imported by the master webcam script.
     print(__doc__)
-    print("pyautogui available :", pyautogui is not None)
-    print("pygetwindow available:", gw is not None)
     demo = "START|id=001|position=1|height=Joint-Level|trial=1|relpath=Participant_001\\Position_1\\Height_Joint-Level"
-    print("example take name   :", build_take_name(parse_start_packet(demo)))
+    f = parse_start_packet(demo)
+    print("example take name   :", build_take_name(f))
+    print("example session path:", sanitize_session_path(os.path.join(LOCAL_ROOT,
+          "Participant_001", "Position_1", "Height_Joint-Level")))
