@@ -1785,6 +1785,34 @@ def run_post_session_batch(root_dir, grid=None, skip_processed=True,
 _OMIT_STATUSES = {"skipped_no_model", "error", "no_ground_truth",
                   "angular_error", "no_gt_angle"}
 ACCUMULATED_REPORT_FILENAME = "accumulated_error_report.csv"
+COMPREHENSIVE_REPORT_FILENAME = "comprehensive_model_comparison.csv"
+
+# The full intended 6-framework matrix: model -> [(variant_token, complexity_label)].
+# The evaluator scores whatever variants are PRESENT in the JSON; this matrix is
+# used to report COVERAGE (which cells were produced vs absent) - it never
+# fabricates a score for a variant that the tracking grid did not produce.
+EXPECTED_MODEL_MATRIX = {
+    "mediapipe": [("0", "Lite"), ("1", "Full"), ("2", "Heavy")],
+    "rtmpose":   [("s", "Small"), ("m", "Medium"), ("l", "Large")],
+    "mmpose":    [("s", "Small"), ("m", "Medium"), ("l", "Large")],
+    "openpose":  [("default", "COCO-18"), ("body25", "BODY_25")],
+    "fremocap":  [("default", "Native")],
+    "posepipe":  [("default", "Native")],
+}
+# Honest notes for cells the current tracking pipeline does not produce.
+_MATRIX_NOTES = {
+    ("openpose", "body25"): "BODY_25 not produced (OpenPose decoder is COCO-18 only)",
+    ("posepipe", "default"): "PosePipe is not implemented in the tracking pipeline",
+    ("fremocap", "default"): "FreMocap is a single config (MediaPipe-2D backbone)",
+}
+
+
+def _complexity_label(model, variant):
+    """Human label for a (model, variant), e.g. mediapipe/0 -> 'Lite (0)'."""
+    for tok, lab in EXPECTED_MODEL_MATRIX.get(model, []):
+        if str(variant) == tok:
+            return f"{lab} ({tok})"
+    return str(variant)
 
 
 def _trial_gt_knee_angle(trial):
@@ -1894,18 +1922,9 @@ def _print_json_leaderboards(records):
             wins.get(_variant_label(min(rs, key=lambda x: x["knee_rmse_deg"])), 0) + 1
     total = len(configs)
 
-    print("\n" + "=" * 80)
-    print(f" GLOBAL WIN-RATE  ({total} configuration(s))")
-    print("-" * 80)
+    print("\n-- GLOBAL WIN-RATE  (per-configuration lowest RMSE) --")
     for lab, c in sorted(wins.items(), key=lambda kv: -kv[1]):
-        print(f"   {lab:<24} {c:>3} win(s)   ({c / total * 100:5.1f}%)")
-    champ = max(wins, key=wins.get)
-    champ_rmse = next(v["mean_rmse"] for v in _mean_by_variant(records) if v["label"] == champ)
-    print("-" * 80)
-    print(f' >> "{champ}" is the ideal model, demonstrating the lowest overall mean')
-    print(f'    RMSE ({champ_rmse:.2f} deg) across the majority of configurations '
-          f'({wins[champ]}/{total}, {wins[champ] / total * 100:.0f}% win-rate).')
-    print("=" * 80)
+        print(f"   {lab:<24} {c:>3} win(s)   ({c / total * 100:5.1f}%)  of {total}")
 
 
 def _write_accumulated_report(records, out_path):
@@ -1920,6 +1939,73 @@ def _write_accumulated_report(records, out_path):
             row["knee_bias_deg"] = round(r["knee_bias_deg"], 3)
             row["lag_sec"] = round(r["lag_sec"], 4)
             w.writerow(row)
+
+
+def _write_comprehensive_csv(records, out_path):
+    """Master spreadsheet grouped by participant / position / height / model+variant."""
+    groups = {}
+    for r in records:
+        key = (r["participant"], r["position"], r["height"], r["model"], r["variant"])
+        groups.setdefault(key, []).append(r)
+    fields = ["participant", "position", "height", "model", "variant", "complexity",
+              "n_trials", "mean_knee_rmse_deg", "mean_knee_bias_deg"]
+    rows = []
+    for (p, pos, h, m, v), rs in groups.items():
+        rows.append({
+            "participant": p, "position": pos, "height": h, "model": m, "variant": v,
+            "complexity": _complexity_label(m, v), "n_trials": len(rs),
+            "mean_knee_rmse_deg": round(float(np.mean([x["knee_rmse_deg"] for x in rs])), 3),
+            "mean_knee_bias_deg": round(float(np.mean([x["knee_bias_deg"] for x in rs])), 3),
+        })
+    rows.sort(key=lambda r: (r["participant"], r["position"], r["height"],
+                             r["mean_knee_rmse_deg"]))
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv_module.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+    return rows
+
+
+def _print_matrix_coverage(records):
+    """Report which cells of the expected 6-model matrix were actually scored."""
+    scored = {}
+    for v in _mean_by_variant(records):
+        model, variant = v["label"].split("/", 1)
+        scored[(model, variant)] = v["mean_rmse"]
+
+    print("\n-- 6-MODEL MATRIX COVERAGE --")
+    for model, variants in EXPECTED_MODEL_MATRIX.items():
+        for tok, lab in variants:
+            cell = f"{lab} ({tok})"
+            note = _MATRIX_NOTES.get((model, tok), "")
+            if (model, tok) in scored:
+                print(f" {model:<10}{cell:<14} {scored[(model, tok)]:7.2f} deg")
+            else:
+                tail = f"  [{note}]" if note else ""
+                print(f" {model:<10}{cell:<14} {'--':>7}      absent in log{tail}")
+
+    expected_keys = {(m, tok) for m, vs in EXPECTED_MODEL_MATRIX.items() for tok, _ in vs}
+    extras = [(k, rmse) for k, rmse in scored.items() if k not in expected_keys]
+    if extras:
+        print(" scored variants not in the expected matrix:")
+        for (m, var), rmse in sorted(extras):
+            print(f"   {m}/{var}: {rmse:.2f} deg")
+
+
+def _declare_definitive_winner(records):
+    """Final verdict: the variant with the lowest overall mean angular RMSE."""
+    ranked = _mean_by_variant(records)
+    if not ranked:
+        return
+    best = ranked[0]
+    model, variant = best["label"].split("/", 1)
+    print("\n" + "=" * 80)
+    print(f' >> "Model {model} at Complexity {_complexity_label(model, variant)} is the')
+    print(f'    ideal setup, achieving the lowest overall mean Angular RMSE '
+          f'({best["mean_rmse"]:.2f} deg)')
+    print('    across all recording configurations."')
+    print("=" * 80)
 
 
 def evaluate_results_json(json_path, report_csv=None):
@@ -1969,12 +2055,19 @@ def evaluate_results_json(json_path, report_csv=None):
                 "lag_sec": sync["lag_sec"], "n": int(len(sync["time"])),
             })
 
-    report_csv = report_csv or os.path.join(
-        os.path.dirname(os.path.abspath(json_path)), ACCUMULATED_REPORT_FILENAME)
+    base = os.path.dirname(os.path.abspath(json_path))
+    report_csv = report_csv or os.path.join(base, ACCUMULATED_REPORT_FILENAME)
+    comprehensive_csv = os.path.join(base, COMPREHENSIVE_REPORT_FILENAME)
     _write_accumulated_report(records, report_csv)
+    _write_comprehensive_csv(records, comprehensive_csv)
+
     print()
     _print_json_leaderboards(records)
-    print(f"\nAccumulated error report written to: {report_csv}")
+    _print_matrix_coverage(records)
+    _declare_definitive_winner(records)
+
+    print(f"\nComprehensive comparison written to: {comprehensive_csv}")
+    print(f"Per-record report written to:        {report_csv}")
     return records
 
 
