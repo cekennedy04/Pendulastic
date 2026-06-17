@@ -16,13 +16,16 @@
  ON A "START" PACKET
    START|id=001|position=1|height=Joint-Level|trial=1|relpath=...
  the script:
-   1. Parses id / position / height / trial.
-   2. Builds a clean Motive take name:  P_{id}_Pos_{position}_H_{height}_T_{trial}
+   1. Parses id / position / height / trial / relpath.
+   2. Mirrors the laptop's folder tree under OptiTrack_Recordings/ using
+      'relpath', so the post-processing pipeline finds the identical
+      Participant/Position/Height tree.
+   3. Builds a clean Motive take name:  P_{id}_Pos_{position}_H_{height}_T_{trial}
       e.g.  P_001_Pos_1_H_Joint-Level_T_1
-   3. Focuses Motive, opens the take-name field (Ctrl+Shift+N), types the name,
+   4. Focuses Motive, opens the take-name field (Ctrl+Shift+N), types the name,
       presses Enter to commit, then fires the record hotkey (F2) to start.
  ON A "STOP" PACKET
-   4. Presses the record hotkey (F2) again to stop + save the take.
+   5. Presses the record hotkey (F2) again to stop + save the take.
 
  Run on Windows with:   python optitrack_slave.py
  Requires:   pip install pyautogui     (pygetwindow is optional but recommended)
@@ -61,6 +64,11 @@ UDP_PORT = 5005                      # Must match the master app.
 LISTEN_IP = "0.0.0.0"                # All interfaces (incl. the hotspot).
 BUFFER_SIZE = 4096
 MOTIVE_WINDOW_TITLE = "Motive"       # Substring used to find/focus the Motive window.
+
+# Mirror the laptop's folder tree under here using the packet's 'relpath', so the
+# post-processing pipeline finds the identical Participant/Position/Height tree.
+LOCAL_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "OptiTrack_Recordings")
 
 # Keyboard-automation timing (seconds). Bump these up if Motive is slow to
 # respond on the OptiTrack PC.
@@ -112,6 +120,28 @@ def build_take_name(fields):
     height = _sanitize(fields.get("height", "Unknown"))
     trial = _sanitize(fields.get("trial", "1"))
     return f"P_{p_id}_Pos_{pos}_H_{height}_T_{trial}"
+
+
+def mirror_relpath(fields):
+    """
+    Recreate the laptop's folder tree under LOCAL_ROOT using the 'relpath' field
+    (e.g. Participant_001\\Position_1\\Height_Joint-Level). Returns the created
+    path, or None if no relpath was supplied. Errors are logged, not fatal.
+    """
+    rel_path = fields.get("relpath", "").strip()
+    if not rel_path:
+        print("    [WARN] START packet had no 'relpath' - skipping folder mirror.")
+        return None
+    # Normalise separators so a Windows-style relpath also works if needed.
+    rel_path = rel_path.replace("\\", os.sep).replace("/", os.sep)
+    target_dir = os.path.join(LOCAL_ROOT, rel_path)
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        print(f"    Mirrored folder: {target_dir}")
+        return target_dir
+    except OSError as e:
+        print(f"    [ERROR] Could not create folder '{target_dir}': {e}")
+        return None
 
 
 def focus_motive():
@@ -190,8 +220,16 @@ def main():
     print(f"   Record hotkey : '{RECORD_HOTKEY}'")
     print(f"   Name shortcut : {'+'.join(NAME_HOTKEY)}")
     print(f"   Window focus  : {'pygetwindow' if gw else 'NOT available - keep Motive frontmost'}")
+    print(f"   Mirror root   : {LOCAL_ROOT}")
     _print_host_ips()
     print("=" * 60)
+
+    # Make sure the mirror root exists up front.
+    try:
+        os.makedirs(LOCAL_ROOT, exist_ok=True)
+    except OSError as e:
+        print(f"[FATAL] Could not create mirror root '{LOCAL_ROOT}': {e}")
+        return
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -215,6 +253,8 @@ def main():
 
                 if message.upper().startswith("START"):
                     fields = parse_start_packet(message)
+                    # Mirror the folder tree the post-processing pipeline expects.
+                    mirror_relpath(fields)
                     take_name = build_take_name(fields)
                     print(f"    -> Take name: {take_name}")
                     try:
