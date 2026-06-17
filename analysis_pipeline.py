@@ -1392,17 +1392,420 @@ def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
     return manifest
 
 
+# =============================================================================
+# 10. POST-SESSION BATCH (download 6 variants -> scan/skip -> track+render ->
+#     knee angular RMSE vs Motive quaternions)
+# =============================================================================
+# The six "local variant" configs: MediaPipe lite/full/heavy + RTMPose s/m/l,
+# one threshold each -> 6 prediction CSVs + 6 fitting videos per trial.
+LOCAL_VARIANTS_GRID = {
+    "mediapipe": {"variant_key": "complexity", "variants": [0, 1, 2], "thresholds": [0.5]},
+    "rtmpose":   {"variant_key": "backbone", "variants": ["s", "m", "l"], "thresholds": [0.3]},
+}
+
+_MP_BUCKET = "https://storage.googleapis.com/mediapipe-models/pose_landmarker"
+_OMM_ONNX = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk"
+
+# The 6 local weight binaries. 'match' is the token the grid resolves them by.
+# NOTE: the RTMPose-l filename/hash was not network-verified here; if it 404s the
+# downloader prints manual instructions and the grid simply skips that variant.
+LOCAL_MODEL_DOWNLOADS = [
+    {"name": "mediapipe/lite",  "dir": MEDIAPIPE_DIR, "kind": "task", "match": "lite",
+     "url": f"{_MP_BUCKET}/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"},
+    {"name": "mediapipe/full",  "dir": MEDIAPIPE_DIR, "kind": "task", "match": "full",
+     "url": f"{_MP_BUCKET}/pose_landmarker_full/float16/latest/pose_landmarker_full.task"},
+    {"name": "mediapipe/heavy", "dir": MEDIAPIPE_DIR, "kind": "task", "match": "heavy",
+     "url": f"{_MP_BUCKET}/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"},
+    {"name": "rtmpose/s", "dir": ONNX_MODELS["rtmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-s",
+     "url": f"{_OMM_ONNX}/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.zip"},
+    {"name": "rtmpose/m", "dir": ONNX_MODELS["rtmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-m",
+     "url": f"{_OMM_ONNX}/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip"},
+    {"name": "rtmpose/l", "dir": ONNX_MODELS["rtmpose"]["dir"], "kind": "onnx_zip", "match": "rtmpose-l",
+     "url": f"{_OMM_ONNX}/rtmpose-l_simcc-body7_pt-body7_420e-256x192-4dba18fc_20230504.zip"},  # VERIFY
+]
+
+# Rigid-body name tokens for the Motive knee-angle reconstruction.
+_PROXIMAL_TOKENS = ["thigh", "femur", "topthigh"]   # reference segment
+_DISTAL_TOKENS = ["shank", "shin", "tibia", "calf"]  # swinging segment
+
+
+# -----------------------------------------------------------------------------
+# 10a. Auto-downloader (6 local variants)
+# -----------------------------------------------------------------------------
+def _local_model_present(spec):
+    if spec["kind"] == "task":
+        pattern = os.path.join(spec["dir"], "**", "*.task")
+        return any(spec["match"] in os.path.basename(p).lower()
+                   for p in glob.glob(pattern, recursive=True))
+    pattern = os.path.join(spec["dir"], "**", "*.onnx")
+    return any(spec["match"] in p.replace(os.sep, "/").lower()
+               for p in glob.glob(pattern, recursive=True))
+
+
+def ensure_local_models(verbose=True):
+    """Verify the 6 local weight binaries exist; download any that are missing."""
+    import urllib.request
+    import zipfile
+    import tempfile
+    import shutil
+
+    status = {}
+    for spec in LOCAL_MODEL_DOWNLOADS:
+        os.makedirs(spec["dir"], exist_ok=True)
+        if _local_model_present(spec):
+            status[spec["name"]] = "present"
+            if verbose:
+                print(f"[models] {spec['name']:<16} present")
+            continue
+
+        if verbose:
+            print(f"[models] {spec['name']:<16} downloading...")
+        tmp_fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(spec["url"])[1] or ".bin")
+        os.close(tmp_fd)
+        try:
+            urllib.request.urlretrieve(spec["url"], tmp)
+            if spec["kind"] == "onnx_zip" and zipfile.is_zipfile(tmp):
+                with zipfile.ZipFile(tmp) as zf:
+                    zf.extractall(spec["dir"])
+                if not _local_model_present(spec):
+                    raise RuntimeError("zip contained no matching .onnx")
+            else:
+                shutil.move(tmp, os.path.join(spec["dir"], os.path.basename(spec["url"])))
+            status[spec["name"]] = "downloaded"
+            if verbose:
+                print(f"[models] {spec['name']:<16} ready")
+        except Exception as e:
+            status[spec["name"]] = f"failed: {e}"
+            print(f"[models] {spec['name']:<16} DOWNLOAD FAILED ({e}).\n"
+                  f"         Place the file manually in {spec['dir']} - this variant "
+                  f"will be skipped until then.")
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    return status
+
+
+# -----------------------------------------------------------------------------
+# 10b. Scan + match (video + OptiTrack pair lock, skip already-processed)
+# -----------------------------------------------------------------------------
+def _session_path_tokens(folder):
+    idv = pos = height = None
+    for part in os.path.normpath(folder).split(os.sep):
+        if part.startswith("Participant_"):
+            idv = part[len("Participant_"):]
+        elif part.startswith("Position_"):
+            pos = part[len("Position_"):]
+        elif part.startswith("Height_"):
+            height = part[len("Height_"):]
+    return idv or "NA", pos or "NA", height or "NA"
+
+
+def _already_processed(folder, trial):
+    """True if grid prediction CSVs already exist for this trial in the folder."""
+    return bool(glob.glob(os.path.join(folder, f"P_*_T_{trial}_*.csv")))
+
+
+def find_session_pairs(root_dir, skip_processed=True):
+    """
+    Recursively find leaf folders holding a Trial_X video (.mp4/.avi) AND a
+    Trial_X_optitrack.csv. Returns one dict per NEW pair (already-processed
+    trials are skipped when skip_processed is True).
+    """
+    pairs = []
+    for dirpath, _dirs, files in os.walk(root_dir):
+        fileset = set(files)
+        for fname in files:
+            m = VIDEO_PATTERN.match(fname)   # Trial_X.mp4 or Trial_X.avi
+            if not m:
+                continue
+            trial = m.group(1)
+            gt_name = f"Trial_{trial}{CSV_SUFFIX}"
+            if gt_name not in fileset:
+                continue
+            if skip_processed and _already_processed(dirpath, trial):
+                print(f"[scan] skip (already processed): {dirpath} Trial_{trial}")
+                continue
+            idv, pos, height = _session_path_tokens(dirpath)
+            pairs.append({
+                "id": idv, "position": pos, "height": height, "trial": trial,
+                "folder": dirpath,
+                "video": os.path.join(dirpath, fname),
+                "optitrack": os.path.join(dirpath, gt_name),
+            })
+    return pairs
+
+
+# -----------------------------------------------------------------------------
+# 10c. Knee angle reconstruction (GT from quaternions, CV from prediction CSV)
+# -----------------------------------------------------------------------------
+def _quat_local_x(q):
+    """Rotate each body's local +X axis into the global frame. q is (N,4) x,y,z,w."""
+    x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    vx = np.stack([1.0 - 2.0 * (y * y + z * z),
+                   2.0 * (x * y + z * w),
+                   2.0 * (x * z - y * w)], axis=1)
+    norm = np.linalg.norm(vx, axis=1, keepdims=True)
+    norm[norm == 0] = 1.0
+    return vx / norm
+
+
+def _vector_angle_deg(a, b):
+    """Gimbal-stable angle (deg) between two vector streams: atan2(|axb|, a.b)."""
+    cross = np.cross(a, b)
+    dot = np.sum(a * b, axis=1)
+    return np.degrees(np.arctan2(np.linalg.norm(cross, axis=1), dot))
+
+
+def _optitrack_knee_angle_series(optitrack_csv):
+    """
+    Reconstruct the knee angle (deg) over time from a Motive Thigh/Shank export
+    using the rigid-body ROTATION quaternions (mirrors joint_angle_processor.py):
+    knee angle = angle between the two segments' local-X axes.
+
+    Returns (time_sec[N], knee_angle_deg[N]).
+    """
+    with open(optitrack_csv, "r", newline="", encoding="utf-8-sig") as f:
+        rows = list(csv_module.reader(f))
+
+    comp_idx = next((i for i, r in enumerate(rows)
+                     if r and r[0].strip().lower() == "frame"), None)
+    if comp_idx is None:
+        raise ValueError("No 'Frame' header row found.")
+    comp_row = [c.strip() for c in rows[comp_idx]]
+
+    type_idx = next((i for i in range(comp_idx - 1, -1, -1)
+                     if any("rotation" in c.lower() for c in rows[i])), None)
+    if type_idx is None:
+        raise ValueError("No 'Rotation' header row - a quaternion export is "
+                         "required to reconstruct the knee angle.")
+    type_row = [c.strip() for c in rows[type_idx]]
+
+    name_idx = next((i for i in range(type_idx - 1, -1, -1)
+                     if any(tok in " ".join(rows[i]).lower()
+                            for tok in _PROXIMAL_TOKENS + _DISTAL_TOKENS)), None)
+    if name_idx is None:
+        raise ValueError("No rigid-body name row (Thigh/Shank) found.")
+    name_row = [c.strip() for c in rows[name_idx]]
+
+    def find_body(tokens):
+        for c in name_row:
+            cl = c.lower()
+            if cl and any(tok in cl for tok in tokens):
+                return c
+        return None
+
+    prox, dist = find_body(_PROXIMAL_TOKENS), find_body(_DISTAL_TOKENS)
+    if not prox or not dist:
+        raise ValueError(f"Could not find both Thigh-like and Shank-like bodies "
+                         f"in {sorted({c for c in name_row if c})}")
+
+    def quat_cols(body):
+        want = {"x": None, "y": None, "z": None, "w": None}
+        for col, (nm, tp, comp) in enumerate(zip(name_row, type_row, comp_row)):
+            if nm.lower() == body.lower() and tp.lower() == "rotation":
+                k = comp.lower()
+                if k in want:
+                    want[k] = col
+        if any(v is None for v in want.values()):
+            raise ValueError(f"Missing rotation quaternion columns for '{body}'.")
+        return [want["x"], want["y"], want["z"], want["w"]]
+
+    cols_p, cols_d = quat_cols(prox), quat_cols(dist)
+    time_col = next((i for i, c in enumerate(comp_row) if "time" in c.lower()), None)
+
+    data_rows = [r for r in rows[comp_idx + 1:] if r and any(str(v).strip() for v in r)]
+    width = max((len(r) for r in data_rows), default=0)
+    arr = np.full((len(data_rows), width), np.nan)
+    for i, r in enumerate(data_rows):
+        for jx, c in enumerate(r):
+            try:
+                arr[i, jx] = float(c)
+            except ValueError:
+                pass
+
+    t = arr[:, time_col] if time_col is not None else np.arange(len(arr), dtype=float)
+    qp, qd = arr[:, cols_p], arr[:, cols_d]
+    finite = np.isfinite(qp).all(1) & np.isfinite(qd).all(1) & np.isfinite(t)
+    if finite.sum() < 2:
+        raise ValueError("Too few valid quaternion samples to reconstruct the knee angle.")
+    t, qp, qd = t[finite], qp[finite], qd[finite]
+    angle = _vector_angle_deg(_quat_local_x(qp), _quat_local_x(qd))
+    return t, angle
+
+
+def _prediction_knee_angle_series(pred_csv):
+    """Read the CV knee flexion angle series from a grid prediction CSV."""
+    times, angles = [], []
+    with open(pred_csv, "r", newline="", encoding="utf-8") as f:
+        for row in csv_module.DictReader(f):
+            try:
+                t = float(row["time_sec"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            try:
+                a = float(row["knee_angle_deg"])
+            except (TypeError, ValueError, KeyError):
+                a = np.nan
+            times.append(t)
+            angles.append(a)
+    t = np.asarray(times, float)
+    a = np.asarray(angles, float)
+    finite = np.isfinite(t) & np.isfinite(a)
+    return t[finite], a[finite]
+
+
+# -----------------------------------------------------------------------------
+# 10d. Angular leaderboard
+# -----------------------------------------------------------------------------
+def _aggregate_angular(per_pair):
+    buckets = {}
+    for rec in per_pair:
+        if rec.get("status") != "ok":
+            continue
+        buckets.setdefault((rec["model"], rec["variant"], rec["threshold"]), []).append(rec)
+    rows = []
+    for (model, variant, threshold), recs in buckets.items():
+        rows.append({
+            "model": model, "variant": variant, "threshold": threshold,
+            "n_trials": len(recs),
+            "mean_knee_rmse_deg": float(np.mean([r["knee_rmse_deg"] for r in recs])),
+            "mean_knee_bias_deg": float(np.mean([r["knee_bias_deg"] for r in recs])),
+        })
+    rows.sort(key=lambda r: r["mean_knee_rmse_deg"])
+    return rows
+
+
+def _write_angular_leaderboard(rows, out_path):
+    fields = ["model", "variant", "threshold", "n_trials",
+              "mean_knee_rmse_deg", "mean_knee_bias_deg"]
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv_module.writer(f)
+        w.writerow(fields)
+        for r in rows:
+            w.writerow([r["model"], r["variant"], r["threshold"], r["n_trials"],
+                        round(r["mean_knee_rmse_deg"], 3), round(r["mean_knee_bias_deg"], 3)])
+
+
+def _print_angular_leaderboard(rows):
+    print("=" * 70)
+    print(" KNEE ANGULAR LEADERBOARD  (mean over trials; lower RMSE = better)")
+    print("=" * 70)
+    if not rows:
+        print(" No knee angular comparisons were produced.")
+        print("=" * 70)
+        return
+    print(f" {'model':<10}{'var':<6}{'thr':<6}{'n':<3} {'RMSE_deg':>9} {'bias_deg':>9}")
+    print("-" * 70)
+    for r in rows:
+        print(f" {r['model']:<10}{str(r['variant']):<6}{str(r['threshold']):<6}"
+              f"{r['n_trials']:<3} {r['mean_knee_rmse_deg']:9.2f} {r['mean_knee_bias_deg']:9.2f}")
+    best = rows[0]
+    print("-" * 70)
+    print(f" BEST: {best['model']} / variant {best['variant']} / threshold "
+          f"{best['threshold']}  ->  {best['mean_knee_rmse_deg']:.2f} deg knee RMSE")
+    print("=" * 70)
+
+
+# -----------------------------------------------------------------------------
+# 10e. Orchestrator
+# -----------------------------------------------------------------------------
+def run_post_session_batch(root_dir, grid=None, skip_processed=True,
+                           render_videos=True, download=True, leaderboard_csv=None):
+    """
+    Post-recording batch: verify/download the 6 variants, scan for new
+    video+OptiTrack pairs, track+render all 6 configs, and score each against the
+    Motive knee angle (deg), appending to an angular leaderboard CSV.
+    """
+    grid = grid or LOCAL_VARIANTS_GRID
+    if download:
+        print("=" * 70)
+        print(" Verifying local model weights (6 variants)...")
+        print("=" * 70)
+        ensure_local_models()
+
+    pairs = find_session_pairs(root_dir, skip_processed=skip_processed)
+    print(f"\nFound {len(pairs)} new trial pair(s) to process under {root_dir}.\n")
+
+    per_pair = []
+    for idx, pair in enumerate(pairs, start=1):
+        print(f"[{idx}/{len(pairs)}] {pair['folder']}  (Trial_{pair['trial']})")
+        tokens = {"id": pair["id"], "position": pair["position"],
+                  "height": pair["height"], "trial": pair["trial"]}
+        manifest = run_model_grid(pair["video"], tokens, pair["folder"],
+                                  grid=grid, render_videos=render_videos)
+
+        try:
+            gt_t, gt_knee = _optitrack_knee_angle_series(pair["optitrack"])
+        except Exception as e:
+            print(f"    [angular] GT knee angle unavailable: {e}")
+            gt_t = gt_knee = None
+
+        for entry in manifest:
+            if entry.get("status") != "ok":
+                continue
+            rec = {"model": entry["model"], "variant": entry["variant"],
+                   "threshold": entry["threshold"], "folder": pair["folder"]}
+            if gt_t is None:
+                rec["status"] = "no_gt_angle"
+            else:
+                try:
+                    cv_t, cv_knee = _prediction_knee_angle_series(entry["csv"])
+                    sync = synchronize_signals(gt_t, gt_knee, cv_t, cv_knee)
+                    rec.update({
+                        "status": "ok",
+                        "knee_rmse_deg": compute_rmse(sync["ref"], sync["test"]),
+                        "knee_bias_deg": float(np.mean(sync["test"] - sync["ref"])),
+                        "lag_sec": sync["lag_sec"], "n": int(len(sync["time"])),
+                    })
+                    print(f"    {entry['model']}/{entry['variant']}: "
+                          f"knee RMSE {rec['knee_rmse_deg']:.2f} deg "
+                          f"(bias {rec['knee_bias_deg']:+.2f})")
+                except Exception as e:
+                    rec.update({"status": "angular_error", "detail": str(e)})
+            per_pair.append(rec)
+
+    leaderboard = _aggregate_angular(per_pair)
+    out_csv = leaderboard_csv or os.path.join(root_dir, "angular_leaderboard.csv")
+    _write_angular_leaderboard(leaderboard, out_csv)
+    print()
+    _print_angular_leaderboard(leaderboard)
+    print(f"\nAngular leaderboard written to: {out_csv}")
+    return {"pairs_processed": len(pairs), "per_pair": per_pair, "leaderboard": leaderboard}
+
+
 def main():
-    import sys
+    import argparse
 
-    if len(sys.argv) < 2:
-        print("Usage: python analysis_pipeline.py /path/to/Recordings")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Pendulastic analysis: per-model scoring or post-session batch.")
+    parser.add_argument("root", nargs="?", default="Recordings",
+                        help="Data directory to process (default: Recordings).")
+    parser.add_argument("--post-session", action="store_true",
+                        help="Run the post-recording batch: download 6 variants, scan "
+                             "for new video+OptiTrack pairs, track+render all 6, and "
+                             "score knee angular RMSE vs the Motive quaternions.")
+    parser.add_argument("--no-videos", action="store_true",
+                        help="Skip rendering the diagnostic fitting videos.")
+    parser.add_argument("--no-skip", action="store_true",
+                        help="Re-process trials even if prediction CSVs already exist.")
+    parser.add_argument("--no-download", action="store_true",
+                        help="Do not auto-download missing model weights.")
+    args = parser.parse_args()
 
-    root_dir = sys.argv[1]
-    if not os.path.isdir(root_dir):
-        print(f"Not a directory: {root_dir}")
-        sys.exit(1)
+    if not os.path.isdir(args.root):
+        print(f"Not a directory: {args.root}")
+        raise SystemExit(1)
+
+    if args.post_session:
+        run_post_session_batch(args.root, skip_processed=not args.no_skip,
+                               render_videos=not args.no_videos,
+                               download=not args.no_download)
+        return
+
+    root_dir = args.root
 
     def _progress(idx, total, pair):
         print(f"[{idx}/{total}] Processing {pair['folder']} (Trial_{pair['trial']})")
