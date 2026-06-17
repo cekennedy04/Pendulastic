@@ -692,6 +692,10 @@ class MasterApp:
                 f"  |  Tracked (no ref): {tracked}"
                 f"  |  Failed: {agg['failed_comparisons']}"
             )
+            grid_ok = results.get("grid_outputs_written", 0)
+            if grid_ok:
+                summary += (f"\nGrid permutations written: {grid_ok} "
+                            "(CSV + fitting video per trial folder).")
             if agg["failed_comparisons"]:
                 summary += ("\n(Failures are per-model, e.g. a missing ONNX file "
                             "or no person detected - see evaluation_results.json.)")

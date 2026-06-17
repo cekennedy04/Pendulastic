@@ -964,16 +964,41 @@ def process_trial(pair, model_functions=None):
 # =============================================================================
 # 8. BATCH AGGREGATION + BEST-CONFIGURATION FINDER
 # =============================================================================
-def run_batch_analysis(root_dir, model_functions=None, progress_callback=None):
-    """Full pipeline entry point: discover trials, process each, aggregate, find best config."""
+def run_batch_analysis(root_dir, model_functions=None, progress_callback=None,
+                       run_grid=True, grid=None, render_grid_videos=True):
+    """Full pipeline entry point: discover trials, process each, aggregate, find best config.
+
+    When run_grid is True, also sweeps the parameter grid (run_model_grid) over
+    every discovered trial video, dropping the per-permutation coordinate CSVs and
+    diagnostic fitting videos straight into each trial's Participant/Position/
+    Height folder. Set run_grid=False (or render_grid_videos=False) to skip the
+    grid (or just its videos) - it is far heavier than the headline per-model pass.
+    """
     pairs = find_trial_pairs(root_dir)
     total = len(pairs)
 
     trial_results = []
+    grid_outputs_ok = 0
     for idx, pair in enumerate(pairs, start=1):
         if progress_callback is not None:
             progress_callback(idx, total, pair)
-        trial_results.append(process_trial(pair, model_functions=model_functions))
+        tr = process_trial(pair, model_functions=model_functions)
+
+        if run_grid:
+            tokens = {
+                "id": pair["participant_id"], "position": pair["position"],
+                "height": pair["height"], "trial": pair["trial"],
+            }
+            try:
+                manifest = run_model_grid(pair["avi_path"], tokens, pair["folder"],
+                                          grid=grid, render_videos=render_grid_videos)
+                tr["grid"] = manifest
+                grid_outputs_ok += sum(1 for m in manifest if m.get("status") == "ok")
+            except Exception as e:
+                tr["grid_error"] = f"{type(e).__name__}: {e}"
+                print(f"[grid] trial {pair['folder']} failed: {tr['grid_error']}")
+
+        trial_results.append(tr)
 
     aggregate = aggregate_results(trial_results)
     with_ref = sum(1 for t in trial_results if t.get("has_reference"))
@@ -983,6 +1008,7 @@ def run_batch_analysis(root_dir, model_functions=None, progress_callback=None):
         "num_trials_found": total,
         "num_trials_with_reference": with_ref,
         "num_trials_without_reference": total - with_ref,
+        "grid_outputs_written": grid_outputs_ok,
         "trials": trial_results,
         "aggregate": aggregate,
     }
@@ -1072,6 +1098,9 @@ def print_summary(results):
     if agg.get("tracked_no_reference"):
         print(f" Tracked (no reference): {agg['tracked_no_reference']} "
               f"model-runs - trajectories saved, awaiting OptiTrack CSVs.")
+    if results.get("grid_outputs_written"):
+        print(f" Grid permutations OK : {results['grid_outputs_written']} "
+              f"(CSV + fitting video per permutation, in trial folders).")
     if best is None:
         print(" No reference-scored comparisons were produced.")
     else:
