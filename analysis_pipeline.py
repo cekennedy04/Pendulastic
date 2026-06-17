@@ -350,12 +350,16 @@ def _resolve_task_path(model_dir):
     return task_files[0]
 
 
-def _mediapipe_keypoint_series(video_path):
+def _mediapipe_keypoint_series(video_path, task_path=None, det_conf=0.3):
     """
     Run MediaPipe PoseLandmarker (CPU) over the video -> (timestamps, kpts_list, fps).
 
     Uses the modern Tasks API. CPU delegate is the default on Windows; we set it
-    explicitly via BaseOptions.Delegate.CPU.
+    explicitly via BaseOptions.Delegate.CPU. Pass task_path to select a specific
+    model asset (e.g. lite/full/heavy for the complexity grid); defaults to the
+    first .task found in models/mediapipe/. det_conf sets the detection /
+    presence / tracking confidence thresholds (this is what "MediaPipe threshold"
+    means - distinct from the per-keypoint floor used for ONNX models).
     """
     try:
         import mediapipe as mp
@@ -366,7 +370,8 @@ def _mediapipe_keypoint_series(video_path):
     except ImportError as e:
         raise ImportError("mediapipe is not installed. Run:  pip install mediapipe") from e
 
-    task_path = _resolve_task_path(MEDIAPIPE_DIR)
+    if task_path is None:
+        task_path = _resolve_task_path(MEDIAPIPE_DIR)
 
     # VIDEO running mode keeps tracking across frames (far more robust on
     # recorded footage than per-frame IMAGE detection). Detection/tracking
@@ -378,9 +383,9 @@ def _mediapipe_keypoint_series(video_path):
         ),
         running_mode=RunningMode.VIDEO,
         num_poses=1,
-        min_pose_detection_confidence=0.3,
-        min_pose_presence_confidence=0.3,
-        min_tracking_confidence=0.3,
+        min_pose_detection_confidence=det_conf,
+        min_pose_presence_confidence=det_conf,
+        min_tracking_confidence=det_conf,
     )
 
     timestamps, kpts_list = [], []
@@ -1081,6 +1086,281 @@ def print_summary(results):
         for m, v in sorted(agg["by_model"].items(), key=lambda kv: kv[1]["mean_rmse_deg"]):
             print(f"   {m:<12} {v['mean_rmse_deg']:7.3f} deg  (n={v['n']})")
     print("=" * 70)
+
+
+# =============================================================================
+# 9. PARAMETER GRID SEARCH (model x complexity/backbone x threshold)
+# =============================================================================
+# Each permutation: extract keypoints once per (model, variant), then for each
+# threshold save a coordinate CSV and render a diagnostic "fitting" video.
+#
+# Variant -> model file:
+#   mediapipe complexity 0/1/2 -> lite/full/heavy .task in models/mediapipe/
+#   rtmpose / mmpose s/m/l      -> rtmpose-<size> .onnx in models/<model>/
+#   openpose                    -> the .onnx in models/openpose/
+# Missing files are SKIPPED (status "skipped_no_model"), never faked.
+MP_COMPLEXITY_TOKEN = {0: "lite", 1: "full", 2: "heavy"}
+
+MODEL_GRID = {
+    "mediapipe": {"variant_key": "complexity", "variants": [0, 1, 2],
+                  "thresholds": [0.5, 0.75]},
+    "rtmpose":   {"variant_key": "backbone", "variants": ["s", "m", "l"],
+                  "thresholds": [0.3, 0.6]},
+    "mmpose":    {"variant_key": "backbone", "variants": ["s", "m", "l"],
+                  "thresholds": [0.3, 0.6]},
+    "openpose":  {"variant_key": "variant", "variants": ["default"],
+                  "thresholds": [0.3, 0.5]},
+}
+
+# Lower-limb limbs to draw on the fitting video (COCO-17 index pairs).
+_SKELETON_LIMBS = [(12, 14), (14, 16), (11, 13), (13, 15), (11, 12)]
+
+
+def _resolve_grid_model(model, variant):
+    """Resolve the model file for a (model, variant). Raises FileNotFoundError."""
+    if model == "mediapipe":
+        token = MP_COMPLEXITY_TOKEN.get(variant)
+        for f in sorted(glob.glob(os.path.join(MEDIAPIPE_DIR, "**", "*.task"),
+                                  recursive=True)):
+            if token and token in os.path.basename(f).lower():
+                return f
+        raise FileNotFoundError(
+            f"MediaPipe complexity {variant} ('{token}') .task not in {MEDIAPIPE_DIR}")
+    if model in ("rtmpose", "mmpose"):
+        model_dir = ONNX_MODELS[model]["dir"]
+        for f in sorted(glob.glob(os.path.join(model_dir, "**", "*.onnx"),
+                                  recursive=True)):
+            if f"rtmpose-{variant}" in f.replace(os.sep, "/").lower():
+                return f
+        raise FileNotFoundError(
+            f"{model} backbone '{variant}' (rtmpose-{variant}*.onnx) not in {model_dir}")
+    if model == "openpose":
+        files = sorted(glob.glob(os.path.join(OPENPOSE_DIR, "**", "*.onnx"),
+                                 recursive=True))
+        if files:
+            return files[0]
+        raise FileNotFoundError(f"OpenPose .onnx not in {OPENPOSE_DIR}")
+    raise ValueError(f"Unknown grid model: {model}")
+
+
+def _get_onnx_session_for(onnx_path):
+    """Load (and cache) a CPU onnxruntime session for a specific .onnx path."""
+    cached = _ONNX_SESSIONS.get(onnx_path)
+    if cached is not None:
+        return cached
+    try:
+        import onnxruntime as ort
+    except ImportError as e:
+        raise ImportError("onnxruntime is not installed. Run:  pip install onnxruntime") from e
+    session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    input_name = session.get_inputs()[0].name
+    _ONNX_SESSIONS[onnx_path] = (session, input_name)
+    return session, input_name
+
+
+def _grid_keypoint_series(model, variant, video_path, mp_det_conf=0.3):
+    """Extract a keypoint series for a specific (model, variant). Raises if missing.
+
+    For MediaPipe, mp_det_conf sets the detection/tracking confidence (the grid
+    threshold). For ONNX models the threshold is applied later as a per-keypoint
+    floor, so it does not affect extraction.
+    """
+    model_file = _resolve_grid_model(model, variant)   # FileNotFoundError if absent
+
+    if model == "mediapipe":
+        return _mediapipe_keypoint_series(video_path, task_path=model_file,
+                                          det_conf=mp_det_conf)
+
+    session_pair = _get_onnx_session_for(model_file)
+    if model == "openpose":
+        dst_w, dst_h = OPENPOSE_INPUT
+        frame_fn = _openpose_keypoints_for_frame
+    else:
+        cfg = ONNX_MODELS[model]
+        dst_w, dst_h = cfg["input_w"], cfg["input_h"]
+        frame_fn = _onnx_keypoints_for_frame
+
+    timestamps, kpts_list = [], []
+    fps = _video_fps(video_path)
+    for _idx, t_sec, frame in _stream_frames(video_path):
+        try:
+            kp = frame_fn(session_pair, frame, dst_w, dst_h)
+        except Exception:
+            kp = None
+        timestamps.append(t_sec)
+        kpts_list.append(kp)
+    return np.asarray(timestamps, dtype=float), kpts_list, fps
+
+
+def _save_coordinate_csv(path, timestamps, kpts_list, leg_used, angles):
+    """Write per-frame tracked hip/knee/ankle coords + knee angle for the chosen leg."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.writer(f)
+        writer.writerow([
+            "frame", "time_sec", "leg",
+            "hip_x", "hip_y", "hip_score",
+            "knee_x", "knee_y", "knee_score",
+            "ankle_x", "ankle_y", "ankle_score",
+            "knee_angle_deg",
+        ])
+        for i, (t, kp) in enumerate(zip(timestamps, kpts_list)):
+            leg = leg_used[i] if i < len(leg_used) else None
+            idxs = COCO_RIGHT if leg == "right" else (COCO_LEFT if leg == "left" else None)
+            row = [i, round(float(t), 4), leg or ""]
+            if kp is not None and idxs is not None:
+                for j in idxs:
+                    row += [round(float(kp[j, 0]), 2), round(float(kp[j, 1]), 2),
+                            round(float(kp[j, 2]), 3)]
+            else:
+                row += [""] * 9
+            ang = angles[i] if i < len(angles) else float("nan")
+            row.append("" if not np.isfinite(ang) else round(float(ang), 3))
+            writer.writerow(row)
+
+
+def _render_fitting_video(in_video, out_video, kpts_list, angles, threshold, fps):
+    """Overlay the lower-limb skeleton on the raw frames for visual grading.
+
+    Joints clearing `threshold` are drawn green, below-threshold red; the chosen
+    leg's knee angle is printed. Returns True on success.
+    """
+    if cv2 is None:
+        return False
+    cap = cv2.VideoCapture(in_video)
+    if not cap.isOpened():
+        return False
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    writer = cv2.VideoWriter(out_video, cv2.VideoWriter_fourcc(*"mp4v"),
+                             fps if fps and fps > 0 else 30.0, (w, h))
+    if not writer.isOpened():
+        cap.release()
+        return False
+
+    i = 0
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            kp = kpts_list[i] if i < len(kpts_list) else None
+            if kp is not None:
+                for a_idx, b_idx in _SKELETON_LIMBS:
+                    ax, ay, asc = kp[a_idx]
+                    bx, by, bsc = kp[b_idx]
+                    if asc > 0 and bsc > 0:
+                        cv2.line(frame, (int(ax), int(ay)), (int(bx), int(by)),
+                                 (255, 200, 0), 2, cv2.LINE_AA)
+                for j in set(idx for limb in _SKELETON_LIMBS for idx in limb):
+                    x, y, sc = kp[j]
+                    if sc > 0:
+                        color = (0, 200, 0) if sc >= threshold else (0, 0, 255)
+                        cv2.circle(frame, (int(x), int(y)), 5, color, -1, cv2.LINE_AA)
+                ang = angles[i] if i < len(angles) else float("nan")
+                if np.isfinite(ang):
+                    cv2.putText(frame, f"knee {ang:5.1f} deg  (thr {threshold})",
+                                (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                                (255, 255, 255), 2, cv2.LINE_AA)
+            writer.write(frame)
+            i += 1
+    finally:
+        cap.release()
+        writer.release()
+    return True
+
+
+def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
+    """
+    Sweep the model/complexity/backbone/threshold grid over one trial video.
+
+    Args:
+        video_path: the trial .mp4/.avi.
+        tokens: dict with id, position, height, trial (for the filename stem).
+        out_dir: directory for the per-permutation .csv and .mp4 outputs.
+        grid: grid config (defaults to MODEL_GRID).
+        render_videos: also write the diagnostic skeleton-overlay videos.
+
+    For each permutation it writes:
+        {stem}_{model}_{variant}_{threshold}.csv   (tracked coords + knee angle)
+        {stem}_{model}_{variant}_{threshold}.mp4   (skeleton-overlay video)
+    where stem = P_{id}_Pos_{position}_H_{height}_T_{trial}.
+
+    Returns a manifest list (one entry per permutation, incl. skips/errors).
+    """
+    grid = grid or MODEL_GRID
+    os.makedirs(out_dir, exist_ok=True)
+    stem = (f"P_{tokens.get('id', 'NA')}_Pos_{tokens.get('position', 'NA')}"
+            f"_H_{tokens.get('height', 'NA')}_T_{tokens.get('trial', 'NA')}")
+
+    manifest = []
+    for model, spec in grid.items():
+        for variant in spec["variants"]:
+            # Resolve the model file once; skip the whole variant if it's absent.
+            try:
+                _resolve_grid_model(model, variant)
+            except FileNotFoundError as e:
+                detail = str(e).splitlines()[0]
+                print(f"[grid] SKIP {model}/{variant}: {detail}")
+                manifest.append({"model": model, "variant": variant,
+                                 "status": "skipped_no_model", "detail": detail})
+                continue
+
+            # MediaPipe applies the threshold at extraction (detection confidence),
+            # so it must re-extract per threshold; ONNX models extract once and
+            # apply the threshold as a per-keypoint floor afterwards.
+            threshold_drives_extraction = (model == "mediapipe")
+            cached = None
+            if not threshold_drives_extraction:
+                try:
+                    cached = _grid_keypoint_series(model, variant, video_path)
+                except Exception as e:
+                    detail = f"{type(e).__name__}: {e}"
+                    print(f"[grid] ERROR {model}/{variant}: {detail}")
+                    manifest.append({"model": model, "variant": variant,
+                                     "status": "error", "detail": detail})
+                    continue
+
+            for threshold in spec["thresholds"]:
+                try:
+                    if threshold_drives_extraction:
+                        timestamps, kpts_list, fps = _grid_keypoint_series(
+                            model, variant, video_path, mp_det_conf=threshold)
+                        joint_floor = MP_SCORE_THRESHOLD
+                    else:
+                        timestamps, kpts_list, fps = cached
+                        joint_floor = threshold
+                except Exception as e:
+                    detail = f"{type(e).__name__}: {e}"
+                    print(f"[grid] ERROR {model}/{variant}@{threshold}: {detail}")
+                    manifest.append({"model": model, "variant": variant,
+                                     "threshold": threshold, "status": "error",
+                                     "detail": detail})
+                    continue
+
+                _, angles, leg_used = _angles_right_with_left_fallback(
+                    timestamps, kpts_list, fps, score_thresh=joint_floor)
+                base = f"{stem}_{model}_{variant}_{threshold}"
+                csv_path = os.path.join(out_dir, base + ".csv")
+                _save_coordinate_csv(csv_path, timestamps, kpts_list, leg_used, angles)
+
+                video_out = None
+                if render_videos:
+                    candidate = os.path.join(out_dir, base + ".mp4")
+                    try:
+                        if _render_fitting_video(video_path, candidate, kpts_list,
+                                                 angles, threshold, fps):
+                            video_out = candidate
+                    except Exception as e:
+                        print(f"[grid] video render failed for {base}: {e}")
+
+                n_valid = int(np.isfinite(angles).sum())
+                print(f"[grid] {base}: {n_valid}/{len(angles)} valid frames")
+                manifest.append({
+                    "model": model, "variant": variant, "threshold": threshold,
+                    "status": "ok", "csv": csv_path, "video": video_out,
+                    "n_frames": int(len(angles)), "n_valid_frames": n_valid,
+                })
+    return manifest
 
 
 def main():
