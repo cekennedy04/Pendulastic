@@ -646,6 +646,23 @@ OPENPOSE_BODY25_TO_COCO17 = {
 # overrides auto-detect for keypoint-only BODY_25 exports.
 _OPENPOSE_BODY25_MIN_C = 58
 
+# Full OpenPose binary (preferred over the ONNX fallback when present).
+# Expected layout:  models/openpose/bin/OpenPoseDemo.exe
+#                   models/openpose/models/pose/{body_25,coco}/pose_iter_*.caffemodel
+OPENPOSE_BIN = os.path.join(OPENPOSE_DIR, "bin", "OpenPoseDemo.exe")
+OPENPOSE_MODELS_DIR = os.path.join(OPENPOSE_DIR, "models")   # Caffe model weights dir
+OPENPOSE_SUBPROCESS_TIMEOUT = 300     # seconds; increase for long/HD videos
+
+# PosePipe external command. If set, process_posepipe() runs this command when
+# Trial_X_posepipe.csv is absent, then re-checks for the CSV.
+# Placeholders: {video} full path, {csv_out} expected output CSV path,
+#               {video_dir} parent folder, {fname} video basename.
+# Examples:
+#   "python C:/posepipe/run.py --video {video} --out {csv_out}"
+#   "docker run --rm -v {video_dir}:/data posepipe/posepipe --video /data/{fname}"
+POSEPIPE_CMD = None             # <- set your command string here, or leave None
+POSEPIPE_SUBPROCESS_TIMEOUT = 120     # seconds
+
 
 def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h, body25=None):
     """
@@ -688,18 +705,120 @@ def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h, body25=
     return kp
 
 
-def _openpose_keypoint_series(video_path):
-    """Stream a video through the OpenPose ONNX model -> (timestamps, kpts_list, fps)."""
+def _parse_openpose_keypoints_from_json(json_path, body25=False):
+    """
+    Parse one OpenPose per-frame JSON file -> (17, 3) [x, y, score] array, or None.
+
+    OpenPose writes one JSON per frame when --write_json is used. The top-level
+    "people" array holds per-person keypoints as a flat [x0,y0,c0, x1,y1,c1, ...]
+    list. We take the first detected person (highest-confidence person index 0).
+    """
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    people = data.get("people", [])
+    if not people:
+        return None
+    kp_flat = people[0].get("pose_keypoints_2d", [])
+    channel_map = OPENPOSE_BODY25_TO_COCO17 if body25 else OPENPOSE_COCO18_TO_COCO17
+    kp = np.zeros((17, 3), dtype=np.float32)
+    for op_idx, coco_idx in channel_map.items():
+        base = op_idx * 3
+        if base + 2 < len(kp_flat):
+            kp[coco_idx] = [kp_flat[base], kp_flat[base + 1], kp_flat[base + 2]]
+    return kp
+
+
+def _openpose_binary_keypoint_series(video_path, variant="default"):
+    """
+    Run the OpenPose binary on a full video via subprocess and parse its per-frame
+    JSON output -> (timestamps, kpts_list, fps).
+
+    Requires OPENPOSE_BIN to exist. Variant "body25" uses BODY_25 keypoint format;
+    "default" (or anything else) uses COCO-18.
+    """
+    import subprocess as _sp
+    import tempfile as _tmp
+    import shutil as _shu
+
+    if not os.path.isfile(OPENPOSE_BIN):
+        raise FileNotFoundError(
+            f"OpenPose binary not found: {OPENPOSE_BIN}\n"
+            "Download OpenPose and place OpenPoseDemo.exe at the path above.")
+
+    body25 = (variant == "body25")
+    model_pose = "BODY_25" if body25 else "COCO"
+    tmp_dir = _tmp.mkdtemp(prefix="op_json_", dir=os.path.dirname(video_path))
+    try:
+        cmd = [
+            OPENPOSE_BIN,
+            "--video",       os.path.abspath(video_path),
+            "--write_json",  tmp_dir,
+            "--model_pose",  model_pose,
+            "--display",     "0",       # no GUI window
+            "--render_pose", "0",       # skip overlay rendering (faster)
+        ]
+        if os.path.isdir(OPENPOSE_MODELS_DIR):
+            cmd += ["--model_folder", OPENPOSE_MODELS_DIR]
+
+        print(f"[openpose] binary ({model_pose}): {os.path.basename(video_path)}")
+        result = _sp.run(
+            cmd,
+            capture_output=True, text=True,
+            timeout=OPENPOSE_SUBPROCESS_TIMEOUT,
+            cwd=os.path.dirname(OPENPOSE_BIN),   # binary resolves models/ relative to itself
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()[:600]
+            raise RuntimeError(
+                f"OpenPoseDemo.exe exited {result.returncode}:\n{stderr}")
+
+        # Sort per-frame JSON files by frame number (filename-order == frame-order).
+        json_files = sorted(
+            f for f in os.listdir(tmp_dir) if f.endswith("_keypoints.json")
+        )
+        if not json_files:
+            raise RuntimeError(
+                "OpenPose produced no keypoint JSON files — check binary output above.")
+
+        fps = _video_fps(video_path)
+        timestamps, kpts_list = [], []
+        for i, jf in enumerate(json_files):
+            kp = _parse_openpose_keypoints_from_json(os.path.join(tmp_dir, jf), body25=body25)
+            timestamps.append(i / fps)
+            kpts_list.append(kp)
+
+        return np.asarray(timestamps, dtype=float), kpts_list, fps
+
+    finally:
+        _shu.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _openpose_keypoint_series(video_path, variant="default"):
+    """
+    Stream a video through OpenPose -> (timestamps, kpts_list, fps).
+
+    Prefers the OpenPose binary (subprocess) when OPENPOSE_BIN exists; falls back
+    to the ONNX model in models/openpose/ otherwise. "body25" variant uses the
+    BODY_25 keypoint layout; "default" uses COCO-18.
+    """
+    if os.path.isfile(OPENPOSE_BIN):
+        return _openpose_binary_keypoint_series(video_path, variant=variant)
+
+    # ONNX fallback — requires an .onnx in OPENPOSE_DIR
     session_pair = _get_onnx_session(OPENPOSE_DIR)    # raises clearly if missing
     dst_w, dst_h = OPENPOSE_INPUT
+    body25 = (variant == "body25")
 
     timestamps, kpts_list = [], []
     fps = _video_fps(video_path)
     for _idx, t_sec, frame in _stream_frames(video_path):
         try:
-            kp = _openpose_keypoints_for_frame(session_pair, frame, dst_w, dst_h)
+            kp = _openpose_keypoints_for_frame(session_pair, frame, dst_w, dst_h, body25=body25)
         except Exception:
-            kp = None      # per-frame failure -> interpolated downstream
+            kp = None
         timestamps.append(t_sec)
         kpts_list.append(kp)
 
@@ -707,8 +826,8 @@ def _openpose_keypoint_series(video_path):
 
 
 def process_openpose(video_path):
-    """OpenPose (ONNX, CPU) -> (timestamps, knee_angles_deg)."""
-    timestamps, kpts_list, fps = _openpose_keypoint_series(video_path)
+    """OpenPose (binary or ONNX, CPU) -> (timestamps, knee_angles_deg)."""
+    timestamps, kpts_list, fps = _openpose_keypoint_series(video_path, variant="default")
     return _angles_from_keypoint_series(timestamps, kpts_list, fps, smoothing="savgol",
                                         score_thresh=OPENPOSE_SCORE_THRESHOLD)
 
@@ -738,16 +857,48 @@ def process_posepipe(video_path):
     """
     PosePipe ingest -> (timestamps, knee_angles_deg).
 
-    Reads Trial_X_posepipe.csv sitting next to the video (time_sec + knee_angle_deg
-    columns, same schema as our own prediction CSVs). Raises FileNotFoundError when
-    the CSV is absent; the pipeline records that as "error" and moves on.
+    1. Checks for Trial_X_posepipe.csv next to the video.
+    2. If absent and POSEPIPE_CMD is configured, runs that command (with
+       {video}/{csv_out}/{video_dir}/{fname} substituted) with a
+       POSEPIPE_SUBPROCESS_TIMEOUT safeguard, then re-checks for the CSV.
+    3. Raises FileNotFoundError if the CSV is still missing after all attempts.
     """
+    import subprocess as _sp
+
     csv_path = _find_posepipe_csv(video_path)
+
+    if csv_path is None and POSEPIPE_CMD:
+        folder = os.path.dirname(video_path)
+        m_vp = VIDEO_PATTERN.match(os.path.basename(video_path))
+        if m_vp:
+            csv_out = os.path.join(folder, f"Trial_{m_vp.group(1)}{POSEPIPE_SUFFIX}")
+            try:
+                cmd_str = POSEPIPE_CMD.format(
+                    video=video_path,
+                    csv_out=csv_out,
+                    video_dir=folder,
+                    fname=os.path.basename(video_path),
+                )
+                print(f"[posepipe] running: {cmd_str[:120]}")
+                proc = _sp.run(
+                    cmd_str, shell=True, capture_output=True, text=True,
+                    timeout=POSEPIPE_SUBPROCESS_TIMEOUT,
+                )
+                if proc.returncode != 0:
+                    print(f"[posepipe] WARNING exit {proc.returncode}: "
+                          f"{(proc.stderr or '').strip()[:300]}")
+            except _sp.TimeoutExpired:
+                print(f"[posepipe] WARNING timed out after {POSEPIPE_SUBPROCESS_TIMEOUT}s")
+            except Exception as exc:
+                print(f"[posepipe] WARNING subprocess error: {exc}")
+            csv_path = _find_posepipe_csv(video_path)   # re-check after command
+
     if csv_path is None:
         raise FileNotFoundError(
             f"No PosePipe export for {os.path.basename(video_path)}.\n"
             "Expected: Trial_X_posepipe.csv next to the video file.\n"
-            "Run PosePipe externally and place its CSV export there.")
+            "Either run PosePipe externally and place the CSV there, or set "
+            "POSEPIPE_CMD at the top of analysis_pipeline.py.")
     t, a = _prediction_knee_angle_series(csv_path)
     if len(t) < 2:
         raise ValueError(f"PosePipe CSV has too few valid rows: {csv_path}")
@@ -1241,6 +1392,9 @@ def _resolve_grid_model(model, variant):
         raise FileNotFoundError(
             f"{model} backbone '{variant}' (rtmpose-{variant}*.onnx) not in {model_dir}")
     if model == "openpose":
+        # Binary takes priority over ONNX and handles both COCO-18 and BODY_25 natively.
+        if os.path.isfile(OPENPOSE_BIN):
+            return OPENPOSE_BIN
         all_files = sorted(glob.glob(os.path.join(OPENPOSE_DIR, "**", "*.onnx"),
                                      recursive=True))
         if variant == "body25":
@@ -1289,6 +1443,11 @@ def _grid_keypoint_series(model, variant, video_path, mp_det_conf=0.3):
     if model == "mediapipe":
         return _mediapipe_keypoint_series(video_path, task_path=model_file,
                                           det_conf=mp_det_conf)
+
+    # OpenPose binary path: _resolve_grid_model returns OPENPOSE_BIN when it exists.
+    # Bypass the ONNX session entirely and use the subprocess-based extractor.
+    if model == "openpose" and model_file == OPENPOSE_BIN:
+        return _openpose_binary_keypoint_series(video_path, variant=variant)
 
     session_pair = _get_onnx_session_for(model_file)
     if model == "openpose":
@@ -1884,6 +2043,96 @@ def run_post_session_batch(root_dir, grid=None, skip_processed=True,
 
 
 # =============================================================================
+# 10f. Unified hands-free pipeline  (--full)
+# =============================================================================
+def run_full_pipeline(root_dir, render_videos=True, download=True, grid=None):
+    """
+    Single-command, hands-free execution chain:
+
+      Step 1 — Weight resolution
+        Verify (and auto-download) all 6 local model weight files.  Missing
+        ONNX weights are fetched; failed downloads print manual-placement
+        instructions and are skipped in the grid — the pipeline never aborts.
+
+      Step 2 — Model × complexity × threshold grid sweep
+        Run every permutation across all discovered Trial_X videos.  For each
+        trial: MediaPipe lite/full/heavy, RTMPose s/m/l, MMPose s/m/l, OpenPose
+        (COCO-18 / BODY_25 via binary or ONNX), FreMocap, PosePipe (ingest hook).
+        Per-permutation coordinate CSVs and fitting videos land in each trial
+        folder.  evaluation_results.json is written to root_dir.
+
+      Step 3 — Immediate evaluation
+        Reconstruct the GT knee angle from OptiTrack rotation quaternions for
+        every trial, resample both signals with scipy.interpolate.interp1d, align
+        with cross-correlation, and compute angular RMSE + bias (degrees).
+
+      Step 4 — Definitive leaderboard
+        Write comprehensive_model_comparison.csv, print the multi-level
+        leaderboard matrix, and end with the definitive winner verdict:
+          "Model X at Complexity Y is the ideal setup, achieving the lowest
+           overall mean Angular RMSE across all configurations."
+    """
+    print("=" * 70)
+    print(" PENDULASTIC FULL PIPELINE  (hands-free)")
+    print("=" * 70)
+
+    # ── Step 1: weight resolution ─────────────────────────────────────────────
+    if download:
+        print("\n[1/4] Verifying / downloading model weights ...")
+        print("=" * 70)
+        ensure_local_models()
+
+    # ── Step 2: grid sweep ────────────────────────────────────────────────────
+    print("\n[2/4] Running model × complexity × threshold grid sweep ...")
+    print("=" * 70)
+
+    pairs = find_trial_pairs(root_dir)
+    if not pairs:
+        print(f"No trial videos found under {root_dir}.  Nothing to process.")
+        return None
+
+    grid = grid or MODEL_GRID
+    trial_results = []
+    grid_ok = 0
+    for idx, pair in enumerate(pairs, start=1):
+        print(f"\n  [{idx}/{len(pairs)}] {pair['folder']}  (Trial_{pair['trial']})")
+        tr = process_trial(pair)
+
+        tokens = {"id": pair["participant_id"], "position": pair["position"],
+                  "height": pair["height"], "trial": pair["trial"]}
+        try:
+            manifest = run_model_grid(pair["avi_path"], tokens, pair["folder"],
+                                      grid=grid, render_videos=render_videos)
+            tr["grid"] = manifest
+            grid_ok += sum(1 for m in manifest if m.get("status") == "ok")
+        except Exception as exc:
+            tr["grid_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"  [grid] ERROR: {tr['grid_error']}")
+        trial_results.append(tr)
+
+    aggregate = aggregate_results(trial_results)
+    full_results = {
+        "root_dir": root_dir,
+        "num_trials_found": len(pairs),
+        "num_trials_with_reference": sum(1 for t in trial_results if t.get("has_reference")),
+        "grid_outputs_written": grid_ok,
+        "trials": trial_results,
+        "aggregate": aggregate,
+    }
+    json_path = os.path.join(root_dir, EVAL_RESULTS_FILENAME)
+    export_results(full_results, json_path)
+    print(f"\n[grid] {grid_ok} permutations written.  JSON saved: {json_path}")
+
+    # ── Step 3 & 4: evaluate + leaderboard ───────────────────────────────────
+    print("\n[3/4] Evaluating angular knee RMSE vs OptiTrack gold standard ...")
+    print("=" * 70)
+    evaluate_results_json(json_path)
+
+    print("\n[4/4] Full pipeline complete.")
+    return full_results
+
+
+# =============================================================================
 # 11. JSON-DRIVEN KNEE-ANGLE ERROR EVALUATION  (--evaluate-json)
 # =============================================================================
 # Re-scores an existing evaluation_results.json autonomously: reconstructs the GT
@@ -2185,13 +2434,26 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Pendulastic analysis: per-model scoring or post-session batch.")
+        description="Pendulastic analysis pipeline — tracking, grid sweep, and evaluation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Modes (pick one; default = basic batch):
+  --full          Hands-free end-to-end: download weights -> grid sweep ->
+                  save JSON -> angular RMSE evaluation -> definitive verdict.
+                  This is the recommended mode after a recording session.
+  --post-session  Lightweight batch: download 6 local variants, scan for new
+                  video+OptiTrack pairs, track+render, score angular RMSE.
+  --evaluate-json Re-score an existing evaluation_results.json only.
+  (default)       Basic per-model batch; writes evaluation_results.json.
+""")
     parser.add_argument("root", nargs="?", default="Recordings",
                         help="Data directory to process (default: Recordings).")
+    parser.add_argument("--full", action="store_true",
+                        help="Hands-free pipeline: download -> grid sweep -> evaluate "
+                             "-> leaderboard + definitive verdict (recommended).")
     parser.add_argument("--post-session", action="store_true",
-                        help="Run the post-recording batch: download 6 variants, scan "
-                             "for new video+OptiTrack pairs, track+render all 6, and "
-                             "score knee angular RMSE vs the Motive quaternions.")
+                        help="Post-recording batch: download 6 variants, scan/skip "
+                             "already-processed trials, track+render, angular RMSE.")
     parser.add_argument("--no-videos", action="store_true",
                         help="Skip rendering the diagnostic fitting videos.")
     parser.add_argument("--no-skip", action="store_true",
@@ -2199,12 +2461,12 @@ def main():
     parser.add_argument("--no-download", action="store_true",
                         help="Do not auto-download missing model weights.")
     parser.add_argument("--evaluate-json", nargs="?", const="", metavar="JSON",
-                        help="Autonomously re-score an evaluation_results.json into a "
-                             "knee-angle error leaderboard + accumulated_error_report.csv "
+                        help="Re-score an evaluation_results.json into a knee-angle "
+                             "error leaderboard + accumulated_error_report.csv "
                              "(defaults to <root>/evaluation_results.json).")
     args = parser.parse_args()
 
-    # JSON evaluation works on a file, so handle it before the is-directory check.
+    # --evaluate-json works on a file, so handle it before the directory check.
     if args.evaluate_json is not None:
         json_path = args.evaluate_json or os.path.join(args.root, EVAL_RESULTS_FILENAME)
         if not os.path.isfile(json_path):
@@ -2217,12 +2479,22 @@ def main():
         print(f"Not a directory: {args.root}")
         raise SystemExit(1)
 
+    # --full: the recommended single-command hands-free mode.
+    if args.full:
+        run_full_pipeline(
+            args.root,
+            render_videos=not args.no_videos,
+            download=not args.no_download,
+        )
+        return
+
     if args.post_session:
         run_post_session_batch(args.root, skip_processed=not args.no_skip,
                                render_videos=not args.no_videos,
                                download=not args.no_download)
         return
 
+    # Default: basic per-model batch (no grid sweep, no auto-evaluation).
     root_dir = args.root
 
     def _progress(idx, total, pair):
