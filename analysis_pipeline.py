@@ -8,7 +8,7 @@
    * Trial_X.mp4 / .avi      - webcam video of the pendulum-test swing
    * Trial_X_optitrack.csv   - gold-standard knee angle time-series from Motive
 
- this module runs FOUR real pose-estimation engines over the webcam video,
+ this module runs FIVE real pose-estimation engines over the webcam video,
  extracts hip/knee/ankle keypoints, computes a knee-flexion-angle time-series
  for each, synchronizes it to the OptiTrack reference, and scores accuracy:
 
@@ -23,6 +23,9 @@
                             uncalibrated camera there is no 3D triangulation, so
                             this runs MediaPipe-2D + FreMocap's characteristic
                             Butterworth low-pass trajectory filtering.
+   5. OpenPose            - ONNX via onnxruntime (CPUExecutionProvider). COCO-18
+                            body model; confidence-map peak decode -> hip/knee/
+                            ankle. Drop the .onnx into models/openpose/.
 
  All inference runs on CPU (no CUDA required) per the Surface Laptop 5 target.
 
@@ -590,11 +593,94 @@ def process_mmpose(video_path):
     return _angles_from_keypoint_series(timestamps, kpts_list, fps, smoothing="savgol")
 
 
+# -----------------------------------------------------------------------------
+# OpenPose (ONNX, CPU) - COCO-18 body model
+# -----------------------------------------------------------------------------
+# Drop an OpenPose body .onnx (COCO-18 / pose_iter_440000 export) into
+# models/openpose/. Output is a single confidence-map tensor (1, C, H, W); the
+# first 18 channels are the COCO-18 keypoint heatmaps (channel 18 is background,
+# the remainder are Part-Affinity Fields, which single-person tracking ignores).
+OPENPOSE_DIR = os.path.join(MODELS_DIR, "openpose")
+OPENPOSE_INPUT = (368, 368)        # (w, h) network input; multiple of 8.
+OPENPOSE_SCORE_THRESHOLD = 0.10    # confidence-map peak floor.
+
+# OpenPose COCO-18 keypoint index -> our COCO-17 slot (only the joints we score).
+#   COCO-18: 8 RHip 9 RKnee 10 RAnkle 11 LHip 12 LKnee 13 LAnkle
+#   COCO-17: 11 LHip 12 RHip 13 LKnee 14 RKnee 15 LAnkle 16 RAnkle
+# NOTE: this assumes the COCO-18 model. A BODY_25 export uses a different
+# ordering (RHip=9, etc.) - update this map if you swap models.
+OPENPOSE_COCO18_TO_COCO17 = {
+    8: 12,   # Right hip
+    9: 14,   # Right knee
+    10: 16,  # Right ankle
+    11: 11,  # Left hip
+    12: 13,  # Left knee
+    13: 15,  # Left ankle
+}
+
+
+def _openpose_keypoints_for_frame(session_pair, frame_bgr, dst_w, dst_h):
+    """Run one frame through an OpenPose ONNX model -> (17, 3) in original coords."""
+    session, input_name = session_pair
+    canvas, scale, pad_x, pad_y = _letterbox(frame_bgr, dst_w, dst_h)
+    # OpenPose preprocessing: BGR, scaled to [0, 1], no mean/std subtraction.
+    blob = canvas.astype(np.float32) / 255.0
+    tensor = np.ascontiguousarray(np.transpose(blob, (2, 0, 1))[None], dtype=np.float32)
+
+    outputs = session.run(None, {input_name: tensor})
+    heat = np.asarray(outputs[0])
+    if heat.ndim != 4:
+        raise RuntimeError(
+            f"Unexpected OpenPose output shape {heat.shape}; expected (1, C, H, W).")
+    heat = heat[0]                       # (C, Hh, Wh)
+    C, Hh, Wh = heat.shape
+
+    kp = np.zeros((17, 3), dtype=np.float32)
+    for op_idx, coco_idx in OPENPOSE_COCO18_TO_COCO17.items():
+        if op_idx >= C:
+            continue
+        plane = heat[op_idx]
+        flat = int(np.argmax(plane))
+        py, px = divmod(flat, Wh)
+        score = float(plane[py, px])
+        # Heatmap cell -> network-input pixels -> invert the letterbox transform.
+        x_in = px * (dst_w / Wh)
+        y_in = py * (dst_h / Hh)
+        kp[coco_idx] = ((x_in - pad_x) / scale, (y_in - pad_y) / scale, score)
+    return kp
+
+
+def _openpose_keypoint_series(video_path):
+    """Stream a video through the OpenPose ONNX model -> (timestamps, kpts_list, fps)."""
+    session_pair = _get_onnx_session(OPENPOSE_DIR)    # raises clearly if missing
+    dst_w, dst_h = OPENPOSE_INPUT
+
+    timestamps, kpts_list = [], []
+    fps = _video_fps(video_path)
+    for _idx, t_sec, frame in _stream_frames(video_path):
+        try:
+            kp = _openpose_keypoints_for_frame(session_pair, frame, dst_w, dst_h)
+        except Exception:
+            kp = None      # per-frame failure -> interpolated downstream
+        timestamps.append(t_sec)
+        kpts_list.append(kp)
+
+    return np.asarray(timestamps, dtype=float), kpts_list, fps
+
+
+def process_openpose(video_path):
+    """OpenPose (ONNX, CPU) -> (timestamps, knee_angles_deg)."""
+    timestamps, kpts_list, fps = _openpose_keypoint_series(video_path)
+    return _angles_from_keypoint_series(timestamps, kpts_list, fps, smoothing="savgol",
+                                        score_thresh=OPENPOSE_SCORE_THRESHOLD)
+
+
 MODEL_FUNCTIONS = {
     "mediapipe": process_mediapipe,
     "rtmpose": process_rtmpose,
     "mmpose": process_mmpose,
     "fremocap": process_fremocap,
+    "openpose": process_openpose,
 }
 
 # Per-model keypoint backbone, trajectory smoothing, and per-joint confidence
@@ -606,6 +692,7 @@ MODEL_BACKBONES = {
     "fremocap":  ("mediapipe", "butter", MP_SCORE_THRESHOLD),
     "rtmpose":   ("rtmpose",   "savgol", SCORE_THRESHOLD),
     "mmpose":    ("mmpose",    "savgol", SCORE_THRESHOLD),
+    "openpose":  ("openpose",  "savgol", OPENPOSE_SCORE_THRESHOLD),
 }
 
 
@@ -613,6 +700,8 @@ def _extract_keypoints(backbone, video_path):
     """Run a model backbone -> (timestamps, kpts_list, fps)."""
     if backbone == "mediapipe":
         return _mediapipe_keypoint_series(video_path)
+    if backbone == "openpose":
+        return _openpose_keypoint_series(video_path)
     return _onnx_keypoint_series(video_path, backbone)
 
 

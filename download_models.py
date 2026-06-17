@@ -172,7 +172,9 @@ def main():
     print(" Pendulastic - ONNX weight downloader")
     print(f" Target dir : {MODELS_DIR}")
     print("=" * 70)
-    print("Fetching MediaPipe .task + RTMPose/MMPose .onnx weights...\n")
+    print("Fetching MediaPipe .task + RTMPose/MMPose .onnx weights...")
+    print("NOTE: OpenPose is not auto-fetched - drop a COCO-18 body .onnx into")
+    print(f"      {os.path.join(MODELS_DIR, 'openpose')}  manually.\n")
 
     results = {}
     for name, spec in MODEL_REGISTRY.items():
