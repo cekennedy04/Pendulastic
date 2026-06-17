@@ -1776,6 +1776,208 @@ def run_post_session_batch(root_dir, grid=None, skip_processed=True,
     return {"pairs_processed": len(pairs), "per_pair": per_pair, "leaderboard": leaderboard}
 
 
+# =============================================================================
+# 11. JSON-DRIVEN KNEE-ANGLE ERROR EVALUATION  (--evaluate-json)
+# =============================================================================
+# Re-scores an existing evaluation_results.json autonomously: reconstructs the GT
+# knee angle from each trial's OptiTrack quaternions, compares every model variant
+# (grid CSV / embedded trajectory), and builds a multi-level accumulated report.
+_OMIT_STATUSES = {"skipped_no_model", "error", "no_ground_truth",
+                  "angular_error", "no_gt_angle"}
+ACCUMULATED_REPORT_FILENAME = "accumulated_error_report.csv"
+
+
+def _trial_gt_knee_angle(trial):
+    """
+    GT knee angle (deg) for a JSON trial block, reconstructed from the OptiTrack
+    rotation quaternions. Uses csv_path when present; if has_reference is false or
+    csv_path is null, dynamically looks for Trial_{trial}_optitrack.csv inside the
+    trial folder.
+    """
+    csv_path = trial.get("csv_path")
+    if not trial.get("has_reference") or not csv_path:
+        folder, trial_num = trial.get("folder"), trial.get("trial")
+        if folder and trial_num is not None:
+            cand = os.path.join(folder, f"Trial_{trial_num}{CSV_SUFFIX}")
+            if os.path.exists(cand):
+                csv_path = cand
+    if not csv_path or not os.path.exists(csv_path):
+        return None
+    try:
+        return _optitrack_knee_angle_series(csv_path)
+    except Exception as e:
+        print(f"    [json-eval] GT knee angle failed ({os.path.basename(csv_path)}): {e}")
+        return None
+
+
+def _trial_model_entries(trial):
+    """
+    Model-variant entries for a JSON trial: the grid manifest (variant-level:
+    complexity 0/1/2, rtmpose s/m/l) if present, else the headline per-model
+    entries (variant 'default').
+    """
+    grid = trial.get("grid")
+    if grid:
+        for e in grid:
+            yield {"model": e.get("model"), "variant": e.get("variant"),
+                   "threshold": e.get("threshold"), "status": e.get("status"),
+                   "csv": e.get("csv"), "trajectories": e.get("trajectories")}
+    else:
+        for name, info in (trial.get("models") or {}).items():
+            yield {"model": name, "variant": "default", "threshold": None,
+                   "status": info.get("status"), "csv": info.get("csv"),
+                   "trajectories": info.get("trajectories")}
+
+
+def _entry_knee_angle(entry):
+    """CV knee angle (time, deg) from a JSON entry: embedded trajectory or its CSV."""
+    traj = entry.get("trajectories")
+    if traj and traj.get("knee_angle") and traj.get("timestamps_sec"):
+        t = np.asarray(traj["timestamps_sec"], float)
+        a = np.asarray([np.nan if v is None else v for v in traj["knee_angle"]], float)
+        fin = np.isfinite(t) & np.isfinite(a)
+        if fin.sum() >= 2:
+            return t[fin], a[fin]
+    csv_path = entry.get("csv")
+    if csv_path and os.path.exists(csv_path):
+        t, a = _prediction_knee_angle_series(csv_path)
+        if len(t) >= 2:
+            return t, a
+    return None
+
+
+def _variant_label(rec):
+    return f"{rec['model']}/{rec['variant']}"
+
+
+def _mean_by_variant(records):
+    grouped = {}
+    for r in records:
+        grouped.setdefault(_variant_label(r), []).append(r)
+    out = [{"label": label,
+            "mean_rmse": float(np.mean([x["knee_rmse_deg"] for x in rs])),
+            "mean_bias": float(np.mean([x["knee_bias_deg"] for x in rs])),
+            "n": len(rs)}
+           for label, rs in grouped.items()]
+    out.sort(key=lambda x: x["mean_rmse"])
+    return out
+
+
+def _print_json_leaderboards(records):
+    if not records:
+        print("No knee-angle comparisons could be computed from the JSON.")
+        return
+
+    print("=" * 80)
+    print(" KNEE-ANGLE ERROR LEADERBOARD  (degrees; lower RMSE = better)")
+    print("=" * 80)
+    print("\n-- Overall (all configurations) --")
+    print(f" {'model/variant':<24}{'mean_RMSE':>10}{'mean_bias':>10}{'n':>5}")
+    for v in _mean_by_variant(records):
+        print(f" {v['label']:<24}{v['mean_rmse']:10.2f}{v['mean_bias']:10.2f}{v['n']:5d}")
+
+    for level, key in (("Participant", "participant"), ("Position", "position"),
+                       ("Height", "height")):
+        print(f"\n-- Best variant by {level} --")
+        for g in sorted(set(r[key] for r in records)):
+            best = _mean_by_variant([r for r in records if r[key] == g])[0]
+            print(f" {level}_{g:<18} -> {best['label']:<22} "
+                  f"{best['mean_rmse']:7.2f} deg  (n={best['n']})")
+
+    # Global win-rate: per (participant, position, height, trial), lowest RMSE wins.
+    configs = {}
+    for r in records:
+        configs.setdefault((r["participant"], r["position"], r["height"], r["trial"]), []).append(r)
+    wins = {}
+    for rs in configs.values():
+        wins[_variant_label(min(rs, key=lambda x: x["knee_rmse_deg"]))] = \
+            wins.get(_variant_label(min(rs, key=lambda x: x["knee_rmse_deg"])), 0) + 1
+    total = len(configs)
+
+    print("\n" + "=" * 80)
+    print(f" GLOBAL WIN-RATE  ({total} configuration(s))")
+    print("-" * 80)
+    for lab, c in sorted(wins.items(), key=lambda kv: -kv[1]):
+        print(f"   {lab:<24} {c:>3} win(s)   ({c / total * 100:5.1f}%)")
+    champ = max(wins, key=wins.get)
+    champ_rmse = next(v["mean_rmse"] for v in _mean_by_variant(records) if v["label"] == champ)
+    print("-" * 80)
+    print(f' >> "{champ}" is the ideal model, demonstrating the lowest overall mean')
+    print(f'    RMSE ({champ_rmse:.2f} deg) across the majority of configurations '
+          f'({wins[champ]}/{total}, {wins[champ] / total * 100:.0f}% win-rate).')
+    print("=" * 80)
+
+
+def _write_accumulated_report(records, out_path):
+    fields = ["participant", "position", "height", "trial", "model", "variant",
+              "threshold", "knee_rmse_deg", "knee_bias_deg", "n", "lag_sec"]
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv_module.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in records:
+            row = {k: r.get(k) for k in fields}
+            row["knee_rmse_deg"] = round(r["knee_rmse_deg"], 3)
+            row["knee_bias_deg"] = round(r["knee_bias_deg"], 3)
+            row["lag_sec"] = round(r["lag_sec"], 4)
+            w.writerow(row)
+
+
+def evaluate_results_json(json_path, report_csv=None):
+    """
+    Autonomously re-score an evaluation_results.json into a knee-flexion-angle
+    error leaderboard. Per trial: reconstruct the GT knee angle from the OptiTrack
+    quaternions (dynamically finding Trial_X_optitrack.csv when csv_path is null),
+    resample + cross-correlation-sync each model variant's CV knee angle, and
+    compute knee RMSE + bias (deg). Variants with status skipped_no_model/error
+    are omitted without breaking the loop. Prints multi-level leaderboards grouped
+    by Participant / Position / Height and writes accumulated_error_report.csv.
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    trials = data.get("trials", [])
+    print(f"Loaded {len(trials)} trial block(s) from {json_path}\n")
+
+    records = []
+    for trial in trials:
+        label = (f"Participant_{trial.get('participant_id')}/"
+                 f"Position_{trial.get('position')}/Height_{trial.get('height')}"
+                 f"/Trial_{trial.get('trial')}")
+        gt = _trial_gt_knee_angle(trial)
+        if gt is None:
+            print(f"[skip] {label}: no OptiTrack knee angle (quaternions) available.")
+            continue
+        gt_t, gt_y = gt
+        for entry in _trial_model_entries(trial):
+            if entry.get("status") in _OMIT_STATUSES:
+                continue
+            cv = _entry_knee_angle(entry)
+            if cv is None:
+                continue
+            try:
+                sync = synchronize_signals(gt_t, gt_y, cv[0], cv[1])
+            except Exception:
+                continue
+            records.append({
+                "participant": str(trial.get("participant_id")),
+                "position": str(trial.get("position")),
+                "height": str(trial.get("height")),
+                "trial": str(trial.get("trial")),
+                "model": entry.get("model"), "variant": str(entry.get("variant")),
+                "threshold": entry.get("threshold"),
+                "knee_rmse_deg": compute_rmse(sync["ref"], sync["test"]),
+                "knee_bias_deg": float(np.mean(sync["test"] - sync["ref"])),
+                "lag_sec": sync["lag_sec"], "n": int(len(sync["time"])),
+            })
+
+    report_csv = report_csv or os.path.join(
+        os.path.dirname(os.path.abspath(json_path)), ACCUMULATED_REPORT_FILENAME)
+    _write_accumulated_report(records, report_csv)
+    print()
+    _print_json_leaderboards(records)
+    print(f"\nAccumulated error report written to: {report_csv}")
+    return records
+
+
 def main():
     import argparse
 
@@ -1793,7 +1995,20 @@ def main():
                         help="Re-process trials even if prediction CSVs already exist.")
     parser.add_argument("--no-download", action="store_true",
                         help="Do not auto-download missing model weights.")
+    parser.add_argument("--evaluate-json", nargs="?", const="", metavar="JSON",
+                        help="Autonomously re-score an evaluation_results.json into a "
+                             "knee-angle error leaderboard + accumulated_error_report.csv "
+                             "(defaults to <root>/evaluation_results.json).")
     args = parser.parse_args()
+
+    # JSON evaluation works on a file, so handle it before the is-directory check.
+    if args.evaluate_json is not None:
+        json_path = args.evaluate_json or os.path.join(args.root, EVAL_RESULTS_FILENAME)
+        if not os.path.isfile(json_path):
+            print(f"evaluation_results.json not found: {json_path}")
+            raise SystemExit(1)
+        evaluate_results_json(json_path)
+        return
 
     if not os.path.isdir(args.root):
         print(f"Not a directory: {args.root}")
