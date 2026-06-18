@@ -2719,7 +2719,10 @@ def _write_accumulated_report(records, out_path):
             row = {k: r.get(k) for k in fields}
             row["knee_rmse_deg"] = round(r["knee_rmse_deg"], 3)
             row["knee_bias_deg"] = round(r["knee_bias_deg"], 3)
-            row["lag_sec"] = round(r["lag_sec"], 4)
+            # Use .get() with a 0.0 default so older JSON replays or
+            # records from a code path that skipped synchronize_signals()
+            # never KeyError here and still produce a valid CSV row.
+            row["lag_sec"] = round(r.get("lag_sec") or 0.0, 4)
             w.writerow(row)
 
 
@@ -2752,7 +2755,7 @@ def _write_comprehensive_csv(records, out_path):
             "n_trials":           len(rs),
             "mean_knee_rmse_deg": round(float(np.mean([x["knee_rmse_deg"] for x in rs])), 3),
             "mean_knee_bias_deg": round(float(np.mean([x["knee_bias_deg"] for x in rs])), 3),
-            "mean_phase_lag_sec": round(float(np.mean([x["lag_sec"]        for x in rs])), 4),
+            "mean_phase_lag_sec": round(float(np.mean([x.get("lag_sec") or 0.0 for x in rs])), 4),
         })
     rows.sort(key=lambda r: (r["participant"], r["position"], r["height"],
                              r["mean_knee_rmse_deg"]))
