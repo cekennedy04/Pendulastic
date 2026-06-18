@@ -1701,7 +1701,7 @@ def _run_angle_direct_variant(model, spec, video_path, stem, out_dir, manifest):
     Failures are caught per-model so a broken PosePipe run does not abort the rest
     of the benchmarking grid.
     """
-    func = PROCESS_FUNCTIONS.get(model)
+    func = MODEL_FUNCTIONS.get(model)
     if func is None:
         manifest.append({"model": model, "variant": "default",
                          "status": "skipped_no_model",
