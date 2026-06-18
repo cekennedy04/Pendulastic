@@ -1360,9 +1360,9 @@ MODEL_GRID = {
     "mediapipe": {"variant_key": "complexity", "variants": [0, 1, 2],
                   "thresholds": [0.5, 0.75]},
     "rtmpose":   {"variant_key": "backbone", "variants": ["s", "m", "l"],
-                  "thresholds": [0.3, 0.6]},
+                  "thresholds": [0.2, 0.35, 0.5]},
     "mmpose":    {"variant_key": "backbone", "variants": ["s", "m", "l"],
-                  "thresholds": [0.3, 0.6]},
+                  "thresholds": [0.2, 0.35, 0.5]},
     # "default" = any .onnx NOT named body25 (auto-detects COCO-18 / BODY_25 by C);
     # "body25"  = file whose basename contains "body25" -> forced BODY_25 channel map.
     "openpose":  {"variant_key": "variant", "variants": ["default", "body25"],
