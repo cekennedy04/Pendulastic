@@ -13,25 +13,29 @@
 
  start_local_motive(packet_string):
    1. Parse the START packet (id / position / height / trial / relpath).
-   2. Mirror the folder tree under OptiTrack_Recordings/ using 'relpath' (the
-      post-processing pipeline expects the identical tree) and SANITIZE that path
-      to forward slashes with no trailing separator - Motive can hard-freeze /
-      drop the record buffer if SetCurrentSession receives Windows backslashes.
-   3. Build a clean take name  P_{id}_Pos_{position}_H_{height}_T_{trial}.
-   4. Send the strict NatNet command sequence:
-        LiveMode  ->  SetCurrentSession,<unix_path>  ->
-        SetRecordTakeName,<take>  ->  StartRecording
-      (LiveMode first, with a settle delay, so the directory change lands while
-       Motive is live rather than in Edit mode.)
+   2. Mirror the folder tree under OptiTrack_Recordings/ using 'relpath' and
+      SANITIZE that path to forward slashes — Motive hard-freezes on backslashes.
+   3. Build the take name:  trial_{N}_optitrack
+      (matches the CSV filename the evaluation pipeline expects).
+   4. Send: LiveMode -> SetCurrentSession,<path> ->
+            SetRecordTakeName,<take> -> StartRecording
+
  stop_local_motive():
-   5. Send StopRecording, then wait ~0.5 s for Motive to flush the .take to disk
-      before the socket is dropped.
+   5. Send StopRecording + STOP_FLUSH_DELAY so Motive finishes writing the .tak.
+   6. auto_export_csv() immediately opens the saved take and exports its rigid-body
+      rotation quaternions as a CSV into the same session folder.
 
- Motive setup: enable NatNet streaming with remote commands; the Command port
- must match MOTIVE_COMMAND_PORT below (Motive default 1510).
+      NatNet command sequence for export:
+        EditMode  -> OpenTake,<path>  -> ExportCSV,<path>  -> LiveMode
+      - EditMode and OpenTake are documented NatNet remote commands (Motive 3+).
+      - ExportCSV is a best-effort command; if Motive does not honour it, export
+        manually: File > Export > CSV (enable Rotation, format Quaternion,
+        disable Markers) from within Motive after the take is loaded.
 
- No third-party dependencies (socket/struct/os/time are stdlib), so importing
- this module never crashes the host GUI app.
+ Motive setup: NatNet streaming + remote commands enabled; Command port must
+ match MOTIVE_COMMAND_PORT (default 1510).
+
+ No third-party dependencies — stdlib only (socket/struct/os/time).
 ==============================================================================
 """
 
@@ -60,8 +64,18 @@ INTER_COMMAND_DELAY = 0.15       # between the remaining sequenced commands
 STOP_FLUSH_DELAY = 0.50          # after StopRecording, to flush the .take to disk
 RESPONSE_TIMEOUT = 0.20          # best-effort read of Motive's command response
 
+# Delays for the post-recording export sequence.
+EDIT_MODE_SETTLE = 0.50          # after EditMode, before OpenTake
+OPEN_TAKE_SETTLE = 3.00          # after OpenTake, Motive needs time to fully load the take
+EXPORT_SETTLE = 2.00             # after ExportCSV, before returning to LiveMode
+
 # Characters illegal in Windows / Motive take names -> replaced with "_".
 _ILLEGAL_NAME_CHARS = '\\/:*?"<>|'
+
+# Session state cached by start_local_motive() so stop_local_motive() /
+# auto_export_csv() can reconstruct the .tak path without extra arguments.
+_last_session_path = None   # forward-slash absolute path sent to SetCurrentSession
+_last_take_name = None      # e.g. "trial_1_optitrack"
 
 
 # -----------------------------------------------------------------------------
@@ -191,10 +205,17 @@ def start_local_motive(packet_string):
     Returns:
         The take name that was set (e.g. "P_001_Pos_1_H_Joint-Level_T_1").
     """
+    global _last_session_path, _last_take_name
+
     fields = parse_start_packet(packet_string)
     target_dir = mirror_relpath(fields)
     take_name = build_take_name(fields)
     session_path = sanitize_session_path(target_dir) if target_dir else None
+
+    # Cache for use by auto_export_csv() after recording stops.
+    _last_session_path = session_path
+    _last_take_name = take_name
+
     print(f"[motive_sync] Take name: {take_name}")
 
     # a) LiveMode first (settle), so the session change lands while Motive is live.
@@ -215,14 +236,67 @@ def start_local_motive(packet_string):
     return take_name
 
 
+def auto_export_csv(session_path=None, take_name=None):
+    """
+    After StopRecording: switch Motive to EditMode, open the saved .tak file,
+    and export rigid-body rotation quaternions as a CSV into the same folder.
+
+    NatNet command sequence:
+        EditMode  ->  OpenTake,<tak_path>  ->  ExportCSV,<csv_path>  ->  LiveMode
+
+    Notes:
+        - EditMode and OpenTake are documented remote commands (Motive 3+).
+        - ExportCSV is a best-effort command. If Motive does not honour it (no
+          CSV appears after ~5 s), export manually from within Motive:
+            File > Export > CSV
+            Rotation data: ON, Format: Quaternion, Markers: OFF
+        - session_path and take_name default to the values cached by the most
+          recent call to start_local_motive().
+    """
+    if session_path is None:
+        session_path = _last_session_path
+    if take_name is None:
+        take_name = _last_take_name
+
+    if not session_path or not take_name:
+        print("[motive_sync] auto_export_csv: session path or take name unknown — skipping.")
+        print("[motive_sync]   Export manually: File > Export > CSV (Quaternion, no markers)")
+        return
+
+    # Forward-slash paths — same requirement as SetCurrentSession.
+    tak_path = f"{session_path}/{take_name}.tak"
+    csv_path = f"{session_path}/{take_name}.csv"
+
+    print(f"[motive_sync] Opening take: {tak_path}")
+    print(f"[motive_sync] Exporting quaternions to: {csv_path}")
+
+    sequence = [
+        ("EditMode",                  EDIT_MODE_SETTLE),
+        (f"OpenTake,{tak_path}",      OPEN_TAKE_SETTLE),
+        (f"ExportCSV,{csv_path}",     EXPORT_SETTLE),
+        ("LiveMode",                  0.0),
+    ]
+    try:
+        _send_command_sequence(sequence)
+        print(f"[motive_sync] Export sequence sent — CSV expected at: {csv_path}")
+        print("[motive_sync]   If the CSV is absent after ~5 s, export manually in Motive.")
+    except OSError as e:
+        print(f"[motive_sync] auto_export_csv error: {e}")
+        print("[motive_sync]   Export manually: File > Export > CSV (Quaternion, no markers)")
+
+
 def stop_local_motive():
     """
-    Stop recording and give Motive time to flush the .take to disk.
+    Stop recording, flush the .tak to disk, then automatically open the take
+    and export rigid-body quaternions as CSV via auto_export_csv().
 
-    Sequence: StopRecording -> sleep(STOP_FLUSH_DELAY) before the socket drops.
+    Sequence:
+        StopRecording -> sleep(STOP_FLUSH_DELAY)
+        -> EditMode -> OpenTake -> ExportCSV -> LiveMode
     """
     _send_command_sequence([("StopRecording", STOP_FLUSH_DELAY)])
     print("[motive_sync] Recording stopped + saved.")
+    auto_export_csv()
 
 
 if __name__ == "__main__":
