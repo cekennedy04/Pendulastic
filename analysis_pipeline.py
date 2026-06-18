@@ -45,6 +45,7 @@
 
 import os
 import re
+import sys
 import csv as csv_module
 import glob
 import json
@@ -64,6 +65,11 @@ except ImportError:
 # -----------------------------------------------------------------------------
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(PROJECT_DIR, "models")
+
+# Expose models/ to Python's import system so sub-packages like fremocap
+# can be imported with plain "import fremocap" without installation.
+if MODELS_DIR not in sys.path:
+    sys.path.append(MODELS_DIR)
 
 # Separate tree where Motive exports its CSVs (mirrors the Recordings/ hierarchy).
 # Structure: OptiTrack_Tracking_Data/Participant_N/Position_P/Height_H/trial_T_optitrack.csv
@@ -487,13 +493,32 @@ def process_mediapipe(video_path):
 
 def process_fremocap(video_path):
     """
-    FreMocap -> (timestamps, knee_angles_deg).
+    FreMoCap -> (timestamps, knee_angles_deg).
 
-    FreMocap's 2D pose engine is MediaPipe; single-camera (no calibration) means
-    no 3D triangulation, so this runs the same MediaPipe-2D backbone and applies
-    FreMocap's characteristic Butterworth low-pass trajectory filtering instead
-    of Savitzky-Golay.
+    Strategy (in order):
+      1. Try to import the ``fremocap`` package from models/fremocap/.
+         If the module exposes a ``process_video(path) -> (t, angles)``
+         or ``run(path) -> (t, angles)`` callable, delegate to it.
+      2. Fall back to the MediaPipe-2D backbone with FreMoCap's characteristic
+         Butterworth low-pass trajectory filter.  This mirrors FreMoCap's
+         behaviour for single-camera (non-triangulated) recordings.
     """
+    try:
+        import fremocap as _fc
+        _func = getattr(_fc, "process_video", None) or getattr(_fc, "run", None)
+        if callable(_func):
+            result = _func(video_path)
+            # Expect (timestamps_array, angles_array); normalise to plain ndarrays.
+            t = np.asarray(result[0], dtype=float)
+            a = np.asarray(result[1], dtype=float)
+            if t.ndim == 1 and a.ndim == 1 and len(t) > 1:
+                return t, a
+    except ImportError:
+        pass  # module not installed; use MediaPipe fallback
+    except Exception as exc:
+        print(f"[fremocap] WARNING: module call failed ({exc}); using MediaPipe fallback.")
+
+    # ── Fallback: MediaPipe 2D + Butterworth (FreMoCap single-camera path) ───
     timestamps, kpts_list, fps = _mediapipe_keypoint_series(video_path)
     return _angles_from_keypoint_series(timestamps, kpts_list, fps, smoothing="butter",
                                         score_thresh=MP_SCORE_THRESHOLD)
@@ -722,7 +747,12 @@ OPENPOSE_SUBPROCESS_TIMEOUT = 300     # seconds; increase for long/HD videos
 # Examples:
 #   "python C:/posepipe/run.py --video {video} --out {csv_out}"
 #   "docker run --rm -v {video_dir}:/data posepipe/posepipe --video /data/{fname}"
-POSEPIPE_CMD = None             # <- set your command string here, or leave None
+# PosePipeline entry-point. {video} is substituted with the trial video path.
+# process_posepipe() runs this command when Trial_X_posepipe.csv is absent,
+# waits POSEPIPE_SUBPROCESS_TIMEOUT seconds, then re-checks for the CSV.
+POSEPIPE_CMD = (
+    r"python C:\Users\cladi\Pendulastic\models\PosePipeline\run_pipeline.py {video}"
+)
 POSEPIPE_SUBPROCESS_TIMEOUT = 120     # seconds
 
 
@@ -1429,7 +1459,19 @@ MODEL_GRID = {
     # "body25"  = file whose basename contains "body25" -> forced BODY_25 channel map.
     "openpose":  {"variant_key": "variant", "variants": ["default", "body25"],
                   "thresholds": [0.3, 0.5]},
+    # Angle-direct models: produce a knee-angle time-series without per-frame
+    # keypoint arrays.  A single "default" variant; thresholds are recorded
+    # as metadata only (no confidence-based filtering applies).
+    "fremocap":  {"variant_key": "variant", "variants": ["default"],
+                  "thresholds": [0.5]},
+    "posepipe":  {"variant_key": "variant", "variants": ["default"],
+                  "thresholds": [0.5]},
 }
+
+# Models that output angles directly rather than (timestamps, kpts_list, fps).
+# run_model_grid() dispatches them to _run_angle_direct_variant() instead of
+# the keypoint-extraction + threshold-sweep path.
+_ANGLE_DIRECT_MODELS = {"fremocap", "posepipe"}
 
 # Lower-limb limbs to draw on the fitting video (COCO-17 index pairs).
 _SKELETON_LIMBS = [(12, 14), (14, 16), (11, 13), (13, 15), (11, 12)]
@@ -1475,6 +1517,22 @@ def _resolve_grid_model(model, variant):
         if all_files:
             return all_files[0]
         raise FileNotFoundError(f"OpenPose .onnx not in {OPENPOSE_DIR}")
+
+    if model == "fremocap":
+        # FreMoCap is always runnable: either via the models/fremocap/ module or
+        # via the MediaPipe+Butterworth fallback.  Return the module directory as
+        # a non-None sentinel so run_model_grid() knows not to skip the variant.
+        return os.path.join(MODELS_DIR, "fremocap")
+
+    if model == "posepipe":
+        # PosePipe requires either a pre-configured command or an existing CSV.
+        if POSEPIPE_CMD:
+            return POSEPIPE_CMD   # command string acts as the "model file"
+        raise FileNotFoundError(
+            "PosePipe: POSEPIPE_CMD is not configured and no pre-computed CSV was "
+            "found.  Set POSEPIPE_CMD at the top of analysis_pipeline.py to enable "
+            "automatic PosePipeline execution.")
+
     raise ValueError(f"Unknown grid model: {model}")
 
 
@@ -1617,6 +1675,79 @@ def _render_fitting_video(in_video, out_video, kpts_list, angles, threshold, fps
     return True
 
 
+def _save_angle_direct_csv(path, timestamps, angles):
+    """
+    Write a minimal time/angle CSV for models that skip keypoint extraction
+    (FreMoCap, PosePipe).  The format is compatible with _prediction_knee_angle_series().
+    """
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv_module.writer(f)
+        w.writerow(["frame", "time_sec", "knee_angle_deg"])
+        for i, (t, a) in enumerate(zip(timestamps, angles)):
+            ang = "" if not np.isfinite(float(a)) else round(float(a), 3)
+            w.writerow([i, round(float(t), 4), ang])
+
+
+def _run_angle_direct_variant(model, spec, video_path, stem, out_dir, manifest):
+    """
+    Grid dispatch for angle-direct models (FreMoCap, PosePipe).
+
+    These models produce a knee-angle time-series directly instead of per-frame
+    keypoint arrays, so they bypass the threshold-sweep extraction path entirely.
+    One CSV is written per threshold (same angles, threshold recorded as metadata).
+    The time-series is also embedded in each manifest entry so evaluate_results_json()
+    can score it without re-reading a CSV file.
+
+    Failures are caught per-model so a broken PosePipe run does not abort the rest
+    of the benchmarking grid.
+    """
+    func = PROCESS_FUNCTIONS.get(model)
+    if func is None:
+        manifest.append({"model": model, "variant": "default",
+                         "status": "skipped_no_model",
+                         "detail": f"No process function registered for '{model}'"})
+        return
+
+    try:
+        t, angles = func(video_path)
+        t      = np.asarray(t,      dtype=float)
+        angles = np.asarray(angles, dtype=float)
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        print(f"[grid] ERROR {model}/default: {detail}")
+        for threshold in spec["thresholds"]:
+            manifest.append({"model": model, "variant": "default",
+                             "threshold": threshold, "status": "error",
+                             "detail": detail})
+        return
+
+    n_valid = int(np.isfinite(angles).sum())
+
+    # Embed the time-series so the evaluator can score without an on-disk CSV.
+    embedded_traj = {
+        "timestamps_sec": [None if not np.isfinite(v) else float(v) for v in t],
+        "knee_angle":     [None if not np.isfinite(v) else float(v) for v in angles],
+    }
+
+    for threshold in spec["thresholds"]:
+        base     = f"{stem}_{model}_default_{threshold}"
+        csv_path = os.path.join(out_dir, base + ".csv")
+        try:
+            _save_angle_direct_csv(csv_path, t, angles)
+        except Exception as exc:
+            print(f"[grid] WARNING: could not write {csv_path}: {exc}")
+            csv_path = None
+
+        print(f"[grid] {base}: {n_valid}/{len(angles)} valid frames  "
+              f"(angle-direct via {model})")
+        manifest.append({
+            "model": model, "variant": "default", "threshold": threshold,
+            "status": "ok", "csv": csv_path, "video": None,
+            "n_frames": int(len(angles)), "n_valid_frames": n_valid,
+            "trajectories": embedded_traj,
+        })
+
+
 def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
     """
     Sweep the model/complexity/backbone/threshold grid over one trial video.
@@ -1642,6 +1773,25 @@ def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
 
     manifest = []
     for model, spec in grid.items():
+        # ── Angle-direct models (FreMoCap / PosePipe) ────────────────────────
+        # These produce angles without per-frame keypoints and are dispatched
+        # separately so they don't enter the threshold-sweep extraction loop.
+        if model in _ANGLE_DIRECT_MODELS:
+            try:
+                _resolve_grid_model(model, spec["variants"][0])
+            except FileNotFoundError as e:
+                detail = str(e).splitlines()[0]
+                print(f"[grid] SKIP {model}: {detail}")
+                for v in spec["variants"]:
+                    for th in spec["thresholds"]:
+                        manifest.append({"model": model, "variant": v,
+                                         "threshold": th,
+                                         "status": "skipped_no_model",
+                                         "detail": detail})
+                continue
+            _run_angle_direct_variant(model, spec, video_path, stem, out_dir, manifest)
+            continue
+
         for variant in spec["variants"]:
             # Resolve the model file once; skip the whole variant if it's absent.
             try:
@@ -2574,20 +2724,35 @@ def _write_accumulated_report(records, out_path):
 
 
 def _write_comprehensive_csv(records, out_path):
-    """Master spreadsheet grouped by participant / position / height / model+variant."""
+    """
+    Master spreadsheet grouped by participant / position / height / model+variant.
+
+    Columns: participant, position, height, model, variant, complexity,
+             n_trials, mean_knee_rmse_deg, mean_knee_bias_deg, mean_phase_lag_sec.
+    Sorted by participant → position → height → ascending RMSE so the best
+    model per group is always the first row in each group.
+    """
     groups = {}
     for r in records:
         key = (r["participant"], r["position"], r["height"], r["model"], r["variant"])
         groups.setdefault(key, []).append(r)
-    fields = ["participant", "position", "height", "model", "variant", "complexity",
-              "n_trials", "mean_knee_rmse_deg", "mean_knee_bias_deg"]
+    fields = [
+        "participant", "position", "height", "model", "variant", "complexity",
+        "n_trials", "mean_knee_rmse_deg", "mean_knee_bias_deg", "mean_phase_lag_sec",
+    ]
     rows = []
     for (p, pos, h, m, v), rs in groups.items():
         rows.append({
-            "participant": p, "position": pos, "height": h, "model": m, "variant": v,
-            "complexity": _complexity_label(m, v), "n_trials": len(rs),
+            "participant":        p,
+            "position":           pos,
+            "height":             h,
+            "model":              m,
+            "variant":            v,
+            "complexity":         _complexity_label(m, v),
+            "n_trials":           len(rs),
             "mean_knee_rmse_deg": round(float(np.mean([x["knee_rmse_deg"] for x in rs])), 3),
             "mean_knee_bias_deg": round(float(np.mean([x["knee_bias_deg"] for x in rs])), 3),
+            "mean_phase_lag_sec": round(float(np.mean([x["lag_sec"]        for x in rs])), 4),
         })
     rows.sort(key=lambda r: (r["participant"], r["position"], r["height"],
                              r["mean_knee_rmse_deg"]))
