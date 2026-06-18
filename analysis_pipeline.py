@@ -2293,7 +2293,7 @@ def _export_optitrack_takes(optitrack_root=None):
 
     if not os.path.isfile(MOTIVE_BATCH_PROCESSOR):
         print(
-            f"[tak→csv] MotiveBatchProcessor not found:\n"
+            f"[tak->csv] MotiveBatchProcessor not found:\n"
             f"  {MOTIVE_BATCH_PROCESSOR}\n"
             f"  Skipping auto-export.  Either:\n"
             f"    (a) Adjust MOTIVE_BATCH_PROCESSOR at the top of analysis_pipeline.py, or\n"
@@ -2313,10 +2313,10 @@ def _export_optitrack_takes(optitrack_root=None):
                     pending.append(tak)
 
     if not pending:
-        print("[tak→csv] No unconverted .tak files found — skipping export step.")
+        print("[tak->csv] No unconverted .tak files found - skipping export step.")
         return 0
 
-    print(f"[tak→csv] {len(pending)} .tak file(s) queued for export.")
+    print(f"[tak->csv] {len(pending)} .tak file(s) queued for export.")
 
     # Embed paths as C# verbatim string literals (@"...").
     cs_path_lines = "\n".join(f'        @"{p}",' for p in pending)
@@ -2409,8 +2409,8 @@ class PendulasticExport
     try:
         with open(tmp_cs, "w", encoding="utf-8") as fh:
             fh.write(script_body)
-        print(f"[tak→csv] Script written: {tmp_cs}")
-        print("[tak→csv] Launching MotiveBatchProcessor ...")
+        print(f"[tak->csv] Script written: {tmp_cs}")
+        print("[tak->csv] Launching MotiveBatchProcessor ...")
 
         result = _sp.run(
             [MOTIVE_BATCH_PROCESSOR, tmp_cs],
@@ -2426,7 +2426,7 @@ class PendulasticExport
 
         if result.returncode != 0:
             print(
-                f"[tak→csv] WARNING: MotiveBatchProcessor exited {result.returncode}.\n"
+                f"[tak->csv] WARNING: MotiveBatchProcessor exited {result.returncode}.\n"
                 f"  If the API names don't match your Motive version, edit the script\n"
                 f"  template inside _export_optitrack_takes() in analysis_pipeline.py."
             )
@@ -2435,15 +2435,15 @@ class PendulasticExport
                 1 for p in pending
                 if os.path.isfile(os.path.splitext(p)[0] + ".csv")
             )
-            print(f"[tak→csv] {confirmed}/{len(pending)} CSVs confirmed on disk.")
+            print(f"[tak->csv] {confirmed}/{len(pending)} CSVs confirmed on disk.")
 
     except _sp.TimeoutExpired:
         print(
-            f"[tak→csv] ERROR: MotiveBatchProcessor timed out after "
+            f"[tak->csv] ERROR: MotiveBatchProcessor timed out after "
             f"{MOTIVE_BATCH_TIMEOUT}s.  Raise MOTIVE_BATCH_TIMEOUT if needed."
         )
     except Exception as exc:
-        print(f"[tak→csv] ERROR: {exc}")
+        print(f"[tak->csv] ERROR: {exc}")
     finally:
         try:
             os.remove(tmp_cs)
@@ -2495,7 +2495,7 @@ def run_full_pipeline(root_dir, render_videos=True, download=True, grid=None):
     print("=" * 70)
 
     # ── Step 1: OptiTrack .tak → CSV export ──────────────────────────────────
-    print("\n[1/5] Exporting OptiTrack .tak files → quaternion CSVs ...")
+    print("\n[1/5] Exporting OptiTrack .tak files -> quaternion CSVs ...")
     print("=" * 70)
     _export_optitrack_takes(OPTITRACK_DATA_ROOT)
 
@@ -2506,7 +2506,7 @@ def run_full_pipeline(root_dir, render_videos=True, download=True, grid=None):
         ensure_local_models()
 
     # ── Step 3: grid sweep ────────────────────────────────────────────────────
-    print("\n[3/5] Running model × complexity × threshold grid sweep ...")
+    print("\n[3/5] Running model x complexity x threshold grid sweep ...")
     print("=" * 70)
 
     pairs = find_trial_pairs(root_dir)
