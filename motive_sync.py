@@ -93,12 +93,16 @@ def _sanitize(token):
 
 
 def build_take_name(fields):
-    """Build  P_{id}_Pos_{position}_H_{height}_T_{trial}  from parsed fields."""
-    p_id = _sanitize(fields.get("id", "Unknown"))
-    pos = _sanitize(fields.get("position", "Unknown"))
-    height = _sanitize(fields.get("height", "Unknown"))
+    """
+    Build the Motive take name: trial_{N}_optitrack
+
+    Matches the CSV filename the evaluation pipeline expects
+    (trial_N_optitrack.csv) so no manual renaming is needed after export.
+    Participant / position / height context lives in the session folder path
+    (SetCurrentSession), not in the take name.
+    """
     trial = _sanitize(fields.get("trial", "1"))
-    return f"P_{p_id}_Pos_{pos}_H_{height}_T_{trial}"
+    return f"trial_{trial}_optitrack"
 
 
 def sanitize_session_path(path):

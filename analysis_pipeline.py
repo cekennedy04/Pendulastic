@@ -65,11 +65,57 @@ except ImportError:
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(PROJECT_DIR, "models")
 
+# Separate tree where Motive exports its CSVs (mirrors the Recordings/ hierarchy).
+# Structure: OptiTrack_Tracking_Data/Participant_N/Position_P/Height_H/trial_T_optitrack.csv
+OPTITRACK_DATA_ROOT = os.path.join(PROJECT_DIR, "OptiTrack_Tracking_Data")
+
 MODEL_NAMES = ["mediapipe", "rtmpose", "mmpose", "fremocap"]
 # Match Trial_<n>.mp4 or Trial_<n>.avi, case-insensitive (so trial_1.MP4 works too).
 VIDEO_PATTERN = re.compile(r"^Trial_(\d+)\.(?:mp4|avi)$", re.IGNORECASE)
 CSV_SUFFIX = "_optitrack.csv"
 EVAL_RESULTS_FILENAME = "evaluation_results.json"
+
+
+def _is_numeric_participant(participant_id):
+    """True only for participants whose ID is an integer (skip x/y/z/test IDs)."""
+    return bool(re.match(r"^\d+$", str(participant_id).strip()))
+
+
+def _find_optitrack_csv(trial_folder, trial_num, participant_id, position, height):
+    """
+    Locate trial_N_optitrack.csv for a trial (case-insensitive filename match).
+
+    Search order:
+      1. Next to the video (same folder as Trial_N.mp4).
+      2. Mirror path under OPTITRACK_DATA_ROOT:
+           OptiTrack_Tracking_Data/Participant_{id}/Position_{pos}/Height_{h}/
+         This is where motive_sync writes its recordings.
+
+    Returns the full path if found, otherwise None.
+    """
+    target = f"trial_{trial_num}_optitrack.csv"
+
+    # 1. Same folder as the video
+    for f in os.listdir(trial_folder):
+        if f.lower() == target:
+            return os.path.join(trial_folder, f)
+
+    # 2. Mirror in OptiTrack_Tracking_Data tree
+    if (participant_id not in (None, "unknown", "NA")
+            and position not in (None, "unknown", "NA")
+            and height not in (None, "unknown", "NA")
+            and os.path.isdir(OPTITRACK_DATA_ROOT)):
+        mirror = os.path.join(
+            OPTITRACK_DATA_ROOT,
+            f"Participant_{participant_id}",
+            f"Position_{position}",
+            f"Height_{height}",
+        )
+        if os.path.isdir(mirror):
+            for f in os.listdir(mirror):
+                if f.lower() == target:
+                    return os.path.join(mirror, f)
+    return None
 
 # COCO-17 keypoint indices for the lower limb (RTMPose / MMPose output order).
 COCO_LEFT = (11, 13, 15)    # (hip, knee, ankle)
@@ -109,9 +155,12 @@ def find_trial_pairs(root_dir):
     Recursively scan root_dir for Trial_X video files (.mp4 or .avi) living in a
     Participant_[ID]/Position_[X]/Height_[Y]/ folder.
 
-    Every video is returned. If a matching Trial_X_optitrack.csv sits next to it,
-    "csv_path" points at it; otherwise "csv_path" is None and the trial is still
-    processed (tracked without a reference, scored later when the CSV arrives).
+    Only participants with a purely numeric ID are included (e.g. "0", "001");
+    letter-coded IDs like "x", "y", "z" are skipped.
+
+    For each video, _find_optitrack_csv() locates trial_N_optitrack.csv first in
+    the same folder, then in the mirror tree under OPTITRACK_DATA_ROOT.  When no
+    CSV is found "csv_path" is None and the trial is tracked without a reference.
     """
     pairs = []
 
@@ -130,12 +179,15 @@ def find_trial_pairs(root_dir):
             elif part.startswith("Height_"):
                 height = part[len("Height_"):]
 
+        # Skip non-numeric participant IDs (x / y / z / test placeholders).
+        if not _is_numeric_participant(participant_id):
+            continue
+
         for video_name in video_files:
             match = VIDEO_PATTERN.match(video_name)
             trial_num = match.group(1)
-            trial_base = os.path.splitext(video_name)[0]
-            csv_name = f"{trial_base}{CSV_SUFFIX}"
-            has_csv = csv_name in filenames
+            csv_path = _find_optitrack_csv(
+                dirpath, trial_num, participant_id, position, height)
 
             pairs.append({
                 "participant_id": participant_id or "unknown",
@@ -144,7 +196,7 @@ def find_trial_pairs(root_dir):
                 "trial": trial_num,
                 "folder": dirpath,
                 "avi_path": os.path.join(dirpath, video_name),
-                "csv_path": os.path.join(dirpath, csv_name) if has_csv else None,
+                "csv_path": csv_path,
             })
 
     return pairs
@@ -1776,30 +1828,36 @@ def _already_processed(folder, trial):
 
 def find_session_pairs(root_dir, skip_processed=True):
     """
-    Recursively find leaf folders holding a Trial_X video (.mp4/.avi) AND a
-    Trial_X_optitrack.csv. Returns one dict per NEW pair (already-processed
-    trials are skipped when skip_processed is True).
+    Recursively find leaf folders holding a Trial_X video (.mp4/.avi) with a
+    matching OptiTrack CSV (searched via _find_optitrack_csv: same folder first,
+    then OPTITRACK_DATA_ROOT mirror).  Non-numeric participant IDs are skipped.
+    Already-processed trials (prediction CSVs present) are skipped when
+    skip_processed is True.
     """
     pairs = []
     for dirpath, _dirs, files in os.walk(root_dir):
-        fileset = set(files)
         for fname in files:
-            m = VIDEO_PATTERN.match(fname)   # Trial_X.mp4 or Trial_X.avi
+            m = VIDEO_PATTERN.match(fname)
             if not m:
                 continue
             trial = m.group(1)
-            gt_name = f"Trial_{trial}{CSV_SUFFIX}"
-            if gt_name not in fileset:
+            idv, pos, height = _session_path_tokens(dirpath)
+
+            # Skip non-numeric participant IDs.
+            if not _is_numeric_participant(idv):
+                continue
+
+            gt_path = _find_optitrack_csv(dirpath, trial, idv, pos, height)
+            if gt_path is None:
                 continue
             if skip_processed and _already_processed(dirpath, trial):
                 print(f"[scan] skip (already processed): {dirpath} Trial_{trial}")
                 continue
-            idv, pos, height = _session_path_tokens(dirpath)
             pairs.append({
                 "id": idv, "position": pos, "height": height, "trial": trial,
                 "folder": dirpath,
                 "video": os.path.join(dirpath, fname),
-                "optitrack": os.path.join(dirpath, gt_name),
+                "optitrack": gt_path,
             })
     return pairs
 
