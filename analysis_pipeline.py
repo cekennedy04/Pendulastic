@@ -1701,6 +1701,20 @@ def _run_angle_direct_variant(model, spec, video_path, stem, out_dir, manifest):
     Failures are caught per-model so a broken PosePipe run does not abort the rest
     of the benchmarking grid.
     """
+    # Skip if every threshold CSV is already on disk — avoids re-running the
+    # angle-direct model on an already-processed trial.
+    _done = [(th, os.path.join(out_dir, f"{stem}_{model}_default_{th}.csv"))
+             for th in spec["thresholds"]]
+    if all(os.path.isfile(p) for _, p in _done):
+        for th, csv_path in _done:
+            print(f"[skip] {stem} - {model}/default@{th}: already processed.")
+            manifest.append({
+                "model": model, "variant": "default", "threshold": th,
+                "status": "ok", "csv": csv_path, "video": None,
+                "n_frames": None, "n_valid_frames": None, "trajectories": None,
+            })
+        return
+
     func = MODEL_FUNCTIONS.get(model)
     if func is None:
         manifest.append({"model": model, "variant": "default",
@@ -1732,6 +1746,17 @@ def _run_angle_direct_variant(model, spec, video_path, stem, out_dir, manifest):
     for threshold in spec["thresholds"]:
         base     = f"{stem}_{model}_default_{threshold}"
         csv_path = os.path.join(out_dir, base + ".csv")
+        # Per-threshold skip for partial re-runs (e.g. a new threshold was added
+        # after an earlier full run completed some but not all threshold files).
+        if os.path.isfile(csv_path):
+            print(f"[skip] {base}: already processed.")
+            manifest.append({
+                "model": model, "variant": "default", "threshold": threshold,
+                "status": "ok", "csv": csv_path, "video": None,
+                "n_frames": int(len(angles)), "n_valid_frames": n_valid,
+                "trajectories": embedded_traj,
+            })
+            continue
         try:
             _save_angle_direct_csv(csv_path, t, angles)
         except Exception as exc:
@@ -1803,6 +1828,25 @@ def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
                                  "status": "skipped_no_model", "detail": detail})
                 continue
 
+            # ── Incremental skip: all threshold CSVs already on disk ──────────
+            # When every output CSV for this (model, variant) already exists, skip
+            # the entire keypoint extraction step and reconstruct manifest entries
+            # directly from the on-disk paths so evaluate_results_json() can still
+            # read and score them without re-running inference.
+            _all_out = {
+                th: os.path.join(out_dir, f"{stem}_{model}_{variant}_{th}.csv")
+                for th in spec["thresholds"]
+            }
+            if all(os.path.isfile(p) for p in _all_out.values()):
+                for _th, _csv in _all_out.items():
+                    print(f"[skip] {stem} - {model}/{variant}@{_th}: already processed.")
+                    manifest.append({
+                        "model": model, "variant": variant, "threshold": _th,
+                        "status": "ok", "csv": _csv, "video": None,
+                        "n_frames": None, "n_valid_frames": None,
+                    })
+                continue
+
             # MediaPipe applies the threshold at extraction (detection confidence),
             # so it must re-extract per threshold; ONNX models extract once and
             # apply the threshold as a per-keypoint floor afterwards.
@@ -1819,6 +1863,20 @@ def run_model_grid(video_path, tokens, out_dir, grid=None, render_videos=True):
                     continue
 
             for threshold in spec["thresholds"]:
+                # Per-threshold skip: catches MediaPipe (where extraction is
+                # per-threshold) and any partial re-run where only some CSVs
+                # from a prior incomplete run are already on disk.
+                _csv_out = os.path.join(out_dir,
+                                        f"{stem}_{model}_{variant}_{threshold}.csv")
+                if os.path.isfile(_csv_out):
+                    print(f"[skip] {stem} - {model}/{variant}@{threshold}: already processed.")
+                    manifest.append({
+                        "model": model, "variant": variant, "threshold": threshold,
+                        "status": "ok", "csv": _csv_out, "video": None,
+                        "n_frames": None, "n_valid_frames": None,
+                    })
+                    continue
+
                 try:
                     if threshold_drives_extraction:
                         timestamps, kpts_list, fps = _grid_keypoint_series(
