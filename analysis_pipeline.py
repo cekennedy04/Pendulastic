@@ -75,6 +75,11 @@ if MODELS_DIR not in sys.path:
 # Structure: OptiTrack_Tracking_Data/Participant_N/Position_P/Height_H/trial_T_optitrack.csv
 OPTITRACK_DATA_ROOT = os.path.join(PROJECT_DIR, "OptiTrack_Tracking_Data")
 
+# Split-folder layout: webcam videos live under recordings/ while OptiTrack CSVs
+# live under a sibling folder with a space in the name.  _find_optitrack_csv()
+# checks this tree as a third fallback after the same-folder and DATA_ROOT paths.
+OPTITRACK_SPLIT_ROOT = os.path.join(PROJECT_DIR, "opti_track recordings")
+
 # MotiveBatchProcessor — OptiTrack's official CLI for running NMotive C# scripts
 # against .tak files without opening the Motive GUI.  Adjust the path if Motive
 # was installed to a non-default location.
@@ -106,6 +111,10 @@ def _find_optitrack_csv(trial_folder, trial_num, participant_id, position, heigh
       2. Mirror path under OPTITRACK_DATA_ROOT:
            OptiTrack_Tracking_Data/Participant_{id}/Position_{pos}/Height_{h}/
          This is where motive_sync writes its recordings.
+      3. Split-folder layout under OPTITRACK_SPLIT_ROOT:
+           opti_track recordings/Participant_{id}/Position_{pos}/Height_{h}/
+         Used when webcam videos and OptiTrack CSVs live in separate sibling
+         directories (e.g. recordings/ vs opti_track recordings/).
 
     Returns the full path if found, otherwise None.
     """
@@ -116,21 +125,33 @@ def _find_optitrack_csv(trial_folder, trial_num, participant_id, position, heigh
         if f.lower() == target:
             return os.path.join(trial_folder, f)
 
+    def _search_mirror_root(root):
+        if (participant_id not in (None, "unknown", "NA")
+                and position not in (None, "unknown", "NA")
+                and height not in (None, "unknown", "NA")
+                and os.path.isdir(root)):
+            mirror = os.path.join(
+                root,
+                f"Participant_{participant_id}",
+                f"Position_{position}",
+                f"Height_{height}",
+            )
+            if os.path.isdir(mirror):
+                for f in os.listdir(mirror):
+                    if f.lower() == target:
+                        return os.path.join(mirror, f)
+        return None
+
     # 2. Mirror in OptiTrack_Tracking_Data tree
-    if (participant_id not in (None, "unknown", "NA")
-            and position not in (None, "unknown", "NA")
-            and height not in (None, "unknown", "NA")
-            and os.path.isdir(OPTITRACK_DATA_ROOT)):
-        mirror = os.path.join(
-            OPTITRACK_DATA_ROOT,
-            f"Participant_{participant_id}",
-            f"Position_{position}",
-            f"Height_{height}",
-        )
-        if os.path.isdir(mirror):
-            for f in os.listdir(mirror):
-                if f.lower() == target:
-                    return os.path.join(mirror, f)
+    found = _search_mirror_root(OPTITRACK_DATA_ROOT)
+    if found:
+        return found
+
+    # 3. Split-folder: opti_track recordings/
+    found = _search_mirror_root(OPTITRACK_SPLIT_ROOT)
+    if found:
+        return found
+
     return None
 
 # COCO-17 keypoint indices for the lower limb (RTMPose / MMPose output order).
@@ -204,6 +225,13 @@ def find_trial_pairs(root_dir):
             trial_num = match.group(1)
             csv_path = _find_optitrack_csv(
                 dirpath, trial_num, participant_id, position, height)
+
+            if csv_path is None:
+                print(
+                    f"[warn] No OptiTrack CSV found for "
+                    f"Participant_{participant_id} Trial_{trial_num} "
+                    f"({dirpath}) — trial will be tracked without reference."
+                )
 
             pairs.append({
                 "participant_id": participant_id or "unknown",
@@ -2067,6 +2095,11 @@ def find_session_pairs(root_dir, skip_processed=True):
 
             gt_path = _find_optitrack_csv(dirpath, trial, idv, pos, height)
             if gt_path is None:
+                print(
+                    f"[warn] No OptiTrack CSV found for "
+                    f"Participant_{idv} Trial_{trial} "
+                    f"({dirpath}) — skipping trial (no reference data)."
+                )
                 continue
             if skip_processed and _already_processed(dirpath, trial):
                 print(f"[scan] skip (already processed): {dirpath} Trial_{trial}")

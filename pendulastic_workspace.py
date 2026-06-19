@@ -24,6 +24,7 @@ import math
 import os
 import queue
 import sys
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -107,6 +108,9 @@ MODEL_COLORS = {
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+PROJECT_DIR     = os.path.dirname(os.path.abspath(__file__))
+PIPELINE_SCRIPT = os.path.join(PROJECT_DIR, "analysis_pipeline.py")
 
 
 # =============================================================================
@@ -613,6 +617,11 @@ class PendulasticApp(ctk.CTk):
         self._rec_start: float = 0.0
         self._ui_queue: queue.Queue = queue.Queue()
 
+        # Pipeline subprocess state
+        self._pipeline_proc   = None   # subprocess.Popen | None
+        self._pipeline_thread = None   # threading.Thread | None
+        self._pulse_on        = False  # banner pulse active?
+
         # Layout
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -784,20 +793,39 @@ class PendulasticApp(ctk.CTk):
 
     def _build_analysis_tab(self, parent):
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(2, weight=1)
+        parent.grid_rowconfigure(4, weight=1)   # plot row expands
 
-        # — Pipeline button —
+        # — Launch Session Analysis button —
         self._btn_pipeline = ctk.CTkButton(
-            parent, text="▶  Run Benchmarking Analysis Pipeline",
-            height=56, font=ctk.CTkFont(size=17, weight="bold"),
-            fg_color="#3498db", hover_color="#2980b9",
+            parent,
+            text="Launch Session Analysis",
+            height=60,
+            font=ctk.CTkFont(size=18, weight="bold"),
+            fg_color="#27ae60",
+            hover_color="#1e8449",
             state="disabled",
-            command=self._on_run_pipeline)
-        self._btn_pipeline.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 8))
+            command=self._on_launch_session_analysis,
+        )
+        self._btn_pipeline.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 4))
+
+        # — Pipeline status banner —
+        banner = ctk.CTkFrame(parent, height=36, corner_radius=8,
+                               fg_color=("gray88", "gray18"))
+        banner.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
+        banner.grid_columnconfigure(0, weight=1)
+        banner.grid_propagate(False)
+        self._banner_label = ctk.CTkLabel(
+            banner,
+            text="  No pipeline running",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray50", "gray60"),
+            anchor="w",
+        )
+        self._banner_label.grid(row=0, column=0, sticky="ew", padx=12)
 
         # — Leaderboard —
         lb_frame = ctk.CTkFrame(parent, corner_radius=10)
-        lb_frame.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
+        lb_frame.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
         lb_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
         ctk.CTkLabel(lb_frame, text="LEADERBOARD",
                      font=ctk.CTkFont(size=12, weight="bold"),
@@ -812,9 +840,28 @@ class PendulasticApp(ctk.CTk):
         self._lb_frame     = lb_frame
         self._lb_rows: List[List[ctk.CTkLabel]] = []
 
+        # — Pipeline log terminal —
+        log_outer = ctk.CTkFrame(parent, corner_radius=10)
+        log_outer.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+        log_outer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(log_outer, text="PIPELINE LOG",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=("gray40", "gray70")).grid(
+                     row=0, column=0, sticky="w", padx=12, pady=(8, 2))
+        self._log_box = ctk.CTkTextbox(
+            log_outer,
+            height=148,
+            font=ctk.CTkFont(family="Courier New", size=11),
+            fg_color=("gray97", "#0d1117"),
+            text_color=("#1a5c1a", "#7ec87e"),
+            wrap="word",
+            state="disabled",
+        )
+        self._log_box.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+
         # — Plot canvas —
         plot_frame = ctk.CTkFrame(parent, corner_radius=10)
-        plot_frame.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 4))
+        plot_frame.grid(row=4, column=0, sticky="nsew", padx=4, pady=(0, 4))
         plot_frame.grid_columnconfigure(0, weight=1)
         plot_frame.grid_rowconfigure(0, weight=1)
 
@@ -823,7 +870,6 @@ class PendulasticApp(ctk.CTk):
         self._canvas = FigureCanvasTkAgg(self._fig, master=plot_frame)
         self._canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew",
                                           padx=4, pady=4)
-        # Minimal toolbar (save icon only)
         tb = NavigationToolbar2Tk(self._canvas, plot_frame, pack_toolbar=False)
         tb.grid(row=1, column=0, sticky="ew", padx=4)
         self._init_plot()
@@ -1033,61 +1079,135 @@ class PendulasticApp(ctk.CTk):
 
     # ── Analysis events ───────────────────────────────────────────────────────
 
-    def _on_run_pipeline(self):
+    def _on_launch_session_analysis(self):
+        """Launch analysis_pipeline.py via Popen for the current session's participant."""
         if not self._session:
-            messagebox.showinfo("No session", "Initialize and complete a session first.")
+            messagebox.showinfo("No session",
+                                "Initialize and complete a session first.")
+            return
+        if self._pipeline_proc is not None and self._pipeline_proc.poll() is None:
+            messagebox.showinfo("Already running",
+                                "A pipeline is already active for this session.")
             return
 
-        self._btn_pipeline.configure(state="disabled",
-                                     text="⏳  Running pipeline…")
-        self._set_status("● Running full analysis pipeline…", "#3498db")
+        base             = self._e_base.get().strip() or self._session.base
+        participant_root = os.path.join(base, self._session.participant)
+        participant_label = self._session.participant
 
-        thread = threading.Thread(target=self._run_pipeline_bg, daemon=True)
-        thread.start()
+        if not os.path.isfile(PIPELINE_SCRIPT):
+            messagebox.showerror("Script not found",
+                                 f"analysis_pipeline.py not found at:\n{PIPELINE_SCRIPT}")
+            return
 
-    def _run_pipeline_bg(self):
+        cmd = [
+            sys.executable, "-u", PIPELINE_SCRIPT,
+            participant_root,
+            "--full", "--no-videos", "--no-download",
+        ]
+
+        self._log_clear()
+        self._append_log(f"[launch] {' '.join(cmd)}")
+        self._btn_pipeline.configure(state="disabled", text="Pipeline running...")
+        self._set_status(f"● Pipeline Active: Processing {participant_label}...",
+                         "#2ecc71")
+        self._banner_set_active(
+            f"  Pipeline Active: Processing {participant_label}...")
+
+        try:
+            self._pipeline_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                cwd=PROJECT_DIR,
+            )
+        except Exception as exc:
+            self._append_log(f"[ERROR] Could not launch pipeline: {exc}")
+            self._banner_set_idle("  Launch failed — see log", "#e74c3c")
+            self._btn_pipeline.configure(state="normal",
+                                         text="Launch Session Analysis")
+            return
+
+        self._pipeline_thread = threading.Thread(
+            target=self._stream_pipeline_output,
+            args=(self._pipeline_proc,),
+            daemon=True,
+        )
+        self._pipeline_thread.start()
+
+    def _stream_pipeline_output(self, proc):
+        """Daemon thread: forward each stdout line to the log terminal via queue."""
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                self._ui_queue.put(("LOG", line.rstrip()))
+        except Exception:
+            pass
+        proc.wait()
+        rc = proc.returncode
+        self._ui_queue.put(("PIPELINE_DONE", rc))
+
+        # After a clean exit, kick off kinematic alignment for the latest trial
+        if rc == 0 and self._session and self._recorder:
+            self._run_kinematics_bg()
+
+    def _run_kinematics_bg(self):
+        """Background: kinematic alignment + RMSE after pipeline completes."""
         session = self._session
-        if session is None:
+        if session is None or self._recorder is None:
             return
-
-        # ── Step A: run the full tracking + evaluation pipeline ───────────────
-        if _AP:
-            try:
-                _ap.run_full_pipeline(session.session_dir, download=True)
-                self._post("Full pipeline complete.")
-            except Exception as exc:
-                self._post(f"[WARN] pipeline error: {exc}")
-        else:
-            self._post("[WARN] analysis_pipeline.py not found — skipping model inference.")
-
-        # ── Step B: kinematic alignment + RMSE for the latest trial ──────────
         target_trial = max(1, session.trial_num - 1)
-        opto_csv     = os.path.join(
-            session.session_dir,
-            f"trial_{target_trial}_optitrack.csv")
-
+        opto_csv     = os.path.join(session.session_dir,
+                                    f"trial_{target_trial}_optitrack.csv")
         if not os.path.isfile(opto_csv):
             self._post(f"[WARN] OptiTrack CSV not found: {opto_csv}")
-            self._post("Cannot compute RMSE without reference data.")
+            return
+        analyzer = KinematicsAnalyzer(session.session_dir,
+                                      self._recorder.proximal,
+                                      self._recorder.distal)
+        result = analyzer.analyze_trial(target_trial, opto_csv)
+        for err in result["errors"]:
+            self._post(f"[WARN] {err}")
+        if result["leaderboard"]:
+            save_png = os.path.join(
+                session.session_dir,
+                f"{session.participant}_benchmark_summary.png")
+            self._ui_queue.put(("RESULTS", result, target_trial, save_png))
         else:
-            analyzer = KinematicsAnalyzer(session.session_dir,
-                                          self._recorder.proximal,   # type: ignore
-                                          self._recorder.distal)      # type: ignore
-            result   = analyzer.analyze_trial(target_trial, opto_csv)
+            self._post("No model results to display yet.")
 
-            for err in result["errors"]:
-                self._post(f"[WARN] {err}")
+    # ── Log terminal helpers ──────────────────────────────────────────────────
 
-            if result["leaderboard"]:
-                save_png = os.path.join(
-                    session.session_dir,
-                    f"Participant_{session.participant}_benchmark_summary.png")
-                # Schedule plot + leaderboard update on the UI thread
-                self._ui_queue.put(("RESULTS", result, target_trial, save_png))
-            else:
-                self._post("No model results to display.")
+    def _log_clear(self):
+        self._log_box.configure(state="normal")
+        self._log_box.delete("1.0", "end")
+        self._log_box.configure(state="disabled")
 
-        self._ui_queue.put(("PIPELINE_DONE", None))
+    def _append_log(self, line: str):
+        self._log_box.configure(state="normal")
+        self._log_box.insert("end", line + "\n")
+        self._log_box.see("end")
+        self._log_box.configure(state="disabled")
+
+    # ── Status banner helpers ─────────────────────────────────────────────────
+
+    def _banner_set_active(self, msg: str):
+        self._pulse_on = True
+        self._banner_label.configure(text=msg, text_color="#2ecc71")
+        self._pulse_banner()
+
+    def _banner_set_idle(self, msg: str, color: str = ("gray50", "gray60")):
+        self._pulse_on = False
+        self._banner_label.configure(text=msg, text_color=color)
+
+    def _pulse_banner(self):
+        """Toggle banner brightness while a pipeline is active."""
+        if not self._pulse_on:
+            return
+        cur = self._banner_label.cget("text_color")
+        nxt = "#a8d8a8" if cur == "#2ecc71" else "#2ecc71"
+        self._banner_label.configure(text_color=nxt)
+        self.after(650, self._pulse_banner)
 
     # ── Status helpers ────────────────────────────────────────────────────────
 
@@ -1115,18 +1235,32 @@ class PendulasticApp(ctk.CTk):
     def _poll_queue(self):
         try:
             while True:
-                msg = self._ui_queue.get_nowait()
+                msg  = self._ui_queue.get_nowait()
                 kind = msg[0]
                 if kind == "STATUS":
                     self._set_status(msg[1])
+                elif kind == "LOG":
+                    self._append_log(msg[1])
                 elif kind == "RESULTS":
                     _, result, trial, save_path = msg
                     self._refresh_leaderboard(result["leaderboard"])
                     self._draw_results(result, trial, save_path)
                 elif kind == "PIPELINE_DONE":
+                    rc = msg[1]
+                    if rc == 0:
+                        self._banner_set_idle(
+                            "  Pipeline complete — all trials processed.",
+                            "#2ecc71")
+                        self._append_log("[done] Pipeline exited successfully.")
+                        self._set_status("● Pipeline complete.", "#2ecc71")
+                    else:
+                        self._banner_set_idle(
+                            f"  Pipeline error (exit {rc})", "#e74c3c")
+                        self._append_log(f"[error] Pipeline exited with code {rc}.")
+                        self._set_status(f"● Pipeline error (exit {rc})", "#e74c3c")
                     self._btn_pipeline.configure(
                         state="normal",
-                        text="▶  Run Benchmarking Analysis Pipeline")
+                        text="Launch Session Analysis")
         except queue.Empty:
             pass
         self.after(100, self._poll_queue)
