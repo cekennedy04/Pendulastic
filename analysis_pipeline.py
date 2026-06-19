@@ -1992,6 +1992,19 @@ LOCAL_MODEL_DOWNLOADS = [
 _PROXIMAL_TOKENS = ["thigh", "femur", "topthigh"]   # reference segment
 _DISTAL_TOKENS = ["shank", "shin", "tibia", "calf"]  # swinging segment
 
+# Prefixes that Motive prepends to body/marker names in CSV exports.
+_MOTIVE_PREFIXES = ("rigid body:", "marker:", "bone:", "unlabeled:")
+
+# ---------------------------------------------------------------------------
+# Configurable extraction list — update these labels to match the exact
+# rigid-body / marker names used in your Motive session.  Labels are matched
+# case-insensitively after stripping Motive prefixes, with substring
+# containment as a fallback so that "Thigh" also captures "LeftThigh".
+# parse_motive_csv() drops every column that does not map to one of these
+# labels, so only the requested coordinate streams reach downstream code.
+# ---------------------------------------------------------------------------
+TARGET_POINTS = ["Thigh", "Shank", "Knee", "Ankle", "Pendulum_Tip"]
+
 
 # -----------------------------------------------------------------------------
 # 10a. Auto-downloader (6 local variants)
@@ -2134,75 +2147,211 @@ def _vector_angle_deg(a, b):
     return np.degrees(np.arctan2(np.linalg.norm(cross, axis=1), dot))
 
 
+def _strip_motive_prefix(label):
+    """Strip Motive export prefixes ('Rigid Body:', 'Marker:', etc.) case-insensitively."""
+    lo = label.strip().lower()
+    for pfx in _MOTIVE_PREFIXES:
+        if lo.startswith(pfx):
+            return label.strip()[len(pfx):].strip()
+    return label.strip()
+
+
+def parse_motive_csv(csv_path, target_points=None):
+    """
+    Parse a Motive multi-row-header CSV and return isolated coordinate streams
+    for the labels listed in *target_points*.
+
+    Motive CSV header structure
+    ---------------------------
+    Motive prepends one or more metadata rows before four structured header rows:
+
+        name_row  - rigid-body / marker label (may carry 'Rigid Body:' prefix)
+        type_row  - data type: 'Rotation', 'Position', or 'Marker'
+        comp_row  - component: 'Frame', 'Time (Seconds)', 'X', 'Y', 'Z', 'W'
+        data_rows - one numeric row per captured frame
+
+    Label matching
+    --------------
+    After stripping Motive prefixes, each column name is matched against
+    target_points using:
+        1. Exact case-insensitive equality  ('Thigh' == 'Thigh')
+        2. Target as substring of column   ('Thigh' in 'LeftThigh')
+    The first match wins; columns that do not match any target are dropped.
+
+    Parameters
+    ----------
+    csv_path : str
+    target_points : list[str] | None
+        Labels to extract.  Defaults to the module-level TARGET_POINTS list.
+
+    Returns
+    -------
+    dict with keys:
+        "time"   : np.ndarray  -- seconds, length N
+        "frame"  : np.ndarray  -- frame numbers, length N
+        "points" : dict        -- {label: {"position": {...}|None,
+                                           "rotation": {...}|None}}
+            position = {"X": arr, "Y": arr, "Z": arr}
+            rotation = {"X": arr, "Y": arr, "Z": arr, "W": arr}
+
+    Labels not found in the file produce None for both sub-keys and emit a
+    [warn] line; unrecognised columns are silently dropped.
+    """
+    if target_points is None:
+        target_points = TARGET_POINTS
+
+    with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
+        rows = list(csv_module.reader(f))
+
+    # ── Locate the comp_row (first cell == 'Frame') ───────────────────────────
+    comp_idx = next(
+        (i for i, r in enumerate(rows) if r and r[0].strip().lower() == "frame"),
+        None,
+    )
+    if comp_idx is None:
+        raise ValueError(
+            f"parse_motive_csv: no 'Frame' header row found in {csv_path!r}."
+        )
+    comp_row = [c.strip() for c in rows[comp_idx]]
+
+    # ── Locate the type_row (row above comp_row with Rotation/Position cells) ─
+    type_idx = next(
+        (i for i in range(comp_idx - 1, -1, -1)
+         if any(c.strip().lower() in ("rotation", "position", "marker")
+                for c in rows[i])),
+        None,
+    )
+    if type_idx is None:
+        raise ValueError(
+            f"parse_motive_csv: no type row (Rotation/Position) found in {csv_path!r}."
+        )
+    type_row = [c.strip() for c in rows[type_idx]]
+
+    # ── Locate the name_row (row above type_row with non-empty stripped cells) ─
+    name_idx = next(
+        (i for i in range(type_idx - 1, -1, -1)
+         if any(_strip_motive_prefix(c) for c in rows[i])),
+        None,
+    )
+    if name_idx is None:
+        raise ValueError(
+            f"parse_motive_csv: no name row found above type row in {csv_path!r}."
+        )
+    name_row = [_strip_motive_prefix(c) for c in rows[name_idx]]
+
+    # ── Build column index: gathered[canonical][type_lower][comp_lower] = col ─
+    frame_col = next(
+        (i for i, c in enumerate(comp_row) if c.lower() == "frame"), None
+    )
+    time_col = next(
+        (i for i, c in enumerate(comp_row) if "time" in c.lower()), None
+    )
+
+    # Lower-cased lookup: target_lo -> canonical label (preserves capitalisation)
+    want = {lbl.lower(): lbl for lbl in target_points}
+
+    gathered = {}
+    for col, (nm, tp, comp) in enumerate(zip(name_row, type_row, comp_row)):
+        if not nm:
+            continue
+        nm_lo = nm.lower()
+        # Exact match first, then substring containment
+        canonical = want.get(nm_lo) or next(
+            (canon for tok, canon in want.items() if tok in nm_lo), None
+        )
+        if canonical is None:
+            continue
+        gathered.setdefault(canonical, {})
+        # setdefault so the first matching column wins for each component
+        gathered[canonical].setdefault(tp.lower(), {}).setdefault(comp.lower(), col)
+
+    # ── Parse numeric data ────────────────────────────────────────────────────
+    data_rows = [r for r in rows[comp_idx + 1:] if r and any(v.strip() for v in r)]
+    n = len(data_rows)
+
+    def _col(idx):
+        arr = np.full(n, np.nan)
+        for i, row in enumerate(data_rows):
+            try:
+                arr[i] = float(row[idx])
+            except (ValueError, IndexError):
+                pass
+        return arr
+
+    frames = _col(frame_col) if frame_col is not None else np.arange(n, dtype=float)
+    time   = _col(time_col)  if time_col  is not None else np.arange(n, dtype=float)
+
+    # ── Assemble per-label output ─────────────────────────────────────────────
+    out_points = {}
+    for label in target_points:
+        body = gathered.get(label, {})
+
+        pos_raw = body.get("position") or body.get("marker")
+        position = (
+            {"X": _col(pos_raw["x"]), "Y": _col(pos_raw["y"]), "Z": _col(pos_raw["z"])}
+            if pos_raw and all(k in pos_raw for k in ("x", "y", "z"))
+            else None
+        )
+
+        rot_raw = body.get("rotation")
+        rotation = (
+            {
+                "X": _col(rot_raw["x"]), "Y": _col(rot_raw["y"]),
+                "Z": _col(rot_raw["z"]), "W": _col(rot_raw["w"]),
+            }
+            if rot_raw and all(k in rot_raw for k in ("x", "y", "z", "w"))
+            else None
+        )
+
+        if position is None and rotation is None:
+            print(f"[warn] parse_motive_csv: '{label}' not found in {csv_path!r}")
+
+        out_points[label] = {"position": position, "rotation": rotation}
+
+    return {"time": time, "frame": frames, "points": out_points}
+
+
 def _optitrack_knee_angle_series(optitrack_csv):
     """
     Reconstruct the knee angle (deg) over time from a Motive Thigh/Shank export
     using the rigid-body ROTATION quaternions (mirrors joint_angle_processor.py):
     knee angle = angle between the two segments' local-X axes.
 
+    Uses parse_motive_csv() with TARGET_POINTS to isolate only the needed column
+    streams; all other Motive columns are dropped before processing.
     Returns (time_sec[N], knee_angle_deg[N]).
     """
-    with open(optitrack_csv, "r", newline="", encoding="utf-8-sig") as f:
-        rows = list(csv_module.reader(f))
+    parsed = parse_motive_csv(optitrack_csv)
+    t      = parsed["time"]
+    points = parsed["points"]
 
-    comp_idx = next((i for i, r in enumerate(rows)
-                     if r and r[0].strip().lower() == "frame"), None)
-    if comp_idx is None:
-        raise ValueError("No 'Frame' header row found.")
-    comp_row = [c.strip() for c in rows[comp_idx]]
-
-    type_idx = next((i for i in range(comp_idx - 1, -1, -1)
-                     if any("rotation" in c.lower() for c in rows[i])), None)
-    if type_idx is None:
-        raise ValueError("No 'Rotation' header row - a quaternion export is "
-                         "required to reconstruct the knee angle.")
-    type_row = [c.strip() for c in rows[type_idx]]
-
-    name_idx = next((i for i in range(type_idx - 1, -1, -1)
-                     if any(tok in " ".join(rows[i]).lower()
-                            for tok in _PROXIMAL_TOKENS + _DISTAL_TOKENS)), None)
-    if name_idx is None:
-        raise ValueError("No rigid-body name row (Thigh/Shank) found.")
-    name_row = [c.strip() for c in rows[name_idx]]
-
-    def find_body(tokens):
-        for c in name_row:
-            cl = c.lower()
-            if cl and any(tok in cl for tok in tokens):
-                return c
+    def _find_body(tokens):
+        """Return the first TARGET_POINTS label that has rotation data and whose
+        name contains any of the given substring tokens."""
+        for label, streams in points.items():
+            if streams["rotation"] is not None and any(
+                tok in label.lower() for tok in tokens
+            ):
+                return label
         return None
 
-    prox, dist = find_body(_PROXIMAL_TOKENS), find_body(_DISTAL_TOKENS)
+    prox = _find_body(_PROXIMAL_TOKENS)
+    dist = _find_body(_DISTAL_TOKENS)
+
     if not prox or not dist:
-        raise ValueError(f"Could not find both Thigh-like and Shank-like bodies "
-                         f"in {sorted({c for c in name_row if c})}")
+        available = [lbl for lbl, s in points.items() if s["rotation"] is not None]
+        raise ValueError(
+            f"Could not find both a Thigh-like ({_PROXIMAL_TOKENS}) and a "
+            f"Shank-like ({_DISTAL_TOKENS}) body with rotation data in "
+            f"{optitrack_csv!r}.  Labels with rotation found: {available}.  "
+            f"Check that TARGET_POINTS {TARGET_POINTS} matches your Motive session."
+        )
 
-    def quat_cols(body):
-        want = {"x": None, "y": None, "z": None, "w": None}
-        for col, (nm, tp, comp) in enumerate(zip(name_row, type_row, comp_row)):
-            if nm.lower() == body.lower() and tp.lower() == "rotation":
-                k = comp.lower()
-                if k in want:
-                    want[k] = col
-        if any(v is None for v in want.values()):
-            raise ValueError(f"Missing rotation quaternion columns for '{body}'.")
-        return [want["x"], want["y"], want["z"], want["w"]]
+    def to_quat(label):
+        r = points[label]["rotation"]
+        return np.column_stack([r["X"], r["Y"], r["Z"], r["W"]])
 
-    cols_p, cols_d = quat_cols(prox), quat_cols(dist)
-    time_col = next((i for i, c in enumerate(comp_row) if "time" in c.lower()), None)
-
-    data_rows = [r for r in rows[comp_idx + 1:] if r and any(str(v).strip() for v in r)]
-    width = max((len(r) for r in data_rows), default=0)
-    arr = np.full((len(data_rows), width), np.nan)
-    for i, r in enumerate(data_rows):
-        for jx, c in enumerate(r):
-            try:
-                arr[i, jx] = float(c)
-            except ValueError:
-                pass
-
-    t = arr[:, time_col] if time_col is not None else np.arange(len(arr), dtype=float)
-    qp, qd = arr[:, cols_p], arr[:, cols_d]
+    qp, qd = to_quat(prox), to_quat(dist)
     finite = np.isfinite(qp).all(1) & np.isfinite(qd).all(1) & np.isfinite(t)
     if finite.sum() < 2:
         raise ValueError("Too few valid quaternion samples to reconstruct the knee angle.")
