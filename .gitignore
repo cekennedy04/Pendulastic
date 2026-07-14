@@ -25,3 +25,30 @@ _mp_diag.py
 .venv/
 venv/
 env/
+
+# JS/Node dependencies (mobile app, web frontend)
+node_modules/
+.expo/
+
+# Participant / session data — never commit
+sessions.json
+uploads/
+OptiTrack_Tracking_Data_Participant_0/
+P001_MSParticipant2_history.csv
+tracking_selections.json
+
+# Large outputs and scratch
+Model_Analysis_Outputs/
+pendulastic model analysis/
+pendulastic_model_analysis_outputs.zip
+STCFormer-main.zip
+
+# Log files
+*.log
+
+# Temp / meta
+meta_tmp.txt
+pip_install_log.txt
+
+# Claude session files
+.claude/

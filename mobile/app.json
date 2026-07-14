@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Pendulastic Clinical",
+    "slug": "pendulastic-clinical",
+    "version": "2.1.0",
+    "orientation": "portrait",
+    "scheme": "pendulastic",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "edu.asu.pendulastic",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access is required to capture the pendulum drop for knee-angle analysis.",
+        "NSMicrophoneUsageDescription": "Microphone access is required by the camera SDK.",
+        "NSPhotoLibraryUsageDescription": "Photo library access is required to upload a pre-recorded trial video."
+      }
+    },
+    "android": {
+      "package": "edu.asu.pendulastic",
+      "permissions": ["CAMERA", "RECORD_AUDIO"]
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Camera access is required to stream frames to the analysis backend." }],
+      ["expo-image-picker", { "photosPermission": "Photo library access is required to upload a pre-recorded trial video." }],
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

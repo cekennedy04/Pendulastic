@@ -126,12 +126,13 @@ class MasterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Biomechanics Master - Acquisition Control")
-        self.root.geometry("480x780")
+        self.root.geometry("480x900")
         self.root.resizable(False, False)
 
         # ---- Camera + recording state (thread-safe) ----
         self.streaming_flag = threading.Event()   # preview thread runs while set
         self.writing_flag = threading.Event()     # frames written to disk while set
+        self._countdown_id = None                 # pending after() id during countdown
         self.cam_thread = None
         self.cap = None
         self.out = None
@@ -190,74 +191,90 @@ class MasterApp:
                        font=("Segoe UI", 13, "bold"))
         cfg.grid(row=7, column=0, columnspan=2, pady=(0, 8))
 
-        # --- Camera (auto-detected; single-camera rig) ---
+        # --- Camera selector dropdown ---
         tk.Label(self.root, text="Camera:").grid(row=8, column=0, sticky="e", **pad)
         cam_frame = tk.Frame(self.root)
         cam_frame.grid(row=8, column=1, sticky="w", **pad)
         self.var_cam = tk.StringVar(value="")
-        self.lbl_cam = tk.Label(cam_frame, textvariable=self.var_cam, width=18,
-                                relief="sunken", anchor="w", bg="white")
-        self.lbl_cam.pack(side="left", ipady=1)
+        self.drop_cam = ttk.Combobox(cam_frame, textvariable=self.var_cam, width=18,
+                                     state="readonly")
+        self.drop_cam.pack(side="left")
+        self.drop_cam.bind("<<ComboboxSelected>>", self._on_cam_selected)
         self.btn_rescan = tk.Button(cam_frame, text="Rescan", command=self.rescan_cameras)
         self.btn_rescan.pack(side="left", padx=(6, 0))
 
+        # --- Camera status panel ---
+        self._cam_status_frame = tk.LabelFrame(self.root, text="Detected Cameras",
+                                               font=("Segoe UI", 9))
+        self._cam_status_frame.grid(row=9, column=0, columnspan=2, sticky="ew",
+                                    padx=10, pady=(0, 4))
+        self._cam_status_rows = []
+
         # --- Camera Position 1-3 ---
-        tk.Label(self.root, text="Camera Position:").grid(row=9, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Position:").grid(row=10, column=0, sticky="e", **pad)
         self.var_pos = tk.StringVar(value="1")
         self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
                                      state="readonly",
                                      values=["1", "2", "3"])
-        self.drop_pos.grid(row=9, column=1, sticky="w", **pad)
+        self.drop_pos.grid(row=10, column=1, sticky="w", **pad)
 
         # --- Camera Height ---
-        tk.Label(self.root, text="Camera Height:").grid(row=10, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Height:").grid(row=11, column=0, sticky="e", **pad)
         self.var_height = tk.StringVar(value="Joint-Level")
         self.drop_height = ttk.Combobox(self.root, textvariable=self.var_height, width=25,
                                         state="readonly",
                                         values=["Low", "Joint-Level", "High"])
-        self.drop_height.grid(row=10, column=1, sticky="w", **pad)
+        self.drop_height.grid(row=11, column=1, sticky="w", **pad)
 
         # --- Trial Number ---
-        tk.Label(self.root, text="Trial Number:").grid(row=11, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Trial Number:").grid(row=12, column=0, sticky="e", **pad)
         self.var_trial = tk.StringVar(value="1")
         self.drop_trial = ttk.Combobox(self.root, textvariable=self.var_trial, width=25,
                                        state="readonly",
-                                       values=["1", "2", "3"])
-        self.drop_trial.grid(row=11, column=1, sticky="w", **pad)
+                                       values=["1", "2", "3", "4", "5"])
+        self.drop_trial.grid(row=12, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=12, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Control buttons ---
         self.btn_start = tk.Button(self.root, text="START RECORDING",
                                    bg="#1e7d34", fg="white",
                                    font=("Segoe UI", 11, "bold"),
-                                   width=18, height=2, command=self.start_recording)
-        self.btn_start.grid(row=13, column=0, padx=10, pady=12)
+                                   width=18, height=2, command=self._on_start_clicked)
+        self.btn_start.grid(row=14, column=0, padx=10, pady=12)
 
         self.btn_stop = tk.Button(self.root, text="STOP",
                                   bg="#a31515", fg="white",
                                   font=("Segoe UI", 11, "bold"),
                                   width=18, height=2, command=self.stop_recording,
                                   state="disabled")
-        self.btn_stop.grid(row=13, column=1, padx=10, pady=12)
+        self.btn_stop.grid(row=14, column=1, padx=10, pady=12)
+
+        # --- Countdown checkbox ---
+        self.var_delayed = tk.BooleanVar(value=False)
+        self.chk_delayed = tk.Checkbutton(
+            self.root, text="5-second countdown before recording",
+            variable=self.var_delayed, font=("Segoe UI", 10),
+        )
+        self.chk_delayed.grid(row=15, column=0, columnspan=2, pady=(0, 6))
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Batch evaluation (active only when not recording) ---
         self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
                                       bg="#1f3a93", fg="white",
                                       font=("Segoe UI", 12, "bold"),
                                       height=2, command=self.start_batch_evaluation)
-        self.btn_evaluate.grid(row=15, column=0, columnspan=2, sticky="ew",
+        self.btn_evaluate.grid(row=17, column=0, columnspan=2, sticky="ew",
                                padx=10, pady=(0, 8))
 
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=16, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=18, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
 
         # Detect the camera now that all widgets exist.
@@ -289,17 +306,25 @@ class MasterApp:
                 f"Could not scan for the camera:\n\n{type(e).__name__}: {e}"
             )
 
-        # Single-camera rig: use the first camera found (MSMF is probed first).
-        self._active_cam = self._cameras[0] if self._cameras else None
-        if self._active_cam is not None:
+        # Populate the camera dropdown with all detected cameras.
+        labels = [c["label"] for c in self._cameras]
+        self.drop_cam["values"] = labels if labels else ["(none detected)"]
+
+        if self._cameras:
+            # Keep the previously selected camera if it is still present.
+            prev_label = self.var_cam.get()
+            match = next((c for c in self._cameras if c["label"] == prev_label), None)
+            self._active_cam = match if match else self._cameras[0]
             self.var_cam.set(self._active_cam["label"])
             # Pre-open + start the live preview so pressing START is instant.
             self._open_camera()
         else:
+            self._active_cam = None
             self.var_cam.set("(none detected)")
             self.var_status.set(
                 "No camera detected - check USB / close other apps, then Rescan."
             )
+        self._rebuild_cam_status()
 
     def _selected_camera(self):
         """Return (index, backend) for the active camera, or raise ValueError."""
@@ -308,6 +333,51 @@ class MasterApp:
                 "No camera detected. Plug in the USB webcam and click 'Rescan'."
             )
         return self._active_cam["index"], self._active_cam["backend"]
+
+    def _on_cam_selected(self, event=None):
+        """Switch to the camera chosen in the dropdown."""
+        if self.writing_flag.is_set():
+            return  # never switch mid-recording
+        selected_label = self.var_cam.get()
+        match = next((c for c in self._cameras if c["label"] == selected_label), None)
+        if match is None:
+            return
+        if (self._active_cam is not None
+                and match["index"] == self._active_cam["index"]
+                and match["backend"] == self._active_cam["backend"]):
+            return  # already using this camera
+        self._close_camera()
+        self._active_cam = match
+        self._rebuild_cam_status()
+        self._open_camera()
+
+    def _rebuild_cam_status(self):
+        """Rebuild the detected-cameras status panel."""
+        for w in self._cam_status_frame.winfo_children():
+            w.destroy()
+        self._cam_status_rows.clear()
+
+        if not self._cameras:
+            tk.Label(self._cam_status_frame, text="  No cameras detected.",
+                     fg="#888", font=("Segoe UI", 9)).pack(anchor="w", padx=4, pady=2)
+            return
+
+        for cam in self._cameras:
+            is_active = (self._active_cam is not None
+                         and cam["index"] == self._active_cam["index"]
+                         and cam["backend"] == self._active_cam["backend"])
+            row = tk.Frame(self._cam_status_frame)
+            row.pack(fill="x", padx=4, pady=1)
+
+            dot = tk.Canvas(row, width=10, height=10, highlightthickness=0)
+            color = "#22c55e" if is_active else "#94a3b8"
+            dot.create_oval(1, 1, 9, 9, fill=color, outline="")
+            dot.pack(side="left", padx=(2, 5))
+
+            status_str = "LIVE" if is_active else "Detected"
+            tk.Label(row, text=f"{cam['label']}  [{status_str}]",
+                     font=("Segoe UI", 9), anchor="w").pack(side="left")
+            self._cam_status_rows.append((dot, color))
 
     # ------------------------------------------------------------------
     # INPUT VALIDATION
@@ -376,6 +446,56 @@ class MasterApp:
         meta_path = os.path.join(participant_dir, "metadata.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
+
+    # ------------------------------------------------------------------
+    # COUNTDOWN  (optional 5-second delay before recording starts)
+    # ------------------------------------------------------------------
+    def _on_start_clicked(self):
+        """START button handler: cancel an active countdown, or start one / record immediately."""
+        if self._countdown_id is not None:
+            self._cancel_countdown()
+            return
+        if self.writing_flag.is_set():
+            return
+        if self.var_delayed.get():
+            self._start_countdown()
+        else:
+            self.start_recording()
+
+    def _start_countdown(self):
+        """Validate inputs, lock the UI, then begin the 5-second countdown."""
+        try:
+            self._validate_inputs()
+        except ValueError as e:
+            messagebox.showerror("Cannot Start Recording", str(e))
+            return
+        self._lock_inputs(True)
+        self.chk_delayed.config(state="disabled")
+        self.btn_start.config(text="CANCEL", bg="#c07000")
+        self.btn_stop.config(state="disabled")
+        self._tick_countdown(5)
+
+    def _tick_countdown(self, n):
+        """Called once per second; fires the real start when n reaches 0."""
+        if n == 0:
+            self._countdown_id = None
+            self.btn_start.config(text="START RECORDING", bg="#1e7d34")
+            self.chk_delayed.config(state="normal")
+            self.start_recording()
+            return
+        self.var_status.set(f"Starting in {n}...")
+        self._countdown_id = self.root.after(1000, lambda: self._tick_countdown(n - 1))
+
+    def _cancel_countdown(self):
+        """Abort an in-progress countdown and return the UI to idle."""
+        if self._countdown_id is not None:
+            self.root.after_cancel(self._countdown_id)
+            self._countdown_id = None
+        self.btn_start.config(text="START RECORDING", bg="#1e7d34", state="normal")
+        self.btn_stop.config(state="disabled")
+        self.chk_delayed.config(state="normal")
+        self._lock_inputs(False)
+        self.var_status.set("Countdown cancelled - ready to record.")
 
     # ------------------------------------------------------------------
     # START
@@ -780,14 +900,17 @@ class MasterApp:
         for w in (self.entry_id, self.entry_age, self.entry_weight):
             w.config(state=state)
         for w in (self.drop_sex, self.drop_diag, self.drop_pos,
-                  self.drop_height, self.drop_trial):
+                  self.drop_height, self.drop_trial, self.drop_cam):
             w.config(state=ro_state)
         # Camera rescan and batch evaluation are only available when not recording.
         self.btn_rescan.config(state=state)
         self.btn_evaluate.config(state=state)
 
     def on_close(self):
-        """Window-close handler: stop recording and release the camera."""
+        """Window-close handler: cancel countdown, stop recording, release camera."""
+        if self._countdown_id is not None:
+            self.root.after_cancel(self._countdown_id)
+            self._countdown_id = None
         try:
             was_recording = self.writing_flag.is_set()
             self.writing_flag.clear()
