@@ -59,3 +59,41 @@ def test_save_trial_explicit_timestamps(tmp_path, monkeypatch):
         rows = list(csv.reader(f))
     assert rows[1][1] == "0.0000"   # t[0] - t[0] = 0
     assert rows[2][1] == "0.5000"   # t[1] - t[0] = 0.5
+
+
+def test_build_filename_with_imu_source():
+    assert DataManager.build_filename("P1", "right", "MS", 1, source="imu") == \
+        "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv"
+
+
+def test_build_filename_with_rgb_source():
+    assert DataManager.build_filename("P2", "left", "MS", 3, source="rgb") == \
+        "PID_P2_LEG_Left_MS_TRIAL_3_rgb.csv"
+
+
+def test_build_filename_source_none_backward_compat():
+    """source=None must produce the same output as the old 4-arg call."""
+    assert DataManager.build_filename("P1", "right", "MS", 1, source=None) == \
+        "PID_P1_LEG_Right_MS_TRIAL_1.csv"
+
+
+def test_save_trial_source_param_written_to_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
+    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+            "sources": ["imu"]}  # new-style metadata (no "methodology" key)
+    DataManager.save_trial("test_imu.csv", [170.0], meta, source="imu")
+    with open(tmp_path / "test_imu.csv") as f:
+        rows = list(csv.reader(f))
+    # methodology column (index 7) should contain the source name
+    assert rows[1][7] == "imu"
+
+
+def test_save_trial_backward_compat_methodology_key(tmp_path, monkeypatch):
+    """Old callers that pass metadata["methodology"] still work when source=None."""
+    monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
+    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+            "methodology": "rgb"}
+    DataManager.save_trial("test.csv", [170.0], meta)
+    with open(tmp_path / "test.csv") as f:
+        rows = list(csv.reader(f))
+    assert rows[1][7] == "rgb"

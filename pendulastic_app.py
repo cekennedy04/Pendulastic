@@ -88,10 +88,12 @@ class DataManager:
     DATA_DIR = os.path.join(BASE_DIR, "data")
 
     @staticmethod
-    def build_filename(pid: str, leg: str, ms_status: str, trial: int) -> str:
-        leg_s = leg.capitalize()
-        ms_s  = ms_status.replace(" ", "_")
-        return f"PID_{pid}_LEG_{leg_s}_{ms_s}_TRIAL_{trial}.csv"
+    def build_filename(pid: str, leg: str, ms_status: str, trial: int,
+                       source: str | None = None) -> str:
+        leg_s  = leg.capitalize()
+        ms_s   = ms_status.replace(" ", "_")
+        suffix = f"_{source}" if source else ""
+        return f"PID_{pid}_LEG_{leg_s}_{ms_s}_TRIAL_{trial}{suffix}.csv"
 
     @classmethod
     def save_trial(
@@ -101,10 +103,12 @@ class DataManager:
         metadata: dict,
         timestamps: list | None = None,
         fps: float = 30.0,
+        source: str | None = None,
     ) -> str:
         os.makedirs(cls.DATA_DIR, exist_ok=True)
         path = os.path.join(cls.DATA_DIR, filename)
         t0 = timestamps[0] if timestamps else 0.0
+        method_val = source if source else metadata.get("methodology", "")
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["frame", "time_s", "knee_angle_deg",
@@ -114,7 +118,7 @@ class DataManager:
                 w.writerow([i, f"{t:.4f}", f"{a:.3f}",
                             metadata["pid"], metadata["leg"],
                             metadata["ms_status"], metadata["trial"],
-                            metadata["methodology"]])
+                            method_val])
         return path
 
 
