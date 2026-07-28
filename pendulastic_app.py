@@ -450,3 +450,61 @@ class AcquisitionPanel(tk.Frame):
                 w.config(state="disabled" if locked else "readonly")
             else:
                 w.config(state="disabled" if locked else "normal")
+
+    # ------------------------------------------------------------------
+    # Live telemetry sparkline (driven by App._tick every 50 ms)
+    # ------------------------------------------------------------------
+    _TELE_MAX = 120   # rolling window ~6 s at 20 Hz
+
+    def push_telemetry(self, t: float, angle_deg: float) -> None:
+        self._tele_buf.append((t, angle_deg))
+        if len(self._tele_buf) > self._TELE_MAX:
+            self._tele_buf.pop(0)
+        self._draw_sparkline()
+
+    def clear_telemetry(self) -> None:
+        self._tele_buf.clear()
+        self.canvas_tele.delete("all")
+
+    def _draw_sparkline(self) -> None:
+        import math
+        c = self.canvas_tele
+        c.delete("all")
+        if not self._tele_buf:
+            return
+
+        W, H    = 440, 80
+        NUM_W   = 110
+        GRAPH_W = W - NUM_W - 8
+        last_a  = self._tele_buf[-1][1]
+
+        # Numeric readout on the right
+        if math.isnan(last_a):
+            txt, col = "—", "gray"
+        else:
+            txt, col = f"{last_a:.1f}°", "#22c55e"
+        cx = W - NUM_W // 2
+        c.create_text(cx, H // 2 - 6, text=txt,
+                      fill="white", font=("Consolas", 18, "bold"), anchor="center")
+        c.create_text(cx, H // 2 + 14, text="knee",
+                      fill="#5A8AB0", font=("Consolas", 8), anchor="center")
+
+        # Sparkline
+        valid = [(t, a) for t, a in self._tele_buf if not math.isnan(a)]
+        if len(valid) < 2:
+            return
+        vals  = [a for _, a in valid]
+        lo, hi = min(vals), max(vals)
+        if hi - lo < 5:
+            mid = (lo + hi) / 2; lo, hi = mid - 2.5, mid + 2.5
+
+        def px(i, a):
+            x = int(8 + (i / (len(valid) - 1)) * (GRAPH_W - 16))
+            y = int(H - 8 - ((a - lo) / (hi - lo)) * (H - 16))
+            return x, y
+
+        pts = [px(i, a) for i, (_, a) in enumerate(valid)]
+        for i in range(len(pts) - 1):
+            c.create_line(*pts[i], *pts[i + 1], fill=col, width=1.5)
+        lx, ly = pts[-1]
+        c.create_oval(lx - 3, ly - 3, lx + 3, ly + 3, fill=col, outline="")

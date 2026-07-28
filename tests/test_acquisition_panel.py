@@ -141,3 +141,31 @@ def test_increment_trial():
         assert int(p.trial_var.get()) == 5
     finally:
         r.destroy()
+
+
+def test_push_telemetry_draws_items_on_canvas():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack()
+        p.enter_recording(); r.update()
+        p.push_telemetry(0.0, 160.0)
+        p.push_telemetry(0.05, 155.0)
+        r.update()
+        assert len(p.canvas_tele.find_all()) > 0
+    finally:
+        r.destroy()
+
+
+def test_clear_telemetry_removes_all_items():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack()
+        p.enter_recording()
+        p.push_telemetry(0.0, 160.0)
+        p.clear_telemetry()
+        r.update()
+        assert len(p.canvas_tele.find_all()) == 0
+    finally:
+        r.destroy()
