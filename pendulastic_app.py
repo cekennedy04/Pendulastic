@@ -133,7 +133,7 @@ class BiomechanicalEngine:
         if self.methodology != "imu" or not _IMU_AVAIL:
             return float("nan")
         try:
-            return float(_imu.get_state()["distal"]["pitch"])
+            return float(_imu.get_state()["angles"]["pitch"])
         except Exception:
             return float("nan")
 
@@ -612,8 +612,8 @@ class PostProcessingPanel(tk.Frame):
             messagebox.showerror("OptiTrack", "load_optitrack not available.")
             return
         try:
-            opti = load_optitrack(csv_path)
-            self._plot_curve(self._angles, self._fps, overlay=opti)
+            _t_ot, opti = load_optitrack(csv_path)
+            self._plot_curve(self._angles, self._fps, overlay=list(opti))
             self.status_var.set(f"Overlay: {os.path.basename(csv_path)}")
         except Exception as e:
             messagebox.showerror("OptiTrack Load Error", str(e))
@@ -847,6 +847,10 @@ class App(tk.Tk):
         self._video_path = os.path.join(
             DataManager.DATA_DIR, fn.replace(".csv", ".avi"))
         cap = _cv2.VideoCapture(0)
+        if not cap.isOpened():
+            cap.release()
+            messagebox.showerror("RGB", "Could not open camera (index 0).")
+            return
         w   = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
         h   = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
         self._rgb_cap    = cap

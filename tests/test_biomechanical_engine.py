@@ -8,8 +8,9 @@ from pendulastic_app import BiomechanicalEngine
 def _make_fake_imu(pitch: float):
     m = types.SimpleNamespace()
     m.get_state = lambda: {
-        "distal":   {"pitch": pitch, "roll": 0.0, "yaw": 0.0},
-        "proximal": {"pitch": 10.0,  "roll": 0.0, "yaw": 0.0},
+        "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+        "proximal": {"connected": False, "ip": "", "packets": 0, "hz": 0.0},
+        "angles":   {"pitch": pitch, "roll": 0.0, "yaw": 0.0, "paired": False},
     }
     return m
 
