@@ -5,16 +5,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from pendulastic_pt_score import compute_pt_params
 
 
-def _damped_sinusoid(n=300, fps=30.0, A0=40.0, freq=0.9, decay=0.25):
-    """Clean damped sinusoid starting at 180° (fully extended), oscillating down."""
+def _damped_sinusoid(n=300, fps=30.0, A0=15.0, freq=0.9, decay=0.25):
+    """Realistic pendulum signal: 1-second hold at 180°, then cosine oscillation."""
     t = np.arange(n) / fps
-    # angle = 180 - A0*(1 - exp(-decay*t))*|sin(2pi*freq*t)|
-    # Simpler: start at 180-A0 and add decaying oscillation back up
-    return t, 180.0 - A0 * np.exp(-decay * t) * np.abs(np.sin(2 * np.pi * freq * t))
+    ang = np.empty(n)
+    hold = int(fps)  # 30 frames of pre-release hold
+    for i in range(n):
+        if i < hold:
+            ang[i] = 180.0
+        else:
+            ti = (i - hold) / fps
+            # At ti=0: 165 + A0*cos(0) = 165 + 15 = 180 (seamless join with hold)
+            ang[i] = 165.0 + A0 * math.exp(-decay * ti) * math.cos(2 * math.pi * freq * ti)
+    return t, ang
 
 
-def _drifting_signal(n=300, fps=30.0, A0=40.0, freq=0.9, drift=3.0):
-    """Same sinusoid but with a monotonic +3° baseline drift over the recording."""
+def _drifting_signal(n=300, fps=30.0, A0=15.0, freq=0.9, drift=2.0):
+    """Same signal but with a monotonic +2° baseline drift over the recording."""
     t, ang = _damped_sinusoid(n, fps, A0, freq)
     drift_arr = np.linspace(0, drift, n)
     return t, ang + drift_arr
