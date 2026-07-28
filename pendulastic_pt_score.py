@@ -39,7 +39,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks, savgol_filter, detrend as _detrend
 from scipy.spatial.transform import Rotation as _R
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -50,25 +50,26 @@ OUT_DIR   = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "PT_Scores")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Healthy reference values ───────────────────────────────────────────────────
-# Literature values from Bajd & Bowman (1982) and Popovic (2018).
-# These work correctly when paired with one-directional penalties in compute_pt_score
-# (only penalise deviations in the pathological direction).
+# Data-driven medians from n=13 control, n=8 MS participants (ASU Pendulastic
+# study, 2024-2025; Mann-Whitney analysis in ms_vs_healthy_stats.csv).
+# One-directional penalties: only penalise deviations in the impaired direction.
 HEALTHY_REF = {
-    "R2n":           0.91,   # Bajd & Bowman 1982; A1_pp / (1.6 × A0)
-    "N":             8.0,    # full oscillation cycles exceeding 1°
-    # phi_max_ratio calibrated from P0 quaternion data (mean 0.636); literature value
-    # of 0.78 was for goniometer recordings and overpenalises quaternion-based angles.
-    "phi_max_ratio": 0.65,
-    "omega_max_n":   4.5,    # peak angular velocity / A0  (Stein et al. 1996)
-    # omega_min_n excluded: approaches 0 for ALL subjects as oscillations decay.
-    # f excluded from primary (4-param) score: literature reference of 1.10 Hz is
-    # for a specific leg-length population; our subjects oscillate at 0.89-0.93 Hz
-    # (longer shanks → lower natural frequency).  N already captures severe cases.
+    "R2n":           1.012,  # control median n=13 (literature 0.91)
+    "N":             7.0,    # control median n=13 (literature 8.0)
+    "phi_max_ratio": 0.787,  # control median n=13; strongest discriminator (Cliff δ=−0.981)
+    "omega_max_n":   5.692,  # control median n=13 (literature 4.5)
+    "omega_min_n":   0.002,  # control median n=8 OptiTrack trials; near-zero by physics
+    # f: our subjects oscillate at 0.89–0.93 Hz (longer shanks than literature)
     "f":             1.10,
-    "area_ratio":    0.09,   # |P+−P−|/P_total; ~0 = balanced = healthy (Popovic 2018 Fig 7)
+    "area_ratio":    0.09,   # |P+−P−|/P_total; ~0 = balanced = healthy (Popovic 2018)
 }
 
-# ── MAS thresholds (Popovic 2018, approximate) ────────────────────────────────
+# ── PT score zones (data-driven) ──────────────────────────────────────────────
+# control median PT=0.037 (IQR=0.047), MS median PT=0.389 (IQR=0.274), p=0.0004
+PT_HEALTHY_MAX    = 0.09   # covers control 75th-pct; below this = healthy
+PT_BORDERLINE_MAX = 0.20   # midpoint of gap between populations
+
+# ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
 
 def pt_to_mas(pt: float) -> str:
@@ -76,8 +77,8 @@ def pt_to_mas(pt: float) -> str:
         if pt <= thresh: return label
     return "4"
 
-_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
-_N_PARAMS    = len(_PARAM_KEYS)   # 6 active parameters
+_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","omega_min_n","f","area_ratio"]
+_N_PARAMS    = len(_PARAM_KEYS)   # 7 parameters (full Popovic 2018 formula)
 
 # Simplified 4-parameter score: excludes area_ratio (unreliable for marker-based
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
@@ -91,35 +92,30 @@ AREA_RATIO_WARN = 0.55
 
 def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
     """
-    One-directional penalty formula over 6 parameters (omega_min_n excluded —
-    it approaches 0 for all subjects regardless of spasticity).
+    Full 7-parameter Popovic (2018) PT score.
 
-    Clinically, only deviations in the IMPAIRED direction are penalised:
+    Penalty directions (impaired = deviated from healthy reference):
       N, R2n, phi_max_ratio, omega_max_n → penalise only if BELOW reference
-      area_ratio                          → penalise only if ABOVE reference
-      f                                   → bidirectional (frequency can shift either way)
-
-    NOTE: trials where area_ratio > AREA_RATIO_WARN (0.55) are flagged as
-    unreliable because the phi trace is heavily one-sided, indicating the
-    angle computation may not represent true knee motion.  The score is still
-    reported, but should be treated with caution.
+      omega_min_n, area_ratio             → penalise only if ABOVE reference
+        (higher omega_min_n = velocity never fully decelerates at oscillation
+         peaks = spastic catch present; higher area_ratio = asymmetric areas)
+      f                                   → bidirectional; skip if uncomputable
     """
     _DENOM_FLOOR = 0.1
     total = 0.0
     for k in _PARAM_KEYS:
-        pij = params[k]; phj = ref[k]
-        if phj <= 0: continue
+        pij = params.get(k, 0.0)
+        phj = ref.get(k, 0.0)
+        if phj <= 0:
+            continue
         delta = pij - phj
         denom = _N_PARAMS * max(phj, _DENOM_FLOOR)
         if k in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
             dev = max(0.0, -delta) / denom   # penalise only if below healthy
-        elif k == "area_ratio":
-            dev = max(0.0,  delta) / denom   # penalise only if more asymmetric
-        else:  # f — bidirectional, but skip when uncomputable
-            # f=0.0 means "period could not be estimated", not "zero Hz".
-            # Also skip when N<2: N already penalises low-oscillation trials and
-            # a sparse peak set makes the period estimate unreliable regardless of f.
-            if pij < 0.1 or params["N"] < 2.0:
+        elif k in ("area_ratio", "omega_min_n"):
+            dev = max(0.0,  delta) / denom   # penalise only if above healthy
+        else:  # f — bidirectional, skip when uncomputable
+            if pij < 0.1 or params.get("N", 0.0) < 2.0:
                 dev = 0.0
             else:
                 dev = abs(delta) / denom
@@ -601,7 +597,8 @@ def _merge_close_extrema(idx_arr: np.ndarray, values: np.ndarray, min_sep: int) 
 
 
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
-                      release_idx: Optional[int] = None) -> Optional[dict]:
+                      release_idx: Optional[int] = None,
+                      detrend: bool = True) -> Optional[dict]:
     """
     Compute Popovic PT parameters from a knee-angle time series.
 
@@ -622,6 +619,8 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
     t_c   = t[mask]
     ang_c = angle_raw[mask]
+    if detrend:
+        ang_c = _detrend(ang_c, type='linear')
     ang_s = _sg(ang_c, w=15, p=3)
 
     # Release detection — use manual override if provided
@@ -662,13 +661,12 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     if phi_negated:              # convention: extension = positive
         phi = -phi; A0_raw = abs(A0_raw)
 
-    # A0: maximum of |phi| in first 15 % after release (handles late trigger)
-    first_n = max(5, int(0.15 * len(phi)))
-    A0 = float(np.nanmax(phi[:first_n]))
-    if A0 < 2.0:
-        A0 = A0_raw
-
     phi_s = _sg(phi, w=9, p=2)
+
+    # A0: maximum of smoothed phi in first 20% after release (wider window handles late trigger)
+    # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
+    first_n = max(5, int(0.20 * len(phi)))
+    A0 = max(float(np.nanmax(phi_s[:first_n])), A0_raw)
 
     # Re-detect peaks on phi with amplitude threshold
     min_amp  = max(1.0, 0.05 * A0)
@@ -732,11 +730,12 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                    if swing_mask.sum() > 5 else 0.0)
 
     # ── 7. Area ratio  (symmetry index) ──────────────────────────────────────
-    # Extend the signal tail by 2.5 s at the resting angle before integrating.
+    # Extend the signal tail by 4.5 s at the resting angle before integrating.
     # Recordings that end before the leg fully settles under-represent the
     # balanced resting region, inflating |P+ - P-|.  Appending the tail-median
-    # (already ~0 in phi space by construction of neutral) corrects this.
-    _EXTEND_S = 2.5
+    # corrects this; 4.5 s ensures even shorter recordings get a full balanced
+    # resting contribution.
+    _EXTEND_S = 4.5
     _dt_mean  = float(np.mean(np.diff(t_r))) if len(t_r) > 1 else 1.0 / 30.0
     _n_ext    = max(1, int(_EXTEND_S / _dt_mean))
     _phi_rest = float(np.nanmedian(phi[max(int(0.80 * len(phi)), 1):]))
