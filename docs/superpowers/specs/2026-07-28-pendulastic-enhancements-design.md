@@ -146,13 +146,13 @@ self._acq.enter_recording()
 **`on_stop()`:**
 - Stop IMU poll thread (unconditional).
 - For each source in `_active_sources`:
-  - `"imu"` → `_imu.stop_recording()`, `DataManager.save_trial(fn_imu, angles["imu"], meta, timestamps=ts["imu"], source="imu")`
+  - `"imu"` → stop accumulating angles (the IMU server runs continuously; no server-side stop call); `DataManager.save_trial(fn_imu, angles["imu"], meta, timestamps=ts["imu"], source="imu")`
   - `"rgb"` → `_stop_rgb_recording()`, spawn MediaPipe background thread
   - `"optitrack"` → `_motive.stop_local_motive()` (non-fatal)
 - If `"rgb"` in `_active_sources` → `PROCESSING` state (MediaPipe runs offline)
 - Else → `_transition_to_review(source_angles, meta)`
 
-**`_run_rgb_processing(meta)`:** on completion, calls `self._after(0, lambda: self._add_rgb_angles_to_review(fn_rgb, angles, meta))` which merges into the existing review if other sources already transitioned.
+**`_run_rgb_processing(meta)`:** on completion, calls `self.after(0, lambda: self._add_rgb_angles_to_review(fn_rgb, angles, meta))` which merges into the existing review if other sources already transitioned.
 
 **`_transition_to_review(source_angles: dict[str, list[float]], meta: dict)`:**
 - Sets `_state = "review"`
