@@ -207,3 +207,145 @@ class BiomechanicalEngine:
 
         progress_cb(1.0)
         return angles
+
+
+# ---------------------------------------------------------------------------
+# AcquisitionPanel
+# ---------------------------------------------------------------------------
+
+class AcquisitionPanel(tk.Frame):
+    """
+    2-column, 14-row acquisition panel (480 px wide).
+    controller: App instance — receives on_start(), on_stop(),
+                on_methodology_changed(method), on_new_trial().
+    """
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._countdown_id: Optional[str] = None
+        self._tele_buf: list = []
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        pad = {"padx": 12, "pady": 5}
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=1)
+
+        # row 0 — title
+        tk.Label(self, text="Pendulastic — Trial Setup",
+                 font=("Segoe UI", 13, "bold")).grid(
+            row=0, column=0, columnspan=2, pady=(16, 4))
+
+        # row 1 — separator
+        ttk.Separator(self, orient="horizontal").grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        # row 2 — Participant ID
+        tk.Label(self, text="Participant ID:").grid(
+            row=2, column=0, sticky="e", **pad)
+        self.pid_var = tk.StringVar()
+        pid_entry = tk.Entry(self, textvariable=self.pid_var, width=22)
+        pid_entry.grid(row=2, column=1, sticky="w", **pad)
+
+        # row 3 — Leg
+        tk.Label(self, text="Leg:").grid(row=3, column=0, sticky="e", **pad)
+        self.leg_var = tk.StringVar(value="Right")
+        leg_f = tk.Frame(self)
+        leg_f.grid(row=3, column=1, sticky="w", **pad)
+        rb_left  = tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var, value="Left")
+        rb_right = tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right")
+        rb_left.pack(side="left", padx=4)
+        rb_right.pack(side="left", padx=4)
+
+        # row 4 — MS Status
+        tk.Label(self, text="MS Status:").grid(row=4, column=0, sticky="e", **pad)
+        self.ms_var = tk.StringVar(value="MS")
+        ms_combo = ttk.Combobox(self, textvariable=self.ms_var, width=22,
+                                state="readonly",
+                                values=["MS", "Stroke", "Control", "Other"])
+        ms_combo.grid(row=4, column=1, sticky="w", **pad)
+
+        # row 5 — Trial Number
+        tk.Label(self, text="Trial Number:").grid(row=5, column=0, sticky="e", **pad)
+        self.trial_var = tk.StringVar(value="1")
+        trial_spin = tk.Spinbox(self, from_=1, to=99, textvariable=self.trial_var, width=6)
+        trial_spin.grid(row=5, column=1, sticky="w", **pad)
+
+        # row 6 — separator
+        ttk.Separator(self, orient="horizontal").grid(
+            row=6, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        # row 7 — Methodology header
+        tk.Label(self, text="Methodology",
+                 font=("Segoe UI", 10, "bold")).grid(
+            row=7, column=0, columnspan=2, sticky="w", padx=12)
+
+        # row 8 — Methodology radio buttons
+        self.method_var = tk.StringVar(value="optitrack")
+        meth_f = tk.Frame(self)
+        meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
+        rb_opti = tk.Radiobutton(meth_f, text="OptiTrack",  variable=self.method_var,
+                                  value="optitrack", command=self._on_method_changed)
+        rb_rgb  = tk.Radiobutton(meth_f, text="RGB",         variable=self.method_var,
+                                  value="rgb",       command=self._on_method_changed)
+        rb_imu  = tk.Radiobutton(meth_f, text="iPhone IMU",  variable=self.method_var,
+                                  value="imu",       command=self._on_method_changed)
+        for rb in (rb_opti, rb_rgb, rb_imu):
+            rb.pack(side="left", padx=8)
+
+        # row 9 — Modality status
+        self.lbl_method_status = tk.Label(
+            self, text="● Ready", font=("Consolas", 9), fg="green", anchor="w")
+        self.lbl_method_status.grid(row=9, column=0, columnspan=2, sticky="w", padx=16)
+
+        # row 10 — separator
+        ttk.Separator(self, orient="horizontal").grid(
+            row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+
+        # row 11 — countdown checkbox
+        self.countdown_var = tk.BooleanVar(value=False)
+        countdown_chk = tk.Checkbutton(
+            self, text="5-second countdown before recording",
+            variable=self.countdown_var)
+        countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+
+        # row 12 — START / STOP (START never moves from col 0)
+        self.btn_start = tk.Button(
+            self, text="START RECORDING",
+            bg=_GREEN, fg="white", font=("Segoe UI", 13, "bold"),
+            width=16, height=2, command=self._on_start_clicked)
+        self.btn_start.grid(row=12, column=0, padx=10, pady=12)
+
+        self.btn_stop = tk.Button(
+            self, text="STOP",
+            bg=_RED, fg="white", font=("Segoe UI", 13, "bold"),
+            width=16, height=2, state="disabled",
+            command=self._on_stop_clicked)
+        self.btn_stop.grid(row=12, column=1, padx=10, pady=12)
+
+        # row 13 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
+        self.canvas_tele = tk.Canvas(
+            self, width=440, height=80, bg="#0B1928", highlightthickness=0)
+
+        # row 14 — status bar
+        self.status_var = tk.StringVar(value="Idle — ready to record.")
+        self.lbl_status = tk.Label(
+            self, textvariable=self.status_var, relief="sunken", anchor="w", fg="#333")
+        self.lbl_status.grid(row=14, column=0, columnspan=2,
+                             sticky="ew", padx=10, pady=(4, 10))
+
+        # Track every form widget that must be locked during recording
+        self._lockable = [
+            pid_entry, rb_left, rb_right, ms_combo, trial_spin,
+            countdown_chk, rb_opti, rb_rgb, rb_imu,
+        ]
+
+    def _on_method_changed(self) -> None:
+        self.controller.on_methodology_changed(self.method_var.get())
+
+    def _on_start_clicked(self) -> None:
+        pass   # implemented in Task 5
+
+    def _on_stop_clicked(self) -> None:
+        pass   # implemented in Task 5
