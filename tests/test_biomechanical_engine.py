@@ -43,3 +43,58 @@ def test_rgb_returns_nan():
 
 def test_methodology_stored():
     assert BiomechanicalEngine("rgb").methodology == "rgb"
+
+
+import pytest
+try:
+    import cv2 as _cv2_test
+    _CV2_OK = True
+except ImportError:
+    _CV2_OK = False
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_returns_angle_per_frame(tmp_path, monkeypatch):
+    """run_offline_track returns one float per video frame via mocked tracker."""
+    import numpy as np, types
+
+    # Write a tiny 5-frame video to disk
+    video_path = str(tmp_path / "test.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"),
+        30.0, (320, 240))
+    for _ in range(5):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    # Fake patient detector returns a 17x2 COCO keypoints array
+    kps = np.zeros((17, 2), dtype=np.float32)
+    kps[12] = [160, 60]    # right hip
+    kps[14] = [160, 120]   # right knee
+    kps[16] = [160, 200]   # right ankle
+
+    class FakeDetector:
+        def detect(self, frame):
+            return kps, None  # (patient_kps, assessor_kps)
+
+    class FakeTracker:
+        def __init__(self, side, fps): pass
+        def init(self, frame, hip, knee, ankle): pass
+        def step(self, frame):
+            return kps[12], kps[14], kps[16], 160.0  # hip, knee, ankle, angle
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    engine = BiomechanicalEngine("rgb")
+    progress = []
+    angles = engine.run_offline_track(video_path,
+                                      lambda p: progress.append(p),
+                                      leg="right")
+
+    assert len(angles) == 5
+    assert all(a == 160.0 for a in angles)
+    assert progress and progress[-1] == 1.0

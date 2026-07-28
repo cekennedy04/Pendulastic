@@ -144,7 +144,66 @@ class BiomechanicalEngine:
         leg: str = "right",
     ) -> list:
         """
-        Run offline MediaPipe tracking on a recorded video file.
-        Implemented in Task 3. Returns list of float angles (one per frame).
+        Offline MediaPipe tracking on a recorded video.
+        Called on a background thread immediately after STOP (RGB methodology).
+
+        Tracker API (from pendulastic_viewer.py):
+          _PatientDetector().detect(frame) -> (patient_kps: ndarray(17,2) | None, _)
+          _MPBatchTracker(side, fps).init(frame, hip, knee, ankle)
+          tracker.step(frame) -> (hip, knee, ankle, angle_deg)
+
+        COCO indices used: 11=L-hip, 12=R-hip, 13=L-knee, 14=R-knee,
+                           15=L-ankle, 16=R-ankle
         """
-        raise NotImplementedError("Implemented in Task 3")
+        if not (_VIEWER_AVAIL and _CV2_AVAIL):
+            return []
+
+        cap = _cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return []
+
+        fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
+        total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
+
+        # COCO column offsets: right leg offset=1, left leg offset=0
+        col    = 1 if leg.lower() == "right" else 0
+        hip_i  = 11 + col   # 12 (right) or 11 (left)
+        knee_i = 13 + col   # 14 (right) or 13 (left)
+        ank_i  = 15 + col   # 16 (right) or 15 (left)
+
+        detector     = _PatientDetector()
+        tracker      = _MPBatchTracker(leg.lower(), fps=fps_v)
+        initialised  = False
+        angles: list = []
+
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    break
+
+                if not initialised:
+                    patient_kps, _ = detector.detect(frame)
+                    if patient_kps is not None and patient_kps.shape[0] >= 17:
+                        hip   = patient_kps[hip_i].astype(float)
+                        knee  = patient_kps[knee_i].astype(float)
+                        ankle = patient_kps[ank_i].astype(float)
+                        tracker.init(frame, hip, knee, ankle)
+                        initialised = True
+
+                if initialised:
+                    try:
+                        _, _, _, angle = tracker.step(frame)
+                        angles.append(float(angle) if angle is not None
+                                      else float("nan"))
+                    except Exception:
+                        angles.append(float("nan"))
+                else:
+                    angles.append(float("nan"))
+
+                progress_cb(len(angles) / total)
+        finally:
+            cap.release()
+
+        progress_cb(1.0)
+        return angles
