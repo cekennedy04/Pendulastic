@@ -116,3 +116,35 @@ class DataManager:
                             metadata["ms_status"], metadata["trial"],
                             metadata["methodology"]])
         return path
+
+
+# ---------------------------------------------------------------------------
+# BiomechanicalEngine
+# ---------------------------------------------------------------------------
+
+class BiomechanicalEngine:
+    """Angle pipeline — three code paths dispatched by methodology string."""
+
+    def __init__(self, methodology: str) -> None:
+        self.methodology = methodology  # "imu" | "rgb" | "optitrack"
+
+    def get_live_angle(self) -> float:
+        """Return current knee angle (degrees) or NaN if unavailable."""
+        if self.methodology != "imu" or not _IMU_AVAIL:
+            return float("nan")
+        try:
+            return float(_imu.get_state()["distal"]["pitch"])
+        except Exception:
+            return float("nan")
+
+    def run_offline_track(
+        self,
+        video_path: str,
+        progress_cb: Callable[[float], None],
+        leg: str = "right",
+    ) -> list:
+        """
+        Run offline MediaPipe tracking on a recorded video file.
+        Implemented in Task 3. Returns list of float angles (one per frame).
+        """
+        raise NotImplementedError("Implemented in Task 3")
