@@ -341,11 +341,112 @@ class AcquisitionPanel(tk.Frame):
             countdown_chk, rb_opti, rb_rgb, rb_imu,
         ]
 
+    # ------------------------------------------------------------------
+    # Public state transitions (called by App)
+    # ------------------------------------------------------------------
+    def enter_idle(self) -> None:
+        self._cancel_countdown()
+        self.btn_start.config(text="START RECORDING",
+                              command=self._on_start_clicked,
+                              bg=_GREEN, state="normal")
+        self.btn_stop.config(state="disabled")
+        self._lock_form(False)
+        self.canvas_tele.grid_remove()
+        self.status_var.set("Idle — ready to record.")
+
+    def enter_recording(self) -> None:
+        self._lock_form(True)
+        self.btn_start.config(text="START RECORDING",
+                              bg=_GREEN, state="disabled")
+        self.btn_stop.config(state="normal")
+        self.canvas_tele.grid(row=13, column=0, columnspan=2, padx=10, pady=4)
+        self.status_var.set("RECORDING…")
+
+    def enter_processing(self) -> None:
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="disabled")
+        self.status_var.set("Running MediaPipe tracking…")
+
+    # ------------------------------------------------------------------
+    # Validation and metadata
+    # ------------------------------------------------------------------
+    def validate_metadata(self) -> tuple:
+        pid = self.pid_var.get().strip()
+        if not pid:
+            return False, "Participant ID cannot be empty."
+        illegal = set('<>:"/\\|?*')
+        if any(c in illegal for c in pid):
+            return False, 'Participant ID contains illegal characters: < > : " / \\ | ? *'
+        return True, ""
+
+    def get_metadata(self) -> dict:
+        return {
+            "pid":        self.pid_var.get().strip(),
+            "leg":        self.leg_var.get(),
+            "ms_status":  self.ms_var.get(),
+            "trial":      int(self.trial_var.get()),
+            "methodology": self.method_var.get(),
+        }
+
+    def increment_trial(self) -> None:
+        self.trial_var.set(str(int(self.trial_var.get()) + 1))
+
+    # ------------------------------------------------------------------
+    # Button handlers
+    # ------------------------------------------------------------------
+    def _on_start_clicked(self) -> None:
+        ok, msg = self.validate_metadata()
+        if not ok:
+            messagebox.showerror("Cannot Start", msg)
+            return
+        if self.countdown_var.get():
+            self._start_countdown()
+        else:
+            self.controller.on_start()
+
+    def _on_stop_clicked(self) -> None:
+        self.controller.on_stop()
+
     def _on_method_changed(self) -> None:
         self.controller.on_methodology_changed(self.method_var.get())
 
-    def _on_start_clicked(self) -> None:
-        pass   # implemented in Task 5
+    # ------------------------------------------------------------------
+    # Countdown
+    # ------------------------------------------------------------------
+    def _start_countdown(self) -> None:
+        self._lock_form(True)
+        self.btn_start.config(text="CANCEL",
+                              command=self._cancel_countdown, bg=_AMBER)
+        self.btn_stop.config(state="disabled")
+        self._tick_countdown(5)
 
-    def _on_stop_clicked(self) -> None:
-        pass   # implemented in Task 5
+    def _tick_countdown(self, n: int) -> None:
+        if n == 0:
+            self.btn_start.config(text="START RECORDING",
+                                  command=self._on_start_clicked, bg=_GREEN)
+            self.controller.on_start()
+            return
+        self.status_var.set(f"Starting in {n}…")
+        self._countdown_id = self.after(1000, lambda: self._tick_countdown(n - 1))
+
+    def _cancel_countdown(self) -> None:
+        if self._countdown_id:
+            self.after_cancel(self._countdown_id)
+            self._countdown_id = None
+        self.btn_start.config(text="START RECORDING",
+                              command=self._on_start_clicked,
+                              bg=_GREEN, state="normal")
+        self.btn_stop.config(state="disabled")
+        self._lock_form(False)
+        self.status_var.set("Countdown cancelled — ready to record.")
+
+    # ------------------------------------------------------------------
+    # Form lock
+    # ------------------------------------------------------------------
+    def _lock_form(self, locked: bool) -> None:
+        for w in self._lockable:
+            cls = w.winfo_class()
+            if cls == "TCombobox":
+                w.config(state="disabled" if locked else "readonly")
+            else:
+                w.config(state="disabled" if locked else "normal")
