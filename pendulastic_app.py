@@ -672,3 +672,286 @@ class PostProcessingPanel(tk.Frame):
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if path:
             self.load_optitrack_overlay(path)
+
+
+# ---------------------------------------------------------------------------
+# App  (thin host)
+# ---------------------------------------------------------------------------
+
+class App(tk.Tk):
+    """
+    Owns: IMU server lifecycle, UDP port 8888 lifecycle, panel switching,
+    IMU poll thread -> queue -> sparkline tick.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Pendulastic")
+        self.geometry("500x740")
+        self.resizable(False, True)
+
+        self._state           = "idle"
+        self._engine: Optional[BiomechanicalEngine] = None
+        self._imu_queue: queue.Queue   = queue.Queue()
+        self._imu_poll_stop            = threading.Event()
+        self._imu_poll_thread: Optional[threading.Thread] = None
+        self._rec_angles:     list     = []
+        self._rec_timestamps: list     = []
+        self._video_path:     str      = ""
+
+        # Start IMU WebSocket server (port 5000) once for this process
+        if _IMU_AVAIL:
+            try:
+                _imu.start()
+            except Exception:
+                pass
+
+        self._acq  = AcquisitionPanel(self, controller=self)
+        self._post = PostProcessingPanel(self, controller=self)
+        self._acq.pack(fill="both", expand=True)
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._tick()
+
+    # ------------------------------------------------------------------
+    # Controller interface (called by AcquisitionPanel / PostProcessingPanel)
+    # ------------------------------------------------------------------
+    def on_start(self) -> None:
+        meta   = self._acq.get_metadata()
+        method = meta["methodology"]
+        self._engine         = BiomechanicalEngine(method)
+        self._rec_angles     = []
+        self._rec_timestamps = []
+        self._acq.clear_telemetry()
+
+        if method == "imu":
+            self._start_imu_recording(meta)
+        elif method == "rgb":
+            self._start_rgb_recording(meta)
+        elif method == "optitrack":
+            self._start_optitrack_recording(meta)
+
+        self._state = "recording"
+        self._acq.enter_recording()
+
+    def on_stop(self) -> None:
+        # Stop IMU poll thread unconditionally
+        self._imu_poll_stop.set()
+        if self._imu_poll_thread:
+            self._imu_poll_thread.join(timeout=1.0)
+        self._imu_poll_stop.clear()
+        self._imu_poll_thread = None
+
+        meta   = self._acq.get_metadata()
+        method = meta["methodology"]
+
+        if method == "imu":
+            if _IMU_AVAIL:
+                try:
+                    _imu.stop_recording()
+                except Exception:
+                    pass
+            fn   = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+            DataManager.save_trial(
+                fn, self._rec_angles, meta,
+                timestamps=self._rec_timestamps or None)
+            self._transition_to_review(fn, self._rec_angles, meta)
+
+        elif method == "rgb":
+            self._stop_rgb_recording()
+            self._state = "processing"
+            self._acq.enter_processing()
+            threading.Thread(
+                target=self._run_rgb_processing,
+                args=(meta,), daemon=True,
+            ).start()
+
+        elif method == "optitrack":
+            if _MOTIVE_AVAIL:
+                try:
+                    _motive.stop_local_motive()
+                except Exception:
+                    pass
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+            # No angles available live — user loads OptiTrack CSV in the panel
+            self._transition_to_review(fn, [], meta)
+
+    def on_new_trial(self) -> None:
+        self._acq.increment_trial()
+        self._post.pack_forget()
+        self._acq.pack(fill="both", expand=True)
+        self._acq.enter_idle()
+        self.geometry("500x740")
+        self._state = "idle"
+
+    def on_methodology_changed(self, method: str) -> None:
+        # Stop any running poll thread (safe to call even if not running)
+        self._imu_poll_stop.set()
+        if self._imu_poll_thread:
+            self._imu_poll_thread.join(timeout=0.5)
+        self._imu_poll_stop.clear()
+        self._imu_poll_thread = None
+
+        if method == "imu":
+            label = ("● iPhone IMU — waiting for phone" if _IMU_AVAIL
+                     else "● IMU module unavailable")
+            color = "#B36B00" if _IMU_AVAIL else "red"
+        elif method == "rgb":
+            label = ("● RGB / MediaPipe ready" if _VIEWER_AVAIL
+                     else "● MediaPipe unavailable (pendulastic_viewer not importable)")
+            color = "green" if _VIEWER_AVAIL else "red"
+        else:
+            label = ("● OptiTrack (Motive)" if _MOTIVE_AVAIL
+                     else "● OptiTrack — Motive not found (will skip live sync)")
+            color = "green" if _MOTIVE_AVAIL else "#B36B00"
+        self._acq.lbl_method_status.config(text=label, fg=color)
+
+    # ------------------------------------------------------------------
+    # Recording helpers
+    # ------------------------------------------------------------------
+    def _start_imu_recording(self, meta: dict) -> None:
+        fn   = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        path = os.path.join(DataManager.DATA_DIR, fn)
+        os.makedirs(DataManager.DATA_DIR, exist_ok=True)
+        if _IMU_AVAIL:
+            try:
+                _imu.start_recording(path, meta)
+            except Exception as e:
+                messagebox.showwarning(
+                    "IMU Recording",
+                    f"IMU CSV could not be opened:\n{e}\n\nContinuing without IMU CSV.")
+        # Start background poll thread for live sparkline
+        self._imu_poll_stop.clear()
+        self._imu_poll_thread = threading.Thread(
+            target=self._imu_poll_worker, daemon=True)
+        self._imu_poll_thread.start()
+
+    def _imu_poll_worker(self) -> None:
+        """Put (t, angle_deg) into _imu_queue at ~20 Hz."""
+        while not self._imu_poll_stop.is_set():
+            if self._engine:
+                angle = self._engine.get_live_angle()
+                self._imu_queue.put((time.time(), angle))
+            time.sleep(0.05)
+
+    def _start_rgb_recording(self, meta: dict) -> None:
+        if not _CV2_AVAIL:
+            messagebox.showerror("RGB", "OpenCV (cv2) is not installed.")
+            return
+        fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        os.makedirs(DataManager.DATA_DIR, exist_ok=True)
+        self._video_path = os.path.join(
+            DataManager.DATA_DIR, fn.replace(".csv", ".avi"))
+        cap = _cv2.VideoCapture(0)
+        w   = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        h   = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+        self._rgb_cap    = cap
+        self._rgb_writer = _cv2.VideoWriter(
+            self._video_path, _cv2.VideoWriter_fourcc(*"XVID"), 30.0, (w, h))
+        self._rgb_stop   = threading.Event()
+        self._rgb_thread = threading.Thread(
+            target=self._rgb_record_worker, daemon=True)
+        self._rgb_thread.start()
+
+    def _rgb_record_worker(self) -> None:
+        while not self._rgb_stop.is_set():
+            ret, frame = self._rgb_cap.read()
+            if ret and frame is not None and self._rgb_writer:
+                self._rgb_writer.write(frame)
+
+    def _stop_rgb_recording(self) -> None:
+        if hasattr(self, "_rgb_stop"):
+            self._rgb_stop.set()
+        if hasattr(self, "_rgb_thread"):
+            self._rgb_thread.join(timeout=2.0)
+        if hasattr(self, "_rgb_writer") and self._rgb_writer:
+            self._rgb_writer.release()
+            self._rgb_writer = None
+        if hasattr(self, "_rgb_cap") and self._rgb_cap:
+            self._rgb_cap.release()
+            self._rgb_cap = None
+
+    def _run_rgb_processing(self, meta: dict) -> None:
+        def progress(pct: float) -> None:
+            self.after(0, lambda p=pct: self._acq.status_var.set(
+                f"MediaPipe tracking: {int(p * 100)}%"))
+
+        leg    = meta.get("leg", "right").lower()
+        angles = self._engine.run_offline_track(self._video_path, progress, leg=leg)
+        fn     = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        DataManager.save_trial(fn, angles, meta, fps=30.0)
+        self.after(0, lambda: self._transition_to_review(fn, angles, meta))
+
+    def _start_optitrack_recording(self, meta: dict) -> None:
+        if _MOTIVE_AVAIL:
+            try:
+                msg = (f"START|id={meta['pid']}|leg={meta['leg']}|"
+                       f"trial={meta['trial']}")
+                _motive.start_local_motive(msg)
+            except Exception as e:
+                messagebox.showwarning(
+                    "Motive Sync",
+                    f"Could not trigger Motive:\n{type(e).__name__}: {e}\n\n"
+                    "Recording will continue without OptiTrack sync.")
+
+    # ------------------------------------------------------------------
+    # Panel switching
+    # ------------------------------------------------------------------
+    def _transition_to_review(self, filename: str,
+                               angles: list, meta: dict) -> None:
+        self._state = "review"
+        self._post.load_trial(angles, self._fps_for(meta), meta, filename)
+        self._acq.pack_forget()
+        self._post.pack(fill="both", expand=True)
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fps_for(meta: dict) -> float:
+        return 30.0   # RGB and OptiTrack; IMU timestamps are explicit
+
+    # ------------------------------------------------------------------
+    # 50 ms tick — drain IMU queue -> sparkline
+    # ------------------------------------------------------------------
+    def _tick(self) -> None:
+        try:
+            while not self._imu_queue.empty():
+                t, angle = self._imu_queue.get_nowait()
+                if self._state == "recording":
+                    self._rec_angles.append(angle)
+                    self._rec_timestamps.append(t)
+                    self._acq.push_telemetry(t, angle)
+        except queue.Empty:
+            pass
+        self.after(50, self._tick)
+
+    # ------------------------------------------------------------------
+    # Teardown
+    # ------------------------------------------------------------------
+    def on_close(self) -> None:
+        self._imu_poll_stop.set()
+        if self._imu_poll_thread:
+            self._imu_poll_thread.join(timeout=0.5)
+        if hasattr(self, "_rgb_stop"):
+            self._rgb_stop.set()
+        if _IMU_AVAIL:
+            try:
+                _imu.stop()
+            except Exception:
+                pass
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
+    App().mainloop()
