@@ -185,16 +185,23 @@ class DataManager:
         return f"PID_{pid}_LEG_{leg_s}_{ms_s}_TRIAL_{trial}.csv"
 
     @classmethod
-    def save_trial(cls, filename: str, angles: list[float],
-                   fps: float, metadata: dict) -> str:
+    def save_trial(cls, filename: str,
+                   angles: list[float],           # (angle_deg,) for RGB/OptiTrack
+                   metadata: dict,                # pid, leg, ms_status, trial, methodology
+                   timestamps: list[float] | None = None,  # epoch-s; None → use fps
+                   fps: float = 30.0) -> str:
+        # For RGB/OptiTrack: time_s = frame_index / fps
+        # For IMU: timestamps is the list of packet epoch times; time_s = t - t[0]
         os.makedirs(cls.DATA_DIR, exist_ok=True)
         path = os.path.join(cls.DATA_DIR, filename)
+        t0 = timestamps[0] if timestamps else 0.0
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["frame", "time_s", "knee_angle_deg",
                         "pid", "leg", "ms_status", "trial", "methodology"])
             for i, a in enumerate(angles):
-                w.writerow([i, f"{i/fps:.4f}", f"{a:.3f}",
+                t = (timestamps[i] - t0) if timestamps else i / fps
+                w.writerow([i, f"{t:.4f}", f"{a:.3f}",
                             metadata["pid"], metadata["leg"],
                             metadata["ms_status"], metadata["trial"],
                             metadata["methodology"]])
