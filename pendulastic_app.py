@@ -1378,17 +1378,25 @@ class App(tk.Tk):
             self.after(0, lambda p=pct: target.set(
                 f"HPE processing: {int(p * 100)}%"))
 
-        leg    = meta.get("leg", "right").lower()
-        engine = BiomechanicalEngine("rgb")
-        angles = engine.run_offline_track(path, progress, leg=leg)
+        try:
+            leg    = meta.get("leg", "right").lower()
+            engine = BiomechanicalEngine("rgb")
+            angles = engine.run_offline_track(path, progress, leg=leg)
 
-        fn = DataManager.build_filename(
-            meta["pid"], meta["leg"], meta["ms_status"],
-            meta["trial"], source="video_file")
-        DataManager.save_trial(fn, angles, meta, fps=30.0, source="video_file")
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"],
+                meta["trial"], source="video_file")
+            DataManager.save_trial(fn, angles, meta, fps=30.0, source="video_file")
 
-        source_angles = {"video_file": angles}
-        self.after(0, lambda: self._transition_to_review(source_angles, meta))
+            source_angles = {"video_file": angles}
+            self.after(0, lambda: self._transition_to_review(source_angles, meta))
+        except Exception as exc:
+            if progress_target is not None:
+                def _err_video(msg=str(exc)):
+                    target.set(f"Error processing video: {msg}")
+                    self._upload_meta.set_processing(False)
+                    self._state = "upload_meta"
+                self.after(0, _err_video)
 
     def _start_rgb_recording(self, meta: dict) -> None:
         if not _CV2_AVAIL:
