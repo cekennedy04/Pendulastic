@@ -57,3 +57,29 @@ def test_on_source_changed_does_not_crash(monkeypatch):
         app.update()
     finally:
         app.destroy()
+
+
+def test_get_live_angle_maps_to_180_convention(monkeypatch):
+    """Full extension (pitch=0 after zero) must read 180°; flexion increases pitch, lowers clinical angle."""
+    import pendulastic_app as _m, types
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", types.SimpleNamespace(
+        get_state=lambda: {
+            "angles": {"pitch": 0.0, "roll": 0.0, "yaw": 0.0, "paired": True},
+            "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+            "proximal": {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+        }
+    ))
+    from pendulastic_app import BiomechanicalEngine
+    engine = BiomechanicalEngine("imu")
+    assert engine.get_live_angle() == 180.0, "Horizontal extension (pitch=0) must map to 180°"
+
+    # Flexion: pitch increases → clinical angle decreases
+    monkeypatch.setattr(_m, "_imu", types.SimpleNamespace(
+        get_state=lambda: {
+            "angles": {"pitch": 45.0, "roll": 0.0, "yaw": 0.0, "paired": True},
+            "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+            "proximal": {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+        }
+    ))
+    assert engine.get_live_angle() == 135.0, "45° pitch must map to 135° clinical"

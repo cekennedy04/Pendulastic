@@ -137,7 +137,7 @@ class BiomechanicalEngine:
         if self.methodology != "imu" or not _IMU_AVAIL:
             return float("nan")
         try:
-            return float(_imu.get_state()["angles"]["pitch"])
+            return 180.0 - float(_imu.get_state()["angles"]["pitch"])
         except Exception:
             return float("nan")
 
