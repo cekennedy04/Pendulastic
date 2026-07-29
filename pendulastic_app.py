@@ -839,8 +839,11 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Pendulastic")
-        self.geometry("500x740")
-        self.resizable(False, True)
+        self.geometry("900x740")
+        self.resizable(True, True)
+        self.minsize(700, 680)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
 
         self._state           = "idle"
         self._engine: Optional[BiomechanicalEngine] = None

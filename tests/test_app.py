@@ -83,3 +83,15 @@ def test_get_live_angle_maps_to_180_convention(monkeypatch):
         }
     ))
     assert engine.get_live_angle() == 135.0, "45° pitch must map to 135° clinical"
+
+
+def test_root_window_is_resizable_and_wide():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        min_w, min_h = app.minsize()
+        assert min_w >= 700, f"minsize width should be ≥700, got {min_w}"
+        assert min_h >= 680, f"minsize height should be ≥680, got {min_h}"
+    finally:
+        app.destroy()
