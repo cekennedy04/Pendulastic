@@ -21,10 +21,11 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
     try:
         app._acq.pid_var.set("P1")
         app._acq.trial_var.set("2")
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
-                "trial": 2, "methodology": "imu"}
-        app._transition_to_review("PID_P1_LEG_Right_MS_TRIAL_2.csv",
-                                   [170.0] * 30, meta)
+        # Directly simulate the review state without going through load_trial
+        # (PostProcessingPanel.load_trial signature changes in Task 5 — bypass here)
+        app._state = "review"
+        app._acq.pack_forget()
+        app._post.pack(fill="both", expand=True)
         app.update()
         app.on_new_trial()
         app.update()
@@ -35,22 +36,24 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
         app.destroy()
 
 
-def test_on_methodology_changed_does_not_crash(monkeypatch):
+def test_on_source_changed_does_not_crash(monkeypatch):
     import pendulastic_app as _m, types
     monkeypatch.setattr(_m, "_IMU_AVAIL", True)
     monkeypatch.setattr(_m, "_imu",
         types.SimpleNamespace(
             start=lambda: None, stop=lambda: None,
             get_state=lambda: {
-                "distal":   {"pitch": 0.0, "roll": 0.0, "yaw": 0.0},
-                "proximal": {"pitch": 0.0, "roll": 0.0, "yaw": 0.0},
+                "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
+                "proximal": {"connected": False, "ip": "", "packets": 0, "hz": 0.0},
+                "angles":   {"pitch": 0.0, "roll": 0.0, "yaw": 0.0, "paired": False},
             }))
     from pendulastic_app import App
     app = App()
     try:
-        app.on_methodology_changed("rgb")
-        app.on_methodology_changed("imu")
-        app.on_methodology_changed("optitrack")
+        app.on_source_changed(["rgb"])
+        app.on_source_changed(["imu"])
+        app.on_source_changed(["imu", "optitrack"])
+        app.on_source_changed([])
         app.update()
     finally:
         app.destroy()

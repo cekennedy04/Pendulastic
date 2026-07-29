@@ -674,13 +674,23 @@ class PostProcessingPanel(tk.Frame):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def load_trial(self, angles: list, fps: float,
+    def load_trial(self, angles: list | dict, fps: float,
                    metadata: dict, filename: str) -> None:
-        self._angles = angles
+        # For now, accept dict (Task 4) or list (old tests); Task 5 will fully refactor
+        if isinstance(angles, dict):
+            # Multi-source dict: pick first non-empty source for display
+            for src in ["imu", "rgb", "optitrack"]:
+                if src in angles and angles[src]:
+                    self._angles = angles[src]
+                    break
+            else:
+                self._angles = []
+        else:
+            self._angles = angles
         self._fps    = fps
         self.title_var.set(filename)
-        self._plot_curve(angles, fps)
-        self._show_pt_metrics(angles, fps)
+        self._plot_curve(self._angles, fps)
+        self._show_pt_metrics(self._angles, fps)
         self.status_var.set(f"Saved: {filename}")
 
     def load_optitrack_overlay(self, csv_path: str) -> None:
@@ -771,8 +781,9 @@ class App(tk.Tk):
         self._imu_queue: queue.Queue   = queue.Queue()
         self._imu_poll_stop            = threading.Event()
         self._imu_poll_thread: Optional[threading.Thread] = None
-        self._rec_angles:     list     = []
-        self._rec_timestamps: list     = []
+        self._active_sources: list     = []
+        self._rec_angles:     dict     = {}   # {"imu": [...], "rgb": [...]}
+        self._rec_timestamps: dict     = {}   # {"imu": [...]}
         self._video_path:     str      = ""
 
         # Start IMU WebSocket server (port 5000) once for this process
@@ -793,19 +804,29 @@ class App(tk.Tk):
     # Controller interface (called by AcquisitionPanel / PostProcessingPanel)
     # ------------------------------------------------------------------
     def on_start(self) -> None:
-        meta   = self._acq.get_metadata()
-        method = meta["methodology"]
-        self._engine         = BiomechanicalEngine(method)
-        self._rec_angles     = []
-        self._rec_timestamps = []
+        meta    = self._acq.get_metadata()
+        sources = meta["sources"]
+        self._active_sources = list(sources)
+
+        # Pick primary engine for live sparkline (IMU > RGB > OptiTrack priority)
+        if "imu" in sources:
+            self._engine = BiomechanicalEngine("imu")
+        elif "rgb" in sources:
+            self._engine = BiomechanicalEngine("rgb")
+        else:
+            self._engine = BiomechanicalEngine("optitrack")
+
+        self._rec_angles     = {}
+        self._rec_timestamps = {}
         self._acq.clear_telemetry()
 
-        if method == "imu":
-            self._start_imu_recording(meta)
-        elif method == "rgb":
-            self._start_rgb_recording(meta)
-        elif method == "optitrack":
-            self._start_optitrack_recording(meta)
+        for src in sources:
+            if src == "imu":
+                self._start_imu_recording(meta)
+            elif src == "rgb":
+                self._start_rgb_recording(meta)
+            elif src == "optitrack":
+                self._start_optitrack_recording(meta)
 
         self._state = "recording"
         self._acq.enter_recording()
@@ -818,41 +839,43 @@ class App(tk.Tk):
         self._imu_poll_stop.clear()
         self._imu_poll_thread = None
 
-        meta   = self._acq.get_metadata()
-        method = meta["methodology"]
+        meta           = self._acq.get_metadata()
+        source_angles: dict = {}
+        pending_rgb    = False
 
-        if method == "imu":
-            if _IMU_AVAIL:
-                try:
-                    _imu.stop_recording()
-                except Exception:
-                    pass
-            fn   = DataManager.build_filename(
-                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
-            DataManager.save_trial(
-                fn, self._rec_angles, meta,
-                timestamps=self._rec_timestamps or None)
-            self._transition_to_review(fn, self._rec_angles, meta)
+        for src in self._active_sources:
+            if src == "imu":
+                angles_imu = self._rec_angles.get("imu", [])
+                ts_imu     = self._rec_timestamps.get("imu") or None
+                fn_imu = DataManager.build_filename(
+                    meta["pid"], meta["leg"], meta["ms_status"], meta["trial"],
+                    source="imu")
+                DataManager.save_trial(fn_imu, angles_imu, meta,
+                                       timestamps=ts_imu, source="imu")
+                source_angles["imu"] = angles_imu
 
-        elif method == "rgb":
-            self._stop_rgb_recording()
+            elif src == "rgb":
+                self._stop_rgb_recording()
+                pending_rgb = True
+
+            elif src == "optitrack":
+                if _MOTIVE_AVAIL:
+                    try:
+                        _motive.stop_local_motive()
+                    except Exception:
+                        pass
+                source_angles["optitrack"] = []   # angles loaded from CSV in review panel
+
+        if pending_rgb:
             self._state = "processing"
             self._acq.enter_processing()
+            self._pending_review = source_angles  # preserve already-done sources
             threading.Thread(
                 target=self._run_rgb_processing,
                 args=(meta,), daemon=True,
             ).start()
-
-        elif method == "optitrack":
-            if _MOTIVE_AVAIL:
-                try:
-                    _motive.stop_local_motive()
-                except Exception:
-                    pass
-            fn = DataManager.build_filename(
-                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
-            # No angles available live — user loads OptiTrack CSV in the panel
-            self._transition_to_review(fn, [], meta)
+        else:
+            self._transition_to_review(source_angles, meta)
 
     def on_new_trial(self) -> None:
         self._acq.increment_trial()
@@ -862,44 +885,16 @@ class App(tk.Tk):
         self.geometry("500x740")
         self._state = "idle"
 
-    def on_methodology_changed(self, method: str) -> None:
-        # Stop any running poll thread (safe to call even if not running)
-        self._imu_poll_stop.set()
-        if self._imu_poll_thread:
-            self._imu_poll_thread.join(timeout=0.5)
-        self._imu_poll_stop.clear()
-        self._imu_poll_thread = None
-
-        if method == "imu":
-            label = ("● iPhone IMU — waiting for phone" if _IMU_AVAIL
-                     else "● IMU module unavailable")
-            color = "#B36B00" if _IMU_AVAIL else "red"
-        elif method == "rgb":
-            label = ("● RGB / MediaPipe ready" if _VIEWER_AVAIL
-                     else "● MediaPipe unavailable (pendulastic_viewer not importable)")
-            color = "green" if _VIEWER_AVAIL else "red"
-        else:
-            label = ("● OptiTrack (Motive)" if _MOTIVE_AVAIL
-                     else "● OptiTrack — Motive not found (will skip live sync)")
-            color = "green" if _MOTIVE_AVAIL else "#B36B00"
-        self._acq.lbl_method_status.config(text=label, fg=color)
+    def on_source_changed(self, sources: list) -> None:
+        """Called by AcquisitionPanel when any source checkbox changes."""
+        self._active_sources = list(sources)
 
     # ------------------------------------------------------------------
     # Recording helpers
     # ------------------------------------------------------------------
     def _start_imu_recording(self, meta: dict) -> None:
-        fn   = DataManager.build_filename(
-            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
-        path = os.path.join(DataManager.DATA_DIR, fn)
-        os.makedirs(DataManager.DATA_DIR, exist_ok=True)
-        if _IMU_AVAIL:
-            try:
-                _imu.start_recording(path, meta)
-            except Exception as e:
-                messagebox.showwarning(
-                    "IMU Recording",
-                    f"IMU CSV could not be opened:\n{e}\n\nContinuing without IMU CSV.")
-        # Start background poll thread for live sparkline
+        # IMU server runs continuously; data flows via queue -> _tick -> _rec_angles["imu"]
+        # No start_recording() call needed — we own the CSV via DataManager.save_trial.
         self._imu_poll_stop.clear()
         self._imu_poll_thread = threading.Thread(
             target=self._imu_poll_worker, daemon=True)
@@ -961,11 +956,14 @@ class App(tk.Tk):
                 f"MediaPipe tracking: {int(p * 100)}%"))
 
         leg    = meta.get("leg", "right").lower()
+        fn_rgb = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="rgb")
         angles = self._engine.run_offline_track(self._video_path, progress, leg=leg)
-        fn     = DataManager.build_filename(
-            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
-        DataManager.save_trial(fn, angles, meta, fps=30.0)
-        self.after(0, lambda: self._transition_to_review(fn, angles, meta))
+        DataManager.save_trial(fn_rgb, angles, meta, fps=30.0, source="rgb")
+
+        source_angles = dict(getattr(self, "_pending_review", {}))
+        source_angles["rgb"] = angles
+        self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     def _start_optitrack_recording(self, meta: dict) -> None:
         if _MOTIVE_AVAIL:
@@ -982,10 +980,11 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Panel switching
     # ------------------------------------------------------------------
-    def _transition_to_review(self, filename: str,
-                               angles: list, meta: dict) -> None:
+    def _transition_to_review(self, source_angles: dict, meta: dict) -> None:
         self._state = "review"
-        self._post.load_trial(angles, self._fps_for(meta), meta, filename)
+        base_fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
         self._acq.pack_forget()
         self._post.pack(fill="both", expand=True)
         try:
@@ -1005,8 +1004,8 @@ class App(tk.Tk):
             while not self._imu_queue.empty():
                 t, angle = self._imu_queue.get_nowait()
                 if self._state == "recording":
-                    self._rec_angles.append(angle)
-                    self._rec_timestamps.append(t)
+                    self._rec_angles.setdefault("imu", []).append(angle)
+                    self._rec_timestamps.setdefault("imu", []).append(t)
                     self._acq.push_telemetry(t, angle)
         except queue.Empty:
             pass
