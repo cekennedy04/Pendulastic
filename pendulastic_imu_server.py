@@ -1,0 +1,1316 @@
+"""
+pendulastic_imu_server.py  —  iPhone IMU goniometer (Sensor Stream → AHRS)
+==========================================================================
+WebSocket server for the "Sensor Stream" companion app (iOS/Android).
+Two phones stream raw 3-axial IMU/MARG data; this module fuses each phone's
+accelerometer + gyroscope + magnetometer into an orientation quaternion via a
+Madgwick AHRS filter, then reports the RELATIVE joint angle between the two
+segments.
+
+Method follows Andersson et al., Sensors 2024, 24, 4769:
+    proximal segment (torso / thigh)  → Euler (phi_1, theta_1, psi_1)
+    distal   segment (thigh / shank)  → Euler (phi_2, theta_2, psi_2)
+    joint angle:  phi_h = phi_2 - phi_1     (abduction/adduction)
+                  theta_h = theta_2 - theta_1 (flexion/extension)  ← angle of interest
+                  psi_h = psi_2 - psi_1     (internal/external rotation)
+
+Sensor Stream protocol (app default port 5000):
+    ws://<host>:5000/accelerometer   {"SensorName","Timestamp","x","y","z"}
+    ws://<host>:5000/gyroscope       idem  (rad/s)
+    ws://<host>:5000/magnetometer    idem  (uT)
+    ws://<host>:5000/orientation     {"SensorName","Timestamp","azimuth","pitch","roll"}
+
+Phones are told apart by their source IP: the first to connect becomes the
+proximal segment, the second the distal segment. Call swap_roles() to flip.
+
+Standalone smoke test:
+    .venv\\Scripts\\python.exe pendulastic_imu_server.py
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import csv
+import hashlib
+import json
+import math
+import os
+import socket
+import subprocess
+import struct
+import sys
+import threading
+import time
+from typing import Optional
+
+import numpy as np
+
+# Sensor Stream's default. Override with PENDULASTIC_IMU_PORT when two
+# Pendulastic apps must run side by side (e.g. master_app.py acquiring while
+# the viewer reviews) — only one process can own a port.
+try:
+    PORT = int(os.environ.get("PENDULASTIC_IMU_PORT", "") or 5000)
+except ValueError:
+    PORT = 5000
+
+# RFC 6455 handshake GUID. The WebSocket server below is implemented directly
+# on asyncio streams — deliberately NOT on the third-party `websockets`
+# package, so the viewer works on any interpreter that can run the GUI. The
+# same approach is used by pendulastic_phone_server.py.
+_WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+# Madgwick filter gain. Higher = trusts accel/mag more (faster drift correction,
+# noisier); lower = trusts gyro more. 0.041 is Madgwick's suggested MARG value.
+BETA = 0.041
+
+# A device is considered disconnected if no packet arrives within this window.
+STALE_AFTER_S = 2.0
+
+# ── Time synchronisation ──────────────────────────────────────────────────────
+# Each phone stamps packets with its OWN clock (Timestamp, epoch ms), which is
+# not the laptop clock that motive_mobile_sync.py and the video recorder use.
+# For every packet we observe (t_local_arrival - t_phone). Network delay only
+# ever makes that larger, so the MINIMUM over a window is the best estimate of
+# the true clock offset; the spread is the transport jitter.
+SYNC_MIN_SAMPLES  = 40      # packets needed before an offset is trusted
+SYNC_WINDOW       = 400     # samples retained per device
+SYNC_WINDOW_S     = 6.0     # …and never older than this, so a slow stream's
+                            # window cannot silently span minutes of drift
+SYNC_MAX_JITTER_S = 0.150   # p10–p90 spread above which the link is too noisy
+
+# The pendulum swings at roughly 1 Hz, and Madgwick needs many correction
+# steps per cycle to track it. Andersson et al. sampled at 100 Hz; below this
+# floor the fused angle is not trustworthy and the UI says so.
+MIN_USABLE_HZ = 25.0
+
+ROLE_PROXIMAL = "proximal"   # torso (hip) or thigh (knee)
+ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
+
+
+# ─── AHRS: Madgwick MARG filter ───────────────────────────────────────────────
+
+class MadgwickAHRS:
+    """Quaternion orientation filter with gyroscope prediction and
+    accelerometer/magnetometer gradient-descent correction (the two-step
+    predict/correct structure described in the reference paper)."""
+
+    def __init__(self, beta: float = BETA):
+        self.beta = beta
+        self.q = np.array([1.0, 0.0, 0.0, 0.0])   # [w, x, y, z]
+
+    def reset(self):
+        self.q = np.array([1.0, 0.0, 0.0, 0.0])
+
+    def update(self, gyro, accel, mag, dt: float):
+        """gyro: rad/s (3,), accel: any unit (3,), mag: any unit (3,) or None,
+        dt: seconds since previous update."""
+        q1, q2, q3, q4 = self.q
+        gx, gy, gz = gyro
+
+        # ── Prediction: integrate angular velocity ────────────────────────────
+        qDot = 0.5 * np.array([
+            -q2 * gx - q3 * gy - q4 * gz,
+             q1 * gx + q3 * gz - q4 * gy,
+             q1 * gy - q2 * gz + q4 * gx,
+             q1 * gz + q2 * gy - q3 * gx,
+        ])
+
+        # ── Correction: gradient descent toward accel (+ mag) reference ───────
+        a_norm = float(np.linalg.norm(accel))
+        if a_norm > 1e-9:
+            ax, ay, az = np.asarray(accel, float) / a_norm
+
+            m_norm = float(np.linalg.norm(mag)) if mag is not None else 0.0
+            use_mag = m_norm > 1e-9
+
+            if use_mag:
+                mx, my, mz = np.asarray(mag, float) / m_norm
+                # Earth-frame magnetic reference, tilt-compensated
+                hx = 2 * (mx * (0.5 - q3 * q3 - q4 * q4) +
+                          my * (q2 * q3 - q1 * q4) +
+                          mz * (q2 * q4 + q1 * q3))
+                hy = 2 * (mx * (q2 * q3 + q1 * q4) +
+                          my * (0.5 - q2 * q2 - q4 * q4) +
+                          mz * (q3 * q4 - q1 * q2))
+                bx = math.sqrt(hx * hx + hy * hy)
+                bz = 2 * (mx * (q2 * q4 - q1 * q3) +
+                          my * (q3 * q4 + q1 * q2) +
+                          mz * (0.5 - q2 * q2 - q3 * q3))
+
+                # Objective function (gravity + magnetic field residuals)
+                f = np.array([
+                    2 * (q2 * q4 - q1 * q3) - ax,
+                    2 * (q1 * q2 + q3 * q4) - ay,
+                    2 * (0.5 - q2 * q2 - q3 * q3) - az,
+                    2 * bx * (0.5 - q3 * q3 - q4 * q4) + 2 * bz * (q2 * q4 - q1 * q3) - mx,
+                    2 * bx * (q2 * q3 - q1 * q4) + 2 * bz * (q1 * q2 + q3 * q4) - my,
+                    2 * bx * (q1 * q3 + q2 * q4) + 2 * bz * (0.5 - q2 * q2 - q3 * q3) - mz,
+                ])
+                J = np.array([
+                    [-2 * q3,             2 * q4,            -2 * q1,             2 * q2],
+                    [ 2 * q2,             2 * q1,             2 * q4,             2 * q3],
+                    [ 0.0,               -4 * q2,            -4 * q3,             0.0],
+                    [-2 * bz * q3,        2 * bz * q4,       -4 * bx * q3 - 2 * bz * q1,
+                                                             -4 * bx * q4 + 2 * bz * q2],
+                    [-2 * bx * q4 + 2 * bz * q2,
+                                          2 * bx * q3 + 2 * bz * q1,
+                                                              2 * bx * q2 + 2 * bz * q4,
+                                                             -2 * bx * q1 + 2 * bz * q3],
+                    [ 2 * bx * q3,        2 * bx * q4 - 4 * bz * q2,
+                                                              2 * bx * q1 - 4 * bz * q3,
+                                                              2 * bx * q2],
+                ])
+            else:
+                # IMU-only fallback (no magnetometer): gravity residual only.
+                f = np.array([
+                    2 * (q2 * q4 - q1 * q3) - ax,
+                    2 * (q1 * q2 + q3 * q4) - ay,
+                    2 * (0.5 - q2 * q2 - q3 * q3) - az,
+                ])
+                J = np.array([
+                    [-2 * q3,  2 * q4, -2 * q1,  2 * q2],
+                    [ 2 * q2,  2 * q1,  2 * q4,  2 * q3],
+                    [ 0.0,    -4 * q2, -4 * q3,  0.0],
+                ])
+
+            step = J.T @ f
+            s_norm = float(np.linalg.norm(step))
+            if s_norm > 1e-9:
+                qDot -= self.beta * (step / s_norm)
+
+        self.q = self.q + qDot * dt
+        n = float(np.linalg.norm(self.q))
+        if n > 1e-9:
+            self.q /= n
+
+    def euler_deg(self) -> tuple[float, float, float]:
+        """Return (roll, pitch, yaw) in degrees — ZYX convention.
+        roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
+        q1, q2, q3, q4 = self.q
+        roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
+        sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
+        pitch = math.asin(sin_p)
+        yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
+        return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+
+
+def wrap180(deg: float) -> float:
+    """Wrap an angle difference into [-180, 180)."""
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def _qconj(q: np.ndarray) -> np.ndarray:
+    return np.array([q[0], -q[1], -q[2], -q[3]])
+
+
+def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return np.array([
+        a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3],
+        a[0]*b[1] + a[1]*b[0] + a[2]*b[3] - a[3]*b[2],
+        a[0]*b[2] - a[1]*b[3] + a[2]*b[0] + a[3]*b[1],
+        a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0],
+    ])
+
+
+# ─── per-phone state ──────────────────────────────────────────────────────────
+
+class _IMUDevice:
+    def __init__(self, ident: str):
+        self.ident      = ident          # source IP
+        self.ahrs       = MadgwickAHRS()
+        self.accel: Optional[np.ndarray] = None
+        self.mag:   Optional[np.ndarray] = None
+        self.last_gyro_t: Optional[float] = None
+        self.last_rx:   float = 0.0
+        self.phone_ts:  int   = 0        # app-supplied epoch ms (sync reference)
+        self.n_packets: int   = 0
+        # Euler angles, degrees. Populated either by AHRS fusion of raw sensors
+        # or directly from the app's /orientation stream when enabled.
+        self.roll = self.pitch = self.yaw = float("nan")
+        self.from_orientation_stream = False
+        # Clock-offset samples: (arrival_epoch, t_local_arrival - t_phone).
+        self.offset_samples: list[tuple[float, float]] = []
+        # Recent gyro arrival times. The gyro drives AHRS integration, so its
+        # rate — not the aggregate packet rate — determines output quality.
+        self.gyro_times: list[float] = []
+
+    @property
+    def connected(self) -> bool:
+        return self.last_rx > 0 and (time.time() - self.last_rx) < STALE_AFTER_S
+
+    def _observe_offset(self, phone_ts_ms: int, arrival: float):
+        if not phone_ts_ms:
+            return
+        self.offset_samples.append((arrival, arrival - phone_ts_ms / 1000.0))
+        cutoff = arrival - SYNC_WINDOW_S
+        if len(self.offset_samples) > SYNC_WINDOW or \
+                self.offset_samples[0][0] < cutoff:
+            self.offset_samples = [s for s in self.offset_samples
+                                   if s[0] >= cutoff][-SYNC_WINDOW:]
+
+    def sync_info(self) -> dict:
+        """Clock-offset estimate for this phone.
+
+        Jitter is the p10–p90 spread rather than min–max so a single delayed
+        packet cannot make an otherwise healthy link look unusable."""
+        vals = sorted(v for _, v in self.offset_samples)
+        n = len(vals)
+        if n == 0:
+            return {"n": 0, "offset_s": None, "jitter_s": None, "ready": False}
+        lo_i = int(0.10 * (n - 1))
+        hi_i = int(0.90 * (n - 1))
+        jitter = vals[hi_i] - vals[lo_i]
+        return {
+            "n": n,
+            "offset_s": vals[0],          # least-delayed sample = best estimate
+            "jitter_s": jitter,
+            "ready": n >= SYNC_MIN_SAMPLES and jitter <= SYNC_MAX_JITTER_S,
+        }
+
+    def reset_sync(self):
+        self.offset_samples.clear()
+
+    def on_accel(self, v, ts):
+        self.accel = v
+        self._touch(ts)
+
+    def on_mag(self, v, ts):
+        self.mag = v
+        self._touch(ts)
+
+    @property
+    def gyro_hz(self) -> float:
+        """Gyro sample rate over the last few seconds, 0.0 if unknown."""
+        t = self.gyro_times
+        if len(t) < 2:
+            return 0.0
+        span = t[-1] - t[0]
+        return (len(t) - 1) / span if span > 1e-6 else 0.0
+
+    def on_gyro(self, v, ts):
+        now = time.time()
+        self.gyro_times.append(now)
+        cutoff = now - 3.0
+        if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
+            self.gyro_times = [x for x in self.gyro_times if x >= cutoff][-600:]
+        # dt from the phone's own clock when plausible, else wall clock — the
+        # phone clock is steadier than network arrival jitter.
+        dt = None
+        if self.last_gyro_t is not None and ts:
+            dt = (ts - self.last_gyro_t) / 1000.0
+        if dt is None or not (0.0 < dt < 0.5):
+            dt = 0.01
+        self.last_gyro_t = ts
+        if self.accel is not None and not self.from_orientation_stream:
+            self.ahrs.update(v, self.accel, self.mag, dt)
+            self.roll, self.pitch, self.yaw = self.ahrs.euler_deg()
+        self._touch(ts, now)
+
+    def on_orientation(self, azimuth, pitch, roll, ts):
+        """The app can do its own fusion; when that stream is on we prefer it."""
+        self.from_orientation_stream = True
+        self.roll, self.pitch, self.yaw = roll, pitch, azimuth
+        self._touch(ts)
+
+    def get_quaternion(self) -> np.ndarray:
+        """Return current orientation as a unit quaternion [w, x, y, z].
+
+        AHRS mode: returns the filter's output directly.
+        Orientation-stream mode: converts stored ZYX Euler angles to quaternion."""
+        if not self.from_orientation_stream:
+            return self.ahrs.q.copy()
+        r = math.radians(self.roll)
+        p = math.radians(self.pitch)
+        y = math.radians(self.yaw)
+        cr, cp, cy = math.cos(r / 2), math.cos(p / 2), math.cos(y / 2)
+        sr, sp, sy = math.sin(r / 2), math.sin(p / 2), math.sin(y / 2)
+        return np.array([
+            cy * cp * cr + sy * sp * sr,
+            cy * cp * sr - sy * sp * cr,
+            sy * cp * sr + cy * sp * cr,
+            sy * cp * cr - cy * sp * sr,
+        ])
+
+    def _touch(self, ts, now: Optional[float] = None):
+        arrival = now if now is not None else time.time()
+        self.last_rx   = arrival
+        self.phone_ts  = ts or self.phone_ts
+        self.n_packets += 1
+        self._observe_offset(ts, arrival)
+
+
+# ─── module state ─────────────────────────────────────────────────────────────
+
+# Reentrant: get_state() holds this while calling sync_status(), which
+# re-acquires it.
+_lock          = threading.RLock()
+_devices: dict[str, _IMUDevice] = {}      # ip → device
+_roles:   dict[str, str]        = {}      # ip → ROLE_PROXIMAL | ROLE_DISTAL
+_offset   = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}   # zeroing calibration
+_q_zero_prox: Optional[np.ndarray] = None
+_q_zero_dist: Optional[np.ndarray] = None
+
+_loop:      Optional[asyncio.AbstractEventLoop] = None
+_thread:    Optional[threading.Thread]          = None
+_stop_evt:  Optional[asyncio.Event]             = None
+_running    = False
+_bind_error: Optional[str] = None   # set when the port could not be claimed
+_ready_evt  = threading.Event()     # signalled once bind succeeds or fails
+_shutdown   = False                 # True only for a deliberate stop()
+
+# Supervisor backoff between rebind attempts. Wi-Fi on a phone hotspot drops
+# briefly and often; the server must survive that rather than exit for good.
+_RETRY_MIN_S = 1.0
+_RETRY_MAX_S = 20.0
+
+# ── Connection keepalive ─────────────────────────────────────────────────────
+# The app opens one socket per enabled sensor. A sensor that is switched on but
+# not producing (or one throttled to a slow interval) leaves its socket quiet,
+# and closing that socket makes the app report the whole session as failed.
+# So quiet connections are kept alive with WebSocket pings and only dropped
+# after prolonged total silence — no data AND no pong.
+_READ_SLICE_S    = 5.0     # wake up this often to service keepalive
+_PING_INTERVAL_S = 15.0    # ping a quiet peer this often
+_IDLE_DROP_S     = 90.0    # give up only after this much complete silence
+
+# Rolling log of connection lifecycle events, so a mid-session drop can be
+# seen after the fact instead of being invisible.
+_CONN_LOG_MAX = 60
+_conn_log: list = []
+_conn_active  = 0
+
+# Per-endpoint ingest report: {path: {status, n, sample, t}}. Makes a schema
+# or endpoint mismatch visible instead of silently discarding every packet.
+_seen_paths: dict = {}
+_printed_status: set = set()   # (path, status) pairs already logged once
+
+_rec_lock   = threading.Lock()
+_rec_file   = None
+_rec_writer = None
+_rec_t0     = 0.0
+_rec_offset: Optional[float] = None   # clock offset captured at record start
+_recording  = False
+
+
+def _device_for(ip: str) -> _IMUDevice:
+    """Fetch or create the device for this IP, assigning a role on first sight."""
+    dev = _devices.get(ip)
+    if dev is None:
+        dev = _IMUDevice(ip)
+        _devices[ip] = dev
+        taken = set(_roles.values())
+        if ROLE_PROXIMAL not in taken:
+            _roles[ip] = ROLE_PROXIMAL
+        elif ROLE_DISTAL not in taken:
+            _roles[ip] = ROLE_DISTAL
+        # A third phone gets no role and is ignored for angle computation.
+    return dev
+
+
+def _by_role(role: str) -> Optional[_IMUDevice]:
+    for ip, r in _roles.items():
+        if r == role:
+            return _devices.get(ip)
+    return None
+
+
+def relative_angles() -> dict:
+    """Relative joint angles (distal − proximal), degrees, zero-offset applied.
+
+    Returns NaN components when either segment is not currently streaming."""
+    prox = _by_role(ROLE_PROXIMAL)
+    dist = _by_role(ROLE_DISTAL)
+    nan = float("nan")
+    if prox is None or dist is None or not prox.connected or not dist.connected:
+        # Single-phone fallback: report the connected segment's absolute
+        # orientation so the operator still gets live feedback while setting up.
+        solo = next((d for d in (dist, prox) if d is not None and d.connected), None)
+        if solo is not None:
+            return {"roll": wrap180(solo.roll - _offset["roll"]),
+                    "pitch": wrap180(solo.pitch - _offset["pitch"]),
+                    "yaw": wrap180(solo.yaw - _offset["yaw"]),
+                    "paired": False}
+        return {"roll": nan, "pitch": nan, "yaw": nan, "paired": False}
+
+    return {
+        "roll":  wrap180(dist.roll  - prox.roll  - _offset["roll"]),
+        "pitch": wrap180(dist.pitch - prox.pitch - _offset["pitch"]),
+        "yaw":   wrap180(dist.yaw   - prox.yaw   - _offset["yaw"]),
+        "paired": True,
+    }
+
+
+def _raw_relative() -> dict:
+    """Relative angles WITHOUT the zero offset — used by zero()."""
+    prox, dist = _by_role(ROLE_PROXIMAL), _by_role(ROLE_DISTAL)
+    if prox is not None and dist is not None and prox.connected and dist.connected:
+        return {"roll":  wrap180(dist.roll  - prox.roll),
+                "pitch": wrap180(dist.pitch - prox.pitch),
+                "yaw":   wrap180(dist.yaw   - prox.yaw)}
+    solo = next((d for d in (dist, prox) if d is not None and d.connected), None)
+    if solo is not None:
+        return {"roll": solo.roll, "pitch": solo.pitch, "yaw": solo.yaw}
+    return {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+
+
+def zero():
+    """Capture the current pose as the 0° reference.
+    Stores both Euler offsets (for relative_angles() backward compat) and
+    quaternion snapshots (for swing_angle_deg())."""
+    global _q_zero_prox, _q_zero_dist
+    with _lock:
+        cur = _raw_relative()
+        for k in ("roll", "pitch", "yaw"):
+            if math.isfinite(cur[k]):
+                _offset[k] = cur[k]
+        prox = _by_role(ROLE_PROXIMAL)
+        dist = _by_role(ROLE_DISTAL)
+        if prox is not None and prox.connected:
+            _q_zero_prox = prox.get_quaternion()
+        if dist is not None and dist.connected:
+            _q_zero_dist = dist.get_quaternion()
+        elif _q_zero_dist is None:
+            solo = next((d for d in (dist, prox)
+                         if d is not None and d.connected), None)
+            if solo is not None:
+                _q_zero_dist = solo.get_quaternion()
+
+
+def clear_zero():
+    global _q_zero_prox, _q_zero_dist
+    with _lock:
+        for k in _offset:
+            _offset[k] = 0.0
+        _q_zero_prox = None
+        _q_zero_dist = None
+
+
+def swing_angle_deg() -> float:
+    """Quaternion rotation distance from zeroed reference pose, in degrees.
+
+    Returns NaN before zero() is called.
+    Two-phone: relative joint angle change from zeroed pose.
+    Single-phone: absolute segment rotation from zeroed pose."""
+    with _lock:
+        if _q_zero_dist is None:
+            return float("nan")
+
+        prox = _by_role(ROLE_PROXIMAL)
+        dist = _by_role(ROLE_DISTAL)
+
+        if (prox is not None and dist is not None
+                and prox.connected and dist.connected
+                and _q_zero_prox is not None):
+            q_rel_zero = _qmul(_qconj(_q_zero_prox), _q_zero_dist)
+            q_rel_cur  = _qmul(_qconj(prox.get_quaternion()),
+                                dist.get_quaternion())
+            dot = float(np.dot(q_rel_zero, q_rel_cur))
+        else:
+            solo = next(
+                (d for d in (dist, prox) if d is not None and d.connected),
+                None)
+            if solo is None:
+                return float("nan")
+            q_zero = (_q_zero_dist
+                      if (dist is not None and dist.connected)
+                      else _q_zero_prox)
+            if q_zero is None:
+                return float("nan")
+            dot = float(np.dot(q_zero, solo.get_quaternion()))
+
+        dot = max(-1.0, min(1.0, abs(dot)))
+        return 2.0 * math.degrees(math.acos(dot))
+
+
+def swap_roles():
+    """Flip which phone is proximal and which is distal."""
+    with _lock:
+        for ip, r in list(_roles.items()):
+            _roles[ip] = ROLE_DISTAL if r == ROLE_PROXIMAL else ROLE_PROXIMAL
+
+
+def sync_status() -> dict:
+    """Clock-alignment state between the phones and this laptop.
+
+    The laptop clock is the reference: it is the base time.time() that
+    motive_mobile_sync.py, the goniometer CSV and the video recorder all
+    stamp with. Recording should wait until state == "synced" so phone
+    timestamps can be mapped onto that shared timeline.
+
+    state: "waiting"  — no phone data yet
+           "syncing"  — collecting samples
+           "unstable" — enough samples but jitter too high (weak Wi-Fi)
+           "synced"   — offset trusted
+    """
+    with _lock:
+        devs = [d for d in (_by_role(ROLE_PROXIMAL), _by_role(ROLE_DISTAL))
+                if d is not None and d.connected]
+        if not devs:
+            return {"state": "waiting", "progress": 0.0, "n": 0,
+                    "offset_s": None, "jitter_s": None, "detail": "no phones streaming"}
+
+        infos = [d.sync_info() for d in devs]
+        n_min = min(i["n"] for i in infos)
+        progress = min(1.0, n_min / SYNC_MIN_SAMPLES)
+        worst_jit = max((i["jitter_s"] or 0.0) for i in infos)
+        offsets = [i["offset_s"] for i in infos if i["offset_s"] is not None]
+        offset = max(offsets) if offsets else None
+
+        if all(i["ready"] for i in infos):
+            state, detail = "synced", f"±{worst_jit*1000:.0f} ms jitter"
+        elif n_min >= SYNC_MIN_SAMPLES:
+            state = "unstable"
+            detail = (f"jitter ±{worst_jit*1000:.0f} ms exceeds "
+                      f"{SYNC_MAX_JITTER_S*1000:.0f} ms — move closer to the hotspot")
+        else:
+            state = "syncing"
+            detail = f"{n_min}/{SYNC_MIN_SAMPLES} samples"
+
+        return {"state": state, "progress": progress, "n": n_min,
+                "offset_s": offset, "jitter_s": worst_jit, "detail": detail,
+                "n_devices": len(devs)}
+
+
+def reset_sync():
+    with _lock:
+        for d in _devices.values():
+            d.reset_sync()
+
+
+def get_state() -> dict:
+    """Snapshot for the UI: connection status per segment plus live angles."""
+    with _lock:
+        prox, dist = _by_role(ROLE_PROXIMAL), _by_role(ROLE_DISTAL)
+        ang = relative_angles()
+        return {
+            "running":   _running,
+            "bind_error": _bind_error,
+            "recording": _recording,
+            "port":      PORT,
+            "proximal":  {"connected": bool(prox and prox.connected),
+                          "ip": prox.ident if prox else "",
+                          "packets": prox.n_packets if prox else 0,
+                          "hz": prox.gyro_hz if prox else 0.0},
+            "distal":    {"connected": bool(dist and dist.connected),
+                          "ip": dist.ident if dist else "",
+                          "packets": dist.n_packets if dist else 0,
+                          "hz": dist.gyro_hz if dist else 0.0},
+            "angles":    ang,
+            "swing_angle_deg": swing_angle_deg(),
+            "sync":      sync_status(),
+            "conns":     _conn_active,
+            "endpoints": {p: dict(v) for p, v in _seen_paths.items()},
+            "last_drop": next(
+                (e for e in reversed(_conn_log)
+                 if e["event"] == "close" and e["reason"] != "client closed"),
+                None),
+        }
+
+
+# ─── recording ────────────────────────────────────────────────────────────────
+
+def start_recording(csv_path: str, meta: Optional[dict] = None) -> bool:  # noqa: C901
+    """Open a CSV and begin logging every fused sample.
+
+    Timestamps are written in three bases so the trace can be aligned with the
+    other modalities: `t_epoch` (time.time(), the same base motive_mobile_sync
+    and the viewer's video recorder use), `t_rel` (seconds since this call),
+    and `phone_ts_ms` (the app's own clock, for inter-phone alignment)."""
+    global _rec_file, _rec_writer, _rec_t0, _recording, _rec_offset
+    with _rec_lock:
+        if _recording:
+            return False
+        try:
+            f = open(csv_path, "w", newline="", encoding="utf-8")
+        except OSError:
+            return False
+        w = csv.writer(f)
+        if meta:
+            for k, v in meta.items():
+                w.writerow([f"# {k}", v])
+        # Record the clock alignment used for t_phone_aligned so the mapping
+        # stays reproducible after the fact.
+        _sy = sync_status()
+        w.writerow(["# sync_state", _sy["state"]])
+        w.writerow(["# sync_offset_s",
+                    f"{_sy['offset_s']:.6f}" if _sy["offset_s"] is not None else ""])
+        w.writerow(["# sync_jitter_s",
+                    f"{_sy['jitter_s']:.6f}" if _sy["jitter_s"] is not None else ""])
+        w.writerow([
+            "t_epoch", "t_rel", "phone_ts_ms", "t_phone_aligned",
+            "hip_roll_deg", "hip_pitch_deg", "hip_yaw_deg",
+            "prox_roll", "prox_pitch", "prox_yaw",
+            "dist_roll", "dist_pitch", "dist_yaw",
+            "paired",
+        ])
+        _rec_file, _rec_writer = f, w
+        _rec_t0 = time.time()
+        _rec_offset = _sy["offset_s"]
+        _recording = True
+    return True
+
+
+def stop_recording():
+    global _rec_file, _rec_writer, _recording
+    with _rec_lock:
+        _recording = False
+        if _rec_file is not None:
+            try:
+                _rec_file.close()
+            except OSError:
+                pass
+        _rec_file = _rec_writer = None
+
+
+def _log_sample():
+    """Append one row. Called on every packet while recording is active."""
+    if not _recording:
+        return
+    with _lock:
+        ang  = relative_angles()
+        prox = _by_role(ROLE_PROXIMAL)
+        dist = _by_role(ROLE_DISTAL)
+        phone_ts = (dist or prox).phone_ts if (dist or prox) else 0
+
+    def _f(v):
+        return f"{v:.4f}" if isinstance(v, float) and math.isfinite(v) else ""
+
+    now = time.time()
+    with _rec_lock:
+        if _rec_writer is None:
+            return
+        # Phone clock mapped onto the laptop epoch that motive_mobile_sync.py,
+        # the video recorder and the goniometer CSV all share.
+        aligned = (f"{phone_ts / 1000.0 + _rec_offset:.4f}"
+                   if (phone_ts and _rec_offset is not None) else "")
+        try:
+            _rec_writer.writerow([
+                f"{now:.4f}", f"{now - _rec_t0:.4f}", phone_ts, aligned,
+                _f(ang["roll"]), _f(ang["pitch"]), _f(ang["yaw"]),
+                _f(prox.roll) if prox else "", _f(prox.pitch) if prox else "",
+                _f(prox.yaw) if prox else "",
+                _f(dist.roll) if dist else "", _f(dist.pitch) if dist else "",
+                _f(dist.yaw) if dist else "",
+                int(bool(ang["paired"])),
+            ])
+        except (ValueError, OSError):
+            pass
+
+
+# ─── WebSocket plumbing ───────────────────────────────────────────────────────
+
+def _num(v) -> Optional[float]:
+    """Coerce a JSON scalar to float. The Android build sends stringified
+    numbers, other builds send real numbers — accept both."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_xyz(payload) -> Optional[np.ndarray]:
+    """Extract a 3-axis vector, tolerating the schema differences between the
+    iOS and Android builds of Sensor Stream: key casing, numeric vs string
+    values, and array-style payloads such as {"values": [x, y, z]}."""
+    if not isinstance(payload, dict):
+        return None
+
+    # Case-insensitive single-letter axes (x/X, or "ax"/"accX" style suffixes).
+    lower = {k.lower(): v for k, v in payload.items()}
+    for keys in (("x", "y", "z"),
+                 ("ax", "ay", "az"),
+                 ("accx", "accy", "accz"),
+                 ("gyrox", "gyroy", "gyroz"),
+                 ("magx", "magy", "magz")):
+        vals = [_num(lower.get(k)) for k in keys]
+        if all(v is not None for v in vals):
+            return np.array(vals, dtype=float)
+
+    # Array forms: {"values": [x,y,z]} / {"data": [...]} / {"vector": [...]}
+    for k in ("values", "value", "data", "vector", "xyz"):
+        seq = lower.get(k)
+        if isinstance(seq, (list, tuple)) and len(seq) >= 3:
+            vals = [_num(s) for s in seq[:3]]
+            if all(v is not None for v in vals):
+                return np.array(vals, dtype=float)
+    return None
+
+
+def _payload_ts(payload: dict) -> int:
+    """Timestamp in epoch ms, whatever the build calls it."""
+    lower = {k.lower(): v for k, v in payload.items()}
+    for k in ("timestamp", "time", "ts", "t"):
+        v = _num(lower.get(k))
+        if v is None:
+            continue
+        # Seconds vs milliseconds: anything below ~1e11 is seconds.
+        return int(v * 1000) if v < 1e11 else int(v)
+    return 0
+
+
+# Endpoint aliases. Only the exact Android paths were handled before, so an
+# iOS build using a different name streamed happily into a black hole.
+_SENSOR_ALIASES = {
+    "accel":       ("accelerometer", "accel", "acc", "linearaccelerometer",
+                    "useraccelerometer", "acceleration"),
+    "gyro":        ("gyroscope", "gyro", "rotationrate", "angularvelocity"),
+    "mag":         ("magnetometer", "mag", "magneticfield", "compass"),
+    "orientation": ("orientation", "orient", "attitude", "rotationvector",
+                    "eulerangles", "quaternion"),
+}
+
+
+def _sensor_kind(path: str, payload: dict) -> Optional[str]:
+    """Classify a message by endpoint, falling back to the SensorName field."""
+    token = path.strip("/").lower().replace("_", "").replace("-", "")
+    for kind, names in _SENSOR_ALIASES.items():
+        if token in names:
+            return kind
+    # Some builds post everything to one endpoint and disambiguate in-band.
+    name = str(payload.get("SensorName", payload.get("sensorName", ""))) \
+        .lower().replace(" ", "").replace("_", "")
+    for kind, names in _SENSOR_ALIASES.items():
+        if any(n in name for n in names):
+            return kind
+    return None
+
+
+def _note_sample(path: str, message: str, status: str):
+    """Keep one verbatim example per (endpoint, status) so a schema mismatch is
+    diagnosable without attaching a packet sniffer to the phone.
+
+    Statuses are tracked individually: a stream that alternates between two
+    failure modes must not overwrite one with the other, nor re-log on every
+    packet."""
+    with _lock:
+        rec = _seen_paths.setdefault(path, {
+            "status": status, "n": 0, "sample": message[:300],
+            "t": time.time(), "statuses": {}})
+        rec["n"] += 1
+        rec["t"] = time.time()
+        per = rec["statuses"].setdefault(status, {"n": 0,
+                                                  "sample": message[:300]})
+        per["n"] += 1
+        # Headline: "ok" wins once anything on this endpoint has parsed, since
+        # that is what the UI keys off; otherwise show the latest failure.
+        if status == "ok" or "ok" not in rec["statuses"]:
+            rec["status"] = status
+            rec["sample"] = message[:300]
+        should_print = (path, status) not in _printed_status
+        if should_print:
+            _printed_status.add((path, status))
+    if should_print:
+        print(f"[IMU] {path}: {status} — {message[:200]}")
+
+
+def _dispatch(path: str, message: str, ip: str):
+    """Route one decoded sensor message into the device model."""
+    try:
+        payload = json.loads(message)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        _note_sample(path, message, "not JSON")
+        return
+    if not isinstance(payload, dict):
+        _note_sample(path, message, f"JSON {type(payload).__name__}, expected object")
+        return
+
+    kind = _sensor_kind(path, payload)
+    if kind is None:
+        _note_sample(path, message, "unrecognised endpoint/sensor")
+        return
+
+    ts = _payload_ts(payload)
+
+    with _lock:
+        dev = _device_for(ip)
+        if kind == "orientation":
+            lower = {k.lower(): v for k, v in payload.items()}
+            az = _num(lower.get("azimuth", lower.get("yaw", lower.get("heading"))))
+            pi = _num(lower.get("pitch"))
+            ro = _num(lower.get("roll"))
+            if pi is None or ro is None:
+                _note_sample(path, message, "orientation without pitch/roll")
+                return
+            dev.on_orientation(az or 0.0, pi, ro, ts)
+        else:
+            v = _parse_xyz(payload)
+            if v is None:
+                _note_sample(path, message, "no x/y/z values found")
+                return
+            if kind == "accel":
+                dev.on_accel(v, ts)
+            elif kind == "gyro":
+                dev.on_gyro(v, ts)
+            else:
+                dev.on_mag(v, ts)
+
+    _note_sample(path, message, "ok")
+    _log_sample()
+
+
+def _unmask(payload: bytes, mask_key: bytes) -> bytes:
+    if not mask_key or not payload:
+        return payload
+    pa = np.frombuffer(payload, dtype=np.uint8).copy()
+    mk = np.frombuffer(mask_key, dtype=np.uint8)
+    pa ^= np.tile(mk, (len(pa) + 3) // 4)[:len(pa)]
+    return pa.tobytes()
+
+
+async def _ws_connection(reader: asyncio.StreamReader,
+                         writer: asyncio.StreamWriter):
+    """One Sensor Stream connection: HTTP upgrade, then a text-frame loop."""
+    ip = "unknown"
+    try:
+        peer = writer.get_extra_info("peername")
+        if peer:
+            ip = peer[0]
+    except (AttributeError, IndexError, TypeError):
+        pass
+
+    # ── handshake ────────────────────────────────────────────────────────────
+    try:
+        raw = b""
+        while b"\r\n\r\n" not in raw:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=10.0)
+            if not chunk:
+                return
+            raw += chunk
+            if len(raw) > 65536:
+                return
+
+        head, _, _rest = raw.partition(b"\r\n\r\n")
+        lines = head.split(b"\r\n")
+        try:
+            path = lines[0].split(b" ")[1].decode("ascii", "replace")
+        except IndexError:
+            return
+        path = path.split("?")[0].rstrip("/") or "/"
+
+        ws_key = None
+        for line in lines[1:]:
+            if line.lower().startswith(b"sec-websocket-key:"):
+                ws_key = line.split(b":", 1)[1].strip().decode("ascii", "replace")
+                break
+        if not ws_key:
+            writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            await writer.drain()
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1((ws_key + _WS_MAGIC).encode("ascii")).digest()
+        ).decode("ascii")
+        writer.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n"
+        )
+        await writer.drain()
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        _safe_close(writer)
+        return
+    except Exception:
+        _safe_close(writer)
+        return
+
+    # ── frame loop ───────────────────────────────────────────────────────────
+    _log_conn("open", ip, path)
+    close_reason = "client closed"
+    frag_op:  Optional[int] = None
+    frag_buf: bytearray     = bytearray()
+    last_rx   = time.time()
+    last_ping = 0.0
+    try:
+        while True:
+            try:
+                hdr = await asyncio.wait_for(reader.readexactly(2),
+                                             timeout=_READ_SLICE_S)
+            except asyncio.TimeoutError:
+                # Quiet socket: keep it alive rather than dropping it. Only a
+                # peer that has gone completely silent is abandoned.
+                now = time.time()
+                if now - last_rx > _IDLE_DROP_S:
+                    close_reason = (f"no data or pong for "
+                                    f"{now - last_rx:.0f}s (peer unreachable)")
+                    break
+                if now - last_ping >= _PING_INTERVAL_S:
+                    try:
+                        writer.write(bytes([0x89, 0]))     # empty ping
+                        await writer.drain()
+                    except (ConnectionError, OSError) as e:
+                        close_reason = f"ping failed: {type(e).__name__}"
+                        break
+                    last_ping = now
+                continue
+
+            last_rx = time.time()
+            fin     = bool(hdr[0] & 0x80)
+            opcode  = hdr[0] & 0x0F
+            is_mask = bool(hdr[1] & 0x80)
+            plen    = hdr[1] & 0x7F
+
+            if plen == 126:
+                plen = struct.unpack(">H", await asyncio.wait_for(
+                    reader.readexactly(2), timeout=10.0))[0]
+            elif plen == 127:
+                plen = struct.unpack(">Q", await asyncio.wait_for(
+                    reader.readexactly(8), timeout=10.0))[0]
+            if plen > 2 ** 20:              # 1 MiB guard on a sensor stream
+                close_reason = f"oversized frame ({plen} bytes)"
+                break
+
+            mask_key = b""
+            if is_mask:
+                mask_key = await asyncio.wait_for(reader.readexactly(4), timeout=10.0)
+            payload = b""
+            if plen:
+                payload = await asyncio.wait_for(
+                    reader.readexactly(plen), timeout=30.0)
+            payload = _unmask(payload, mask_key)
+
+            if opcode == 0x8:                       # close
+                close_reason = "client closed"
+                break
+            if opcode == 0x9:                       # ping → pong
+                pong = payload[:125]
+                writer.write(bytes([0x8A, len(pong)]) + pong)
+                await writer.drain()
+                continue
+            if opcode == 0xA:                       # pong
+                continue
+
+            if opcode == 0x0:                       # continuation
+                if frag_op is None:
+                    continue
+                frag_buf += payload
+                if fin:
+                    if frag_op == 0x1:
+                        _dispatch(path, frag_buf.decode("utf-8", "replace"), ip)
+                    frag_op, frag_buf = None, bytearray()
+                continue
+
+            if not fin:                             # first fragment
+                frag_op, frag_buf = opcode, bytearray(payload)
+                continue
+
+            if opcode == 0x1:                       # complete text frame
+                _dispatch(path, payload.decode("utf-8", "replace"), ip)
+            # binary frames (0x2) are not part of the sensor protocol
+    except asyncio.IncompleteReadError:
+        close_reason = "connection cut mid-frame (Wi-Fi drop or app closed)"
+    except asyncio.TimeoutError:
+        close_reason = "timed out mid-frame"
+    except (ConnectionError, OSError) as e:
+        close_reason = f"{type(e).__name__}: {e}"
+    except Exception as e:
+        close_reason = f"{type(e).__name__}: {e}"
+    finally:
+        _log_conn("close", ip, path, close_reason)
+        _safe_close(writer)
+
+
+def _log_conn(event: str, ip: str, path: str, reason: str = ""):
+    """Record a connection lifecycle event for the UI and post-hoc diagnosis."""
+    global _conn_active
+    with _lock:
+        if event == "open":
+            _conn_active += 1
+        elif event == "close":
+            _conn_active = max(0, _conn_active - 1)
+        _conn_log.append({"t": time.time(), "event": event, "ip": ip,
+                          "path": path, "reason": reason})
+        del _conn_log[:-_CONN_LOG_MAX]
+    if event == "close" and reason not in ("client closed", ""):
+        print(f"[IMU] {ip}{path} dropped: {reason}")
+
+
+def connection_log() -> list:
+    with _lock:
+        return list(_conn_log)
+
+
+def _safe_close(writer: asyncio.StreamWriter):
+    try:
+        writer.close()
+    except Exception:
+        pass
+
+
+async def _serve_forever():
+    global _stop_evt, _running
+    global _bind_error
+    _stop_evt = asyncio.Event()
+    # reuse_address must NOT be set on Windows: there SO_REUSEADDR lets a second
+    # process bind a port another process is already listening on, so a stray
+    # viewer would silently steal connections and both would look healthy while
+    # only one received data. Leaving it off makes the clash a clean bind error
+    # that surfaces in the UI.
+    kwargs = {} if sys.platform == "win32" else {"reuse_address": True}
+    server = await asyncio.start_server(
+        _ws_connection, "0.0.0.0", PORT, **kwargs)
+    async with server:
+        # Only now is the port actually claimed. Clear any earlier failure so
+        # the UI recovers on its own once a competing app releases the port.
+        _running = True
+        _bind_error = None
+        _ready_evt.set()
+        # Confirm success out loud: previously only failures printed, so a
+        # silent console was ambiguous between "listening" and "not running".
+        print(f"[IMU] Listening on ws://{get_local_ip()}:{PORT}  — enter "
+              f"{get_local_ip()}:{PORT} in the Sensor Stream app")
+        await _stop_evt.wait()
+
+
+def _port_owner(port: int) -> Optional[str]:
+    """Best-effort 'name (PID n)' of whatever is listening on `port`.
+
+    Purely diagnostic: any failure just yields None so the caller falls back
+    to a generic message."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                                 capture_output=True, text=True, timeout=6,
+                                 creationflags=0x08000000).stdout
+            pid = None
+            for line in out.splitlines():
+                f = line.split()
+                if len(f) >= 5 and f[3].upper() == "LISTENING" \
+                        and f[1].endswith(f":{port}"):
+                    pid = f[4]
+                    break
+            if not pid:
+                return None
+            tl = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=6,
+                creationflags=0x08000000).stdout.strip()
+            name = tl.split(",")[0].strip('"') if tl and "," in tl else "a process"
+            return f"{name} (PID {pid})"
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=6).stdout
+        rows = [l.split() for l in out.splitlines()[1:] if l.split()]
+        if rows:
+            return f"{rows[0][0]} (PID {rows[0][1]})"
+    except Exception:
+        pass
+    return None
+
+
+def _thread_main():
+    """Supervise the WebSocket server for the life of the app.
+
+    A hotspot Wi-Fi blip, an adapter reset, or a competing app holding the port
+    must not kill acquisition permanently: every failure is recorded, reported
+    to the UI, and retried with capped backoff. The loop exits only on an
+    explicit stop()."""
+    global _loop, _running, _bind_error
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+    delay = _RETRY_MIN_S
+    attempts = 0
+    last_printed = None                    # dedupe: retries repeat forever
+    try:
+        while not _shutdown:
+            try:
+                _loop.run_until_complete(_serve_forever())
+                if attempts:
+                    print(f"[IMU] Bound port {PORT} after {attempts} "
+                          f"failed attempt(s).")
+                break                      # clean stop() — do not restart
+            except OSError as e:
+                if getattr(e, "errno", None) in (48, 98, 10048):
+                    owner = _port_owner(PORT)
+                    who = f" It is held by {owner}." if owner else ""
+                    _bind_error = (
+                        f"Port {PORT} is already in use.{who} Only one "
+                        f"Pendulastic app can own the IMU port — close the "
+                        f"other one (master_app.py, another viewer, or a "
+                        f"standalone pendulastic_imu_server.py), or start this "
+                        f"app with PENDULASTIC_IMU_PORT set to a free port and "
+                        f"enter that port in the phone app. Retrying "
+                        f"automatically every {int(delay)}s.")
+                else:
+                    _bind_error = f"{type(e).__name__}: {e} (retrying)"
+                # Print once per distinct problem, not once per retry — the
+                # supervisor can loop for as long as the port stays taken.
+                key = ("bind", getattr(e, "errno", None))
+                if key != last_printed:
+                    last_printed = key
+                    owner = _port_owner(PORT)
+                    print(f"[IMU] Port {PORT} unavailable"
+                          + (f" (held by {owner})" if owner else "")
+                          + ". Retrying in the background; close the other "
+                            "Pendulastic app and it will bind automatically.")
+            except Exception as e:
+                _bind_error = f"{type(e).__name__}: {e} (retrying)"
+                key = ("err", type(e).__name__, str(e))
+                if key != last_printed:
+                    last_printed = key
+                    print(f"[IMU] Server error: {type(e).__name__}: {e} "
+                          f"(retrying in the background)")
+
+            attempts += 1
+            _running = False
+            _ready_evt.set()               # unblock a waiting start()
+            if _shutdown:
+                break
+            # Sleep in slices so stop() is honoured promptly.
+            waited = 0.0
+            while waited < delay and not _shutdown:
+                time.sleep(0.1)
+                waited += 0.1
+            delay = min(delay * 2, _RETRY_MAX_S)
+    finally:
+        _running = False
+        _ready_evt.set()
+        try:
+            _loop.close()
+        except Exception:
+            pass
+
+
+def _score_ip(ip: str) -> int:
+    """Rank an address by how likely a phone on the same LAN can reach it.
+
+    iPhone Personal Hotspot hands out 172.20.10.2-14 (gateway .1), and Android
+    tethering uses 192.168.4x.x — those beat an ordinary LAN, which in turn
+    beats link-local/APIPA (169.254.x, never routable to the phone)."""
+    if ip.startswith("172.20.10."):          # iPhone Personal Hotspot
+        return 100
+    if ip.startswith("192.168.137."):        # Windows Mobile Hotspot (ICS)
+        # The laptop's own uplink also has an address, but a phone joined to
+        # the laptop's hotspot can only reach this one.
+        return 98
+    if ip.startswith(("192.168.43.", "192.168.42.")):   # Android tethering
+        return 90
+    if ip.startswith("192.168."):
+        return 60
+    if ip.startswith("10."):
+        return 50
+    if ip.startswith("172."):                # other RFC1918 /12
+        return 40
+    if ip.startswith("169.254."):            # link-local: unusable
+        return 0
+    return 20
+
+
+def get_all_local_ips() -> list[str]:
+    """Every usable IPv4 address on this host, best candidate first."""
+    seen: set[str] = set()
+    found: list[str] = []
+
+    def _add(ip: str):
+        if ip and ip not in seen and not ip.startswith("127."):
+            seen.add(ip)
+            found.append(ip)
+
+    # The address the OS would use to reach the default gateway. On a hotspot
+    # with no other route this is exactly right; with a VPN up it may not be,
+    # which is why it is scored alongside the enumerated addresses rather than
+    # trusted outright.
+    for dest in ("8.8.8.8", "1.1.1.1"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.settimeout(0.4)
+            s.connect((dest, 80))
+            _add(s.getsockname()[0])
+        except OSError:
+            pass
+        finally:
+            s.close()
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            _add(info[4][0])
+    except OSError:
+        pass
+
+    found.sort(key=lambda ip: -_score_ip(ip))
+    return found or ["127.0.0.1"]
+
+
+def get_local_ip() -> str:
+    """Best-guess address to type into the Sensor Stream app."""
+    return get_all_local_ips()[0]
+
+
+def start() -> bool:
+    """Launch the WebSocket server in a background thread. Idempotent.
+    Returns True once the port is bound; see bind_error() on failure."""
+    global _thread, _bind_error, _shutdown
+    if _thread is not None and _thread.is_alive():
+        return _running
+    _bind_error = None
+    _shutdown = False
+    _ready_evt.clear()
+    _thread = threading.Thread(target=_thread_main, daemon=True, name="imu-ws")
+    _thread.start()
+    _ready_evt.wait(timeout=3.0)
+    # False here only means "not listening yet" — the supervisor keeps retrying
+    # in the background and will bind as soon as the port frees up.
+    return _running
+
+
+def bind_error() -> Optional[str]:
+    """Human-readable reason the server is not listening, or None."""
+    return _bind_error
+
+
+def stop():
+    """Deliberate shutdown: ends the supervisor rather than triggering a retry."""
+    global _shutdown
+    _shutdown = True
+    stop_recording()
+    if _loop is not None and _stop_evt is not None:
+        try:
+            _loop.call_soon_threadsafe(_stop_evt.set)
+        except RuntimeError:
+            pass
+
+
+def reset_devices():
+    """Forget all connected phones and their role assignments."""
+    with _lock:
+        _devices.clear()
+        _roles.clear()
+
+
+if __name__ == "__main__":
+    # Diagnostics only. Running this INSTEAD of the viewer or master_app is the
+    # most common way to end up with a phone that streams but records nothing,
+    # because this script owns the port those apps need.
+    print("=" * 68)
+    print(" Pendulastic IMU server — DIAGNOSTIC MODE")
+    print(" Live angles only: no recording, no CSV, no GUI.")
+    print(" For real capture run master_app.py or pendulastic_viewer.py")
+    print(" instead — only ONE of them can own the port.")
+    print("=" * 68)
+    ip = get_local_ip()
+    if not start():
+        print(f"\nCannot listen on port {PORT}: {bind_error()}")
+        print("Refusing to idle in the background and block that app.")
+        stop()
+        sys.exit(1)
+    print(f"Sensor Stream IMU server on ws://{ip}:{PORT}")
+    print(f"In the app, set the address to  {ip}:{PORT}  and enable")
+    print("Accelerometer + Gyroscope + Magnetometer on BOTH phones.")
+    try:
+        while True:
+            time.sleep(0.5)
+            st = get_state()
+            a  = st["angles"]
+            print(f"\rprox={'Y' if st['proximal']['connected'] else '-'} "
+                  f"dist={'Y' if st['distal']['connected'] else '-'}  "
+                  f"flex/ext={a['pitch']:7.2f}°  "
+                  f"abd/add={a['roll']:7.2f}°  "
+                  f"rot={a['yaw']:7.2f}°   ", end="")
+    except KeyboardInterrupt:
+        stop()
+        print("\nStopped.")
