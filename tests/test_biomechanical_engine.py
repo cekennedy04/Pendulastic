@@ -6,8 +6,10 @@ from pendulastic_app import BiomechanicalEngine
 
 
 def _make_fake_imu(pitch: float):
+    """Create a fake IMU. pitch param now represents swing_angle_deg for the new interface."""
     m = types.SimpleNamespace()
     m.get_state = lambda: {
+        "swing_angle_deg": pitch,
         "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
         "proximal": {"connected": False, "ip": "", "packets": 0, "hz": 0.0},
         "angles":   {"pitch": pitch, "roll": 0.0, "yaw": 0.0, "paired": False},
@@ -18,15 +20,15 @@ def _make_fake_imu(pitch: float):
 def test_imu_returns_distal_pitch(monkeypatch):
     monkeypatch.setattr(_app, "_IMU_AVAIL", True)
     monkeypatch.setattr(_app, "_imu", _make_fake_imu(42.7))
-    assert BiomechanicalEngine("imu").get_live_angle() == 42.7
+    assert BiomechanicalEngine("imu").get_live_angle() == 137.3
 
 
 def test_imu_no_proximal_subtraction(monkeypatch):
-    """Shank-only: distal pitch 42.7 is returned regardless of proximal 10.0."""
+    """Shank-only: swing_angle_deg 42.7 maps to 180 - 42.7 = 137.3."""
     monkeypatch.setattr(_app, "_IMU_AVAIL", True)
     monkeypatch.setattr(_app, "_imu", _make_fake_imu(42.7))
     angle = BiomechanicalEngine("imu").get_live_angle()
-    assert angle == 42.7          # NOT 42.7 - 10.0
+    assert angle == 137.3
 
 
 def test_imu_unavailable_returns_nan(monkeypatch):

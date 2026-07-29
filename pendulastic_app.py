@@ -9,6 +9,7 @@ Run:
 from __future__ import annotations
 
 import csv
+import math
 import os
 import queue
 import threading
@@ -146,7 +147,10 @@ class BiomechanicalEngine:
         if self.methodology != "imu" or not _IMU_AVAIL:
             return float("nan")
         try:
-            return 180.0 - float(_imu.get_state()["angles"]["pitch"])
+            swing = _imu.get_state().get("swing_angle_deg", float("nan"))
+            if math.isfinite(swing):
+                return 180.0 - swing
+            return float("nan")
         except Exception:
             return float("nan")
 
