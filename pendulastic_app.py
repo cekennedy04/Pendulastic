@@ -1319,11 +1319,18 @@ class App(tk.Tk):
                     except (KeyError, ValueError):
                         pass
         except OSError as e:
-            self.after(0, lambda: target.set(f"Error reading file: {e}"))
+            def _err_os(msg=str(e)):
+                target.set(f"Error reading file: {msg}")
+                self._upload_meta.set_processing(False)
+                self._state = "upload_meta"
+            self.after(0, _err_os)
             return
         if not angle_vals:
-            self.after(0, lambda: target.set(
-                "Error: no valid angle data found in CSV"))
+            def _err_empty():
+                target.set("Error: no valid angle data found in CSV")
+                self._upload_meta.set_processing(False)
+                self._state = "upload_meta"
+            self.after(0, _err_empty)
             return
         source_angles = {"upload_csv": angle_vals}
         fn = DataManager.build_filename(

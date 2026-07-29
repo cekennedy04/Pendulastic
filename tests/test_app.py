@@ -217,7 +217,7 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
         monkeypatch.setattr(app, "_transition_to_review", fake_transition)
         # Patch DataManager.save_trial to avoid writing files during test
         monkeypatch.setattr(DataManager, "save_trial",
-                            classmethod(lambda cls, *a, **kw: ""))
+                            lambda *a, **kw: None)
 
         meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._run_csv_analysis(str(p), meta)
