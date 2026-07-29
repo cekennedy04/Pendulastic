@@ -265,3 +265,62 @@ def test_rgb_source_swaps_to_preview_during_recording():
         assert p.canvas_tele.grid_info() == {}, "canvas_tele should be hidden during RGB recording"
     finally:
         r.destroy()
+
+
+def test_video_file_checkbox_exists():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert hasattr(p, "_src_video_file"), "_src_video_file BooleanVar must exist"
+        assert p._src_video_file.get() is False, "Video file checkbox must be unchecked by default"
+    finally:
+        r.destroy()
+
+
+def test_validate_rejects_video_file_and_rgb_together():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pid_var.set("P1")
+        p._src_video_file.set(True)
+        p._src_rgb.set(True)
+        p._stored_video_path = "/fake/video.mp4"
+        ok, msg = p.validate_metadata()
+        assert not ok
+        assert "rgb" in msg.lower() or "video" in msg.lower() or "simultan" in msg.lower()
+    finally:
+        r.destroy()
+
+
+def test_validate_rejects_video_file_without_path():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pid_var.set("P1")
+        p._src_optitrack.set(False)
+        p._src_video_file.set(True)
+        p._stored_video_path = ""
+        ok, msg = p.validate_metadata()
+        assert not ok
+        assert "file" in msg.lower() or "select" in msg.lower()
+    finally:
+        r.destroy()
+
+
+def test_get_metadata_includes_video_file_path():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pid_var.set("P2")
+        p._src_optitrack.set(False)
+        p._src_video_file.set(True)
+        p._stored_video_path = "/data/trial.mp4"
+        meta = p.get_metadata()
+        assert meta["video_file_path"] == "/data/trial.mp4"
+        assert "video_file" in meta["sources"]
+    finally:
+        r.destroy()

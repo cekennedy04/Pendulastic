@@ -295,23 +295,45 @@ class AcquisitionPanel(tk.Frame):
             row=7, column=0, columnspan=2, sticky="w", padx=12)
 
         # row 8 — Source checkboxes
-        self._src_optitrack = tk.BooleanVar(value=True)
-        self._src_rgb       = tk.BooleanVar(value=False)
-        self._src_imu       = tk.BooleanVar(value=False)
+        self._src_optitrack  = tk.BooleanVar(value=True)
+        self._src_rgb        = tk.BooleanVar(value=False)
+        self._src_imu        = tk.BooleanVar(value=False)
+        self._src_video_file = tk.BooleanVar(value=False)
 
         meth_f = tk.Frame(self)
         meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
-        chk_opti = tk.Checkbutton(meth_f, text="OptiTrack",
-                                   variable=self._src_optitrack,
-                                   command=self._on_source_changed)
-        chk_rgb  = tk.Checkbutton(meth_f, text="RGB",
-                                   variable=self._src_rgb,
-                                   command=self._on_source_changed)
-        chk_imu  = tk.Checkbutton(meth_f, text="iPhone IMU",
-                                   variable=self._src_imu,
-                                   command=self._on_source_changed)
-        for chk in (chk_opti, chk_rgb, chk_imu):
+
+        # Inner row 1: the 4 source checkbuttons side-by-side
+        chk_row = tk.Frame(meth_f)
+        chk_row.pack(side="top", anchor="w")
+        chk_opti  = tk.Checkbutton(chk_row, text="OptiTrack",
+                                    variable=self._src_optitrack,
+                                    command=self._on_source_changed)
+        chk_rgb   = tk.Checkbutton(chk_row, text="RGB",
+                                    variable=self._src_rgb,
+                                    command=self._on_source_changed)
+        chk_imu   = tk.Checkbutton(chk_row, text="iPhone IMU",
+                                    variable=self._src_imu,
+                                    command=self._on_source_changed)
+        chk_video = tk.Checkbutton(chk_row, text="Video File",
+                                    variable=self._src_video_file,
+                                    command=self._on_source_changed)
+        for chk in (chk_opti, chk_rgb, chk_imu, chk_video):
             chk.pack(side="left", padx=8)
+
+        # Inner row 2: video file path selector (hidden until _src_video_file checked)
+        self._video_path_frame = tk.Frame(meth_f)
+        self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
+        self._video_path_var    = tk.StringVar(value="No file selected")
+        self._stored_video_path = ""
+        tk.Label(self._video_path_frame,
+                 textvariable=self._video_path_var,
+                 font=("Consolas", 8), fg="gray", width=38,
+                 anchor="w").pack(side="left")
+        tk.Button(self._video_path_frame, text="Browse...",
+                  font=("Segoe UI", 8),
+                  command=self._on_browse_video).pack(side="left", padx=4)
+        self._video_path_frame.pack_forget()   # hidden until checkbox checked
 
         # row 9 — Modality status + Zero Sensor button (Zero hidden until IMU checked)
         self.lbl_method_status = tk.Label(
@@ -374,7 +396,7 @@ class AcquisitionPanel(tk.Frame):
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            countdown_chk, chk_opti, chk_rgb, chk_imu,
+            countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
             self.btn_zero, self.btn_clear_zero,
         ]
 
@@ -444,15 +466,20 @@ class AcquisitionPanel(tk.Frame):
             return False, 'Participant ID contains illegal characters: < > : " / \\ | ? *'
         if not self.get_active_sources():
             return False, "Select at least one recording source."
+        if self._src_video_file.get() and self._src_rgb.get():
+            return False, "Cannot use 'Video File' and live RGB simultaneously."
+        if self._src_video_file.get() and not self.get_video_file_path():
+            return False, "Select a video file before starting."
         return True, ""
 
     def get_metadata(self) -> dict:
         return {
-            "pid":       self.pid_var.get().strip(),
-            "leg":       self.leg_var.get(),
-            "ms_status": self.ms_var.get(),
-            "trial":     int(self.trial_var.get()),
-            "sources":   self.get_active_sources(),
+            "pid":             self.pid_var.get().strip(),
+            "leg":             self.leg_var.get(),
+            "ms_status":       self.ms_var.get(),
+            "trial":           int(self.trial_var.get()),
+            "sources":         self.get_active_sources(),
+            "video_file_path": self.get_video_file_path() if self._src_video_file.get() else None,
         }
 
     def increment_trial(self) -> None:
@@ -482,11 +509,17 @@ class AcquisitionPanel(tk.Frame):
             self._zero_frame.grid()
         else:
             self._zero_frame.grid_remove()
+        # Show/hide video file path frame
+        if self._src_video_file.get():
+            self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
+        else:
+            self._video_path_frame.pack_forget()
         # Build status line
         source_labels = {
-            "imu": "iPhone IMU — waiting for phone" if _IMU_AVAIL else "iPhone IMU — unavailable",
-            "rgb": "RGB / MediaPipe" if _VIEWER_AVAIL else "RGB — MediaPipe unavailable",
-            "optitrack": "OptiTrack (Motive)" if _MOTIVE_AVAIL else "OptiTrack — Motive not found",
+            "imu":        "iPhone IMU — waiting for phone" if _IMU_AVAIL else "iPhone IMU — unavailable",
+            "rgb":        "RGB / MediaPipe" if _VIEWER_AVAIL else "RGB — MediaPipe unavailable",
+            "optitrack":  "OptiTrack (Motive)" if _MOTIVE_AVAIL else "OptiTrack — Motive not found",
+            "video_file": f"Video: {os.path.basename(self.get_video_file_path()) or 'no file'}",
         }
         if sources:
             label_parts = [source_labels[s] for s in sources]
@@ -501,9 +534,10 @@ class AcquisitionPanel(tk.Frame):
     def get_active_sources(self) -> list:
         """Return sorted list of checked source keys."""
         sources = []
-        if self._src_imu.get():       sources.append("imu")
-        if self._src_optitrack.get(): sources.append("optitrack")
-        if self._src_rgb.get():       sources.append("rgb")
+        if self._src_imu.get():        sources.append("imu")
+        if self._src_optitrack.get():  sources.append("optitrack")
+        if self._src_rgb.get():        sources.append("rgb")
+        if self._src_video_file.get(): sources.append("video_file")
         return sorted(sources)
 
     def _on_zero_sensor(self) -> None:
@@ -522,6 +556,20 @@ class AcquisitionPanel(tk.Frame):
             except Exception:
                 pass
         self._on_source_changed()
+
+    def _on_browse_video(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select pre-recorded video",
+            filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"),
+                       ("All files", "*.*")])
+        if path:
+            self._stored_video_path = path
+            self._video_path_var.set(os.path.basename(path))
+        # If user cancelled, keep existing path
+
+    def get_video_file_path(self) -> str:
+        """Return the currently selected video file path, or empty string."""
+        return getattr(self, "_stored_video_path", "")
 
     # ------------------------------------------------------------------
     # Countdown
@@ -638,8 +686,9 @@ class PostProcessingPanel(tk.Frame):
         "rgb":        {"color": "#16A34A", "ls": "-",   "label": "RGB"},
         "optitrack":  {"color": "#D97706", "ls": "--",  "label": "OptiTrack"},
         "hpe_upload": {"color": "#7C3AED", "ls": "--",  "label": "HPE Upload"},
+        "video_file": {"color": "#7C3AED", "ls": "--",  "label": "Video File (HPE)"},
     }
-    _PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload"]
+    _PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload", "video_file"]
 
     def __init__(self, parent, controller) -> None:
         super().__init__(parent)
@@ -937,6 +986,9 @@ class App(tk.Tk):
                 self._start_rgb_recording(meta)
             elif src == "optitrack":
                 self._start_optitrack_recording(meta)
+            elif src == "video_file":
+                self._start_video_file_processing(meta)
+                return   # video_file source skips recording state and goes straight to processing
 
         self._state = "recording"
         self._acq.enter_recording()
@@ -1025,6 +1077,36 @@ class App(tk.Tk):
                 angle = self._engine.get_live_angle()
                 self._imu_queue.put((time.time(), angle))
             time.sleep(0.05)
+
+    def _start_video_file_processing(self, meta: dict) -> None:
+        path = self._acq.get_video_file_path()
+        if not path:
+            messagebox.showerror("Video File", "No video file selected.")
+            return
+        self._state = "processing"
+        self._acq.enter_processing()
+        threading.Thread(
+            target=self._run_video_file_hpe,
+            args=(path, meta), daemon=True,
+        ).start()
+
+    def _run_video_file_hpe(self, path: str, meta: dict) -> None:
+        def progress(pct: float) -> None:
+            self.after(0, lambda p=pct: self._acq.status_var.set(
+                f"HPE processing: {int(p * 100)}%"))
+
+        leg    = meta.get("leg", "right").lower()
+        engine = BiomechanicalEngine("rgb")
+        angles = engine.run_offline_track(path, progress, leg=leg)
+
+        fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"],
+            meta["trial"], source="video_file")
+        DataManager.save_trial(fn, angles, meta, fps=30.0, source="video_file")
+
+        source_angles = dict(self._pending_review)
+        source_angles["video_file"] = angles
+        self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     def _start_rgb_recording(self, meta: dict) -> None:
         if not _CV2_AVAIL:
