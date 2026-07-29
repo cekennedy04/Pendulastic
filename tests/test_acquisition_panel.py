@@ -238,3 +238,30 @@ def test_zero_sensor_button_shown_when_imu_checked():
         assert hasattr(p, "btn_zero") and p.btn_zero.winfo_exists()
     finally:
         r.destroy()
+
+
+def test_preview_label_exists():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert hasattr(p, "lbl_preview"), "lbl_preview widget must exist"
+        assert p.lbl_preview.winfo_exists()
+    finally:
+        r.destroy()
+
+
+def test_rgb_source_swaps_to_preview_during_recording():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_rgb.set(True)
+        p._on_source_changed()
+        p.enter_recording()
+        r.update()
+        # preview label must be gridded; sparkline must be hidden
+        assert p.lbl_preview.grid_info() != {}, "lbl_preview should be visible during RGB recording"
+        assert p.canvas_tele.grid_info() == {}, "canvas_tele should be hidden during RGB recording"
+    finally:
+        r.destroy()

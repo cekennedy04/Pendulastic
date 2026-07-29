@@ -54,6 +54,15 @@ except Exception:
     _PatientDetector = None
     _VIEWER_AVAIL = False
 
+_mp_pose = _mp_draw = _mp_styles = None
+try:
+    import mediapipe as _mp
+    _mp_pose   = _mp.solutions.pose
+    _mp_draw   = _mp.solutions.drawing_utils
+    _mp_styles = _mp.solutions.drawing_styles
+except Exception:
+    pass
+
 try:
     from pendulastic_pt_score import (
         compute_pt_params, compute_pt_score_simple, pt_to_mas,
@@ -351,6 +360,10 @@ class AcquisitionPanel(tk.Frame):
         self.canvas_tele = tk.Canvas(
             self, width=440, height=80, bg="#0B1928", highlightthickness=0)
 
+        # row 13 alt — live video preview (shown instead of canvas_tele when RGB is recording)
+        self.lbl_preview = tk.Label(self, bg="black")
+        # not gridded at init; enter_recording() grids the correct one
+
         # row 14 — status bar
         self.status_var = tk.StringVar(value="Idle — ready to record.")
         self.lbl_status = tk.Label(
@@ -379,6 +392,7 @@ class AcquisitionPanel(tk.Frame):
         self.btn_stop.config(state="disabled")
         self._lock_form(False)
         self.canvas_tele.grid_remove()
+        self.lbl_preview.grid_remove()   # hide live preview if it was shown
         self.status_var.set("Idle — ready to record.")
 
     def enter_recording(self) -> None:
@@ -386,13 +400,37 @@ class AcquisitionPanel(tk.Frame):
         self.btn_start.config(text="START RECORDING",
                               bg=_GREEN, state="disabled")
         self.btn_stop.config(state="normal")
-        self.canvas_tele.grid(row=13, column=0, columnspan=2, padx=10, pady=4)
+        if self._src_rgb.get():
+            self.lbl_preview.grid(row=13, column=0, columnspan=2,
+                                  padx=10, pady=4, sticky="nsew")
+            self.canvas_tele.grid_remove()
+        else:
+            self.canvas_tele.grid(row=13, column=0, columnspan=2,
+                                  padx=10, pady=4)
+            self.lbl_preview.grid_remove()
         self.status_var.set("RECORDING…")
 
     def enter_processing(self) -> None:
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="disabled")
         self.status_var.set("Running MediaPipe tracking…")
+
+    def update_preview(self, frame_bgr) -> None:
+        """Convert a BGR numpy frame and display it in lbl_preview."""
+        if not _CV2_AVAIL:
+            return
+        import base64
+        h, w = frame_bgr.shape[:2]
+        scale = min(440 / max(w, 1), 330 / max(h, 1))
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        small = _cv2.resize(frame_bgr, (nw, nh))
+        rgb   = _cv2.cvtColor(small, _cv2.COLOR_BGR2RGB)
+        ok, buf = _cv2.imencode(".png", rgb)
+        if ok:
+            b64 = base64.b64encode(buf).decode("utf-8")
+            photo = tk.PhotoImage(data=b64)
+            self.lbl_preview.config(image=photo)
+            self.lbl_preview._photo = photo   # prevent GC
 
     # ------------------------------------------------------------------
     # Validation and metadata
@@ -855,6 +893,8 @@ class App(tk.Tk):
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
         self._pending_review: dict     = {}
         self._video_path:     str      = ""
+        self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
+        self._pose_estimator               = None
 
         # Start IMU WebSocket server (port 5000) once for this process
         if _IMU_AVAIL:
@@ -908,6 +948,14 @@ class App(tk.Tk):
             self._imu_poll_thread.join(timeout=1.0)
         self._imu_poll_stop.clear()
         self._imu_poll_thread = None
+
+        # Close pose estimator if it was active
+        if self._pose_estimator is not None:
+            try:
+                self._pose_estimator.close()
+            except Exception:
+                pass
+            self._pose_estimator = None
 
         meta           = self._acq.get_metadata()
         source_angles: dict = {}
@@ -997,6 +1045,24 @@ class App(tk.Tk):
         self._rgb_cap    = cap
         self._rgb_writer = _cv2.VideoWriter(
             self._video_path, _cv2.VideoWriter_fourcc(*"XVID"), 30.0, (w, h))
+
+        # Drain any stale frames from a previous recording
+        while not self._preview_queue.empty():
+            try:
+                self._preview_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Init lightweight pose estimator for live overlay (guarded)
+        if _mp_pose is not None:
+            self._pose_estimator = _mp_pose.Pose(
+                model_complexity=0,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+        else:
+            self._pose_estimator = None
+
         self._rgb_stop   = threading.Event()
         self._rgb_thread = threading.Thread(
             target=self._rgb_record_worker, daemon=True)
@@ -1005,8 +1071,34 @@ class App(tk.Tk):
     def _rgb_record_worker(self) -> None:
         while not self._rgb_stop.is_set():
             ret, frame = self._rgb_cap.read()
-            if ret and frame is not None and self._rgb_writer:
+            if not ret or frame is None:
+                break
+
+            # Write RAW frame to disk — preserves data integrity
+            if self._rgb_writer:
                 self._rgb_writer.write(frame)
+
+            # Build annotated preview copy (overlay never touches the saved file)
+            preview = frame.copy()
+            if self._pose_estimator is not None and _mp_draw is not None:
+                try:
+                    rgb_frame = _cv2.cvtColor(preview, _cv2.COLOR_BGR2RGB)
+                    results   = self._pose_estimator.process(rgb_frame)
+                    if results.pose_landmarks:
+                        _mp_draw.draw_landmarks(
+                            preview,
+                            results.pose_landmarks,
+                            _mp_pose.POSE_CONNECTIONS,
+                            landmark_drawing_spec=_mp_styles.get_default_pose_landmarks_style(),
+                        )
+                except Exception:
+                    pass   # never crash the recording on overlay failure
+
+            # Deliver to UI thread — drop stale frame if queue is full
+            try:
+                self._preview_queue.put_nowait(preview)
+            except queue.Full:
+                pass
 
     def _stop_rgb_recording(self) -> None:
         if hasattr(self, "_rgb_stop"):
@@ -1079,6 +1171,15 @@ class App(tk.Tk):
                     self._acq.push_telemetry(t, angle)
         except queue.Empty:
             pass
+
+        # Drain preview queue and update acquisition canvas during RGB recording
+        if "rgb" in self._active_sources and self._state == "recording":
+            try:
+                frame = self._preview_queue.get_nowait()
+                self._acq.update_preview(frame)
+            except queue.Empty:
+                pass
+
         self.after(50, self._tick)
 
     # ------------------------------------------------------------------
