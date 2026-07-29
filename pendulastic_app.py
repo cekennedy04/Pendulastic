@@ -221,7 +221,7 @@ class AcquisitionPanel(tk.Frame):
     """
     2-column, 14-row acquisition panel (480 px wide).
     controller: App instance — receives on_start(), on_stop(),
-                on_methodology_changed(method), on_new_trial().
+                on_source_changed(sources: list[str]), on_new_trial().
     """
 
     def __init__(self, parent, controller) -> None:
@@ -483,8 +483,7 @@ class AcquisitionPanel(tk.Frame):
                 _imu.clear_zero()
             except Exception:
                 pass
-        self.lbl_method_status.config(
-            text="● iPhone IMU — waiting for phone", fg="#B36B00")
+        self._on_source_changed()
 
     # ------------------------------------------------------------------
     # Countdown
@@ -851,6 +850,7 @@ class App(tk.Tk):
         self._active_sources: list     = []
         self._rec_angles:     dict     = {}   # {"imu": [...], "rgb": [...]}
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
+        self._pending_review: dict     = {}
         self._video_path:     str      = ""
 
         # Start IMU WebSocket server (port 5000) once for this process
@@ -1028,7 +1028,7 @@ class App(tk.Tk):
         angles = self._engine.run_offline_track(self._video_path, progress, leg=leg)
         DataManager.save_trial(fn_rgb, angles, meta, fps=30.0, source="rgb")
 
-        source_angles = dict(getattr(self, "_pending_review", {}))
+        source_angles = dict(self._pending_review)
         source_angles["rgb"] = angles
         self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
