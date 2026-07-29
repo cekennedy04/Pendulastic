@@ -249,10 +249,16 @@ class AcquisitionPanel(tk.Frame):
         self.columnconfigure(0, weight=0)
         self.columnconfigure(1, weight=1)
 
-        # row 0 — title
-        tk.Label(self, text="Pendulastic — Trial Setup",
-                 font=("Segoe UI", 13, "bold")).grid(
-            row=0, column=0, columnspan=2, pady=(16, 4))
+        # row 0 — header: mode-select back button + title
+        hdr0 = tk.Frame(self)
+        hdr0.grid(row=0, column=0, columnspan=2, sticky="ew",
+                  padx=12, pady=(16, 4))
+        self.btn_back = tk.Button(hdr0, text="<- Mode Select",
+                                  font=("Segoe UI", 9),
+                                  command=self.controller.on_back_to_mode_select)
+        self.btn_back.pack(side="left", padx=(0, 8))
+        tk.Label(hdr0, text="Pendulastic — Trial Setup",
+                 font=("Segoe UI", 13, "bold")).pack(side="left")
 
         # row 1 — separator
         ttk.Separator(self, orient="horizontal").grid(
@@ -401,7 +407,7 @@ class AcquisitionPanel(tk.Frame):
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
             countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
-            self.btn_zero, self.btn_clear_zero,
+            self.btn_zero, self.btn_clear_zero, self.btn_back,
         ]
 
         # Initialize status label and zero frame based on default sources
@@ -676,6 +682,151 @@ class AcquisitionPanel(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# ModeSelectView
+# ---------------------------------------------------------------------------
+
+class ModeSelectView(tk.Frame):
+    """Startup landing screen — routes to live recording or file upload."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        tk.Label(self, text="Pendulastic",
+                 font=("Segoe UI", 20, "bold")).grid(
+            row=0, column=0, columnspan=2, pady=(60, 4))
+        tk.Label(self, text="Clinical Pendulum Test Platform",
+                 font=("Segoe UI", 11), fg="#555").grid(
+            row=1, column=0, columnspan=2, pady=(0, 40))
+
+        tk.Button(
+            self,
+            text="Live Recording Session\nIMU · RGB · OptiTrack",
+            font=("Segoe UI", 12, "bold"),
+            bg=_GREEN, fg="white",
+            width=24, height=4,
+            command=self.controller._enter_live_mode,
+        ).grid(row=2, column=0, padx=40, pady=16, sticky="n")
+
+        tk.Button(
+            self,
+            text="Upload & Analyze\nVideo or CSV file",
+            font=("Segoe UI", 12, "bold"),
+            bg=_BLUE, fg="white",
+            width=24, height=4,
+            command=self.controller._enter_upload_mode,
+        ).grid(row=2, column=1, padx=40, pady=16, sticky="n")
+
+
+# ---------------------------------------------------------------------------
+# UploadMetaView
+# ---------------------------------------------------------------------------
+
+class UploadMetaView(tk.Frame):
+    """Compact metadata form for file-first upload analysis."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller  = controller
+        self._file_path  = ""
+        self.status_var  = tk.StringVar(value="Ready")
+        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=1)
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        pad = {"padx": 12, "pady": 6}
+
+        # Header: back button + title
+        hdr = tk.Frame(self)
+        hdr.grid(row=0, column=0, columnspan=2, sticky="ew",
+                 padx=12, pady=(16, 4))
+        self.btn_back = tk.Button(hdr, text="<- Back",
+                                  font=("Segoe UI", 10),
+                                  command=self.controller._upload_back_to_select)
+        self.btn_back.pack(side="left", padx=(0, 12))
+        tk.Label(hdr, text="Upload & Analyze",
+                 font=("Segoe UI", 13, "bold")).pack(side="left")
+
+        # Selected file name
+        self._file_label_var = tk.StringVar(value="No file selected")
+        tk.Label(self, textvariable=self._file_label_var,
+                 font=("Consolas", 9), fg="gray", anchor="w").grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
+
+        # Participant ID
+        tk.Label(self, text="Participant ID:").grid(
+            row=2, column=0, sticky="e", **pad)
+        self.pid_var = tk.StringVar()
+        tk.Entry(self, textvariable=self.pid_var, width=22).grid(
+            row=2, column=1, sticky="w", **pad)
+
+        # Leg
+        tk.Label(self, text="Leg:").grid(row=3, column=0, sticky="e", **pad)
+        self.leg_var = tk.StringVar(value="Right")
+        leg_f = tk.Frame(self)
+        leg_f.grid(row=3, column=1, sticky="w", **pad)
+        tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var,
+                       value="Left").pack(side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var,
+                       value="Right").pack(side="left", padx=4)
+
+        # MS Status
+        tk.Label(self, text="MS Status:").grid(row=4, column=0, sticky="e", **pad)
+        self.ms_var = tk.StringVar(value="MS")
+        ttk.Combobox(self, textvariable=self.ms_var, width=22, state="readonly",
+                     values=["MS", "Stroke", "Control", "Other"]).grid(
+            row=4, column=1, sticky="w", **pad)
+
+        # Trial number
+        tk.Label(self, text="Trial Number:").grid(row=5, column=0, sticky="e", **pad)
+        self.trial_var = tk.StringVar(value="1")
+        tk.Spinbox(self, from_=1, to=99, textvariable=self.trial_var, width=6).grid(
+            row=5, column=1, sticky="w", **pad)
+
+        # Analyze button
+        self.btn_analyze = tk.Button(
+            self, text="Analyze ->",
+            bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
+            width=16, height=2,
+            command=self.controller._start_upload_analysis)
+        self.btn_analyze.grid(row=6, column=0, columnspan=2, pady=20)
+
+        # Status bar
+        tk.Label(self, textvariable=self.status_var,
+                 relief="sunken", anchor="w", fg="#333").grid(
+            row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(4, 10))
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def set_file(self, path: str) -> None:
+        self._file_path = path
+        self._file_label_var.set(f"File: {os.path.basename(path)}")
+
+    def get_metadata(self) -> dict:
+        return {
+            "pid":        self.pid_var.get().strip(),
+            "leg":        self.leg_var.get(),
+            "ms_status":  self.ms_var.get(),
+            "trial":      int(self.trial_var.get()),
+            "sources":    ["upload_csv"
+                           if self._file_path.lower().endswith(".csv")
+                           else "video_file"],
+        }
+
+    def set_processing(self, active: bool) -> None:
+        state = "disabled" if active else "normal"
+        self.btn_back.config(state=state)
+        self.btn_analyze.config(state=state)
+
+
+# ---------------------------------------------------------------------------
 # PostProcessingPanel
 # ---------------------------------------------------------------------------
 
@@ -691,8 +842,9 @@ class PostProcessingPanel(tk.Frame):
         "optitrack":  {"color": "#D97706", "ls": "--",  "label": "OptiTrack"},
         "hpe_upload": {"color": "#7C3AED", "ls": "--",  "label": "HPE Upload"},
         "video_file": {"color": "#7C3AED", "ls": "--",  "label": "Video File (HPE)"},
+        "upload_csv": {"color": "#0891B2", "ls": "--",  "label": "CSV Upload"},
     }
-    _PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload", "video_file"]
+    _PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload", "video_file", "upload_csv"]
 
     def __init__(self, parent, controller) -> None:
         super().__init__(parent)
@@ -708,11 +860,17 @@ class PostProcessingPanel(tk.Frame):
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=1)
 
-        # row 0 — title (trial filename)
+        # row 0 — header: mode-select back button + trial filename
+        hdr0 = tk.Frame(self)
+        hdr0.grid(row=0, column=0, columnspan=3, sticky="ew",
+                  padx=12, pady=(12, 4))
+        tk.Button(hdr0, text="<- Mode Select",
+                  font=("Segoe UI", 9),
+                  command=self.controller.on_back_to_mode_select).pack(
+            side="left", padx=(0, 12))
         self.title_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self.title_var,
-                 font=("Segoe UI", 12, "bold"), anchor="w").grid(
-            row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 4))
+        tk.Label(hdr0, textvariable=self.title_var,
+                 font=("Segoe UI", 12, "bold"), anchor="w").pack(side="left")
 
         # row 1 — matplotlib figure
         if _MPL_AVAIL:
@@ -936,7 +1094,7 @@ class App(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        self._state           = "idle"
+        self._state           = "mode_select"
         self._engine: Optional[BiomechanicalEngine] = None
         self._imu_queue: queue.Queue   = queue.Queue()
         self._imu_poll_stop            = threading.Event()
@@ -956,9 +1114,11 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        self._mode_select = ModeSelectView(self, controller=self)
+        self._upload_meta = UploadMetaView(self, controller=self)
         self._acq  = AcquisitionPanel(self, controller=self)
         self._post = PostProcessingPanel(self, controller=self)
-        self._acq.pack(fill="both", expand=True)
+        self._mode_select.pack(fill="both", expand=True)
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._tick()
@@ -1058,14 +1218,120 @@ class App(tk.Tk):
     def on_new_trial(self) -> None:
         self._acq.increment_trial()
         self._post.pack_forget()
+        self._mode_select.pack_forget()
         self._acq.pack(fill="both", expand=True)
         self._acq.enter_idle()
-        self.geometry("500x740")
         self._state = "idle"
 
     def on_source_changed(self, sources: list) -> None:
         """Called by AcquisitionPanel when any source checkbox changes."""
         self._active_sources = list(sources)
+
+    # ------------------------------------------------------------------
+    # Mode-select routing
+    # ------------------------------------------------------------------
+    def _enter_live_mode(self) -> None:
+        self._mode_select.pack_forget()
+        self._acq.pack(fill="both", expand=True)
+        self._state = "idle"
+
+    def _enter_upload_mode(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select file to analyze",
+            filetypes=[
+                ("Video / CSV", "*.mp4 *.avi *.mov *.mkv *.csv"),
+                ("All files", "*.*"),
+            ])
+        if not path:
+            return
+        self._mode_select.pack_forget()
+        self._upload_meta.set_file(path)
+        self._upload_meta.status_var.set("Ready")
+        self._upload_meta.set_processing(False)
+        self._upload_meta.pack(fill="both", expand=True)
+        self._state = "upload_meta"
+
+    def _upload_back_to_select(self) -> None:
+        if self._state == "upload_processing":
+            return
+        self._upload_meta.pack_forget()
+        self._mode_select.pack(fill="both", expand=True)
+        self._state = "mode_select"
+
+    def on_back_to_mode_select(self) -> None:
+        self._acq.pack_forget()
+        self._post.pack_forget()
+        self._upload_meta.pack_forget()
+        self._mode_select.pack(fill="both", expand=True)
+        self._state        = "mode_select"
+        self._active_sources  = []
+        self._rec_angles      = {}
+        self._rec_timestamps  = {}
+        self._pending_review  = {}
+
+    def _start_upload_analysis(self) -> None:
+        meta = self._upload_meta.get_metadata()
+        if not meta.get("pid", "").strip():
+            messagebox.showerror("Metadata", "Participant ID cannot be empty.")
+            return
+        path = self._upload_meta._file_path
+        if not path:
+            messagebox.showerror("Metadata", "No file selected.")
+            return
+        self._state = "upload_processing"
+        self._upload_meta.set_processing(True)
+        self._upload_meta.status_var.set("Processing...")
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".mp4", ".avi", ".mov", ".mkv"):
+            threading.Thread(
+                target=self._run_video_file_hpe,
+                args=(path, meta),
+                kwargs={"progress_target": self._upload_meta.status_var},
+                daemon=True,
+            ).start()
+        else:
+            threading.Thread(
+                target=self._run_csv_analysis,
+                args=(path, meta),
+                daemon=True,
+            ).start()
+
+    def _run_csv_analysis(self, path: str, meta: dict) -> None:
+        import csv as _csv_mod
+        target = self._upload_meta.status_var
+        t_vals: list = []
+        angle_vals: list = []
+        try:
+            with open(path, newline="", encoding="utf-8") as f:
+                lines = (row for row in f if not row.startswith("#"))
+                reader = _csv_mod.DictReader(lines)
+                for row in reader:
+                    try:
+                        t_key = next(
+                            (k for k in ("time_s", "t_rel") if k in row), None)
+                        a_key = next(
+                            (k for k in ("knee_angle_deg", "angle") if k in row),
+                            None)
+                        if t_key is None or a_key is None:
+                            continue
+                        t_vals.append(float(row[t_key]))
+                        angle_vals.append(float(row[a_key]))
+                    except (KeyError, ValueError):
+                        pass
+        except OSError as e:
+            self.after(0, lambda: target.set(f"Error reading file: {e}"))
+            return
+        if not angle_vals:
+            self.after(0, lambda: target.set(
+                "Error: no valid angle data found in CSV"))
+            return
+        source_angles = {"upload_csv": angle_vals}
+        fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"],
+            meta["trial"], source="upload_csv")
+        DataManager.save_trial(fn, angle_vals, meta,
+                               timestamps=t_vals, source="upload_csv")
+        self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     # ------------------------------------------------------------------
     # Recording helpers
@@ -1098,9 +1364,11 @@ class App(tk.Tk):
             args=(path, meta), daemon=True,
         ).start()
 
-    def _run_video_file_hpe(self, path: str, meta: dict) -> None:
+    def _run_video_file_hpe(self, path: str, meta: dict,
+                             progress_target: Optional[tk.StringVar] = None) -> None:
+        target = progress_target or self._acq.status_var
         def progress(pct: float) -> None:
-            self.after(0, lambda p=pct: self._acq.status_var.set(
+            self.after(0, lambda p=pct: target.set(
                 f"HPE processing: {int(p * 100)}%"))
 
         leg    = meta.get("leg", "right").lower()
@@ -1237,6 +1505,7 @@ class App(tk.Tk):
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
         self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
         self._acq.pack_forget()
+        self._upload_meta.pack_forget()
         self._post.pack(fill="both", expand=True)
         try:
             self.state("zoomed")

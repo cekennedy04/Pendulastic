@@ -15,6 +15,7 @@ def _get_root():
 
 class _Ctrl:
     def on_new_trial(self): pass
+    def on_back_to_mode_select(self): pass
 
 
 def test_panel_instantiates():

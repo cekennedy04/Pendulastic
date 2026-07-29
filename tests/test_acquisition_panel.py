@@ -14,6 +14,7 @@ class _Ctrl:
     def on_stop(self): pass
     def on_source_changed(self, sources): pass
     def on_new_trial(self): pass
+    def on_back_to_mode_select(self): pass
 
 
 def test_panel_instantiates():
