@@ -979,6 +979,13 @@ class App(tk.Tk):
         self._rec_timestamps = {}
         self._acq.clear_telemetry()
 
+        # video_file is a fully standalone path — process it immediately and bypass
+        # the live recording loop so no other co-selected sources are started.
+        if "video_file" in sources:
+            self._pending_review = {}
+            self._start_video_file_processing(meta)
+            return   # video_file is standalone — no live recording
+
         for src in sources:
             if src == "imu":
                 self._start_imu_recording(meta)
@@ -986,9 +993,6 @@ class App(tk.Tk):
                 self._start_rgb_recording(meta)
             elif src == "optitrack":
                 self._start_optitrack_recording(meta)
-            elif src == "video_file":
-                self._start_video_file_processing(meta)
-                return   # video_file source skips recording state and goes straight to processing
 
         self._state = "recording"
         self._acq.enter_recording()
@@ -1104,8 +1108,7 @@ class App(tk.Tk):
             meta["trial"], source="video_file")
         DataManager.save_trial(fn, angles, meta, fps=30.0, source="video_file")
 
-        source_angles = dict(self._pending_review)
-        source_angles["video_file"] = angles
+        source_angles = {"video_file": angles}
         self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     def _start_rgb_recording(self, meta: dict) -> None:
