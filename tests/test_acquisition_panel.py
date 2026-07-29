@@ -12,7 +12,7 @@ class _Ctrl:
     """Minimal fake controller."""
     def on_start(self): pass
     def on_stop(self): pass
-    def on_methodology_changed(self, m): pass
+    def on_source_changed(self, sources): pass
     def on_new_trial(self): pass
 
 
@@ -32,8 +32,10 @@ def test_default_vars():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        assert p.leg_var.get()      == "Right"
-        assert p.method_var.get()   == "optitrack"
+        # Multi-source: optitrack checked by default, others unchecked
+        assert p._src_optitrack.get() is True
+        assert p._src_rgb.get() is False
+        assert p._src_imu.get() is False
         assert p.countdown_var.get() is False
         assert int(p.trial_var.get()) == 1
     finally:
@@ -116,17 +118,55 @@ def test_validate_empty_pid_fails():
         r.destroy()
 
 
-def test_get_metadata_returns_correct_dict():
+def test_validate_no_source_checked_fails():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pid_var.set("P1")
+        p._src_optitrack.set(False)
+        p._src_rgb.set(False)
+        p._src_imu.set(False)
+        ok, msg = p.validate_metadata()
+        assert not ok
+        assert "source" in msg.lower()
+    finally:
+        r.destroy()
+
+
+def test_get_metadata_returns_sources_list():
     from pendulastic_app import AcquisitionPanel
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
         p.pid_var.set("P7"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
-        p.method_var.set("imu")
-        assert p.get_metadata() == {
-            "pid": "P7", "leg": "Left", "ms_status": "Stroke",
-            "trial": 3, "methodology": "imu"}
+        p._src_optitrack.set(False)
+        p._src_imu.set(True)
+        result = p.get_metadata()
+        assert result["pid"] == "P7"
+        assert result["leg"] == "Left"
+        assert result["ms_status"] == "Stroke"
+        assert result["trial"] == 3
+        assert result["sources"] == ["imu"]
+        assert "methodology" not in result
+    finally:
+        r.destroy()
+
+
+def test_get_active_sources_sorted():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p._src_optitrack.set(True)
+        p._src_imu.set(True)
+        p._src_rgb.set(False)
+        sources = p.get_active_sources()
+        assert "imu" in sources
+        assert "optitrack" in sources
+        assert "rgb" not in sources
+        assert sources == sorted(sources)
     finally:
         r.destroy()
 
@@ -167,5 +207,34 @@ def test_clear_telemetry_removes_all_items():
         p.clear_telemetry()
         r.update()
         assert len(p.canvas_tele.find_all()) == 0
+    finally:
+        r.destroy()
+
+
+def test_zero_sensor_button_hidden_when_imu_unchecked():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(False)
+        p._on_source_changed()
+        r.update()
+        # _zero_frame (containing btn_zero + btn_clear_zero) should be removed from grid
+        assert p._zero_frame.grid_info() == {}
+    finally:
+        r.destroy()
+
+
+def test_zero_sensor_button_shown_when_imu_checked():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        # _zero_frame should be in the grid; btn_zero widget must also exist
+        assert p._zero_frame.grid_info() != {}
+        assert hasattr(p, "btn_zero") and p.btn_zero.winfo_exists()
     finally:
         r.destroy()

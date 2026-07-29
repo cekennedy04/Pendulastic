@@ -285,23 +285,42 @@ class AcquisitionPanel(tk.Frame):
                  font=("Segoe UI", 10, "bold")).grid(
             row=7, column=0, columnspan=2, sticky="w", padx=12)
 
-        # row 8 — Methodology radio buttons
-        self.method_var = tk.StringVar(value="optitrack")
+        # row 8 — Source checkboxes
+        self._src_optitrack = tk.BooleanVar(value=True)
+        self._src_rgb       = tk.BooleanVar(value=False)
+        self._src_imu       = tk.BooleanVar(value=False)
+
         meth_f = tk.Frame(self)
         meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
-        rb_opti = tk.Radiobutton(meth_f, text="OptiTrack",  variable=self.method_var,
-                                  value="optitrack", command=self._on_method_changed)
-        rb_rgb  = tk.Radiobutton(meth_f, text="RGB",         variable=self.method_var,
-                                  value="rgb",       command=self._on_method_changed)
-        rb_imu  = tk.Radiobutton(meth_f, text="iPhone IMU",  variable=self.method_var,
-                                  value="imu",       command=self._on_method_changed)
-        for rb in (rb_opti, rb_rgb, rb_imu):
-            rb.pack(side="left", padx=8)
+        chk_opti = tk.Checkbutton(meth_f, text="OptiTrack",
+                                   variable=self._src_optitrack,
+                                   command=self._on_source_changed)
+        chk_rgb  = tk.Checkbutton(meth_f, text="RGB",
+                                   variable=self._src_rgb,
+                                   command=self._on_source_changed)
+        chk_imu  = tk.Checkbutton(meth_f, text="iPhone IMU",
+                                   variable=self._src_imu,
+                                   command=self._on_source_changed)
+        for chk in (chk_opti, chk_rgb, chk_imu):
+            chk.pack(side="left", padx=8)
 
-        # row 9 — Modality status
+        # row 9 — Modality status + Zero Sensor button (Zero hidden until IMU checked)
         self.lbl_method_status = tk.Label(
-            self, text="● Ready", font=("Consolas", 9), fg="green", anchor="w")
-        self.lbl_method_status.grid(row=9, column=0, columnspan=2, sticky="w", padx=16)
+            self, text="● OptiTrack (Motive)", font=("Consolas", 9), fg="green", anchor="w")
+        self.lbl_method_status.grid(row=9, column=0, sticky="w", padx=16)
+
+        zero_f = tk.Frame(self)
+        zero_f.grid(row=9, column=1, sticky="w", padx=4)
+        self.btn_zero = tk.Button(
+            zero_f, text="⊙ Zero Sensor", font=("Segoe UI", 8),
+            command=self._on_zero_sensor)
+        self.btn_zero.pack(side="left", padx=2)
+        self.btn_clear_zero = tk.Button(
+            zero_f, text="↺ Clear", font=("Segoe UI", 8),
+            command=self._on_clear_zero)
+        self.btn_clear_zero.pack(side="left", padx=2)
+        zero_f.grid_remove()   # hidden until IMU is checked; toggled in _on_source_changed
+        self._zero_frame = zero_f
 
         # row 10 — separator
         ttk.Separator(self, orient="horizontal").grid(
@@ -342,8 +361,12 @@ class AcquisitionPanel(tk.Frame):
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            countdown_chk, rb_opti, rb_rgb, rb_imu,
+            countdown_chk, chk_opti, chk_rgb, chk_imu,
+            self.btn_zero, self.btn_clear_zero,
         ]
+
+        # Initialize status label and zero frame based on default sources
+        self._on_source_changed()
 
     # ------------------------------------------------------------------
     # Public state transitions (called by App)
@@ -381,15 +404,17 @@ class AcquisitionPanel(tk.Frame):
         illegal = set('<>:"/\\|?*')
         if any(c in illegal for c in pid):
             return False, 'Participant ID contains illegal characters: < > : " / \\ | ? *'
+        if not self.get_active_sources():
+            return False, "Select at least one recording source."
         return True, ""
 
     def get_metadata(self) -> dict:
         return {
-            "pid":        self.pid_var.get().strip(),
-            "leg":        self.leg_var.get(),
-            "ms_status":  self.ms_var.get(),
-            "trial":      int(self.trial_var.get()),
-            "methodology": self.method_var.get(),
+            "pid":       self.pid_var.get().strip(),
+            "leg":       self.leg_var.get(),
+            "ms_status": self.ms_var.get(),
+            "trial":     int(self.trial_var.get()),
+            "sources":   self.get_active_sources(),
         }
 
     def increment_trial(self) -> None:
@@ -411,8 +436,55 @@ class AcquisitionPanel(tk.Frame):
     def _on_stop_clicked(self) -> None:
         self.controller.on_stop()
 
-    def _on_method_changed(self) -> None:
-        self.controller.on_methodology_changed(self.method_var.get())
+    def _on_source_changed(self) -> None:
+        """Called on any source checkbox toggle. Updates status label and Zero button visibility."""
+        sources = self.get_active_sources()
+        # Show/hide Zero Sensor frame
+        if self._src_imu.get():
+            self._zero_frame.grid()
+        else:
+            self._zero_frame.grid_remove()
+        # Build status line
+        source_labels = {
+            "imu": "iPhone IMU — waiting for phone" if _IMU_AVAIL else "iPhone IMU — unavailable",
+            "rgb": "RGB / MediaPipe" if _VIEWER_AVAIL else "RGB — MediaPipe unavailable",
+            "optitrack": "OptiTrack (Motive)" if _MOTIVE_AVAIL else "OptiTrack — Motive not found",
+        }
+        if sources:
+            label_parts = [source_labels[s] for s in sources]
+            label = "● " + " + ".join(label_parts)
+            color = "green"
+        else:
+            label = "● No source selected"
+            color = "red"
+        self.lbl_method_status.config(text=label, fg=color)
+        self.controller.on_source_changed(sources)
+
+    def get_active_sources(self) -> list:
+        """Return sorted list of checked source keys."""
+        sources = []
+        if self._src_imu.get():       sources.append("imu")
+        if self._src_optitrack.get(): sources.append("optitrack")
+        if self._src_rgb.get():       sources.append("rgb")
+        return sorted(sources)
+
+    def _on_zero_sensor(self) -> None:
+        if _IMU_AVAIL:
+            try:
+                _imu.zero()
+                self.lbl_method_status.config(
+                    text="● Sensor zeroed — horizontal = 0°", fg="#B36B00")
+            except Exception as e:
+                messagebox.showerror("Zero Sensor", f"Could not zero sensor:\n{e}")
+
+    def _on_clear_zero(self) -> None:
+        if _IMU_AVAIL:
+            try:
+                _imu.clear_zero()
+            except Exception:
+                pass
+        self.lbl_method_status.config(
+            text="● iPhone IMU — waiting for phone", fg="#B36B00")
 
     # ------------------------------------------------------------------
     # Countdown
