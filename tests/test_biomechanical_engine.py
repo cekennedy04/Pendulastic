@@ -5,26 +5,27 @@ import pendulastic_app as _app
 from pendulastic_app import BiomechanicalEngine
 
 
-def _make_fake_imu(pitch: float):
-    """Create a fake IMU. pitch param now represents swing_angle_deg for the new interface."""
+def _make_fake_imu(swing_angle_deg: float):
+    """Create a fake IMU state dict with quaternion swing_angle_deg interface."""
     m = types.SimpleNamespace()
     m.get_state = lambda: {
-        "swing_angle_deg": pitch,
+        "swing_angle_deg": swing_angle_deg,
         "distal":   {"connected": True, "ip": "", "packets": 0, "hz": 0.0},
         "proximal": {"connected": False, "ip": "", "packets": 0, "hz": 0.0},
-        "angles":   {"pitch": pitch, "roll": 0.0, "yaw": 0.0, "paired": False},
+        "angles":   {},  # Stub: old Euler angles no longer used by get_live_angle()
     }
     return m
 
 
 def test_imu_returns_distal_pitch(monkeypatch):
+    """swing_angle_deg 42.7 maps to 180 - 42.7 = 137.3 (clinical convention)."""
     monkeypatch.setattr(_app, "_IMU_AVAIL", True)
     monkeypatch.setattr(_app, "_imu", _make_fake_imu(42.7))
     assert BiomechanicalEngine("imu").get_live_angle() == 137.3
 
 
 def test_imu_no_proximal_subtraction(monkeypatch):
-    """Shank-only: swing_angle_deg 42.7 maps to 180 - 42.7 = 137.3."""
+    """Shank-only: swing_angle_deg 42.7 maps to 180 - 42.7 = 137.3 (no proximal involved)."""
     monkeypatch.setattr(_app, "_IMU_AVAIL", True)
     monkeypatch.setattr(_app, "_imu", _make_fake_imu(42.7))
     angle = BiomechanicalEngine("imu").get_live_angle()
