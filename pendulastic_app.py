@@ -596,23 +596,33 @@ class PostProcessingPanel(tk.Frame):
     rowconfigure(1, weight=1) lets the matplotlib figure expand to fill height.
     """
 
+    _CURVE_STYLES = {
+        "imu":        {"color": "#2563EB", "ls": "-",   "label": "IMU"},
+        "rgb":        {"color": "#16A34A", "ls": "-",   "label": "RGB"},
+        "optitrack":  {"color": "#D97706", "ls": "--",  "label": "OptiTrack"},
+        "hpe_upload": {"color": "#7C3AED", "ls": "--",  "label": "HPE Upload"},
+    }
+    _PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload"]
+
     def __init__(self, parent, controller) -> None:
         super().__init__(parent)
-        self.controller   = controller
-        self._angles: list = []
-        self._fps: float   = 30.0
+        self.controller      = controller
+        self._source_angles: dict  = {}
+        self._fps: float           = 30.0
+        self._meta: dict | None    = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
         self.rowconfigure(1, weight=1)
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=1)
 
         # row 0 — title (trial filename)
         self.title_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.title_var,
                  font=("Segoe UI", 12, "bold"), anchor="w").grid(
-            row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 4))
+            row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 4))
 
         # row 1 — matplotlib figure
         if _MPL_AVAIL:
@@ -620,16 +630,16 @@ class PostProcessingPanel(tk.Frame):
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvasTkAgg(self._fig, master=self)
             self._canvas.get_tk_widget().grid(
-                row=1, column=0, columnspan=2, sticky="nsew", padx=8, pady=4)
+                row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=4)
         else:
             tk.Label(self, text="matplotlib not available — install it in .venv",
-                     fg="red").grid(row=1, column=0, columnspan=2)
+                     fg="red").grid(row=1, column=0, columnspan=3)
             self._canvas = None
 
         # row 2 — PT Metrics LabelFrame
-        mf = tk.LabelFrame(self, text="Popovic Pendulum Test Metrics",
-                           font=("Segoe UI", 9, "bold"), padx=8, pady=4)
-        mf.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
+        self._metrics_frame = tk.LabelFrame(self, text="Popović PT Metrics",
+                                            font=("Segoe UI", 9, "bold"), padx=8, pady=4)
+        self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
         self.omega_var = tk.StringVar(value="—")
@@ -648,9 +658,9 @@ class PostProcessingPanel(tk.Frame):
             ("MAS",       self.mas_var),
             ("Score",     self.score_var),
         ]):
-            tk.Label(mf, text=lbl, font=("Segoe UI", 8), fg="#555").grid(
+            tk.Label(self._metrics_frame, text=lbl, font=("Segoe UI", 8), fg="#555").grid(
                 row=0, column=col, padx=10, pady=1)
-            tk.Label(mf, textvariable=var,
+            tk.Label(self._metrics_frame, textvariable=var,
                      font=("Segoe UI", 11, "bold")).grid(
                 row=1, column=col, padx=10)
 
@@ -664,34 +674,35 @@ class PostProcessingPanel(tk.Frame):
                   font=("Segoe UI", 10), width=20, height=2,
                   command=self._on_load_optitrack).grid(
             row=3, column=1, padx=10, pady=12, sticky="w")
+        self.btn_upload_video = tk.Button(
+            self, text="🎥 Upload Video for HPE",
+            font=("Segoe UI", 10), width=22, height=2,
+            command=self._on_upload_video)
+        self.btn_upload_video.grid(row=3, column=2, padx=10, pady=12, sticky="w")
 
         # row 4 — status bar
         self.status_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.status_var,
                  relief="sunken", anchor="w", fg="#333").grid(
-            row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 8))
+            row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def load_trial(self, angles: list | dict, fps: float,
-                   metadata: dict, filename: str) -> None:
-        # For now, accept dict (Task 4) or list (old tests); Task 5 will fully refactor
-        if isinstance(angles, dict):
-            # Multi-source dict: pick first non-empty source for display
-            for src in ["imu", "rgb", "optitrack"]:
-                if src in angles and angles[src]:
-                    self._angles = angles[src]
-                    break
-            else:
-                self._angles = []
-        else:
-            self._angles = angles
-        self._fps    = fps
-        self.title_var.set(filename)
-        self._plot_curve(self._angles, fps)
-        self._show_pt_metrics(self._angles, fps)
-        self.status_var.set(f"Saved: {filename}")
+    def load_trial(
+        self,
+        source_angles: dict,
+        fps: float,
+        metadata: dict,
+        base_filename: str,
+    ) -> None:
+        self._source_angles = dict(source_angles)
+        self._fps           = fps
+        self._meta          = metadata
+        self.title_var.set(base_filename)
+        self._plot_all_curves()
+        self._show_pt_metrics_from_sources()
+        self.status_var.set(f"Saved: {base_filename}")
 
     def load_optitrack_overlay(self, csv_path: str) -> None:
         if not _PT_AVAIL or load_optitrack is None:
@@ -699,7 +710,9 @@ class PostProcessingPanel(tk.Frame):
             return
         try:
             _t_ot, opti = load_optitrack(csv_path)
-            self._plot_curve(self._angles, self._fps, overlay=list(opti))
+            self._source_angles["optitrack"] = list(opti)
+            self._plot_all_curves()
+            self._show_pt_metrics_from_sources()
             self.status_var.set(f"Overlay: {os.path.basename(csv_path)}")
         except Exception as e:
             messagebox.showerror("OptiTrack Load Error", str(e))
@@ -707,38 +720,52 @@ class PostProcessingPanel(tk.Frame):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _plot_curve(self, angles: list, fps: float,
-                    overlay: list | None = None) -> None:
+    def _plot_all_curves(self) -> None:
         if not _MPL_AVAIL or self._canvas is None:
             return
         self._ax.clear()
-        times = [i / fps for i in range(len(angles))]
-        self._ax.plot(times, angles, color="#2563EB", linewidth=1.5,
-                      label="Knee angle")
-        if overlay:
-            t_ot = [i / fps for i in range(len(overlay))]
-            self._ax.plot(t_ot, overlay, color="#16A34A", linewidth=1.5,
-                          linestyle="--", label="OptiTrack")
+        n_curves = 0
+        fps = self._fps or 30.0
+        for src, angles in self._source_angles.items():
+            if not angles:
+                continue
+            style = self._CURVE_STYLES.get(
+                src, {"color": "gray", "ls": "-", "label": src})
+            times = [i / fps for i in range(len(angles))]
+            self._ax.plot(times, angles,
+                          color=style["color"], linewidth=1.5,
+                          linestyle=style["ls"], label=style["label"])
+            n_curves += 1
+        if n_curves >= 2:
             self._ax.legend(fontsize=8)
         self._ax.set_xlabel("Time (s)", fontsize=9)
         self._ax.set_ylabel("Knee angle (deg)", fontsize=9)
-        self._ax.set_title("Popovic Pendulum Test — Knee Angle", fontsize=10)
+        self._ax.set_title("Popović Pendulum Test — Knee Angle", fontsize=10)
         self._ax.grid(True, alpha=0.3)
         self._fig.tight_layout()
         self._canvas.draw()
 
-    def _show_pt_metrics(self, angles: list, fps: float) -> None:
+    def _show_pt_metrics_from_sources(self) -> None:
         if not _PT_AVAIL or compute_pt_params is None:
             return
-        try:
+        fps = self._fps or 30.0
+        for src in self._PT_SOURCE_PRIORITY:
+            angles = self._source_angles.get(src)
+            if not angles:
+                continue
             t   = np.arange(len(angles), dtype=float) / fps
             arr = np.array(angles, dtype=float)
-            p   = compute_pt_params(t, arr)
+            should_detrend = (src == "imu")
+            try:
+                p = compute_pt_params(t, arr, detrend=should_detrend)
+            except TypeError:
+                p = compute_pt_params(t, arr)   # backward compat
             if p is None:
-                self.status_var.set("PT scoring: insufficient data (need >= 40 finite frames).")
-                return
+                continue
             score = compute_pt_score_simple(p)
             mas   = pt_to_mas(score)
+            self._metrics_frame.config(
+                text=f"Popović PT Metrics (source: {src.upper()})")
             self.a1_var.set(f"{p['A1_deg']:.1f}")
             self.omega_var.set(f"{p['omega_peak_deg_s']:.1f}")
             self.n_var.set(f"{p['N']:.1f}")
@@ -746,8 +773,48 @@ class PostProcessingPanel(tk.Frame):
             self.r2n_var.set(f"{p['R2n']:.3f}")
             self.mas_var.set(str(mas))
             self.score_var.set(f"{score:.3f}")
-        except Exception as e:
-            self.status_var.set(f"PT scoring error: {e}")
+            return
+        self.status_var.set("PT scoring: no valid source data.")
+
+    def _on_upload_video(self) -> None:
+        if not _VIEWER_AVAIL:
+            messagebox.showerror(
+                "HPE Unavailable",
+                "pendulastic_viewer not importable — cannot run MediaPipe.")
+            return
+        path = filedialog.askopenfilename(
+            title="Select video for HPE",
+            filetypes=[("Video", "*.mp4 *.avi *.mov *.mkv"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        self.status_var.set("HPE processing: 0%")
+        leg    = self._meta.get("leg", "right") if self._meta else "right"
+        engine = BiomechanicalEngine("rgb")
+
+        def _progress(pct: float) -> None:
+            self.after(0, lambda p=pct: self.status_var.set(
+                f"HPE processing: {int(p * 100)}%"))
+
+        def _run() -> None:
+            angles = engine.run_offline_track(path, _progress, leg=leg.lower())
+            self.after(0, lambda: self._add_hpe_overlay(angles, fps=30.0))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _add_hpe_overlay(self, angles: list, fps: float = 30.0) -> None:
+        if not angles:
+            self.status_var.set(
+                "HPE: no pose detected — check video or leg selection.")
+            return
+        self._source_angles["hpe_upload"] = angles
+        if not self._fps:
+            self._fps = fps
+        if not self.title_var.get():
+            self.title_var.set("HPE upload")
+        self._plot_all_curves()
+        self._show_pt_metrics_from_sources()
+        self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
 
     def _on_new_trial(self) -> None:
         self.controller.on_new_trial()
