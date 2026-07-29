@@ -1353,10 +1353,18 @@ class App(tk.Tk):
 
     def _imu_poll_worker(self) -> None:
         """Put (t, angle_deg) into _imu_queue at ~20 Hz."""
+        _EMA_ALPHA = 0.3   # higher = less smoothing, less lag
+        _ema: Optional[float] = None
         while not self._imu_poll_stop.is_set():
             if self._engine:
                 angle = self._engine.get_live_angle()
-                self._imu_queue.put((time.time(), angle))
+                if math.isfinite(angle):
+                    _ema = (angle if _ema is None
+                            else _EMA_ALPHA * angle + (1.0 - _EMA_ALPHA) * _ema)
+                    self._imu_queue.put((time.time(), _ema))
+                else:
+                    _ema = None   # reset on NaN (pre-zero or disconnected)
+                    self._imu_queue.put((time.time(), angle))
             time.sleep(0.05)
 
     def _start_video_file_processing(self, meta: dict) -> None:

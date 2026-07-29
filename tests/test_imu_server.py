@@ -63,6 +63,32 @@ def test_imudevice_get_quaternion_orientation_stream_is_unit():
     assert abs(np.linalg.norm(q) - 1.0) < 1e-6
 
 
+def test_ahrs_updates_even_when_orientation_stream_active():
+    """on_gyro() must still integrate the AHRS filter when from_orientation_stream=True."""
+    dev = imu._IMUDevice("1.2.3.7")
+    dev.from_orientation_stream = True
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    q_before = dev.ahrs.q.copy()
+    # Feed a non-zero gyro packet — AHRS should rotate away from identity.
+    dev.on_gyro(np.array([0.5, 0.0, 0.0]), ts=0)
+    assert not np.allclose(dev.ahrs.q, q_before), (
+        "AHRS quaternion must evolve on gyro input even in orientation-stream mode")
+
+
+def test_get_quaternion_prefers_ahrs_when_gyro_present():
+    """get_quaternion() must return the AHRS quaternion when gyro data has arrived,
+    even if from_orientation_stream is True (avoids staircase from low-rate orientation)."""
+    dev = imu._IMUDevice("1.2.3.8")
+    dev.from_orientation_stream = True
+    dev.roll, dev.pitch, dev.yaw = 30.0, 45.0, 10.0
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    # Simulate gyro arrival (sets last_gyro_t)
+    dev.on_gyro(np.array([0.1, 0.0, 0.0]), ts=1000)
+    q = dev.get_quaternion()
+    # Must match the AHRS quaternion, not the Euler-converted one
+    np.testing.assert_allclose(q, dev.ahrs.q, atol=1e-9)
+
+
 def test_swing_angle_deg_returns_nan_before_zero():
     """swing_angle_deg() must return NaN before zero() is called."""
     imu.reset_devices()

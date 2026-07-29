@@ -301,9 +301,13 @@ class _IMUDevice:
         if dt is None or not (0.0 < dt < 0.5):
             dt = 0.01
         self.last_gyro_t = ts
-        if self.accel is not None and not self.from_orientation_stream:
+        if self.accel is not None:
             self.ahrs.update(v, self.accel, self.mag, dt)
-            self.roll, self.pitch, self.yaw = self.ahrs.euler_deg()
+            # Only overwrite the display Euler angles from AHRS when we are not
+            # receiving an orientation stream; the orientation stream sets them
+            # directly via on_orientation() and may be higher quality.
+            if not self.from_orientation_stream:
+                self.roll, self.pitch, self.yaw = self.ahrs.euler_deg()
         self._touch(ts, now)
 
     def on_orientation(self, azimuth, pitch, roll, ts):
@@ -315,9 +319,12 @@ class _IMUDevice:
     def get_quaternion(self) -> np.ndarray:
         """Return current orientation as a unit quaternion [w, x, y, z].
 
-        AHRS mode: returns the filter's output directly.
-        Orientation-stream mode: converts stored ZYX Euler angles to quaternion."""
-        if not self.from_orientation_stream:
+        Prefers the AHRS quaternion whenever gyro data has arrived: the filter
+        integrates at ~100 Hz and produces a smooth, continuously-evolving
+        quaternion regardless of the orientation stream's lower update rate.
+        Falls back to Euler→quaternion conversion only when the phone sends
+        orientation data but no raw gyro (orientation-stream-only mode)."""
+        if not self.from_orientation_stream or self.last_gyro_t is not None:
             return self.ahrs.q.copy()
         r = math.radians(self.roll)
         p = math.radians(self.pitch)
