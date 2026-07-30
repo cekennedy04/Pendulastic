@@ -295,10 +295,13 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
                 settle_idx = i
                 break
         settle_t = float(t_r[settle_idx])
-        # Buffer kept well under the plateau check's 6-tick (0.3s) minimum
-        # run length, expressed via TICK_S (this file's own tick constant)
-        # rather than a bare literal, so the coupling is self-documenting.
-        window_end_t = min(t_r[0] + 4.0, settle_t + 5 * TICK_S)
+        # settle_t is already the point where the signal is permanently
+        # within tolerance of neutral — Savitzky-Goyal smoothing lag at the
+        # transition edge is already accounted for in settle_idx. Adding more
+        # time past it doesn't protect against trailing-edge artifacts; it
+        # only pulls more of the already-flat tail into the window, which is
+        # exactly what would re-introduce false plateau violations.
+        window_end_t = min(t_r[0] + 4.0, settle_t)
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
