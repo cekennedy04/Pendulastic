@@ -1252,11 +1252,19 @@ def test_score_waveform_good_signal_passes():
 
 
 def test_score_waveform_bad_start_fails():
+    """Isolates gate A specifically: the hold ramps smoothly from 140 up to
+    180 across the whole pre-release segment (rather than a block overwrite),
+    so nothing else trips -- a prior version of this test also produced a
+    clip violation at the hold/release boundary, so it couldn't distinguish
+    "gate A works" from "gate A is deleted and gate C catches it anyway."""
     t, angle = _damped_pendulum_series()
     angle = angle.copy()
-    angle[:10] = 140.0   # doesn't start near 180
+    hold_mask = t < 1.0
+    n_hold = int(hold_mask.sum())
+    angle[hold_mask] = np.linspace(140.0, 180.0, n_hold)
     result = tuner.score_waveform(t, angle)
     assert not result["passes"]
+    assert result["penalty"] > 0
 
 
 def test_score_waveform_clipped_step_fails():
@@ -1269,12 +1277,24 @@ def test_score_waveform_clipped_step_fails():
 
 
 def test_score_waveform_plateau_during_active_swing_fails():
+    """Isolates the plateau check specifically: after the frozen run, the
+    REST of the series is shifted by a constant so it resumes continuously
+    from the frozen value, rather than jumping back to the raw curve. A
+    prior version of this test also produced a large clip violation at the
+    un-freeze edge, so it couldn't distinguish "the plateau check works"
+    from "the plateau check is deleted and the clip check catches it
+    anyway." A constant shift doesn't change the remainder's own shape or
+    derivatives -- only its offset -- so it introduces no new discontinuity."""
     t, angle = _damped_pendulum_series()
     angle = angle.copy()
-    # Freeze a long run of samples right after release (well inside the
-    # active-swing window) -> staircase artifact.
     release_i = int(1.0 / 0.05)
-    angle[release_i + 2: release_i + 12] = angle[release_i + 2]
+    freeze_start = release_i + 2
+    freeze_len = 10
+    freeze_end = freeze_start + freeze_len
+    frozen_value = angle[freeze_start]
+    angle[freeze_start:freeze_end] = frozen_value
+    offset = frozen_value - angle[freeze_end]
+    angle[freeze_end:] += offset
     result = tuner.score_waveform(t, angle)
     assert not result["passes"]
 
@@ -1294,6 +1314,32 @@ def test_score_waveform_long_resting_tail_after_one_drop_still_passes():
     result = tuner.score_waveform(t, angle)
     assert result["passes"], (
         "a genuine single-drop-then-lock severe-spasticity trial must pass, "
+        f"got penalty={result['penalty']}, params={result['params']}")
+
+
+def test_score_waveform_slow_single_drop_then_lock_still_passes():
+    """Same severe-spasticity shape as the test above, but the drop itself
+    takes 3.5s instead of 1s -- still a real, physically valid (if unusually
+    slow) release, not an artifact. A prior version of the no-extrema window
+    fallback used a per-tick derivative threshold to find where the drop
+    "settles"; that threshold was itself speed-coupled, so any drop slower
+    than roughly 1s/35deg fell through to the same flat-4.0s window this
+    fix exists to eliminate, and got rejected with false plateau violations
+    on its own resting tail. This test pins the fix against that regression
+    directly, at a drop speed the original test could not have caught."""
+    t = np.arange(0, 20.0, 0.05)
+    angle = np.full_like(t, 180.0)
+    release_t = 1.0
+    drop_s = 3.5
+    for i, ti in enumerate(t):
+        if release_t <= ti < release_t + drop_s:
+            tau = ti - release_t
+            angle[i] = 180.0 - 35.0 * (tau / drop_s)
+        elif ti >= release_t + drop_s:
+            angle[i] = 145.0
+    result = tuner.score_waveform(t, angle)
+    assert result["passes"], (
+        "a slower single-drop-then-lock trial must still pass, "
         f"got penalty={result['penalty']}, params={result['params']}")
 
 
@@ -1387,19 +1433,33 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         # even register as one detected trough via find_peaks, since that
         # requires the signal to go down AND back up). A flat 4.0s cap from
         # release would still bleed well into the resting tail here, since
-        # nothing bounds where the single drop itself ends. Bound it instead
-        # to the last moment the signal was still meaningfully changing,
-        # plus a small buffer strictly UNDER the plateau check's own 6-tick
-        # (0.3s) minimum run length below -- so the buffer itself can never
-        # accumulate enough consecutive quiet ticks to trigger a false
-        # violation, however long the resting tail beyond it continues.
-        diffs_settle = np.abs(np.diff(ang_r))
-        moving = np.where(diffs_settle > 1.0)[0]
-        if len(moving):
-            last_moving_t = float(t_r[int(moving.max())])
-            window_end_t = min(t_r[0] + 4.0, last_moving_t + 0.2)
-        else:
-            window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
+        # nothing bounds where the single drop itself ends.
+        #
+        # A per-tick derivative threshold ("is it still moving") was tried
+        # and rejected: it's coupled to both sample rate and drop SPEED --
+        # any real drop slower than roughly the threshold's own rate falls
+        # through to the same broken flat-4.0s case it was meant to fix.
+        # Instead, this uses compute_pt_params's own tail-median
+        # `neutral_deg` directly: find the first point after which the
+        # signal is PERMANENTLY within tolerance of neutral (not just
+        # transiently close, which a still-swinging signal could be too --
+        # but that ambiguity doesn't apply here, since this branch only
+        # runs when no oscillation was detected at all). This is robust to
+        # the drop taking 1 second or 5, because it asks "has it reached
+        # its final resting value," not "how fast is it changing right now."
+        neutral = pt_params["neutral_deg"]
+        tol = max(2.0, 0.05 * pt_params["A0_deg"])   # matches min_amp's own convention
+        near_neutral = np.abs(ang_r - neutral) <= tol
+        settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
+        for i in range(len(ang_r)):
+            if np.all(near_neutral[i:]):
+                settle_idx = i
+                break
+        settle_t = float(t_r[settle_idx])
+        # Buffer kept well under the plateau check's 6-tick (0.3s) minimum
+        # run length, expressed via TICK_S (this file's own tick constant)
+        # rather than a bare literal, so the coupling is self-documenting.
+        window_end_t = min(t_r[0] + 4.0, settle_t + 5 * TICK_S)
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
