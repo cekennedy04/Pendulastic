@@ -299,3 +299,44 @@ def test_zero_does_not_arm_flex_axis_when_capture_disabled(monkeypatch):
     assert not imu._flex_axis_armed, "flex-axis capture must not arm when disabled in config"
     imu.reset_devices()
     imu.clear_zero()
+
+
+def test_start_stop_raw_log_writes_jsonl(tmp_path):
+    import json as _json
+    imu.reset_devices()
+    path = str(tmp_path / "trial_raw.jsonl")
+    imu.start_raw_log(path)
+    dev = imu._IMUDevice("14.0.0.1")
+    imu._devices["14.0.0.1"] = dev
+    imu._roles["14.0.0.1"] = imu.ROLE_DISTAL
+    dev.on_accel(np.array([0., 0., -9.81]), ts=100)
+    dev.on_gyro(np.array([0.1, 0.2, 0.3]), ts=110)
+    dev.on_mag(np.array([1., 0., 0.]), ts=120)
+    returned_path = imu.stop_raw_log()
+    assert returned_path == path
+
+    lines = [_json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    assert len(lines) == 3
+    assert lines[0]["sensor"] == "accel"
+    assert lines[0]["role"] == imu.ROLE_DISTAL
+    assert lines[0]["v"] == [0.0, 0.0, -9.81]
+    assert lines[0]["phone_ts_ms"] == 100
+    assert lines[1]["sensor"] == "gyro"
+    assert lines[2]["sensor"] == "mag"
+    imu.reset_devices()
+
+
+def test_stop_raw_log_returns_none_when_nothing_open():
+    imu._raw_log_file = None
+    imu._raw_log_path = None
+    assert imu.stop_raw_log() is None
+
+
+def test_on_accel_on_gyro_on_mag_are_no_ops_for_raw_log_when_not_recording():
+    """Packets arriving with no raw log open must not raise."""
+    imu.reset_devices()
+    dev = imu._IMUDevice("14.0.0.2")
+    dev.on_accel(np.array([0., 0., 9.81]), ts=0)
+    dev.on_gyro(np.array([0., 0., 0.]), ts=10)
+    dev.on_mag(np.array([1., 0., 0.]), ts=20)
+    imu.reset_devices()

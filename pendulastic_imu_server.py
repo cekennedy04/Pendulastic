@@ -314,10 +314,12 @@ class _IMUDevice:
             if _CONFIG["gravity_seed"]:
                 self.ahrs.q = _gravity_seed(self.accel)
             self._ahrs_seeded = True
+        _raw_log_write(_roles.get(self.ident), "accel", v, ts)
         self._touch(ts)
 
     def on_mag(self, v, ts):
         self.mag = v
+        _raw_log_write(_roles.get(self.ident), "mag", v, ts)
         self._touch(ts)
 
     @property
@@ -332,6 +334,7 @@ class _IMUDevice:
     def on_gyro(self, v, ts):
         global _flex_axis, _flex_axis_armed
         now = time.time()
+        _raw_log_write(_roles.get(self.ident), "gyro", v, ts)
         self.gyro_times.append(now)
         cutoff = now - 3.0
         if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
@@ -417,6 +420,10 @@ _flex_axis_armed: bool = False            # True after zero(), awaiting first mo
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
 
 _CONFIG = load_config()   # {beta, ema_alpha, flex_axis_capture, gravity_seed, ...}
+
+_raw_lock:     threading.Lock          = threading.Lock()
+_raw_log_file                          = None    # open file handle, or None
+_raw_log_path: Optional[str]           = None
 
 _loop:      Optional[asyncio.AbstractEventLoop] = None
 _thread:    Optional[threading.Thread]          = None
@@ -702,6 +709,54 @@ def get_state() -> dict:
                  if e["event"] == "close" and e["reason"] != "client closed"),
                 None),
         }
+
+
+def start_raw_log(path: str) -> None:
+    """Begin logging every raw accel/gyro/mag packet as JSONL to `path`,
+    independent of the legacy start_recording()/_recording mechanism
+    (that one is only used by pendulastic_viewer.py)."""
+    global _raw_log_file, _raw_log_path
+    with _raw_lock:
+        if _raw_log_file is not None:
+            try:
+                _raw_log_file.close()
+            except OSError:
+                pass
+        _raw_log_file = open(path, "w", encoding="utf-8")
+        _raw_log_path = path
+
+
+def stop_raw_log() -> Optional[str]:
+    """Close the current raw log, if any, and return the path that was
+    just closed (or None if no raw log was open)."""
+    global _raw_log_file, _raw_log_path
+    with _raw_lock:
+        path = _raw_log_path
+        if _raw_log_file is not None:
+            try:
+                _raw_log_file.close()
+            except OSError:
+                pass
+        _raw_log_file = None
+        _raw_log_path = None
+        return path
+
+
+def _raw_log_write(role: Optional[str], sensor: str, v, phone_ts_ms) -> None:
+    with _raw_lock:
+        if _raw_log_file is None:
+            return
+        line = json.dumps({
+            "t": time.time(),
+            "role": role,
+            "sensor": sensor,
+            "v": [float(v[0]), float(v[1]), float(v[2])],
+            "phone_ts_ms": int(phone_ts_ms) if phone_ts_ms else 0,
+        })
+        try:
+            _raw_log_file.write(line + "\n")
+        except (OSError, ValueError):
+            pass
 
 
 # ─── recording ────────────────────────────────────────────────────────────────
