@@ -29,8 +29,8 @@ fusion math.
 
 | File | Nature of change |
 |---|---|
-| `pendulastic_imu_server.py` | Add raw accel/gyro/mag JSONL logging alongside the existing fused-angle CSV (`on_accel`/`on_mag`/`on_gyro`, `start_recording`/`stop_recording`); add `current_raw_log_path()`; replace hardcoded `BETA` and the flex-axis/gravity-seed toggles with `load_config()`-driven values |
-| `pendulastic_app.py` | `_imu_poll_worker`'s hardcoded `_EMA_ALPHA` becomes config-driven; IMU RECORDING→REVIEW transition calls `tune()` on the background worker thread already used for other sources, persists on improvement, feeds the REVIEW graph the tuned series |
+| `pendulastic_imu_server.py` | Add new `start_raw_log(path)` / `stop_raw_log() -> Optional[str]`, independent of the legacy `start_recording()`/`stop_recording()`/`_recording` mechanism (that one is only used by `pendulastic_viewer.py` — confirmed via grep, `pendulastic_app.py` never calls it); `on_accel`/`on_mag`/`on_gyro` append to the raw log gated by a new module-level flag those two functions own; replace hardcoded `BETA` and the flex-axis/gravity-seed toggles with `load_config()`-driven values |
+| `pendulastic_app.py` | `_start_imu_recording()` calls `start_raw_log(path)`; `on_stop()`'s existing `imu` branch calls `stop_raw_log()` to get the path; `_imu_poll_worker`'s hardcoded `_EMA_ALPHA` becomes config-driven; IMU RECORDING→REVIEW transition calls `tune()` on the background worker thread already used for other sources, persists on improvement, feeds the REVIEW graph the tuned series |
 | `imu_calibration_tuner.py` (new) | `replay_trial`, `score_waveform`, `tune`, `load_config`/`save_config` — the shared engine |
 | `tune_imu.py` (new) | Thin CLI wrapper: `tune_imu.py <raw_log.jsonl> [more...] [--force]` |
 | `pendulastic_pt_score.py` | No changes — `compute_pt_params` is imported and reused as-is |
@@ -40,8 +40,28 @@ fusion math.
 
 ## 3. Raw Sample Logging
 
-`on_accel()`, `on_mag()`, `on_gyro()` in `pendulastic_imu_server.py` already fire on every incoming
-packet. Each gains one call, gated by the existing `_recording` flag `_log_sample()` already checks:
+**Correction from the original draft:** `pendulastic_imu_server.py`'s existing
+`start_recording()`/`stop_recording()`/`_recording` mechanism (the one `_log_sample()` already
+gates on) is only ever called by `pendulastic_viewer.py` — confirmed by grep, zero call sites in
+`pendulastic_app.py`. The app this entire spec is built around drives IMU recording through its own
+independent path instead: `_start_imu_recording()` spins up `_imu_poll_worker` (polls
+`get_live_angle()` at 20 Hz into `_imu_queue`), `_tick()` drains that into
+`App._rec_angles["imu"]`/`_rec_timestamps["imu"]`, and `on_stop()` writes the CSV directly via
+`DataManager.save_trial()`. Gating raw logging on the legacy `_recording` flag would mean it never
+fires during actual `pendulastic_app.py` usage. Raw logging instead gets its own dedicated
+start/stop pair, called from the app's real recording lifecycle.
+
+**New functions in `pendulastic_imu_server.py`:**
+
+```python
+def start_raw_log(path: str) -> None: ...
+def stop_raw_log() -> Optional[str]:   # returns the path just closed, or None if none was open
+    ...
+```
+
+`on_accel()`, `on_mag()`, `on_gyro()` — which already fire on every incoming packet — each gain one
+call, gated by a new module-level flag these two functions own (independent of the legacy
+`_recording` flag, which keeps working unchanged for `pendulastic_viewer.py`):
 
 ```python
 _raw_log_writer(role, sensor, v, phone_ts_ms)
@@ -57,13 +77,16 @@ a rigid CSV schema doesn't fit):
 `role` is read live from `_by_role()` at capture time (not baked in at trial start), so a mid-trial
 `swap_roles()` call still replays correctly.
 
-**File naming:** derived from the existing CSV path — `start_recording(csv_path, meta)` also opens
-`<csv_path without .csv>_raw.jsonl`. `current_raw_log_path() -> Optional[str]` lets
-`pendulastic_app.py` find the file right after recording stops.
+**Call sites in `pendulastic_app.py`:** `_start_imu_recording()` derives a path from the trial's
+filename convention (`DataManager.build_filename(..., source="imu")` with `.csv` replaced by
+`_raw.jsonl`) and calls `start_raw_log(path)` before starting `_imu_poll_worker`. `on_stop()`'s
+existing `imu` branch calls `stop_raw_log()` right alongside its existing `DataManager.save_trial`
+call, getting the raw log path back directly (no separate accessor needed — the return value is
+the file that was just closed).
 
 **Size/perf:** ~100 Hz × 3 sensors × ~15 s trial ≈ 4,500 lines (~400 KB) — trivial, buffered write,
-flushed on close alongside the existing file. This is purely additive; `_log_sample()`'s existing
-fused-angle CSV output is unchanged.
+flushed on close. This is purely additive; nothing about the existing recording path (fused-angle
+CSV via `DataManager.save_trial`, or the legacy `pendulastic_viewer.py` mechanism) changes.
 
 ---
 
@@ -196,8 +219,9 @@ hardcoded `BETA` constant and threading `flex_axis_capture`/`gravity_seed` as co
 reads `ema_alpha` from the same config instead of its hardcoded `0.3`. All four are mechanical:
 swap a constant for a config lookup, same default value as today.
 
-**Live trigger:** on the RECORDING→REVIEW transition for IMU trials, load that trial's raw JSONL via
-`current_raw_log_path()`, call `tune()` on the existing background worker thread the app already
+**Live trigger:** in `on_stop()`'s existing `imu` branch, `stop_raw_log()` returns the path to that
+trial's just-closed raw JSONL. On the RECORDING→REVIEW transition, load it and call `tune()` on the
+existing background worker thread the app already
 uses for other sources (matching `_run_video_file_hpe`'s pattern — no new async machinery). If
 `tune()` finds a passing configuration, the trial's already-saved CSV is **rewritten** (same path,
 same `DataManager.save_trial` call) with the tuned `replay_trial` series before the REVIEW screen
