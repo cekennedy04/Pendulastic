@@ -1456,10 +1456,17 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
                 settle_idx = i
                 break
         settle_t = float(t_r[settle_idx])
-        # Buffer kept well under the plateau check's 6-tick (0.3s) minimum
-        # run length, expressed via TICK_S (this file's own tick constant)
-        # rather than a bare literal, so the coupling is self-documenting.
-        window_end_t = min(t_r[0] + 4.0, settle_t + 5 * TICK_S)
+        # No added buffer past settle_t -- unlike the rejected derivative-
+        # threshold approach, settle_idx is already the point after which
+        # EVERY remaining sample is within tolerance of neutral (that's what
+        # "permanently" means above), so it is already at or slightly after
+        # the true end of the transition (Savitzky-Golay smoothing can add a
+        # few ticks of lag at the edge, which settle_idx already absorbs by
+        # construction). Adding extra time past it only pulls more of the
+        # already-flat tail into the window -- exactly what caused a false
+        # plateau violation (~9 flat ticks, 3 over the 6-tick/0.3s limit) on
+        # the original 1-second-drop test in an earlier version of this fix.
+        window_end_t = min(t_r[0] + 4.0, settle_t)
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
