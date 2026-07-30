@@ -170,9 +170,14 @@ the curve looks. Otherwise, broad physiological *plausibility* bounds are checke
 `HEALTHY_REF` severity comparison used for MAS scoring, which is condition-dependent and wrong to
 gate tuning on:
 
-- `N` (swing count) ∈ [1, 10]
+- `N` (swing count) ∈ [0.5, 10] — 0.5 (not 1.0) admits a single initial drop with
+  no rebound at all, i.e. `compute_pt_params`'s own `N=(n_pos+n_neg)/2` for one
+  lone trough — the severe-spasticity single-drop-then-lock case, not a defect
 - `A0` (initial swing) ∈ [10°, 90°]
-- `f` (frequency) ∈ [0.3, 3.0] Hz — matches the pendulum's documented ~1 Hz dynamics
+- `f` (frequency) ∈ [0.3, 3.0] Hz, OR exactly 0.0 (matches the pendulum's
+  documented ~1 Hz dynamics; `compute_pt_params` itself reports `f=0.0` as
+  "too few extrema to measure a frequency," which is expected, not an error,
+  for the same low-oscillation-count cases the relaxed `N` bound admits)
 - `R2n`, `omega_max_n`, `omega_min_n` finite (not NaN/inf)
 
 This is what stops the search from "cheating" — e.g. picking heavy EMA smoothing that produces a

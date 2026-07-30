@@ -1219,21 +1219,28 @@ Add to `tests/test_imu_calibration_tuner.py`:
 
 ```python
 def _damped_pendulum_series(duration_s=12.0, dt=0.05, release_t=1.0,
-                            a0_deg=40.0, decay=0.18, freq=0.9, ramp_s=0.3):
-    """Damped-cosine formula similar to the synthetic HPE stub in
-    web/api/routers/ws_stream.py, but with a `ramp_s`-second smooth envelope
-    at release instead of an instant jump from 180 to full amplitude — a
-    real IMU signal is continuous, and an instant jump would itself trip the
-    continuity check this fixture is used to validate against."""
+                            neutral_deg=140.0, decay=0.18, freq=0.9):
+    """Damped oscillation centered on a sub-180 resting (neutral) angle,
+    starting exactly at 180 and decaying toward `neutral_deg`:
+
+        angle(tau) = neutral + (180 - neutral) * exp(-decay*tau) * cos(2*pi*freq*tau)
+
+    At tau=0: exp(0)*cos(0)=1, so angle=neutral+(180-neutral)=180 exactly —
+    already continuous with the pre-release hold, no separate release ramp
+    needed. For any tau>0, exp(-decay*tau)*cos(...) < 1 strictly, so
+    angle < neutral + (180-neutral)*1 = 180 always — the signal can never
+    exceed 180 (physically impossible for this convention) regardless of
+    the oscillation's phase, unlike a naive "180 - amplitude*cos(...)"
+    formula centered on 180 itself, which swings above 180 whenever
+    cos(...) goes negative."""
     t = np.arange(0, duration_s, dt)
     angle = np.full_like(t, 180.0)
+    amplitude = 180.0 - neutral_deg
     for i, ti in enumerate(t):
         if ti >= release_t:
             tau = ti - release_t
-            envelope = min(1.0, tau / ramp_s)
-            angle_rad = (envelope * math.radians(a0_deg)
-                        * math.exp(-decay * tau) * math.cos(2 * math.pi * freq * tau))
-            angle[i] = 180.0 - math.degrees(angle_rad)
+            angle[i] = (neutral_deg
+                       + amplitude * math.exp(-decay * tau) * math.cos(2 * math.pi * freq * tau))
     return t, angle
 
 
@@ -1394,10 +1401,19 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     continuity_penalty = 2.0 * clip_violations + 1.0 * plateau_violations
 
     # ── D. Plausibility bounds ────────────────────────────────────────────
+    # N >= 0.5 (not 1.0) and f == 0.0-is-acceptable deliberately admit the
+    # single-drop-then-lock severe-spasticity case the Section 5 continuity
+    # fix exists to protect: compute_pt_params reports N=(n_pos+n_neg)/2=0.5
+    # for a lone initial trough with no rebound, and f=0.0 when fewer than 4
+    # extrema exist to measure a frequency from (its own documented
+    # "undefined, not enough cycles" signal, not an error). Gating strictly
+    # on N>=1.0 or f>=0.3 would reject exactly the patients this test exists
+    # to characterize — the same inconsistency the C-check's window bound
+    # was designed to avoid, just showing up in D instead.
     d_ok = (
-        1.0 <= pt_params["N"] <= 10.0
+        0.5 <= pt_params["N"] <= 10.0
         and 10.0 <= pt_params["A0_deg"] <= 90.0
-        and 0.3 <= pt_params["f"] <= 3.0
+        and (pt_params["f"] == 0.0 or 0.3 <= pt_params["f"] <= 3.0)
         and math.isfinite(pt_params["R2n"])
         and math.isfinite(pt_params["omega_max_n"])
         and math.isfinite(pt_params["omega_min_n"])
