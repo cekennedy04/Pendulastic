@@ -123,6 +123,23 @@ glitches/clipping), and no run of ≥6 consecutive ticks (300 ms) with |Δangle|
 active-swing window (catches the "staircase" the recent fix commits targeted). Penalty = weighted
 violation count.
 
+**Active-swing window, precisely bounded — clinical safety fix:** a naive "release to end of trial"
+window would misclassify genuine severe-spasticity behavior as a sensor artifact. In the Wartenberg
+pendulum test, a patient with severe spasticity/MS can lock up almost immediately after the initial
+drop and stay essentially motionless for the rest of the trial — a real, clinically meaningful
+finding (reflected in an extreme `R2n`/`omega_min_n`), not a staircase glitch. A flat 300 ms window
+applied blindly across the whole post-release signal would penalize exactly the patients this test
+exists to characterize. The window is therefore bounded using the same extrema-detection
+`compute_pt_params` already runs (`_detect_release` / `_merge_close_extrema`, imported, not
+reimplemented): **from `release_idx` to the last detected swing extremum**, capped at a 4 s ceiling
+after release either way (generous for the pendulum's documented ~1 Hz dynamics — a real trial
+settles within 3–4 cycles). Everything after that point is the expected resting tail — matching
+`compute_pt_params`'s own "neutral from tail-median of the settled section" logic elsewhere — and is
+excluded from the plateau check entirely, whether that tail is 2 seconds (healthy control, several
+rebounds) or 12 seconds (severe spasticity, locked after one drop). The single-tick jump/clipping
+check is unaffected and still runs across the full series — a real quaternion-flip glitch can't be
+explained away by "the patient is locked up," so it stays gated everywhere.
+
 **D. Truthfulness gate** — `pendulastic_pt_score.compute_pt_params(t, angle_deg)` is imported and
 reused as-is (same release-detection, Savitzky-Golay smoothing, detrending already covered by the
 existing 84 passing tests). `None` (no detectable release) is a hard fail regardless of how smooth
