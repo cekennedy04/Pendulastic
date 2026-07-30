@@ -103,6 +103,86 @@ def test_get_state_contains_swing_angle_deg_key():
     assert "swing_angle_deg" in st
 
 
+def test_dynamic_beta_skips_correction_during_impact():
+    """Accelerometer correction must be skipped when |a| >> g (high-impact)."""
+    ahrs = imu.MadgwickAHRS(beta=0.5)  # high beta so correction is very visible
+    # Warm up the g-magnitude estimate with a few near-g samples
+    g_vec = np.array([0.0, 0.0, 9.81])
+    gyro_zero = np.array([0.0, 0.0, 0.0])
+    for _ in range(20):
+        ahrs.update(gyro_zero, g_vec, None, 0.01)
+    q_after_warmup = ahrs.q.copy()
+
+    # Apply impact: accel 5× gravity. With correction enabled this would distort
+    # the orientation; with correction skipped, only gyro drives the update.
+    impact_accel = np.array([0.0, 0.0, 9.81 * 5])
+    ahrs.update(gyro_zero, impact_accel, None, 0.01)
+    # q should be nearly unchanged (gyro is zero, correction skipped)
+    np.testing.assert_allclose(ahrs.q, q_after_warmup, atol=1e-4,
+        err_msg="Impact accel should not distort orientation (correction skipped)")
+
+
+def test_flex_axis_captured_on_first_motion_after_zero():
+    """After zero(), the first gyro burst above threshold must populate _flex_axis."""
+    imu.reset_devices()
+    imu.clear_zero()
+    # Register a distal device
+    imu._devices["10.0.0.2"] = imu._IMUDevice("10.0.0.2")
+    imu._roles["10.0.0.2"]   = imu.ROLE_DISTAL
+    dev = imu._devices["10.0.0.2"]
+    dev.accel    = np.array([0.0, 0.0, 9.81])
+    dev.ahrs.q   = np.array([1.0, 0.0, 0.0, 0.0])
+    dev.last_rx  = __import__("time").time()
+    imu.zero()
+    assert imu._flex_axis_armed, "zero() must arm flex-axis capture"
+    assert imu._flex_axis is None, "_flex_axis should be None before first motion"
+
+    # Feed a gyro burst above the capture threshold
+    omega = np.array([0.0, 1.0, 0.0])   # 1 rad/s around y-axis
+    dev.on_gyro(omega, ts=1000)
+    assert imu._flex_axis is not None, "_flex_axis must be captured after first motion"
+    assert not imu._flex_axis_armed, "_flex_axis_armed must be cleared after capture"
+    np.testing.assert_allclose(
+        np.linalg.norm(imu._flex_axis), 1.0, atol=1e-6,
+        err_msg="_flex_axis must be a unit vector")
+    imu.reset_devices()
+    imu.clear_zero()
+
+
+def test_swing_angle_projection_excludes_out_of_plane_rotation():
+    """When _flex_axis is set, only the on-axis component is returned."""
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["10.0.0.3"] = imu._IMUDevice("10.0.0.3")
+    imu._roles["10.0.0.3"]   = imu.ROLE_DISTAL
+    dev = imu._devices["10.0.0.3"]
+    dev.from_orientation_stream = False
+    dev.ahrs.q  = np.array([1.0, 0.0, 0.0, 0.0])  # identity = zero pose
+    dev.last_rx = __import__("time").time()
+    imu.zero()
+
+    # Manually lock the flexion axis as +Y in sensor frame
+    imu._flex_axis       = np.array([0.0, 1.0, 0.0])
+    imu._flex_axis_armed = False
+
+    # Rotate 45° purely around Y (sagittal axis) — projected angle should be 45°
+    angle_rad = math.radians(45.0)
+    dev.ahrs.q = np.array([math.cos(angle_rad / 2), 0.0,
+                            math.sin(angle_rad / 2), 0.0])
+    projected = imu.swing_angle_deg()
+    assert abs(projected - 45.0) < 0.5, f"Pure Y-rotation: expected ~45°, got {projected:.2f}°"
+
+    # Rotate 45° purely around Z (out-of-plane) — projected angle should be ~0°
+    dev.ahrs.q = np.array([math.cos(angle_rad / 2), 0.0, 0.0,
+                            math.sin(angle_rad / 2)])
+    projected_oop = imu.swing_angle_deg()
+    assert abs(projected_oop) < 1.0, (
+        f"Out-of-plane Z-rotation: expected ~0°, got {projected_oop:.2f}°")
+
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_swing_angle_zero_returns_zero():
     """Immediately after zero(), swing_angle_deg() should return ~0°."""
     imu.reset_devices()

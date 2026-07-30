@@ -97,6 +97,7 @@ class MadgwickAHRS:
     def __init__(self, beta: float = BETA):
         self.beta = beta
         self.q = np.array([1.0, 0.0, 0.0, 0.0])   # [w, x, y, z]
+        self._a_est = 0.0   # slow EMA of |accel|; self-calibrates to g in any units
 
     def reset(self):
         self.q = np.array([1.0, 0.0, 0.0, 0.0])
@@ -117,7 +118,15 @@ class MadgwickAHRS:
 
         # ── Correction: gradient descent toward accel (+ mag) reference ───────
         a_norm = float(np.linalg.norm(accel))
-        if a_norm > 1e-9:
+        # Slow EMA tracks the steady-state gravity magnitude in whatever unit
+        # the phone sends (m/s² or g).  Initialises on the first sample.
+        self._a_est = (a_norm if self._a_est == 0.0
+                       else 0.999 * self._a_est + 0.001 * a_norm)
+        # Skip the accelerometer correction step during high-impact transients
+        # so the gravity-direction estimate is not distorted by linear accel.
+        _do_correct = (self._a_est > 1e-9
+                       and 0.9 * self._a_est <= a_norm <= 1.1 * self._a_est)
+        if a_norm > 1e-9 and _do_correct:
             ax, ay, az = np.asarray(accel, float) / a_norm
 
             m_norm = float(np.linalg.norm(mag)) if mag is not None else 0.0
@@ -288,6 +297,7 @@ class _IMUDevice:
         return (len(t) - 1) / span if span > 1e-6 else 0.0
 
     def on_gyro(self, v, ts):
+        global _flex_axis, _flex_axis_armed
         now = time.time()
         self.gyro_times.append(now)
         cutoff = now - 3.0
@@ -308,6 +318,19 @@ class _IMUDevice:
             # directly via on_orientation() and may be higher quality.
             if not self.from_orientation_stream:
                 self.roll, self.pitch, self.yaw = self.ahrs.euler_deg()
+        # Capture anatomical flexion axis from the first deliberate motion after
+        # zero().  Only the distal segment (or the solo phone) defines the axis.
+        if _flex_axis_armed:
+            omega_mag = float(np.linalg.norm(v))
+            if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
+                dist_dev = _by_role(ROLE_DISTAL)
+                prox_dev = _by_role(ROLE_PROXIMAL)
+                is_distal = dist_dev is not None and dist_dev.ident == self.ident
+                is_solo   = ((dist_dev is None or not dist_dev.connected) and
+                             prox_dev is not None and prox_dev.ident == self.ident)
+                if is_distal or is_solo:
+                    _flex_axis       = v / omega_mag
+                    _flex_axis_armed = False
         self._touch(ts, now)
 
     def on_orientation(self, azimuth, pitch, roll, ts):
@@ -356,6 +379,9 @@ _roles:   dict[str, str]        = {}      # ip → ROLE_PROXIMAL | ROLE_DISTAL
 _offset   = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}   # zeroing calibration
 _q_zero_prox: Optional[np.ndarray] = None
 _q_zero_dist: Optional[np.ndarray] = None
+_flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
+_flex_axis_armed: bool = False            # True after zero(), awaiting first motion
+_FLEX_CAPTURE_THRESHOLD = 0.3             # rad/s — min |ω| to register as intentional
 
 _loop:      Optional[asyncio.AbstractEventLoop] = None
 _thread:    Optional[threading.Thread]          = None
@@ -463,8 +489,10 @@ def _raw_relative() -> dict:
 def zero():
     """Capture the current pose as the 0° reference.
     Stores both Euler offsets (for relative_angles() backward compat) and
-    quaternion snapshots (for swing_angle_deg())."""
-    global _q_zero_prox, _q_zero_dist
+    quaternion snapshots (for swing_angle_deg()).  Arms the flex-axis capture
+    so the first significant gyro burst after this call defines the sagittal
+    flexion axis."""
+    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
     with _lock:
         cur = _raw_relative()
         for k in ("roll", "pitch", "yaw"):
@@ -481,23 +509,34 @@ def zero():
                          if d is not None and d.connected), None)
             if solo is not None:
                 _q_zero_dist = solo.get_quaternion()
+        # Arm the flex-axis capture; the first gyro burst with |ω| above the
+        # threshold will lock the anatomical flexion axis for this session.
+        _flex_axis        = None
+        _flex_axis_armed  = True
 
 
 def clear_zero():
-    global _q_zero_prox, _q_zero_dist
+    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
     with _lock:
         for k in _offset:
             _offset[k] = 0.0
         _q_zero_prox = None
         _q_zero_dist = None
+        _flex_axis       = None
+        _flex_axis_armed = False
 
 
 def swing_angle_deg() -> float:
-    """Quaternion rotation distance from zeroed reference pose, in degrees.
+    """Knee flexion angle in degrees from the zeroed reference pose.
 
     Returns NaN before zero() is called.
     Two-phone: relative joint angle change from zeroed pose.
-    Single-phone: absolute segment rotation from zeroed pose."""
+    Single-phone: absolute segment rotation from zeroed pose.
+
+    If a flexion axis has been captured (first deliberate motion after zero()),
+    the angle is projected onto that axis to isolate sagittal flexion-extension
+    and exclude ankle inversion/eversion and internal-rotation artefacts.
+    Falls back to axis-agnostic total quaternion rotation distance otherwise."""
     with _lock:
         if _q_zero_dist is None:
             return float("nan")
@@ -511,7 +550,7 @@ def swing_angle_deg() -> float:
             q_rel_zero = _qmul(_qconj(_q_zero_prox), _q_zero_dist)
             q_rel_cur  = _qmul(_qconj(prox.get_quaternion()),
                                 dist.get_quaternion())
-            dot = float(np.dot(q_rel_zero, q_rel_cur))
+            q_delta = _qmul(_qconj(q_rel_zero), q_rel_cur)
         else:
             solo = next(
                 (d for d in (dist, prox) if d is not None and d.connected),
@@ -523,9 +562,23 @@ def swing_angle_deg() -> float:
                       else _q_zero_prox)
             if q_zero is None:
                 return float("nan")
-            dot = float(np.dot(q_zero, solo.get_quaternion()))
+            q_delta = _qmul(_qconj(q_zero), solo.get_quaternion())
 
-        dot = max(-1.0, min(1.0, abs(dot)))
+        if _flex_axis is not None:
+            # Axis-projected angle: decomposes q_delta into axis-angle form and
+            # returns only the component around the captured anatomical axis.
+            # Ensure w ≥ 0 (canonical hemisphere) before decomposing.
+            q = q_delta if q_delta[0] >= 0.0 else -q_delta
+            sin_half = float(np.linalg.norm(q[1:]))
+            if sin_half > 1e-9:
+                theta = 2.0 * math.acos(min(1.0, float(q[0])))
+                u     = q[1:] / sin_half
+                return abs(math.degrees(theta * float(np.dot(u, _flex_axis))))
+            return 0.0
+
+        # Fallback: total quaternion rotation distance (axis-agnostic).
+        # dot(q_zero, q_current) == q_delta[0] for unit quaternions.
+        dot = max(-1.0, min(1.0, abs(float(q_delta[0]))))
         return 2.0 * math.degrees(math.acos(dot))
 
 
@@ -603,7 +656,9 @@ def get_state() -> dict:
                           "packets": dist.n_packets if dist else 0,
                           "hz": dist.gyro_hz if dist else 0.0},
             "angles":    ang,
-            "swing_angle_deg": swing_angle_deg(),
+            "swing_angle_deg":    swing_angle_deg(),
+            "flex_axis_armed":    _flex_axis_armed,
+            "flex_axis_captured": _flex_axis is not None,
             "sync":      sync_status(),
             "conns":     _conn_active,
             "endpoints": {p: dict(v) for p, v in _seen_paths.items()},
