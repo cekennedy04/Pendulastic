@@ -163,3 +163,101 @@ def test_replay_trial_gravity_seed_changes_zero_reference_under_correction():
         "gravity_seed must measurably change the replayed series when "
         "correction (beta>0) is active and the accel is tilted "
         f"(seeded={angle_seeded[-1]:.2f}, unseeded={angle_unseeded[-1]:.2f})")
+
+
+def _damped_pendulum_series(duration_s=12.0, dt=0.05, release_t=1.0,
+                            neutral_deg=140.0, decay=0.18, freq=0.9):
+    """Damped oscillation centered on a sub-180 resting (neutral) angle,
+    starting exactly at 180 and decaying toward `neutral_deg`:
+
+        angle(tau) = neutral + (180 - neutral) * exp(-decay*tau) * cos(2*pi*freq*tau)
+
+    At tau=0: exp(0)*cos(0)=1, so angle=neutral+(180-neutral)=180 exactly —
+    already continuous with the pre-release hold, no separate release ramp
+    needed. For any tau>0, exp(-decay*tau)*cos(...) < 1 strictly, so
+    angle < neutral + (180-neutral)*1 = 180 always — the signal can never
+    exceed 180 (physically impossible for this convention) regardless of
+    the oscillation's phase, unlike a naive "180 - amplitude*cos(...)"
+    formula centered on 180 itself, which swings above 180 whenever
+    cos(...) goes negative."""
+    t = np.arange(0, duration_s, dt)
+    angle = np.full_like(t, 180.0)
+    amplitude = 180.0 - neutral_deg
+    for i, ti in enumerate(t):
+        if ti >= release_t:
+            tau = ti - release_t
+            angle[i] = (neutral_deg
+                       + amplitude * math.exp(-decay * tau) * math.cos(2 * math.pi * freq * tau))
+    return t, angle
+
+
+def test_score_waveform_good_signal_passes():
+    t, angle = _damped_pendulum_series()
+    result = tuner.score_waveform(t, angle)
+    assert result["passes"], result
+    assert result["params"] is not None
+
+
+def test_score_waveform_bad_start_fails():
+    t, angle = _damped_pendulum_series()
+    angle = angle.copy()
+    angle[:10] = 140.0   # doesn't start near 180
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"]
+
+
+def test_score_waveform_clipped_step_fails():
+    t, angle = _damped_pendulum_series()
+    angle = angle.copy()
+    mid = len(angle) // 2
+    angle[mid] = angle[mid - 1] + 60.0   # impossible single-tick jump
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"]
+
+
+def test_score_waveform_plateau_during_active_swing_fails():
+    t, angle = _damped_pendulum_series()
+    angle = angle.copy()
+    # Freeze a long run of samples right after release (well inside the
+    # active-swing window) -> staircase artifact.
+    release_i = int(1.0 / 0.05)
+    angle[release_i + 2: release_i + 12] = angle[release_i + 2]
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"]
+
+
+def test_score_waveform_long_resting_tail_after_one_drop_still_passes():
+    """Severe-spasticity case: one real drop, then genuinely locked/motionless
+    for the rest of a long trial. Must NOT be misclassified as a staircase."""
+    t = np.arange(0, 20.0, 0.05)
+    angle = np.full_like(t, 180.0)
+    release_t = 1.0
+    for i, ti in enumerate(t):
+        if release_t <= ti < release_t + 1.0:
+            tau = ti - release_t
+            angle[i] = 180.0 - 35.0 * (tau / 1.0)   # smooth single drop to ~145
+        elif ti >= release_t + 1.0:
+            angle[i] = 145.0   # locked — flat for the remaining ~18s
+    result = tuner.score_waveform(t, angle)
+    assert result["passes"], (
+        "a genuine single-drop-then-lock severe-spasticity trial must pass, "
+        f"got penalty={result['penalty']}, params={result['params']}")
+
+
+def test_score_waveform_trick_oversmoothed_no_oscillation_fails():
+    """A technically plateau-free but physically flat (no real swing) curve
+    must be rejected by the truthfulness gate (D), even though A-C alone
+    would not catch it."""
+    t = np.arange(0, 12.0, 0.05)
+    # Tiny monotonic sag with no oscillation and no plateau at all.
+    angle = 180.0 - 2.0 * (1.0 - np.exp(-0.05 * t))
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"], "a no-oscillation curve must fail the truthfulness gate"
+
+
+def test_score_waveform_too_short_series_fails():
+    t = np.arange(0, 0.5, 0.05)
+    angle = np.full_like(t, 180.0)
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"]
+    assert result["params"] is None

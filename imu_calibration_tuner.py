@@ -220,3 +220,103 @@ def replay_trial(raw_samples: list, params: dict):
             smoothed[i] = ema
 
     return t_arr, smoothed
+
+
+def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
+    """
+    Score a replayed trial's angle series against the pendulum test's
+    physical constraints. Returns {"passes": bool, "penalty": float,
+    "params": dict | None}. See spec Section 5 for the full rationale,
+    including why the continuity check is bounded to the active-swing
+    window rather than the whole trial (severe-spasticity patients can
+    genuinely lock up and hold still for most of a trial — that must not
+    be misclassified as a staircase sensor artifact).
+    """
+    t = np.asarray(t, dtype=float)
+    angle_deg = np.asarray(angle_deg, dtype=float)
+
+    if len(t) < 40 or np.count_nonzero(np.isfinite(angle_deg)) < 40:
+        return {"passes": False, "penalty": 1e6, "params": None}
+
+    # ── A. Horizontal start ────────────────────────────────────────────
+    start_mask = t <= (t[0] + 0.3)
+    start_vals = angle_deg[start_mask]
+    start_vals = start_vals[np.isfinite(start_vals)]
+    if len(start_vals) == 0:
+        return {"passes": False, "penalty": 1e6, "params": None}
+    start_median = float(np.median(start_vals))
+    start_ok = abs(start_median - 180.0) <= 8.0
+    start_penalty = max(0.0, abs(start_median - 180.0) - 8.0)
+
+    # ── D. Truthfulness gate (drives B/C's window too) ─────────────────
+    pt_params = compute_pt_params(t, angle_deg, detrend=False)
+    if pt_params is None:
+        return {"passes": False, "penalty": 1e6 + start_penalty, "params": None}
+
+    # ── B. Oscillation range (uses pt_params' smoothed, unflipped ang_r) ─
+    ang_r = pt_params["ang_r"]
+    min_angle = float(np.nanmin(ang_r))
+    range_ok = 80.0 <= min_angle <= 178.0
+    range_penalty = max(0.0, 80.0 - min_angle) + max(0.0, min_angle - 178.0)
+
+    # ── C. Continuity, bounded to the active-swing window ───────────────
+    t_r = pt_params["t_r"]
+    pk_i, tr_i = pt_params["pk_i"], pt_params["tr_i"]
+    extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
+    if len(extrema):
+        last_extremum_t = float(t_r[int(extrema.max())])
+        window_end_t = t_r[0] + min(4.0, max(0.0, last_extremum_t - t_r[0]))
+    else:
+        window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
+
+    clip_violations = 0
+    diffs = np.diff(angle_deg)
+    for i in range(len(diffs)):
+        if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
+            continue
+        if abs(diffs[i]) > 25.0:
+            clip_violations += 1
+
+    active_idx = np.where((t >= t_r[0]) & (t <= window_end_t))[0]
+    plateau_violations = 0
+    run = 0
+    for i in active_idx:
+        if i + 1 >= len(angle_deg):
+            continue
+        if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
+            run = 0
+            continue
+        if abs(angle_deg[i + 1] - angle_deg[i]) < 0.05:
+            run += 1
+            if run >= 6:
+                plateau_violations += 1
+        else:
+            run = 0
+
+    continuity_ok = (clip_violations == 0 and plateau_violations == 0)
+    continuity_penalty = 2.0 * clip_violations + 1.0 * plateau_violations
+
+    # ── D. Plausibility bounds ────────────────────────────────────────────
+    # N >= 0.5 (not 1.0) and f == 0.0-is-acceptable deliberately admit the
+    # single-drop-then-lock severe-spasticity case the Section 5 continuity
+    # fix exists to protect: compute_pt_params reports N=(n_pos+n_neg)/2=0.5
+    # for a lone initial trough with no rebound, and f=0.0 when fewer than 4
+    # extrema exist to measure a frequency from (its own documented
+    # "undefined, not enough cycles" signal, not an error). Gating strictly
+    # on N>=1.0 or f>=0.3 would reject exactly the patients this test exists
+    # to characterize — the same inconsistency the C-check's window bound
+    # was designed to avoid, just showing up in D instead.
+    d_ok = (
+        0.0 <= pt_params["N"] <= 10.0
+        and 10.0 <= pt_params["A0_deg"] <= 90.0
+        and (pt_params["f"] == 0.0 or 0.3 <= pt_params["f"] <= 3.0)
+        and math.isfinite(pt_params["R2n"])
+        and math.isfinite(pt_params["omega_max_n"])
+        and math.isfinite(pt_params["omega_min_n"])
+    )
+
+    passes = start_ok and range_ok and continuity_ok and d_ok
+    penalty = (start_penalty + range_penalty + continuity_penalty
+              + (0.0 if d_ok else 50.0))
+
+    return {"passes": passes, "penalty": penalty, "params": pt_params}
