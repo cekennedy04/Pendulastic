@@ -66,6 +66,17 @@ def replay_trial(raw_samples: list, params: dict):
     cadence the live app displays and saves. Returns two empty arrays if the
     log is empty or no motion above the flex-axis threshold is ever detected
     (the trial never "zeroes" and can't be scored).
+
+    Contract: angle_deg[0] is always NaN — the very first tick is always
+    emitted before any raw sample has been processed (tick_times[0] always
+    equals raw_samples[0]["t"] exactly), so no device state exists yet at
+    that instant. This mirrors the live app's own contract: _imu_poll_worker
+    (pendulastic_app.py) puts a non-finite angle onto its queue and resets
+    the EMA "on NaN (pre-zero or disconnected)" under the same condition —
+    a NaN-bearing angle series is normal, pre-existing behavior in this
+    codebase, not a defect. Callers (score_waveform, App._run_imu_tuning)
+    must finite-filter before reducing (e.g. np.nanmedian, or
+    arr[np.isfinite(arr)]) rather than assume every tick is a number.
     """
     if not raw_samples:
         return np.array([]), np.array([])
@@ -85,6 +96,13 @@ def replay_trial(raw_samples: list, params: dict):
     flex_axis_armed = True
     q_zero: dict = {}
     zero_captured = False
+
+    # Mirrors on_gyro()'s "only the distal segment (or the solo phone)
+    # defines the axis" restriction (pendulastic_imu_server.py's on_gyro,
+    # is_distal/is_solo). Without this, a proximal-only motion burst in a
+    # two-phone trial would incorrectly arm the axis/zero, which live never
+    # does. "Solo" here means no distal-role sample ever appears in this log.
+    has_distal = any(s["role"] == ROLE_DISTAL for s in raw_samples)
 
     t0 = raw_samples[0]["t"]
     t_end = raw_samples[-1]["t"]
@@ -136,12 +154,19 @@ def replay_trial(raw_samples: list, params: dict):
             if flex_axis_armed:
                 omega_mag = float(np.linalg.norm(v))
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
-                    if not zero_captured:
-                        q_zero = _snapshot()
-                        zero_captured = True
-                    if params["flex_axis_capture"]:
-                        flex_axis = v / omega_mag
-                    flex_axis_armed = False
+                    # Only a qualifying role's burst may arm/capture — a
+                    # non-qualifying role's motion is ignored entirely
+                    # (flex_axis_armed stays True), exactly matching
+                    # on_gyro()'s is_distal/is_solo gate.
+                    is_distal = (role == ROLE_DISTAL)
+                    is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
+                    if is_distal or is_solo:
+                        if not zero_captured:
+                            q_zero = _snapshot()
+                            zero_captured = True
+                        if params["flex_axis_capture"]:
+                            flex_axis = v / omega_mag
+                        flex_axis_armed = False
 
             if st.accel is not None:
                 st.ahrs.update(v, st.accel, st.mag, dt)
