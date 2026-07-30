@@ -272,19 +272,33 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         # even register as one detected trough via find_peaks, since that
         # requires the signal to go down AND back up). A flat 4.0s cap from
         # release would still bleed well into the resting tail here, since
-        # nothing bounds where the single drop itself ends. Bound it instead
-        # to the last moment the signal was still meaningfully changing,
-        # plus a small buffer strictly UNDER the plateau check's own 6-tick
-        # (0.3s) minimum run length below -- so the buffer itself can never
-        # accumulate enough consecutive quiet ticks to trigger a false
-        # violation, however long the resting tail beyond it continues.
-        diffs_settle = np.abs(np.diff(ang_r))
-        moving = np.where(diffs_settle > 1.0)[0]
-        if len(moving):
-            last_moving_t = float(t_r[int(moving.max())])
-            window_end_t = min(t_r[0] + 4.0, last_moving_t + 0.2)
-        else:
-            window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
+        # nothing bounds where the single drop itself ends.
+        #
+        # A per-tick derivative threshold ("is it still moving") was tried
+        # and rejected: it's coupled to both sample rate and drop SPEED --
+        # any real drop slower than roughly the threshold's own rate falls
+        # through to the same broken flat-4.0s case it was meant to fix.
+        # Instead, this uses compute_pt_params's own tail-median
+        # `neutral_deg` directly: find the first point after which the
+        # signal is PERMANENTLY within tolerance of neutral (not just
+        # transiently close, which a still-swinging signal could be too --
+        # but that ambiguity doesn't apply here, since this branch only
+        # runs when no oscillation was detected at all). This is robust to
+        # the drop taking 1 second or 5, because it asks "has it reached
+        # its final resting value," not "how fast is it changing right now."
+        neutral = pt_params["neutral_deg"]
+        tol = max(2.0, 0.05 * pt_params["A0_deg"])   # matches min_amp's own convention
+        near_neutral = np.abs(ang_r - neutral) <= tol
+        settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
+        for i in range(len(ang_r)):
+            if np.all(near_neutral[i:]):
+                settle_idx = i
+                break
+        settle_t = float(t_r[settle_idx])
+        # Buffer kept well under the plateau check's 6-tick (0.3s) minimum
+        # run length, expressed via TICK_S (this file's own tick constant)
+        # rather than a bare literal, so the coupling is self-documenting.
+        window_end_t = min(t_r[0] + 4.0, settle_t + 5 * TICK_S)
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
