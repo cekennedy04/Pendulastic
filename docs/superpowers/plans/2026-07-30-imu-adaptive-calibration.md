@@ -837,13 +837,27 @@ def test_replay_trial_matches_hand_computed_rotation():
         f"expected ~{expected_final:.2f} deg, got {angle[-1]:.2f} deg")
 
 
+def test_replay_trial_first_tick_is_nan_rest_are_finite():
+    """Contract: tick 0 always precedes any processed sample (tick_times[0]
+    always equals raw_samples[0]["t"] exactly), so no device state exists yet
+    and it is always NaN. Every later tick, once zeroed, must be finite.
+    Pinning this explicitly (not just working around it in another test)
+    stops it from silently regressing into more than one leading NaN."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, angle = tuner.replay_trial(samples, params)
+    assert math.isnan(angle[0])
+    assert np.isfinite(angle[1:]).all()
+
+
 def test_replay_trial_holds_near_180_before_release():
     """Before the burst, held nearly still, the displayed angle must read ~180."""
     samples = _solo_hold_then_burst_samples()
     params = {"beta": 0.0, "ema_alpha": 1.0,
               "flex_axis_capture": True, "gravity_seed": True}
     t, angle = tuner.replay_trial(samples, params)
-    pre_release = angle[t < 0.9]
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
     assert len(pre_release) > 0
     assert abs(float(np.median(pre_release)) - 180.0) < 1.0
 
@@ -868,7 +882,78 @@ def test_replay_trial_no_motion_ever_returns_empty_arrays():
                                                 "flex_axis_capture": True,
                                                 "gravity_seed": True})
     assert len(t_arr) == 0 and len(angle) == 0
+
+
+def test_replay_trial_flex_axis_capture_excludes_out_of_plane_rotation():
+    """Two sequential bursts about orthogonal axes: flex_axis is captured from
+    the FIRST (Y-axis) burst. flex_axis_capture=True must project out the
+    second (X-axis) burst's contribution; flex_axis_capture=False reports the
+    axis-agnostic total rotation, which includes both. beta=0.0 isolates pure
+    gyro integration so the two settings' difference isn't confounded by the
+    accelerometer correction term."""
+    samples = []
+    samples.append({"t": 0.0, "role": "distal", "sensor": "accel",
+                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": 0})
+    t = 0.0
+    for _ in range(30):   # burst 1: 0.3s about Y -> captures flex_axis=[0,1,0]
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(30):   # burst 2: 0.3s about X -- orthogonal to flex_axis
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [2.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(50):
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+
+    base = {"beta": 0.0, "ema_alpha": 1.0, "gravity_seed": True}
+    _, angle_projected = tuner.replay_trial(samples, {**base, "flex_axis_capture": True})
+    _, angle_total      = tuner.replay_trial(samples, {**base, "flex_axis_capture": False})
+    assert abs(angle_projected[-1] - angle_total[-1]) > 5.0, (
+        "flex_axis_capture must measurably change the result once a second, "
+        "orthogonal rotation is introduced after the axis is captured "
+        f"(projected={angle_projected[-1]:.2f}, total={angle_total[-1]:.2f})")
+
+
+def test_replay_trial_gravity_seed_changes_zero_reference_under_correction():
+    """q_zero is captured on the FIRST qualifying gyro sample -- if that is
+    the very first sample in the log, it is captured BEFORE any ahrs.update()
+    call, so it equals whatever on_accel's seeding produced verbatim. A
+    tilted accel makes gravity_seed=True seed q far from identity while
+    gravity_seed=False leaves it at identity; with beta>0 (correction
+    active), that starting-point difference measurably changes the
+    subsequent trajectory rather than cancelling out (which it would if
+    beta were 0 -- see the plan's Section 4 discussion)."""
+    samples = []
+    tilt_deg = 60.0
+    samples.append({
+        "t": 0.0, "role": "distal", "sensor": "accel",
+        "v": [9.81 * math.sin(math.radians(tilt_deg)), 0.0,
+              9.81 * math.cos(math.radians(tilt_deg))],
+        "phone_ts_ms": 0,
+    })
+    t = 0.0
+    for _ in range(80):   # first gyro sample triggers onset immediately
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(50):
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+
+    base = {"beta": 0.15, "ema_alpha": 1.0, "flex_axis_capture": True}
+    _, angle_seeded   = tuner.replay_trial(samples, {**base, "gravity_seed": True})
+    _, angle_unseeded = tuner.replay_trial(samples, {**base, "gravity_seed": False})
+    assert abs(angle_seeded[-1] - angle_unseeded[-1]) > 1.0, (
+        "gravity_seed must measurably change the replayed series when "
+        "correction (beta>0) is active and the accel is tilted "
+        f"(seeded={angle_seeded[-1]:.2f}, unseeded={angle_unseeded[-1]:.2f})")
 ```
+
+**Note for whoever implements this (added during Task 6's review fix round):** the two threshold values above (`5.0`, `1.0`) come from first-principles reasoning about the quaternion math, not from actually running the code. Run both tests once implemented — if the real observed difference is smaller but still clearly non-trivial (not floating-point noise), lower the threshold to match reality rather than force the predicted number. If either difference comes out essentially zero, STOP and report it as a concern — that would mean the parameter genuinely has no effect, which is itself a bug worth surfacing, not something to paper over by loosening the assertion to near-zero.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -948,6 +1033,17 @@ def replay_trial(raw_samples: list, params: dict):
     cadence the live app displays and saves. Returns two empty arrays if the
     log is empty or no motion above the flex-axis threshold is ever detected
     (the trial never "zeroes" and can't be scored).
+
+    Contract: angle_deg[0] is always NaN — the very first tick is always
+    emitted before any raw sample has been processed (tick_times[0] always
+    equals raw_samples[0]["t"] exactly), so no device state exists yet at
+    that instant. This mirrors the live app's own contract: _imu_poll_worker
+    (pendulastic_app.py) puts a non-finite angle onto its queue and resets
+    the EMA "on NaN (pre-zero or disconnected)" under the same condition —
+    a NaN-bearing angle series is normal, pre-existing behavior in this
+    codebase, not a defect. Callers (score_waveform, App._run_imu_tuning)
+    must finite-filter before reducing (e.g. np.nanmedian, or
+    arr[np.isfinite(arr)]) rather than assume every tick is a number.
     """
     if not raw_samples:
         return np.array([]), np.array([])
@@ -967,6 +1063,13 @@ def replay_trial(raw_samples: list, params: dict):
     flex_axis_armed = True
     q_zero: dict = {}
     zero_captured = False
+
+    # Mirrors on_gyro()'s "only the distal segment (or the solo phone)
+    # defines the axis" restriction (pendulastic_imu_server.py's on_gyro,
+    # is_distal/is_solo). Without this, a proximal-only motion burst in a
+    # two-phone trial would incorrectly arm the axis/zero, which live never
+    # does. "Solo" here means no distal-role sample ever appears in this log.
+    has_distal = any(s["role"] == ROLE_DISTAL for s in raw_samples)
 
     t0 = raw_samples[0]["t"]
     t_end = raw_samples[-1]["t"]
@@ -1018,12 +1121,19 @@ def replay_trial(raw_samples: list, params: dict):
             if flex_axis_armed:
                 omega_mag = float(np.linalg.norm(v))
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
-                    if not zero_captured:
-                        q_zero = _snapshot()
-                        zero_captured = True
-                    if params["flex_axis_capture"]:
-                        flex_axis = v / omega_mag
-                    flex_axis_armed = False
+                    # Only a qualifying role's burst may arm/capture — a
+                    # non-qualifying role's motion is ignored entirely
+                    # (flex_axis_armed stays True), exactly matching
+                    # on_gyro()'s is_distal/is_solo gate.
+                    is_distal = (role == ROLE_DISTAL)
+                    is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
+                    if is_distal or is_solo:
+                        if not zero_captured:
+                            q_zero = _snapshot()
+                            zero_captured = True
+                        if params["flex_axis_capture"]:
+                            flex_axis = v / omega_mag
+                        flex_axis_armed = False
 
             if st.accel is not None:
                 st.ahrs.update(v, st.accel, st.mag, dt)
