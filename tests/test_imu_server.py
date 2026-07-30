@@ -3,7 +3,17 @@ import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
+import pytest
 import pendulastic_imu_server as imu
+
+
+@pytest.fixture(autouse=True)
+def _reset_imu_config(monkeypatch):
+    """Every test in this file must see the hardcoded defaults, regardless of
+    whatever imu_calibration_config.json a prior tuning run may have written
+    to the real repo root."""
+    import imu_calibration_config as _cfgmod
+    monkeypatch.setattr(imu, "_CONFIG", dict(_cfgmod.DEFAULT_CONFIG))
 
 
 def test_qconj_negates_vector_part():
@@ -258,5 +268,34 @@ def test_swing_angle_zero_returns_zero():
     # Same pose → 0° swing
     angle = imu.swing_angle_deg()
     assert abs(angle) < 1e-4, f"Expected ~0°, got {angle}"
+    imu.reset_devices()
+    imu.clear_zero()
+
+
+def test_new_device_uses_configured_beta(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "beta", 0.15)
+    dev = imu._IMUDevice("12.0.0.1")
+    assert dev.ahrs.beta == 0.15
+
+
+def test_on_accel_skips_seeding_when_gravity_seed_disabled(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "gravity_seed", False)
+    dev = imu._IMUDevice("12.0.0.2")
+    dev.on_accel(np.array([0., 0., -9.81]), ts=0)
+    assert dev._ahrs_seeded, "seeded flag must still be set so we never re-seed later"
+    np.testing.assert_allclose(dev.ahrs.q, [1., 0., 0., 0.], atol=1e-9,
+        err_msg="AHRS quaternion must stay at identity when gravity_seed=False")
+
+
+def test_zero_does_not_arm_flex_axis_when_capture_disabled(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "flex_axis_capture", False)
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["13.0.0.1"] = imu._IMUDevice("13.0.0.1")
+    imu._roles["13.0.0.1"]   = imu.ROLE_DISTAL
+    dev = imu._devices["13.0.0.1"]
+    dev.last_rx = __import__("time").time()
+    imu.zero()
+    assert not imu._flex_axis_armed, "flex-axis capture must not arm when disabled in config"
     imu.reset_devices()
     imu.clear_zero()

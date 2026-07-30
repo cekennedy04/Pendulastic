@@ -45,6 +45,8 @@ from typing import Optional
 
 import numpy as np
 
+from imu_calibration_config import load_config
+
 # Sensor Stream's default. Override with PENDULASTIC_IMU_PORT when two
 # Pendulastic apps must run side by side (e.g. master_app.py acquiring while
 # the viewer reviews) — only one process can own a port.
@@ -252,7 +254,7 @@ def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 class _IMUDevice:
     def __init__(self, ident: str):
         self.ident      = ident          # source IP
-        self.ahrs       = MadgwickAHRS()
+        self.ahrs       = MadgwickAHRS(beta=_CONFIG["beta"])
         self.accel: Optional[np.ndarray] = None
         self.mag:   Optional[np.ndarray] = None
         self.last_gyro_t: Optional[float] = None
@@ -309,7 +311,8 @@ class _IMUDevice:
     def on_accel(self, v, ts):
         self.accel = np.asarray(v, float)
         if not self._ahrs_seeded:
-            self.ahrs.q = _gravity_seed(self.accel)
+            if _CONFIG["gravity_seed"]:
+                self.ahrs.q = _gravity_seed(self.accel)
             self._ahrs_seeded = True
         self._touch(ts)
 
@@ -412,6 +415,8 @@ _q_zero_dist: Optional[np.ndarray] = None
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
+
+_CONFIG = load_config()   # {beta, ema_alpha, flex_axis_capture, gravity_seed, ...}
 
 _loop:      Optional[asyncio.AbstractEventLoop] = None
 _thread:    Optional[threading.Thread]          = None
@@ -542,7 +547,7 @@ def zero():
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.
         _flex_axis        = None
-        _flex_axis_armed  = True
+        _flex_axis_armed  = _CONFIG["flex_axis_capture"]
 
 
 def clear_zero():
