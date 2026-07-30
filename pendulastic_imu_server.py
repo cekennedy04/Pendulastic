@@ -208,6 +208,32 @@ def wrap180(deg: float) -> float:
     return (deg + 180.0) % 360.0 - 180.0
 
 
+def _gravity_seed(accel: np.ndarray) -> np.ndarray:
+    """Tilt-alignment quaternion: shortest rotation from sensor-Z-up (AHRS
+    default identity) to the measured gravity direction.
+
+    The Madgwick filter's equilibrium for q=[1,0,0,0] has the accelerometer
+    reading [0,0,+1]·g (sensor Z aligned with the gravity reaction vector).
+    A phone mounted face-down in a shoe reads ≈[0,0,-1]·g — nearly 180° from
+    identity — so without seeding the filter needs tens of seconds to converge.
+    Seeding from the first accel packet eliminates that delay completely.
+
+    Derivation: shortest-arc quaternion from [0,0,1] to g_hat.
+        q_unnorm = [1 + g_hat·ẑ,  cross(ẑ, g_hat)]
+                 = [1 + gz, [-gy, gx, 0]]
+        |q_unnorm| = sqrt(2·(1 + gz))
+    Special case gz≈-1 (anti-aligned): rotate 180° around X instead."""
+    a = np.asarray(accel, float)
+    n = float(np.linalg.norm(a))
+    if n < 1e-9:
+        return np.array([1., 0., 0., 0.])
+    gx, gy, gz = a / n
+    denom = math.sqrt(max(0., 2.0 * (1.0 + gz)))
+    if denom < 1e-9:          # gz ≈ -1: 180° — pick X axis
+        return np.array([0., 1., 0., 0.])
+    return np.array([(1.0 + gz) / denom, -gy / denom, gx / denom, 0.0])
+
+
 def _qconj(q: np.ndarray) -> np.ndarray:
     return np.array([q[0], -q[1], -q[2], -q[3]])
 
@@ -237,6 +263,7 @@ class _IMUDevice:
         # or directly from the app's /orientation stream when enabled.
         self.roll = self.pitch = self.yaw = float("nan")
         self.from_orientation_stream = False
+        self._ahrs_seeded = False        # True after first accel seeds AHRS tilt
         # Clock-offset samples: (arrival_epoch, t_local_arrival - t_phone).
         self.offset_samples: list[tuple[float, float]] = []
         # Recent gyro arrival times. The gyro drives AHRS integration, so its
@@ -280,7 +307,10 @@ class _IMUDevice:
         self.offset_samples.clear()
 
     def on_accel(self, v, ts):
-        self.accel = v
+        self.accel = np.asarray(v, float)
+        if not self._ahrs_seeded:
+            self.ahrs.q = _gravity_seed(self.accel)
+            self._ahrs_seeded = True
         self._touch(ts)
 
     def on_mag(self, v, ts):
@@ -381,7 +411,7 @@ _q_zero_prox: Optional[np.ndarray] = None
 _q_zero_dist: Optional[np.ndarray] = None
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
-_FLEX_CAPTURE_THRESHOLD = 0.3             # rad/s — min |ω| to register as intentional
+_FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
 
 _loop:      Optional[asyncio.AbstractEventLoop] = None
 _thread:    Optional[threading.Thread]          = None

@@ -183,6 +183,66 @@ def test_swing_angle_projection_excludes_out_of_plane_rotation():
     imu.clear_zero()
 
 
+def test_gravity_seed_z_up_is_identity():
+    """accel = [0,0,+1] (sensor Z already up) → identity quaternion."""
+    q = imu._gravity_seed(np.array([0., 0., 9.81]))
+    np.testing.assert_allclose(q, [1., 0., 0., 0.], atol=1e-6)
+
+
+def test_gravity_seed_z_down_is_unit():
+    """accel = [0,0,-1] (phone face-down, Z inverted) → unit quaternion with w=0."""
+    q = imu._gravity_seed(np.array([0., 0., -9.81]))
+    assert abs(np.linalg.norm(q) - 1.0) < 1e-6
+    # Must represent a 180° rotation (w ≈ 0)
+    assert abs(q[0]) < 1e-6
+
+
+def test_gravity_seed_result_is_unit_quaternion():
+    """Seeded quaternion must be unit length for any non-zero accel."""
+    for a in [[0, 0, 9.81], [0, 0, -9.81], [9.81, 0, 0], [0, 9.81, 0],
+              [5., 5., 5.], [-3., 1., 8.]]:
+        q = imu._gravity_seed(np.array(a, float))
+        assert abs(np.linalg.norm(q) - 1.0) < 1e-6, f"not unit for accel={a}: {q}"
+
+
+def test_gravity_seed_applied_on_first_accel():
+    """on_accel() must seed ahrs.q from gravity on the very first call."""
+    dev = imu._IMUDevice("9.9.9.9")
+    assert not dev._ahrs_seeded
+    np.testing.assert_allclose(dev.ahrs.q, [1., 0., 0., 0.], atol=1e-9)
+    # Feed accel pointing straight down (phone face-down in shoe)
+    dev.on_accel(np.array([0., 0., -9.81]), ts=0)
+    assert dev._ahrs_seeded
+    # The seeded quaternion must NOT be identity any more
+    assert not np.allclose(dev.ahrs.q, [1., 0., 0., 0.], atol=0.1), (
+        "First accel should have seeded AHRS away from identity")
+    # Second call must NOT re-seed (flag stays True, q stays whatever it is now)
+    q_after_first = dev.ahrs.q.copy()
+    dev.on_accel(np.array([0., 0., 9.81]), ts=1)   # different accel
+    np.testing.assert_allclose(dev.ahrs.q, q_after_first, atol=1e-9,
+        err_msg="Second on_accel must not overwrite the seed")
+
+
+def test_swing_angle_near_zero_after_gravity_seeded_zero():
+    """With gravity-seeded AHRS, zeroing while stationary should give ~0° angle."""
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["11.0.0.1"] = imu._IMUDevice("11.0.0.1")
+    imu._roles["11.0.0.1"]   = imu.ROLE_DISTAL
+    dev = imu._devices["11.0.0.1"]
+    dev.last_rx = __import__("time").time()
+
+    # Simulate phone face-down (screen toward ground): accel ≈ [0, 0, -1g]
+    dev.on_accel(np.array([0., 0., -9.81]), ts=0)
+    # AHRS is now seeded for face-down orientation
+    imu.zero()
+    # Same pose → angle must be ≈ 0°
+    angle = imu.swing_angle_deg()
+    assert abs(angle) < 1.0, f"Expected ~0° after correct seed+zero, got {angle:.3f}°"
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_swing_angle_zero_returns_zero():
     """Immediately after zero(), swing_angle_deg() should return ~0°."""
     imu.reset_devices()
