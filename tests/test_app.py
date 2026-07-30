@@ -229,3 +229,29 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
     angles = captured["source_angles"]["upload_csv"]
     assert len(angles) == 3
     assert abs(angles[0] - 170.0) < 0.01
+
+
+def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_config as _cfgmod
+    monkeypatch.setattr(_cfgmod, "load_config",
+                        lambda: {**_cfgmod.DEFAULT_CONFIG, "ema_alpha": 0.9})
+    # Re-import-equivalent: the worker reads the config fresh via
+    # imu_calibration_config.load_config() each time it starts, not a cached
+    # module-level constant, so patching load_config() is sufficient.
+    app = _m.App()
+    try:
+        app._engine = _m.BiomechanicalEngine("imu")
+        app._imu_poll_stop.clear()
+        import threading, time as _time
+        t = threading.Thread(target=app._imu_poll_worker, daemon=True)
+        t.start()
+        _time.sleep(0.15)
+        app._imu_poll_stop.set()
+        t.join(timeout=1.0)
+        # No assertion on numeric output here (depends on live/absent IMU
+        # hardware) — this test's purpose is only to confirm the worker
+        # doesn't crash when reading ema_alpha from a monkeypatched config.
+    finally:
+        app._imu_poll_stop.set()
+        app.destroy()

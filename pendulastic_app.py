@@ -1353,7 +1353,8 @@ class App(tk.Tk):
 
     def _imu_poll_worker(self) -> None:
         """Put (t, angle_deg) into _imu_queue at ~20 Hz."""
-        _EMA_ALPHA = 0.3   # higher = less smoothing, less lag
+        import imu_calibration_config as _cfgmod
+        _EMA_ALPHA = _cfgmod.load_config()["ema_alpha"]
         _ema: Optional[float] = None
         while not self._imu_poll_stop.is_set():
             if self._engine:
