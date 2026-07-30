@@ -1180,6 +1180,9 @@ class App(tk.Tk):
         meta           = self._acq.get_metadata()
         source_angles: dict = {}
         pending_rgb    = False
+        imu_raw_log_path: Optional[str] = None
+        imu_csv_path:     Optional[str] = None
+        fn_imu:           Optional[str] = None
 
         for src in self._active_sources:
             if src == "imu":
@@ -1188,9 +1191,11 @@ class App(tk.Tk):
                 fn_imu = DataManager.build_filename(
                     meta["pid"], meta["leg"], meta["ms_status"], meta["trial"],
                     source="imu")
-                DataManager.save_trial(fn_imu, angles_imu, meta,
+                imu_csv_path = DataManager.save_trial(fn_imu, angles_imu, meta,
                                        timestamps=ts_imu, source="imu")
                 source_angles["imu"] = angles_imu
+                if _IMU_AVAIL:
+                    imu_raw_log_path = _imu.stop_raw_log()
 
             elif src == "rgb":
                 self._stop_rgb_recording()
@@ -1346,6 +1351,14 @@ class App(tk.Tk):
     def _start_imu_recording(self, meta: dict) -> None:
         # IMU server runs continuously; data flows via queue -> _tick -> _rec_angles["imu"]
         # No start_recording() call needed — we own the CSV via DataManager.save_trial.
+        if _IMU_AVAIL:
+            fn_imu = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"],
+                source="imu")
+            raw_path = os.path.join(
+                DataManager.DATA_DIR, fn_imu.replace(".csv", "_raw.jsonl"))
+            os.makedirs(DataManager.DATA_DIR, exist_ok=True)
+            _imu.start_raw_log(raw_path)
         self._imu_poll_stop.clear()
         self._imu_poll_thread = threading.Thread(
             target=self._imu_poll_worker, daemon=True)

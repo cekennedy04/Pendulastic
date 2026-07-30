@@ -255,3 +255,20 @@ def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
     finally:
         app._imu_poll_stop.set()
         app.destroy()
+
+
+def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+                "sources": ["imu"]}
+        app._start_imu_recording(meta)
+        expected_raw_path = os.path.join(
+            str(tmp_path), "PID_P1_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
+        assert _m._imu.stop_raw_log() == expected_raw_path
+        app._imu_poll_stop.set()
+    finally:
+        app._imu_poll_stop.set()
+        app.destroy()
