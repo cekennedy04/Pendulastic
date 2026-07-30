@@ -307,3 +307,104 @@ def test_score_waveform_too_short_series_fails():
     result = tuner.score_waveform(t, angle)
     assert not result["passes"]
     assert result["params"] is None
+
+
+def test_tune_picks_lowest_penalty_passing_candidate(monkeypatch):
+    fake_results = [
+        {"params": {"beta": 0.02, "ema_alpha": 0.1, "flex_axis_capture": True, "gravity_seed": True}, "penalty": 5.0, "passes": True},
+        {"params": {"beta": 0.041, "ema_alpha": 0.3, "flex_axis_capture": True, "gravity_seed": True}, "penalty": 1.0, "passes": True},
+        {"params": {"beta": 0.08, "ema_alpha": 0.5, "flex_axis_capture": False, "gravity_seed": False}, "penalty": 0.5, "passes": False},
+    ]
+    it = iter(fake_results)
+
+    def fake_replay(raw_samples, params):
+        return np.array([0.0, 1.0]), np.array([180.0, 170.0])
+
+    def fake_score(t, angle):
+        r = next(it)
+        return {"passes": r["passes"], "penalty": r["penalty"], "params": None}
+
+    monkeypatch.setattr(tuner, "TUNING_GRID", [r["params"] for r in fake_results])
+    monkeypatch.setattr(tuner, "replay_trial", fake_replay)
+    monkeypatch.setattr(tuner, "score_waveform", fake_score)
+
+    best = tuner.tune([{"t": 0, "role": "distal", "sensor": "gyro", "v": [0, 0, 0], "phone_ts_ms": 0}])
+    assert best["passes"] is True
+    assert best["penalty"] == 1.0
+    assert best["params"]["beta"] == 0.041
+
+
+def test_tune_falls_back_to_least_bad_when_none_pass(monkeypatch):
+    fake_results = [
+        {"params": {"beta": 0.02, "ema_alpha": 0.1, "flex_axis_capture": True, "gravity_seed": True}, "penalty": 5.0, "passes": False},
+        {"params": {"beta": 0.041, "ema_alpha": 0.3, "flex_axis_capture": True, "gravity_seed": True}, "penalty": 2.0, "passes": False},
+    ]
+    it = iter(fake_results)
+    monkeypatch.setattr(tuner, "TUNING_GRID", [r["params"] for r in fake_results])
+    monkeypatch.setattr(tuner, "replay_trial",
+                        lambda raw, p: (np.array([0.0]), np.array([180.0])))
+    # Simpler: rebuild fake_score to just cycle through fake_results' values.
+    it2 = iter(fake_results)
+    monkeypatch.setattr(tuner, "score_waveform",
+                        lambda t, a: {k: v for k, v in next(it2).items() if k in ("passes", "penalty", )} | {"params": None})
+
+    best = tuner.tune([{"t": 0, "role": "distal", "sensor": "gyro", "v": [0, 0, 0], "phone_ts_ms": 0}])
+    assert best["passes"] is False
+    assert best["penalty"] == 2.0
+
+
+def test_tune_empty_replay_treated_as_worst_case(monkeypatch):
+    monkeypatch.setattr(tuner, "TUNING_GRID", [
+        {"beta": 0.041, "ema_alpha": 0.3, "flex_axis_capture": True, "gravity_seed": True}])
+    monkeypatch.setattr(tuner, "replay_trial",
+                        lambda raw, p: (np.array([]), np.array([])))
+    best = tuner.tune([{"t": 0, "role": "distal", "sensor": "gyro", "v": [0, 0, 0], "phone_ts_ms": 0}])
+    assert best["passes"] is False
+    assert best["penalty"] >= 1e6
+
+
+def test_tune_and_persist_saves_when_improving(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1,
+                   "flex_axis_capture": False, "gravity_seed": False},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    saved = cfgmod.load_config()
+    assert saved["beta"] == 0.08
+    assert saved["passes"] is True
+    assert saved["source_trial"] == "trial_1.csv"
+
+
+def test_tune_and_persist_does_not_overwrite_a_better_existing_config(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    cfgmod.save_config({**cfgmod.DEFAULT_CONFIG, "beta": 0.15, "penalty": 0.1, "passes": True})
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.02, "ema_alpha": 0.5,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 3.0, "passes": True,   # worse penalty -> must not overwrite
+    })
+    tuner.tune_and_persist([{"dummy": True}])
+    assert cfgmod.load_config()["beta"] == 0.15
+
+
+def test_tune_and_persist_force_overwrites_regardless(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    cfgmod.save_config({**cfgmod.DEFAULT_CONFIG, "beta": 0.15, "penalty": 0.1, "passes": True})
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.02, "ema_alpha": 0.5,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 3.0, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], force=True)
+    assert cfgmod.load_config()["beta"] == 0.02

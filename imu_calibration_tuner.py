@@ -357,3 +357,60 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
               + (0.0 if d_ok else 50.0))
 
     return {"passes": passes, "penalty": penalty, "params": pt_params}
+
+
+def tune(raw_samples: list) -> dict:
+    """
+    Grid search over TUNING_GRID. Returns the best candidate found:
+        {"params": dict, "penalty": float, "passes": bool}
+    Any candidate with passes=True beats any with passes=False, regardless
+    of penalty; among passing candidates, lower penalty wins. If none pass,
+    the least-bad (lowest-penalty) candidate is returned anyway, tagged
+    passes=False, so the caller can decide not to persist it.
+    """
+    results = []
+    for params in TUNING_GRID:
+        t, angle = replay_trial(raw_samples, params)
+        if len(t) == 0:
+            results.append({"params": params, "penalty": 1e6, "passes": False})
+            continue
+        scored = score_waveform(t, angle)
+        results.append({"params": params, "penalty": scored["penalty"],
+                        "passes": scored["passes"]})
+
+    passing = [r for r in results if r["passes"]]
+    pool = passing if passing else results
+    return min(pool, key=lambda r: r["penalty"])
+
+
+def _is_improvement(candidate: dict, current: dict) -> bool:
+    if candidate["passes"] and not current.get("passes"):
+        return True
+    if candidate["passes"] and current.get("passes"):
+        return candidate["penalty"] < current.get("penalty", float("inf"))
+    return False
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def tune_and_persist(raw_samples: list, source_trial: str = "",
+                     force: bool = False) -> dict:
+    """Run tune(), persist the winning config only if it's a genuine
+    improvement over the currently persisted one (or force=True), and
+    return the winning candidate dict regardless of whether it was persisted."""
+    best = tune(raw_samples)
+    current = load_config()
+    if force or _is_improvement(best, current):
+        save_config({
+            "beta": best["params"]["beta"],
+            "ema_alpha": best["params"]["ema_alpha"],
+            "flex_axis_capture": best["params"]["flex_axis_capture"],
+            "gravity_seed": best["params"]["gravity_seed"],
+            "penalty": best["penalty"],
+            "passes": best["passes"],
+            "tuned_at": _now_iso(),
+            "source_trial": source_trial,
+        })
+    return best
