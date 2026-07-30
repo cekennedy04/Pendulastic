@@ -159,20 +159,32 @@ after release either way (generous for the pendulum's documented ~1 Hz dynamics 
 settles within 3–4 cycles). Everything after that point is the expected resting tail — matching
 `compute_pt_params`'s own "neutral from tail-median of the settled section" logic elsewhere — and is
 excluded from the plateau check entirely, whether that tail is 2 seconds (healthy control, several
-rebounds) or 12 seconds (severe spasticity, locked after one drop). The single-tick jump/clipping
-check is unaffected and still runs across the full series — a real quaternion-flip glitch can't be
-explained away by "the patient is locked up," so it stays gated everywhere.
+rebounds) or 12 seconds (severe spasticity, locked after one drop). When there are NO detected
+extrema at all (the single-drop-no-rebound case above) the flat 4 s cap has nothing to bound it
+against and would itself bleed into the resting tail, so that case instead bounds the window to the
+last moment the signal was still meaningfully changing, plus a small buffer kept strictly under the
+plateau check's own 6-tick minimum run length — the buffer alone can never accumulate enough
+consecutive quiet ticks to trigger a false violation, however long the tail beyond it continues. The
+single-tick jump/clipping check is unaffected and still runs across the full series — a real
+quaternion-flip glitch can't be explained away by "the patient is locked up," so it stays gated
+everywhere.
 
-**D. Truthfulness gate** — `pendulastic_pt_score.compute_pt_params(t, angle_deg)` is imported and
-reused as-is (same release-detection, Savitzky-Golay smoothing, detrending already covered by the
-existing 84 passing tests). `None` (no detectable release) is a hard fail regardless of how smooth
-the curve looks. Otherwise, broad physiological *plausibility* bounds are checked — not the clinical
-`HEALTHY_REF` severity comparison used for MAS scoring, which is condition-dependent and wrong to
-gate tuning on:
+**D. Truthfulness gate** — `pendulastic_pt_score.compute_pt_params(t, angle_deg, detrend=False)` is
+imported and reused as-is (same release-detection, Savitzky-Golay smoothing). `detrend=False` is
+deliberate: `compute_pt_params`'s default linear detrend corrects genuine slow gyro-integration
+drift for its own parameter-extraction purpose, but this scorer needs the *raw* physical angle — if
+a candidate parameter set produced a real baseline drift (exactly the failure mode this tuner exists
+to detect and penalize), letting `compute_pt_params` silently detrend it away before scoring would
+make a badly-drifting candidate look clean. `None` (no detectable release) is a hard fail regardless
+of how smooth the curve looks. Otherwise, broad physiological *plausibility* bounds are checked — not
+the clinical `HEALTHY_REF` severity comparison used for MAS scoring, which is condition-dependent and
+wrong to gate tuning on:
 
-- `N` (swing count) ∈ [0.5, 10] — 0.5 (not 1.0) admits a single initial drop with
-  no rebound at all, i.e. `compute_pt_params`'s own `N=(n_pos+n_neg)/2` for one
-  lone trough — the severe-spasticity single-drop-then-lock case, not a defect
+- `N` (swing count) ∈ [0.0, 10] — 0.0 (not 1.0) admits a single initial drop with
+  no rebound at all: `find_peaks`-based extrema detection requires the signal to
+  go down AND back up to register at all, so a genuine one-drop-then-lock trial
+  (the most severe end of the spasticity spectrum) has ZERO detected extrema and
+  `compute_pt_params`'s own `N=(n_pos+n_neg)/2` formula gives exactly 0.0, not 0.5
 - `A0` (initial swing) ∈ [10°, 90°]
 - `f` (frequency) ∈ [0.3, 3.0] Hz, OR exactly 0.0 (matches the pendulum's
   documented ~1 Hz dynamics; `compute_pt_params` itself reports `f=0.0` as

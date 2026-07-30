@@ -1353,7 +1353,18 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     start_penalty = max(0.0, abs(start_median - 180.0) - 8.0)
 
     # ── D. Truthfulness gate (drives B/C's window too) ─────────────────
-    pt_params = compute_pt_params(t, angle_deg)
+    # detrend=False is deliberate, not an oversight: compute_pt_params's
+    # default linear detrend (scipy.signal.detrend across the WHOLE finite
+    # series) is designed to correct genuine slow gyro-integration drift —
+    # exactly the failure mode this tuner exists to detect and penalize. If
+    # the scorer let compute_pt_params silently detrend away a candidate's
+    # baseline drift before checking it, a badly-drifting candidate could
+    # look clean to the scorer despite being visibly wrong in the raw
+    # signal. B and C need the RAW physical angle, not a drift-corrected
+    # derived quantity — detrending is appropriate for pendulastic_pt_score's
+    # own parameter-extraction use, not for this truthfulness/plausibility
+    # check.
+    pt_params = compute_pt_params(t, angle_deg, detrend=False)
     if pt_params is None:
         return {"passes": False, "penalty": 1e6 + start_penalty, "params": None}
 
@@ -1371,7 +1382,24 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         last_extremum_t = float(t_r[int(extrema.max())])
         window_end_t = t_r[0] + min(4.0, max(0.0, last_extremum_t - t_r[0]))
     else:
-        window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
+        # No oscillation detected at all -- a genuine single drop with no
+        # rebound, the most severe end of the spasticity spectrum (it won't
+        # even register as one detected trough via find_peaks, since that
+        # requires the signal to go down AND back up). A flat 4.0s cap from
+        # release would still bleed well into the resting tail here, since
+        # nothing bounds where the single drop itself ends. Bound it instead
+        # to the last moment the signal was still meaningfully changing,
+        # plus a small buffer strictly UNDER the plateau check's own 6-tick
+        # (0.3s) minimum run length below -- so the buffer itself can never
+        # accumulate enough consecutive quiet ticks to trigger a false
+        # violation, however long the resting tail beyond it continues.
+        diffs_settle = np.abs(np.diff(ang_r))
+        moving = np.where(diffs_settle > 1.0)[0]
+        if len(moving):
+            last_moving_t = float(t_r[int(moving.max())])
+            window_end_t = min(t_r[0] + 4.0, last_moving_t + 0.2)
+        else:
+            window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
@@ -1401,17 +1429,20 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     continuity_penalty = 2.0 * clip_violations + 1.0 * plateau_violations
 
     # ── D. Plausibility bounds ────────────────────────────────────────────
-    # N >= 0.5 (not 1.0) and f == 0.0-is-acceptable deliberately admit the
+    # N >= 0.0 (not 1.0) and f == 0.0-is-acceptable deliberately admit the
     # single-drop-then-lock severe-spasticity case the Section 5 continuity
-    # fix exists to protect: compute_pt_params reports N=(n_pos+n_neg)/2=0.5
-    # for a lone initial trough with no rebound, and f=0.0 when fewer than 4
-    # extrema exist to measure a frequency from (its own documented
+    # fix exists to protect. A genuine single drop with NO rebound at all
+    # doesn't register as a single detected trough via find_peaks either —
+    # find_peaks needs the signal to go down AND back up to count as an
+    # extremum, and this case never does — so compute_pt_params reports
+    # N=(n_pos+n_neg)/2=0.0 exactly (not 0.5), and f=0.0 since there aren't
+    # even 4 extrema to measure a frequency from (its own documented
     # "undefined, not enough cycles" signal, not an error). Gating strictly
     # on N>=1.0 or f>=0.3 would reject exactly the patients this test exists
     # to characterize — the same inconsistency the C-check's window bound
     # was designed to avoid, just showing up in D instead.
     d_ok = (
-        0.5 <= pt_params["N"] <= 10.0
+        0.0 <= pt_params["N"] <= 10.0
         and 10.0 <= pt_params["A0_deg"] <= 90.0
         and (pt_params["f"] == 0.0 or 0.3 <= pt_params["f"] <= 3.0)
         and math.isfinite(pt_params["R2n"])
