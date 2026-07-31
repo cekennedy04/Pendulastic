@@ -1670,7 +1670,18 @@ class App(tk.Tk):
                 and self._state in ("idle", "recording")):
             try:
                 st = _imu.get_state()
-                if st.get("flex_axis_captured"):
+                # Low gyro rate makes AHRS integration unreliable regardless of
+                # flex-axis state -- surface it first. Same threshold/message
+                # pattern already used in pendulastic_viewer.py.
+                slow = [d for d in (st["proximal"], st["distal"])
+                        if d["connected"] and 0 < d.get("hz", 0) < _imu.MIN_USABLE_HZ]
+                if slow:
+                    hz = min(d["hz"] for d in slow)
+                    self._acq.lbl_method_status.config(
+                        text=f"⚠ gyro only {hz:.0f} Hz — set the app's update "
+                             f"interval to 10 ms (≥{_imu.MIN_USABLE_HZ:.0f} Hz needed)",
+                        fg="#D97706")
+                elif st.get("flex_axis_captured"):
                     self._acq.lbl_method_status.config(
                         text="● Axis locked — sagittal tracking", fg="green")
                 elif st.get("flex_axis_armed"):

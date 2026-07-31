@@ -274,6 +274,48 @@ def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
         app.destroy()
 
 
+def test_tick_shows_low_gyro_rate_warning(monkeypatch):
+    """A gyro rate below MIN_USABLE_HZ must surface a warning that takes
+    priority over the flex-axis armed/captured status -- unreliable AHRS
+    integration matters more than which tracking state it's in."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": False, "hz": 0.0},
+            "distal":   {"connected": True, "hz": 3.0},
+            "flex_axis_captured": True,   # must be masked by the rate warning
+            "flex_axis_armed": False,
+        })
+        app._tick()
+        assert "3 Hz" in app._acq.lbl_method_status.cget("text")
+        assert "update" in app._acq.lbl_method_status.cget("text").lower()
+    finally:
+        app.destroy()
+
+
+def test_tick_shows_flex_axis_status_when_rate_is_healthy(monkeypatch):
+    """Once the rate is above MIN_USABLE_HZ, the existing flex-axis label
+    behavior must be unaffected by the new check."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": False, "hz": 0.0},
+            "distal":   {"connected": True, "hz": 100.0},
+            "flex_axis_captured": True,
+            "flex_axis_armed": False,
+        })
+        app._tick()
+        assert "Axis locked" in app._acq.lbl_method_status.cget("text")
+    finally:
+        app.destroy()
+
+
 def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
     import pendulastic_app as _m
     import imu_calibration_tuner as _tuner
