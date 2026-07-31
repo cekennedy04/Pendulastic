@@ -229,3 +229,157 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
     angles = captured["source_angles"]["upload_csv"]
     assert len(angles) == 3
     assert abs(angles[0] - 170.0) < 0.01
+
+
+def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_config as _cfgmod
+    monkeypatch.setattr(_cfgmod, "load_config",
+                        lambda: {**_cfgmod.DEFAULT_CONFIG, "ema_alpha": 0.9})
+    # Re-import-equivalent: the worker reads the config fresh via
+    # imu_calibration_config.load_config() each time it starts, not a cached
+    # module-level constant, so patching load_config() is sufficient.
+    app = _m.App()
+    try:
+        app._engine = _m.BiomechanicalEngine("imu")
+        app._imu_poll_stop.clear()
+        import threading, time as _time
+        t = threading.Thread(target=app._imu_poll_worker, daemon=True)
+        t.start()
+        _time.sleep(0.15)
+        app._imu_poll_stop.set()
+        t.join(timeout=1.0)
+        # No assertion on numeric output here (depends on live/absent IMU
+        # hardware) — this test's purpose is only to confirm the worker
+        # doesn't crash when reading ema_alpha from a monkeypatched config.
+    finally:
+        app._imu_poll_stop.set()
+        app.destroy()
+
+
+def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+                "sources": ["imu"]}
+        app._start_imu_recording(meta)
+        expected_raw_path = os.path.join(
+            str(tmp_path), "PID_P1_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
+        assert _m._imu.stop_raw_log() == expected_raw_path
+        app._imu_poll_stop.set()
+    finally:
+        app._imu_poll_stop.set()
+        app.destroy()
+
+
+def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_tuner as _tuner
+    import numpy as np
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+
+    raw_path = tmp_path / "trial_raw.jsonl"
+    raw_path.write_text('{"t": 0, "role": "distal", "sensor": "gyro", "v": [0,0,0], "phone_ts_ms": 0}\n',
+                        encoding="utf-8")
+
+    monkeypatch.setattr(_tuner, "tune_and_persist", lambda raw, source_trial="", **kw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.3,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 0.4, "passes": True,
+    })
+    # replay_trial's real contract always emits a leading NaN (see its
+    # docstring / test_replay_trial_first_tick_is_nan_rest_are_finite) --
+    # include one here so this test actually exercises _run_imu_tuning's
+    # own finite-filtering rather than relying on an unrealistic all-finite
+    # mock return value.
+    monkeypatch.setattr(_tuner, "replay_trial", lambda raw, params: (
+        np.array([0.0, 0.05, 0.1, 0.15]),
+        np.array([np.nan, 180.0, 179.0, 178.0])))
+
+    app = _m.App()
+    try:
+        meta = {"pid": "P2", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
+
+        result_holder = {}
+        def _capture(source_angles, m):
+            result_holder["source_angles"] = source_angles
+        app._transition_to_review = _capture
+
+        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        # _run_imu_tuning schedules the transition via self.after(0, ...) --
+        # exactly the real production path (see the Note below) -- so the
+        # Tk event loop must be pumped once before the callback has run.
+        app.update()
+
+        # The leading NaN tick must be dropped, not saved/displayed --
+        # DataManager.save_trial formats angles as f"{a:.3f}", so an
+        # unfiltered NaN would write a literal "nan" into the trial CSV.
+        assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
+        with open(csv_path, encoding="utf-8") as f:
+            content = f.read()
+        assert "179.000" in content
+        assert "nan" not in content.lower()
+    finally:
+        app.destroy()
+
+
+def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_tuner as _tuner
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+
+    raw_path = tmp_path / "trial_raw.jsonl"
+    raw_path.write_text('{"t": 0, "role": "distal", "sensor": "gyro", "v": [0,0,0], "phone_ts_ms": 0}\n',
+                        encoding="utf-8")
+    monkeypatch.setattr(_tuner, "tune_and_persist", lambda raw, source_trial="", **kw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.3,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 99.0, "passes": False,
+    })
+
+    app = _m.App()
+    try:
+        meta = {"pid": "P3", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
+
+        result_holder = {}
+        app._transition_to_review = lambda source_angles, m: result_holder.update(
+            source_angles=source_angles)
+
+        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        app.update()
+
+        assert result_holder["source_angles"]["imu"] == [1.0, 2.0, 3.0]
+    finally:
+        app.destroy()
+
+
+def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P4", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0], meta, source="imu")
+
+        result_holder = {}
+        app._transition_to_review = lambda source_angles, m: result_holder.update(
+            source_angles=source_angles)
+
+        app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
+        app.update()
+        assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
+    finally:
+        app.destroy()

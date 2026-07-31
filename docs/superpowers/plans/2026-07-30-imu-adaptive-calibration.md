@@ -837,13 +837,27 @@ def test_replay_trial_matches_hand_computed_rotation():
         f"expected ~{expected_final:.2f} deg, got {angle[-1]:.2f} deg")
 
 
+def test_replay_trial_first_tick_is_nan_rest_are_finite():
+    """Contract: tick 0 always precedes any processed sample (tick_times[0]
+    always equals raw_samples[0]["t"] exactly), so no device state exists yet
+    and it is always NaN. Every later tick, once zeroed, must be finite.
+    Pinning this explicitly (not just working around it in another test)
+    stops it from silently regressing into more than one leading NaN."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, angle = tuner.replay_trial(samples, params)
+    assert math.isnan(angle[0])
+    assert np.isfinite(angle[1:]).all()
+
+
 def test_replay_trial_holds_near_180_before_release():
     """Before the burst, held nearly still, the displayed angle must read ~180."""
     samples = _solo_hold_then_burst_samples()
     params = {"beta": 0.0, "ema_alpha": 1.0,
               "flex_axis_capture": True, "gravity_seed": True}
     t, angle = tuner.replay_trial(samples, params)
-    pre_release = angle[t < 0.9]
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
     assert len(pre_release) > 0
     assert abs(float(np.median(pre_release)) - 180.0) < 1.0
 
@@ -868,7 +882,78 @@ def test_replay_trial_no_motion_ever_returns_empty_arrays():
                                                 "flex_axis_capture": True,
                                                 "gravity_seed": True})
     assert len(t_arr) == 0 and len(angle) == 0
+
+
+def test_replay_trial_flex_axis_capture_excludes_out_of_plane_rotation():
+    """Two sequential bursts about orthogonal axes: flex_axis is captured from
+    the FIRST (Y-axis) burst. flex_axis_capture=True must project out the
+    second (X-axis) burst's contribution; flex_axis_capture=False reports the
+    axis-agnostic total rotation, which includes both. beta=0.0 isolates pure
+    gyro integration so the two settings' difference isn't confounded by the
+    accelerometer correction term."""
+    samples = []
+    samples.append({"t": 0.0, "role": "distal", "sensor": "accel",
+                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": 0})
+    t = 0.0
+    for _ in range(30):   # burst 1: 0.3s about Y -> captures flex_axis=[0,1,0]
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(30):   # burst 2: 0.3s about X -- orthogonal to flex_axis
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [2.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(50):
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+
+    base = {"beta": 0.0, "ema_alpha": 1.0, "gravity_seed": True}
+    _, angle_projected = tuner.replay_trial(samples, {**base, "flex_axis_capture": True})
+    _, angle_total      = tuner.replay_trial(samples, {**base, "flex_axis_capture": False})
+    assert abs(angle_projected[-1] - angle_total[-1]) > 5.0, (
+        "flex_axis_capture must measurably change the result once a second, "
+        "orthogonal rotation is introduced after the axis is captured "
+        f"(projected={angle_projected[-1]:.2f}, total={angle_total[-1]:.2f})")
+
+
+def test_replay_trial_gravity_seed_changes_zero_reference_under_correction():
+    """q_zero is captured on the FIRST qualifying gyro sample -- if that is
+    the very first sample in the log, it is captured BEFORE any ahrs.update()
+    call, so it equals whatever on_accel's seeding produced verbatim. A
+    tilted accel makes gravity_seed=True seed q far from identity while
+    gravity_seed=False leaves it at identity; with beta>0 (correction
+    active), that starting-point difference measurably changes the
+    subsequent trajectory rather than cancelling out (which it would if
+    beta were 0 -- see the plan's Section 4 discussion)."""
+    samples = []
+    tilt_deg = 60.0
+    samples.append({
+        "t": 0.0, "role": "distal", "sensor": "accel",
+        "v": [9.81 * math.sin(math.radians(tilt_deg)), 0.0,
+              9.81 * math.cos(math.radians(tilt_deg))],
+        "phone_ts_ms": 0,
+    })
+    t = 0.0
+    for _ in range(80):   # first gyro sample triggers onset immediately
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": int(t * 1000)})
+    for _ in range(50):
+        t += 0.01
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+
+    base = {"beta": 0.15, "ema_alpha": 1.0, "flex_axis_capture": True}
+    _, angle_seeded   = tuner.replay_trial(samples, {**base, "gravity_seed": True})
+    _, angle_unseeded = tuner.replay_trial(samples, {**base, "gravity_seed": False})
+    assert abs(angle_seeded[-1] - angle_unseeded[-1]) > 1.0, (
+        "gravity_seed must measurably change the replayed series when "
+        "correction (beta>0) is active and the accel is tilted "
+        f"(seeded={angle_seeded[-1]:.2f}, unseeded={angle_unseeded[-1]:.2f})")
 ```
+
+**Note for whoever implements this (added during Task 6's review fix round):** the two threshold values above (`5.0`, `1.0`) come from first-principles reasoning about the quaternion math, not from actually running the code. Run both tests once implemented — if the real observed difference is smaller but still clearly non-trivial (not floating-point noise), lower the threshold to match reality rather than force the predicted number. If either difference comes out essentially zero, STOP and report it as a concern — that would mean the parameter genuinely has no effect, which is itself a bug worth surfacing, not something to paper over by loosening the assertion to near-zero.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -948,6 +1033,17 @@ def replay_trial(raw_samples: list, params: dict):
     cadence the live app displays and saves. Returns two empty arrays if the
     log is empty or no motion above the flex-axis threshold is ever detected
     (the trial never "zeroes" and can't be scored).
+
+    Contract: angle_deg[0] is always NaN — the very first tick is always
+    emitted before any raw sample has been processed (tick_times[0] always
+    equals raw_samples[0]["t"] exactly), so no device state exists yet at
+    that instant. This mirrors the live app's own contract: _imu_poll_worker
+    (pendulastic_app.py) puts a non-finite angle onto its queue and resets
+    the EMA "on NaN (pre-zero or disconnected)" under the same condition —
+    a NaN-bearing angle series is normal, pre-existing behavior in this
+    codebase, not a defect. Callers (score_waveform, App._run_imu_tuning)
+    must finite-filter before reducing (e.g. np.nanmedian, or
+    arr[np.isfinite(arr)]) rather than assume every tick is a number.
     """
     if not raw_samples:
         return np.array([]), np.array([])
@@ -967,6 +1063,13 @@ def replay_trial(raw_samples: list, params: dict):
     flex_axis_armed = True
     q_zero: dict = {}
     zero_captured = False
+
+    # Mirrors on_gyro()'s "only the distal segment (or the solo phone)
+    # defines the axis" restriction (pendulastic_imu_server.py's on_gyro,
+    # is_distal/is_solo). Without this, a proximal-only motion burst in a
+    # two-phone trial would incorrectly arm the axis/zero, which live never
+    # does. "Solo" here means no distal-role sample ever appears in this log.
+    has_distal = any(s["role"] == ROLE_DISTAL for s in raw_samples)
 
     t0 = raw_samples[0]["t"]
     t_end = raw_samples[-1]["t"]
@@ -1018,12 +1121,19 @@ def replay_trial(raw_samples: list, params: dict):
             if flex_axis_armed:
                 omega_mag = float(np.linalg.norm(v))
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
-                    if not zero_captured:
-                        q_zero = _snapshot()
-                        zero_captured = True
-                    if params["flex_axis_capture"]:
-                        flex_axis = v / omega_mag
-                    flex_axis_armed = False
+                    # Only a qualifying role's burst may arm/capture — a
+                    # non-qualifying role's motion is ignored entirely
+                    # (flex_axis_armed stays True), exactly matching
+                    # on_gyro()'s is_distal/is_solo gate.
+                    is_distal = (role == ROLE_DISTAL)
+                    is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
+                    if is_distal or is_solo:
+                        if not zero_captured:
+                            q_zero = _snapshot()
+                            zero_captured = True
+                        if params["flex_axis_capture"]:
+                            flex_axis = v / omega_mag
+                        flex_axis_armed = False
 
             if st.accel is not None:
                 st.ahrs.update(v, st.accel, st.mag, dt)
@@ -1109,21 +1219,28 @@ Add to `tests/test_imu_calibration_tuner.py`:
 
 ```python
 def _damped_pendulum_series(duration_s=12.0, dt=0.05, release_t=1.0,
-                            a0_deg=40.0, decay=0.18, freq=0.9, ramp_s=0.3):
-    """Damped-cosine formula similar to the synthetic HPE stub in
-    web/api/routers/ws_stream.py, but with a `ramp_s`-second smooth envelope
-    at release instead of an instant jump from 180 to full amplitude — a
-    real IMU signal is continuous, and an instant jump would itself trip the
-    continuity check this fixture is used to validate against."""
+                            neutral_deg=140.0, decay=0.18, freq=0.9):
+    """Damped oscillation centered on a sub-180 resting (neutral) angle,
+    starting exactly at 180 and decaying toward `neutral_deg`:
+
+        angle(tau) = neutral + (180 - neutral) * exp(-decay*tau) * cos(2*pi*freq*tau)
+
+    At tau=0: exp(0)*cos(0)=1, so angle=neutral+(180-neutral)=180 exactly —
+    already continuous with the pre-release hold, no separate release ramp
+    needed. For any tau>0, exp(-decay*tau)*cos(...) < 1 strictly, so
+    angle < neutral + (180-neutral)*1 = 180 always — the signal can never
+    exceed 180 (physically impossible for this convention) regardless of
+    the oscillation's phase, unlike a naive "180 - amplitude*cos(...)"
+    formula centered on 180 itself, which swings above 180 whenever
+    cos(...) goes negative."""
     t = np.arange(0, duration_s, dt)
     angle = np.full_like(t, 180.0)
+    amplitude = 180.0 - neutral_deg
     for i, ti in enumerate(t):
         if ti >= release_t:
             tau = ti - release_t
-            envelope = min(1.0, tau / ramp_s)
-            angle_rad = (envelope * math.radians(a0_deg)
-                        * math.exp(-decay * tau) * math.cos(2 * math.pi * freq * tau))
-            angle[i] = 180.0 - math.degrees(angle_rad)
+            angle[i] = (neutral_deg
+                       + amplitude * math.exp(-decay * tau) * math.cos(2 * math.pi * freq * tau))
     return t, angle
 
 
@@ -1135,11 +1252,19 @@ def test_score_waveform_good_signal_passes():
 
 
 def test_score_waveform_bad_start_fails():
+    """Isolates gate A specifically: the hold ramps smoothly from 140 up to
+    180 across the whole pre-release segment (rather than a block overwrite),
+    so nothing else trips -- a prior version of this test also produced a
+    clip violation at the hold/release boundary, so it couldn't distinguish
+    "gate A works" from "gate A is deleted and gate C catches it anyway."""
     t, angle = _damped_pendulum_series()
     angle = angle.copy()
-    angle[:10] = 140.0   # doesn't start near 180
+    hold_mask = t < 1.0
+    n_hold = int(hold_mask.sum())
+    angle[hold_mask] = np.linspace(140.0, 180.0, n_hold)
     result = tuner.score_waveform(t, angle)
     assert not result["passes"]
+    assert result["penalty"] > 0
 
 
 def test_score_waveform_clipped_step_fails():
@@ -1152,12 +1277,24 @@ def test_score_waveform_clipped_step_fails():
 
 
 def test_score_waveform_plateau_during_active_swing_fails():
+    """Isolates the plateau check specifically: after the frozen run, the
+    REST of the series is shifted by a constant so it resumes continuously
+    from the frozen value, rather than jumping back to the raw curve. A
+    prior version of this test also produced a large clip violation at the
+    un-freeze edge, so it couldn't distinguish "the plateau check works"
+    from "the plateau check is deleted and the clip check catches it
+    anyway." A constant shift doesn't change the remainder's own shape or
+    derivatives -- only its offset -- so it introduces no new discontinuity."""
     t, angle = _damped_pendulum_series()
     angle = angle.copy()
-    # Freeze a long run of samples right after release (well inside the
-    # active-swing window) -> staircase artifact.
     release_i = int(1.0 / 0.05)
-    angle[release_i + 2: release_i + 12] = angle[release_i + 2]
+    freeze_start = release_i + 2
+    freeze_len = 10
+    freeze_end = freeze_start + freeze_len
+    frozen_value = angle[freeze_start]
+    angle[freeze_start:freeze_end] = frozen_value
+    offset = frozen_value - angle[freeze_end]
+    angle[freeze_end:] += offset
     result = tuner.score_waveform(t, angle)
     assert not result["passes"]
 
@@ -1177,6 +1314,32 @@ def test_score_waveform_long_resting_tail_after_one_drop_still_passes():
     result = tuner.score_waveform(t, angle)
     assert result["passes"], (
         "a genuine single-drop-then-lock severe-spasticity trial must pass, "
+        f"got penalty={result['penalty']}, params={result['params']}")
+
+
+def test_score_waveform_slow_single_drop_then_lock_still_passes():
+    """Same severe-spasticity shape as the test above, but the drop itself
+    takes 3.5s instead of 1s -- still a real, physically valid (if unusually
+    slow) release, not an artifact. A prior version of the no-extrema window
+    fallback used a per-tick derivative threshold to find where the drop
+    "settles"; that threshold was itself speed-coupled, so any drop slower
+    than roughly 1s/35deg fell through to the same flat-4.0s window this
+    fix exists to eliminate, and got rejected with false plateau violations
+    on its own resting tail. This test pins the fix against that regression
+    directly, at a drop speed the original test could not have caught."""
+    t = np.arange(0, 20.0, 0.05)
+    angle = np.full_like(t, 180.0)
+    release_t = 1.0
+    drop_s = 3.5
+    for i, ti in enumerate(t):
+        if release_t <= ti < release_t + drop_s:
+            tau = ti - release_t
+            angle[i] = 180.0 - 35.0 * (tau / drop_s)
+        elif ti >= release_t + drop_s:
+            angle[i] = 145.0
+    result = tuner.score_waveform(t, angle)
+    assert result["passes"], (
+        "a slower single-drop-then-lock trial must still pass, "
         f"got penalty={result['penalty']}, params={result['params']}")
 
 
@@ -1236,7 +1399,18 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     start_penalty = max(0.0, abs(start_median - 180.0) - 8.0)
 
     # ── D. Truthfulness gate (drives B/C's window too) ─────────────────
-    pt_params = compute_pt_params(t, angle_deg)
+    # detrend=False is deliberate, not an oversight: compute_pt_params's
+    # default linear detrend (scipy.signal.detrend across the WHOLE finite
+    # series) is designed to correct genuine slow gyro-integration drift —
+    # exactly the failure mode this tuner exists to detect and penalize. If
+    # the scorer let compute_pt_params silently detrend away a candidate's
+    # baseline drift before checking it, a badly-drifting candidate could
+    # look clean to the scorer despite being visibly wrong in the raw
+    # signal. B and C need the RAW physical angle, not a drift-corrected
+    # derived quantity — detrending is appropriate for pendulastic_pt_score's
+    # own parameter-extraction use, not for this truthfulness/plausibility
+    # check.
+    pt_params = compute_pt_params(t, angle_deg, detrend=False)
     if pt_params is None:
         return {"passes": False, "penalty": 1e6 + start_penalty, "params": None}
 
@@ -1254,7 +1428,45 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         last_extremum_t = float(t_r[int(extrema.max())])
         window_end_t = t_r[0] + min(4.0, max(0.0, last_extremum_t - t_r[0]))
     else:
-        window_end_t = t_r[0] + min(4.0, t_r[-1] - t_r[0])
+        # No oscillation detected at all -- a genuine single drop with no
+        # rebound, the most severe end of the spasticity spectrum (it won't
+        # even register as one detected trough via find_peaks, since that
+        # requires the signal to go down AND back up). A flat 4.0s cap from
+        # release would still bleed well into the resting tail here, since
+        # nothing bounds where the single drop itself ends.
+        #
+        # A per-tick derivative threshold ("is it still moving") was tried
+        # and rejected: it's coupled to both sample rate and drop SPEED --
+        # any real drop slower than roughly the threshold's own rate falls
+        # through to the same broken flat-4.0s case it was meant to fix.
+        # Instead, this uses compute_pt_params's own tail-median
+        # `neutral_deg` directly: find the first point after which the
+        # signal is PERMANENTLY within tolerance of neutral (not just
+        # transiently close, which a still-swinging signal could be too --
+        # but that ambiguity doesn't apply here, since this branch only
+        # runs when no oscillation was detected at all). This is robust to
+        # the drop taking 1 second or 5, because it asks "has it reached
+        # its final resting value," not "how fast is it changing right now."
+        neutral = pt_params["neutral_deg"]
+        tol = max(2.0, 0.05 * pt_params["A0_deg"])   # matches min_amp's own convention
+        near_neutral = np.abs(ang_r - neutral) <= tol
+        settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
+        for i in range(len(ang_r)):
+            if np.all(near_neutral[i:]):
+                settle_idx = i
+                break
+        settle_t = float(t_r[settle_idx])
+        # No added buffer past settle_t -- unlike the rejected derivative-
+        # threshold approach, settle_idx is already the point after which
+        # EVERY remaining sample is within tolerance of neutral (that's what
+        # "permanently" means above), so it is already at or slightly after
+        # the true end of the transition (Savitzky-Golay smoothing can add a
+        # few ticks of lag at the edge, which settle_idx already absorbs by
+        # construction). Adding extra time past it only pulls more of the
+        # already-flat tail into the window -- exactly what caused a false
+        # plateau violation (~9 flat ticks, 3 over the 6-tick/0.3s limit) on
+        # the original 1-second-drop test in an earlier version of this fix.
+        window_end_t = min(t_r[0] + 4.0, settle_t)
 
     clip_violations = 0
     diffs = np.diff(angle_deg)
@@ -1284,10 +1496,22 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     continuity_penalty = 2.0 * clip_violations + 1.0 * plateau_violations
 
     # ── D. Plausibility bounds ────────────────────────────────────────────
+    # N >= 0.0 (not 1.0) and f == 0.0-is-acceptable deliberately admit the
+    # single-drop-then-lock severe-spasticity case the Section 5 continuity
+    # fix exists to protect. A genuine single drop with NO rebound at all
+    # doesn't register as a single detected trough via find_peaks either —
+    # find_peaks needs the signal to go down AND back up to count as an
+    # extremum, and this case never does — so compute_pt_params reports
+    # N=(n_pos+n_neg)/2=0.0 exactly (not 0.5), and f=0.0 since there aren't
+    # even 4 extrema to measure a frequency from (its own documented
+    # "undefined, not enough cycles" signal, not an error). Gating strictly
+    # on N>=1.0 or f>=0.3 would reject exactly the patients this test exists
+    # to characterize — the same inconsistency the C-check's window bound
+    # was designed to avoid, just showing up in D instead.
     d_ok = (
-        1.0 <= pt_params["N"] <= 10.0
+        0.0 <= pt_params["N"] <= 10.0
         and 10.0 <= pt_params["A0_deg"] <= 90.0
-        and 0.3 <= pt_params["f"] <= 3.0
+        and (pt_params["f"] == 0.0 or 0.3 <= pt_params["f"] <= 3.0)
         and math.isfinite(pt_params["R2n"])
         and math.isfinite(pt_params["omega_max_n"])
         and math.isfinite(pt_params["omega_min_n"])
@@ -1566,12 +1790,15 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
         result_holder = {}
-        orig_transition = app._transition_to_review
         def _capture(source_angles, m):
             result_holder["source_angles"] = source_angles
         app._transition_to_review = _capture
 
         app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        # _run_imu_tuning schedules the transition via self.after(0, ...) --
+        # exactly the real production path (see the Note below) -- so the
+        # Tk event loop must be pumped once before the callback has run.
+        app.update()
 
         assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
         with open(csv_path, encoding="utf-8") as f:
@@ -1608,6 +1835,7 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
             source_angles=source_angles)
 
         app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        app.update()
 
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0, 3.0]
     finally:
@@ -1630,6 +1858,7 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
             source_angles=source_angles)
 
         app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
+        app.update()
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
     finally:
         app.destroy()
@@ -1724,7 +1953,16 @@ Add this method to the `App` class in `pendulastic_app.py`, right before `_run_r
                         csv_filename, tuned_angles, meta,
                         timestamps=[float(x) for x in t], source="imu")
                     source_angles["imu"] = tuned_angles
-        except (OSError, ValueError, KeyError):
+        except Exception:
+            # Broad on purpose: this runs in an unsupervised daemon thread,
+            # and imu_calibration_tuner.py has no internal exception handling
+            # of its own -- a malformed-but-JSON-parseable raw sample (e.g.
+            # missing "role", or "v" not a 3-element list) could raise
+            # TypeError/IndexError from deep inside replay_trial. An uncaught
+            # exception here would kill the thread silently, the self.after
+            # transition below would never fire, and the app would sit in
+            # "processing" forever -- a direct violation of "tuning must
+            # never block the clinician from seeing trial data."
             pass   # fall back to the originally-recorded series
         self.after(0, lambda: self._transition_to_review(source_angles, meta))
 ```
@@ -1839,6 +2077,13 @@ def test_load_raw_log_skips_malformed_lines(tmp_path):
 
 
 def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsys):
+    """Each log must score DIFFERENTLY (2.0 vs 4.0), so the printed average
+    can only be correct (3.0) if the code genuinely combines both logs --
+    a broken implementation using only raw_logs[0] would print 2.0, and
+    one using only raw_logs[-1] would print 4.0. An identical-penalty
+    fixture (used in an earlier version of this test) can't distinguish
+    real averaging from "just used one log," since any of those bugs would
+    coincidentally produce the same output as the correct implementation."""
     path1 = tmp_path / "a.jsonl"
     path2 = tmp_path / "b.jsonl"
     _write_jsonl(path1, [{"t": 0.0, "role": "distal", "sensor": "gyro",
@@ -1851,8 +2096,13 @@ def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsy
     ])
     monkeypatch.setattr(tune_imu, "replay_trial",
                         lambda raw, p: (np.array([0.0, 0.05]), np.array([180.0, 175.0])))
-    monkeypatch.setattr(tune_imu, "score_waveform",
-                        lambda t, a: {"passes": True, "penalty": 1.0, "params": None})
+
+    call_count = {"n": 0}
+    def fake_score(t, a):
+        call_count["n"] += 1
+        penalty = 2.0 if call_count["n"] % 2 == 1 else 4.0
+        return {"passes": True, "penalty": penalty, "params": None}
+    monkeypatch.setattr(tune_imu, "score_waveform", fake_score)
     monkeypatch.setattr(tune_imu, "save_config", lambda cfg: None)
     monkeypatch.setattr(tune_imu, "load_config",
                         lambda: {"beta": 0.041, "ema_alpha": 0.3,
@@ -1862,7 +2112,19 @@ def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsy
 
     tune_imu.main([str(path1), str(path2)])
     out = capsys.readouterr().out
-    assert "beta" in out.lower() or "0.041" in out
+    assert "3.0" in out, f"expected the true average (2.0+4.0)/2=3.0 in output, got: {out}"
+
+
+def test_main_reports_and_skips_unreadable_log(tmp_path, capsys):
+    good_path = tmp_path / "good.jsonl"
+    _write_jsonl(good_path, [{"t": 0.0, "role": "distal", "sensor": "gyro",
+                             "v": [0, 0, 0], "phone_ts_ms": 0}])
+    missing_path = str(tmp_path / "does_not_exist.jsonl")
+
+    tune_imu.main([str(good_path), missing_path])
+    out = capsys.readouterr().out
+    assert "Skipping" in out
+    assert missing_path in out
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1901,16 +2163,24 @@ from imu_calibration_tuner import (
 
 
 def load_raw_log(path: str) -> list:
+    """Return this log's raw samples, or [] with a printed warning if the
+    file can't be read at all (missing path, permission error, etc.) --
+    treated the same as an empty/all-malformed log by the caller, rather
+    than raising an unhandled traceback for a typo'd CLI argument."""
     samples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                samples.append(json.loads(line))
-            except ValueError:
-                continue
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    samples.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError as e:
+        print(f"Warning: could not read {path}: {e}")
+        return []
     return samples
 
 
@@ -1946,8 +2216,11 @@ def main(argv=None) -> int:
                              "improve on the current one")
     args = parser.parse_args(argv)
 
-    raw_log_sets = [load_raw_log(p) for p in args.raw_logs]
-    raw_log_sets = [s for s in raw_log_sets if s]
+    loaded = [(p, load_raw_log(p)) for p in args.raw_logs]
+    dropped = [p for p, s in loaded if not s]
+    if dropped:
+        print(f"Skipping {len(dropped)} log(s) with no valid samples: {', '.join(dropped)}")
+    raw_log_sets = [s for _, s in loaded if s]
     if not raw_log_sets:
         print("No valid samples found in any provided raw log.")
         return 1

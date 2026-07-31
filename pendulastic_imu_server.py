@@ -45,6 +45,8 @@ from typing import Optional
 
 import numpy as np
 
+from imu_calibration_config import load_config
+
 # Sensor Stream's default. Override with PENDULASTIC_IMU_PORT when two
 # Pendulastic apps must run side by side (e.g. master_app.py acquiring while
 # the viewer reviews) — only one process can own a port.
@@ -252,7 +254,7 @@ def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 class _IMUDevice:
     def __init__(self, ident: str):
         self.ident      = ident          # source IP
-        self.ahrs       = MadgwickAHRS()
+        self.ahrs       = MadgwickAHRS(beta=_CONFIG["beta"])
         self.accel: Optional[np.ndarray] = None
         self.mag:   Optional[np.ndarray] = None
         self.last_gyro_t: Optional[float] = None
@@ -309,12 +311,15 @@ class _IMUDevice:
     def on_accel(self, v, ts):
         self.accel = np.asarray(v, float)
         if not self._ahrs_seeded:
-            self.ahrs.q = _gravity_seed(self.accel)
+            if _CONFIG["gravity_seed"]:
+                self.ahrs.q = _gravity_seed(self.accel)
             self._ahrs_seeded = True
+        _raw_log_write(_roles.get(self.ident), "accel", v, ts)
         self._touch(ts)
 
     def on_mag(self, v, ts):
         self.mag = v
+        _raw_log_write(_roles.get(self.ident), "mag", v, ts)
         self._touch(ts)
 
     @property
@@ -329,6 +334,7 @@ class _IMUDevice:
     def on_gyro(self, v, ts):
         global _flex_axis, _flex_axis_armed
         now = time.time()
+        _raw_log_write(_roles.get(self.ident), "gyro", v, ts)
         self.gyro_times.append(now)
         cutoff = now - 3.0
         if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
@@ -412,6 +418,12 @@ _q_zero_dist: Optional[np.ndarray] = None
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
+
+_CONFIG = load_config()   # {beta, ema_alpha, flex_axis_capture, gravity_seed, ...}
+
+_raw_lock:     threading.Lock          = threading.Lock()
+_raw_log_file                          = None    # open file handle, or None
+_raw_log_path: Optional[str]           = None
 
 _loop:      Optional[asyncio.AbstractEventLoop] = None
 _thread:    Optional[threading.Thread]          = None
@@ -542,7 +554,7 @@ def zero():
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.
         _flex_axis        = None
-        _flex_axis_armed  = True
+        _flex_axis_armed  = _CONFIG["flex_axis_capture"]
 
 
 def clear_zero():
@@ -697,6 +709,54 @@ def get_state() -> dict:
                  if e["event"] == "close" and e["reason"] != "client closed"),
                 None),
         }
+
+
+def start_raw_log(path: str) -> None:
+    """Begin logging every raw accel/gyro/mag packet as JSONL to `path`,
+    independent of the legacy start_recording()/_recording mechanism
+    (that one is only used by pendulastic_viewer.py)."""
+    global _raw_log_file, _raw_log_path
+    with _raw_lock:
+        if _raw_log_file is not None:
+            try:
+                _raw_log_file.close()
+            except OSError:
+                pass
+        _raw_log_file = open(path, "w", encoding="utf-8")
+        _raw_log_path = path
+
+
+def stop_raw_log() -> Optional[str]:
+    """Close the current raw log, if any, and return the path that was
+    just closed (or None if no raw log was open)."""
+    global _raw_log_file, _raw_log_path
+    with _raw_lock:
+        path = _raw_log_path
+        if _raw_log_file is not None:
+            try:
+                _raw_log_file.close()
+            except OSError:
+                pass
+        _raw_log_file = None
+        _raw_log_path = None
+        return path
+
+
+def _raw_log_write(role: Optional[str], sensor: str, v, phone_ts_ms) -> None:
+    with _raw_lock:
+        if _raw_log_file is None:
+            return
+        line = json.dumps({
+            "t": time.time(),
+            "role": role,
+            "sensor": sensor,
+            "v": [float(v[0]), float(v[1]), float(v[2])],
+            "phone_ts_ms": int(phone_ts_ms) if phone_ts_ms else 0,
+        })
+        try:
+            _raw_log_file.write(line + "\n")
+        except (OSError, ValueError):
+            pass
 
 
 # ─── recording ────────────────────────────────────────────────────────────────
