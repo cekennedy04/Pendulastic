@@ -1552,14 +1552,18 @@ class App(tk.Tk):
                         csv_filename, tuned_angles, meta,
                         timestamps=[float(x) for x in t], source="imu")
                     source_angles["imu"] = tuned_angles
-        except (OSError, ValueError, KeyError):
+        except Exception:
+            # Broad on purpose: this runs in an unsupervised daemon thread,
+            # and imu_calibration_tuner.py has no internal exception handling
+            # of its own -- a malformed-but-JSON-parseable raw sample (e.g.
+            # missing "role", or "v" not a 3-element list) could raise
+            # TypeError/IndexError from deep inside replay_trial. An uncaught
+            # exception here would kill the thread silently, the self.after
+            # transition below would never fire, and the app would sit in
+            # "processing" forever -- a direct violation of "tuning must
+            # never block the clinician from seeing trial data."
             pass   # fall back to the originally-recorded series
-        # Schedule on main thread if not already there (production path runs from background thread)
-        # In tests (where this runs on main thread), call directly
-        if threading.current_thread() is threading.main_thread():
-            self._transition_to_review(source_angles, meta)
-        else:
-            self.after(0, lambda: self._transition_to_review(source_angles, meta))
+        self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     def _run_rgb_processing(self, meta: dict) -> None:
         def progress(pct: float) -> None:
