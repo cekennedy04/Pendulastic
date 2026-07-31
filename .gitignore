@@ -52,3 +52,6 @@ pip_install_log.txt
 
 # Claude session files
 .claude/
+
+# Isolated worktrees for plan execution
+.worktrees/
