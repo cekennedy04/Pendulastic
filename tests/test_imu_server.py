@@ -480,6 +480,62 @@ def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
     imu.clear_zero()
 
 
+def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path):
+    """Regression for the _lock/_rec_lock ordering hazard fixed in Task 2:
+    on_gyro() acquires _rec_lock while its caller already holds _lock (as
+    _dispatch() does in production), so start_recording()/stop_recording()
+    must never acquire _lock while holding _rec_lock. Two concurrent
+    start/stop threads are required to close the cyclic wait: with only one
+    rec thread, _recording is never True at the instant that thread holds
+    _rec_lock and blocks on _lock (its own prior stop_recording() call
+    already cleared the flag), so a single-threaded version of this test
+    cannot reach the deadlock state at all — confirmed empirically during
+    Task 5. All worker threads are daemons and joined with a timeout, so a
+    regression fails this assertion instead of hanging the test suite."""
+    import threading
+
+    imu.reset_devices()
+    imu._devices["10.0.0.20"] = imu._IMUDevice("10.0.0.20")
+    imu._roles["10.0.0.20"] = imu.ROLE_DISTAL
+    dev = imu._devices["10.0.0.20"]
+    dev.accel = np.array([0.0, 0.0, 9.81])
+
+    stop_evt = threading.Event()
+
+    def gyro_loop():
+        i = 0
+        while not stop_evt.is_set():
+            with imu._lock:
+                dev.on_gyro(np.array([0.01, 0.0, 0.0]), i)
+            i += 1
+
+    def rec_loop(tag):
+        for n in range(50):
+            path = str(tmp_path / f"Trial_deadlock_{tag}_{n}_imu.csv")
+            imu.start_recording(path)
+            imu.stop_recording()
+
+    t_gyro = threading.Thread(target=gyro_loop, daemon=True)
+    t_rec_a = threading.Thread(target=rec_loop, args=("a",), daemon=True)
+    t_rec_b = threading.Thread(target=rec_loop, args=("b",), daemon=True)
+    t_gyro.start()
+    t_rec_a.start()
+    t_rec_b.start()
+    t_rec_a.join(timeout=10.0)
+    t_rec_b.join(timeout=10.0)
+    stop_evt.set()
+    t_gyro.join(timeout=5.0)
+
+    assert not t_rec_a.is_alive(), \
+        "start_recording()/stop_recording() (thread a) hung — lock-order regression"
+    assert not t_rec_b.is_alive(), \
+        "start_recording()/stop_recording() (thread b) hung — lock-order regression"
+    assert not t_gyro.is_alive(), \
+        "gyro callback loop hung — lock-order regression"
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_new_device_uses_configured_beta(monkeypatch):
     monkeypatch.setitem(imu._CONFIG, "beta", 0.15)
     dev = imu._IMUDevice("12.0.0.1")
