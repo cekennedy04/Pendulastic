@@ -1707,7 +1707,39 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        self._tick_calibration_check()
+
         self.after(50, self._tick)
+
+    def _tick_calibration_check(self) -> None:
+        """Countdown auto-tare: continuously watch for a stable hold and
+        re-tare (edge-triggered) each time a new stable window begins.
+        Active only while AcquisitionPanel's countdown is running."""
+        if not (_IMU_AVAIL and "imu" in self._active_sources
+                and self._acq._countdown_id is not None):
+            return
+        try:
+            st = _imu.get_state()
+            ang = st.get("angles", {})
+            pitch, roll = ang.get("pitch"), ang.get("roll")
+            if pitch is None or roll is None or not (math.isfinite(pitch) and math.isfinite(roll)):
+                return
+            self._calib_buffer.append((pitch, roll))
+            if len(self._calib_buffer) > _CALIB_BUFFER_SAMPLES:
+                self._calib_buffer.pop(0)
+            if len(self._calib_buffer) < _CALIB_BUFFER_SAMPLES:
+                self._calib_was_stable = False
+                return
+            pitches = [p for p, _ in self._calib_buffer]
+            rolls   = [r for _, r in self._calib_buffer]
+            stable = (max(pitches) - min(pitches) < _CALIB_STABILITY_RANGE_DEG
+                     and max(rolls) - min(rolls) < _CALIB_STABILITY_RANGE_DEG)
+            if stable and not self._calib_was_stable:
+                _imu.zero()
+                self._calib_ever_stable = True
+            self._calib_was_stable = stable
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Teardown

@@ -440,3 +440,74 @@ def test_on_countdown_start_resets_calibration_state():
         assert app._calib_ever_stable is False
     finally:
         app.destroy()
+
+
+def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._acq._countdown_id = "sentinel"   # any non-None value marks countdown active
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "angles": {"pitch": 10.0, "roll": 0.0},
+        })
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1
+        assert app._calib_ever_stable is True
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+def test_tick_calibration_refires_after_drift_then_restabilizing(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._acq._countdown_id = "sentinel"
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        state = {"pitch": 10.0, "roll": 0.0}
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
+
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1
+
+        # Drift: feed a swinging pitch that exceeds the stability range so the
+        # buffer's peak-to-peak range fails, resetting the edge-trigger.
+        for i in range(_m._CALIB_BUFFER_SAMPLES):
+            state["pitch"] = 10.0 + (i % 2) * 10.0   # alternates 10/20 -> 10 deg swing
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1, "must not re-fire while still unstable"
+
+        # Re-stabilize at a new position.
+        state["pitch"] = 45.0
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 2, "must re-fire on the next new stable window"
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+def test_tick_calibration_skipped_outside_countdown(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._acq._countdown_id = None   # no countdown running
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "angles": {"pitch": 10.0, "roll": 0.0},
+        })
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+            app._tick_calibration_check()
+        assert zero_calls == []
+        assert app._calib_buffer == []
+    finally:
+        app.destroy()
