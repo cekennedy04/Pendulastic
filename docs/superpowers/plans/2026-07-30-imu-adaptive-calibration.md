@@ -2077,6 +2077,13 @@ def test_load_raw_log_skips_malformed_lines(tmp_path):
 
 
 def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsys):
+    """Each log must score DIFFERENTLY (2.0 vs 4.0), so the printed average
+    can only be correct (3.0) if the code genuinely combines both logs --
+    a broken implementation using only raw_logs[0] would print 2.0, and
+    one using only raw_logs[-1] would print 4.0. An identical-penalty
+    fixture (used in an earlier version of this test) can't distinguish
+    real averaging from "just used one log," since any of those bugs would
+    coincidentally produce the same output as the correct implementation."""
     path1 = tmp_path / "a.jsonl"
     path2 = tmp_path / "b.jsonl"
     _write_jsonl(path1, [{"t": 0.0, "role": "distal", "sensor": "gyro",
@@ -2089,8 +2096,13 @@ def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsy
     ])
     monkeypatch.setattr(tune_imu, "replay_trial",
                         lambda raw, p: (np.array([0.0, 0.05]), np.array([180.0, 175.0])))
-    monkeypatch.setattr(tune_imu, "score_waveform",
-                        lambda t, a: {"passes": True, "penalty": 1.0, "params": None})
+
+    call_count = {"n": 0}
+    def fake_score(t, a):
+        call_count["n"] += 1
+        penalty = 2.0 if call_count["n"] % 2 == 1 else 4.0
+        return {"passes": True, "penalty": penalty, "params": None}
+    monkeypatch.setattr(tune_imu, "score_waveform", fake_score)
     monkeypatch.setattr(tune_imu, "save_config", lambda cfg: None)
     monkeypatch.setattr(tune_imu, "load_config",
                         lambda: {"beta": 0.041, "ema_alpha": 0.3,
@@ -2100,7 +2112,19 @@ def test_main_averages_penalty_across_multiple_logs(tmp_path, monkeypatch, capsy
 
     tune_imu.main([str(path1), str(path2)])
     out = capsys.readouterr().out
-    assert "beta" in out.lower() or "0.041" in out
+    assert "3.0" in out, f"expected the true average (2.0+4.0)/2=3.0 in output, got: {out}"
+
+
+def test_main_reports_and_skips_unreadable_log(tmp_path, capsys):
+    good_path = tmp_path / "good.jsonl"
+    _write_jsonl(good_path, [{"t": 0.0, "role": "distal", "sensor": "gyro",
+                             "v": [0, 0, 0], "phone_ts_ms": 0}])
+    missing_path = str(tmp_path / "does_not_exist.jsonl")
+
+    tune_imu.main([str(good_path), missing_path])
+    out = capsys.readouterr().out
+    assert "Skipping" in out
+    assert missing_path in out
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2139,16 +2163,24 @@ from imu_calibration_tuner import (
 
 
 def load_raw_log(path: str) -> list:
+    """Return this log's raw samples, or [] with a printed warning if the
+    file can't be read at all (missing path, permission error, etc.) --
+    treated the same as an empty/all-malformed log by the caller, rather
+    than raising an unhandled traceback for a typo'd CLI argument."""
     samples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                samples.append(json.loads(line))
-            except ValueError:
-                continue
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    samples.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError as e:
+        print(f"Warning: could not read {path}: {e}")
+        return []
     return samples
 
 
@@ -2184,8 +2216,11 @@ def main(argv=None) -> int:
                              "improve on the current one")
     args = parser.parse_args(argv)
 
-    raw_log_sets = [load_raw_log(p) for p in args.raw_logs]
-    raw_log_sets = [s for s in raw_log_sets if s]
+    loaded = [(p, load_raw_log(p)) for p in args.raw_logs]
+    dropped = [p for p, s in loaded if not s]
+    if dropped:
+        print(f"Skipping {len(dropped)} log(s) with no valid samples: {', '.join(dropped)}")
+    raw_log_sets = [s for _, s in loaded if s]
     if not raw_log_sets:
         print("No valid samples found in any provided raw log.")
         return 1

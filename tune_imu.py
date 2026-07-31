@@ -24,16 +24,24 @@ from imu_calibration_tuner import (
 
 
 def load_raw_log(path: str) -> list:
+    """Return this log's raw samples, or [] with a printed warning if the
+    file can't be read at all (missing path, permission error, etc.) --
+    treated the same as an empty/all-malformed log by the caller, rather
+    than raising an unhandled traceback for a typo'd CLI argument."""
     samples = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                samples.append(json.loads(line))
-            except ValueError:
-                continue
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    samples.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError as e:
+        print(f"Warning: could not read {path}: {e}")
+        return []
     return samples
 
 
@@ -69,8 +77,11 @@ def main(argv=None) -> int:
                              "improve on the current one")
     args = parser.parse_args(argv)
 
-    raw_log_sets = [load_raw_log(p) for p in args.raw_logs]
-    raw_log_sets = [s for s in raw_log_sets if s]
+    loaded = [(p, load_raw_log(p)) for p in args.raw_logs]
+    dropped = [p for p, s in loaded if not s]
+    if dropped:
+        print(f"Skipping {len(dropped)} log(s) with no valid samples: {', '.join(dropped)}")
+    raw_log_sets = [s for _, s in loaded if s]
     if not raw_log_sets:
         print("No valid samples found in any provided raw log.")
         return 1
