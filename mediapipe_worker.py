@@ -230,10 +230,13 @@ def run(video_path: str, csv_path: str, task_file: str,
     det_thresh = min(score_thresh, 0.1) if guided else score_thresh
     options   = mp_vision.PoseLandmarkerOptions(
         base_options=base_opts,
-        running_mode=mp_vision.RunningMode.VIDEO,
+        # IMAGE mode: every frame detected independently — no temporal state.
+        # This prevents the assessor-ankle lock-on that VIDEO mode causes when
+        # the assessor grabs the patient's leg during the hold phase.
+        running_mode=mp_vision.RunningMode.IMAGE,
         num_poses=2,
         min_pose_detection_confidence=det_thresh,
-        min_tracking_confidence=det_thresh,
+        min_pose_presence_confidence=det_thresh,
         output_segmentation_masks=False,
     )
 
@@ -297,11 +300,6 @@ def run(video_path: str, csv_path: str, task_file: str,
     _knee_init_pt = None
     if sel.get("knee_x_norm") is not None:
         _knee_init_pt = np.array([sel["knee_x_norm"] * w_vid0, sel["knee_y_norm"] * h_vid0])
-    tracker = _KneeTracker(leg_side)
-    if _knee_init_pt is not None:
-        tracker._last = _knee_init_pt
-    elif hip_pt is not None:
-        tracker._last = hip_pt
 
     leg_side_locked   = leg_side
     leg_side_from_sel = False
@@ -341,7 +339,7 @@ def run(video_path: str, csv_path: str, task_file: str,
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             mp_img   = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-            result   = det.detect_for_video(mp_img, ts_ms)
+            result   = det.detect(mp_img)
             h_vid, w_vid = frame.shape[:2]
 
             # Pre-start frames: run inference for tracker warm-up only.
@@ -410,7 +408,11 @@ def run(video_path: str, csv_path: str, task_file: str,
 
             else:
                 # --- ORIGINAL MODE ---
-                # Continuity tracker: stays near last-known knee position
+                # Per-frame person selection (IMAGE mode — no history-based tracker).
+                # Priority: (1) nearest to user's initial knee click, (2) leftmost
+                # knee in frame (patient on table, assessor stands to the right).
+                # This avoids the VIDEO-mode drift where _KneeTracker._last locked
+                # onto the assessor after hold-phase occlusion.
                 kp17_list: list = []
                 sc17_list: list = []
                 for pose_lms in result.pose_landmarks:
@@ -426,7 +428,21 @@ def run(video_path: str, csv_path: str, task_file: str,
                     kp17_list.append(kp)
                     sc17_list.append(sc)
 
-                best = tracker.pick_mp(kp17_list, sc17_list) if len(kp17_list) > 1 else 0
+                n_poses = len(result.pose_landmarks)
+                if n_poses == 1:
+                    best = 0
+                elif _knee_init_pt is not None:
+                    # Fixed-reference selection: use initial click every frame, never drifts
+                    k_mp = MP_L_KNEE if leg_side_locked == "left" else MP_R_KNEE
+                    best = min(range(n_poses), key=lambda i: float(np.linalg.norm(
+                        np.array([result.pose_landmarks[i][k_mp].x * w_vid,
+                                  result.pose_landmarks[i][k_mp].y * h_vid])
+                        - _knee_init_pt)))
+                else:
+                    # Fallback: patient knee is furthest LEFT (assessor stands to the right)
+                    k_mp = MP_L_KNEE if leg_side_locked == "left" else MP_R_KNEE
+                    best = min(range(n_poses),
+                               key=lambda i: result.pose_landmarks[i][k_mp].x)
                 lms  = result.pose_landmarks[best]
 
                 if not leg_side_from_sel and kp17_list:

@@ -44,6 +44,8 @@ interface UseWebSocketStreamReturn {
   wsState:    WsState;
   /** Transmit one JPEG frame to the backend. Thread-safe across the JS event loop. */
   sendFrame:  (jpeg: ArrayBuffer, frameIndex: number) => void;
+  /** Send an arbitrary JSON message (e.g. joint correction). No-op if not connected. */
+  sendJson:   (msg: object) => void;
   close:      () => void;
 }
 
@@ -158,6 +160,12 @@ export function useWebSocketStream(
     []
   );
 
+  const sendJson = useCallback((msg: object) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(msg));
+  }, []);
+
   const close = useCallback(() => {
     closedByUser.current = true;
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
@@ -165,5 +173,5 @@ export function useWebSocketStream(
     setWsState("closed");
   }, []);
 
-  return { wsState, sendFrame, close };
+  return { wsState, sendFrame, sendJson, close };
 }

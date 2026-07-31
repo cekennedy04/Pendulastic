@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
     "babel-preset-expo": "~54.0.10",
     "expo": "~54.0.0",
     "expo-camera": "~17.0.10",

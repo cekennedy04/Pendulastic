@@ -173,35 +173,53 @@ async def stream_endpoint(ws: WebSocket):
     session:     dict | None = None
     frame_count: int         = 0
     start_time:  float       = time.monotonic()
+    # Per-joint position overrides sent by the client's correction mode.
+    # Maps joint name → {"x": float, "y": float}.  Applied to every
+    # subsequent frame until the client sends a new correction.
+    corrections: dict[str, dict] = {}
 
     try:
         while True:
             # ── Receive next message ──────────────────────────────────────────
             message = await ws.receive()
 
-            # Text message: must be the session_meta handshake.
+            # Starlette's raw receive() doesn't raise WebSocketDisconnect itself —
+            # it returns this sentinel message. Re-raise so the except clause
+            # below actually runs the disconnect cleanup (pending_review, etc.)
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+
+            # Text message: session_meta handshake or joint correction.
             if "text" in message:
                 import json
                 try:
-                    meta = json.loads(message["text"])
+                    msg = json.loads(message["text"])
                 except ValueError:
-                    await ws.send_json({"type": "warning", "message": "Invalid JSON in handshake."})
+                    await ws.send_json({"type": "warning", "message": "Invalid JSON."})
                     continue
 
-                if meta.get("type") != "session_meta":
-                    await ws.send_json({"type": "warning", "message": "Expected session_meta as first message."})
-                    continue
+                msg_type = msg.get("type")
 
-                session = {
-                    "trial_id": meta["trial_id"],
-                    "model":    meta.get("model", "mediapipe"),
-                    "leg_side": meta.get("leg_side", "right"),
-                    "width":    meta.get("width", 1),
-                    "height":   meta.get("height", 1),
-                }
-                # Mark trial as actively streaming in the shared trial store.
-                if session["trial_id"] in trial_db:
-                    trial_db[session["trial_id"]]["status"] = "recording"
+                if msg_type == "session_meta":
+                    session = {
+                        "trial_id": msg["trial_id"],
+                        "model":    msg.get("model", "mediapipe"),
+                        "leg_side": msg.get("leg_side", "right"),
+                        "width":    msg.get("width", 1),
+                        "height":   msg.get("height", 1),
+                    }
+                    corrections.clear()
+                    if session["trial_id"] in trial_db:
+                        trial_db[session["trial_id"]]["status"] = "recording"
+
+                elif msg_type == "correction":
+                    joint = msg.get("joint")
+                    if joint in ("hip", "knee", "ankle"):
+                        corrections[joint] = {"x": float(msg["x"]), "y": float(msg["y"])}
+
+                else:
+                    await ws.send_json({"type": "warning", "message": f"Unknown message type: {msg_type}"})
+
                 continue
 
             # Binary message: frame payload with 8-byte header.
@@ -226,6 +244,15 @@ async def stream_endpoint(ws: WebSocket):
                     session["model"],
                     session["leg_side"],
                 )
+
+                # Apply any client-side joint corrections.
+                if corrections:
+                    kpts = result["keypoints"]
+                    for joint, override in corrections.items():
+                        if joint in kpts:
+                            kpts[joint]["x"] = override["x"]
+                            kpts[joint]["y"] = override["y"]
+                            kpts[joint]["confidence"] = 1.0
 
                 payload = {
                     "type":        "keypoints",

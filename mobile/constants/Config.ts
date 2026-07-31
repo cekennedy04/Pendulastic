@@ -8,11 +8,14 @@
  * printed by `uvicorn`.  Replace with the production hostname before release.
  */
 
-const DEV_HOST = "172.20.10.2"; // ← replace with the uvicorn host LAN IP
+const DEV_HOST = "192.168.137.1";  // Windows Mobile Hotspot IP (fixed) — or run: ipconfig | findstr "192.168"
+const DEV_PORT = 8000;             // FastAPI backend: uvicorn web.api.app:app --port 8000
 
 export const Config = {
-  API_BASE: `http://${DEV_HOST}:8000/api`,
-  WS_BASE:  `ws://${DEV_HOST}:8000`,
+  // REST endpoints — FastAPI mounts all routes under /api
+  API_BASE: `http://${DEV_HOST}:${DEV_PORT}/api`,
+  // WebSocket — FastAPI mounts /ws/stream directly (no /api prefix)
+  WS_BASE:  `ws://${DEV_HOST}:${DEV_PORT}`,
 
   // Frame capture target rate sent to the backend (frames per second).
   // Clinical accuracy is sufficient at 15 fps; the backend processes each

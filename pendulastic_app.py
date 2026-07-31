@@ -555,7 +555,7 @@ class AcquisitionPanel(tk.Frame):
             try:
                 _imu.zero()
                 self.lbl_method_status.config(
-                    text="● Sensor zeroed — horizontal = 0°", fg="#B36B00")
+                    text="⚡ Flex once to capture axis...", fg="#B36B00")
             except Exception as e:
                 messagebox.showerror("Zero Sensor", f"Could not zero sensor:\n{e}")
 
@@ -1559,6 +1559,20 @@ class App(tk.Tk):
                 frame = self._preview_queue.get_nowait()
                 self._acq.update_preview(frame)
             except queue.Empty:
+                pass
+
+        # Flip label when flex axis transitions from armed → captured
+        if (_IMU_AVAIL and "imu" in self._active_sources
+                and self._state in ("idle", "recording")):
+            try:
+                st = _imu.get_state()
+                if st.get("flex_axis_captured"):
+                    self._acq.lbl_method_status.config(
+                        text="● Axis locked — sagittal tracking", fg="green")
+                elif st.get("flex_axis_armed"):
+                    self._acq.lbl_method_status.config(
+                        text="⚡ Flex once to capture axis...", fg="#B36B00")
+            except Exception:
                 pass
 
         self.after(50, self._tick)
