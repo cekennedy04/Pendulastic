@@ -120,6 +120,14 @@ A trial is whatever subset of the three modalities the researcher supplies —
   independently to each modality's own curve. Comparing extrema *timing*
   pairwise across modalities gives the "timing jitter across oscillation
   cycles" metric from the original ask.
+- **Reference selection (star topology, not all-pairs)**: with up to 8
+  loaded traces (IMU + OptiTrack + 6 HPE models), metrics are computed as
+  *every other trace vs. one chosen reference*, not every possible pair.
+  The reference defaults to OptiTrack when present, else IMU, else the
+  first-loaded HPE model — overridable via a reference-selector dropdown in
+  `WorkbenchView`. This directly matches the original ask ("comparative
+  error metrics against the OptiTrack gold standard for both Phone IMU and
+  MediaPipe HPE") while staying well-defined when OptiTrack is absent.
 
 ## 5. UI: Synchronized Video + Signal Viewer
 
@@ -139,6 +147,10 @@ A trial is whatever subset of the three modalities the researcher supplies —
   release-frame click handler into an arbitrary seek).
 - **Per-trace visibility checkboxes**, since up to 8 traces (IMU + OptiTrack
   + 6 HPE models) would otherwise overlap heavily.
+- **Metrics readout** shows the Section 4 reference-selector's chosen
+  reference plus a row per other *visible* trace's `compare_pair` result
+  against it — hiding a trace also hides its metrics row, so the readout
+  never shows more than what's actually plotted.
 
 ## 6. Annotations
 
