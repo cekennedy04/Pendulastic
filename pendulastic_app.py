@@ -606,12 +606,34 @@ class AcquisitionPanel(tk.Frame):
 
     def _tick_countdown(self, n: int) -> None:
         if n == 0:
-            self._countdown_id = None
-            self.btn_start.config(text="START RECORDING",
-                                  command=self._on_start_clicked, bg=_GREEN)
-            self.controller.on_start()
+            if self.controller.is_imu_calibrated():
+                self._countdown_id = None
+                self.btn_start.config(text="START RECORDING",
+                                      command=self._on_start_clicked, bg=_GREEN)
+                self.controller.on_start()
+                return
+            if self._calib_extension_s < _MAX_CALIB_EXTENSION_S:
+                self._calib_extension_s += 1
+                self.status_var.set("Hold steady…")
+                self._countdown_id = self.after(1000, lambda: self._tick_countdown(0))
+                return
+            if messagebox.askyesno(
+                    "Sensor Not Stable",
+                    "The IMU sensor hasn't settled to a stable reading. "
+                    "Start recording anyway?"):
+                self._countdown_id = None
+                self.btn_start.config(text="START RECORDING",
+                                      command=self._on_start_clicked, bg=_GREEN)
+                self.controller.on_start()
+            else:
+                self._cancel_countdown()
             return
-        self.status_var.set(f"Starting in {n}…")
+        if "imu" in self.get_active_sources():
+            calib_suffix = (" — ✓ calibrated" if self.controller.is_imu_calibrated()
+                           else " — stabilizing…")
+        else:
+            calib_suffix = ""
+        self.status_var.set(f"Starting in {n}…{calib_suffix}")
         self._countdown_id = self.after(1000, lambda: self._tick_countdown(n - 1))
 
     def _cancel_countdown(self) -> None:
@@ -1266,6 +1288,13 @@ class App(tk.Tk):
         self._calib_buffer = []
         self._calib_was_stable = False
         self._calib_ever_stable = False
+
+    def is_imu_calibrated(self) -> bool:
+        """True if calibration isn't required (imu not an active source) or
+        has already succeeded at least once this countdown."""
+        if "imu" not in self._active_sources:
+            return True
+        return self._calib_ever_stable
 
     # ------------------------------------------------------------------
     # Mode-select routing

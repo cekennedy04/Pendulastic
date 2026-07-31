@@ -345,3 +345,101 @@ def test_start_countdown_calls_on_countdown_start():
         assert p._calib_extension_s == 0
     finally:
         r.destroy()
+
+
+def test_tick_countdown_extends_when_not_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = 0
+        p._tick_countdown(0)
+        r.update()
+        assert "start" not in calls
+        assert p._calib_extension_s == 1
+        assert "Hold steady" in p.status_var.get()
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_proceeds_when_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return True
+            def on_start(self): calls.append("start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = 0
+        p._tick_countdown(0)
+        r.update()
+        assert "start" in calls
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_confirm_dialog_accept_proceeds(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as _m
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **kw: True)
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = _m._MAX_CALIB_EXTENSION_S
+        p._tick_countdown(0)
+        r.update()
+        assert "start" in calls
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_confirm_dialog_decline_cancels(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as _m
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **kw: False)
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = _m._MAX_CALIB_EXTENSION_S
+        p._tick_countdown(0)
+        r.update()
+        assert "start" not in calls
+        assert p.btn_start.cget("text") == "START RECORDING"
+    finally:
+        r.destroy()
+
+
+def test_countdown_status_shows_stabilizing_then_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        class C(_Ctrl):
+            calibrated = False
+            def is_imu_calibrated(self): return self.calibrated
+        ctrl = C()
+        p = AcquisitionPanel(r, ctrl); p.pack()
+        p._src_imu.set(True)
+        p._tick_countdown(3)
+        r.update()
+        assert "stabilizing" in p.status_var.get()
+        ctrl.calibrated = True
+        p._tick_countdown(2)
+        r.update()
+        assert "calibrated" in p.status_var.get()
+    finally:
+        if p._countdown_id:
+            p.after_cancel(p._countdown_id)
+        r.destroy()

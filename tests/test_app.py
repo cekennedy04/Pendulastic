@@ -566,3 +566,27 @@ def test_tick_calibration_stops_after_countdown_completes_naturally(monkeypatch)
             "Must NOT re-fire zero() during recording, even if stable"
     finally:
         app.destroy()
+
+
+def test_is_imu_calibrated_true_when_imu_not_active():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._active_sources = []
+        app._calib_ever_stable = False
+        assert app.is_imu_calibrated() is True
+    finally:
+        app.destroy()
+
+
+def test_is_imu_calibrated_reflects_ever_stable_when_imu_active():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._active_sources = ["imu"]
+        app._calib_ever_stable = False
+        assert app.is_imu_calibrated() is False
+        app._calib_ever_stable = True
+        assert app.is_imu_calibrated() is True
+    finally:
+        app.destroy()
