@@ -606,6 +606,7 @@ class AcquisitionPanel(tk.Frame):
 
     def _tick_countdown(self, n: int) -> None:
         if n == 0:
+            self._countdown_id = None
             self.btn_start.config(text="START RECORDING",
                                   command=self._on_start_clicked, bg=_GREEN)
             self.controller.on_start()
@@ -1716,6 +1717,7 @@ class App(tk.Tk):
         re-tare (edge-triggered) each time a new stable window begins.
         Active only while AcquisitionPanel's countdown is running."""
         if not (_IMU_AVAIL and "imu" in self._active_sources
+                and self._state == "idle"
                 and self._acq._countdown_id is not None):
             return
         try:

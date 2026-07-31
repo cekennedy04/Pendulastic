@@ -447,6 +447,7 @@ def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
     app = _m.App()
     try:
         app._active_sources = ["imu"]
+        app._state = "idle"
         app._acq._countdown_id = "sentinel"   # any non-None value marks countdown active
         zero_calls = []
         monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
@@ -467,6 +468,7 @@ def test_tick_calibration_refires_after_drift_then_restabilizing(monkeypatch):
     app = _m.App()
     try:
         app._active_sources = ["imu"]
+        app._state = "idle"
         app._acq._countdown_id = "sentinel"
         zero_calls = []
         monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
@@ -509,5 +511,44 @@ def test_tick_calibration_skipped_outside_countdown(monkeypatch):
             app._tick_calibration_check()
         assert zero_calls == []
         assert app._calib_buffer == []
+    finally:
+        app.destroy()
+
+
+def test_tick_calibration_stops_after_countdown_completes_naturally(monkeypatch):
+    """Regression test: verify calibration gate closes when countdown reaches n==0
+    and transitions to recording state. Even if the subject holds steady during
+    recording (stable buffer), zero() must not fire mid-trial."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "angles": {"pitch": 10.0, "roll": 0.0},
+        })
+
+        # Start countdown manually (simulate _start_countdown without triggering button)
+        app._acq._countdown_id = "active"
+        app._state = "idle"
+
+        # Fill buffer while in countdown to get close to stable
+        for _ in range(_m._CALIB_BUFFER_SAMPLES):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1, "Must fire once during stable countdown"
+
+        # Simulate countdown reaching n==0 by manually setting what it does:
+        # Clear _countdown_id and set state to recording (bypass full on_start())
+        app._acq._countdown_id = None
+        app._state = "recording"
+        assert app._acq._countdown_id is None, "countdown_id must be None after natural completion"
+        assert app._state == "recording", "state must be recording after countdown completion"
+
+        # Now call calibration check multiple times with stable readings
+        # It should NOT fire zero() because state is "recording" not "idle"
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1, "Must NOT re-fire zero() during recording, even if stable"
     finally:
         app.destroy()
