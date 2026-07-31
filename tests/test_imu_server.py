@@ -1,5 +1,5 @@
 # tests/test_imu_server.py
-import os, sys, math
+import os, sys, math, csv
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
@@ -260,3 +260,31 @@ def test_swing_angle_zero_returns_zero():
     assert abs(angle) < 1e-4, f"Expected ~0°, got {angle}"
     imu.reset_devices()
     imu.clear_zero()
+
+
+def test_raw_csv_prefix_strips_imu_suffix():
+    assert imu._raw_csv_prefix("C:/x/Trial_4_imu.csv") == "C:/x/Trial_4"
+
+
+def test_raw_csv_prefix_without_imu_suffix():
+    assert imu._raw_csv_prefix("C:/x/Trial_4.csv") == "C:/x/Trial_4"
+
+
+def test_raw_csv_prefix_case_insensitive():
+    assert imu._raw_csv_prefix("C:/x/Trial_4_IMU.CSV") == "C:/x/Trial_4"
+
+
+def test_open_raw_csv_writes_header(tmp_path):
+    path = str(tmp_path / "trial_accel.csv")
+    f, w = imu._open_raw_csv(path)
+    assert f is not None and w is not None
+    f.close()
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["timestamp_ms", "phone_ts_ms", "role",
+                        "sensor_name", "x", "y", "z"]
+
+
+def test_open_raw_csv_returns_none_on_unwritable_path():
+    f, w = imu._open_raw_csv("Z:/definitely/not/a/real/drive/trial_accel.csv")
+    assert f is None and w is None

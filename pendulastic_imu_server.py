@@ -454,6 +454,16 @@ _rec_t0     = 0.0
 _rec_offset: Optional[float] = None   # clock offset captured at record start
 _recording  = False
 
+# Raw 9-DOF logging: one CSV per sensor, opened alongside the fused CSV in
+# start_recording() and sharing _rec_lock with it.
+_RAW_SENSOR_SUFFIX = {
+    "Accelerometer": "accel",
+    "Gyroscope":     "gyro",
+    "Magnetometer":  "mag",
+}
+_raw_files:   dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
+_raw_writers: dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
+
 
 def _device_for(ip: str) -> _IMUDevice:
     """Fetch or create the device for this IP, assigning a role on first sight."""
@@ -752,6 +762,30 @@ def stop_recording():
             except OSError:
                 pass
         _rec_file = _rec_writer = None
+
+
+def _raw_csv_prefix(csv_path: str) -> str:
+    """Derive the shared '<trial>_accel/gyro/mag.csv' prefix from the fused
+    angle CSV path, e.g. '.../Trial_4_imu.csv' -> '.../Trial_4'."""
+    prefix = csv_path[:-4] if csv_path.lower().endswith(".csv") else csv_path
+    if prefix.lower().endswith("_imu"):
+        prefix = prefix[:-len("_imu")]
+    return prefix
+
+
+def _open_raw_csv(path: str):
+    """Open one raw-sensor CSV and write its header row.
+    Returns (file, writer), or (None, None) if the file could not be opened —
+    raw logging is best-effort and must never block the fused CSV."""
+    try:
+        f = open(path, "w", newline="", encoding="utf-8")
+    except OSError as e:
+        print(f"[IMU] Could not open raw CSV {path}: {e}")
+        return None, None
+    w = csv.writer(f)
+    w.writerow(["timestamp_ms", "phone_ts_ms", "role", "sensor_name",
+                "x", "y", "z"])
+    return f, w
 
 
 def _log_sample():
