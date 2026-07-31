@@ -1594,19 +1594,17 @@ class App(tk.Tk):
         if not _CV2_AVAIL:
             messagebox.showerror("RGB", "OpenCV (cv2) is not installed.")
             return
+        if self._camera is None or self._camera.active is None \
+                or self._camera.frame_size is None:
+            messagebox.showerror(
+                "RGB", "No camera selected. Click Rescan and pick a camera first.")
+            return
         fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
         os.makedirs(DataManager.DATA_DIR, exist_ok=True)
         self._video_path = os.path.join(
             DataManager.DATA_DIR, fn.replace(".csv", ".avi"))
-        cap = _cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap.release()
-            messagebox.showerror("RGB", "Could not open camera (index 0).")
-            return
-        w   = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
-        h   = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
-        self._rgb_cap    = cap
+        w, h = self._camera.frame_size
         self._rgb_writer = _cv2.VideoWriter(
             self._video_path, _cv2.VideoWriter_fourcc(*"XVID"), 30.0, (w, h))
 
@@ -1627,54 +1625,13 @@ class App(tk.Tk):
         else:
             self._pose_estimator = None
 
-        self._rgb_stop   = threading.Event()
-        self._rgb_thread = threading.Thread(
-            target=self._rgb_record_worker, daemon=True)
-        self._rgb_thread.start()
-
-    def _rgb_record_worker(self) -> None:
-        while not self._rgb_stop.is_set():
-            ret, frame = self._rgb_cap.read()
-            if not ret or frame is None:
-                break
-
-            # Write RAW frame to disk — preserves data integrity
-            if self._rgb_writer:
-                self._rgb_writer.write(frame)
-
-            # Build annotated preview copy (overlay never touches the saved file)
-            preview = frame.copy()
-            if self._pose_estimator is not None and _mp_draw is not None:
-                try:
-                    rgb_frame = _cv2.cvtColor(preview, _cv2.COLOR_BGR2RGB)
-                    results   = self._pose_estimator.process(rgb_frame)
-                    if results.pose_landmarks:
-                        _mp_draw.draw_landmarks(
-                            preview,
-                            results.pose_landmarks,
-                            _mp_pose.POSE_CONNECTIONS,
-                            landmark_drawing_spec=_mp_styles.get_default_pose_landmarks_style(),
-                        )
-                except Exception:
-                    pass   # never crash the recording on overlay failure
-
-            # Deliver to UI thread — drop stale frame if queue is full
-            try:
-                self._preview_queue.put_nowait(preview)
-            except queue.Full:
-                pass
+        self._camera.attach_writer(self._rgb_writer)
 
     def _stop_rgb_recording(self) -> None:
-        if hasattr(self, "_rgb_stop"):
-            self._rgb_stop.set()
-        if hasattr(self, "_rgb_thread"):
-            self._rgb_thread.join(timeout=2.0)
-        if hasattr(self, "_rgb_writer") and self._rgb_writer:
-            self._rgb_writer.release()
-            self._rgb_writer = None
-        if hasattr(self, "_rgb_cap") and self._rgb_cap:
-            self._rgb_cap.release()
-            self._rgb_cap = None
+        writer = self._camera.detach_writer() if self._camera is not None else None
+        if writer is not None:
+            writer.release()
+        self._rgb_writer = None
 
     def _run_imu_tuning(self, raw_log_path: str, csv_path: str,
                         csv_filename: str, meta: dict) -> None:
@@ -1843,8 +1800,14 @@ class App(tk.Tk):
         self._imu_poll_stop.set()
         if self._imu_poll_thread:
             self._imu_poll_thread.join(timeout=0.5)
-        if hasattr(self, "_rgb_stop"):
-            self._rgb_stop.set()
+        if self._camera is not None:
+            writer = self._camera.detach_writer()
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+            self._camera.close()
         if _IMU_AVAIL:
             try:
                 _imu.stop()

@@ -525,3 +525,110 @@ def test_camera_frame_callback_queues_preview_frame():
         assert queued is frame
     finally:
         app.destroy()
+
+
+def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    if not _m._CV2_AVAIL:
+        return   # nothing to test without OpenCV installed
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        # Simulate an already-open, pre-warmed camera (as Rescan would leave it).
+        app._camera.active = {"index": 0, "backend": 700, "backend_name": "MSMF",
+                              "label": "Camera 0 (MSMF)"}
+        app._camera._frame_size = (64, 48)
+        attached = []
+        monkeypatch.setattr(app._camera, "attach_writer", lambda w: attached.append(w))
+        opened_new_capture = []
+        monkeypatch.setattr(_m._cv2, "VideoCapture",
+                            lambda *a, **kw: opened_new_capture.append(a) or None)
+        # Fake the writer too, so this test never depends on a real codec
+        # being available in the environment.
+        created_writers = []
+        class _FakeWriter:
+            pass
+        monkeypatch.setattr(_m._cv2, "VideoWriter",
+                            lambda *a, **kw: created_writers.append(a) or _FakeWriter())
+        monkeypatch.setattr(_m._cv2, "VideoWriter_fourcc", lambda *a: None)
+
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._start_rgb_recording(meta)
+
+        assert len(attached) == 1, "must attach a writer to the existing CameraSession"
+        assert isinstance(attached[0], _FakeWriter)
+        assert opened_new_capture == [], "must NOT open a new cv2.VideoCapture"
+    finally:
+        app.destroy()
+
+
+def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
+    import pendulastic_app as _m
+    if not _m._CV2_AVAIL:
+        return
+    app = _m.App()
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showerror",
+                        lambda title, msg: shown.append((title, msg)))
+    try:
+        assert app._camera.active is None
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._start_rgb_recording(meta)
+        assert shown, "must surface an error when no camera is active"
+        assert not hasattr(app, "_rgb_writer") or app._rgb_writer is None
+    finally:
+        app.destroy()
+
+
+def test_stop_rgb_recording_detaches_writer_but_leaves_camera_live(monkeypatch):
+    import pendulastic_app as _m
+    if not _m._CV2_AVAIL:
+        return
+    app = _m.App()
+    try:
+        class _FakeWriter:
+            def __init__(self):
+                self.released = False
+            def release(self):
+                self.released = True
+
+        writer = _FakeWriter()
+        monkeypatch.setattr(app._camera, "detach_writer", lambda: writer)
+        closed = []
+        monkeypatch.setattr(app._camera, "close", lambda: closed.append(True))
+
+        app._stop_rgb_recording()
+
+        assert writer.released is True
+        assert closed == [], "camera capture must stay open/live across trials"
+    finally:
+        app.destroy()
+
+
+def test_rgb_cap_and_rgb_thread_attributes_no_longer_exist():
+    """Regression: the old open-fresh-per-trial machinery must be fully removed."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        assert not hasattr(app, "_rgb_cap")
+        assert not hasattr(app, "_rgb_thread")
+        assert not hasattr(app, "_rgb_stop")
+    finally:
+        app.destroy()
+
+
+def test_on_close_detaches_and_releases_writer_before_closing_camera(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    order = []
+    if app._camera is not None:
+        class _FakeWriter:
+            def release(self):
+                order.append("writer_released")
+        writer = _FakeWriter()
+        monkeypatch.setattr(app._camera, "detach_writer", lambda: order.append("detach") or writer)
+        monkeypatch.setattr(app._camera, "close", lambda: order.append("camera_closed"))
+    monkeypatch.setattr(_m, "_IMU_AVAIL", False)
+    app.on_close()
+    if app._camera is not None:
+        assert order == ["detach", "writer_released", "camera_closed"]
