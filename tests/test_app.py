@@ -272,3 +272,99 @@ def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
     finally:
         app._imu_poll_stop.set()
         app.destroy()
+
+
+def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_tuner as _tuner
+    import numpy as np
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+
+    raw_path = tmp_path / "trial_raw.jsonl"
+    raw_path.write_text('{"t": 0, "role": "distal", "sensor": "gyro", "v": [0,0,0], "phone_ts_ms": 0}\n',
+                        encoding="utf-8")
+
+    monkeypatch.setattr(_tuner, "tune_and_persist", lambda raw, source_trial="", **kw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.3,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 0.4, "passes": True,
+    })
+    monkeypatch.setattr(_tuner, "replay_trial", lambda raw, params: (
+        np.array([0.0, 0.05, 0.1]), np.array([180.0, 179.0, 178.0])))
+
+    app = _m.App()
+    try:
+        meta = {"pid": "P2", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
+
+        result_holder = {}
+        orig_transition = app._transition_to_review
+        def _capture(source_angles, m):
+            result_holder["source_angles"] = source_angles
+        app._transition_to_review = _capture
+
+        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+
+        assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
+        with open(csv_path, encoding="utf-8") as f:
+            content = f.read()
+        assert "179.000" in content
+    finally:
+        app.destroy()
+
+
+def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import imu_calibration_tuner as _tuner
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+
+    raw_path = tmp_path / "trial_raw.jsonl"
+    raw_path.write_text('{"t": 0, "role": "distal", "sensor": "gyro", "v": [0,0,0], "phone_ts_ms": 0}\n',
+                        encoding="utf-8")
+    monkeypatch.setattr(_tuner, "tune_and_persist", lambda raw, source_trial="", **kw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.3,
+                   "flex_axis_capture": True, "gravity_seed": True},
+        "penalty": 99.0, "passes": False,
+    })
+
+    app = _m.App()
+    try:
+        meta = {"pid": "P3", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
+
+        result_holder = {}
+        app._transition_to_review = lambda source_angles, m: result_holder.update(
+            source_angles=source_angles)
+
+        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+
+        assert result_holder["source_angles"]["imu"] == [1.0, 2.0, 3.0]
+    finally:
+        app.destroy()
+
+
+def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P4", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._pending_review = {"imu": [1.0, 2.0]}
+        csv_filename = _m.DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+        csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0], meta, source="imu")
+
+        result_holder = {}
+        app._transition_to_review = lambda source_angles, m: result_holder.update(
+            source_angles=source_angles)
+
+        app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
+        assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
+    finally:
+        app.destroy()

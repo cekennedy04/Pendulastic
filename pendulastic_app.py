@@ -9,6 +9,7 @@ Run:
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import queue
@@ -32,6 +33,11 @@ try:
 except Exception:
     _imu = None
     _IMU_AVAIL = False
+
+try:
+    import imu_calibration_tuner as _tuner
+except Exception:
+    _tuner = None
 
 try:
     import motive_sync as _motive
@@ -1209,6 +1215,9 @@ class App(tk.Tk):
                         pass
                 source_angles["optitrack"] = []   # angles loaded from CSV in review panel
 
+        pending_imu_tune = (
+            imu_raw_log_path is not None and not pending_rgb and _tuner is not None)
+
         if pending_rgb:
             self._state = "processing"
             self._acq.enter_processing()
@@ -1216,6 +1225,14 @@ class App(tk.Tk):
             threading.Thread(
                 target=self._run_rgb_processing,
                 args=(meta,), daemon=True,
+            ).start()
+        elif pending_imu_tune:
+            self._state = "processing"
+            self._acq.enter_processing()
+            self._pending_review = source_angles
+            threading.Thread(
+                target=self._run_imu_tuning,
+                args=(imu_raw_log_path, imu_csv_path, fn_imu, meta), daemon=True,
             ).start()
         else:
             self._transition_to_review(source_angles, meta)
@@ -1505,6 +1522,44 @@ class App(tk.Tk):
         if hasattr(self, "_rgb_cap") and self._rgb_cap:
             self._rgb_cap.release()
             self._rgb_cap = None
+
+    def _run_imu_tuning(self, raw_log_path: str, csv_path: str,
+                        csv_filename: str, meta: dict) -> None:
+        """Load this trial's raw IMU log, run the grid search, and — only if
+        a passing configuration is found — rewrite the trial's saved CSV and
+        feed the tuned series into REVIEW. Must never raise: any failure
+        falls back to the originally-recorded series so tuning can never
+        block a clinician from seeing trial data."""
+        source_angles = dict(self._pending_review)
+        try:
+            raw_samples = []
+            with open(raw_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw_samples.append(json.loads(line))
+                    except ValueError:
+                        continue
+
+            if raw_samples and _tuner is not None:
+                best = _tuner.tune_and_persist(raw_samples, source_trial=csv_filename)
+                if best["passes"]:
+                    t, angle = _tuner.replay_trial(raw_samples, best["params"])
+                    tuned_angles = [float(a) for a in angle]
+                    DataManager.save_trial(
+                        csv_filename, tuned_angles, meta,
+                        timestamps=[float(x) for x in t], source="imu")
+                    source_angles["imu"] = tuned_angles
+        except (OSError, ValueError, KeyError):
+            pass   # fall back to the originally-recorded series
+        # Schedule on main thread if not already there (production path runs from background thread)
+        # In tests (where this runs on main thread), call directly
+        if threading.current_thread() is threading.main_thread():
+            self._transition_to_review(source_angles, meta)
+        else:
+            self.after(0, lambda: self._transition_to_review(source_angles, meta))
 
     def _run_rgb_processing(self, meta: dict) -> None:
         def progress(pct: float) -> None:
