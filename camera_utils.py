@@ -78,13 +78,15 @@ class CameraSession:
         message). Neither callback may touch Tkinter directly — the caller
         marshals to the UI thread. capture_factory(index, backend) -> a
         cv2.VideoCapture-like object; defaults to cv2.VideoCapture, override
-        only in tests."""
+        only in tests. open()/close() are intended to be called from a
+        single thread (the Tk UI thread in production) — not safe to call
+        concurrently from multiple threads."""
         self._on_frame = on_frame
         self._on_status = on_status or (lambda msg: None)
         self._capture_factory = capture_factory or cv2.VideoCapture
         self._cap = None
         self._thread = None
-        self._stop_evt = threading.Event()
+        self._stop_evt = None          # created fresh per open(); never reused
         self._writer = None
         self._writer_lock = threading.Lock()
         self._frame_size = None
@@ -95,7 +97,12 @@ class CameraSession:
         return self._frame_size
 
     def rescan(self):
-        """Enumerate available cameras. Does not open or change the active one."""
+        """Enumerate available cameras. Does not open or change the active
+        one — but note enumerate_cameras() briefly probes every index on
+        every backend, including whichever index this session currently has
+        open, so the active camera can transiently appear busy/missing in
+        its own rescan result. This call blocks for the full probe; do not
+        call it on the UI thread without expecting a multi-second pause."""
         return enumerate_cameras()
 
     def open(self, cam: dict) -> bool:
@@ -112,7 +119,7 @@ class CameraSession:
                 cap.release()
             except Exception:
                 pass
-            self._on_status(f"Could not open {cam['label']}.")
+            self._safe_status(f"Could not open {cam['label']}.")
             return False
 
         self._cap = cap
@@ -121,31 +128,40 @@ class CameraSession:
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or None
         self._frame_size = (w, h) if w and h else None
 
-        self._stop_evt.clear()
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
-        self._on_status("live")
+        stop_evt = threading.Event()
+        self._stop_evt = stop_evt
+        thread = threading.Thread(target=self._read_loop, args=(cap, stop_evt), daemon=True)
+        self._thread = thread
+        thread.start()
+        self._safe_status("live")
         return True
 
     def close(self) -> None:
-        """Stop the read loop and release the capture. Idempotent — safe to
-        call when nothing is open, and always fully releases the hardware
-        handle even if the read loop already exited on its own (e.g. after
-        a detected camera loss)."""
-        self._stop_evt.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        """Stop the read loop and clear this session's state. Idempotent —
+        safe to call when nothing is open, and safe to call twice. If the
+        read thread doesn't stop within the timeout (e.g. a stalled MSMF
+        read), this session detaches from it rather than releasing the
+        capture out from under an in-flight cap.read() call (a native
+        use-after-release crash) — the abandoned thread releases its own
+        capture itself, in its own finally block, once the blocking call
+        eventually returns. Does not touch an attached writer's file — if
+        a writer is attached, detach_writer() it and release() it yourself
+        before calling close(), or the video file is only finalized whenever
+        Python eventually garbage-collects the writer object."""
+        if self._stop_evt is not None:
+            self._stop_evt.set()
+        thread = self._thread
         self._thread = None
+        self._stop_evt = None
         with self._writer_lock:
             self._writer = None
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
+        self._cap = None
         self.active = None
         self._frame_size = None
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                self._safe_status("camera did not respond to close(); abandoning it")
 
     def attach_writer(self, writer) -> None:
         """Frames read from here on are also passed to writer.write() until
@@ -162,15 +178,26 @@ class CameraSession:
             w, self._writer = self._writer, None
         return w
 
-    def _read_loop(self) -> None:
+    def _safe_status(self, msg: str) -> None:
+        try:
+            self._on_status(msg)
+        except Exception:
+            pass
+
+    def _read_loop(self, cap, stop_evt) -> None:
+        """Operates only on the `cap`/`stop_evt` passed in at thread start —
+        never on self._cap/self._stop_evt — so a thread that outlives its
+        session's close()/open() call can never be resurrected by, or
+        interfere with, a later session. cap.release() happens here,
+        unconditionally, on every exit path — close()/open() never call it."""
         miss = 0
         lost = False
         try:
-            while not self._stop_evt.is_set():
-                ret, frame = self._cap.read()
+            while not stop_evt.is_set():
+                ret, frame = cap.read()
                 if not ret or frame is None:
                     miss += 1
-                    if miss > self._LOSS_THRESHOLD:
+                    if miss > self._LOSS_THRESHOLD:   # more than 30 consecutive failures
                         lost = True
                         break
                     time.sleep(0.01)
@@ -189,15 +216,17 @@ class CameraSession:
                     pass
         except Exception as e:
             lost = True
-            self._on_status(f"error: {type(e).__name__}: {e}")
+            self._safe_status(f"error: {type(e).__name__}: {e}")
         finally:
-            if lost:
-                if self._cap is not None:
-                    try:
-                        self._cap.release()
-                    except Exception:
-                        pass
-                    self._cap = None
+            try:
+                cap.release()
+            except Exception:
+                pass
+            # Only touch session-level state if this thread is still the
+            # session's current thread — an abandoned orphan (after a
+            # close()/open() timeout) must never clobber a newer session.
+            if lost and self._thread is threading.current_thread():
+                self._cap = None
                 self.active = None
                 self._frame_size = None
-                self._on_status("lost")
+                self._safe_status("lost")
