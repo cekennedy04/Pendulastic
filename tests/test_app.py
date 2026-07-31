@@ -425,3 +425,18 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
     finally:
         app.destroy()
+
+
+def test_on_countdown_start_resets_calibration_state():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._calib_buffer = [(1.0, 2.0)]
+        app._calib_was_stable = True
+        app._calib_ever_stable = True
+        app.on_countdown_start()
+        assert app._calib_buffer == []
+        assert app._calib_was_stable is False
+        assert app._calib_ever_stable is False
+    finally:
+        app.destroy()

@@ -15,6 +15,8 @@ class _Ctrl:
     def on_source_changed(self, sources): pass
     def on_new_trial(self): pass
     def on_back_to_mode_select(self): pass
+    def on_countdown_start(self): pass
+    def is_imu_calibrated(self): return True
 
 
 def test_panel_instantiates():
@@ -323,5 +325,23 @@ def test_get_metadata_includes_video_file_path():
         meta = p.get_metadata()
         assert meta["video_file_path"] == "/data/trial.mp4"
         assert "video_file" in meta["sources"]
+    finally:
+        r.destroy()
+
+
+def test_start_countdown_calls_on_countdown_start():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def on_countdown_start(self): calls.append("countdown_start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p.pid_var.set("P1")
+        p.countdown_var.set(True)
+        p._on_start_clicked()
+        r.update()
+        assert "countdown_start" in calls
+        assert p._calib_extension_s == 0
     finally:
         r.destroy()

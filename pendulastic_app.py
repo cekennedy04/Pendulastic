@@ -96,6 +96,10 @@ _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
 
+_CALIB_STABILITY_RANGE_DEG = 2.0   # max peak-to-peak pitch/roll swing to count as "stable"
+_CALIB_BUFFER_SAMPLES = 20         # ~1s of samples at the 50ms _tick() cadence
+_MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
+
 # ---------------------------------------------------------------------------
 # DataManager
 # ---------------------------------------------------------------------------
@@ -248,6 +252,7 @@ class AcquisitionPanel(tk.Frame):
         self.controller = controller
         self._countdown_id: Optional[str] = None
         self._tele_buf: list = []
+        self._calib_extension_s: int = 0
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -591,6 +596,8 @@ class AcquisitionPanel(tk.Frame):
     # Countdown
     # ------------------------------------------------------------------
     def _start_countdown(self) -> None:
+        self.controller.on_countdown_start()
+        self._calib_extension_s = 0
         self._lock_form(True)
         self.btn_start.config(text="CANCEL",
                               command=self._cancel_countdown, bg=_AMBER)
@@ -1112,6 +1119,9 @@ class App(tk.Tk):
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
+        self._calib_buffer:      list = []     # trailing (pitch, roll) samples during countdown
+        self._calib_was_stable:  bool = False   # edge-trigger state for auto-tare
+        self._calib_ever_stable: bool = False   # True once calibrated this countdown
 
         # Start IMU WebSocket server (port 5000) once for this process
         if _IMU_AVAIL:
@@ -1248,6 +1258,13 @@ class App(tk.Tk):
     def on_source_changed(self, sources: list) -> None:
         """Called by AcquisitionPanel when any source checkbox changes."""
         self._active_sources = list(sources)
+
+    def on_countdown_start(self) -> None:
+        """Called by AcquisitionPanel at the start of each countdown; resets
+        the auto-tare stability tracking for this fresh countdown window."""
+        self._calib_buffer = []
+        self._calib_was_stable = False
+        self._calib_ever_stable = False
 
     # ------------------------------------------------------------------
     # Mode-select routing
