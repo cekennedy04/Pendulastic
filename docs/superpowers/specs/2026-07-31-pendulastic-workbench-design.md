@@ -51,18 +51,21 @@ Two new files, mirroring this repo's established config/engine/UI separation
 pendulastic_workbench.py
   TrialLoadPanel(tk.Frame)  - 3 independent file pickers (IMU log / video /
                               OptiTrack CSV) + HPE model checkboxes (of the
-                              6 in analysis_pipeline.MODEL_FUNCTIONS)
+                              6 in analysis_pipeline.MODEL_FUNCTIONS) +
+                              optional femur/tibia length fields (Section 3a)
   WorkbenchView(tk.Frame)   - ttk.PanedWindow: video canvas + ttk.Scale
                               scrubber | matplotlib multi-trace Figure +
                               annotation toolbar + metrics readout
   App(tk.Tk)                - panel-swap container (matches pendulastic_app.py)
 
 workbench_engine.py
-  load_imu_trial(jsonl_path, config=None) -> (t, angle)
+  load_imu_trial(jsonl_path, config=None, ft_ratio=None) -> (t, angle)
   load_optitrack_trial(csv_path) -> (t, angle, method: "rigid_body"|"marker_pca")
   load_video_trial(video_path, models: list[str], progress_cb=None)
       -> dict[str, (t, angle) | {"error": str}]
+  _active_window_end(t, angle) -> int          # ported from diagnose_area_ratio.py
   compare_pair(ref_t, ref_y, test_t, test_y) -> metrics dict
+  windowed_pt_params(t, angle) -> dict          # area_ratio, R2n, N, f, etc.
   extrema_jitter(t, angle) -> {"pk_i", "tr_i", "cycle_times"}
 ```
 
@@ -95,6 +98,36 @@ A trial is whatever subset of the three modalities the researcher supplies —
   existing `run_offline_track` progress-queue pattern. One model erroring
   (missing ONNX weights, decode failure) does not abort the trial — that
   trace is omitted with a visible status note; other models still load.
+
+## 3a. Ockendon Constant Personalization
+
+`imu_calibration_tuner.ockendon_deg` (Task 12) currently hardcodes
+`OCKENDON_FT_RATIO = 1.2` as a module-level constant with no override. Per
+the source split confirmed for this spec — Ockendon & Gilbert define the
+single-segment kinematic method (tibial inclination → knee angle), while the
+1.2 femur:tibia ratio itself is anthropometric, attributed to Anderson et
+al. — **this attribution is not independently verifiable from anything
+currently in this repository** (no "Anderson" reference exists in the
+codebase, comments, or the source PDF read during earlier work). It's
+recorded here as supplied, but should be checked against the user's actual
+source material before it appears in any publication-facing output.
+
+**Feature**: `TrialLoadPanel` gains optional `femur_length_cm` /
+`tibia_length_cm` fields. When both are supplied, a personalized ratio
+`ft_ratio = femur_length_cm / tibia_length_cm` is computed and threaded
+through to the IMU ingestion path in place of the fixed 1.2 default; left
+blank, behavior is unchanged.
+
+**Required small change to already-shipped Task 12 code**: `ockendon_deg`
+gains an optional `ft_ratio: float = OCKENDON_FT_RATIO` parameter, and
+`replay_trial` reads it via `params.get("ft_ratio", OCKENDON_FT_RATIO)` —
+additive and backward-compatible (default preserves current behavior),
+mirroring how `params.get("method", "relative")` already works. This also
+requires exposing an explicit way to force the IMU trace onto the Ockendon
+method for a given workbench trial (`load_imu_trial(..., method="ockendon_flipped")`),
+rather than relying solely on whichever method the persisted auto-tuning
+config happens to have picked — needed to directly validate the
+personalized-ratio Ockendon path against OptiTrack in this tool.
 
 ## 4. Time Alignment & Metrics
 
@@ -129,6 +162,40 @@ A trial is whatever subset of the three modalities the researcher supplies —
   error metrics against the OptiTrack gold standard for both Phone IMU and
   MediaPipe HPE") while staying well-defined when OptiTrack is absent.
 
+## 4a. Active-Window Masking (area_ratio drift fix)
+
+`diagnose_area_ratio.py` (existing, unshipped diagnostic script) already
+demonstrated a real bug: `pendulastic_pt_score.compute_pt_params`'s
+`area_ratio` metric integrates P+/P- over the *entire recorded tail*,
+including the long resting period after oscillation has died out — on real
+P5 trials this inflated `area_ratio` to 0.51–0.54 ("suspect") vs. a
+correctly-windowed 0.07 ("good"). Its prototyped fix (`extract_robust`,
+internally labeled "anti-leak shield") truncates integration to end ~0.5s
+after the last detected peak/trough extremum.
+
+**Scope decision**: this is ported into a new `workbench_engine._active_window_end(t, angle) -> int`
+helper, used by two call sites — but `pendulastic_pt_score.compute_pt_params`
+and `imu_calibration_tuner.score_waveform` (which each have their own,
+independently-built settle/tail-handling logic, shipped and tested as part
+of unrelated features) are **not** touched or refactored. Consolidating all
+three "where does the signal settle" implementations into one shared
+primitive is a real opportunity, but out of scope here — it would mean
+touching two already-shipped, unrelated feature areas as a side effect of
+building this workbench.
+
+Two call sites for `_active_window_end`:
+- **`compare_pair`**: both curves are truncated to their (intersected)
+  active window *before* `synchronize_signals`/RMSE/MAE, so the flat
+  resting tail — where any two curves trivially agree — doesn't dilute the
+  cross-modality agreement score.
+- **`windowed_pt_params(t, angle) -> dict`** (new): applies the same
+  windowing to a single trace and returns `area_ratio`, `R2n`, `N`, `f`,
+  `omega_max_n`, `omega_min_n` (mirroring `extract_robust`'s parameter set),
+  surfaced per-modality in the metrics readout. This is additive — it does
+  not replace `compute_pt_params`'s existing area_ratio used elsewhere
+  (e.g. PT scoring); it's a separate, more robust presentation specific to
+  this workbench.
+
 ## 5. UI: Synchronized Video + Signal Viewer
 
 - **Layout**: `ttk.PanedWindow` — video canvas (OpenCV `VideoCapture` frame
@@ -162,6 +229,18 @@ A trial is whatever subset of the three modalities the researcher supplies —
   markers (reusing the existing `_ax.annotate` pattern already present in
   `pendulastic_viewer.py`).
 - Annotations are per-trial (one shared timeline), not per-trace.
+- **Stale-frame binding**: an annotation click must read the scrubber's
+  bound state variable (e.g. `self._scrub_var.get()`) directly — *not*
+  whatever frame the video canvas has actually finished painting. Canvas
+  repaint is asynchronous and can lag behind the scrubber's logical
+  position (e.g. mid-drag, or if decode is briefly slow); binding to render
+  state instead of scrubber state risks silently mis-attributing an
+  annotation to the wrong frame. Each stored annotation records both the
+  frame index and its corresponding `t_sec` on the shared time axis — the
+  same numeric source the plot's `axvline` already reads from `_update_plot`
+  — so the value is correct even if the visual paint stutters. No
+  rate-limiting/debounce mechanism is needed for this; it's a data-binding
+  correctness fix (bind to state, not to render), not a throughput problem.
 - **Export**: a standalone JSON — not merged into `analysis_pipeline`'s
   batch report schema, since this tool is for interactive single-trial
   inspection, not aggregate leaderboard generation. Bundles trial metadata,
@@ -185,6 +264,17 @@ A trial is whatever subset of the three modalities the researcher supplies —
   paths, `extrema_jitter`'s cycle-timing math, and an OptiTrack fixture with
   deliberately-missing rigid-body rotation columns to exercise the
   rigid-body → marker-PCA fallback-with-badge path.
+- **Active-window masking**: reproduce `diagnose_area_ratio.py`'s own P5
+  T3/T5 finding as a regression test — a synthetic curve with genuine
+  oscillation followed by a long flat resting tail must produce a
+  meaningfully lower `area_ratio` from `windowed_pt_params` than from naively
+  integrating the full unwindowed series, pinning the exact bug this section
+  exists to fix.
+- **Ockendon personalization**: `ockendon_deg` with an explicit `ft_ratio`
+  override produces a different result than the 1.2 default for the same
+  beta (proves the parameter is actually threaded through, not silently
+  ignored); omitting it reproduces Task 12's existing default-behavior tests
+  unchanged.
 - **Real-data validation (manual)**: cross-check `compare_pair`'s
   auto-detected lag against `diagnose_lag.py`'s independent brute-force
   frame-shift correlation result, for the same two trials it already covers
@@ -202,6 +292,17 @@ A trial is whatever subset of the three modalities the researcher supplies —
 - No changes to `analysis_pipeline.py`'s batch report/leaderboard writers.
 - No new accel-transient release-detection algorithm (superseded by reusing
   `synchronize_signals`).
+- No consolidation of `compute_pt_params`, `score_waveform`, and
+  `diagnose_area_ratio.py`'s three independent settle/tail-detection
+  implementations — `_active_window_end` is new and workbench-local (Section
+  4a); the other two are left exactly as shipped.
+- No rate-limiting/debounce mechanism for annotation clicks — the
+  stale-frame issue (Section 6) is a state-binding fix, not a throughput
+  control.
+- The "Anderson" attribution for the 1.2 femur:tibia ratio constant is
+  recorded as supplied and is not independently verified against a source
+  (Section 3a) — confirming it is a follow-up, not part of this workbench's
+  build.
 - No live/streaming OptiTrack support — this workbench is for post-hoc
   offline trial review only.
 - User-definable annotation labels (fixed set only, per Section 6).
