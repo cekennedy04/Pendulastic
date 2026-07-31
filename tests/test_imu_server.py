@@ -2,8 +2,16 @@
 import os, sys, math, csv
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import pytest
 import numpy as np
 import pendulastic_imu_server as imu
+
+
+@pytest.fixture(autouse=True)
+def ensure_recording_stopped():
+    """Ensure stop_recording() is called after each test."""
+    yield
+    imu.stop_recording()
 
 
 def test_qconj_negates_vector_part():
@@ -323,3 +331,44 @@ def test_start_recording_fused_csv_header_unchanged(tmp_path):
         ]
     finally:
         imu.stop_recording()
+
+
+def test_log_raw_appends_row_to_correct_csv(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_6_imu.csv")
+    assert imu.start_recording(path)
+    imu._log_raw("proximal", "Gyroscope", [0.018327, -0.023543, 0.002843],
+                 1785500950869, 1000.25)
+    imu.stop_recording()
+    with open(tmp_path / "Trial_6_gyro.csv", newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert len(rows) == 2
+    _, phone_ts, role, sensor_name, x, y, z = rows[1]
+    assert phone_ts == "1785500950869"
+    assert role == "proximal"
+    assert sensor_name == "Gyroscope"
+    assert x == "0.018327" and y == "-0.023543" and z == "0.002843"
+
+
+def test_log_raw_noop_when_no_writer_open():
+    """No CSV is open (never recorded) — must not raise."""
+    imu.reset_devices()
+    imu._log_raw("distal", "Accelerometer", [0.0, 0.0, 9.81], 0, 0.0)
+
+
+def test_stop_recording_closes_and_resets_all_handles(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_7_imu.csv")
+    assert imu.start_recording(path)
+    imu.stop_recording()
+    assert imu._rec_file is None and imu._rec_writer is None
+    assert all(f is None for f in imu._raw_files.values())
+    assert all(w is None for w in imu._raw_writers.values())
+
+
+def test_stop_recording_is_idempotent(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_8_imu.csv")
+    assert imu.start_recording(path)
+    imu.stop_recording()
+    imu.stop_recording()   # must not raise

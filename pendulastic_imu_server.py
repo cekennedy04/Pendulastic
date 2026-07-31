@@ -773,12 +773,26 @@ def stop_recording():
     global _rec_file, _rec_writer, _recording
     with _rec_lock:
         _recording = False
-        if _rec_file is not None:
-            try:
+        try:
+            if _rec_file is not None:
+                _rec_file.flush()
                 _rec_file.close()
+        except OSError:
+            pass
+        finally:
+            _rec_file = _rec_writer = None
+
+        for sensor_name in list(_raw_files.keys()):
+            rf = _raw_files[sensor_name]
+            try:
+                if rf is not None:
+                    rf.flush()
+                    rf.close()
             except OSError:
                 pass
-        _rec_file = _rec_writer = None
+            finally:
+                _raw_files[sensor_name]   = None
+                _raw_writers[sensor_name] = None
 
 
 def _raw_csv_prefix(csv_path: str) -> str:
@@ -803,6 +817,22 @@ def _open_raw_csv(path: str):
     w.writerow(["timestamp_ms", "phone_ts_ms", "role", "sensor_name",
                 "x", "y", "z"])
     return f, w
+
+
+def _log_raw(role: str, sensor_name: str, v, ts, now: float):
+    """Append one raw-sensor sample to its CSV. Called from on_accel/on_gyro/
+    on_mag while _recording is True, independent of AHRS fusion."""
+    with _rec_lock:
+        w = _raw_writers.get(sensor_name)
+        if w is None:
+            return
+        try:
+            w.writerow([
+                f"{now * 1000.0:.3f}", ts, role, sensor_name,
+                f"{float(v[0]):.6f}", f"{float(v[1]):.6f}", f"{float(v[2]):.6f}",
+            ])
+        except (ValueError, OSError, IndexError, TypeError):
+            pass
 
 
 def _log_sample():
