@@ -32,6 +32,16 @@ from tkinter import ttk, messagebox
 # Local Motive control (same machine; replaces the old UDP slave listener).
 import motive_sync
 
+# iPhone IMU goniometer (Sensor Stream app -> AHRS fusion). Optional: a missing
+# module must not stop webcam + Motive acquisition, so the import is guarded and
+# every call site checks _IMU_AVAIL.
+try:
+    import pendulastic_imu_server as imu_server
+    _IMU_AVAIL = True
+except Exception:
+    imu_server = None
+    _IMU_AVAIL = False
+
 # On Windows, the MSMF backend can hang for 30-120 seconds opening a USB camera
 # because of hardware Media Foundation Transforms. Disabling them makes camera
 # open near-instant. This MUST be set before OpenCV (cv2) is imported.
@@ -140,7 +150,21 @@ class MasterApp:
         self.frame_size = (FRAME_WIDTH, FRAME_HEIGHT)
         self._codec_warmed = False                # XVID DLL pre-loaded once
 
+        # ---- iPhone IMU goniometer ----
+        self.var_record_imu = tk.BooleanVar(value=_IMU_AVAIL)
+        self.var_session    = tk.StringVar(value="pre")
+        self._imu_recording = False
+        self._imu_csv_path  = ""
+        self._sync_after_id = None                # pending after() for status poll
+        if _IMU_AVAIL:
+            try:
+                imu_server.start()
+            except Exception:
+                pass   # port busy / no network — surfaced in the status line
+
         self._build_ui()
+        if _IMU_AVAIL:
+            self._poll_imu_status()
 
     # ------------------------------------------------------------------
     # UI CONSTRUCTION
@@ -184,17 +208,24 @@ class MasterApp:
                                               "Other Motor Impairment"])
         self.drop_diag.grid(row=5, column=1, sticky="w", **pad)
 
+        # --- Session tag (pre / post intervention) ---
+        tk.Label(self.root, text="Session:").grid(row=6, column=0, sticky="e", **pad)
+        self.drop_session = ttk.Combobox(self.root, textvariable=self.var_session,
+                                          width=25, state="readonly",
+                                          values=["pre", "post"])
+        self.drop_session.grid(row=6, column=1, sticky="w", **pad)
+
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=6, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         cfg = tk.Label(self.root, text="Camera Configuration",
                        font=("Segoe UI", 13, "bold"))
-        cfg.grid(row=7, column=0, columnspan=2, pady=(0, 8))
+        cfg.grid(row=8, column=0, columnspan=2, pady=(0, 8))
 
         # --- Camera selector dropdown ---
-        tk.Label(self.root, text="Camera:").grid(row=8, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera:").grid(row=9, column=0, sticky="e", **pad)
         cam_frame = tk.Frame(self.root)
-        cam_frame.grid(row=8, column=1, sticky="w", **pad)
+        cam_frame.grid(row=9, column=1, sticky="w", **pad)
         self.var_cam = tk.StringVar(value="")
         self.drop_cam = ttk.Combobox(cam_frame, textvariable=self.var_cam, width=18,
                                      state="readonly")
@@ -206,50 +237,50 @@ class MasterApp:
         # --- Camera status panel ---
         self._cam_status_frame = tk.LabelFrame(self.root, text="Detected Cameras",
                                                font=("Segoe UI", 9))
-        self._cam_status_frame.grid(row=9, column=0, columnspan=2, sticky="ew",
+        self._cam_status_frame.grid(row=10, column=0, columnspan=2, sticky="ew",
                                     padx=10, pady=(0, 4))
         self._cam_status_rows = []
 
         # --- Camera Position 1-3 ---
-        tk.Label(self.root, text="Camera Position:").grid(row=10, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Position:").grid(row=11, column=0, sticky="e", **pad)
         self.var_pos = tk.StringVar(value="1")
         self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
                                      state="readonly",
                                      values=["1", "2", "3"])
-        self.drop_pos.grid(row=10, column=1, sticky="w", **pad)
+        self.drop_pos.grid(row=11, column=1, sticky="w", **pad)
 
         # --- Camera Height ---
-        tk.Label(self.root, text="Camera Height:").grid(row=11, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Camera Height:").grid(row=12, column=0, sticky="e", **pad)
         self.var_height = tk.StringVar(value="Joint-Level")
         self.drop_height = ttk.Combobox(self.root, textvariable=self.var_height, width=25,
                                         state="readonly",
                                         values=["Low", "Joint-Level", "High"])
-        self.drop_height.grid(row=11, column=1, sticky="w", **pad)
+        self.drop_height.grid(row=12, column=1, sticky="w", **pad)
 
         # --- Trial Number ---
-        tk.Label(self.root, text="Trial Number:").grid(row=12, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Trial Number:").grid(row=13, column=0, sticky="e", **pad)
         self.var_trial = tk.StringVar(value="1")
         self.drop_trial = ttk.Combobox(self.root, textvariable=self.var_trial, width=25,
                                        state="readonly",
                                        values=["1", "2", "3", "4", "5"])
-        self.drop_trial.grid(row=12, column=1, sticky="w", **pad)
+        self.drop_trial.grid(row=13, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Control buttons ---
         self.btn_start = tk.Button(self.root, text="START RECORDING",
                                    bg="#1e7d34", fg="white",
                                    font=("Segoe UI", 11, "bold"),
                                    width=18, height=2, command=self._on_start_clicked)
-        self.btn_start.grid(row=14, column=0, padx=10, pady=12)
+        self.btn_start.grid(row=15, column=0, padx=10, pady=12)
 
         self.btn_stop = tk.Button(self.root, text="STOP",
                                   bg="#a31515", fg="white",
                                   font=("Segoe UI", 11, "bold"),
                                   width=18, height=2, command=self.stop_recording,
                                   state="disabled")
-        self.btn_stop.grid(row=14, column=1, padx=10, pady=12)
+        self.btn_stop.grid(row=15, column=1, padx=10, pady=12)
 
         # --- Countdown checkbox ---
         self.var_delayed = tk.BooleanVar(value=False)
@@ -257,24 +288,40 @@ class MasterApp:
             self.root, text="5-second countdown before recording",
             variable=self.var_delayed, font=("Segoe UI", 10),
         )
-        self.chk_delayed.grid(row=15, column=0, columnspan=2, pady=(0, 6))
+        self.chk_delayed.grid(row=16, column=0, columnspan=2, pady=(0, 6))
+
+        # --- iPhone IMU goniometer (optional third modality) ---
+        imu_frame = tk.LabelFrame(self.root, text="iPhone IMU Goniometer",
+                                  font=("Segoe UI", 9, "bold"))
+        imu_frame.grid(row=20, column=0, columnspan=2, sticky="ew",
+                       padx=10, pady=(0, 6))
+        self.chk_imu = tk.Checkbutton(
+            imu_frame, text="Record iPhone IMU (.csv)",
+            variable=self.var_record_imu,
+            state=("normal" if _IMU_AVAIL else "disabled"))
+        self.chk_imu.pack(anchor="w", padx=8, pady=(2, 0))
+        self.lbl_imu = tk.Label(imu_frame, justify="left", anchor="w",
+                                font=("Consolas", 8), fg="gray",
+                                text=("IMU module unavailable"
+                                      if not _IMU_AVAIL else "starting…"))
+        self.lbl_imu.pack(anchor="w", padx=8, pady=(0, 4))
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=17, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Batch evaluation (active only when not recording) ---
         self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
                                       bg="#1f3a93", fg="white",
                                       font=("Segoe UI", 12, "bold"),
                                       height=2, command=self.start_batch_evaluation)
-        self.btn_evaluate.grid(row=17, column=0, columnspan=2, sticky="ew",
+        self.btn_evaluate.grid(row=18, column=0, columnspan=2, sticky="ew",
                                padx=10, pady=(0, 8))
 
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=18, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=19, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
 
         # Detect the camera now that all widgets exist.
@@ -288,6 +335,89 @@ class MasterApp:
     # ------------------------------------------------------------------
     # CAMERA SELECTION
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # iPHONE IMU GONIOMETER
+    # ------------------------------------------------------------------
+    def _poll_imu_status(self):
+        """Refresh the IMU status line ~2x/second while the app is open."""
+        if not _IMU_AVAIL:
+            return
+        try:
+            st = imu_server.get_state()
+            sy = st["sync"]
+            if st.get("bind_error"):
+                txt, col = f"server offline — {st['bind_error']}", "#B00020"
+            else:
+                n = int(st["proximal"]["connected"]) + int(st["distal"]["connected"])
+                addr = f"{imu_server.get_local_ip()}:{imu_server.PORT}"
+                if n == 0:
+                    txt, col = f"waiting for phones — enter {addr} in app", "gray"
+                elif n == 1:
+                    txt, col = f"1 of 2 phones connected ({addr})", "#B36B00"
+                elif sy["state"] == "synced":
+                    txt, col = (f"2 phones · synced Δ{sy['offset_s']:+.3f}s "
+                                f"({sy['detail']})", "#1B7F3B")
+                else:
+                    txt, col = (f"2 phones · {sy['state']} — {sy['detail']}",
+                                "#B36B00")
+            self.lbl_imu.config(text=txt, fg=col)
+        except Exception:
+            pass
+        self._sync_after_id = self.root.after(500, self._poll_imu_status)
+
+    def _imu_ready(self):
+        """(ok, reason) — whether the IMU can contribute a usable recording."""
+        if not (_IMU_AVAIL and self.var_record_imu.get()):
+            return True, ""
+        st = imu_server.get_state()
+        if st.get("bind_error"):
+            return False, f"IMU server offline: {st['bind_error']}"
+        if not (st["proximal"]["connected"] or st["distal"]["connected"]):
+            return False, ("No phone is streaming, so the IMU CSV would be "
+                           "empty. Enter "
+                           f"{imu_server.get_local_ip()}:{imu_server.PORT} "
+                           "in the Sensor Stream app.")
+        sy = imu_server.sync_status()
+        if sy["state"] != "synced":
+            return False, (f"Phone clocks are not aligned yet ({sy['state']} — "
+                           f"{sy['detail']}). IMU timestamps may not line up "
+                           "with the video and Motive take.")
+        return True, ""
+
+    def _start_imu(self, trial_dir, pid, trial):
+        """Open the IMU CSV for this trial. Never fatal to the main capture."""
+        if not (_IMU_AVAIL and self.var_record_imu.get()):
+            return
+        path = os.path.join(trial_dir, f"Trial_{trial}_imu.csv")
+        meta = {
+            "participant": pid,
+            "session":     self.var_session.get(),
+            "position":    self.var_pos.get(),
+            "height":      self.var_height.get(),
+            "trial":       trial,
+            "t0_epoch":    f"{time.time():.4f}",
+            "video":       f"Trial_{trial}.avi",
+            "video_fps":   f"{TARGET_FPS:.3f}",
+        }
+        try:
+            if imu_server.start_recording(path, meta):
+                self._imu_recording = True
+                self._imu_csv_path = path
+        except Exception as e:
+            messagebox.showwarning(
+                "IMU Goniometer",
+                f"Webcam is recording, but the IMU CSV could not be opened:\n\n"
+                f"{type(e).__name__}: {e}")
+
+    def _stop_imu(self):
+        if not self._imu_recording:
+            return
+        self._imu_recording = False
+        try:
+            imu_server.stop_recording()
+        except Exception:
+            pass
+
     def rescan_cameras(self):
         """Detect the connected camera, then pre-open it so START is instant."""
         if self.writing_flag.is_set():
@@ -413,8 +543,14 @@ class MasterApp:
         height = self.var_height.get()
         trial = self.var_trial.get()
 
+        session = self.var_session.get()
+
+        # Pre- and post-intervention takes are kept in separate subtrees so a
+        # repeated Position/Height/Trial combination cannot overwrite the other
+        # session's data.
         participant_dir = os.path.join(ROOT_DIR, f"Participant_{pid}")
         trial_dir = os.path.join(participant_dir,
+                                 f"Session_{session}",
                                  f"Position_{position}",
                                  f"Height_{height}")
         # exist_ok=True makes this safe to call repeatedly.
@@ -424,6 +560,7 @@ class MasterApp:
 
         # Relative path is what the slave machine recreates under its own root.
         rel_path = os.path.join(f"Participant_{pid}",
+                                f"Session_{session}",
                                 f"Position_{position}",
                                 f"Height_{height}")
         return participant_dir, video_path, rel_path
@@ -437,9 +574,11 @@ class MasterApp:
             "sex": self.var_sex.get(),
             "diagnosis": self.var_diag.get(),
             "last_trial": {
+                "session": self.var_session.get(),
                 "camera_position": self.var_pos.get(),
                 "camera_height": self.var_height.get(),
                 "trial_number": self.var_trial.get(),
+                "imu_recorded": bool(_IMU_AVAIL and self.var_record_imu.get()),
             },
             "last_updated": datetime.now().isoformat(timespec="seconds"),
         }
@@ -512,6 +651,16 @@ class MasterApp:
 
         try:
             pid = self._validate_inputs()
+
+            # The IMU is optional, so a problem here is a warning the operator
+            # can override — not a hard stop on webcam + Motive capture.
+            ok, why = self._imu_ready()
+            if not ok and not messagebox.askyesno(
+                    "iPhone IMU not ready",
+                    f"{why}\n\nRecord without a usable IMU trace?"):
+                self.var_status.set("Idle - waiting for the iPhone IMU.")
+                return
+
             participant_dir, video_path, rel_path = self._build_paths(pid)
             self._write_metadata(participant_dir, pid)
 
@@ -542,6 +691,11 @@ class MasterApp:
             # Start the webcam immediately (the stream thread writes frames now)
             # and lock the UI. Locking first disables the text entries, so the
             # Motive keystrokes below can never land in them.
+            # Start the IMU CSV in the same tick as the video writer so both
+            # share a start epoch; every IMU row carries time.time().
+            self._start_imu(os.path.dirname(video_path), pid,
+                            self.var_trial.get())
+
             self.writing_flag.set()
             self.btn_start.config(state="disabled")
             self.btn_stop.config(state="normal")
@@ -563,11 +717,13 @@ class MasterApp:
 
         except (ValueError, RuntimeError, OSError) as e:
             self.writing_flag.clear()
+            self._stop_imu()
             self._finalize_writer()
             messagebox.showerror("Cannot Start Recording", str(e))
             self.var_status.set("Idle - start failed.")
         except Exception as e:
             self.writing_flag.clear()
+            self._stop_imu()
             self._finalize_writer()
             messagebox.showerror(
                 "Unexpected Error",
@@ -732,6 +888,7 @@ class MasterApp:
         # Stop the webcam first (instant), then stop Motive. A Motive failure
         # must not lose the already-saved webcam file.
         self.writing_flag.clear()     # stop writing frames immediately
+        self._stop_imu()              # close the IMU CSV alongside the video
         self._finalize_writer()       # finalize and close the .avi
         try:
             motive_sync.stop_local_motive()
@@ -900,20 +1057,28 @@ class MasterApp:
         for w in (self.entry_id, self.entry_age, self.entry_weight):
             w.config(state=state)
         for w in (self.drop_sex, self.drop_diag, self.drop_pos,
-                  self.drop_height, self.drop_trial, self.drop_cam):
+                  self.drop_height, self.drop_trial, self.drop_cam,
+                  self.drop_session):
             w.config(state=ro_state)
         # Camera rescan and batch evaluation are only available when not recording.
         self.btn_rescan.config(state=state)
         self.btn_evaluate.config(state=state)
+        # The IMU toggle must not flip mid-take; leave it disabled entirely
+        # when the module is unavailable.
+        self.chk_imu.config(state=state if _IMU_AVAIL else "disabled")
 
     def on_close(self):
         """Window-close handler: cancel countdown, stop recording, release camera."""
         if self._countdown_id is not None:
             self.root.after_cancel(self._countdown_id)
             self._countdown_id = None
+        if self._sync_after_id is not None:
+            self.root.after_cancel(self._sync_after_id)
+            self._sync_after_id = None
         try:
             was_recording = self.writing_flag.is_set()
             self.writing_flag.clear()
+            self._stop_imu()
             self._finalize_writer()
             if was_recording:
                 try:
@@ -922,6 +1087,12 @@ class MasterApp:
                     pass
         finally:
             self._close_camera()
+            # Release the IMU port so a later run (or the viewer) can bind it.
+            if _IMU_AVAIL:
+                try:
+                    imu_server.stop()
+                except Exception:
+                    pass
             self.root.destroy()
 
 

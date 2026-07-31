@@ -28,9 +28,11 @@ import json
 import math
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
+import time
 from typing import Optional
 
 try:
@@ -39,6 +41,13 @@ try:
 except Exception:
     _pps = None          # type: ignore[assignment]
     _PPS_AVAIL = False
+
+try:
+    import pendulastic_imu_server as _imu
+    _IMU_AVAIL = True
+except Exception:
+    _imu = None          # type: ignore[assignment]
+    _IMU_AVAIL = False
 
 import cv2
 import numpy as np
@@ -65,13 +74,51 @@ except ImportError:
     print("matplotlib required: .venv\\Scripts\\pip install matplotlib")
     sys.exit(1)
 
+PT_HEALTHY_MAX    = 0.09   # fallback if import fails
+PT_BORDERLINE_MAX = 0.20
 try:
     from pendulastic_pt_score import (compute_pt_params, compute_pt_score,
                                       compute_pt_score_simple, HEALTHY_REF, pt_to_mas,
+                                      PT_HEALTHY_MAX, PT_BORDERLINE_MAX,
                                       load_optitrack)
     _PT_AVAIL = True
 except Exception:
     _PT_AVAIL = False
+
+_MP_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "mediapipe")
+_MP_MODEL = next(
+    (os.path.join(_MP_MODEL_DIR, n) for n in (
+        "pendulastic_pose_landmarker.task",   # fine-tuned (preferred)
+        "pose_landmarker_full.task",           # original fallback
+    ) if os.path.isfile(os.path.join(_MP_MODEL_DIR, n))),
+    os.path.join(_MP_MODEL_DIR, "pose_landmarker_full.task"),  # default path even if missing
+)
+try:
+    import mediapipe as _mp_lib
+    _ = _mp_lib.tasks.vision.PoseLandmarker   # verify Tasks API is present
+    _MP_AVAIL = os.path.isfile(_MP_MODEL)
+except Exception:
+    _MP_AVAIL = False
+
+# ── Calibration model (train_calibration.py output) ──────────────────────────
+# Corrects MediaPipe's systematic, angle-dependent bias against OptiTrack.
+# Loaded once at startup; used transparently in both tracker classes.
+import pickle as _pickle
+_CALIB_PKL   = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "models", "calibration", "angle_calibration.pkl")
+_CALIB_MODEL = None
+try:
+    with open(_CALIB_PKL, "rb") as _f:
+        _CALIB_MODEL = _pickle.load(_f)["model"]
+    print(f"[Calibration] Loaded: angle_calibration.pkl")
+except Exception:
+    pass  # not yet trained — falls back to raw 2D angle
+
+# ── Simple polynomial calibration (calibrate.py / recalibrate_lying_down.py) ──
+# When --coefficients is passed on the CLI, these coefficients are loaded and
+# take precedence over _CALIB_MODEL.  Format: [c0, c1, c2, ...]
+# ot_angle = c0 + c1*mp + c2*mp^2 + ...
+_POLY_COEFFS: list = []  # empty = not loaded / use _CALIB_MODEL
 
 _MAS_COLORS = {
     "0":  "#00E87A",
@@ -92,6 +139,12 @@ YOLO_PT    = os.path.join(MODELS_DIR, "yolov8n-pose.pt")
 # ─── session database ─────────────────────────────────────────────────────────
 
 _DB_FILE = os.path.join(BASE_DIR, "sessions.json")
+
+# ─── iPhone goniometer UDP stream ─────────────────────────────────────────────
+# Matches the protocol used by motive_mobile_sync.py so the same iPhone
+# goniometer app / config works unchanged: plain float or {"angle": ...} JSON.
+GONIOMETER_UDP_IP   = "0.0.0.0"
+GONIOMETER_UDP_PORT = 8888
 
 def _load_db() -> dict:
     if os.path.exists(_DB_FILE):
@@ -164,6 +217,74 @@ def _angle_deg(a, b, c) -> float:
     if n1 < 1e-6 or n2 < 1e-6:
         return float("nan")
     return math.degrees(math.acos(np.clip(np.dot(ba, bc) / (n1 * n2), -1, 1)))
+
+
+def _world_angle_3d(world_lm_set, side: str):
+    """
+    Compute interior knee angle from MediaPipe world landmarks (3D, metres).
+    World landmarks are rotation-invariant — no perspective distortion.
+    Returns (angle_deg, hip_visibility, knee_visibility) or (None, 0, 0).
+    """
+    try:
+        import mediapipe as mp
+        PL = mp.tasks.vision.PoseLandmark
+        hi = PL.LEFT_HIP.value   if side == "left" else PL.RIGHT_HIP.value
+        ki = PL.LEFT_KNEE.value  if side == "left" else PL.RIGHT_KNEE.value
+        ai = PL.LEFT_ANKLE.value if side == "left" else PL.RIGHT_ANKLE.value
+        hw, kw, aw = world_lm_set[hi], world_lm_set[ki], world_lm_set[ai]
+        hip_v, kne_v = float(hw.visibility), float(kw.visibility)
+        if hip_v < 0.4 or kne_v < 0.4 or float(aw.visibility) < 0.4:
+            return None, hip_v, kne_v
+        v1 = np.array([hw.x - kw.x, hw.y - kw.y, hw.z - kw.z], dtype=np.float64)
+        v2 = np.array([aw.x - kw.x, aw.y - kw.y, aw.z - kw.z], dtype=np.float64)
+        n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+        if n1 < 1e-6 or n2 < 1e-6:
+            return None, hip_v, kne_v
+        cos_a = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+        return math.degrees(math.acos(cos_a)), hip_v, kne_v
+    except Exception:
+        return None, 0.0, 0.0
+
+
+def _calibrate_from_world(world_lm_set, side: str, fallback: float) -> float:
+    """
+    Return calibration-corrected knee angle.
+
+    Priority order:
+      1. _POLY_COEFFS  — simple polynomial from calibrate.py / recalibrate_lying_down.py
+                         (loaded via --coefficients; position-specific if lying-down)
+      2. _CALIB_MODEL  — sklearn pipeline from train_calibration.py (if pkl exists)
+      3. fallback      — raw 2D pixel-plane angle (no calibration)
+
+    Input feature is always the 2D pixel-plane angle (fallback), matching the
+    training data's mp_angle_aligned to avoid train/inference mismatch.
+    """
+    if not (60.0 <= fallback <= 210.0):
+        return fallback
+
+    # -- Simple polynomial (position-stratified coefficients) -----------------
+    if _POLY_COEFFS:
+        try:
+            result = _POLY_COEFFS[0]
+            for power, c in enumerate(_POLY_COEFFS[1:], start=1):
+                result += c * (fallback ** power)
+            return float(result)
+        except Exception:
+            pass
+
+    # -- Sklearn pipeline (train_calibration.py model) ------------------------
+    if _CALIB_MODEL is None:
+        return fallback
+    try:
+        hip_v, kne_v = 1.0, 1.0
+        if world_lm_set is not None:
+            _, hip_v_w, kne_v_w = _world_angle_3d(world_lm_set, side)
+            if hip_v_w > 0:
+                hip_v, kne_v = hip_v_w, kne_v_w
+        X = np.array([[fallback, hip_v, kne_v]])
+        return float(_CALIB_MODEL.predict(X)[0])
+    except Exception:
+        return fallback
 
 
 def _load_sel(video_path: str) -> dict:
@@ -460,6 +581,9 @@ class _ArcTracker:
     _VEL_THRESH    = 4.0      # °/frame above which we switch to slow blending
     _MOTION_THRESH    = 15.0  # peak tdiff_s above which we use temporal-diff signal
     _RETRACK_COOLDOWN = 25   # frames of narrow post-pin window after a user correction
+    _MAX_ANKLE_JUMP   = 80.0 # max pixel displacement of ankle between consecutive frames
+
+    _MOTION_CONSEC_REQ = 3   # consecutive frames above threshold before latching motion
 
     def __init__(self):
         self.knee:            Optional[np.ndarray] = None
@@ -472,7 +596,9 @@ class _ArcTracker:
         self._fc:             int   = 0                     # frame counter
         self._prev_gray:      Optional[np.ndarray] = None   # previous frame (for temporal diff)
         self._motion_detected:  bool = False                # latched True once leg releases
+        self._motion_consec:    int  = 0                   # consecutive frames above threshold
         self._retrack_cooldown: int  = 0                   # frames left in narrow post-pin window
+        self._prev_ankle_px:  Optional[np.ndarray] = None  # pixel pos of ankle last frame
 
     # ── feature image ─────────────────────────────────────────────────────────
 
@@ -574,6 +700,8 @@ class _ArcTracker:
         self._tmpl            = self._sample(self._grad(gray), self._theta)
         self._prev_gray       = gray
         self._motion_detected = False
+        self._motion_consec   = 0
+        self._prev_ankle_px   = ank.copy()
 
     def step(self, frame_bgr: np.ndarray) -> tuple:
         """Returns (hip, knee, ankle_ndarray, angle_deg)."""
@@ -582,9 +710,16 @@ class _ArcTracker:
 
         pred = self._theta + self._vel
 
-        # Wide window for the first WIDE_FRAMES frames (velocity estimate is
-        # still near zero so it cannot adapt the window to fast motion yet)
-        if self._fc < self._WIDE_FRAMES:
+        # Window sizing:
+        # • Pre-release (static hold): tight ±10° window — the leg isn't moving,
+        #   so a wide window only lets background edges (table base, assessor body)
+        #   compete with the real ankle location.
+        # • Post-release, first WIDE_FRAMES: open to WIN_INIT so the tracker can
+        #   catch the initial fast swing before the velocity EMA has ramped up.
+        # • Post-release, later frames: velocity-adaptive window.
+        if not self._motion_detected:
+            win = 10.0
+        elif self._fc < self._WIDE_FRAMES:
             win = self._WIN_INIT
         else:
             win = min(self._WIN_MAX,
@@ -637,12 +772,17 @@ class _ArcTracker:
             motion_level = 0.0
             tdiff_n      = np.zeros(len(thetas))
 
-        # Latch motion onset: once the leg releases (temporal diff spikes above threshold)
-        # we permanently switch to motion-tracking weights.  The initial NCC template
-        # was built while the assessor was holding the leg, so it encodes the assessor's
-        # hands at the ankle endpoint — it is NOT reliable after the leg moves away.
-        if not self._motion_detected and motion_level > self._MOTION_THRESH:
-            self._motion_detected = True
+        # Latch motion onset: require _MOTION_CONSEC_REQ consecutive frames above threshold
+        # before switching weights.  A single-frame spike (background pedestrian, PT
+        # shifting weight) previously latched permanently and sent the tracker to follow
+        # background motion instead of the stationary leg.
+        if not self._motion_detected:
+            if motion_level > self._MOTION_THRESH:
+                self._motion_consec += 1
+                if self._motion_consec >= self._MOTION_CONSEC_REQ:
+                    self._motion_detected = True
+            else:
+                self._motion_consec = max(0, self._motion_consec - 1)
 
         # Two-tier adaptive weighting:
         # • Pre-release (static hold): 60% NCC + 35% pv keep the tracker locked to the
@@ -703,6 +843,14 @@ class _ArcTracker:
                                    self._theta0 + math.radians(130)))
             best_i = int(np.argmin(np.abs(thetas - best_t)))
 
+        # Pre-release static freeze: if the leg has not been released and there is no
+        # meaningful motion (ml < 5), lock theta completely.  The 35% perp_var weight
+        # can otherwise be lured by hard background edges (table base, assessor body)
+        # that score higher than the stationary ankle on quiet frames.
+        if not self._motion_detected and motion_level < 5.0:
+            best_t    = self._theta
+            self._vel = 0.0
+
         # Jump guard + noise-floor freeze (active only after motion onset):
         # • ml < 5  (sensor noise floor): leg is definitively stationary — freeze theta
         #   entirely and zero the velocity so accumulated noise cannot cause drift.
@@ -755,6 +903,21 @@ class _ArcTracker:
                 best_t = _cw if _ang_dist(best_t, _cw) < _ang_dist(best_t, _ccw) else _ccw
                 self._vel *= 0.5
 
+        # ── Pixel-space jump guard ────────────────────────────────────────────
+        # Caps how far the ankle can travel in image space between frames.
+        # Angular gates (above) allow jumps when motion_level ≥ 25 (fast swing),
+        # but a different person's ankle scores high on the arc and would pass
+        # that gate. Real pendulum speeds top out at ~30 px/frame; the wrong
+        # ankle is typically 150–300 px away — well above _MAX_ANKLE_JUMP.
+        if self._prev_ankle_px is not None:
+            _cand_ank = self.knee + np.array([math.cos(best_t) * self.radius,
+                                              math.sin(best_t) * self.radius])
+            if float(np.linalg.norm(_cand_ank - self._prev_ankle_px)) > self._MAX_ANKLE_JUMP:
+                best_t = float(np.clip(pred,
+                                       self._theta0 - math.radians(130),
+                                       self._theta0 + math.radians(130)))
+                self._vel *= 0.5
+
         # Velocity EMA — clip the observed per-frame step before blending so that
         # large tracking jumps (e.g. tracker skips to the correct trough in one frame)
         # don't corrupt the velocity estimate used for the next frame's search window.
@@ -790,9 +953,684 @@ class _ArcTracker:
 
         ankle = (self.knee + np.array([math.cos(best_t) * self.radius,
                                        math.sin(best_t) * self.radius]))
+        self._prev_ankle_px = ankle.copy()
         ang = (_angle_deg(self.hip0, self.knee, ankle)
                if self.hip0 is not None else float("nan"))
         return self.hip0, self.knee, ankle.astype(np.float32), ang
+
+
+# ─── MediaPipe shared helper ─────────────────────────────────────────────────
+
+def _mp_nearest_pose(poses, ref_px, shape, side, PL,
+                     x_gate_frac: float = 0.25,
+                     anchor_xfrac: float = None):
+    """
+    From a list of MediaPipe pose-landmark sets, return (lm, dist) where lm
+    is the set whose `side` knee is closest to ref_px in pixel space.
+    Returns (None, inf) when poses is empty.
+
+    x_gate_frac: any pose whose knee x-coordinate is more than this fraction of
+    frame width away from the reference x is rejected before distance ranking.
+
+    anchor_xfrac: if provided (0-1 normalised x of the patient's knee, set once
+    at selection time and never drifted), uses this as the x-reference with a
+    tighter 18 % gate.  This prevents the tracker ever drifting to the assessor
+    even when the EMA has wandered slightly, because the anchor never moves.
+    """
+    if not poses:
+        return None, float("inf")
+    h, w = shape[:2]
+    ki = PL.LEFT_KNEE.value if side == "left" else PL.RIGHT_KNEE.value
+    ref = np.asarray(ref_px, dtype=np.float32)
+    if anchor_xfrac is not None:
+        x_ref = anchor_xfrac * w
+        x_tol = 0.15 * w          # tighter gate when we have a firm anchor
+    else:
+        x_ref = ref[0]
+        x_tol = x_gate_frac * w
+    best_lm, best_d = None, float("inf")
+    for lm in poses:
+        kp = np.array([lm[ki].x * w, lm[ki].y * h], dtype=np.float32)
+        if abs(kp[0] - x_ref) > x_tol:    # wrong person — skip
+            continue
+        d = float(np.linalg.norm(kp - ref))
+        if d < best_d:
+            best_d, best_lm = d, lm
+    return best_lm, best_d
+
+
+# ─── Ankle-template matching ──────────────────────────────────────────────────
+# Used to disambiguate between patient and assessor when both are in frame.
+
+_TMPL_SZ = 48   # patch side length in pixels
+
+
+def _ankle_patch(frame_bgr: np.ndarray, pos) -> Optional[np.ndarray]:
+    """Extract a zero-mean, unit-std BGR patch centred on pos."""
+    h, w = frame_bgr.shape[:2]
+    x = int(round(float(pos[0]))); y = int(round(float(pos[1])))
+    half = _TMPL_SZ // 2
+    x1, y1 = max(0, x - half), max(0, y - half)
+    x2, y2 = min(w, x + half), min(h, y + half)
+    roi = frame_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None
+    patch = cv2.resize(roi, (_TMPL_SZ, _TMPL_SZ)).astype(np.float32)
+    sigma = float(patch.std()) + 1e-6
+    return (patch - patch.mean()) / sigma
+
+
+def _patch_ncc(a: Optional[np.ndarray], b: Optional[np.ndarray]) -> float:
+    """Normalised cross-correlation between two pre-normalised patches (−1..1)."""
+    if a is None or b is None or a.shape != b.shape:
+        return 0.0
+    return float(np.dot(a.ravel(), b.ravel()) / max(a.size, 1))
+
+
+# ─── MediaPipe per-frame tracker ─────────────────────────────────────────────
+
+class _MPTracker:
+    """
+    Per-frame MediaPipe Pose tracker for live camera and video-playback use.
+
+    Runs MediaPipe Pose (model_complexity=2, "Full") on each frame and extracts
+    hip/knee/ankle landmarks for whichever leg is closest to the user's click.
+    Hip and knee are exponentially smoothed to suppress jitter at the pivot;
+    the ankle is the live joint.  Falls back to the last known positions when
+    detection fails so angle recording stays continuous.
+
+    The correction workflow is unchanged: the viewer's ankle-pin corrections
+    override the MediaPipe output for specific frames via the arc-interpolation
+    and Retrack mechanism already in place.
+    """
+
+    def __init__(self):
+        self._pose:     object               = None
+        self._PL:       object               = None   # PoseLandmark enum (cached)
+        self._side:     str                  = "right"
+        self.hip0:      Optional[np.ndarray] = None
+        self.knee0:     Optional[np.ndarray] = None
+        self.ankle0:    Optional[np.ndarray] = None
+        self.shank_len: float                = 0.0
+        self._hip_px:   Optional[np.ndarray] = None
+        self._knee_px:  Optional[np.ndarray] = None
+        self._ank_px:   Optional[np.ndarray] = None
+        self._ready:       bool = False
+        self._ts_ms:       int  = 0
+        self._ms_per_frame: int = 33   # updated to actual FPS when video loads
+        self._last_world_lms: list = []   # parallel to pose_landmarks; for calibration
+        self._sel_world_lm:   object = None  # world lm set for the selected pose
+        self._anchor_xfrac: Optional[float] = None  # normalised x of patient knee, never drifts
+        # Visibility scores for the selected pose — updated each frame, used by UI overlay
+        self.last_hip_vis:  float = 0.0
+        self.last_kne_vis:  float = 0.0
+        self.last_ank_vis:  float = 0.0
+        # Rolling quality metrics (90-frame window ≈ 3 s at 30 fps)
+        from collections import deque as _deque
+        self._vis_window:   _deque = _deque(maxlen=90)  # 1=good frame, 0=missed
+        self._ang_window:   _deque = _deque(maxlen=150) # recent knee angles for assessor check
+        # Directional prior from user corrections — biases step() toward corrected direction
+        self._corr_theta:  float = 0.0
+        self._corr_weight: float = 0.0
+
+    # ── public interface ──────────────────────────────────────────────────────
+
+    @property
+    def ready(self) -> bool:
+        return self._ready
+
+    @property
+    def _ank(self) -> Optional[np.ndarray]:
+        return self._ank_px
+
+    @property
+    def coverage_pct(self) -> float:
+        """Fraction of recent frames where knee landmark was clearly visible (0–1)."""
+        if not self._vis_window:
+            return 0.0
+        return sum(self._vis_window) / len(self._vis_window)
+
+    @property
+    def assessor_warning(self) -> bool:
+        """True when the knee angle hasn't varied enough to be a pendulum test.
+
+        Triggers after ≥5 s of data (150 frames) with std < 4° — likely means
+        the camera is tracking the assessor (standing still) not the patient.
+        """
+        if len(self._ang_window) < 150:
+            return False
+        return float(np.std(self._ang_window)) < 4.0
+
+    def init(self, frame_bgr: np.ndarray, hip, knee, ankle):
+        """Determine side from click, snapshot pivot, run first detection.
+
+        With num_poses=2 MediaPipe may detect both the patient and a nearby
+        clinician.  We iterate every detected pose and check both the left and
+        right knee against the user's click to find the correct person and side.
+        If the best match is still more than 2 shank-lengths away from the click,
+        MediaPipe detected the wrong area entirely — we fall back to the user's
+        click positions so tracking stays anchored to where they actually clicked.
+        """
+        self._open_pose()
+        kne_click = np.asarray(knee, dtype=np.float32)
+        ank_click = np.asarray(ankle, dtype=np.float32)
+        shank_from_click = float(np.linalg.norm(ank_click - kne_click))
+        # 1× shank: only snap to a MP detection that is within one shank-length of
+        # the user's click.  The previous 3× ceiling was too permissive — it let
+        # MediaPipe snap to an assessor standing right next to the patient.
+        max_ok_dist = max(60.0, shank_from_click * 1.0)
+
+        # Defaults — used when MP is absent or detects the wrong person.
+        h_px = np.asarray(hip,   dtype=np.float32)
+        k_px = np.asarray(knee,  dtype=np.float32)
+        a_px = np.asarray(ankle, dtype=np.float32)
+        self._side = "right"
+
+        poses = self._run_mp(frame_bgr)          # list[landmarks] | None
+        if poses and self._PL is not None:
+            PL   = self._PL
+            fh, fw = frame_bgr.shape[:2]
+            best_lm, best_side, best_d = None, "right", float("inf")
+            for lm in poses:
+                for ki, s in ((PL.LEFT_KNEE.value, "left"),
+                              (PL.RIGHT_KNEE.value, "right")):
+                    kp = np.array([lm[ki].x * fw, lm[ki].y * fh],
+                                  dtype=np.float32)
+                    d  = float(np.linalg.norm(kp - kne_click))
+                    if d < best_d:
+                        best_d, best_lm, best_side = d, lm, s
+            if best_lm is not None and best_d < max_ok_dist:
+                self._side = best_side
+                # Side detection only — do NOT snap positions to MP output.
+                # If the assessor is closer to the click than the patient
+                # (hold phase occlusion), MP would corrupt self.shank_len and
+                # freeze the ankle in the wrong place during step().
+
+        # Always use the user's original click positions.
+        h_px = np.asarray(hip,   dtype=np.float32)
+        k_px = np.asarray(knee,  dtype=np.float32)
+        a_px = np.asarray(ankle, dtype=np.float32)
+        self.hip0      = h_px.copy()
+        self.knee0     = k_px.copy()
+        self.ankle0    = a_px.copy()
+        self.thigh_len = float(np.linalg.norm(k_px - h_px))
+        self.shank_len = float(np.linalg.norm(a_px - k_px))
+        self._hip_px   = h_px
+        self._knee_px  = k_px
+        self._ank_px   = a_px
+        # Store the patient's knee x as a normalised fraction so step() can gate
+        # tightly without ever drifting toward the assessor.
+        self._anchor_xfrac = float(k_px[0]) / max(frame_bgr.shape[1], 1)
+        self._ready    = True
+
+    def step(self, frame_bgr: np.ndarray) -> tuple:
+        """Returns (hip, knee, ankle, angle_deg).
+
+        Guided 1-DOF mode: hip and knee are pinned to the user's initial click.
+        Every frame we scan ALL detected ankles from ALL poses (both L and R) and
+        pick the candidate whose distance from knee0 is closest to shank_len —
+        i.e. the one sitting on the anatomical shank circle.  That point is then
+        projected exactly onto the circle so only direction, never magnitude, comes
+        from MediaPipe.
+
+        Why this beats the old approach
+        ────────────────────────────────
+        The old approach picked one person by knee proximity, then read their
+        ankle landmark and blended it toward the stored position with EMA.
+        Two failure modes:
+          1. Person selection locked onto the assessor after hold-phase occlusion.
+          2. EMA carried a wrong detection smoothly into subsequent frames.
+        Here, there is no person selection and no EMA.  The shank circle is the
+        only discriminator: the correct ankle is always ~shank_len from the knee;
+        the assessor's ankle and the floor are almost never on that circle.
+
+        Rejection: if no candidate is within 50 % of shank_len from the circle,
+        the ankle direction is left unchanged (last known good direction holds).
+        """
+        poses = self._run_mp(frame_bgr)
+
+        if poses:
+            fh, fw = frame_bgr.shape[:2]
+            best_ank      = None
+            best_d2c      = float("inf")   # |dist_from_knee - shank_len|
+            best_pose_idx = 0
+
+            # Scan every ankle landmark (both sides) from every detected pose.
+            # BlazePose indices: 27 = LEFT_ANKLE, 28 = RIGHT_ANKLE (fixed).
+            for pi, pose_lms in enumerate(poses):
+                for ai in (27, 28):
+                    lm  = pose_lms[ai]
+                    ank = np.array([lm.x * fw, lm.y * fh], dtype=np.float32)
+                    dfk = float(np.linalg.norm(ank - self.knee0))
+                    d2c = abs(dfk - self.shank_len)
+                    # Correction bias: add a directional penalty so candidates
+                    # far from the user-confirmed direction score worse.
+                    # Decays from weight=1.0 to ~0 over 25 frames.
+                    if self._corr_weight > 0.01 and dfk > 2.0:
+                        v_c   = ank - self.knee0
+                        theta = math.atan2(float(v_c[1]), float(v_c[0]))
+                        d_th  = abs(theta - self._corr_theta)
+                        if d_th > math.pi:
+                            d_th = 2 * math.pi - d_th
+                        d2c  += self._corr_weight * d_th * self.shank_len * 0.15
+                    if d2c < best_d2c:
+                        best_d2c      = d2c
+                        best_ank      = ank
+                        best_pose_idx = pi
+
+            if best_ank is not None:
+                # Always project the best candidate onto the shank circle.
+                # Candidate selection (smallest d2c + correction bias) handles
+                # person disambiguation — no per-frame rejection threshold needed.
+                vec  = best_ank - self.knee0
+                norm = float(np.linalg.norm(vec))
+                if norm > 2.0:
+                    self._ank_px = self.knee0 + (vec / norm) * self.shank_len
+                self._sel_world_lm = (
+                    self._last_world_lms[best_pose_idx]
+                    if self._last_world_lms and best_pose_idx < len(self._last_world_lms)
+                    else None
+                )
+                self.last_hip_vis = 1.0
+                self.last_kne_vis = 1.0
+                self.last_ank_vis = 1.0
+                self._vis_window.append(1)
+            else:
+                self.last_ank_vis = 0.0
+                self._vis_window.append(0)
+
+        # Decay correction weight each frame so the prior fades after ~25 frames.
+        if self._corr_weight > 0.0:
+            self._corr_weight = max(0.0, self._corr_weight * 0.85)
+
+        # Hip and knee are always the fixed user-click positions — never drifted.
+        ang = _angle_deg(self.hip0, self.knee0, self._ank_px)
+        ang = _calibrate_from_world(self._sel_world_lm, self._side, ang)
+        if math.isfinite(ang):
+            self._ang_window.append(ang)
+        return self.hip0, self.knee0, self._ank_px, ang
+
+    def apply_correction(self, ankle_px):
+        """Update the live tracker's ankle and set a directional prior.
+
+        Projects ankle_px onto the shank circle and biases the next ~25
+        step() calls toward the corrected direction so the tracker stays on
+        target after a user pin without needing a full Retrack run.
+        """
+        if not self._ready or self.knee0 is None:
+            return
+        vec  = np.asarray(ankle_px, dtype=np.float32) - self.knee0
+        norm = float(np.linalg.norm(vec))
+        if norm < 2.0:
+            return
+        self._ank_px      = self.knee0 + (vec / norm) * self.shank_len
+        self._corr_theta  = math.atan2(float(vec[1]), float(vec[0]))
+        self._corr_weight = 1.0
+
+    def reset(self):
+        if self._pose is not None:
+            try: self._pose.close()
+            except Exception: pass
+            self._pose = None
+        self._hip_px = self._knee_px = self._ank_px = None
+        self.hip0 = self.knee0 = self.ankle0 = None
+        self.shank_len = 0.0
+        self._ready = False
+        self._ts_ms = 0
+        self._corr_weight = 0.0
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _open_pose(self):
+        if self._pose is not None:
+            return
+        try:
+            import mediapipe as mp
+            V = mp.tasks.vision
+            self._PL  = V.PoseLandmark
+            options   = V.PoseLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
+                # IMAGE mode: each frame detected independently — no temporal drift.
+                # VIDEO mode caused the assessor-ankle lock-on during hold-phase occlusion.
+                running_mode=V.RunningMode.IMAGE,
+                num_poses=2,          # detect patient AND clinician; we pick the right one
+                min_pose_detection_confidence=0.30,
+                min_pose_presence_confidence=0.30,
+            )
+            self._pose = V.PoseLandmarker.create_from_options(options)
+        except Exception as e:
+            print(f"[MPTracker] MediaPipe unavailable: {e}")
+
+    def _run_mp(self, frame_bgr):
+        """Run MediaPipe and return the full list of detected pose-landmark sets.
+        Also caches pose_world_landmarks in self._last_world_lms for calibration."""
+        if self._pose is None:
+            self._last_world_lms = []
+            return None
+        try:
+            import mediapipe as mp
+            rgb    = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = self._pose.detect(mp_img)
+            self._last_world_lms = result.pose_world_landmarks or []
+            return result.pose_landmarks if result.pose_landmarks else None
+        except Exception:
+            self._last_world_lms = []
+            return None
+
+    def _lm_to_px(self, lm, shape):
+        PL = self._PL
+        h, w = shape[:2]
+        hi = PL.LEFT_HIP.value   if self._side == "left" else PL.RIGHT_HIP.value
+        ki = PL.LEFT_KNEE.value  if self._side == "left" else PL.RIGHT_KNEE.value
+        ai = PL.LEFT_ANKLE.value if self._side == "left" else PL.RIGHT_ANKLE.value
+        return (
+            np.array([lm[hi].x * w, lm[hi].y * h], dtype=np.float32),
+            np.array([lm[ki].x * w, lm[ki].y * h], dtype=np.float32),
+            np.array([lm[ai].x * w, lm[ai].y * h], dtype=np.float32),
+        )
+
+
+# ─── MediaPipe batch tracker ──────────────────────────────────────────────────
+
+class _MPBatchTracker:
+    """
+    MediaPipe-based batch tracker for 'Track All' and 'Retrack' operations.
+
+    Exposes the same interface and ArcTracker-compatible attributes (_theta,
+    _vel, radius) so the existing rollback logic in _cmd_track_all and
+    _cmd_retrack_from_here works for both tracker types without changes.
+    """
+
+    # ArcTracker-compat class-level dummies (instance attrs shadow these)
+    _motion_detected  = True
+    _retrack_cooldown = 0
+
+    def __init__(self, side: str = "right", fps: float = 30.0):
+        self._side:         str = side
+        self._ms_per_frame: int = max(1, int(round(1000.0 / max(fps, 1.0))))
+        self._pose:   object = None
+        self._PL:     object = None
+        self._hip:    Optional[np.ndarray] = None
+        self._kne:    Optional[np.ndarray] = None
+        self._ank:    Optional[np.ndarray] = None
+        self._last_world_lms: list = []
+        self._sel_world_lm:   object = None
+        self.hip0:    Optional[np.ndarray] = None
+        self.knee:    Optional[np.ndarray] = None   # ArcTracker compat
+        self.radius:  float = 0.0
+        self._vel:    float = 0.0                   # ArcTracker compat (ignored)
+        self._ts_ms:  int   = 0
+        self._anchor_xfrac: Optional[float] = None  # normalised x of patient knee, set once
+        # Appearance templates learnt from user ankle corrections
+        self._correct_template: Optional[np.ndarray] = None
+        self._wrong_template:   Optional[np.ndarray] = None
+        # Directional prior from user corrections — biases step() toward corrected direction
+        self._corr_theta:  float = 0.0
+        self._corr_weight: float = 0.0
+
+    # _theta: ArcTracker-compat property computed from current ankle position
+    @property
+    def _theta(self) -> float:
+        if self._kne is None or self._ank is None:
+            return 0.0
+        v = self._ank.astype(float) - self._kne.astype(float)
+        return math.atan2(float(v[1]), float(v[0]))
+
+    @_theta.setter
+    def _theta(self, value: float):
+        r = self.radius if self.radius > 0 else 50.0
+        if self._kne is not None:
+            self._ank = (self._kne + np.array(
+                [math.cos(value) * r, math.sin(value) * r], dtype=np.float32))
+
+    # ── public ────────────────────────────────────────────────────────────────
+
+    def init(self, frame_bgr: np.ndarray, hip, knee, ankle):
+        """Initialise directly from the user's click positions.
+
+        MediaPipe position snapping has been deliberately removed from init().
+        When both the patient and the assessor are in frame (which is always the
+        case during the hold phase), MP cannot reliably determine which person the
+        clinician is pointing at.  The snap would silently replace the correct
+        patient positions with the assessor's positions, corrupting self.radius
+        so that step()'s ankle-update gate freezes the ankle in the wrong place.
+
+        Disambiguation happens inside step() / _pick_pose() via the x-gate and
+        the NCC ankle template, which work on a frame-by-frame basis and can
+        tolerate occasional detection ambiguity without accumulating error.
+        """
+        self._open_pose()
+        self._ts_ms = 0
+        # Trust the user's click positions exactly.
+        self._hip = np.asarray(hip,   dtype=np.float32)
+        self._kne = np.asarray(knee,  dtype=np.float32)
+        self._ank = np.asarray(ankle, dtype=np.float32)
+        self.hip0   = self._hip.copy()
+        self.knee   = self._kne.copy()
+        self.radius = float(np.linalg.norm(self._ank - self._kne))
+        # Store the patient's normalised x so step() never drifts to the assessor.
+        self._anchor_xfrac = float(self.knee[0]) / max(frame_bgr.shape[1], 1)
+
+    def apply_correction(self, ankle_px):
+        """Set a directional prior from a user-pinned ankle position.
+
+        Biases the next ~25 step() calls so drift away from the correction
+        direction is suppressed in the frames immediately following a pin.
+        """
+        if self._kne is None:
+            return
+        vec  = np.asarray(ankle_px, dtype=np.float32) - self._kne
+        norm = float(np.linalg.norm(vec))
+        if norm < 2.0:
+            return
+        self._ank         = self._kne + (vec / norm) * self.radius
+        self._corr_theta  = math.atan2(float(vec[1]), float(vec[0]))
+        self._corr_weight = 1.0
+
+    def _pick_pose(self, poses, frame_bgr):
+        """Choose the best-matching pose from candidates.
+
+        When a learnt ankle template exists AND more than one pose passes the
+        x-gate, score by:
+          NCC(correct_template) − 0.4·NCC(wrong_template) − 0.05·(knee_dist/radius)
+
+        Falls back to nearest-knee distance when no template is available, or
+        when only one candidate passes the gate.
+        """
+        if not poses or self._PL is None:
+            return None, float("inf")
+        PL = self._PL
+        h, w = frame_bgr.shape[:2]
+        ki = PL.LEFT_KNEE.value  if self._side == "left" else PL.RIGHT_KNEE.value
+        ai = PL.LEFT_ANKLE.value if self._side == "left" else PL.RIGHT_ANKLE.value
+
+        # x-gate candidates to the patient's side
+        if self._anchor_xfrac is not None:
+            x_ref = self._anchor_xfrac * w
+        else:
+            x_ref = float(self.knee[0]) if self.knee is not None else w / 2
+        x_tol = 0.15 * w   # tighter: excludes assessor knee that drifts into the 0.22 zone
+        candidates = [lm for lm in poses if abs(lm[ki].x * w - x_ref) <= x_tol]
+        if not candidates:
+            return None, float("inf")
+
+        if len(candidates) == 1 or self._correct_template is None:
+            # No template or single candidate — nearest knee wins
+            best, best_d = None, float("inf")
+            for lm in candidates:
+                kp = np.array([lm[ki].x * w, lm[ki].y * h])
+                d  = float(np.linalg.norm(kp - self.knee))
+                if d < best_d:
+                    best_d, best = d, lm
+            return best, best_d
+
+        # Multiple candidates with a learnt template: score and pick best
+        best_lm, best_score = None, -float("inf")
+        for lm in candidates:
+            a_pos = np.array([lm[ai].x * w, lm[ai].y * h])
+            patch = _ankle_patch(frame_bgr, a_pos)
+            score = _patch_ncc(patch, self._correct_template)
+            if self._wrong_template is not None:
+                score -= 0.4 * _patch_ncc(patch, self._wrong_template)
+            kp = np.array([lm[ki].x * w, lm[ki].y * h])
+            knee_dist = float(np.linalg.norm(kp - self.knee))
+            score -= 0.05 * (knee_dist / max(self.radius, 1.0))
+            if score > best_score:
+                best_score = score
+                best_lm    = lm
+        if best_lm is None:
+            return None, float("inf")
+        kp = np.array([best_lm[ki].x * w, best_lm[ki].y * h])
+        return best_lm, float(np.linalg.norm(kp - self.knee))
+
+    def step(self, frame_bgr: np.ndarray) -> tuple:
+        """Advance one frame.
+
+        Person identity: uses self.knee (the initial, stable knee position) — not
+        the drifting EMA self._kne — as the x-gate reference so the assessor can
+        never pull the tracker away through accumulated EMA drift.
+
+        EMA weights scale with landmark visibility so dark clothing or occlusion
+        barely moves the stored positions instead of injecting noisy detections.
+        """
+        poses = self._run_mp(frame_bgr)
+        if poses and self._PL is not None:
+            lm, knee_d = self._pick_pose(poses, frame_bgr)
+            if lm is not None and knee_d < max(40.0, self.radius * 0.40):
+                PL = self._PL
+                hi = PL.LEFT_HIP.value   if self._side == "left" else PL.RIGHT_HIP.value
+                ki = PL.LEFT_KNEE.value  if self._side == "left" else PL.RIGHT_KNEE.value
+                ai = PL.LEFT_ANKLE.value if self._side == "left" else PL.RIGHT_ANKLE.value
+                hip_vis = float(lm[hi].visibility)
+                kne_vis = float(lm[ki].visibility)
+                ank_vis = float(lm[ai].visibility)
+
+                h_px, k_px, a_px = self._lm_to_px(lm, frame_bgr.shape)
+                # Visibility-weighted EMA (hip + knee are reliable; update freely)
+                self._hip = (1 - 0.20 * hip_vis) * self._hip + 0.20 * hip_vis * h_px
+                self._kne = (1 - 0.25 * kne_vis) * self._kne + 0.25 * kne_vis * k_px
+
+                # ── Ankle: three cascaded guards ─────────────────────────────
+                # Guard 1 — shank-length range.  Ankle must be within [0.45, 1.35]×
+                # radius of the knee.  This rejects the assessor's shins/feet
+                # (typically >1.4× shank away from the patient's knee) and also
+                # implausibly close positions (foot-near-knee = tracking failure).
+                ank_d = float(np.linalg.norm(a_px - self._kne))
+                in_range = (self.radius * 0.45 < ank_d < self.radius * 1.35)
+
+                if in_range and ank_vis > 0.10:
+                    # Guard 2 — NCC template match.  If a reference ankle patch
+                    # was learnt (from the wizard or from Retrack), weight the EMA
+                    # update by how well the detected ankle looks like the template.
+                    # A floor of 0.20 prevents tracking from completely freezing
+                    # when the ankle's appearance changes during swing.
+                    if self._correct_template is not None:
+                        patch_det = _ankle_patch(frame_bgr, a_px)
+                        ncc = _patch_ncc(patch_det, self._correct_template)
+                        if self._wrong_template is not None:
+                            ncc -= 0.5 * _patch_ncc(patch_det, self._wrong_template)
+                        ncc_w = max(0.20, ncc)
+                    else:
+                        ncc_w = 1.0
+                    alpha_a = 0.35 * ank_vis * ncc_w
+
+                    # Guard 3 — velocity cap.  The EMA-proposed position cannot
+                    # move more than 22% of the shank length per frame (≈58 px at
+                    # 30 fps for a 265 px shank).  This stops a single bad frame
+                    # from dragging the ankle EMA toward the assessor and locking
+                    # it there through the range gate.
+                    proposed = (1 - alpha_a) * self._ank + alpha_a * a_px
+                    step_d   = float(np.linalg.norm(proposed - self._ank))
+                    max_step = self.radius * 0.22
+                    if step_d > max_step:
+                        proposed = self._ank + (proposed - self._ank) * (max_step / step_d)
+                    self._ank = proposed
+                pose_idx = next((i for i, p in enumerate(poses) if p is lm), 0)
+                self._sel_world_lm = (
+                    self._last_world_lms[pose_idx]
+                    if self._last_world_lms and pose_idx < len(self._last_world_lms)
+                    else None
+                )
+        # Correction pull: draw the ankle EMA toward the user-confirmed direction.
+        # Strong for the first ~5 frames after a pin, fades to zero over ~25 frames.
+        if self._corr_weight > 0.0:
+            corr_ank = self._kne + np.array([
+                math.cos(self._corr_theta), math.sin(self._corr_theta)
+            ], dtype=np.float32) * self.radius
+            pull          = self._corr_weight * 0.35
+            self._ank     = (1 - pull) * self._ank + pull * corr_ank
+            self._corr_weight = max(0.0, self._corr_weight * 0.85)
+
+        # Arc projection: compute the angle from the DIRECTION of knee→ankle,
+        # projected onto the radius circle.  This makes the angle robust to
+        # small EMA magnitude drift — only the direction (hence the angle)
+        # matters for the clinical measurement.
+        ank_dir  = self._ank - self._kne
+        ank_dist = float(np.linalg.norm(ank_dir))
+        ank_for_angle = (self._kne + ank_dir * (self.radius / ank_dist)
+                         if ank_dist > 1e-6 else self._ank)
+
+        ang = _angle_deg(self._hip, self._kne, ank_for_angle)
+        ang = _calibrate_from_world(self._sel_world_lm, self._side, ang)
+        return self._hip, self._kne, self._ank, ang
+
+    def close(self):
+        if self._pose is not None:
+            try: self._pose.close()
+            except Exception: pass
+            self._pose = None
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _open_pose(self):
+        if self._pose is not None:
+            return
+        try:
+            import mediapipe as mp
+            V = mp.tasks.vision
+            self._PL  = V.PoseLandmark
+            options   = V.PoseLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
+                # IMAGE mode: each frame detected independently — no temporal drift.
+                # VIDEO mode caused the assessor-ankle lock-on during hold-phase occlusion.
+                running_mode=V.RunningMode.IMAGE,
+                num_poses=2,          # detect patient AND clinician; we pick the right one
+                min_pose_detection_confidence=0.30,
+                min_pose_presence_confidence=0.30,
+            )
+            self._pose = V.PoseLandmarker.create_from_options(options)
+        except Exception as e:
+            print(f"[MPBatchTracker] MediaPipe unavailable: {e}")
+
+    def _run_mp(self, frame_bgr):
+        """Run MediaPipe and return the full list of detected pose-landmark sets.
+        Also caches pose_world_landmarks in self._last_world_lms for calibration."""
+        if self._pose is None:
+            self._last_world_lms = []
+            return None
+        try:
+            import mediapipe as mp
+            rgb    = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = self._pose.detect(mp_img)
+            self._last_world_lms = result.pose_world_landmarks or []
+            return result.pose_landmarks if result.pose_landmarks else None
+        except Exception:
+            self._last_world_lms = []
+            return None
+
+    def _lm_to_px(self, lm, shape):
+        PL = self._PL
+        h, w = shape[:2]
+        hi = PL.LEFT_HIP.value   if self._side == "left" else PL.RIGHT_HIP.value
+        ki = PL.LEFT_KNEE.value  if self._side == "left" else PL.RIGHT_KNEE.value
+        ai = PL.LEFT_ANKLE.value if self._side == "left" else PL.RIGHT_ANKLE.value
+        return (
+            np.array([lm[hi].x * w, lm[hi].y * h], dtype=np.float32),
+            np.array([lm[ki].x * w, lm[ki].y * h], dtype=np.float32),
+            np.array([lm[ai].x * w, lm[ai].y * h], dtype=np.float32),
+        )
 
 
 # ─── overlay renderer ─────────────────────────────────────────────────────────
@@ -859,7 +1697,7 @@ def _draw(frame: np.ndarray, hip, knee, ankle, angle: float,
         r_arc = max(30, int(55 * scale))
         cv2.ellipse(out, k, (r_arc, r_arc), 0, -hi, -lo, _C_ARC, lw)
 
-        label = f"{angle:.1f}°"
+        label = f"{angle:.1f} deg"
         fs    = max(0.45, 0.75 * scale)
         thick = max(1, int(2 * scale))
         tx, ty = k[0] + int(14 * scale), k[1] - int(12 * scale)
@@ -872,6 +1710,21 @@ def _draw(frame: np.ndarray, hip, knee, ankle, angle: float,
 # ─── main application ─────────────────────────────────────────────────────────
 
 class PendulaticViewer(tk.Tk):
+
+    # (key, display label, plot colour). Order sets the dropdown order and
+    # the first entry is the default methodology.
+    _METHODS = [
+        ("rgb",  "RGB / HPE",  "#2563EB"),
+        ("imu",  "iPhone IMU", "#D97706"),
+        ("opti", "OptiTrack",  "#16A34A"),
+    ]
+
+    @classmethod
+    def _method_key(cls, label: str) -> str:
+        for k, lbl, _c in cls._METHODS:
+            if lbl == label:
+                return k
+        return cls._METHODS[0][0]
 
     def __init__(self, initial_video: Optional[str] = None):
         super().__init__()
@@ -907,6 +1760,59 @@ class PendulaticViewer(tk.Tk):
         self._countdown_remaining: int = 0
         self._countdown_after_id:  Optional[str] = None
 
+        # iPhone goniometer (UDP angle stream) — always listening in the
+        # background so the live readout works whenever the app is open,
+        # independent of camera/recording state. Same protocol as
+        # motive_mobile_sync.py: port 8888, plain float or {"angle": ...} JSON.
+        self._goniometer_angle:     float = float("nan")
+        self._goniometer_last_rx:   float = 0.0    # time.time() of last packet
+        self._goniometer_lock                = threading.Lock()
+        self._goniometer_recording: bool  = False
+        self._goniometer_csv_file            = None
+        self._goniometer_csv_writer          = None
+        self._goniometer_csv_lock            = threading.Lock()
+        self._goniometer_csv_path:  str   = ""     # path of the CSV from the last recording
+        self._gonio_stop                     = threading.Event()
+        self._gonio_bind_error:     str   = ""     # last socket failure, if any
+        threading.Thread(
+            target=self._goniometer_listener_worker, daemon=True, name="goniometer-udp"
+        ).start()
+
+        # iPhone IMU goniometer (Sensor Stream app → AHRS fusion). Two phones
+        # stream raw MARG data; the relative Euler difference is the joint
+        # angle (Andersson et al. 2024). Primary source; the UDP listener above
+        # is a fallback for apps that send a pre-computed angle.
+        self._imu_csv_path: str = ""
+        self._imu_recording: bool = False
+        # Which Euler component drives the recorded/plotted trace.
+        # pitch = flexion/extension, the angle of interest for both the
+        # Wartenberg knee test and the paper's hip analysis.
+        self._imu_axis_var = tk.StringVar(value="pitch")
+        self._imu_addr_next_scan: float = 0.0   # throttle for IP enumeration
+
+        # ── Measurement methodologies ────────────────────────────────────────
+        # Each methodology contributes one knee/hip angle series resampled onto
+        # this video's frame grid, so PT scoring, the plot and export all share
+        # a single index space. All are stored in the viewer's interior-angle
+        # convention (180° = fully extended, decreasing with flexion), matching
+        # load_optitrack().
+        self._method_series: dict[str, list] = {}
+        self._method_var  = tk.StringVar(value=self._METHODS[0][1])
+        self._overlay_var = tk.BooleanVar(value=False)
+        self._opti_csv_path: str = ""
+        # Session tag written into unified exports and saved trials.
+        self._session_var = tk.StringVar(value="pre")
+        if _IMU_AVAIL:
+            try:
+                _imu.start()
+            except Exception:
+                pass   # port busy / no network — non-fatal, UI shows disconnected
+
+        # Recording auto-stop timer: 0 = manual stop (click ✓ Done).
+        self._rec_timer_var       = tk.StringVar(value="0")
+        self._rec_stop_after_id: Optional[str] = None
+        self._rec_started_at:    float = 0.0
+
         # Session / participant database
         self._db:             dict = _load_db()
         self._last_pt_params: Optional[dict] = None   # raw compute_pt_params output
@@ -921,8 +1827,23 @@ class PendulaticViewer(tk.Tk):
             "2":  "#EA580C", "3":  "#DC2626", "4":  "#9B1C1C",
         }
 
-        # Tracking state
-        self.tracker  = _Tracker()
+        # Privacy
+        self._blur_faces = tk.BooleanVar(value=False)
+        self._face_casc:  Optional[object] = None   # lazy-loaded Haar frontal cascade
+        self._prof_casc:  Optional[object] = None   # lazy-loaded Haar profile cascade
+
+        # Ankle appearance templates learnt from user corrections (persist across
+        # Track All runs so once a correction is made it sticks for the session)
+        self._ankle_correct_template: Optional[np.ndarray] = None
+        self._ankle_wrong_template:   Optional[np.ndarray] = None
+
+        # Guided skeleton wizard (Set Skeleton button)
+        self._skel_guide_active: bool = False
+        self._skel_guide_step:   int  = 0      # 0=hip 1=knee 2=ankle
+        self._skel_guide_tmp:    list = [None, None, None]
+
+        # Tracking state — use MediaPipe when available, else LK optical flow
+        self.tracker  = _MPTracker() if _MP_AVAIL else _Tracker()
         self.detector = _PatientDetector()
         self._angles: list = []
         self._trail:  list = []
@@ -933,6 +1854,10 @@ class PendulaticViewer(tk.Tk):
         self._hip_click:   Optional[tuple] = None
         self._knee_click:  Optional[tuple] = None
         self._ankle_click: Optional[tuple] = None
+
+        # Person-select mode: MediaPipe shows all detected people, user clicks patient
+        self._person_select_active: bool = False
+        self._person_select_poses:  list = []   # list of lm-sets from last MP IMAGE detection
 
         # Path draw mode: {frame_idx: (vx, vy)} ankle keyframes in video coords
         self._path_keyframes: dict = {}
@@ -946,10 +1871,41 @@ class PendulaticViewer(tk.Tk):
         # _trim_end == 0 means "not yet set" — reset to total_frames on video open.
         self._trim_start: int = 0
         self._trim_end:   int = 0
+
+        # Release frame: the frame index where the assessor lets go of the leg.
+        # All frames before this are frozen at the hold angle (eliminates pre-release
+        # jitter).  None means "not set" — Track All runs the tracker on every frame.
+        self._release_fi: Optional[int] = None
         self._tl_drag:    Optional[str] = None   # "left" | "right" during handle drag
+
+        # Auto-start the phone/Expo backend so it is available as soon as the
+        # viewer opens — no need to manually trigger "Phone Camera" first.
+        if _PPS_AVAIL:
+            try:
+                _pps.start(upload_dir=os.path.join(BASE_DIR, "uploads"))
+            except Exception:
+                pass   # port already in use or network unavailable — non-fatal
+
+        # Uploads directory watcher — tracks files already present at startup so
+        # only videos that arrive during THIS session are auto-opened.
+        self._viewer_start_time: float = time.time()
+        self._uploads_seen: set        = set()
+        self._uploads_next_scan: float = 0.0
+        _udir_init = os.path.join(BASE_DIR, "uploads")
+        if os.path.isdir(_udir_init):
+            for _fn in os.listdir(_udir_init):
+                if _fn.lower().endswith((".mp4", ".mov", ".avi", ".m4v", ".mkv")):
+                    self._uploads_seen.add(os.path.join(_udir_init, _fn))
 
         self._build_ui()
         self._tick()
+
+        # Start background webcam probe so _cmd_open_camera doesn't block the UI.
+        self._available_cams: list = []   # [(idx, backend, w, h), ...]
+        self._cam_probe_done: bool = False
+        threading.Thread(
+            target=self._probe_cameras_bg, daemon=True, name="cam-probe"
+        ).start()
 
         # Keyboard shortcuts.
         # Space uses bind_all so it fires even when a toolbar button has keyboard
@@ -967,9 +1923,252 @@ class PendulaticViewer(tk.Tk):
         self.bind_all("<KeyPress-space>", _on_space_key)
         self.bind("<Right>",  self._path_step_fwd)
         self.bind("<Left>",   self._path_step_bwd)
+        self.bind_all("<Escape>", self._on_escape_key)
 
         if initial_video:
             self.after(100, lambda: self._open_video(initial_video))
+
+    # ── iPhone goniometer UDP listener ───────────────────────────────────────
+
+    def _goniometer_listener_worker(self):
+        """Background daemon thread: listen for angle packets from the iPhone
+        goniometer app and update the live readout. While a trial recording
+        is active with 'Sync Goniometer' checked, also append rows to the
+        open CSV writer. Runs for the lifetime of the app."""
+        delay = 1.0
+        while not self._gonio_stop.is_set():
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((GONIOMETER_UDP_IP, GONIOMETER_UDP_PORT))
+                sock.settimeout(1.0)
+                delay = 1.0            # bound cleanly — reset the backoff
+                self._gonio_bind_error = ""
+
+                # Inner loop: only a socket-level failure escapes it. A bad
+                # packet must never take the listener down.
+                while not self._gonio_stop.is_set():
+                    try:
+                        data, _addr = sock.recvfrom(1024)
+                    except socket.timeout:
+                        continue       # idle tick; lets the stop flag be seen
+
+                    try:
+                        text = data.decode("utf-8", errors="ignore").strip()
+                        if text.startswith("{"):
+                            parsed = json.loads(text)
+                            angle_val = float(parsed.get(
+                                "angle", parsed.get("val", 0.0)))
+                        else:
+                            angle_val = float(text)
+                    except (ValueError, json.JSONDecodeError, TypeError):
+                        continue       # malformed packet — skip, keep listening
+
+                    now = time.time()
+                    with self._goniometer_lock:
+                        self._goniometer_angle   = angle_val
+                        self._goniometer_last_rx = now
+                    if self._goniometer_recording:
+                        with self._goniometer_csv_lock:
+                            if self._goniometer_csv_writer is not None:
+                                try:
+                                    self._goniometer_csv_writer.writerow(
+                                        [f"{now:.4f}", f"{angle_val:.2f}"])
+                                except (ValueError, OSError):
+                                    pass   # file closed mid-write; not fatal
+            except OSError as e:
+                # Adapter reset, hotspot blip, or the port briefly taken.
+                self._gonio_bind_error = f"{type(e).__name__}: {e}"
+                print(f"[Goniometer] UDP {GONIOMETER_UDP_PORT} hiccup: {e} — "
+                      f"retrying in {delay:.0f}s")
+            except Exception as e:
+                self._gonio_bind_error = f"{type(e).__name__}: {e}"
+                print(f"[Goniometer] listener error: {type(e).__name__}: {e}")
+            finally:
+                # sock may be None if socket() itself raised — guard the close.
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+
+            # Wait in slices so shutdown is prompt, with capped backoff.
+            if self._gonio_stop.wait(timeout=delay):
+                break
+            delay = min(delay * 2, 20.0)
+
+    # ── iPhone IMU goniometer commands ───────────────────────────────────────
+
+    def _cmd_imu_zero(self):
+        if not _IMU_AVAIL:
+            return
+        st = _imu.get_state()
+        if not (st["proximal"]["connected"] or st["distal"]["connected"]):
+            messagebox.showinfo(
+                "No phones connected",
+                "No IMU data is arriving yet.\n\n"
+                f"In the Sensor Stream app set the address to "
+                f"{_imu.get_local_ip()}:{_imu.PORT} and enable Accelerometer, "
+                "Gyroscope and Magnetometer.")
+            return
+        _imu.zero()
+        self._status.config(
+            text="IMU zeroed — current posture is now the 0° reference.")
+
+    def _cmd_imu_swap(self):
+        if _IMU_AVAIL:
+            _imu.swap_roles()
+            self._status.config(text="IMU segments swapped (proximal ⇄ distal).")
+
+    def _cmd_imu_reset(self):
+        """Forget connected phones so roles are reassigned, and retry the
+        server bind if it failed at startup (e.g. the port was busy)."""
+        if not _IMU_AVAIL:
+            return
+        _imu.reset_devices()
+        _imu.clear_zero()
+        if not _imu.get_state()["running"]:
+            _imu.start()
+            err = _imu.bind_error()
+            if err:
+                messagebox.showwarning("IMU server offline", err)
+                return
+        self._status.config(
+            text="IMU devices cleared — reconnect the phones to reassign segments.")
+
+    def _imu_axis_value(self, angles: dict) -> float:
+        return angles.get(self._imu_axis_var.get(), float("nan"))
+
+    def _imu_single_mode(self) -> bool:
+        """One IMU on the distal segment only.
+
+        Valid for the Wartenberg test, where the thigh is supported and
+        stationary: the shank's absolute orientation IS the knee angle once
+        zeroed against the extended limb. The assumption is only as good as
+        the thigh actually holding still — cross-check against the RGB trace
+        with Overlay to confirm it held."""
+        return self._imu_segpair_var.get().startswith("Single")
+
+    def _cmd_imu_copy_addr(self):
+        """Copy host:port to the clipboard for typing into the phone app."""
+        addr = self._imu_addr_var.get()
+        self.clipboard_clear()
+        self.clipboard_append(addr)
+        self._status.config(text=f"Copied {addr} — enter this in the Sensor Stream app.")
+
+    def _cmd_imu_network_help(self):
+        """Troubleshooting for 'the app cannot connect'.
+
+        The usual cause on Windows is that the running interpreter has no
+        inbound firewall rule, so the port is bound but unreachable from the
+        phone. Adding that rule needs administrator rights, so the exact
+        command is shown for the operator to run rather than applied here."""
+        ips  = _imu.get_all_local_ips() if _IMU_AVAIL else ["?"]
+        port = _imu.PORT if _IMU_AVAIL else 5000
+        exe  = sys.executable
+        err  = _imu.bind_error() if _IMU_AVAIL else "IMU module not importable"
+        st   = _imu.get_state() if _IMU_AVAIL else {"running": False}
+
+        # netsh works in an elevated cmd.exe *or* PowerShell, so it is the one
+        # put on the clipboard; the PowerShell-native form is shown as well.
+        netsh = (f'netsh advfirewall firewall add rule '
+                 f'name="Pendulastic IMU {port}" dir=in action=allow '
+                 f'protocol=TCP localport={port} program="{exe}" enable=yes')
+        psrule = (f'New-NetFirewallRule -DisplayName "Pendulastic IMU {port}" '
+                  f'-Direction Inbound -Action Allow -Protocol TCP '
+                  f'-LocalPort {port} -Program "{exe}"')
+
+        lines = [
+            f"Server listening: {'yes' if st.get('running') else 'NO'}"
+            + (f"  ({err})" if err else ""),
+            f"Address for the app:  {ips[0]}:{port}",
+        ]
+        if len(ips) > 1:
+            lines.append("Other addresses:      " + ", ".join(ips[1:]))
+        lines += [
+            "",
+            "Checklist:",
+            "  1. Phone and laptop on the SAME network. On a Personal Hotspot",
+            "     the laptop address starts with 172.20.10.",
+            f"  2. In Sensor Stream enter exactly  <address>:{port}  (no http://,",
+            "     no path) and enable Accelerometer + Gyroscope + Magnetometer.",
+            "  3. Windows Firewall must allow inbound TCP for THIS interpreter:",
+            f"     {exe}",
+            "     A rule registered for a different python.exe does not cover",
+            "     the venv one. If the phone still cannot connect, open an",
+            "     Administrator command prompt and paste the netsh command",
+            "     below (already on your clipboard), then press Reconnect.",
+            "",
+            "  4. Only ONE Pendulastic app can own the IMU port. If master_app.py",
+            "     is acquiring, the phones stream to it, not to this viewer. To",
+            "     run both, start one of them on a different port, e.g.:",
+            "         set PENDULASTIC_IMU_PORT=5001",
+            "         python pendulastic_viewer.py",
+            "     and enter that port in the Sensor Stream app.",
+            "",
+            "netsh (cmd.exe or PowerShell, as Administrator):",
+            f"  {netsh}",
+            "",
+            "PowerShell equivalent:",
+            f"  {psrule}",
+        ]
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(netsh)
+        except tk.TclError:
+            pass
+        messagebox.showinfo("iPhone cannot connect — network help",
+                            "\n".join(lines))
+
+    def _cmd_imu_resync(self):
+        """Discard clock-offset samples and re-estimate from scratch."""
+        if not _IMU_AVAIL:
+            return
+        _imu.reset_sync()
+        self._status.config(text="Re-syncing phone clocks…")
+
+    _SYNC_STYLE = {
+        "waiting":  ("○", "#94A3B8", "Waiting for phones…"),
+        "syncing":  ("◐", "#D97706", "Syncing…"),
+        "unstable": ("⚠", "#DC2626", "Sync unstable"),
+        "synced":   ("●", "#16A34A", "Synced"),
+    }
+
+    def _update_sync_ui(self, sync: dict):
+        """Reflect clock-alignment state in the Time Sync Recording block."""
+        icon, colour, text = self._SYNC_STYLE.get(
+            sync["state"], ("○", "#94A3B8", sync["state"]))
+        if sync["state"] == "syncing":
+            text = f"Syncing…  {int(sync['progress'] * 100)}%"
+        elif sync["state"] == "synced" and sync.get("offset_s") is not None:
+            text = f"Synced   Δ {sync['offset_s']:+.3f} s"
+        self._imu_sync_lbl.config(text=f"{icon}  {text}", fg=colour)
+        self._imu_sync_detail.config(text=sync.get("detail", ""))
+
+        w = max(1, self._sync_bar.winfo_width())
+        frac = 1.0 if sync["state"] in ("synced", "unstable") else sync["progress"]
+        self._sync_bar.coords(self._sync_bar_fill, 0, 0, int(w * frac), 6)
+        self._sync_bar.itemconfig(self._sync_bar_fill, fill=colour)
+
+    def _sync_ready(self) -> bool:
+        """True when recording may start given the operator's sync preference.
+
+        Two distinct conditions are checked. No signal at all is always a
+        blocker — recording would write an empty goniometer CSV — and that
+        holds even when 'wait for sync' is off, because that switch is an
+        override for imperfect alignment, not for a missing sensor. Clock
+        alignment itself is only enforced when the operator asks for it."""
+        if not (_IMU_AVAIL and self._var_goniometer.get()):
+            return True
+
+        st = _imu.get_state()
+        if not (st["proximal"]["connected"] or st["distal"]["connected"]):
+            return False                      # no phone streaming at all
+
+        if not self._var_wait_sync.get():
+            return True
+        return _imu.sync_status()["state"] == "synced"
 
     # ── build UI ──────────────────────────────────────────────────────────────
 
@@ -1001,7 +2200,7 @@ class PendulaticViewer(tk.Tk):
         tk.Button(toolbar, text="↺ Reset Trim",       command=self._cmd_reset_trim,   **_b).pack(side="left", padx=2)
         self._btn_cam = tk.Button(toolbar, text="📷 Camera", command=self._cmd_open_camera, **_b)
         self._btn_cam.pack(side="left", padx=2)
-        tk.Button(toolbar, text="👤 Detect Patient", command=self._cmd_detect,        **_b).pack(side="left", padx=2)
+        tk.Button(toolbar, text="👤 Pick Person",    command=self._cmd_pick_person,    **_b).pack(side="left", padx=2)
         sep()
         self._btn_knee   = tk.Button(toolbar, text="🦵 Knee",  command=self._cmd_knee,   **_b)
         self._btn_ankle  = tk.Button(toolbar, text="🦶 Ankle", command=self._cmd_ankle,  **_b)
@@ -1015,6 +2214,9 @@ class PendulaticViewer(tk.Tk):
                                        command=self._cmd_retrack_from_here,
                                        state="disabled", **_b)
         self._btn_retrack.pack(side="left", padx=2)
+        self._btn_release = tk.Button(toolbar, text="✂ Mark Release",
+                                      command=self._cmd_mark_release, **_b)
+        self._btn_release.pack(side="left", padx=2)
         tk.Button(toolbar, text="↩ Reset",        command=self._cmd_reset,      **_b).pack(side="left", padx=2)
         sep()
         self._btn_path = tk.Button(toolbar, text="✏ Path",
@@ -1030,6 +2232,7 @@ class PendulaticViewer(tk.Tk):
         self._btn_clear_path.pack(side="left", padx=2)
         sep()
         tk.Button(toolbar, text="💾 Export CSV",  command=self._cmd_export,     **_b).pack(side="left", padx=2)
+        tk.Button(toolbar, text="🗃 Unified CSV", command=self._cmd_export_unified, **_b).pack(side="left", padx=2)
         self._btn_export_vid = tk.Button(toolbar, text="🎬 Export Video",
                                          command=self._cmd_export_annotated_video, **_b)
         self._btn_export_vid.pack(side="left", padx=2)
@@ -1039,6 +2242,15 @@ class PendulaticViewer(tk.Tk):
         self._vid_lbl = tk.Label(toolbar, text="No video loaded",
                                   bg=PANEL, fg=FG3, font=("Segoe UI", 8), anchor="e")
         self._vid_lbl.pack(side="right", padx=8)
+
+        # Privacy: face-blur toggle
+        sep()
+        tk.Checkbutton(toolbar, text="🔒 Blur Faces",
+                       variable=self._blur_faces,
+                       bg=PANEL, fg=FG, selectcolor=PANEL,
+                       activebackground=PANEL, activeforeground=FG,
+                       font=("Segoe UI", 8), bd=0, highlightthickness=0,
+                       cursor="hand2").pack(side="right", padx=4)
 
         # ── session toolbar (row 2) ───────────────────────────────────────────
         sbar = tk.Frame(self, bg=BG, pady=5, padx=8)
@@ -1079,6 +2291,55 @@ class PendulaticViewer(tk.Tk):
                                        width=3, state="readonly",
                                        font=("Segoe UI", 9))
         self._pos_combo.pack(side="left", padx=(2, 0))
+
+        ttk.Separator(sbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=2)
+
+        # Trial number — auto-filled with the next unused number for this
+        # participant+leg, but editable so a trial can be re-recorded.
+        tk.Label(sbar, text="Trial:", bg=BG, fg=FG2,
+                 font=("Segoe UI", 9)).pack(side="left")
+        self._trial_var = tk.StringVar(value="1")
+        tk.Spinbox(sbar, textvariable=self._trial_var, from_=1, to=99,
+                   width=3, font=("Segoe UI", 9), relief="flat",
+                   bg="#F1F5F9", fg=FG, buttonbackground=BTN,
+                   highlightthickness=1, highlightbackground=BORDER).pack(
+                       side="left", padx=(2, 2))
+        tk.Button(sbar, text="↻", command=self._refresh_trial_number,
+                  **_sb).pack(side="left", padx=(0, 2))
+        # Keep the suggested trial number in step with participant/leg changes.
+        self._part_combo.bind("<<ComboboxSelected>>",
+                              lambda e: self._refresh_trial_number())
+        self._leg_var.trace_add("write", lambda *a: self._refresh_trial_number())
+
+        ttk.Separator(sbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=2)
+
+        # Session tag — distinguishes pre- and post-intervention recordings in
+        # the unified export and in saved trials.
+        tk.Label(sbar, text="Session:", bg=BG, fg=FG2,
+                 font=("Segoe UI", 9)).pack(side="left")
+        ttk.Combobox(sbar, textvariable=self._session_var,
+                     values=["pre", "post"], width=5, state="readonly",
+                     font=("Segoe UI", 9)).pack(side="left", padx=(2, 0))
+
+        ttk.Separator(sbar, orient="vertical").pack(side="left", fill="y", padx=8, pady=2)
+
+        # Methodology switcher — swaps which measurement drives the plot,
+        # the stats and the PT score.
+        tk.Label(sbar, text="Method:", bg=BG, fg=FG2,
+                 font=("Segoe UI", 9)).pack(side="left")
+        self._method_combo = ttk.Combobox(
+            sbar, textvariable=self._method_var,
+            values=[lbl for _k, lbl, _c in self._METHODS],
+            width=12, state="readonly", font=("Segoe UI", 9))
+        self._method_combo.pack(side="left", padx=(2, 2))
+        self._method_combo.bind("<<ComboboxSelected>>",
+                                lambda e: self._cmd_set_method())
+        tk.Checkbutton(sbar, text="Overlay all", variable=self._overlay_var,
+                       command=self._refresh_overlay,
+                       bg=BG, fg=FG, selectcolor=BTN, activebackground=BG,
+                       font=("Segoe UI", 9), cursor="hand2").pack(side="left")
+        tk.Button(sbar, text="＋ OptiTrack", command=self._cmd_load_optitrack,
+                  **_sb).pack(side="left", padx=(2, 0))
 
         ttk.Separator(sbar, orient="vertical").pack(side="left", fill="y", padx=10, pady=2)
 
@@ -1196,38 +2457,192 @@ class PendulaticViewer(tk.Tk):
         self._stat_rest = self._stat_card(stats_wrap, "Rest",      "#16A34A", SURFACE, MONO)
         self._stat_amp  = self._stat_card(stats_wrap, "Amplitude", "#475569", SURFACE, MONO)
 
+        # ── iPHONE GONIOMETER (IMU) card ──────────────────────────────────────
+        # Two phones running the Sensor Stream app stream raw accel/gyro/mag;
+        # an AHRS filter fuses each into Euler angles and the relative
+        # difference is the joint angle (Andersson et al., Sensors 2024).
+        imu_wrap = _panel("iPHONE GONIOMETER (IMU)")
+        _IB = SURFACE
+
+        # Address to type into the app. On a Personal Hotspot the laptop is
+        # 172.20.10.x; that range is ranked first so the operator is not shown
+        # a VPN or link-local address the phone could never reach.
+        addr_row = tk.Frame(imu_wrap, bg=_IB)
+        addr_row.pack(fill="x")
+        self._imu_addr_var = tk.StringVar(
+            value=f"{_imu.get_local_ip()}:{_imu.PORT}" if _IMU_AVAIL else "—")
+        tk.Label(addr_row, text="Enter in app:", bg=_IB, fg=FG3,
+                 font=("Segoe UI", 8)).pack(side="left")
+        tk.Entry(addr_row, textvariable=self._imu_addr_var, width=20,
+                 font=(MONO[0], 9, "bold"), relief="flat", bg="#F1F5F9",
+                 fg="#0F172A", readonlybackground="#F1F5F9",
+                 state="readonly").pack(side="left", padx=(4, 4))
+        tk.Button(addr_row, text="⧉", command=self._cmd_imu_copy_addr,
+                  bg=BTN, fg=FG, relief="flat", bd=0, padx=6, pady=1,
+                  font=("Segoe UI", 8), cursor="hand2",
+                  activebackground=BTN_ACT).pack(side="left")
+        # Alternate addresses, shown only when the host is multi-homed.
+        self._imu_alt_lbl = tk.Label(imu_wrap, text="", bg=_IB, fg=FG3,
+                                      font=("Segoe UI", 7), anchor="w",
+                                      wraplength=380, justify="left")
+        self._imu_alt_lbl.pack(fill="x")
+        tk.Label(imu_wrap,
+                 text="Enable Accelerometer + Gyroscope + Magnetometer on both phones.",
+                 bg=_IB, fg=FG3, font=("Segoe UI", 7), anchor="w",
+                 wraplength=380, justify="left").pack(fill="x", pady=(0, 6))
+
+        # Segment pair: which two body segments the phones are strapped to.
+        seg_row = tk.Frame(imu_wrap, bg=_IB)
+        seg_row.pack(fill="x", pady=(0, 4))
+        tk.Label(seg_row, text="Segments:", bg=_IB, fg=FG3,
+                 font=("Segoe UI", 8)).pack(side="left")
+        self._imu_segpair_var = tk.StringVar(value="Thigh → Shank (knee)")
+        ttk.Combobox(seg_row, textvariable=self._imu_segpair_var,
+                     values=["Thigh → Shank (knee)",
+                             "Torso → Thigh (hip)",
+                             "Single IMU — shank only"],
+                     width=22, state="readonly",
+                     font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+
+        # Per-phone connection status
+        self._imu_prox_lbl = tk.Label(imu_wrap, text="○  proximal — waiting",
+                                       bg=_IB, fg=FG3, font=(MONO[0], 8),
+                                       anchor="w")
+        self._imu_prox_lbl.pack(fill="x")
+        self._imu_dist_lbl = tk.Label(imu_wrap, text="○  distal — waiting",
+                                       bg=_IB, fg=FG3, font=(MONO[0], 8),
+                                       anchor="w")
+        self._imu_dist_lbl.pack(fill="x")
+        self._imu_srv_lbl = tk.Label(imu_wrap, text="", bg=_IB, fg="#DC2626",
+                                      font=("Segoe UI", 7), anchor="w",
+                                      wraplength=380, justify="left")
+        self._imu_srv_lbl.pack(fill="x", pady=(0, 6))
+
+        # Live relative Euler angles
+        self._imu_flex_lbl = self._stat_card(imu_wrap, "Flex/Ext",  "#2563EB", _IB, MONO)
+        self._imu_abd_lbl  = self._stat_card(imu_wrap, "Abd/Add",   "#7C3AED", _IB, MONO)
+        self._imu_rot_lbl  = self._stat_card(imu_wrap, "Rotation",  "#0891B2", _IB, MONO)
+
+        # ── Time Sync Recording ───────────────────────────────────────────────
+        # The phones stamp packets with their own clocks; the video, the
+        # goniometer CSV and motive_mobile_sync all use this laptop's
+        # time.time(). This block estimates that offset and blocks recording
+        # until it is trusted, so every modality lands on one timeline.
+        ttk.Separator(imu_wrap, orient="horizontal").pack(fill="x", pady=(8, 6))
+        sync_hdr = tk.Frame(imu_wrap, bg=_IB)
+        sync_hdr.pack(fill="x")
+        tk.Label(sync_hdr, text="TIME SYNC RECORDING", bg=_IB, fg=FG3,
+                 font=("Segoe UI", 8, "bold")).pack(side="left")
+        self._var_wait_sync = tk.BooleanVar(value=True)
+        tk.Checkbutton(sync_hdr, text="wait for sync",
+                       variable=self._var_wait_sync, bg=_IB, fg=FG2,
+                       selectcolor=BTN, activebackground=_IB,
+                       font=("Segoe UI", 7), cursor="hand2").pack(side="right")
+
+        self._imu_sync_lbl = tk.Label(imu_wrap, text="○  Waiting for phones…",
+                                       bg=_IB, fg=FG3, font=(MONO[0], 9, "bold"),
+                                       anchor="w")
+        self._imu_sync_lbl.pack(fill="x", pady=(3, 1))
+        # Progress bar for the sample-collection phase.
+        self._sync_bar = tk.Canvas(imu_wrap, height=6, bg="#E2E8F0",
+                                    highlightthickness=0)
+        self._sync_bar.pack(fill="x", pady=(0, 2))
+        self._sync_bar_fill = self._sync_bar.create_rectangle(
+            0, 0, 0, 6, fill="#2563EB", outline="")
+        self._imu_sync_detail = tk.Label(imu_wrap, text="", bg=_IB, fg=FG3,
+                                          font=("Segoe UI", 7), anchor="w",
+                                          wraplength=380, justify="left")
+        self._imu_sync_detail.pack(fill="x")
+        tk.Button(imu_wrap, text="↻ Re-sync clocks", command=self._cmd_imu_resync,
+                  bg=BTN, fg=FG, relief="flat", bd=0, padx=8, pady=3,
+                  font=("Segoe UI", 8), cursor="hand2",
+                  activebackground=BTN_ACT,
+                  activeforeground="#FFFFFF").pack(anchor="w", pady=(4, 0))
+
+        ttk.Separator(imu_wrap, orient="horizontal").pack(fill="x", pady=(8, 6))
+
+        axis_row = tk.Frame(imu_wrap, bg=_IB)
+        axis_row.pack(fill="x", pady=(4, 2))
+        tk.Label(axis_row, text="Record axis:", bg=_IB, fg=FG3,
+                 font=("Segoe UI", 8)).pack(side="left")
+        for _txt, _val in (("Flex/Ext", "pitch"), ("Abd/Add", "roll"), ("Rot", "yaw")):
+            tk.Radiobutton(axis_row, text=_txt, variable=self._imu_axis_var,
+                           value=_val, bg=_IB, fg=FG2, selectcolor=BTN,
+                           activebackground=_IB, font=("Segoe UI", 8),
+                           cursor="hand2").pack(side="left", padx=1)
+
+        _bi = dict(bg=BTN, fg=FG, relief="flat", bd=0, padx=8, pady=3,
+                   font=("Segoe UI", 8), cursor="hand2",
+                   activebackground=BTN_ACT, activeforeground="#FFFFFF")
+        imu_btns = tk.Frame(imu_wrap, bg=_IB)
+        imu_btns.pack(fill="x", pady=(4, 0))
+        tk.Button(imu_btns, text="⊙ Zero", command=self._cmd_imu_zero,
+                  **_bi).pack(side="left", padx=(0, 4))
+        tk.Button(imu_btns, text="⇄ Swap", command=self._cmd_imu_swap,
+                  **_bi).pack(side="left", padx=(0, 4))
+        tk.Button(imu_btns, text="↺ Reconnect", command=self._cmd_imu_reset,
+                  **_bi).pack(side="left", padx=(0, 4))
+        tk.Button(imu_btns, text="🛜 Can't connect?",
+                  command=self._cmd_imu_network_help, **_bi).pack(side="left")
+        tk.Label(imu_wrap,
+                 text="Zero with the participant in the reference posture "
+                      "(paper uses a 5 s upright hold).",
+                 bg=_IB, fg=FG3, font=("Segoe UI", 7, "italic"), anchor="w",
+                 wraplength=380, justify="left").pack(fill="x", pady=(4, 0))
+        self._imu_mode_note = tk.Label(
+            imu_wrap, text="", bg=_IB, fg="#D97706",
+            font=("Segoe UI", 7, "italic"), anchor="w",
+            wraplength=380, justify="left")
+        self._imu_mode_note.pack(fill="x")
+
         # ── POPOVIC PT SCORE card ─────────────────────────────────────────────
         _PB = SURFACE
         pt_wrap = _panel("POPOVIĆ PT SCORE")
 
-        hdr_row = tk.Frame(pt_wrap, bg=_PB)
-        hdr_row.pack(fill="x")
-        self._mas_lbl = tk.Label(hdr_row, text="—", bg=_PB, fg=FG,
-                                  font=("Segoe UI", 18, "bold"))
-        self._mas_lbl.pack(side="right")
-
         sc_row = tk.Frame(pt_wrap, bg=_PB)
-        sc_row.pack(fill="x", pady=(2, 0))
+        sc_row.pack(fill="x", pady=(0, 2))
         self._pt_score_key_lbl = tk.Label(sc_row, text="PT score (4 params selected):",
                                            bg=_PB, fg=FG3, font=("Segoe UI", 8))
         self._pt_score_key_lbl.pack(side="left")
         self._pt_score_lbl = tk.Label(sc_row, text="—", bg=_PB, fg=FG2,
-                                       font=(MONO[0], 9, "bold"))
-        self._pt_score_lbl.pack(side="left", padx=(4, 0))
+                                       font=(MONO[0], 14, "bold"))
+        self._pt_score_lbl.pack(side="left", padx=(6, 0))
 
-        # MAS scale pills (0 → 4)
-        mas_row = tk.Frame(pt_wrap, bg=_PB)
-        mas_row.pack(fill="x", pady=(8, 2))
-        tk.Label(mas_row, text="MAS:", bg=_PB, fg=FG3,
-                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 6))
-        self._mas_dots: dict = {}
-        for _mv, _mc in [("0","#16A34A"),("1","#65A30D"),("1+","#D97706"),
-                          ("2","#EA580C"),("3","#DC2626"),("4","#9B1C1C")]:
-            _dot = tk.Label(mas_row, text=_mv, bg=BTN, fg=FG3,
-                            font=("Segoe UI", 8, "bold"), width=3,
-                            relief="flat", padx=4, pady=2)
-            _dot.pack(side="left", padx=1)
-            self._mas_dots[_mv] = (_dot, _mc)
+        # PT score gauge: healthy / borderline / spastic zones
+        # Zones calibrated from n=13 control, n=8 MS participants
+        _GW, _GH, _PTOP = 260, 14, 12
+        self._gauge_w   = _GW
+        self._gauge_top = _PTOP
+        self._gauge_h   = _GH
+        _g_end = int(_GW * PT_HEALTHY_MAX)    # green → amber boundary
+        _a_end = int(_GW * PT_BORDERLINE_MAX)  # amber → red boundary
+        gauge_row = tk.Frame(pt_wrap, bg=_PB)
+        gauge_row.pack(fill="x", pady=(6, 2))
+        self._pt_gauge = tk.Canvas(gauge_row, width=_GW, height=_PTOP + _GH + 20,
+                                    bg=_PB, highlightthickness=0)
+        self._pt_gauge.pack(anchor="w")
+        self._pt_gauge.create_rectangle(0,      _PTOP, _g_end, _PTOP + _GH,
+                                         fill="#16A34A", outline="")
+        self._pt_gauge.create_rectangle(_g_end, _PTOP, _a_end, _PTOP + _GH,
+                                         fill="#D97706", outline="")
+        self._pt_gauge.create_rectangle(_a_end, _PTOP, _GW,    _PTOP + _GH,
+                                         fill="#DC2626", outline="")
+        # Zone labels spread across full canvas width to avoid overlap —
+        # the healthy and borderline zones (9 % and 20 % of width) are too
+        # narrow to center text in them.
+        self._pt_gauge.create_text(2,           _PTOP + _GH + 9,
+                                    text="Healthy", fill="#16A34A",
+                                    font=("Segoe UI", 7, "bold"), anchor="w")
+        self._pt_gauge.create_text(_GW // 2,    _PTOP + _GH + 9,
+                                    text="Borderline", fill="#D97706",
+                                    font=("Segoe UI", 7, "bold"), anchor="center")
+        self._pt_gauge.create_text(_GW - 2,     _PTOP + _GH + 9,
+                                    text="Spastic", fill="#DC2626",
+                                    font=("Segoe UI", 7, "bold"), anchor="e")
+        # Pointer triangle (▼) — tip at bar top, updated each score
+        self._gauge_ptr = self._pt_gauge.create_polygon(
+            0, _PTOP, 0, 0, 0, 0, fill="#0F172A", outline="white", width=1,
+            state="hidden")
 
         ttk.Separator(pt_wrap, orient="horizontal").pack(fill="x", pady=(6, 4))
 
@@ -1247,13 +2662,14 @@ class PendulaticViewer(tk.Tk):
 
         # Parameter rows: ☑ | description | score | ref
         # area_ratio and f excluded by default (unreliable for vision-based angles)
+        _HR = HEALTHY_REF if _PT_AVAIL else {}
         _PT_PARAM_DESCS = [
-            ("Relaxation (R₂ₙ)",  "R2n",           0.91, True ),
-            ("Swing count (N)",    "N",              8.0,  True ),
-            ("Excursion (φmax)",   "phi_max_ratio",  0.65, True ),
-            ("Peak vel. (ωmax)",   "omega_max_n",    4.5,  True ),
-            ("Frequency (f) †",   "f",              1.10, False),
-            ("Area ratio (AR) †", "area_ratio",     0.09, False),
+            ("Relaxation (R₂ₙ)",  "R2n",           _HR.get("R2n",           1.012), True ),
+            ("Swing count (N)",    "N",              _HR.get("N",             7.0),   True ),
+            ("Excursion (φmax)",   "phi_max_ratio",  _HR.get("phi_max_ratio", 0.787), True ),
+            ("Peak vel. (ωmax)",   "omega_max_n",    _HR.get("omega_max_n",   5.692), True ),
+            ("Frequency (f) †",   "f",              _HR.get("f",             1.10),  False),
+            ("Area ratio (AR) †", "area_ratio",     _HR.get("area_ratio",    0.09),  False),
         ]
         pg = tk.Frame(pt_wrap, bg=_PB)
         pg.pack(fill="x")
@@ -1320,11 +2736,12 @@ class PendulaticViewer(tk.Tk):
             ("Area ratio (AR)",
              "Swing envelope asymmetry. Higher = more erratic trajectory.",
              "< 0.12", "> 0.20"),
-            ("MAS / PT score",
-             "Modified Ashworth Scale estimated from the 4-parameter PT score "
-             "(Popovic 2018).\n"
-             "0 = no tone increase  ·  1/1+ = mild  ·  2 = marked  ·  3/4 = severe",
-             "MAS 0  (PT < 0.12)", "MAS 2–4  (PT > 0.44)"),
+            ("PT score interpretation",
+             "Composite of 4 Popovic parameters calibrated on n=13 control / n=8 MS "
+             "participants (ASU study).\n"
+             "0.0 = perfectly healthy swing  ·  scores above 0.20 = strong spastic signal",
+             f"Healthy  (PT ≤ {PT_HEALTHY_MAX:.2f})",
+             f"Spastic signal  (PT > {PT_BORDERLINE_MAX:.2f})"),
         ]
         _gtxt = tk.Text(guide_frame, height=9, wrap="word",
                         bg=PANEL, fg=FG2, font=("Segoe UI", 8),
@@ -1444,7 +2861,16 @@ class PendulaticViewer(tk.Tk):
         self._ax.set_ylim(0, 185)
         self._ax.autoscale(enable=False, axis="y")
         self._ax.grid(True, color="#E2E8F0", linewidth=0.7)
-        self._line_plot, = self._ax.plot([], [], color="#2563EB", linewidth=1.8)
+        self._line_plot, = self._ax.plot([], [], color="#2563EB", linewidth=1.8,
+                                          label="Active")
+        # One overlay line per methodology, shown together when Overlay is on.
+        self._overlay_lines: dict = {}
+        for _k, _lbl, _col in self._METHODS:
+            _ln, = self._ax.plot([], [], color=_col, linewidth=1.3, alpha=0.85,
+                                  label=_lbl, visible=False)
+            self._overlay_lines[_k] = _ln
+        # Kept as the IMU overlay handle used by the recording flow.
+        self._line_imu = self._overlay_lines["imu"]
         self._vline      = self._ax.axvline(0, color="#94A3B8", linewidth=0.8,
                                              alpha=0.6, linestyle="--")
 
@@ -1547,6 +2973,34 @@ class PendulaticViewer(tk.Tk):
                        selectcolor=BTN, font=("Segoe UI", 8),
                        cursor="hand2").pack(side="left", padx=2)
         self._motive_active = False   # True while a Motive recording is live
+
+        ttk.Separator(self._cam_ctrl, orient="vertical").pack(
+            side="left", fill="y", padx=8, pady=3)
+        self._var_goniometer = tk.BooleanVar(value=False)
+        tk.Checkbutton(self._cam_ctrl, text="Sync Goniometer",
+                       variable=self._var_goniometer,
+                       bg=PANEL, fg="#60C0FF", activebackground=PANEL,
+                       selectcolor=BTN, font=("Segoe UI", 8),
+                       cursor="hand2").pack(side="left", padx=2)
+        self._goniometer_lbl = tk.Label(self._cam_ctrl, text="⚪ --°",
+                                         bg=PANEL, fg=FG3, font=(MONO[0], 9))
+        self._goniometer_lbl.pack(side="left", padx=(4, 2))
+
+        ttk.Separator(self._cam_ctrl, orient="vertical").pack(
+            side="left", fill="y", padx=8, pady=3)
+        # Recording auto-stop duration. 0 = record until ✓ Done is clicked.
+        tk.Label(self._cam_ctrl, text="stop after:", bg=PANEL, fg=FG3,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(2, 2))
+        ttk.Combobox(self._cam_ctrl, textvariable=self._rec_timer_var,
+                     values=["0", "10", "15", "20", "30", "45", "60"],
+                     width=3, state="normal",
+                     font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(self._cam_ctrl, text="s", bg=PANEL, fg=FG3,
+                 font=("Segoe UI", 8)).pack(side="left", padx=(1, 2))
+        self._rec_timer_lbl = tk.Label(self._cam_ctrl, text="",
+                                        bg=PANEL, fg="#DC2626",
+                                        font=(MONO[0], 9, "bold"))
+        self._rec_timer_lbl.pack(side="left", padx=(2, 2))
         # Hidden until camera mode is active
 
         # iPhone-style trim timeline: seek by clicking, drag bracket handles to set trim range.
@@ -1588,6 +3042,11 @@ class PendulaticViewer(tk.Tk):
             except Exception:
                 pass
             self._phone_mode = False
+        # Always leave live mode when opening a recorded file — otherwise
+        # _try_init_tracker picks self._last_live_frame (None for upload flow)
+        # and tracker.init() silently aborts, leaving tracker.ready = False.
+        self._live = False
+        self._last_live_frame = None
         if self.cap:
             self.cap.release()
         self.cap = cv2.VideoCapture(path)
@@ -1597,6 +3056,7 @@ class PendulaticViewer(tk.Tk):
         self.video_path    = path
         self.fps           = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.total_frames  = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.tracker._ms_per_frame = max(1, int(round(1000.0 / self.fps)))
         w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self._vid_w = w
@@ -1613,6 +3073,7 @@ class PendulaticViewer(tk.Tk):
         self._path_keyframes = {}
         self._trim_start   = 0
         self._trim_end     = self.total_frames
+        self._release_fi   = None
         if hasattr(self, '_trim_spans'):
             self._update_trim_spans()
         self._btn_play.config(text="▶")
@@ -1722,22 +3183,64 @@ class PendulaticViewer(tk.Tk):
                     hip = self._auto_hip(kne, ank)
                 ang = _angle_deg(hip, kne, ank)
 
-        # Windowed trail: pass at most TRAIL_LEN recent positions so the full
-        # frame-indexed _trail (length = total_frames) doesn't flood the renderer.
-        if len(self._trail) == self.total_frames:
-            _trail_vis = [p for p in self._trail[max(0, fi - TRAIL_LEN): fi + 1]
-                          if p is not None]
+        # During the guided skeleton wizard, suppress the existing skeleton and
+        # trail so the user sees only the frame and the guide point overlay.
+        if self._skel_guide_active:
+            overlay = _draw(frame, None, None, None, float("nan"), [], self._scale)
         else:
-            _trail_vis = self._trail
-        overlay = _draw(frame, hip, kne, ank, ang, _trail_vis, self._scale)
+            # Windowed trail: pass at most TRAIL_LEN recent positions so the full
+            # frame-indexed _trail (length = total_frames) doesn't flood the renderer.
+            if len(self._trail) == self.total_frames:
+                _trail_vis = [p for p in self._trail[max(0, fi - TRAIL_LEN): fi + 1]
+                              if p is not None]
+            else:
+                _trail_vis = self._trail
+            overlay = _draw(frame, hip, kne, ank, ang, _trail_vis, self._scale)
         overlay = self._overlay_path(overlay)
+        if self._person_select_active and self._person_select_poses:
+            overlay = self._draw_person_select_overlay(overlay)
+        if self._skel_guide_active:
+            overlay = self._overlay_skel_guide(overlay)
         self._push_frame(overlay)
         t = fi / self.fps
         self._time_lbl.config(text=f"{t:.2f} s / {self.total_frames/self.fps:.2f} s")
         self._tl_draw()
         self._update_stats(ang, fi)
 
+    def _apply_face_blur(self, bgr: np.ndarray) -> np.ndarray:
+        """Detect faces and apply Gaussian blur for patient privacy."""
+        if self._face_casc is None:
+            self._face_casc = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+            self._prof_casc = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_profileface.xml")
+        out = bgr.copy()
+        h, w = bgr.shape[:2]
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        cv2.equalizeHist(gray, gray)
+        min_face = max(24, int(h * 0.07))
+        all_faces = []
+        for casc in (self._face_casc, self._prof_casc):
+            if casc and not casc.empty():
+                det = casc.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=4,
+                    minSize=(min_face, min_face))
+                if len(det):
+                    all_faces.extend(det.tolist())
+        for (x, y, fw, fh) in all_faces:
+            pad = int(fh * 0.25)
+            x1, y1 = max(0, x - pad), max(0, y - pad)
+            x2, y2 = min(w, x + fw + pad), min(h, y + fh + pad)
+            roi = out[y1:y2, x1:x2]
+            if roi.size == 0:
+                continue
+            k = max(21, int(max(fw, fh) * 0.9) | 1)  # must be odd
+            out[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (k, k), 0)
+        return out
+
     def _push_frame(self, bgr: np.ndarray):
+        if self._blur_faces.get():
+            bgr = self._apply_face_blur(bgr)
         rgb  = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         img  = Image.fromarray(rgb)
         self._photo = ImageTk.PhotoImage(img)
@@ -1816,11 +3319,200 @@ class PendulaticViewer(tk.Tk):
     # ── playback tick ─────────────────────────────────────────────────────────
 
     def _tick(self):
+        # ── Live iPhone IMU goniometer readout ─────────────────────────────────
+        _imu_ang: Optional[float] = None
+        if _IMU_AVAIL and hasattr(self, "_imu_flex_lbl"):
+            st  = _imu.get_state()
+            ang = st["angles"]
+            for lbl, key, role in (
+                    (self._imu_flex_lbl, "pitch", None),
+                    (self._imu_abd_lbl,  "roll",  None),
+                    (self._imu_rot_lbl,  "yaw",   None)):
+                v = ang.get(key, float("nan"))
+                lbl.config(text=f"{v:+.1f}°" if math.isfinite(v) else "—")
+
+            _single = self._imu_single_mode()
+            _note = ("Single-IMU mode: knee angle = shank orientation. Valid "
+                     "only while the thigh stays still — confirm with Overlay "
+                     "against the RGB trace." if _single else "")
+            if self._imu_mode_note.cget("text") != _note:
+                self._imu_mode_note.config(text=_note)
+            if _single:
+                _prox_name, _dist_name = ("Shank", "")
+            elif "Torso" in self._imu_segpair_var.get():
+                _prox_name, _dist_name = ("Torso", "Thigh")
+            else:
+                _prox_name, _dist_name = ("Thigh", "Shank")
+            _err = st.get("bind_error")
+            for lbl, info, name in ((self._imu_prox_lbl, st["proximal"], _prox_name),
+                                    (self._imu_dist_lbl, st["distal"],   _dist_name)):
+                if _err:
+                    lbl.config(text=f"⚠  {name} — server offline", fg="#DC2626")
+                elif info["connected"]:
+                    _hz = info.get("hz", 0.0)
+                    if _hz <= 0:
+                        # Streaming, but no gyro yet — AHRS cannot run on
+                        # accelerometer alone.
+                        lbl.config(text=f"◐  {name} — {info['ip']}  (no gyro)",
+                                   fg="#D97706")
+                    elif _hz < _imu.MIN_USABLE_HZ:
+                        lbl.config(
+                            text=f"⚠  {name} — {info['ip']}  {_hz:.0f} Hz (too slow)",
+                            fg="#D97706")
+                    else:
+                        lbl.config(
+                            text=f"●  {name} — {info['ip']}  {_hz:.0f} Hz",
+                            fg="#16A34A")
+                elif not name:
+                    # Single-IMU mode: the second row is deliberately unused.
+                    lbl.config(text="–  thigh assumed stationary (not measured)",
+                               fg="#94A3B8")
+                else:
+                    lbl.config(text=f"○  {name} — waiting…", fg="#94A3B8")
+            if _err:
+                _msg, _col = _err, "#DC2626"
+            else:
+                # No bind problem: show live socket count and the last
+                # unexpected drop, so a mid-session failure is visible.
+                _drop = st.get("last_drop")
+                _n    = st.get("conns", 0)
+                _eps  = st.get("endpoints", {})
+                _bad  = {p: v for p, v in _eps.items() if v["status"] != "ok"}
+                _slow = [d for d in (st["proximal"], st["distal"])
+                         if d["connected"] and 0 < d.get("hz", 0) < _imu.MIN_USABLE_HZ]
+                if _slow:
+                    _msg = (f"⚠ gyro only {min(d['hz'] for d in _slow):.0f} Hz — "
+                            f"set the app's update interval to 10 ms "
+                            f"(≥{_imu.MIN_USABLE_HZ:.0f} Hz needed for AHRS)")
+                    _col = "#D97706"
+                elif _bad and not any(v["status"] == "ok" for v in _eps.values()):
+                    # Data is arriving but nothing parses — the usual cause is
+                    # an app build whose payload schema differs from ours.
+                    _p, _v = next(iter(_bad.items()))
+                    _msg = (f"⚠ receiving on {_p} but {_v['status']} — "
+                            f"see console for a sample payload")
+                    _col = "#DC2626"
+                elif _drop:
+                    _ago = time.time() - _drop["t"]
+                    _msg = (f"{_n} socket{'s' if _n != 1 else ''} open · last "
+                            f"drop {_ago:.0f}s ago on {_drop['path']} "
+                            f"({_drop['reason']})")
+                    _col = "#D97706" if _ago < 60 else "#94A3B8"
+                elif _n:
+                    _msg, _col = (f"{_n} socket{'s' if _n != 1 else ''} open",
+                                  "#16A34A")
+                else:
+                    _msg, _col = "", "#94A3B8"
+            if self._imu_srv_lbl.cget("text") != _msg:
+                self._imu_srv_lbl.config(text=_msg, fg=_col)
+
+            self._update_sync_ui(st["sync"])
+
+            # Refresh the advertised address if the network changed (e.g. the
+            # hotspot came up after the viewer launched). Enumeration opens
+            # sockets and resolves the hostname, so it is throttled rather
+            # than run on every frame.
+            _now = time.time()
+            if _now >= self._imu_addr_next_scan:
+                self._imu_addr_next_scan = _now + 5.0
+                _ips  = _imu.get_all_local_ips()
+                _addr = f"{_ips[0]}:{_imu.PORT}"
+                if _addr != self._imu_addr_var.get():
+                    self._imu_addr_var.set(_addr)
+                _alt_txt = ("also reachable at: " + ", ".join(_ips[1:])
+                            if len(_ips) > 1 else "")
+                if _alt_txt != self._imu_alt_lbl.cget("text"):
+                    self._imu_alt_lbl.config(text=_alt_txt)
+
+            v = self._imu_axis_value(ang)
+            if math.isfinite(v):
+                _imu_ang = v
+
+        # ── Live goniometer readout (IMU preferred, UDP as fallback) ───────────
+        if hasattr(self, "_goniometer_lbl"):
+            if _imu_ang is not None:
+                dot = "🔴" if (self._goniometer_recording or self._imu_recording) else "🟢"
+                self._goniometer_lbl.config(text=f"{dot} {_imu_ang:.1f}°", fg="#0F172A")
+            else:
+                with self._goniometer_lock:
+                    g_ang, g_last = self._goniometer_angle, self._goniometer_last_rx
+                if g_last == 0.0 or (time.time() - g_last) > 2.0:
+                    self._goniometer_lbl.config(text="⚪ --°", fg="#94A3B8")
+                else:
+                    dot = "🔴" if self._goniometer_recording else "🟢"
+                    self._goniometer_lbl.config(text=f"{dot} {g_ang:.1f}°", fg="#0F172A")
+
+        # ── Recording countdown readout ────────────────────────────────────────
+        if self._recording and hasattr(self, "_rec_timer_lbl"):
+            _dur = self._rec_timer_seconds()
+            if _dur > 0:
+                _left = max(0.0, _dur - (time.time() - self._rec_started_at))
+                self._rec_timer_lbl.config(text=f"⏱ {_left:4.1f}s")
+            else:
+                self._rec_timer_lbl.config(
+                    text=f"⏱ {time.time() - self._rec_started_at:5.1f}s")
+
+        # ── Check for uploaded videos ──────────────────────────────────────────
+        # Path 1: in-process queue (server embedded in viewer — fastest)
+        _auto_open_path: str | None = None
+        if _PPS_AVAIL and not self._recording:
+            try:
+                _auto_open_path = _pps.upload_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+        # Path 2: uploads/ directory scan — catches files written by a standalone
+        # server process (separate terminal), runs every ~2 s.
+        if _auto_open_path is None and not self._recording:
+            _now = time.time()
+            if _now >= self._uploads_next_scan:
+                self._uploads_next_scan = _now + 2.0
+                _udir = os.path.join(BASE_DIR, "uploads")
+                if os.path.isdir(_udir):
+                    for _fn in sorted(os.listdir(_udir)):
+                        if not _fn.lower().endswith(
+                                (".mp4", ".mov", ".avi", ".m4v", ".mkv")):
+                            continue
+                        _fp = os.path.join(_udir, _fn)
+                        if _fp in self._uploads_seen:
+                            continue
+                        self._uploads_seen.add(_fp)
+                        try:
+                            _mt = os.path.getmtime(_fp)
+                        except OSError:
+                            continue
+                        if _mt >= self._viewer_start_time:
+                            _auto_open_path = _fp
+                            break  # open one at a time; next scan handles any others
+
+        if _auto_open_path is not None:
+            try:
+                if getattr(self, "_phone_qr_dlg", None):
+                    self._phone_qr_dlg.destroy()
+                    self._phone_qr_dlg = None
+            except Exception:
+                pass
+            self._uploads_seen.add(_auto_open_path)
+            self._status.config(
+                text=f"Received from phone: {os.path.basename(_auto_open_path)}"
+                     "  —  place markers then Track All.")
+            self.after(max(1, int(1000 / FPS_CAP)), self._tick)  # keep loop alive
+            self._open_video(_auto_open_path)
+            # _open_video may have called _pps.stop() (when _phone_mode was True).
+            # Restart the server so the phone can continue to upload more videos.
+            if _PPS_AVAIL:
+                try:
+                    _pps.start(upload_dir=os.path.join(BASE_DIR, "uploads"))
+                except Exception:
+                    pass
+            return
+
         if self._live and (self.cap is not None or self._phone_mode):
             # ── Frame acquisition: USB camera or phone WebSocket stream ──────
             ok    = False
             frame = None
             if self._phone_mode and _PPS_AVAIL:
+                # ── Real-time WebSocket frame (future / Android) ──────────────
                 try:
                     frame = _pps.frame_queue.get_nowait()
                     ok    = True
@@ -1892,6 +3584,9 @@ class PendulaticViewer(tk.Tk):
                 overlay = self._overlay_path(overlay)
                 # Thigh recline angle overlay (live only)
                 overlay = self._overlay_recline(overlay, hip, kne)
+                # Position readiness check (live preview only, not during recording)
+                if not self._recording:
+                    overlay = self._overlay_position_check(overlay, hip, kne, ank, show_ang)
                 # Countdown overlay
                 if self._countdown_remaining > 0:
                     n = self._countdown_remaining
@@ -2019,6 +3714,172 @@ class PendulaticViewer(tk.Tk):
         cv2.putText(frame, line1, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
                     fscale, color_bgr, thick, cv2.LINE_AA)
         return frame
+
+    # ── position check overlay ────────────────────────────────────────────────
+
+    def _overlay_position_check(self, frame: np.ndarray, hip, kne, ank,
+                                 ang: float) -> np.ndarray:
+        """Draw a position-readiness banner during live preview (before recording).
+
+        Runs only when the tracker is ready so markers are confirmed placed.
+        Checks:
+          - Shank length >= 60 px  (markers not jumbled together)
+          - Ankle at or below knee in image space (y increases downward)
+          - Hip-knee-ankle angle in [-30°, 120°] (covers all valid test setups)
+          - Angle is finite (tracker hasn't lost the leg)
+        Shows green "Ready" when all pass, orange with the first failing check otherwise.
+        """
+        if not self.tracker.ready:
+            return frame
+        if kne is None or ank is None:
+            return frame
+
+        warnings: list[str] = []
+
+        # Check 1: shank long enough to be valid
+        sl = float(getattr(self.tracker, "shank_len", 0))
+        if sl < 60:
+            warnings.append(f"Shank too short ({sl:.0f}px) — recheck knee/ankle markers")
+
+        # Check 2: ankle should appear below knee (higher y = lower in image)
+        kny = float(kne[1])
+        any_ = float(ank[1])
+        if any_ < kny - 30:   # ankle more than 30px above knee in the image
+            warnings.append("Ankle appears above knee — flip camera or recheck markers")
+
+        # Check 3: angle in expected range for the pendulum test
+        if math.isfinite(ang):
+            if ang < -30 or ang > 120:
+                warnings.append(f"Leg angle ({ang:.0f}deg) is outside expected range")
+        else:
+            warnings.append("Cannot measure angle — reposition or replace markers")
+
+        ok = len(warnings) == 0
+        color_bgr = (50, 200, 70) if ok else (30, 120, 255)   # green / orange
+        label = "Position OK — ready to record" if ok else warnings[0]
+
+        fh, fw = frame.shape[:2]
+        fscale = max(0.4, fw / 1280)
+        thick  = max(1, round(fscale * 1.5))
+
+        # Draw at top-left (recline indicator is at bottom-left)
+        tx, ty = 10, 30
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fscale, thick)
+        cv2.rectangle(frame, (tx - 4, ty - th - 6), (tx + tw + 6, ty + 6),
+                      (0, 0, 0), -1)
+        cv2.putText(frame, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
+                    fscale, color_bgr, thick, cv2.LINE_AA)
+
+        # ── Visibility bars (MediaPipe-backed tracker only) ───────────────────
+        if hasattr(self.tracker, "last_kne_vis"):
+            def _vc(v):
+                if v >= 0.70: return (50, 220, 80)    # green
+                if v >= 0.50: return (30, 200, 255)   # yellow
+                return (50, 60, 220)                   # red
+
+            vis_y  = ty + th + 18
+            sscale = max(0.35, fscale * 0.78)
+            x_pos  = tx
+            last_bh = th
+            for name, vis in [("Hip", self.tracker.last_hip_vis),
+                               ("Kne", self.tracker.last_kne_vis),
+                               ("Ank", self.tracker.last_ank_vis)]:
+                tag = f"{name}:{vis:.2f}"
+                col = _vc(vis)
+                (bw, bh), _ = cv2.getTextSize(
+                    tag, cv2.FONT_HERSHEY_SIMPLEX, sscale, 1)
+                last_bh = bh
+                cv2.rectangle(frame,
+                              (x_pos - 2, vis_y - bh - 3),
+                              (x_pos + bw + 3, vis_y + 3), (0, 0, 0), -1)
+                cv2.putText(frame, tag, (x_pos, vis_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, sscale, col, 1,
+                            cv2.LINE_AA)
+                x_pos += bw + 14
+
+            cov     = self.tracker.coverage_pct
+            cov_col = ((50, 220, 80) if cov >= 0.75
+                       else (30, 200, 255) if cov >= 0.50
+                       else (50, 60, 220))
+            cov_tag = f"| Cov:{cov*100:.0f}%"
+            (cw, ch), _ = cv2.getTextSize(
+                cov_tag, cv2.FONT_HERSHEY_SIMPLEX, sscale, 1)
+            cv2.rectangle(frame,
+                          (x_pos - 2, vis_y - ch - 3),
+                          (x_pos + cw + 3, vis_y + 3), (0, 0, 0), -1)
+            cv2.putText(frame, cov_tag, (x_pos, vis_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, sscale, cov_col, 1,
+                        cv2.LINE_AA)
+
+            if self.tracker.assessor_warning:
+                warn_y = vis_y + last_bh + 14
+                wtag   = "! Assessor may be tracked -- recheck camera aim"
+                (ww, wh), _ = cv2.getTextSize(
+                    wtag, cv2.FONT_HERSHEY_SIMPLEX, sscale, 1)
+                cv2.rectangle(frame,
+                              (tx - 4, warn_y - wh - 3),
+                              (tx + ww + 4, warn_y + 3), (20, 0, 80), -1)
+                cv2.putText(frame, wtag, (tx, warn_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, sscale,
+                            (100, 80, 255), 1, cv2.LINE_AA)
+
+        return frame
+
+    # ── person-select overlay ─────────────────────────────────────────────────
+
+    _PS_COLORS = [
+        (0, 230, 150),   # person 1 — cyan-green
+        (0, 130, 255),   # person 2 — orange
+        (220,  50, 220), # person 3 — magenta
+        (50,  220, 255), # person 4 — yellow
+    ]
+    _PS_CONNECTIONS = [
+        (11, 12), (11, 23), (12, 24), (23, 24),
+        (23, 25), (24, 26), (25, 27), (26, 28),
+    ]
+
+    def _draw_person_select_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """Draw all MP-detected persons with numbered colored skeletons.
+
+        Landmark positions are 0-1 fractions, so multiplying by the frame
+        dimensions works regardless of display scale.
+        """
+        out = frame.copy()
+        h, w = out.shape[:2]
+
+        for i, lm_set in enumerate(self._person_select_poses):
+            color = self._PS_COLORS[i % len(self._PS_COLORS)]
+            pts   = [(int(lm.x * w), int(lm.y * h)) for lm in lm_set]
+
+            for a, b in self._PS_CONNECTIONS:
+                if a < len(pts) and b < len(pts):
+                    cv2.line(out, pts[a], pts[b], color, 2, cv2.LINE_AA)
+
+            for pt in pts:
+                cv2.circle(out, pt, 5, color, -1, cv2.LINE_AA)
+                cv2.circle(out, pt, 6, (0, 0, 0), 1, cv2.LINE_AA)
+
+            # Numbered badge above mid-hip
+            if len(pts) > 24:
+                mx = (pts[23][0] + pts[24][0]) // 2
+                my = (pts[23][1] + pts[24][1]) // 2 - 28
+            elif pts:
+                mx, my = pts[0][0], pts[0][1] - 28
+            else:
+                continue
+            cv2.circle(out, (mx, my), 18, (10, 10, 10), -1, cv2.LINE_AA)
+            cv2.circle(out, (mx, my), 18, color, 2,  cv2.LINE_AA)
+            cv2.putText(out, str(i + 1), (mx - 7, my + 7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
+
+        # Instruction banner
+        cv2.rectangle(out, (0, 0), (w, 44), (10, 10, 30), -1)
+        n = len(self._person_select_poses)
+        cv2.putText(
+            out,
+            f"MediaPipe detected {n} person(s)  —  CLICK the PATIENT",
+            (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 230, 130), 2, cv2.LINE_AA)
+        return out
 
     # ── path draw ─────────────────────────────────────────────────────────────
 
@@ -2176,8 +4037,11 @@ class PendulaticViewer(tk.Tk):
                 cap2.set(cv2.CAP_PROP_POS_FRAMES, last_kf_fi)
                 ok, f0 = cap2.read()
                 if ok:
-                    t2 = _ArcTracker()
+                    _side_p = getattr(self.tracker, '_side', 'right')
+                    t2 = _MPBatchTracker(_side_p, fps=self.fps) if _MP_AVAIL else _ArcTracker()
                     t2.init(f0, hip0, kne0, ank_init)
+                    if hasattr(self.tracker, '_anchor_xfrac') and self.tracker._anchor_xfrac is not None:
+                        t2._anchor_xfrac = self.tracker._anchor_xfrac
                     new_ang, new_tr = {}, {}
                     for fi in range(last_kf_fi + 1, n_total):
                         ok2, fr = cap2.read()
@@ -2224,14 +4088,23 @@ class PendulaticViewer(tk.Tk):
         self._frame_idx = fi
         self._show_frame_idx(fi)
 
+    def _on_escape_key(self, _event=None):
+        if self._skel_guide_active:
+            self._skel_guide_active = False
+            self._skel_guide_step   = 0
+            self._skel_guide_tmp    = [None, None, None]
+            self._hl_btn(None)
+            self._status.config(text="Manual skeleton cancelled.")
+            self._show_frame_idx(self._frame_idx)
+
     # ── angle post-processing ─────────────────────────────────────────────────
 
     @staticmethod
     def _postprocess_angles(angles: list) -> list:
-        """5-frame rolling median — kills jitter without distorting oscillation."""
+        """9-frame rolling median — kills jitter without distorting oscillation peaks."""
         arr = np.array(angles, dtype=float)
         out = arr.copy()
-        W   = 5
+        W   = 9
         for i in range(len(arr)):
             if not np.isfinite(arr[i]):
                 continue
@@ -2247,17 +4120,15 @@ class PendulaticViewer(tk.Tk):
 
     def _clear_pt_panel(self):
         self._clear_annotations()
-        self._mas_lbl.config(text="—", fg="#94A3B8")
         n_sel = sum(1 for v in self._param_active.values() if v.get()) \
                 if hasattr(self, "_param_active") else 6
         self._pt_score_key_lbl.config(
             text=f"PT score ({n_sel} param{'s' if n_sel != 1 else ''} selected):")
-        self._pt_score_lbl.config(text="—")
+        self._pt_score_lbl.config(text="—", fg="#475569")
         for lbl in self._pt_param_lbls.values():
             lbl.config(text="—", fg="#0F172A")
-        if hasattr(self, "_mas_dots"):
-            for dot, _ in self._mas_dots.values():
-                dot.config(bg="#E2E8F0", fg="#94A3B8")
+        if hasattr(self, "_pt_gauge"):
+            self._pt_gauge.itemconfig(self._gauge_ptr, state="hidden")
         self._last_pt_params = None
         self._last_pt_s      = None
         self._last_pt_f      = None
@@ -2347,18 +4218,24 @@ class PendulaticViewer(tk.Tk):
         n_sel = sum(1 for v in self._param_active.values() if v.get())
         self._pt_score_key_lbl.config(
             text=f"PT score ({n_sel} param{'s' if n_sel != 1 else ''} selected):")
-        self._pt_score_lbl.config(text=f"{pt_custom:.3f}")
 
-        mas_col = self._MAS_COLORS_LIGHT.get(mas, "#0F172A")
-        self._mas_lbl.config(text=f"MAS {mas}", fg=mas_col)
+        # Colour score label by zone
+        if pt_custom <= PT_HEALTHY_MAX:
+            _zone_col = "#16A34A"   # green
+        elif pt_custom <= PT_BORDERLINE_MAX:
+            _zone_col = "#D97706"   # amber
+        else:
+            _zone_col = "#DC2626"   # red
+        self._pt_score_lbl.config(text=f"{pt_custom:.3f}", fg=_zone_col)
 
-        # Update MAS dots
-        if hasattr(self, "_mas_dots"):
-            for mv, (dot, mc) in self._mas_dots.items():
-                if mv == str(mas):
-                    dot.config(bg=mc, fg="#FFFFFF")
-                else:
-                    dot.config(bg="#E2E8F0", fg="#94A3B8")
+        # Update gauge pointer (▼ sits above the colored bar)
+        if hasattr(self, "_pt_gauge"):
+            _gx = int(min(max(pt_custom, 0.0), 1.0) * self._gauge_w)
+            _gx = max(6, min(_gx, self._gauge_w - 6))
+            _pt = self._gauge_top
+            self._pt_gauge.coords(self._gauge_ptr,
+                _gx, _pt, _gx - 5, _pt - 10, _gx + 5, _pt - 10)
+            self._pt_gauge.itemconfig(self._gauge_ptr, state="normal")
 
         for key, lbl in self._pt_param_lbls.items():
             val     = params.get(key, float("nan"))
@@ -2445,6 +4322,265 @@ class PendulaticViewer(tk.Tk):
         self._vline.set_xdata([t_now, t_now])
         self._ax.set_xlim(0, max(t_now + 2, 5.0))
         self._plot_canvas.draw_idle()
+
+    def _load_imu_overlay(self, imu_csv: str, video_t0: Optional[float] = None):
+        """Overlay the recorded IMU goniometer trace on the angle plot.
+
+        Both files stamp every sample with time.time(), so the IMU trace is
+        placed on the video's time axis by subtracting the video's start
+        epoch — the same alignment motive_mobile_sync.py relies on."""
+        if not imu_csv or not os.path.exists(imu_csv):
+            return False
+        axis_col = {"pitch": "hip_pitch_deg", "roll": "hip_roll_deg",
+                    "yaw": "hip_yaw_deg"}[self._imu_axis_var.get()]
+        ts, vals, t0_meta = [], [], None
+        try:
+            with open(imu_csv, encoding="utf-8") as f:
+                rows = []
+                for line in f:
+                    if line.startswith("#"):
+                        if "t0_epoch" in line:
+                            try:
+                                t0_meta = float(line.split(",", 1)[1].strip())
+                            except (IndexError, ValueError):
+                                pass
+                        continue
+                    rows.append(line)
+                for r in csv.DictReader(rows):
+                    v = r.get(axis_col, "")
+                    if not v:
+                        continue
+                    try:
+                        ts.append(float(r["t_epoch"]))
+                        vals.append(float(v))
+                    except (KeyError, ValueError):
+                        continue
+        except OSError:
+            return False
+        if len(ts) < 2:
+            return False
+
+        base = video_t0 if video_t0 is not None else (t0_meta or ts[0])
+        rel = [t - base for t in ts]
+        self._line_imu.set_data(rel, vals)
+        self._line_imu.set_visible(True)
+        # Explicit handles — a bare legend() would also list the other
+        # (hidden) methodology lines.
+        self._ax.legend([self._line_plot, self._line_imu],
+                        ["Active", "iPhone IMU"],
+                        loc="upper right", fontsize=7, framealpha=0.85)
+        self._plot_canvas.draw_idle()
+        return True
+
+    def _clear_imu_overlay(self):
+        self._line_imu.set_data([], [])
+        self._line_imu.set_visible(False)
+        _lg = self._ax.get_legend()
+        if _lg is not None:
+            _lg.remove()
+        self._plot_canvas.draw_idle()
+
+    # ── measurement methodologies ────────────────────────────────────────────
+
+    def _resample_to_frames(self, t_src, a_src, t_offset: float = 0.0) -> list:
+        """Interpolate a (time, angle) series onto this video's frame grid.
+
+        Frames outside the source's coverage stay NaN rather than being
+        clamped, so a short trace does not masquerade as a full-length one."""
+        n = self.total_frames or len(self._angles)
+        if n <= 0:
+            return []
+        t = np.asarray(t_src, dtype=float) - float(t_offset)
+        a = np.asarray(a_src, dtype=float)
+        ok = np.isfinite(t) & np.isfinite(a)
+        if ok.sum() < 2:
+            return [float("nan")] * n
+        t, a = t[ok], a[ok]
+        order = np.argsort(t)
+        t, a = t[order], a[order]
+        grid = np.arange(n) / max(self.fps, 1.0)
+        out = np.interp(grid, t, a, left=float("nan"), right=float("nan"))
+        out[(grid < t[0]) | (grid > t[-1])] = float("nan")
+        return [float(v) for v in out]
+
+    def _release_time(self, angles) -> Optional[float]:
+        """Release instant (s) for a frame-indexed series, or None."""
+        if not _PT_AVAIL:
+            return None
+        arr = np.asarray(angles, dtype=float)
+        if np.sum(np.isfinite(arr)) < 50:
+            return None
+        try:
+            p = compute_pt_params(np.arange(len(arr)) / max(self.fps, 1.0), arr)
+        except Exception:
+            return None
+        if p is None:
+            return None
+        t_r = p.get("t_r")
+        if t_r is None or len(t_r) == 0:
+            return None
+        return float(t_r[0])
+
+    def _set_method_series(self, key: str, angles: list):
+        self._method_series[key] = list(angles)
+
+    def _active_method(self) -> str:
+        return self._method_key(self._method_var.get())
+
+    def _cmd_set_method(self):
+        """Switch the active methodology: swaps the analysed series and
+        recomputes the PT score, stats and plot from it."""
+        key = self._active_method()
+        series = self._method_series.get(key)
+        if not series:
+            lbl = dict((k, l) for k, l, _c in self._METHODS)[key]
+            hint = {
+                "rgb":  "Run ▶▶ Track All first.",
+                "imu":  "Record with 'Sync Goniometer' on, or open a video "
+                        "that has a Trial_N_imu.csv beside it.",
+                "opti": "Load a Motive export with ＋ OptiTrack.",
+            }[key]
+            messagebox.showinfo("No data for this methodology",
+                                f"No {lbl} series is loaded.\n\n{hint}")
+            # Revert the dropdown to whatever is actually displayed.
+            for k, l, _c in self._METHODS:
+                if self._method_series.get(k) and k == getattr(
+                        self, "_shown_method", None):
+                    self._method_var.set(l)
+                    break
+            return
+
+        self._shown_method = key
+        self._angles = list(series)
+        self._clear_annotations()
+        self._release_fi = None
+        fi = min(self._frame_idx, max(0, len(self._angles) - 1))
+        self._update_plot(fi)
+        self._compute_and_show_pt()
+        self._refresh_overlay()
+        lbl = dict((k, l) for k, l, _c in self._METHODS)[key]
+        n_ok = sum(1 for a in self._angles if math.isfinite(a))
+        self._status.config(
+            text=f"Methodology: {lbl} — {n_ok} valid frames. "
+                 "PT score and graph recomputed from this source.")
+
+    def _refresh_overlay(self):
+        """Show every loaded methodology together, or hide them all."""
+        show = bool(self._overlay_var.get())
+        shown = []
+        for key, lbl, _col in self._METHODS:
+            line = self._overlay_lines[key]
+            series = self._method_series.get(key)
+            if show and series:
+                ts = [i / max(self.fps, 1.0) for i, a in enumerate(series)
+                      if math.isfinite(a)]
+                vs = [a for a in series if math.isfinite(a)]
+                if len(ts) >= 2:
+                    line.set_data(ts, vs)
+                    line.set_visible(True)
+                    shown.append((line, lbl))
+                    continue
+            line.set_data([], [])
+            line.set_visible(False)
+
+        # The active trace duplicates one overlay line; hide it while
+        # overlaying so the legend maps one line to one methodology.
+        self._line_plot.set_visible(not (show and shown))
+        lg = self._ax.get_legend()
+        if lg is not None:
+            lg.remove()
+        if shown:
+            # Build from explicit handles: a default legend() would also pick
+            # up the hidden active trace and show a phantom entry.
+            self._ax.legend([h for h, _l in shown], [l for _h, l in shown],
+                            loc="upper right", fontsize=7, framealpha=0.85)
+        self._plot_canvas.draw_idle()
+
+    def _cmd_load_optitrack(self):
+        """Load a Motive/OptiTrack export as the OptiTrack methodology."""
+        if not _PT_AVAIL:
+            messagebox.showwarning("Unavailable",
+                                   "pendulastic_pt_score is not importable.")
+            return
+        if self.cap is None or self.total_frames <= 0:
+            messagebox.showinfo("No video", "Open or record a video first — the "
+                                "OptiTrack trace is resampled onto its frame grid.")
+            return
+        path = filedialog.askopenfilename(
+            title="Select OptiTrack CSV",
+            filetypes=[("CSV", "*.csv"), ("All", "*.*")],
+            initialdir=os.path.join(BASE_DIR, "Recordings"))
+        if not path:
+            return
+        try:
+            t_o, a_o = load_optitrack(path)
+        except Exception as e:
+            messagebox.showerror("Load error", f"OptiTrack CSV:\n{e}")
+            return
+
+        # OptiTrack has no shared clock with the video, so align on the
+        # release event — the one landmark both modalities observe.
+        offset = 0.0
+        note   = "aligned at t=0 (no release detected)"
+        rgb = self._method_series.get("rgb") or self._angles
+        t_r_vid = self._release_time(rgb) if rgb else None
+        t_r_opt = self._release_time(
+            self._resample_to_frames(t_o, a_o, 0.0)) if len(t_o) else None
+        if t_r_vid is not None and t_r_opt is not None:
+            offset = t_r_opt - t_r_vid
+            note   = f"release-aligned (offset {offset:+.2f} s)"
+
+        self._set_method_series("opti", self._resample_to_frames(t_o, a_o, offset))
+        self._opti_csv_path = path
+        n_ok = sum(1 for a in self._method_series["opti"] if math.isfinite(a))
+        self._status.config(
+            text=f"OptiTrack loaded: {os.path.basename(path)} — "
+                 f"{n_ok} frames, {note}.")
+        self._method_var.set("OptiTrack")
+        self._cmd_set_method()
+
+    def _load_imu_series(self, imu_csv: str, video_t0: Optional[float] = None) -> bool:
+        """Load the recorded IMU trace as the iPhone methodology.
+
+        The AHRS relative angle is a flexion angle (0° at the zeroed reference
+        posture); the viewer works in interior angles (180° = extended), so the
+        two are related by interior = 180 - flexion. This assumes Zero was
+        taken with the limb extended, which is what the panel instructs."""
+        if not imu_csv or not os.path.exists(imu_csv):
+            return False
+        axis_col = {"pitch": "hip_pitch_deg", "roll": "hip_roll_deg",
+                    "yaw": "hip_yaw_deg"}[self._imu_axis_var.get()]
+        ts, vals, t0_meta = [], [], None
+        try:
+            with open(imu_csv, encoding="utf-8") as f:
+                rows = []
+                for line in f:
+                    if line.startswith("#"):
+                        if "t0_epoch" in line:
+                            try:
+                                t0_meta = float(line.split(",", 1)[1].strip())
+                            except (IndexError, ValueError):
+                                pass
+                        continue
+                    rows.append(line)
+                for r in csv.DictReader(rows):
+                    v = r.get(axis_col, "")
+                    if not v:
+                        continue
+                    try:
+                        ts.append(float(r["t_epoch"]))
+                        vals.append(180.0 - float(v))
+                    except (KeyError, ValueError):
+                        continue
+        except OSError:
+            return False
+        if len(ts) < 2:
+            return False
+        # Epoch stamps map onto the video timeline by subtracting the video's
+        # start epoch — the alignment the shared time base exists for.
+        base = video_t0 if video_t0 else (t0_meta or ts[0])
+        self._set_method_series("imu", self._resample_to_frames(ts, vals, base))
+        return True
 
     def _clear_annotations(self):
         for a in self._plot_annots:
@@ -2603,18 +4739,40 @@ class PendulaticViewer(tk.Tk):
 
     # ── toolbar commands ──────────────────────────────────────────────────────
 
-    def _cmd_open_camera(self):
-        # Probe indices 0-4 with DirectShow (faster on Windows)
-        available = []   # list of (idx, w, h)
+    def _probe_cameras_bg(self) -> None:
+        """Probe webcam indices 0-4 in a background thread (MSMF first, DirectShow fallback).
+        Populates self._available_cams so _cmd_open_camera never blocks the UI thread."""
+        found: list = []
+        seen_idx: set = set()
         for idx in range(5):
-            c = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if c.isOpened():
-                ok, _ = c.read()
-                if ok:
-                    w = int(c.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h = int(c.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    available.append((idx, w, h))
-            c.release()
+            for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW):
+                try:
+                    c = cv2.VideoCapture(idx, backend)
+                    if c.isOpened():
+                        ok, _ = c.read()
+                        if ok and idx not in seen_idx:
+                            w = int(c.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(c.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            found.append((idx, backend, w, h))
+                            seen_idx.add(idx)
+                    c.release()
+                    if idx in seen_idx:
+                        break  # found it with this backend, skip DirectShow for same index
+                except Exception:
+                    pass
+        self._available_cams = found
+        self._cam_probe_done = True
+
+    def _cmd_open_camera(self):
+        if not self._cam_probe_done:
+            messagebox.showinfo(
+                "Camera scan",
+                "Webcam scan is still in progress.\n"
+                "Please wait a moment and try again.",
+                parent=self)
+            return
+
+        available = [(idx, w, h) for idx, _backend, w, h in self._available_cams]
 
         # Fetch friendly names from Windows (best-effort)
         names = []
@@ -2667,8 +4825,12 @@ class PendulaticViewer(tk.Tk):
                   btn.winfo_rooty() + btn.winfo_height())
 
     def _open_camera_by_index(self, idx: int):
-        """Open the camera at the given DirectShow index and activate live mode."""
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        """Open the camera at the given index using the backend found during probe."""
+        backend = next(
+            (b for i, b, _w, _h in self._available_cams if i == idx),
+            cv2.CAP_DSHOW,
+        )
+        cap = cv2.VideoCapture(idx, backend)
         if not cap.isOpened():
             messagebox.showerror("Camera error", f"Could not open camera {idx}.")
             return
@@ -2778,7 +4940,8 @@ class PendulaticViewer(tk.Tk):
         self._skip_marker_check = False
 
         try:
-            local_ip, http_port, _ws_port = _pps.start()
+            upload_dir = os.path.join(BASE_DIR, "uploads")
+            local_ip, http_port, _ws_port = _pps.start(upload_dir=upload_dir)
         except Exception as exc:
             messagebox.showerror("Phone Camera", f"Failed to start server:\n{exc}")
             self._phone_mode = False
@@ -2803,9 +4966,19 @@ class PendulaticViewer(tk.Tk):
         self._time_lbl.config(text="⬤ LIVE")
 
         url = f"http://{local_ip}:{http_port}"
-        self._show_phone_qr_dialog(url)
+        alt_ips: list[str] = []
+        if _PPS_AVAIL and hasattr(_pps, "get_all_local_ips"):
+            try:
+                all_ips = _pps.get_all_local_ips()
+                alt_ips = [ip for ip in all_ips if ip != local_ip]
+            except Exception:
+                pass
+        self._phone_qr_dlg = None
+        self._show_phone_qr_dialog(url, alt_ips=alt_ips)
+        if _PPS_AVAIL and hasattr(_pps, "get_public_url"):
+            self._poll_ngrok(0)
 
-    def _show_phone_qr_dialog(self, url: str):
+    def _show_phone_qr_dialog(self, url: str, alt_ips: list[str] | None = None):
         """Show a non-modal dialog with QR code and URL for phone connection."""
         C = _C
         BG  = C["BG"]
@@ -2817,12 +4990,14 @@ class PendulaticViewer(tk.Tk):
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.attributes("-topmost", True)
+        self._phone_qr_dlg = dlg
 
-        tk.Label(dlg, text="Scan with your phone's camera app",
+        tk.Label(dlg, text="Open this URL on your phone",
                  bg=BG, fg=FG, font=("Segoe UI", 11, "bold")).pack(pady=(14, 4))
 
         # Try to generate QR code image using the qrcode package
         qr_photo = None
+        self._phone_qr_label = None  # reset; set below if QR renders
         try:
             import qrcode as _qrmod
             qr = _qrmod.QRCode(box_size=7, border=3)
@@ -2836,6 +5011,7 @@ class PendulaticViewer(tk.Tk):
             lbl_qr = tk.Label(dlg, image=qr_photo, bg=BG, relief="flat")
             lbl_qr.image = qr_photo   # keep reference alive
             lbl_qr.pack(pady=6)
+            self._phone_qr_label = lbl_qr  # updated when ngrok URL arrives
         except Exception as _qr_err:
             tk.Label(dlg, text=f"(QR unavailable: {_qr_err})",
                      bg=BG, fg=FG2, font=("Segoe UI", 8)).pack(pady=4)
@@ -2843,10 +5019,17 @@ class PendulaticViewer(tk.Tk):
         tk.Label(dlg, text="— or type this URL in your phone's browser —",
                  bg=BG, fg=FG2, font=("Segoe UI", 8)).pack()
 
-        # URL entry + Copy button
+        # ── Primary URL entry + Copy button ──────────────────────────────────
+        http_port = url.rsplit(":", 1)[-1]
+
+        # Current displayed URL (may switch when user picks an alt IP or ngrok connects)
+        _active_url = [url]
+        self._phone_qr_active_url = _active_url  # updated by _poll_ngrok
+
         row = tk.Frame(dlg, bg=BG)
-        row.pack(padx=16, pady=(4, 8))
+        row.pack(padx=16, pady=(4, 4))
         url_var = tk.StringVar(value=url)
+        self._phone_qr_url_var = url_var  # updated by _poll_ngrok
         url_ent = tk.Entry(row, textvariable=url_var, state="readonly",
                            font=("Segoe UI Mono", 12), width=26,
                            bg="#1E293B", fg="#E2E8F0",
@@ -2856,7 +5039,7 @@ class PendulaticViewer(tk.Tk):
 
         def _copy():
             dlg.clipboard_clear()
-            dlg.clipboard_append(url)
+            dlg.clipboard_append(_active_url[0])
             copy_btn.config(text="Copied!")
             dlg.after(1500, lambda: copy_btn.config(text="Copy"))
 
@@ -2865,19 +5048,164 @@ class PendulaticViewer(tk.Tk):
                              relief="flat", padx=8, pady=3, cursor="hand2")
         copy_btn.pack(side="left")
 
+        # ── Alternate IPs ─────────────────────────────────────────────────────
+        if alt_ips:
+            tk.Label(dlg,
+                     text="If the URL above doesn't work, try an alternate address:",
+                     bg=BG, fg=FG2, font=("Segoe UI", 8)).pack(pady=(2, 0))
+            for alt_ip in alt_ips[:4]:   # show at most 4 alternates
+                alt_url = f"http://{alt_ip}:{http_port}"
+                alt_row = tk.Frame(dlg, bg=BG)
+                alt_row.pack(padx=16, pady=1)
+
+                alt_ent = tk.Entry(alt_row, font=("Segoe UI Mono", 9), width=28,
+                                   bg="#162032", fg="#94A3B8",
+                                   readonlybackground="#162032",
+                                   relief="flat", bd=4)
+                alt_ent.insert(0, alt_url)
+                alt_ent.config(state="readonly")
+                alt_ent.pack(side="left", padx=(0, 4))
+
+                def _use_this(u=alt_url):
+                    _active_url[0] = u
+                    url_var.set(u)
+
+                tk.Button(alt_row, text="Use", command=_use_this,
+                          bg="#1E3A5F", fg="#93C5FD", font=("Segoe UI", 8),
+                          relief="flat", padx=6, pady=2, cursor="hand2").pack(side="left")
+
+        # ── ngrok tunnel status ───────────────────────────────────────────────
+        self._phone_tunnel_lbl = tk.Label(
+            dlg, text="Connecting to HTTPS tunnel…",
+            bg=BG, fg="#FBBF24", font=("Segoe UI", 9))
+        self._phone_tunnel_lbl.pack(pady=(6, 0))
+
+        def _setup_token():
+            from tkinter import simpledialog
+            token = simpledialog.askstring(
+                "Set up ngrok Auth Token",
+                "1. Create free account at: dashboard.ngrok.com/signup\n"
+                "2. Copy token from:  dashboard.ngrok.com/get-started/your-authtoken\n\n"
+                "Paste token here:",
+                parent=dlg)
+            if not token or not token.strip():
+                return
+            token = token.strip()
+            try:
+                from pyngrok import ngrok as _ng
+                _ng.set_auth_token(token)
+            except Exception as exc:
+                messagebox.showerror("ngrok", f"Failed to save token:\n{exc}", parent=dlg)
+                return
+            # Reset state and retry tunnel
+            try:
+                old = _pps._ngrok_tunnel
+                if old is not None:
+                    from pyngrok import ngrok as _ng2
+                    _ng2.disconnect(old.public_url)
+            except Exception:
+                pass
+            _pps._ngrok_tunnel = None
+            _pps._ngrok_status = "not_started"
+            _pps._public_url   = None
+            try:
+                self._phone_tunnel_lbl.config(
+                    text="Connecting to HTTPS tunnel…", fg="#FBBF24")
+            except Exception:
+                pass
+            import threading as _thr
+            _thr.Thread(target=_pps._ngrok_worker, args=(_pps.PORT_HTTP,),
+                        daemon=True, name="pps-ngrok-retry").start()
+            self._poll_ngrok(0)
+
+        self._ngrok_setup_btn = tk.Button(
+            dlg, text="Set up free HTTPS tunnel  →",
+            command=_setup_token,
+            bg=BG, fg="#60A5FA", font=("Segoe UI", 8),
+            relief="flat", cursor="hand2", bd=0, pady=0)
+        self._ngrok_setup_btn.pack(pady=(1, 3))
+
+        # ── Connection status ─────────────────────────────────────────────────
         # Connection status — polled from _tick() by name
         self._phone_status_lbl = tk.Label(
             dlg, text="Waiting for phone…",
             bg=BG, fg="#FBBF24", font=("Segoe UI", 11, "bold"))
-        self._phone_status_lbl.pack(pady=(2, 8))
+        self._phone_status_lbl.pack(pady=(6, 4))
 
-        tk.Label(dlg, text="Phone browser streams back-camera at 15 fps.\n"
-                            "Place Knee + Ankle markers then ⏺ Record.",
+        tk.Label(dlg, text="Record with your back camera → tap Send to Desktop.\n"
+                            "The video opens here automatically when the upload finishes.",
                  bg=BG, fg=FG2, font=("Segoe UI", 8), justify="center").pack(pady=(0, 6))
 
         tk.Button(dlg, text="Close", command=dlg.destroy,
                   bg="#475569", fg="#E2E8F0", font=("Segoe UI", 10),
                   relief="flat", padx=14, pady=4, cursor="hand2").pack(pady=(0, 14))
+
+    # ── ngrok URL polling ──────────────────────────────────────────────────────
+
+    def _poll_ngrok(self, attempts: int) -> None:
+        """Called periodically after phone dialog opens; updates URL/QR when tunnel ready."""
+        if not self._phone_mode or not _PPS_AVAIL:
+            return
+        if not hasattr(_pps, "get_public_url") or not hasattr(_pps, "get_ngrok_status"):
+            return
+
+        pub = _pps.get_public_url()
+        status, err = _pps.get_ngrok_status()
+
+        if pub:
+            # Update stored URL
+            if hasattr(self, "_phone_qr_active_url"):
+                self._phone_qr_active_url[0] = pub
+            if hasattr(self, "_phone_qr_url_var"):
+                try:
+                    self._phone_qr_url_var.set(pub)
+                except Exception:
+                    pass
+            # Regenerate QR for the HTTPS URL
+            if getattr(self, "_phone_qr_label", None) is not None:
+                try:
+                    import qrcode as _qrmod
+                    qr = _qrmod.QRCode(box_size=7, border=3)
+                    qr.add_data(pub)
+                    qr.make(fit=True)
+                    raw = qr.make_image(fill_color="black", back_color="white")
+                    pil_img = raw.get_image() if hasattr(raw, "get_image") else raw
+                    pil_img = pil_img.convert("RGB")
+                    photo = ImageTk.PhotoImage(pil_img)
+                    self._phone_qr_label.config(image=photo)
+                    self._phone_qr_label.image = photo
+                except Exception:
+                    pass
+            # Update tunnel status label and hide setup button
+            if getattr(self, "_phone_tunnel_lbl", None) is not None:
+                try:
+                    self._phone_tunnel_lbl.config(
+                        text="✓ HTTPS tunnel ready — works on any network (even cellular)",
+                        fg="#4ADE80")
+                except Exception:
+                    pass
+            if getattr(self, "_ngrok_setup_btn", None) is not None:
+                try:
+                    self._ngrok_setup_btn.pack_forget()
+                except Exception:
+                    pass
+        elif status == "error":
+            if getattr(self, "_phone_tunnel_lbl", None) is not None:
+                msg = "HTTPS tunnel unavailable — use WiFi URL above"
+                if err and ("4018" in err or "401" in err or "auth" in err.lower()):
+                    msg = "ngrok auth needed: ngrok.com → free account → run: ngrok authtoken TOKEN"
+                try:
+                    self._phone_tunnel_lbl.config(text=msg, fg="#94A3B8")
+                except Exception:
+                    pass
+        elif status == "unavailable":
+            if getattr(self, "_phone_tunnel_lbl", None) is not None:
+                try:
+                    self._phone_tunnel_lbl.config(text="", fg="#94A3B8")
+                except Exception:
+                    pass
+        elif attempts < 45:
+            self.after(1000, lambda a=attempts + 1: self._poll_ngrok(a))
 
     # ── countdown ─────────────────────────────────────────────────────────────
 
@@ -2922,7 +5250,10 @@ class PendulaticViewer(tk.Tk):
 
     def _validate_camera_setup(self) -> list:
         """Return a list of error dicts; empty = all clear."""
-        errors = []
+        # Goniometer connectivity does not depend on the camera or markers, so
+        # it is checked first — the later checks return early and would
+        # otherwise hide it until markers were placed.
+        errors = self._validate_goniometer_setup()
         frame = self._last_live_frame
         if frame is None:
             errors.append({
@@ -3019,16 +5350,111 @@ class PendulaticViewer(tk.Tk):
                 "region": "ankle",
             })
 
+        # MediaPipe visibility checks (only after ≥30 live frames so scores stabilise)
+        if hasattr(self.tracker, "last_kne_vis"):
+            n_frames = len(getattr(self.tracker, "_vis_window", []))
+            if n_frames >= 30:
+                cov = self.tracker.coverage_pct
+                if cov < 0.50:
+                    errors.append({
+                        "code": "low_knee_visibility",
+                        "msg": (f"Knee landmark poorly visible "
+                                f"({cov*100:.0f}% of recent frames)."),
+                        "tip": (
+                            "Expose the patient's knee: roll up the pant leg or "
+                            "have them wear shorts. Avoid dark or patterned clothing "
+                            "over the knee joint."
+                        ),
+                        "region": "knee",
+                    })
+                elif self.tracker.last_kne_vis < 0.50:
+                    errors.append({
+                        "code": "knee_occluded",
+                        "msg": "Knee landmark confidence is low — knee may be partially obscured.",
+                        "tip": (
+                            "Aim the camera at knee height, 1.5–2.5 m to the patient's SIDE "
+                            "(sagittal view). Ensure no clothing or limb overlaps the knee."
+                        ),
+                        "region": "knee",
+                    })
+            if getattr(self.tracker, "assessor_warning", False):
+                errors.append({
+                    "code": "assessor_tracked",
+                    "msg": "Camera appears to be tracking the assessor, not the patient.",
+                    "tip": (
+                        "Aim the camera at the patient's leg. "
+                        "The assessor should stand outside or behind the camera's field of view."
+                    ),
+                    "region": "full_leg",
+                })
+
         return errors
+
+    def _validate_goniometer_setup(self) -> list:
+        """Check the iPhone goniometer link. Empty unless 'Sync Goniometer'
+        is on and the phones are not both streaming."""
+        if getattr(self, "_var_goniometer", None) is None or not self._var_goniometer.get():
+            return []
+
+        st = _imu.get_state() if _IMU_AVAIL else None
+        n_imu = (int(st["proximal"]["connected"]) + int(st["distal"]["connected"])
+                 if st else 0)
+        with self._goniometer_lock:
+            g_last = self._goniometer_last_rx
+        udp_live = g_last > 0 and (time.time() - g_last) <= 2.0
+
+        if n_imu == 0 and not udp_live:
+            return [{
+                "code": "goniometer_no_data",
+                "msg": "No data received from the iPhone goniometer.",
+                "tip": (
+                    f"In the Sensor Stream app set the address to "
+                    f"{_imu.get_local_ip() if _IMU_AVAIL else '<LAN IP>'}:"
+                    f"{_imu.PORT if _IMU_AVAIL else 5000} and enable "
+                    "Accelerometer, Gyroscope and Magnetometer. "
+                    "Phone and laptop must be on the same Wi-Fi network."
+                ),
+                "region": None,
+            }]
+        _enough = (n_imu == 2 or (n_imu == 1 and self._imu_single_mode()))
+        if _enough and self._var_wait_sync.get():
+            _sy = _imu.sync_status() if _IMU_AVAIL else {"state": "synced"}
+            if _sy["state"] == "unstable":
+                return [{
+                    "code": "goniometer_sync_unstable",
+                    "msg": f"Phone clock sync is unstable — {_sy['detail']}.",
+                    "tip": ("Move the phones closer to the hotspot, or turn off "
+                            "unused sensor streams in the app to reduce Wi-Fi "
+                            "load. Recording now risks a misaligned IMU trace."),
+                    "region": None,
+                }]
+            if _sy["state"] != "synced":
+                return [{
+                    "code": "goniometer_syncing",
+                    "msg": f"Still syncing phone clocks — {_sy['detail']}.",
+                    "tip": ("Leave both phones streaming for a few seconds. "
+                            "The Time Sync panel turns green when the IMU and "
+                            "laptop timestamps are aligned."),
+                    "region": None,
+                }]
+        if n_imu == 1 and not self._imu_single_mode():
+            return [{
+                "code": "goniometer_one_phone",
+                "msg": "Only one IMU phone is streaming — relative joint "
+                       "angle needs two.",
+                "tip": (
+                    "Start Sensor Stream on the second phone and point it at "
+                    "the same address. One phone goes on the proximal segment "
+                    "(torso or thigh), the other on the distal segment "
+                    "(thigh or shank)."
+                ),
+                "region": None,
+            }]
+        return []
 
     def _cmd_check_setup(self):
         errors = self._validate_camera_setup()
-        if not errors:
-            messagebox.showinfo("Setup OK",
-                                "Camera setup looks good!\n\nYou can now Record.",
-                                parent=self)
-        else:
-            self._show_camera_guide(errors)
+        self._show_camera_guide(errors)
 
     def _show_camera_guide(self, errors: list, pending_countdown: int = 0):
         """Open a guide popup explaining the detected setup issues."""
@@ -3040,7 +5466,7 @@ class PendulaticViewer(tk.Tk):
         top = tk.Toplevel(self)
         top.title("Camera Setup Guide")
         top.configure(bg=BG)
-        top.geometry("680x560")
+        top.geometry("680x640")
         top.resizable(True, True)
         top.transient(self)
         top.grab_set()
@@ -3048,10 +5474,17 @@ class PendulaticViewer(tk.Tk):
         # ── header ────────────────────────────────────────────────────────────
         hdr = tk.Frame(top, bg=PNL, pady=10, padx=14)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="⚠  Camera Setup Issues", bg=PNL, fg=WARN,
-                 font=("Segoe UI", 12, "bold")).pack(side="left")
-        tk.Label(hdr, text=f"{len(errors)} issue{'s' if len(errors)!=1 else ''} found",
-                 bg=PNL, fg=FG2, font=("Segoe UI", 9)).pack(side="right")
+        if errors:
+            tk.Label(hdr, text="⚠  Camera Setup Issues", bg=PNL, fg=WARN,
+                     font=("Segoe UI", 12, "bold")).pack(side="left")
+            tk.Label(hdr,
+                     text=f"{len(errors)} issue{'s' if len(errors)!=1 else ''} found",
+                     bg=PNL, fg=FG2, font=("Segoe UI", 9)).pack(side="right")
+        else:
+            tk.Label(hdr, text="✓  Camera Setup — Best Practices", bg=PNL,
+                     fg=OK, font=("Segoe UI", 12, "bold")).pack(side="left")
+            tk.Label(hdr, text="All checks passed", bg=PNL, fg=FG2,
+                     font=("Segoe UI", 9)).pack(side="right")
 
         # ── two-column body ────────────────────────────────────────────────────
         body = tk.Frame(top, bg=BG)
@@ -3137,26 +5570,61 @@ class PendulaticViewer(tk.Tk):
                                             stick_cv.winfo_height() or 360,
                                             highlighted_regions))
 
-        # Right: error list + tips
+        # Right: error list + setup checklist
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True)
 
-        tk.Label(right, text="Issues detected:", bg=BG, fg=FG,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        scroll_outer = tk.Frame(right, bg=BG)
+        scroll_outer.pack(fill="both", expand=True)
 
-        err_scroll = tk.Frame(right, bg=BG)
-        err_scroll.pack(fill="both", expand=True)
+        if errors:
+            tk.Label(scroll_outer, text="Issues detected:", bg=BG, fg=FG,
+                     font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+            for err in errors:
+                card = tk.Frame(scroll_outer, bg=SFC, pady=6, padx=8,
+                                highlightthickness=1, highlightbackground=FG3)
+                card.pack(fill="x", pady=3)
+                tk.Label(card, text=f"⚠  {err['msg']}", bg=SFC, fg=ERR,
+                         font=("Segoe UI", 9, "bold"), wraplength=280,
+                         justify="left", anchor="w").pack(anchor="w")
+                tk.Label(card, text=f"→ {err['tip']}", bg=SFC, fg=FG2,
+                         font=("Segoe UI", 8), wraplength=280,
+                         justify="left", anchor="w").pack(anchor="w", pady=(2, 0))
 
-        for i, err in enumerate(errors):
-            card = tk.Frame(err_scroll, bg=SFC, pady=6, padx=8,
-                            highlightthickness=1, highlightbackground=FG3)
-            card.pack(fill="x", pady=3)
-            tk.Label(card, text=f"⚠  {err['msg']}", bg=SFC, fg=ERR,
-                     font=("Segoe UI", 9, "bold"), wraplength=280,
-                     justify="left", anchor="w").pack(anchor="w")
-            tk.Label(card, text=f"→ {err['tip']}", bg=SFC, fg=FG2,
-                     font=("Segoe UI", 8), wraplength=280,
-                     justify="left", anchor="w").pack(anchor="w", pady=(2, 0))
+        # ── Setup Checklist (always shown) ────────────────────────────────────
+        sep = (8, 4) if errors else (0, 4)
+        tk.Label(scroll_outer, text="Setup Checklist:", bg=BG, fg=FG,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=sep)
+        _TIPS = [
+            ("Knee exposed",
+             "Patient wears shorts or rolls up pants — no fabric covering the knee."),
+            ("Camera position",
+             "Place camera at knee height, 1.5–2.5 m to the patient's SIDE (sagittal view)."),
+            ("Camera stability",
+             "Mount on a tripod or stable surface — handheld wobble reduces accuracy."),
+            ("Lighting",
+             "Avoid placing the patient in front of a bright window; "
+             "backlight silhouettes the leg."),
+            ("Assessor position",
+             "Assessor stands outside or behind the camera's field of view during the swing."),
+        ]
+        bp_card = tk.Frame(scroll_outer, bg=SFC, pady=6, padx=8,
+                           highlightthickness=1, highlightbackground=FG3)
+        bp_card.pack(fill="x", pady=(0, 3))
+        for title, tip in _TIPS:
+            row = tk.Frame(bp_card, bg=SFC)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text="✓", bg=SFC, fg=OK,
+                     font=("Segoe UI", 9, "bold"), width=2).pack(
+                         side="left", anchor="n")
+            inner = tk.Frame(row, bg=SFC)
+            inner.pack(side="left", fill="x", expand=True)
+            tk.Label(inner, text=title, bg=SFC, fg=FG,
+                     font=("Segoe UI", 8, "bold"),
+                     anchor="w", justify="left").pack(anchor="w")
+            tk.Label(inner, text=tip, bg=SFC, fg=FG2,
+                     font=("Segoe UI", 8), wraplength=260,
+                     anchor="w", justify="left").pack(anchor="w")
 
         # ── button row ─────────────────────────────────────────────────────────
         btn_row = tk.Frame(top, bg=PNL, pady=8, padx=12)
@@ -3200,6 +5668,41 @@ class PendulaticViewer(tk.Tk):
 
     # ── recording ─────────────────────────────────────────────────────────────
 
+    def _rec_timer_seconds(self) -> float:
+        """Auto-stop duration in seconds; 0 (or invalid) means manual stop."""
+        try:
+            return max(0.0, float(self._rec_timer_var.get().strip()))
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def _on_rec_timer_elapsed(self):
+        """Fires when the configured recording duration is reached."""
+        self._rec_stop_after_id = None
+        if self._recording:
+            self._status.config(
+                text=f"Recording auto-stopped after {self._rec_timer_seconds():.0f} s.")
+            self._cmd_rec_toggle()
+
+    def _close_goniometer_csv(self):
+        """Stop and close both goniometer streams. Safe to call when idle."""
+        if self._goniometer_recording:
+            self._goniometer_recording = False
+            with self._goniometer_csv_lock:
+                if self._goniometer_csv_file is not None:
+                    try:
+                        self._goniometer_csv_file.close()
+                    except Exception:
+                        pass
+                    self._goniometer_csv_file   = None
+                    self._goniometer_csv_writer = None
+        if self._imu_recording:
+            self._imu_recording = False
+            if _IMU_AVAIL:
+                try:
+                    _imu.stop_recording()
+                except Exception:
+                    pass
+
     def _cmd_rec_toggle(self):
         if not self._live:
             return
@@ -3210,8 +5713,36 @@ class PendulaticViewer(tk.Tk):
                     "Knee + Ankle markers not placed yet.\n"
                     "Recording will start without tracking.\n\nContinue?"):
                     return
+            # Hold off until the phone clocks are aligned with this laptop's,
+            # otherwise the IMU trace cannot be placed on the same timeline as
+            # the video and the Motive take.
+            if not self._sync_ready():
+                _sy   = _imu.sync_status()
+                _st   = _imu.get_state()
+                _live = (_st["proximal"]["connected"] or _st["distal"]["connected"])
+                if not _live:
+                    _title = "No goniometer signal"
+                    _body  = (
+                        "'Sync Goniometer' is on but no phone is streaming, so "
+                        "the goniometer CSV would be empty.\n\n"
+                        f"Enter {_imu.get_local_ip()}:{_imu.PORT} in the Sensor "
+                        "Stream app, or use 🛜 Can't connect? for help.\n\n"
+                        "Record without the goniometer anyway?")
+                    _short = "No goniometer signal — check the phones."
+                else:
+                    _title = "Time sync not ready"
+                    _body  = (
+                        f"iPhone IMU clock sync: {_sy['state']} — {_sy['detail']}.\n\n"
+                        "Recording now means the IMU trace may not align with the "
+                        "video and Motive take.\n\nStart anyway?")
+                    _short = (f"Waiting for time sync — {_sy['detail']}. "
+                              "Recording will align once synced.")
+                if not messagebox.askyesno(_title, _body):
+                    self._status.config(text=_short)
+                    return
+            # Consume the one-shot marker bypass only once every gate has
+            # passed, so an abort here does not silently discard it.
             self._skip_marker_check = False
-            # Build participant folder matching Recordings structure
             part = self._get_participant()
             pid  = part["id"] if part else "Unknown"
             # Find or create participant folder: Participant_{pid}_{label}
@@ -3230,13 +5761,18 @@ class PendulaticViewer(tk.Tk):
             rec_dir = os.path.join(rec_root, part_folder,
                                    f"Position_{pos}", "Height_Joint-Level")
             os.makedirs(rec_dir, exist_ok=True)
-            # Next trial number
-            existing = [f for f in os.listdir(rec_dir)
-                        if f.lower().startswith("trial_") and
-                        f.lower().endswith((".mp4", ".avi"))]
-            trial_n = len(existing) + 1
+            # Trial number comes from the operator-editable field so the video,
+            # goniometer CSV, IMU CSV and Motive take all share one identifier.
+            trial_n = self._trial_number()
             import datetime
             self._rec_path = os.path.join(rec_dir, f"Trial_{trial_n}.mp4")
+            if os.path.exists(self._rec_path):
+                if not messagebox.askyesno(
+                        "Overwrite trial?",
+                        f"Trial_{trial_n}.mp4 already exists in\n{rec_dir}\n\n"
+                        "Recording will overwrite it (and its goniometer/IMU "
+                        "CSVs).\n\nContinue?"):
+                    return
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             self._writer = cv2.VideoWriter(
                 self._rec_path, fourcc, self.fps, (self._cam_w, self._cam_h))
@@ -3272,15 +5808,9 @@ class PendulaticViewer(tk.Tk):
                      "Adjust knee/ankle markers at any time. Click ✓ Done to analyze.")
             # Sync Motive if requested
             if self._var_motive.get():
-                part = self._get_participant()
-                pid  = part["id"] if part else "Unknown"
-                leg  = self._leg_var.get()
-                existing_n = sum(1 for s in self._db["sessions"]
-                                 if s["participant"] == pid and s["leg"] == leg)
-                trial_num  = existing_n + 1
                 _start_msg = (
-                    f"START|id={pid}|position=1|height=Viewer|"
-                    f"trial={trial_num}|relpath=Participant_{pid}"
+                    f"START|id={pid}|position={pos}|height=Viewer|"
+                    f"trial={trial_n}|relpath=Participant_{pid}"
                 )
                 try:
                     import motive_sync as _ms
@@ -3292,6 +5822,56 @@ class PendulaticViewer(tk.Tk):
                         "Camera is recording, but Motive could not be triggered:\n\n"
                         f"{type(_me).__name__}: {_me}\n\n"
                         "Check that Motive is open and motive_sync.py is present.")
+            # Sync iPhone goniometer if requested — CSVs live alongside the
+            # video, named to match the trial. All three modalities (video,
+            # goniometer, Motive) start within the same tick and every CSV row
+            # carries a time.time() epoch stamp, the same base
+            # motive_mobile_sync.py writes, so the traces align afterwards.
+            if self._var_goniometer.get():
+                gon_path = os.path.join(rec_dir, f"Trial_{trial_n}_goniometer.csv")
+                try:
+                    with self._goniometer_csv_lock:
+                        self._goniometer_csv_file   = open(gon_path, mode="w", newline="")
+                        self._goniometer_csv_writer = csv.writer(self._goniometer_csv_file)
+                        self._goniometer_csv_writer.writerow(["timestamp", "angle_deg"])
+                    self._goniometer_csv_path  = gon_path
+                    self._goniometer_recording = True
+                except Exception as _ge:
+                    messagebox.showwarning(
+                        "Goniometer Sync",
+                        "Camera is recording, but the goniometer CSV could not be opened:\n\n"
+                        f"{type(_ge).__name__}: {_ge}")
+
+                if _IMU_AVAIL:
+                    imu_path = os.path.join(rec_dir, f"Trial_{trial_n}_imu.csv")
+                    _meta = {
+                        "participant": pid,
+                        "leg":         self._leg_var.get(),
+                        "position":    pos,
+                        "trial":       trial_n,
+                        "segments":    self._imu_segpair_var.get(),
+                        # Record the modelling assumption alongside the data:
+                        # a single-IMU trace is only a knee angle if the thigh
+                        # really was stationary for the whole trial.
+                        "imu_mode":    ("single-distal (thigh assumed stationary)"
+                                        if self._imu_single_mode()
+                                        else "two-segment relative"),
+                        "video":       os.path.basename(self._rec_path),
+                        "video_fps":   f"{self.fps:.3f}",
+                        "t0_epoch":    f"{time.time():.4f}",
+                        "motive_synced": int(bool(self._var_motive.get())),
+                    }
+                    if _imu.start_recording(imu_path, _meta):
+                        self._imu_csv_path  = imu_path
+                        self._imu_recording = True
+
+            # Arm the auto-stop timer if a duration was set. This epoch is also
+            # the video's t=0, used to place the IMU trace on the same axis.
+            self._rec_started_at = time.time()
+            _dur = self._rec_timer_seconds()
+            if _dur > 0:
+                self._rec_stop_after_id = self.after(
+                    int(_dur * 1000), self._on_rec_timer_elapsed)
         else:
             # Stop recording — auto-analyze
             self._recording = False
@@ -3305,6 +5885,11 @@ class PendulaticViewer(tk.Tk):
                 except Exception:
                     pass
                 self._motive_active = False
+            if self._rec_stop_after_id is not None:
+                self.after_cancel(self._rec_stop_after_id)
+                self._rec_stop_after_id = None
+            self._rec_timer_lbl.config(text="")
+            self._close_goniometer_csv()
             self._btn_rec.config(text="⏺ Record", bg="#5C1A1A", fg="#F8FAFC")
             n     = self._live_fi
             valid = sum(1 for a in self._angles if math.isfinite(a))
@@ -3406,6 +5991,12 @@ class PendulaticViewer(tk.Tk):
             except Exception:
                 pass
             self._motive_active = False
+        if self._rec_stop_after_id is not None:
+            self.after_cancel(self._rec_stop_after_id)
+            self._rec_stop_after_id = None
+        if hasattr(self, "_rec_timer_lbl"):
+            self._rec_timer_lbl.config(text="")
+        self._close_goniometer_csv()
         if self._phone_mode and _PPS_AVAIL:
             try:
                 _pps.stop()
@@ -3428,6 +6019,19 @@ class PendulaticViewer(tk.Tk):
         if not path:
             return
         self._exit_camera_mode()   # restore transport if coming from camera mode
+        # Drop any IMU trace from a previous recording, then adopt this video's
+        # own sidecar CSV if one was recorded alongside it.
+        self._clear_imu_overlay()
+        self._method_series.clear()
+        self._opti_csv_path = ""
+        self._shown_method = "rgb"
+        self._method_var.set("RGB / HPE")
+        self._refresh_overlay()
+        _sidecar = os.path.splitext(path)[0] + "_imu.csv"
+        self._imu_csv_path = _sidecar if os.path.exists(_sidecar) else ""
+        # This video was not recorded in this session, so the live start epoch
+        # no longer applies — fall back to the t0_epoch stored in the CSV.
+        self._rec_started_at = 0.0
         self._playing = False
         self._btn_play.config(text="▶")
         self.tracker.reset()
@@ -3471,6 +6075,152 @@ class PendulaticViewer(tk.Tk):
             text=f"Patient detected. thigh={self.tracker.thigh_len:.0f}px  "
                  f"shank={self.tracker.shank_len:.0f}px  →  Press ▶ or Track All.")
 
+    def _cmd_pick_person(self):
+        """Run MediaPipe IMAGE-mode on the current frame, show all detected persons
+        with numbered colored skeletons, then let the user click the patient.
+        This makes it easy to see which person MP is finding and pick the right one."""
+        if self.cap is None:
+            messagebox.showinfo("No video", "Open a video first.")
+            return
+        frame = self._get_frame(self._frame_idx)
+        if frame is None:
+            return
+        self._status.config(text="Running MediaPipe detection…")
+        self.update_idletasks()
+
+        try:
+            import mediapipe as mp
+            V = mp.tasks.vision
+            opts = V.PoseLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
+                running_mode=V.RunningMode.IMAGE,
+                num_poses=4,
+                min_pose_detection_confidence=0.25,
+                min_pose_presence_confidence=0.25,
+            )
+            with V.PoseLandmarker.create_from_options(opts) as detector:
+                rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            self._person_select_poses = result.pose_landmarks or []
+        except Exception as e:
+            self._status.config(text=f"MediaPipe detection failed: {e}")
+            return
+
+        n = len(self._person_select_poses)
+        if n == 0:
+            self._status.config(
+                text="MediaPipe found 0 people in this frame. Try a different frame.")
+            return
+
+        self._person_select_active = True
+        self._show_frame_idx(self._frame_idx)
+        self._status.config(
+            text=f"MediaPipe found {n} person(s) shown with colored numbers. "
+                 f"Click anywhere on the PATIENT to select them.")
+
+    def _on_person_select_click(self, nx: float, ny: float):
+        """Handle a click during person-select mode.
+
+        Finds the detected person nearest to the click (checking all landmarks),
+        picks whichever leg is more visible, sets hip/knee/ankle, and inits tracker.
+        """
+        poses = self._person_select_poses
+        if not poses:
+            self._person_select_active = False
+            return
+
+        frame = self._get_frame(self._frame_idx)
+        if frame is None:
+            return
+        fh, fw = frame.shape[:2]
+        click  = np.array([nx, ny], dtype=np.float32)
+
+        # Find the person whose ANY landmark is nearest the click
+        best_set  = None
+        best_dist = float("inf")
+        for lm_set in poses:
+            for lm in lm_set:
+                pt = np.array([lm.x * fw, lm.y * fh], dtype=np.float32)
+                d  = float(np.linalg.norm(pt - click))
+                if d < best_dist:
+                    best_dist = d
+                    best_set  = lm_set
+
+        if best_set is None:
+            return
+
+        # Pick the leg that matches the Leg selector (Left/Right radio button).
+        # BlazePose indices: anatomical LEFT hip=23,knee=25,ankle=27
+        #                    anatomical RIGHT hip=24,knee=26,ankle=28
+        # IMPORTANT: anatomical left/right is NOT the same as image left/right.
+        # If the patient faces the camera their anatomical left appears on the
+        # RIGHT side of the image (mirrored). Map by screen-space x-position so
+        # "Left" in the UI means "the leg on the left side of the screen."
+        lh, lk, la = best_set[23], best_set[25], best_set[27]  # anatomical left
+        rh, rk, ra = best_set[24], best_set[26], best_set[28]  # anatomical right
+
+        want_image_left = (self._leg_var.get() == "left")
+
+        # Which anatomical side appears on the left of the image?
+        anat_left_is_img_left = (lk.x <= rk.x)
+
+        # image-left set / image-right set
+        if anat_left_is_img_left:
+            img_left  = (lh, lk, la)
+            img_right = (rh, rk, ra)
+        else:
+            img_left  = (rh, rk, ra)
+            img_right = (lh, lk, la)
+
+        h_lm, k_lm, a_lm = img_left if want_image_left else img_right
+
+        # Debug: confirm exactly which side is forced
+        side_str = "image-LEFT" if want_image_left else "image-RIGHT"
+        print(f"DEBUG leg-select: _leg_var='{self._leg_var.get()}' → {side_str}")
+        print(f"DEBUG anat LEFT  knee x={lk.x:.3f}  vis={lk.visibility:.2f}")
+        print(f"DEBUG anat RIGHT knee x={rk.x:.3f}  vis={rk.visibility:.2f}")
+        print(f"DEBUG chosen knee x={k_lm.x:.3f}  ankle x={a_lm.x:.3f}")
+
+        # Reject ankle if visibility is too low — a hallucinated ankle seeds the
+        # tracker at a wrong position and the ArcTracker carries that error forward.
+        # In that case keep the knee as anchor and leave ankle=None so the user
+        # can place it manually with the Ankle button.
+        ankle_ok = a_lm.visibility >= 0.35
+        if not ankle_ok:
+            self._status.config(
+                text=f"Ankle visibility too low ({a_lm.visibility:.2f}) — "
+                     f"place Knee marker then click Ankle manually.")
+            # Still place the knee so the user has a head start
+            kne = np.array([k_lm.x * fw, k_lm.y * fh], dtype=np.float32)
+            self._knee_click = tuple(float(v) for v in kne)
+            self._person_select_active = False
+            self._person_select_poses  = []
+            self._show_frame_idx(self._frame_idx)
+            return
+
+        hip = np.array([h_lm.x * fw, h_lm.y * fh], dtype=np.float32)
+        kne = np.array([k_lm.x * fw, k_lm.y * fh], dtype=np.float32)
+        ank = np.array([a_lm.x * fw, a_lm.y * fh], dtype=np.float32)
+
+        self._hip_click   = tuple(float(v) for v in hip)
+        self._knee_click  = tuple(float(v) for v in kne)
+        self._ankle_click = tuple(float(v) for v in ank)
+
+        self.tracker.init(frame, hip, kne, ank)
+        _, _, _, ang0 = self.tracker.step(frame)
+        self._angles[self._frame_idx] = ang0
+
+        # Exit person-select mode
+        self._person_select_active = False
+        self._person_select_poses  = []
+
+        side = self._leg_var.get().capitalize()
+        self._show_frame_idx(self._frame_idx)
+        self._status.config(
+            text=f"{side} leg selected — shank={self.tracker.shank_len:.0f}px  "
+                 f"ankle vis={a_lm.visibility:.2f}  angle={ang0:.1f} deg  "
+                 f"→  Press Track All.")
+
     def _cmd_knee(self):
         self._mode = "knee"
         self._hl_btn(self._btn_knee)
@@ -3486,6 +6236,30 @@ class PendulaticViewer(tk.Tk):
         self._hl_btn(self._btn_hip)
         self._status.config(text="Click on the patient's HIP in the video. (Optional — auto-estimated from knee+ankle.)")
 
+    def _cmd_mark_release(self):
+        """Mark the current frame as the moment the assessor releases the leg.
+
+        All frames before this frame are frozen at the initial hold angle after
+        Track All runs, eliminating the jitter that occurs while the leg is being
+        held stationary by the assessor.  Click again on the same frame to clear.
+        """
+        if self.cap is None:
+            return
+        fi = self._frame_idx
+        if self._release_fi == fi:
+            self._release_fi = None
+            self._btn_release.config(relief="raised", bg="")
+            self._status.config(
+                text="Release marker cleared.  Track All will use full video range.")
+        else:
+            self._release_fi = fi
+            self._btn_release.config(relief="sunken")
+            t = fi / max(self.fps, 1.0)
+            self._status.config(
+                text=f"Release marked at frame {fi} ({t:.2f} s).  "
+                     "Run Track All — frames before release will be frozen at hold angle.")
+        self._show_frame_idx(fi)
+
     def _cmd_track_all(self):
         if self.cap is None or not self.tracker.ready:
             messagebox.showinfo("Set markers", "Place Knee + Ankle markers first.")
@@ -3498,10 +6272,13 @@ class PendulaticViewer(tk.Tk):
         hip0, kne0, ank0 = self.tracker.hip0.copy(), self.tracker.knee0.copy(), self.tracker.ankle0.copy()
         path = self.video_path
 
-        t_start = self._trim_start
-        t_end   = self._trim_end_eff()
-        # Clamp init frame to the tracking range so it's always valid.
-        init_fi = max(t_start, min(self._frame_idx, t_end - 1))
+        t_start    = self._trim_start
+        t_end      = self._trim_end_eff()
+        release_fi = self._release_fi   # may be None
+        # Always start from the beginning of the trim window.
+        # Using self._frame_idx caused 0-frame runs when the user was scrubbed
+        # to the last frame, producing 1/N valid frames and no PT score.
+        init_fi = t_start
 
         def _run():
             # Pre-fill the full angles / trail arrays with NaN / None so any
@@ -3510,24 +6287,63 @@ class PendulaticViewer(tk.Tk):
             trail  = [None]         * self.total_frames
 
             cap2 = cv2.VideoCapture(path)
-            # Init the ArcTracker on the exact frame where the user placed
-            # their ankle marker — that's the only frame where ank0 is correct.
+            # Init tracker on the exact frame where the user placed their marker.
             cap2.set(cv2.CAP_PROP_POS_FRAMES, init_fi)
             ok, f_init = cap2.read()
             if not ok:
                 cap2.release(); return
-            t2 = _ArcTracker()
+            _side = getattr(self.tracker, '_side', 'right')
+            t2 = _MPBatchTracker(_side, fps=self.fps) if _MP_AVAIL else _ArcTracker()
             t2.init(f_init, hip0, kne0, ank0)
-            angles[init_fi]  = _angle_deg(hip0, kne0, ank0)
+            # Person-identity gate: use live tracker's anchor x-fraction if available,
+            # but always pin self.knee to the user-placed kne0 — if init() snapped
+            # self.knee to a wrong MP detection, that wrong position would persist
+            # through every subsequent step() call and track the assessor instead.
+            if hasattr(self.tracker, '_anchor_xfrac') and self.tracker._anchor_xfrac is not None:
+                t2._anchor_xfrac = self.tracker._anchor_xfrac
+            if hasattr(t2, 'knee'):
+                t2.knee = kne0.astype(np.float32)
+            # Copy any ankle templates learnt from previous corrections so this
+            # fresh Track All run still benefits from the user's last retrack fix.
+            if hasattr(t2, '_correct_template'):
+                t2._correct_template = self._ankle_correct_template
+                t2._wrong_template   = self._ankle_wrong_template
+            hold_ang = _angle_deg(hip0, kne0, ank0)   # initial hold angle
+            angles[init_fi]  = hold_ang
             trail[init_fi]   = ank0.copy()
             _last_ank        = ank0
             _last_good_theta = t2._theta
             _last_good_vel   = 0.0
-            _last_good_ang   = angles[init_fi]
+            _last_good_ang   = hold_ang
             _n_autocorr      = [0]
             n_frames = t_end - init_fi
-            # Track forward from init_fi+1 — cap2 is already positioned there.
-            for fi in range(init_fi + 1, t_end):
+
+            # Determine the first frame that actually needs live tracking.
+            # If the user marked a release frame, all frames from init_fi up to
+            # (but not including) release_fi are frozen at the hold angle so
+            # assessor-hand jitter is eliminated entirely.
+            live_start = release_fi if (release_fi is not None and release_fi > init_fi) \
+                         else init_fi + 1
+
+            # Fill pre-release frames with the frozen hold angle.
+            for fi in range(init_fi + 1, live_start):
+                angles[fi] = hold_ang
+                trail[fi]  = ank0.copy()
+
+            # If a release was marked and is within the trim window, seek cap2
+            # to that frame and re-initialise the tracker so it starts with
+            # full motion-onset information from the actual release instant.
+            if release_fi is not None and live_start > init_fi + 1:
+                cap2.set(cv2.CAP_PROP_POS_FRAMES, live_start)
+                ok, f_rel = cap2.read()
+                if ok:
+                    t2 = _MPBatchTracker(_side, fps=self.fps) if _MP_AVAIL else _ArcTracker()
+                    t2.init(f_rel, hip0, kne0, ank0)
+                    angles[live_start] = hold_ang
+                    trail[live_start]  = ank0.copy()
+
+            # Track forward from live_start+1 — cap2 is positioned there.
+            for fi in range(live_start + 1, t_end):
                 ok, fr = cap2.read()
                 if not ok: break
                 _, _, ank, ang = t2.step(fr)
@@ -3650,53 +6466,79 @@ class PendulaticViewer(tk.Tk):
                     new_angles[fi] = _angle_deg(hip0, kne0, ank_t)
                     new_trail[fi]  = ank_t.astype(np.float32)
 
-            # ── Phase 2: run _ArcTracker beyond the last pin ───────────────
+            # ── Phase 2: run tracker beyond the last pin ──────────────────
             last_fi, last_ank = pins_sorted[-1]
             _n_autocorr_r = [0]   # defined here so the lambda below always sees it
             cap2 = cv2.VideoCapture(path)
             cap2.set(cv2.CAP_PROP_POS_FRAMES, last_fi)
             ok, f0 = cap2.read()
             if ok:
-                t2   = _ArcTracker()
-                init_ank = _arc_pos(_arc_theta(last_ank))  # project to arc
-                t2.init(f0, hip0, kne0, init_ank)
-
-                # ── Retrack-specific tracker priming ──────────────────────────
-                # init() always resets _motion_detected=False; force motion mode
-                # immediately so the 75% temporal-diff weights are active from
-                # the very first frame after the pin.
-                t2._motion_detected = True
-
-                # Activate the narrow post-pin cooldown window.  For _RETRACK_COOLDOWN
-                # frames the search is restricted to ±_WIN_BASE (28°) around the
-                # current theta, gradually widening to the normal ±80°.
-                # This is the primary fix for "one frame correct, next one broken":
-                # without this, the ±80° default window includes wrong attractors
-                # (table edge, assessor's body) that score higher than the shank on
-                # the first frame, locking the tracker onto the wrong object again.
-                t2._retrack_cooldown = _ArcTracker._RETRACK_COOLDOWN
-
-                # Seed velocity ONLY from Phase 1 arc-interpolated positions
-                # (new_trail), which are correct by construction.  Never fall back
-                # to self._trail — that trail was WRONG (it's the reason the user
-                # placed a correction pin in the first place).  Using the wrong
-                # trail seeds a bad velocity, pred points in the wrong direction,
-                # and the jump guard locks onto that wrong direction immediately.
-                # With no Phase 1 data (single-pin case), vel stays at 0 and the
-                # narrow cooldown window handles the first frames without needing
-                # any velocity prediction.
-                _theta_pin = t2._theta
-                for _dfi in range(1, 6):
-                    _pfi = last_fi - _dfi
-                    if _pfi in new_trail and new_trail[_pfi] is not None:
-                        _th_prev = math.atan2(
-                            float(new_trail[_pfi][1] - kne0[1]),
-                            float(new_trail[_pfi][0] - kne0[0]))
-                        _dth = _theta_pin - _th_prev
-                        while _dth >  math.pi: _dth -= 2 * math.pi
-                        while _dth < -math.pi: _dth += 2 * math.pi
-                        t2._vel = _dth / _dfi   # radians/frame from interpolated trail
-                        break
+                _side_r  = getattr(self.tracker, '_side', 'right')
+                init_ank = _arc_pos(_arc_theta(last_ank))   # project to arc as start hint
+                if _MP_AVAIL:
+                    t2 = _MPBatchTracker(_side_r, fps=self.fps)
+                    t2.init(f0, hip0, kne0, init_ank)
+                    # Seed correction prior so the tracker stays near the user's
+                    # pin direction for the first ~25 frames beyond the last pin.
+                    t2.apply_correction(init_ank)
+                    # For retrack: derive anchor fresh from the user-placed kne0 rather
+                    # than copying the old anchor — if the previous run was tracking the
+                    # wrong person, the old anchor perpetuates that error.
+                    # Also force self.knee to kne0 so init()'s MP snap can't have
+                    # silently locked the distance reference onto the assessor.
+                    _fw = max(f0.shape[1], 1)
+                    t2.knee          = kne0.astype(np.float32)
+                    t2._anchor_xfrac = float(kne0[0]) / _fw
+                    # ── Learn ankle appearance from the pin frame ──────────────
+                    # Run MP again on this frame to find BOTH persons if present.
+                    # Correct template = patch at the user-confirmed pin position.
+                    # Wrong template   = any other detected person's ankle that is
+                    # clearly far from the pin (the stationary assessor ankle).
+                    _all_p = t2._run_mp(f0) or []
+                    _PL_t  = t2._PL
+                    if _PL_t is not None and _all_p:
+                        _ai_t = (_PL_t.LEFT_ANKLE.value if _side_r == "left"
+                                 else _PL_t.RIGHT_ANKLE.value)
+                        _h_f, _w_f = f0.shape[:2]
+                        _pin_pos = np.array(last_ank, dtype=np.float32)
+                        _ranked = sorted(
+                            _all_p,
+                            key=lambda lm: float(np.linalg.norm(
+                                np.array([lm[_ai_t].x * _w_f,
+                                          lm[_ai_t].y * _h_f]) - _pin_pos)))
+                        _correct_tmpl = _ankle_patch(f0, _pin_pos)
+                        _wrong_tmpl   = None
+                        for _lm in _ranked[1:]:
+                            _a_wrong = np.array([_lm[_ai_t].x * _w_f,
+                                                 _lm[_ai_t].y * _h_f])
+                            if float(np.linalg.norm(_a_wrong - _pin_pos)) > _TMPL_SZ * 1.5:
+                                _wrong_tmpl = _ankle_patch(f0, _a_wrong)
+                                break
+                        t2._correct_template = _correct_tmpl
+                        t2._wrong_template   = _wrong_tmpl
+                        self._ankle_correct_template = _correct_tmpl
+                        self._ankle_wrong_template   = _wrong_tmpl
+                    # MediaPipe redetects from scratch each frame — no cooldown needed
+                else:
+                    t2 = _ArcTracker()
+                    t2.init(f0, hip0, kne0, init_ank)
+                    # ArcTracker-specific priming: force motion mode and narrow window
+                    t2._motion_detected  = True
+                    t2._retrack_cooldown = _ArcTracker._RETRACK_COOLDOWN
+                    # Seed velocity from Phase 1 arc-interpolated positions so the
+                    # first post-pin frames track in the right direction.
+                    _theta_pin = t2._theta
+                    for _dfi in range(1, 6):
+                        _pfi = last_fi - _dfi
+                        if _pfi in new_trail and new_trail[_pfi] is not None:
+                            _th_prev = math.atan2(
+                                float(new_trail[_pfi][1] - kne0[1]),
+                                float(new_trail[_pfi][0] - kne0[0]))
+                            _dth = _theta_pin - _th_prev
+                            while _dth >  math.pi: _dth -= 2 * math.pi
+                            while _dth < -math.pi: _dth += 2 * math.pi
+                            t2._vel = _dth / _dfi
+                            break
 
                 # Record the last-pin frame itself (already in new_angles via
                 # Phase 1 if it's not the lone start pin, but write it anyway)
@@ -3795,16 +6637,51 @@ class PendulaticViewer(tk.Tk):
         if n_autocorr:
             msg += f"  Auto-corrected {n_autocorr} physically invalid frames."
         msg += "  Scrub to a bad frame → click Ankle → Retrack → to correct it."
+        # This tracking result is the RGB/HPE methodology.
+        self._set_method_series("rgb", self._angles)
+        self._shown_method = "rgb"
+        self._method_var.set("RGB / HPE")
+        # Adopt the IMU trace recorded alongside this video, if any.
+        _vt0 = getattr(self, "_rec_started_at", None) or None
+        if self._imu_csv_path and self._load_imu_series(self._imu_csv_path, _vt0):
+            msg += "  iPhone IMU series loaded — switch with the Method dropdown."
+            self._load_imu_overlay(self._imu_csv_path, _vt0)
+        self._refresh_overlay()
         self._status.config(text=msg)
 
     # ── participant / session management ──────────────────────────────────────
 
     def _get_participant(self) -> Optional[dict]:
-        sel = self._part_var.get()
+        # The combobox shows "<id>  ·  <diagnosis>"; match the id exactly.
+        # Substring matching would resolve "P1" to "P10" and mis-file trials.
+        pid = self._part_var.get().split("·")[0].strip()
         for p in self._db["participants"]:
-            if sel.startswith(p["id"]) or p["id"] in sel:
+            if p["id"] == pid:
                 return p
         return None
+
+    def _next_trial_number(self) -> int:
+        """Lowest trial number not yet saved for the current participant+leg."""
+        part = self._get_participant()
+        if part is None:
+            return 1
+        leg  = self._leg_var.get()
+        used = {s.get("trial") for s in self._db["sessions"]
+                if s.get("participant") == part["id"] and s.get("leg") == leg}
+        n = 1
+        while n in used:
+            n += 1
+        return n
+
+    def _refresh_trial_number(self):
+        self._trial_var.set(str(self._next_trial_number()))
+
+    def _trial_number(self) -> int:
+        """The operator-entered trial number, falling back to the auto value."""
+        try:
+            return max(1, int(self._trial_var.get().strip()))
+        except (ValueError, AttributeError):
+            return self._next_trial_number()
 
     def _refresh_participant_list(self):
         def _disp(p):
@@ -3895,18 +6772,29 @@ class PendulaticViewer(tk.Tk):
             messagebox.showwarning("No Data", "Run Track All first.")
             return
 
-        part = None
-        for p in self._db["participants"]:
-            if part_sel.startswith(p["id"]) or p["id"] in part_sel:
-                part = p; break
+        part = self._get_participant()
         if part is None:
             return
 
         leg   = self._leg_var.get()
-        video = os.path.basename(self.video_path or self._rec_path or "")
-        existing_n = sum(1 for s in self._db["sessions"]
-                         if s["participant"] == part["id"] and s["leg"] == leg)
-        trial_num = existing_n + 1
+        _vp = self.video_path or self._rec_path or ""
+        if _vp:
+            try:
+                video = os.path.relpath(_vp, BASE_DIR)   # relative to project dir
+            except ValueError:
+                video = _vp                              # different drive — keep absolute
+        else:
+            video = ""
+        def _rel(p: str) -> str:
+            if not p:
+                return ""
+            try:
+                return os.path.relpath(p, BASE_DIR)
+            except ValueError:
+                return p
+        gon_csv = _rel(self._goniometer_csv_path)
+        imu_csv = _rel(self._imu_csv_path)
+        trial_num = self._trial_number()
 
         now = datetime.datetime.now()
         pp  = self._last_pt_params
@@ -3919,6 +6807,10 @@ class PendulaticViewer(tk.Tk):
             "leg":           leg,
             "trial":         trial_num,
             "video":         video,
+            "goniometer_csv": gon_csv,
+            "imu_csv":       imu_csv,
+            "session":       self._session_var.get(),
+            "method":        self._active_method(),
             "mas":           self._last_mas or "—",
             "pt_4":          round(float(self._last_pt_s), 4),
             "pt_6":          round(float(self._last_pt_f), 4),
@@ -3934,6 +6826,7 @@ class PendulaticViewer(tk.Tk):
         self._db["sessions"].append(sess)
         _save_db(self._db)
         self._btn_save_trial.config(state="disabled")
+        self._refresh_trial_number()
         self._status.config(
             text=f"Saved: {part.get('name', part['id'])} — {leg.capitalize()} leg — Trial {trial_num}  (MAS {sess['mas']})")
 
@@ -3950,10 +6843,14 @@ class PendulaticViewer(tk.Tk):
 
     def _cmd_reset(self):
         self.tracker.reset()
+        self._person_select_active = False
+        self._person_select_poses  = []
         self._hip_click = self._knee_click = self._ankle_click = None
         self._trail  = []
         self._path_keyframes.clear()
         self._ankle_pins.clear()
+        self._release_fi = None
+        self._btn_release.config(relief="raised", bg="")
         self._btn_apply_path.config(state="disabled")
         self._btn_clear_path.config(state="disabled")
         if self._mode == "path":
@@ -4133,68 +7030,112 @@ class PendulaticViewer(tk.Tk):
         indexed_trail = (len(trail_src) == n_total)
 
         cap2 = cv2.VideoCapture(snap["path"])
+        if not cap2.isOpened():
+            self.after(0, lambda: (
+                self._btn_export_vid.config(state="normal"),
+                self._status.config(text="Export failed: cannot re-open video file."),
+                messagebox.showerror("Export failed",
+                                     f"Could not open video for reading:\n{snap['path']}")
+            ))
+            return
         w = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        ext    = os.path.splitext(out_path)[1].lower()
-        fourcc = cv2.VideoWriter_fourcc(*("XVID" if ext == ".avi" else "mp4v"))
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+
+        ext = os.path.splitext(out_path)[1].lower()
+        if ext == ".avi":
+            fourcc_candidates = [
+                cv2.VideoWriter_fourcc(*"XVID"),
+                cv2.VideoWriter_fourcc(*"MJPG"),
+            ]
+        else:
+            fourcc_candidates = [
+                cv2.VideoWriter_fourcc(*"avc1"),   # H.264 — best quality on Windows
+                cv2.VideoWriter_fourcc(*"mp4v"),   # MPEG-4 fallback
+                cv2.VideoWriter_fourcc(*"XVID"),   # last resort (may produce .avi in .mp4 container)
+            ]
+
+        writer = None
+        for fc in fourcc_candidates:
+            w_ = cv2.VideoWriter(out_path, fc, fps, (w, h))
+            if w_.isOpened():
+                writer = w_
+                break
+            w_.release()
+
+        if writer is None:
+            cap2.release()
+            self.after(0, lambda: (
+                self._btn_export_vid.config(state="normal"),
+                self._status.config(text="Export failed: no usable video codec found."),
+                messagebox.showerror("Export failed",
+                                     "Could not find a working video codec.\n"
+                                     "Try saving as .avi instead of .mp4.")
+            ))
+            return
 
         rolling_trail = []
 
-        for fi in range(n_total):
-            ok, frame = cap2.read()
-            if not ok:
-                break
+        try:
+            for fi in range(n_total):
+                ok, frame = cap2.read()
+                if not ok:
+                    break
 
-            ang = angles[fi] if fi < len(angles) else float("nan")
+                ang = angles[fi] if fi < len(angles) else float("nan")
 
-            # Resolve ankle position
-            if fi in pins:
-                ank = np.array(pins[fi], dtype=np.float32)
-            elif indexed_trail and fi < len(trail_src) and trail_src[fi] is not None:
-                ank = np.array(trail_src[fi], dtype=np.float32)
-            else:
-                ank = _ank_from_ang(ang)
+                # Resolve ankle position for this frame.
+                # Priority: user-pinned position > indexed trail > angle reconstruction.
+                if fi in pins:
+                    ank = np.array(pins[fi], dtype=np.float32)
+                elif indexed_trail and fi < len(trail_src) and trail_src[fi] is not None:
+                    ank = np.array(trail_src[fi], dtype=np.float32)
+                else:
+                    ank = _ank_from_ang(ang)
 
-            # Maintain rolling trail for the ankle arc
-            if ank is not None:
-                rolling_trail.append(ank)
-                if len(rolling_trail) > TRAIL_LEN:
-                    rolling_trail.pop(0)
+                # Maintain rolling trail for the ankle arc visible in the overlay.
+                if ank is not None:
+                    rolling_trail.append(ank)
+                    if len(rolling_trail) > TRAIL_LEN:
+                        rolling_trail.pop(0)
 
-            # Frames outside the trimmed range: pass through unmodified
-            if fi < t_start or fi >= t_end:
-                writer.write(frame)
-                continue
+                # Draw skeleton + arc overlay on every frame so the skeleton is always
+                # visible.  Angle text and arc appear only when tracking data is valid.
+                overlay = _draw(frame, hip0, kne0, ank, ang,
+                                list(rolling_trail), scale=1.0)
 
-            overlay = _draw(frame, hip0, kne0, ank, ang,
-                            list(rolling_trail), scale=1.0)
+                if math.isfinite(ang):
+                    ang_txt = f"{ang:.1f} deg"
+                    cv2.putText(overlay, ang_txt, (16, h - 18),
+                                cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.putText(overlay, ang_txt, (16, h - 18),
+                                cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (80, 230, 140), 2, cv2.LINE_AA)
 
-            # Angle text in bottom-left corner (outline + fill for readability)
-            if math.isfinite(ang):
-                ang_txt = f"{ang:.1f}°"
-                cv2.putText(overlay, ang_txt, (16, h - 18),
-                            cv2.FONT_HERSHEY_DUPLEX, 1.1,
-                            (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(overlay, ang_txt, (16, h - 18),
-                            cv2.FONT_HERSHEY_DUPLEX, 1.1,
-                            (80, 230, 140), 2, cv2.LINE_AA)
+                t_txt = f"{fi / fps:.2f} s"
+                cv2.putText(overlay, t_txt, (16, h - 52),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(overlay, t_txt, (16, h - 52),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (190, 190, 190), 1, cv2.LINE_AA)
 
-            # Timestamp
-            t_txt = f"{fi / fps:.2f} s"
-            cv2.putText(overlay, t_txt, (16, h - 52),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                        (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(overlay, t_txt, (16, h - 52),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                        (190, 190, 190), 1, cv2.LINE_AA)
+                writer.write(overlay)
 
-            writer.write(overlay)
+                if fi % 30 == 0:
+                    pct = int(fi / max(n_total, 1) * 100)
+                    self.after(0, lambda p=pct: self._status.config(
+                        text=f"Exporting annotated video… {p}%"))
 
-            if fi % 30 == 0:
-                pct = int(fi / max(n_total, 1) * 100)
-                self.after(0, lambda p=pct: self._status.config(
-                    text=f"Exporting annotated video… {p}%"))
+        except Exception as exc:
+            cap2.release()
+            writer.release()
+            self.after(0, lambda e=str(exc): (
+                self._btn_export_vid.config(state="normal"),
+                self._status.config(text=f"Export error: {e}"),
+                messagebox.showerror("Export error", f"An error occurred during export:\n{e}")
+            ))
+            return
 
         cap2.release()
         writer.release()
@@ -4206,6 +7147,78 @@ class PendulaticViewer(tk.Tk):
         self._status.config(text=f"Annotated video saved: {name}")
         messagebox.showinfo("Export complete",
                             f"Annotated video saved:\n{out_path}")
+
+    def _cmd_export_unified(self):
+        """Write one CSV holding every loaded methodology on a shared clock.
+
+        Rows are the video's frame grid, so all methodologies share an index
+        and a `t_s`; `t_epoch` carries the absolute laptop-clock time when the
+        recording start epoch is known (the base motive_mobile_sync.py and the
+        IMU CSV also use), letting this file be joined against the raw
+        per-modality captures."""
+        loaded = {k: s for k, s in self._method_series.items() if s}
+        if not loaded:
+            messagebox.showinfo("Nothing to export",
+                                "Run ▶▶ Track All, or load an IMU/OptiTrack "
+                                "series first.")
+            return
+
+        src = self._rec_path if (self._live and self._rec_path) else self.video_path
+        part = self._get_participant()
+        pid  = part["id"] if part else "Unknown"
+        leg  = self._leg_var.get()
+        sess = self._session_var.get()
+        trial = self._trial_number()
+        default_name = f"{pid}_{leg}_{sess}_Trial_{trial}_unified.csv"
+        out = filedialog.asksaveasfilename(
+            title="Save unified multi-modal CSV",
+            initialdir=os.path.dirname(src) if src else BASE_DIR,
+            initialfile=default_name, defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not out:
+            return
+
+        n = max(len(s) for s in loaded.values())
+        t0 = getattr(self, "_rec_started_at", 0.0) or 0.0
+        keys = [k for k, _l, _c in self._METHODS if k in loaded]
+        try:
+            with open(out, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                for k, v in (
+                        ("participant", pid), ("leg", leg), ("session", sess),
+                        ("trial", trial), ("position", self._pos_var.get()),
+                        ("fps", f"{self.fps:.3f}"),
+                        ("video", os.path.basename(src) if src else ""),
+                        ("imu_csv", os.path.basename(self._imu_csv_path)
+                         if self._imu_csv_path else ""),
+                        ("optitrack_csv", os.path.basename(self._opti_csv_path)
+                         if self._opti_csv_path else ""),
+                        ("t0_epoch", f"{t0:.4f}" if t0 else ""),
+                        ("angle_convention", "interior degrees, 180 = extended"),
+                        ("methodologies", "|".join(keys)),
+                        ("exported_at", datetime.datetime.now().isoformat(
+                            timespec="seconds")),
+                ):
+                    w.writerow([f"# {k}", v])
+                w.writerow(["frame", "t_s", "t_epoch"] +
+                           [f"{k}_deg" for k in keys])
+                for i in range(n):
+                    t_s = i / max(self.fps, 1.0)
+                    # 6 dp: at 30 fps a 4-dp step (0.0333) accumulates visible
+                    # drift against the epoch column over a long trial.
+                    row = [i, f"{t_s:.6f}",
+                           f"{t0 + t_s:.6f}" if t0 else ""]
+                    for k in keys:
+                        s = loaded[k]
+                        v = s[i] if i < len(s) else float("nan")
+                        row.append(f"{v:.4f}" if math.isfinite(v) else "")
+                    w.writerow(row)
+        except OSError as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        self._status.config(
+            text=f"Unified CSV saved ({sess}, {len(keys)} methodolog"
+                 f"{'ies' if len(keys) != 1 else 'y'}): {os.path.basename(out)}")
 
     def _cmd_export(self):
         if self._live and not self._rec_path:
@@ -4581,7 +7594,13 @@ class PendulaticViewer(tk.Tk):
         c.create_line(xe - 2, mid - 5, xe + 3, mid, xe - 2, mid + 5,
                       fill="white", width=1.5)
 
-        # 6. Playhead — orange needle with a small dot on top
+        # 6. Release marker — green dashed vertical line
+        if self._release_fi is not None and 0 <= self._release_fi < self.total_frames:
+            xr = self._tl_frame_to_x(self._release_fi)
+            c.create_line(xr, 2, xr, h - 2, fill="#4ADE80", width=2, dash=(4, 3))
+            c.create_text(xr + 4, 4, text="✂", anchor="nw", fill="#4ADE80", font=("", 8))
+
+        # 7. Playhead — orange needle with a small dot on top
         c.create_line(xp, 2, xp, h - 2, fill="#F59E0B", width=2)
         c.create_oval(xp - 4, 0, xp + 4, 8, fill="#F59E0B", outline="")
 
@@ -4629,7 +7648,7 @@ class PendulaticViewer(tk.Tk):
     # ── canvas click: marker placement ────────────────────────────────────────
 
     def _on_click(self, event):
-        if self.cap is None or self._mode == "idle":
+        if self.cap is None:
             return
         # Recompute scale from live canvas dimensions so a click that arrives
         # within the 60 ms debounce window after a resize still maps correctly.
@@ -4644,6 +7663,20 @@ class PendulaticViewer(tk.Tk):
                 self._img_oy = max(0, (ch - dh) // 2)
         nx = (event.x - self._img_ox) / self._scale
         ny = (event.y - self._img_oy) / self._scale
+
+        # Guided skeleton wizard intercepts all clicks when active.
+        if self._skel_guide_active:
+            self._on_skel_guide_click(nx, ny)
+            return
+
+        # Person-select mode must be checked before the idle guard — the mode
+        # stays "idle" during person selection so the check was silently eaten.
+        if self._person_select_active:
+            self._on_person_select_click(nx, ny)
+            return
+
+        if self._mode == "idle":
+            return
 
         if self._mode == "path":
             fi = self._frame_idx
@@ -4755,6 +7788,8 @@ class PendulaticViewer(tk.Tk):
                     # starts from this corrected position and shank length.
                     self.tracker.ankle0    = raw.astype(np.float32)
                     self.tracker.shank_len = float(np.linalg.norm(raw - self.tracker.knee0))
+                    if self.tracker.ready:
+                        self.tracker.apply_correction(raw)
                     n_filled = len(fill_range)
                     self._btn_retrack.config(state="normal")
                     self._status.config(
@@ -4773,6 +7808,10 @@ class PendulaticViewer(tk.Tk):
                     # corrected geometry instead of the original (wrong) one.
                     self.tracker.ankle0    = raw.astype(np.float32)
                     self.tracker.shank_len = float(np.linalg.norm(raw - self.tracker.knee0))
+                    # Feed correction back into the live tracker so it immediately
+                    # resumes from the correct position with a directional prior.
+                    if self.tracker.ready:
+                        self.tracker.apply_correction(raw)
                     n_pins = len(self._ankle_pins)
                     hint = ("  Shift+click a later frame to bulk-pin the range."
                             if n_pins == 1 else
@@ -4856,9 +7895,149 @@ class PendulaticViewer(tk.Tk):
                 text=f"Knee/Hip marker moved at frame {self._frame_idx}. "
                      "Press ▶▶ Track All to re-track the entire video.")
 
+    # ── guided skeleton wizard ────────────────────────────────────────────────
+
+    def _cmd_skel_guide(self):
+        """Enter the 3-click manual skeleton wizard: Hip → Knee → Ankle."""
+        if self.cap is None:
+            return
+        self._playing = False
+        self._btn_play.config(text="▶")
+        self._skel_guide_active = True
+        self._skel_guide_step   = 0
+        self._skel_guide_tmp    = [None, None, None]
+        self._mode = "idle"          # disable any pending single-point modes
+        self._hl_btn(self._btn_skel)
+        self._status.config(
+            text="Set Skeleton (1/3): Click the patient's HIP joint.  "
+                 "[Esc to cancel]")
+        self._show_frame_idx(self._frame_idx)
+
+    def _on_skel_guide_click(self, nx: float, ny: float):
+        """Handle one click in the guided skeleton wizard."""
+        self._skel_guide_tmp[self._skel_guide_step] = np.array([nx, ny], dtype=np.float32)
+        self._skel_guide_step += 1
+        prompts = [
+            "Set Skeleton (2/3): Click the patient's KNEE joint.  [Esc to cancel]",
+            "Set Skeleton (3/3): Click the patient's ANKLE joint.  [Esc to cancel]",
+        ]
+        if self._skel_guide_step < 3:
+            self._status.config(text=prompts[self._skel_guide_step - 1])
+        else:
+            self._skel_guide_active = False
+            self._hl_btn(None)
+            self._apply_skel_guide()
+            return
+        self._show_frame_idx(self._frame_idx)
+
+    def _apply_skel_guide(self):
+        """Commit the three manually placed points as the tracker skeleton.
+
+        Crucially, this BYPASSES tracker.init() entirely.  init() runs
+        MediaPipe and can snap to the nearest detected person — which is often
+        the assessor when both are in frame.  Here we set all tracker attributes
+        directly from the clinician's clicks so MediaPipe has zero opportunity
+        to override them.
+        """
+        hip_a, kne_a, ank_a = self._skel_guide_tmp
+        if None in (hip_a, kne_a, ank_a):
+            return
+        hip = hip_a.astype(np.float32)
+        kne = kne_a.astype(np.float32)
+        ank = ank_a.astype(np.float32)
+
+        # Mirror into the per-point click slots so any subsequent call that
+        # reads _hip_click / _knee_click / _ankle_click sees the guide values.
+        self._hip_click   = (float(hip[0]), float(hip[1]))
+        self._knee_click  = (float(kne[0]), float(kne[1]))
+        self._ankle_click = (float(ank[0]), float(ank[1]))
+
+        frame = self._get_frame(self._frame_idx)
+        fw    = frame.shape[1] if frame is not None else max(self._vid_w, 1)
+
+        # ── set tracker geometry directly — no MediaPipe ──────────────────────
+        t = self.tracker
+        t.hip0      = hip.copy()
+        t.knee0     = kne.copy()
+        t.ankle0    = ank.copy()
+        t.thigh_len = float(np.linalg.norm(kne - hip))
+        t.shank_len = float(np.linalg.norm(ank - kne))
+        t._hip_px   = hip.copy()
+        t._knee_px  = kne.copy()
+        t._ank_px   = ank.copy()
+        t._anchor_xfrac = float(kne[0]) / fw
+        t._ready    = True
+        # Ensure the pose detector is open so step() can run after Track All
+        if hasattr(t, '_open_pose'):
+            t._open_pose()
+
+        # ── lock knee anchor on _MPBatchTracker compat attrs ─────────────────
+        if hasattr(t, 'knee'):
+            t.knee = kne.copy()
+
+        # ── seed appearance template from clicked ankle ───────────────────────
+        if frame is not None:
+            patch = _ankle_patch(frame, ank)
+            if patch is not None:
+                self._ankle_correct_template = patch
+                if hasattr(t, '_correct_template'):
+                    t._correct_template = patch
+
+        # ── clear stale trail so old assessor tracking doesn't show through ───
+        if hasattr(self, '_trail') and self.total_frames > 0:
+            self._trail  = [None] * self.total_frames
+            self._angles = [float('nan')] * self.total_frames
+            self._ankle_pins.clear()
+
+        shank = t.shank_len
+        self._btn_retrack.config(state="normal")
+        self._status.config(
+            text=f"✓ Manual skeleton set (shank {shank:.0f} px).  "
+                 "Press ▶▶ Track All to track from these points.")
+        self._show_frame_idx(self._frame_idx)
+
+    def _overlay_skel_guide(self, frame: np.ndarray) -> np.ndarray:
+        """Draw the already-placed guide points and a step-instruction banner."""
+        NAMES  = ["Hip",     "Knee",      "Ankle"]
+        COLORS = [(255, 160, 30), (50, 220, 80), (80, 180, 255)]   # orange / green / blue
+        out = frame.copy()
+
+        prev_pt = None
+        for i, pt in enumerate(self._skel_guide_tmp):
+            if pt is None:
+                continue
+            x = int(round(float(pt[0]))); y = int(round(float(pt[1])))
+            col = COLORS[i]
+            if prev_pt is not None:
+                px = int(round(float(prev_pt[0]))); py = int(round(float(prev_pt[1])))
+                cv2.line(out, (px, py), (x, y), col, 2, cv2.LINE_AA)
+            cv2.circle(out, (x, y), 9, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.circle(out, (x, y), 8, col, -1, cv2.LINE_AA)
+            (lw, lh), _ = cv2.getTextSize(NAMES[i], cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.rectangle(out, (x + 12, y - lh - 3), (x + 14 + lw, y + 3),
+                          (0, 0, 0), -1)
+            cv2.putText(out, NAMES[i], (x + 13, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
+            prev_pt = pt
+
+        # Instruction banner for the next step
+        if self._skel_guide_step < 3:
+            step_labels = ["HIP", "KNEE", "ANKLE"]
+            step_cols   = COLORS
+            label = step_labels[self._skel_guide_step]
+            col   = step_cols[self._skel_guide_step]
+            banner = f"({self._skel_guide_step + 1}/3)  Click the patient's {label}"
+            (bw, bh), _ = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.68, 2)
+            bx, by = 14, 30
+            cv2.rectangle(out, (bx - 6, by - bh - 8), (bx + bw + 8, by + 6),
+                          (0, 0, 0), -1)
+            cv2.putText(out, banner, (bx, by),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.68, col, 2, cv2.LINE_AA)
+        return out
+
     def _hl_btn(self, btn):
         # Reset all to normal light-mode palette colour
-        for b in (self._btn_knee, self._btn_ankle, self._btn_hip, self._btn_path):
+        for b in (self._btn_knee, self._btn_ankle, self._btn_hip, self._btn_path, self._btn_skel):
             b.config(bg="#E2E8F0", fg="#0F172A")
         if btn:
             # Light-blue highlight — clearly visible on the light toolbar
@@ -5222,13 +8401,41 @@ class _HistoryWindow(tk.Toplevel):
             messagebox.showwarning("No video", "No video file recorded for this trial.",
                                    parent=self)
             return
-        path = os.path.join(BASE_DIR, video_name)
-        if not os.path.exists(path):
-            # try sessions.json directory
-            path = os.path.join(os.path.dirname(_DB_FILE), video_name)
-        if not os.path.exists(path):
+        # Resolution order:
+        # 1. Stored value is an absolute path that still exists.
+        # 2. Stored value is relative to BASE_DIR (new format).
+        # 3. Legacy basename — search Recordings/ then uploads/ then full walk.
+        path = None
+        if os.path.isabs(video_name) and os.path.exists(video_name):
+            path = video_name
+        else:
+            rel = os.path.join(BASE_DIR, video_name)
+            if os.path.exists(rel):
+                path = rel
+
+        if path is None:
+            # Fallback: search known subdirectories by basename
+            basename = os.path.basename(video_name)
+            search_roots = [
+                os.path.join(BASE_DIR, "Recordings"),
+                os.path.join(BASE_DIR, "uploads"),
+                BASE_DIR,
+            ]
+            for root in search_roots:
+                if not os.path.isdir(root):
+                    continue
+                for dirpath, _, filenames in os.walk(root):
+                    if basename in filenames:
+                        path = os.path.join(dirpath, basename)
+                        break
+                if path:
+                    break
+
+        if path is None:
             messagebox.showerror("File not found",
-                                 f"Cannot locate:\n{video_name}", parent=self)
+                                 f"Cannot locate:\n{os.path.basename(video_name)}\n\n"
+                                 "Move the video into the Recordings folder, or open it "
+                                 "directly with File → Open Video.", parent=self)
             return
         self._master._open_video(path)
         self._master.lift()
@@ -5901,7 +9108,27 @@ def main():
 
     ap = argparse.ArgumentParser(description="Pendulastic Wartenberg Test Viewer")
     ap.add_argument("video", nargs="?", help="Optional video path to open on launch")
+    ap.add_argument(
+        "--coefficients", metavar="JSON",
+        help="Path to calibration_coefficients*.json (e.g. calibration_coefficients_lying_down.json). "
+             "Overrides the sklearn pkl model for this session.")
     args = ap.parse_args()
+
+    # Load position-stratified polynomial coefficients when --coefficients is given.
+    global _POLY_COEFFS
+    if args.coefficients:
+        import json as _json
+        _coeff_path = os.path.abspath(args.coefficients)
+        try:
+            with open(_coeff_path, encoding="utf-8") as _f:
+                _cd = _json.load(_f)
+            _POLY_COEFFS = _cd["coefficients"]
+            _group = _cd.get("position_group", "?")
+            print(f"[Calibration] Loaded polynomial coefficients ({_group}): "
+                  f"{_cd['coefficients']}  [{_coeff_path}]")
+        except Exception as _e:
+            print(f"[Calibration] WARNING: could not load --coefficients {_coeff_path}: {_e}")
+
     PendulaticViewer(initial_video=args.video).mainloop()
 
 

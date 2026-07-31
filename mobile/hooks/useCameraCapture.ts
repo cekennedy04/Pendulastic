@@ -14,7 +14,7 @@ import type { CameraView } from "expo-camera";
 import { Config } from "../constants/Config";
 
 interface UseCameraCaptureOptions {
-  cameraRef:  React.RefObject<CameraView>;
+  cameraRef:  React.RefObject<CameraView | null>;
   enabled:    boolean;
   onFrame:    (jpeg: ArrayBuffer, frameIndex: number) => void;
 }

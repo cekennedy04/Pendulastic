@@ -58,6 +58,20 @@ export type WsServerMessage =
   | WsWarningPayload
   | WsCompletePayload;
 
+/** Sent from the client to override a single joint position. */
+export interface WsJointCorrection {
+  type:  "correction";
+  joint: "hip" | "knee" | "ankle";
+  x:     number;  // normalised [0, 1]
+  y:     number;  // normalised [0, 1]
+}
+
+/** One sample in the real-time angle history buffer. */
+export interface AnglePoint {
+  t:     number;  // timestamp_ms from WsKeypointPayload
+  angle: number;  // knee_angle_deg
+}
+
 // ── Pose types ────────────────────────────────────────────────────────────────
 
 export interface Keypoint {

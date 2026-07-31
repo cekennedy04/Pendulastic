@@ -17,12 +17,14 @@
  * so all joints move together.  `useNativeDriver: false` is required because
  * react-native-svg props are not backed by native animated nodes.
  *
- * `Animated.add` produces derived label-position values that track kneeX/kneeY
- * without additional state — the offset is baked in at construction time and
- * updates automatically as the knee joint animates.
+ * Pulse animation
+ * ---------------
+ * When `trackingStatus === "uncertain"`, an `AnimatedG` wrapper loops a slow
+ * opacity pulse (1.0 → 0.35 → 1.0, 550 ms each half-cycle) so the clinician
+ * notices the reduced confidence without losing sight of the joints.
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { Animated } from "react-native";
 import Svg, { Circle, G, Line, Text } from "react-native-svg";
 import type { PoseKeypoints, TrackingStatus } from "../../types";
@@ -32,6 +34,7 @@ import type { PoseKeypoints, TrackingStatus } from "../../types";
 const AnimatedCircle = Animated.createAnimatedComponent(Circle) as React.ComponentType<any>;
 const AnimatedLine   = Animated.createAnimatedComponent(Line)   as React.ComponentType<any>;
 const AnimatedText   = Animated.createAnimatedComponent(Text)   as React.ComponentType<any>;
+const AnimatedG      = Animated.createAnimatedComponent(G)      as React.ComponentType<any>;
 
 const SPRING = {
   damping:         18,
@@ -73,6 +76,26 @@ export const SkeletonOverlay = React.memo(function SkeletonOverlay({
   const labelX = useRef(Animated.add(kneeX, 14)).current;
   const labelY = useRef(Animated.add(kneeY,  4)).current;
 
+  // Pulse opacity — active only when uncertain (breathes 1.0 ↔ 0.35).
+  const pulseAnim    = useRef(new Animated.Value(1)).current;
+  const pulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  useEffect(() => {
+    pulseLoopRef.current?.stop();
+    if (trackingStatus === "uncertain") {
+      pulseLoopRef.current = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 0.35, duration: 550, useNativeDriver: false }),
+          Animated.timing(pulseAnim, { toValue: 1.00, duration: 550, useNativeDriver: false }),
+        ])
+      );
+      pulseLoopRef.current.start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [trackingStatus, pulseAnim]);
+
+  // Keypoint spring animation.
   useEffect(() => {
     if (!keypoints) return;
 
@@ -89,7 +112,8 @@ export const SkeletonOverlay = React.memo(function SkeletonOverlay({
     return () => anim.stop();
   }, [keypoints, width, height]);
 
-  const boneOpacity = trackingStatus === "lost" ? 0.25 : 0.88;
+  const isLost      = trackingStatus === "lost";
+  const boneOpacity = isLost ? 0.22 : 0.88;
   const boneWidth   = trackingStatus === "uncertain" ? 1.5 : 2.5;
 
   return (
@@ -99,39 +123,42 @@ export const SkeletonOverlay = React.memo(function SkeletonOverlay({
       style={{ position: "absolute", top: 0, left: 0 }}
       pointerEvents="none"
     >
-      <G opacity={boneOpacity}>
-        <AnimatedLine
-          x1={hipX}   y1={hipY}
-          x2={kneeX}  y2={kneeY}
-          stroke={C_BONE} strokeWidth={boneWidth} strokeLinecap="round"
-        />
-        <AnimatedLine
-          x1={kneeX}  y1={kneeY}
-          x2={ankleX} y2={ankleY}
-          stroke={C_BONE} strokeWidth={boneWidth} strokeLinecap="round"
-        />
-      </G>
+      {/* pulseAnim only modulates opacity when uncertain; stays at 1.0 otherwise */}
+      <AnimatedG opacity={pulseAnim}>
+        <G opacity={boneOpacity}>
+          <AnimatedLine
+            x1={hipX}   y1={hipY}
+            x2={kneeX}  y2={kneeY}
+            stroke={C_BONE} strokeWidth={boneWidth} strokeLinecap="round"
+          />
+          <AnimatedLine
+            x1={kneeX}  y1={kneeY}
+            x2={ankleX} y2={ankleY}
+            stroke={C_BONE} strokeWidth={boneWidth} strokeLinecap="round"
+          />
+        </G>
 
-      <AnimatedCircle
-        cx={hipX} cy={hipY}
-        r={7} fill="rgba(249,115,22,0.35)" stroke={C_HIP} strokeWidth={2}
-      />
-      <AnimatedCircle
-        cx={kneeX} cy={kneeY}
-        r={8} fill="rgba(14,165,233,0.35)" stroke={C_KNEE} strokeWidth={2}
-      />
-      <AnimatedCircle
-        cx={ankleX} cy={ankleY}
-        r={7} fill="rgba(34,197,94,0.35)" stroke={C_ANKLE} strokeWidth={2}
-      />
+        <AnimatedCircle
+          cx={hipX} cy={hipY}
+          r={7} fill="rgba(249,115,22,0.35)" stroke={C_HIP} strokeWidth={2}
+        />
+        <AnimatedCircle
+          cx={kneeX} cy={kneeY}
+          r={8} fill="rgba(14,165,233,0.35)" stroke={C_KNEE} strokeWidth={2}
+        />
+        <AnimatedCircle
+          cx={ankleX} cy={ankleY}
+          r={7} fill="rgba(34,197,94,0.35)" stroke={C_ANKLE} strokeWidth={2}
+        />
 
-      <AnimatedText
-        x={labelX} y={labelY}
-        fill={C_ANGLE} fontSize={13} fontFamily="monospace"
-        opacity={trackingStatus === "lost" ? 0 : 0.95}
-      >
-        {`${Math.round(kneeAngleDeg)}°`}
-      </AnimatedText>
+        <AnimatedText
+          x={labelX} y={labelY}
+          fill={C_ANGLE} fontSize={13} fontFamily="monospace"
+          opacity={isLost ? 0 : 0.95}
+        >
+          {`${Math.round(kneeAngleDeg)}°`}
+        </AnimatedText>
+      </AnimatedG>
     </Svg>
   );
 });

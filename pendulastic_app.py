@@ -9,6 +9,7 @@ Run:
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import queue
@@ -32,6 +33,11 @@ try:
 except Exception:
     _imu = None
     _IMU_AVAIL = False
+
+try:
+    import imu_calibration_tuner as _tuner
+except Exception:
+    _tuner = None
 
 try:
     import motive_sync as _motive
@@ -555,7 +561,7 @@ class AcquisitionPanel(tk.Frame):
             try:
                 _imu.zero()
                 self.lbl_method_status.config(
-                    text="● Sensor zeroed — horizontal = 0°", fg="#B36B00")
+                    text="⚡ Flex once to capture axis...", fg="#B36B00")
             except Exception as e:
                 messagebox.showerror("Zero Sensor", f"Could not zero sensor:\n{e}")
 
@@ -1180,6 +1186,9 @@ class App(tk.Tk):
         meta           = self._acq.get_metadata()
         source_angles: dict = {}
         pending_rgb    = False
+        imu_raw_log_path: Optional[str] = None
+        imu_csv_path:     Optional[str] = None
+        fn_imu:           Optional[str] = None
 
         for src in self._active_sources:
             if src == "imu":
@@ -1188,9 +1197,11 @@ class App(tk.Tk):
                 fn_imu = DataManager.build_filename(
                     meta["pid"], meta["leg"], meta["ms_status"], meta["trial"],
                     source="imu")
-                DataManager.save_trial(fn_imu, angles_imu, meta,
+                imu_csv_path = DataManager.save_trial(fn_imu, angles_imu, meta,
                                        timestamps=ts_imu, source="imu")
                 source_angles["imu"] = angles_imu
+                if _IMU_AVAIL:
+                    imu_raw_log_path = _imu.stop_raw_log()
 
             elif src == "rgb":
                 self._stop_rgb_recording()
@@ -1204,6 +1215,9 @@ class App(tk.Tk):
                         pass
                 source_angles["optitrack"] = []   # angles loaded from CSV in review panel
 
+        pending_imu_tune = (
+            imu_raw_log_path is not None and not pending_rgb and _tuner is not None)
+
         if pending_rgb:
             self._state = "processing"
             self._acq.enter_processing()
@@ -1211,6 +1225,14 @@ class App(tk.Tk):
             threading.Thread(
                 target=self._run_rgb_processing,
                 args=(meta,), daemon=True,
+            ).start()
+        elif pending_imu_tune:
+            self._state = "processing"
+            self._acq.enter_processing()
+            self._pending_review = source_angles
+            threading.Thread(
+                target=self._run_imu_tuning,
+                args=(imu_raw_log_path, imu_csv_path, fn_imu, meta), daemon=True,
             ).start()
         else:
             self._transition_to_review(source_angles, meta)
@@ -1346,6 +1368,25 @@ class App(tk.Tk):
     def _start_imu_recording(self, meta: dict) -> None:
         # IMU server runs continuously; data flows via queue -> _tick -> _rec_angles["imu"]
         # No start_recording() call needed — we own the CSV via DataManager.save_trial.
+        if _IMU_AVAIL:
+            fn_imu = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"],
+                source="imu")
+            raw_path = os.path.join(
+                DataManager.DATA_DIR, fn_imu.replace(".csv", "_raw.jsonl"))
+            try:
+                os.makedirs(DataManager.DATA_DIR, exist_ok=True)
+                _imu.start_raw_log(raw_path)
+            except OSError as e:
+                # Raw logging is purely a diagnostic/auxiliary feature that
+                # feeds the auto-tuning loop -- it must never be able to block
+                # the core acquisition it's attached to. Warn and continue;
+                # this trial simply won't be eligible for auto-tuning.
+                messagebox.showwarning(
+                    "IMU Raw Log",
+                    f"Could not open raw IMU log:\n{type(e).__name__}: {e}\n\n"
+                    "Recording will continue without a raw log (this trial "
+                    "will not be eligible for auto-tuning).")
         self._imu_poll_stop.clear()
         self._imu_poll_thread = threading.Thread(
             target=self._imu_poll_worker, daemon=True)
@@ -1353,7 +1394,8 @@ class App(tk.Tk):
 
     def _imu_poll_worker(self) -> None:
         """Put (t, angle_deg) into _imu_queue at ~20 Hz."""
-        _EMA_ALPHA = 0.3   # higher = less smoothing, less lag
+        import imu_calibration_config as _cfgmod
+        _EMA_ALPHA = _cfgmod.load_config()["ema_alpha"]
         _ema: Optional[float] = None
         while not self._imu_poll_stop.is_set():
             if self._engine:
@@ -1492,6 +1534,68 @@ class App(tk.Tk):
             self._rgb_cap.release()
             self._rgb_cap = None
 
+    def _run_imu_tuning(self, raw_log_path: str, csv_path: str,
+                        csv_filename: str, meta: dict) -> None:
+        """Load this trial's raw IMU log, run the grid search, and — only if
+        a passing configuration is found — rewrite the trial's saved CSV and
+        feed the tuned series into REVIEW. Must never raise: any failure
+        falls back to the originally-recorded series so tuning can never
+        block a clinician from seeing trial data."""
+        source_angles = dict(self._pending_review)
+        try:
+            raw_samples = []
+            with open(raw_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        raw_samples.append(json.loads(line))
+                    except ValueError:
+                        continue
+
+            if raw_samples and _tuner is not None:
+                best = _tuner.tune_and_persist(raw_samples, source_trial=csv_filename)
+                if best["passes"]:
+                    t, angle = _tuner.replay_trial(raw_samples, best["params"])
+                    # replay_trial's own contract (see its docstring) guarantees
+                    # angle[0] is always NaN -- the first tick always precedes any
+                    # processed sample. Callers must finite-filter before reducing;
+                    # score_waveform does this internally, but we save/display the
+                    # raw series here, so we must filter explicitly ourselves or a
+                    # literal "nan" gets written into the persisted trial CSV.
+                    finite_mask = np.isfinite(angle)
+                    t, angle = t[finite_mask], angle[finite_mask]
+                    tuned_angles = [float(a) for a in angle]
+                    DataManager.save_trial(
+                        csv_filename, tuned_angles, meta,
+                        timestamps=[float(x) for x in t], source="imu")
+                    source_angles["imu"] = tuned_angles
+
+                    # Note on config staleness: ema_alpha applies starting next
+                    # trial (the poll worker reloads config fresh each start),
+                    # but beta/gravity_seed/flex_axis_capture are read once at
+                    # pendulastic_imu_server.py's import time and only take
+                    # effect after that process is restarted. The very next
+                    # trial therefore runs a hybrid parameter set that was never
+                    # actually scored as a combination by the grid search --
+                    # make that visible instead of silent.
+                    print("IMU config updated: EMA smoothing applies next trial; "
+                          "AHRS beta/gravity-seed/flex-axis-capture require an "
+                          "IMU server restart to take effect.")
+        except Exception:
+            # Broad on purpose: this runs in an unsupervised daemon thread,
+            # and imu_calibration_tuner.py has no internal exception handling
+            # of its own -- a malformed-but-JSON-parseable raw sample (e.g.
+            # missing "role", or "v" not a 3-element list) could raise
+            # TypeError/IndexError from deep inside replay_trial. An uncaught
+            # exception here would kill the thread silently, the self.after
+            # transition below would never fire, and the app would sit in
+            # "processing" forever -- a direct violation of "tuning must
+            # never block the clinician from seeing trial data."
+            pass   # fall back to the originally-recorded series
+        self.after(0, lambda: self._transition_to_review(source_angles, meta))
+
     def _run_rgb_processing(self, meta: dict) -> None:
         def progress(pct: float) -> None:
             self.after(0, lambda p=pct: self._acq.status_var.set(
@@ -1559,6 +1663,20 @@ class App(tk.Tk):
                 frame = self._preview_queue.get_nowait()
                 self._acq.update_preview(frame)
             except queue.Empty:
+                pass
+
+        # Flip label when flex axis transitions from armed → captured
+        if (_IMU_AVAIL and "imu" in self._active_sources
+                and self._state in ("idle", "recording")):
+            try:
+                st = _imu.get_state()
+                if st.get("flex_axis_captured"):
+                    self._acq.lbl_method_status.config(
+                        text="● Axis locked — sagittal tracking", fg="green")
+                elif st.get("flex_axis_armed"):
+                    self._acq.lbl_method_status.config(
+                        text="⚡ Flex once to capture axis...", fg="#B36B00")
+            except Exception:
                 pass
 
         self.after(50, self._tick)

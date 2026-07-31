@@ -51,7 +51,23 @@ _MAS_COLOR = {
 }
 _MAS_NUMS = {"0": 0, "1": 1, "1+": 1.5, "2": 2, "3": 3, "4": 4, "?": -1}
 
-BEST_HPE = "rtmpose_m"   # confirmed most accurate from hpe_mas_evaluation.py
+BEST_HPE = "mediapipe_full"   # best comprehensive model from hpe_mas_evaluation.py
+
+# Viewer participant IDs that need explicit mapping (don't follow P→numeric rule)
+# P001 and P005 are both P5 (MS participant 2); P004/P008/P010 use zero-padded format
+_VIEWER_PID_MAP = {
+    "P001": "5",
+    "P004": "4",
+    "P005": "5",
+    "P008": "8",
+    "P010": "10",
+}
+
+# Participants excluded from clinical analysis
+_EXCLUDE_PIDS = {"0", "TEST"}
+
+# MS participants (all others treated as healthy controls)
+_MS_PIDS = {"4", "5"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -59,8 +75,14 @@ BEST_HPE = "rtmpose_m"   # confirmed most accurate from hpe_mas_evaluation.py
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _norm_pid(raw: str) -> str:
-    """'P004' → '4',  '4' → '4',  'P001' → '1'."""
+    """Normalize viewer participant ID to the same numeric prefix used in OptiTrack CSVs.
+    'P001' → '5' (MSParticipant2), 'P004' → '4', '6' → '6', etc.
+    """
     s = str(raw).strip()
+    # Explicit mapping takes priority (handles zero-padded and alias IDs)
+    if s in _VIEWER_PID_MAP:
+        return _VIEWER_PID_MAP[s]
+    # Strip 'P' prefix and convert numeric remainder
     if s.upper().startswith("P"):
         s = s[1:]
     try:
@@ -93,10 +115,29 @@ def load_viewer_sessions() -> pd.DataFrame:
     for s in db.get("sessions", []):
         raw_pid = str(s.get("participant", ""))
         num_pid = _norm_pid(raw_pid)
+
+        # Skip calibration participant P0 and TEST sessions
+        if num_pid in _EXCLUDE_PIDS:
+            continue
+
+        # Skip sessions with no MAS score computed yet
+        mas = str(s.get("mas", "")).strip()
+        if not mas or mas in ("None", "nan", "?"):
+            continue
+
         leg     = str(s.get("leg", "right")).lower()
         trial   = str(s.get("trial", "")).strip()
         pt4     = s.get("pt_4")
-        mas     = str(s.get("mas", "?"))
+
+        # Determine diagnosis from numeric PID (overrides sessions.json diagnosis
+        # since P001/P005 appear under different names but are all P5)
+        if num_pid in _MS_PIDS:
+            diag = "MS"
+        elif num_pid in _EXCLUDE_PIDS:
+            diag = "Excluded"
+        else:
+            diag = "Healthy"
+
         rows.append({
             "viewer_pid":   num_pid,
             "viewer_leg":   leg,
@@ -108,7 +149,7 @@ def load_viewer_sessions() -> pd.DataFrame:
             "viewer_phi":   s.get("phi_max_ratio"),
             "viewer_omega": s.get("omega_max_n"),
             "viewer_A0":    s.get("A0_deg"),
-            "diagnosis":    part_diag.get(num_pid, "Unknown"),
+            "diagnosis":    diag,
             "session_id":   s.get("id", ""),
         })
     df = pd.DataFrame(rows)
@@ -240,9 +281,13 @@ def build_matched(viewer: pd.DataFrame, opti: pd.DataFrame,
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _adj_flag(mas_a: str, mas_b: str) -> bool:
+    return abs(_MAS_NUMS.get(str(mas_a), -99) - _MAS_NUMS.get(str(mas_b), -99)) <= 1.0
+
+
 def main() -> None:
     sep = "=" * 72
-    print(f"\n{sep}\n  Three-Way Comparison: OptiTrack vs Viewer vs HPE ({BEST_HPE})\n{sep}\n")
+    print(f"\n{sep}\n  Pendulastic Viewer vs OptiTrack — Full Accuracy Comparison\n{sep}\n")
 
     viewer = load_viewer_sessions()
     opti   = load_optitrack()
@@ -253,71 +298,112 @@ def main() -> None:
     if opti.empty:
         print("No OptiTrack data found"); return
 
-    print(f"Viewer sessions : {len(viewer)}")
-    print(f"OptiTrack trials: {len(opti)}")
+    print(f"Viewer sessions with MAS scores: {len(viewer)}")
+    print(f"  MS sessions   : {(viewer['diagnosis']=='MS').sum()}")
+    print(f"  Healthy sessions: {(viewer['diagnosis']=='Healthy').sum()}")
+    print(f"OptiTrack trials (excl. P0, quality-warned): {len(opti[opti['quality_warn']==''])}")
     print(f"HPE ({BEST_HPE}) trials: {len(hpe)}")
+    print(f"\nViewer participant IDs seen: {sorted(viewer['viewer_pid'].unique())}")
+    print(f"OptiTrack numeric IDs      : {sorted(opti['opti_num'].unique())}")
 
     matched = build_matched(viewer, opti, hpe)
     if matched.empty:
-        print("\nNo matching trials found between viewer and OptiTrack.")
-        print("Check that trial numbers and participant IDs match.")
-        print("\nViewer participants:", sorted(viewer["viewer_pid"].unique()))
-        print("OptiTrack nums:     ", sorted(opti["opti_num"].unique()))
+        print("\nNo matching trials found.  Check participant ID mapping.")
         return
 
-    # Exclude artifact trials for accuracy metrics
+    # Exclude quality-warned OptiTrack trials from accuracy metrics
     clean = matched[matched["quality_warn"] == ""].copy()
-
-    print(f"\nMatched trials: {len(matched)}  ({len(clean)} without artifact warning)")
-
-    # ── Accuracy summary ──────────────────────────────────────────────────────
-    print(f"\n{sep}")
-    print(f"{'Metric':<36} {'Viewer':>10} {'HPE ('+BEST_HPE+')':>16}")
-    print("-" * 65)
-
-    def _pct(series, denom):
-        return f"{series.mean()*100:.1f}%" if denom > 0 else "n/a"
-
     n_c = len(clean)
-    metrics = [
-        ("Exact MAS agreement",
-         clean["viewer_mas_match"].sum() / n_c * 100 if n_c else float("nan"),
-         clean["hpe_mas_match"].sum()    / n_c * 100 if n_c else float("nan")),
-        ("Adjacent MAS agreement",
-         clean.apply(lambda r: abs(_MAS_NUMS.get(r["viewer_mas"], -1) -
-                                   _MAS_NUMS.get(r["opti_mas"], -1)) <= 1, axis=1
-                     ).mean() * 100 if n_c else float("nan"),
-         clean.apply(lambda r: abs(_MAS_NUMS.get(r["hpe_mas"], -1) -
-                                   _MAS_NUMS.get(r["opti_mas"], -1)) <= 1, axis=1
-                     ).mean() * 100 if n_c else float("nan")),
-        ("Mean absolute PT error",
-         clean["viewer_pt_diff"].mean(),
-         clean["hpe_pt_diff"].mean()),
-    ]
-    for label, v_val, h_val in metrics:
-        vs = f"{v_val:.1f}" if not math.isnan(v_val) else "n/a"
-        hs = f"{h_val:.1f}" if not math.isnan(h_val) else "n/a"
-        suf = "%" if "agree" in label else ""
-        print(f"{label:<36} {vs+suf:>10} {hs+suf:>16}")
-    print(sep)
+
+    print(f"\nMatched viewer->OptiTrack trials: {len(matched)}")
+    print(f"  Clean (no quality warning)     : {n_c}")
+    print(f"  MS matched    : {(clean['diagnosis']=='MS').sum()}")
+    print(f"  Healthy matched: {(clean['diagnosis']=='Healthy').sum()}")
 
     # ── Per-trial table ───────────────────────────────────────────────────────
-    print("\nPer-trial breakdown (clean trials):")
-    print(f"{'P':>4} {'Leg':>6} {'T':>3}  {'OptiPT':>8} {'Opti':>5}  "
-          f"{'ViewPT':>8} {'View':>5}  {'HPEPT':>7} {'HPE':>5}")
-    print("-" * 60)
-    for _, r in clean.sort_values(["participant","leg","trial"]).iterrows():
-        vp = f"{r['viewer_pt4']:.3f}" if math.isfinite(r["viewer_pt4"]) else " n/a "
-        hp = f"{r['hpe_pt4']:.3f}"    if math.isfinite(r["hpe_pt4"])    else " n/a "
-        print(f"{r['participant']:>4} {r['leg']:>6} {r['trial']:>3}  "
+    print(f"\n{sep}")
+    print("Per-trial breakdown:")
+    print(f"{'P':>4} {'Leg':>6} {'T':>3} {'Dx':>8}  {'OptiPT':>8} {'Opti':>5}  "
+          f"{'ViewPT':>8} {'View':>5}  {'Match?':>8} {'Adj?':>5}")
+    print("-" * 75)
+    for _, r in clean.sort_values(["participant", "leg", "trial"]).iterrows():
+        vp    = f"{r['viewer_pt4']:.3f}" if math.isfinite(r["viewer_pt4"]) else "  n/a "
+        exact = "EXACT" if r["viewer_mas_match"] else "     "
+        adj   = "adj"   if _adj_flag(r["viewer_mas"], r["opti_mas"]) else "  X"
+        print(f"{r['participant']:>4} {r['leg']:>6} {r['trial']:>3} {r['diagnosis']:>8}  "
               f"{r['opti_pt4']:>8.3f} {r['opti_mas']:>5}  "
-              f"{vp:>8} {r['viewer_mas']:>5}  "
-              f"{hp:>7} {r['hpe_mas']:>5}")
+              f"{vp:>8} {r['viewer_mas']:>5}  {exact:>8} {adj:>5}")
     print(sep)
 
-    # ── Save CSV ──────────────────────────────────────────────────────────────
+    # ── Viewer accuracy metrics ───────────────────────────────────────────────
+    healthy_c = clean[clean["diagnosis"] == "Healthy"]
+    spastic_c = clean[clean["diagnosis"] == "MS"]
+
+    viewer_exact = clean["viewer_mas_match"].mean() * 100 if n_c else float("nan")
+    viewer_adj   = clean.apply(lambda r: _adj_flag(r["viewer_mas"], r["opti_mas"]),
+                               axis=1).mean() * 100 if n_c else float("nan")
+    viewer_h0    = (healthy_c["viewer_mas"] == "0").mean() * 100 if len(healthy_c) else float("nan")
+    viewer_s1    = (spastic_c["viewer_mas"] != "0").mean() * 100 if len(spastic_c) else float("nan")
+    viewer_mae   = clean["viewer_pt_diff"].dropna().mean()
+    viewer_r     = (clean[["opti_pt4", "viewer_pt4"]].dropna().corr().iloc[0, 1]
+                    if n_c > 2 else float("nan"))
+
+    viewer_summary = {
+        "model_family":        "Pendulastic Viewer",
+        "n_trials":            n_c,
+        "n_healthy":           len(healthy_c),
+        "n_spastic":           len(spastic_c),
+        "exact_MAS_agree_%":   round(viewer_exact, 1),
+        "adj_MAS_agree_%":     round(viewer_adj, 1),
+        "healthy_MAS0_%":      round(viewer_h0, 1),
+        "spastic_MAS1+_%":     round(viewer_s1, 1),
+        "PT_correlation":      round(viewer_r, 3),
+        "PT_MAE":              round(viewer_mae, 4),
+    }
+
+    # ── Load HPE summary ──────────────────────────────────────────────────────
+    hpe_summary_csv = os.path.join(BASE_DIR, "Model_Analysis_Outputs",
+                                   "HPE_Comparison", "hpe_accuracy_summary.csv")
+    hpe_sum_df = pd.read_csv(hpe_summary_csv) if os.path.exists(hpe_summary_csv) else pd.DataFrame()
+
+    # ── Print combined comparison ─────────────────────────────────────────────
+    print(f"\n{'System / Model':<26} {'n':>4}  {'Adj%':>6}  {'Exact%':>7}  "
+          f"{'Hlth->0%':>8}  {'MS->1+%':>8}  {'r':>7}  {'MAE':>6}")
+    print("-" * 80)
+
+    def _row(d: dict):
+        r_str  = f"{d['PT_correlation']:.3f}" if not math.isnan(d.get("PT_correlation", float("nan"))) else "  n/a"
+        h_str  = f"{d['healthy_MAS0_%']:.1f}"  if not math.isnan(d.get("healthy_MAS0_%", float("nan"))) else " n/a"
+        s_str  = f"{d['spastic_MAS1+_%']:.1f}" if not math.isnan(d.get("spastic_MAS1+_%", float("nan"))) else " n/a"
+        print(f"{d['model_family']:<26} {d['n_trials']:>4}  "
+              f"{d['adj_MAS_agree_%']:>5.1f}%  {d['exact_MAS_agree_%']:>6.1f}%  "
+              f"{h_str:>8}%  {s_str:>7}%  {r_str:>7}  {d['PT_MAE']:>6.4f}")
+
+    # Viewer first
+    _row(viewer_summary)
+    print("  " + "·" * 76)
+    # Then all HPE models sorted by adj%
+    if not hpe_sum_df.empty:
+        for _, hr in hpe_sum_df.sort_values("adj_MAS_agree_%", ascending=False).iterrows():
+            row = hr.to_dict()
+            row["healthy_MAS0_%"]  = float(row.get("healthy_MAS0_%",  float("nan")))
+            row["spastic_MAS1+_%"] = float(row.get("spastic_MAS1+_%", float("nan")))
+            row["PT_correlation"]  = float(row.get("PT_correlation",  float("nan")))
+            _row(row)
+    print(sep)
+
+    # ── Save CSVs ─────────────────────────────────────────────────────────────
     out_csv = os.path.join(OUT_DIR, "viewer_vs_optitrack.csv")
     matched.to_csv(out_csv, index=False)
+
+    # Combined summary (viewer row + HPE rows)
+    if not hpe_sum_df.empty:
+        viewer_row_df = pd.DataFrame([viewer_summary])
+        combined = pd.concat([viewer_row_df,
+                              hpe_sum_df[viewer_row_df.columns.intersection(hpe_sum_df.columns)]],
+                             ignore_index=True)
+        combined.to_csv(os.path.join(OUT_DIR, "viewer_vs_hpe_summary.csv"), index=False)
+
     print(f"\nDetail CSV -> {out_csv}")
 
     # ── Plots ─────────────────────────────────────────────────────────────────

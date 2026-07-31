@@ -7,6 +7,15 @@ import numpy as np
 import pendulastic_imu_server as imu
 
 
+@pytest.fixture(autouse=True)
+def _reset_imu_config(monkeypatch):
+    """Every test in this file must see the hardcoded defaults, regardless of
+    whatever imu_calibration_config.json a prior tuning run may have written
+    to the real repo root."""
+    import imu_calibration_config as _cfgmod
+    monkeypatch.setattr(imu, "_CONFIG", dict(_cfgmod.DEFAULT_CONFIG))
+
+
 def test_qconj_negates_vector_part():
     q = np.array([0.9, 0.1, 0.2, 0.3])
     c = imu._qconj(q)
@@ -469,3 +478,73 @@ def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
     np.testing.assert_allclose(dev1.ahrs.q, dev2.ahrs.q, atol=1e-12)
     imu.reset_devices()
     imu.clear_zero()
+
+
+def test_new_device_uses_configured_beta(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "beta", 0.15)
+    dev = imu._IMUDevice("12.0.0.1")
+    assert dev.ahrs.beta == 0.15
+
+
+def test_on_accel_skips_seeding_when_gravity_seed_disabled(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "gravity_seed", False)
+    dev = imu._IMUDevice("12.0.0.2")
+    dev.on_accel(np.array([0., 0., -9.81]), ts=0)
+    assert dev._ahrs_seeded, "seeded flag must still be set so we never re-seed later"
+    np.testing.assert_allclose(dev.ahrs.q, [1., 0., 0., 0.], atol=1e-9,
+        err_msg="AHRS quaternion must stay at identity when gravity_seed=False")
+
+
+def test_zero_does_not_arm_flex_axis_when_capture_disabled(monkeypatch):
+    monkeypatch.setitem(imu._CONFIG, "flex_axis_capture", False)
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["13.0.0.1"] = imu._IMUDevice("13.0.0.1")
+    imu._roles["13.0.0.1"]   = imu.ROLE_DISTAL
+    dev = imu._devices["13.0.0.1"]
+    dev.last_rx = __import__("time").time()
+    imu.zero()
+    assert not imu._flex_axis_armed, "flex-axis capture must not arm when disabled in config"
+    imu.reset_devices()
+    imu.clear_zero()
+
+
+def test_start_stop_raw_log_writes_jsonl(tmp_path):
+    import json as _json
+    imu.reset_devices()
+    path = str(tmp_path / "trial_raw.jsonl")
+    imu.start_raw_log(path)
+    dev = imu._IMUDevice("14.0.0.1")
+    imu._devices["14.0.0.1"] = dev
+    imu._roles["14.0.0.1"] = imu.ROLE_DISTAL
+    dev.on_accel(np.array([0., 0., -9.81]), ts=100)
+    dev.on_gyro(np.array([0.1, 0.2, 0.3]), ts=110)
+    dev.on_mag(np.array([1., 0., 0.]), ts=120)
+    returned_path = imu.stop_raw_log()
+    assert returned_path == path
+
+    lines = [_json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    assert len(lines) == 3
+    assert lines[0]["sensor"] == "accel"
+    assert lines[0]["role"] == imu.ROLE_DISTAL
+    assert lines[0]["v"] == [0.0, 0.0, -9.81]
+    assert lines[0]["phone_ts_ms"] == 100
+    assert lines[1]["sensor"] == "gyro"
+    assert lines[2]["sensor"] == "mag"
+    imu.reset_devices()
+
+
+def test_stop_raw_log_returns_none_when_nothing_open():
+    imu._raw_log_file = None
+    imu._raw_log_path = None
+    assert imu.stop_raw_log() is None
+
+
+def test_on_accel_on_gyro_on_mag_are_no_ops_for_raw_log_when_not_recording():
+    """Packets arriving with no raw log open must not raise."""
+    imu.reset_devices()
+    dev = imu._IMUDevice("14.0.0.2")
+    dev.on_accel(np.array([0., 0., 9.81]), ts=0)
+    dev.on_gyro(np.array([0., 0., 0.]), ts=10)
+    dev.on_mag(np.array([1., 0., 0.]), ts=20)
+    imu.reset_devices()

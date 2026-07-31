@@ -98,7 +98,7 @@ def model_family(model_str: str) -> str:
 
 def hpe_pt_score(csv_path: str) -> dict | None:
     """
-    Load a single HPE model CSV, compute 4-param PT score and MAS grade.
+    Load a single HPE model CSV, compute PT score, MAS grade, and all 7 PT params.
     Returns None if insufficient data.
     """
     try:
@@ -117,11 +117,17 @@ def hpe_pt_score(csv_path: str) -> dict | None:
             return None
         pt  = compute_pt_score_simple(params)
         mas = pt_to_mas(pt)
+        def _p(k): return float(params.get(k, float("nan")))
         return {
-            "pt":     round(pt, 4),
-            "mas":    mas,
-            "N":      float(params.get("N", 0)),
-            "A0_deg": float(params.get("A0_deg", 0)),
+            "pt":            round(pt, 4),
+            "mas":           mas,
+            "N":             _p("N"),
+            "A0_deg":        _p("A0_deg"),
+            "phi_max_ratio": _p("phi_max_ratio"),
+            "omega_max_n":   _p("omega_max_n"),
+            "omega_min_n":   _p("omega_min_n"),
+            "f_hz":          _p("f_hz"),
+            "area_ratio":    _p("area_ratio"),
         }
     except Exception:
         return None
@@ -172,13 +178,28 @@ def main() -> None:
     opti_df["quality_warn"] = opti_df["quality_warn"].fillna("")
     opti_df = opti_df[opti_df["quality_warn"] == ""]  # exclude unreliable duo trials
 
+    # Exclude P0 and P1 — same person; P0 is calibration reference, P1 is duplicate
+    opti_df = opti_df[~opti_df["pid"].str.startswith("0")]
+    opti_df = opti_df[opti_df["pid"] != "1_control"]
+
+    # MS / spastic participants: P2 (MAS 3), P4 (MAS 1+/2), P5 (borderline).
+    # All others (P1, P6–P12, …) are healthy controls.
+    def _is_healthy(pid_str: str) -> bool:
+        return pid_str.split("_")[0] not in ("2", "4", "5")
+
+    def _of(r, col): return float(r[col]) if col in r.index and pd.notna(r[col]) else float("nan")
     opti_key = {
         (r["pid"], r["pos"], r["trial"]): {
-            "opti_pt":     r["pt_score_4param"],
-            "opti_mas":    r["est_MAS_4param"],
-            "is_healthy":  str(r["pid"]).startswith(("0", "1", "2")),
-            "opti_N":      float(r["N"])      if pd.notna(r["N"])      else 0.0,
-            "opti_A0_deg": float(r["A0_deg"]) if pd.notna(r["A0_deg"]) else 0.0,
+            "opti_pt":            r["pt_score_4param"],
+            "opti_mas":           r["est_MAS_4param"],
+            "is_healthy":         _is_healthy(r["pid"]),
+            "opti_N":             _of(r, "N"),
+            "opti_A0_deg":        _of(r, "A0_deg"),
+            "opti_phi_max_ratio": _of(r, "phi_max_ratio"),
+            "opti_omega_max_n":   _of(r, "omega_max_n"),
+            "opti_omega_min_n":   _of(r, "omega_min_n"),
+            "opti_f_hz":          _of(r, "f_hz"),
+            "opti_area_ratio":    _of(r, "area_ratio"),
         }
         for _, r in opti_df.iterrows()
     }
@@ -211,14 +232,24 @@ def main() -> None:
             "opti_mas":     ref["opti_mas"],
             "opti_N":       ref["opti_N"],
             "opti_A0_deg":  ref["opti_A0_deg"],
-            "hpe_pt":       result["pt"],
-            "hpe_mas":      result["mas"],
-            "hpe_N":        result["N"],
-            "hpe_A0_deg":   result["A0_deg"],
-            "delta_N":      result["N"]      - ref["opti_N"],
-            "delta_A0":     result["A0_deg"] - ref["opti_A0_deg"],
-            "mas_match":    result["mas"] == ref["opti_mas"],
-            "pt_diff":      abs(result["pt"] - ref["opti_pt"]),
+            "hpe_pt":            result["pt"],
+            "hpe_mas":           result["mas"],
+            "hpe_N":             result["N"],
+            "hpe_A0_deg":        result["A0_deg"],
+            "hpe_phi_max_ratio": result["phi_max_ratio"],
+            "hpe_omega_max_n":   result["omega_max_n"],
+            "hpe_omega_min_n":   result["omega_min_n"],
+            "hpe_f_hz":          result["f_hz"],
+            "hpe_area_ratio":    result["area_ratio"],
+            "delta_N":           result["N"]      - ref["opti_N"],
+            "delta_A0":          result["A0_deg"] - ref["opti_A0_deg"],
+            "delta_phi_max":     result["phi_max_ratio"] - ref["opti_phi_max_ratio"],
+            "delta_omega_max":   result["omega_max_n"]   - ref["opti_omega_max_n"],
+            "delta_omega_min":   result["omega_min_n"]   - ref["opti_omega_min_n"],
+            "delta_f_hz":        result["f_hz"]          - ref["opti_f_hz"],
+            "delta_area":        result["area_ratio"]     - ref["opti_area_ratio"],
+            "mas_match":         result["mas"] == ref["opti_mas"],
+            "pt_diff":           abs(result["pt"] - ref["opti_pt"]),
         })
 
     if not rows:
@@ -263,21 +294,28 @@ def main() -> None:
         corr = grp[["opti_pt", "hpe_pt"]].corr().iloc[0, 1]
         mae  = grp["pt_diff"].mean()
 
+        def _mae(col): return round(grp[col].abs().mean(), 4) if col in grp.columns else float("nan")
+        def _mea(col): return round(grp[col].mean(), 4)      if col in grp.columns else float("nan")
         accuracy_rows.append({
-            "model_family":        family,
-            "n_trials":            n,
-            "n_healthy":           len(healthy),
-            "n_spastic":           len(spastic),
-            "exact_MAS_agree_%":   round(mas_match * 100, 1),
-            "adj_MAS_agree_%":     round(adj * 100, 1),
-            "healthy_MAS0_%":      round(h_correct * 100, 1) if not math.isnan(h_correct) else float("nan"),
-            "spastic_MAS1+_%":     round(s_correct * 100, 1) if not math.isnan(s_correct) else float("nan"),
-            "PT_correlation":      round(corr, 3),
-            "PT_MAE":              round(mae, 4),
-            "mean_delta_N":        round(grp["delta_N"].mean(), 2),
-            "mean_abs_delta_N":    round(grp["delta_N"].abs().mean(), 2),
-            "mean_delta_A0_deg":   round(grp["delta_A0"].mean(), 2),
-            "mean_abs_delta_A0_deg": round(grp["delta_A0"].abs().mean(), 2),
+            "model_family":            family,
+            "n_trials":                n,
+            "n_healthy":               len(healthy),
+            "n_spastic":               len(spastic),
+            "exact_MAS_agree_%":       round(mas_match * 100, 1),
+            "adj_MAS_agree_%":         round(adj * 100, 1),
+            "healthy_MAS0_%":          round(h_correct * 100, 1) if not math.isnan(h_correct) else float("nan"),
+            "spastic_MAS1+_%":         round(s_correct * 100, 1) if not math.isnan(s_correct) else float("nan"),
+            "PT_correlation":          round(corr, 3),
+            "PT_MAE":                  round(mae, 4),
+            "mean_delta_N":            _mea("delta_N"),
+            "mean_abs_delta_N":        _mae("delta_N"),
+            "mean_delta_A0_deg":       _mea("delta_A0"),
+            "mean_abs_delta_A0_deg":   _mae("delta_A0"),
+            "mean_abs_delta_phi_max":  _mae("delta_phi_max"),
+            "mean_abs_delta_omega_max":_mae("delta_omega_max"),
+            "mean_abs_delta_omega_min":_mae("delta_omega_min"),
+            "mean_abs_delta_f_hz":     _mae("delta_f_hz"),
+            "mean_abs_delta_area":     _mae("delta_area"),
         })
 
     acc_df = pd.DataFrame(accuracy_rows).sort_values("adj_MAS_agree_%", ascending=False)
