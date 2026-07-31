@@ -1790,12 +1790,15 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
         result_holder = {}
-        orig_transition = app._transition_to_review
         def _capture(source_angles, m):
             result_holder["source_angles"] = source_angles
         app._transition_to_review = _capture
 
         app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        # _run_imu_tuning schedules the transition via self.after(0, ...) --
+        # exactly the real production path (see the Note below) -- so the
+        # Tk event loop must be pumped once before the callback has run.
+        app.update()
 
         assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
         with open(csv_path, encoding="utf-8") as f:
@@ -1832,6 +1835,7 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
             source_angles=source_angles)
 
         app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
+        app.update()
 
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0, 3.0]
     finally:
@@ -1854,6 +1858,7 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
             source_angles=source_angles)
 
         app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
+        app.update()
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
     finally:
         app.destroy()
@@ -1948,7 +1953,16 @@ Add this method to the `App` class in `pendulastic_app.py`, right before `_run_r
                         csv_filename, tuned_angles, meta,
                         timestamps=[float(x) for x in t], source="imu")
                     source_angles["imu"] = tuned_angles
-        except (OSError, ValueError, KeyError):
+        except Exception:
+            # Broad on purpose: this runs in an unsupervised daemon thread,
+            # and imu_calibration_tuner.py has no internal exception handling
+            # of its own -- a malformed-but-JSON-parseable raw sample (e.g.
+            # missing "role", or "v" not a 3-element list) could raise
+            # TypeError/IndexError from deep inside replay_trial. An uncaught
+            # exception here would kill the thread silently, the self.after
+            # transition below would never fire, and the app would sit in
+            # "processing" forever -- a direct violation of "tuning must
+            # never block the clinician from seeing trial data."
             pass   # fall back to the originally-recorded series
         self.after(0, lambda: self._transition_to_review(source_angles, meta))
 ```
