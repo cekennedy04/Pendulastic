@@ -712,13 +712,21 @@ def get_state() -> dict:
 # ─── recording ────────────────────────────────────────────────────────────────
 
 def start_recording(csv_path: str, meta: Optional[dict] = None) -> bool:  # noqa: C901
-    """Open a CSV and begin logging every fused sample.
+    """Open a CSV and begin logging every fused sample, plus one raw CSV per
+    sensor (accel/gyro/mag) beside it.
 
     Timestamps are written in three bases so the trace can be aligned with the
     other modalities: `t_epoch` (time.time(), the same base motive_mobile_sync
     and the viewer's video recorder use), `t_rel` (seconds since this call),
-    and `phone_ts_ms` (the app's own clock, for inter-phone alignment)."""
+    and `phone_ts_ms` (the app's own clock, for inter-phone alignment).
+
+    sync_status() is deliberately computed BEFORE _rec_lock is acquired: it
+    takes _lock internally, and on_accel/on_gyro/on_mag (which run on the
+    dispatch thread while already holding _lock) acquire _rec_lock to log raw
+    samples. Acquiring _rec_lock here and then reaching for _lock would be the
+    reverse order and can deadlock against that thread."""
     global _rec_file, _rec_writer, _rec_t0, _recording, _rec_offset
+    _sy = sync_status()
     with _rec_lock:
         if _recording:
             return False
@@ -732,7 +740,6 @@ def start_recording(csv_path: str, meta: Optional[dict] = None) -> bool:  # noqa
                 w.writerow([f"# {k}", v])
         # Record the clock alignment used for t_phone_aligned so the mapping
         # stays reproducible after the fact.
-        _sy = sync_status()
         w.writerow(["# sync_state", _sy["state"]])
         w.writerow(["# sync_offset_s",
                     f"{_sy['offset_s']:.6f}" if _sy["offset_s"] is not None else ""])
@@ -745,6 +752,16 @@ def start_recording(csv_path: str, meta: Optional[dict] = None) -> bool:  # noqa
             "dist_roll", "dist_pitch", "dist_yaw",
             "paired",
         ])
+        f.flush()
+
+        prefix = _raw_csv_prefix(csv_path)
+        for sensor_name, suffix in _RAW_SENSOR_SUFFIX.items():
+            rf, rw = _open_raw_csv(f"{prefix}_{suffix}.csv")
+            if rf is not None:
+                rf.flush()
+            _raw_files[sensor_name]   = rf
+            _raw_writers[sensor_name] = rw
+
         _rec_file, _rec_writer = f, w
         _rec_t0 = time.time()
         _rec_offset = _sy["offset_s"]

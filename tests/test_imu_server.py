@@ -288,3 +288,38 @@ def test_open_raw_csv_writes_header(tmp_path):
 def test_open_raw_csv_returns_none_on_unwritable_path():
     f, w = imu._open_raw_csv("Z:/definitely/not/a/real/drive/trial_accel.csv")
     assert f is None and w is None
+
+
+def test_start_recording_creates_three_raw_csvs(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_4_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        for suffix in ("accel", "gyro", "mag"):
+            p = tmp_path / f"Trial_4_{suffix}.csv"
+            assert p.exists(), f"missing {p}"
+            with open(p, newline="", encoding="utf-8") as fh:
+                header = next(csv.reader(fh))
+            assert header == ["timestamp_ms", "phone_ts_ms", "role",
+                               "sensor_name", "x", "y", "z"]
+    finally:
+        imu.stop_recording()
+
+
+def test_start_recording_fused_csv_header_unchanged(tmp_path):
+    """Regression: the existing fused-angle CSV format must not change."""
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_5_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(csv.reader(fh))
+        header_row = next(r for r in rows if r and r[0] == "t_epoch")
+        assert header_row == [
+            "t_epoch", "t_rel", "phone_ts_ms", "t_phone_aligned",
+            "hip_roll_deg", "hip_pitch_deg", "hip_yaw_deg",
+            "prox_roll", "prox_pitch", "prox_yaw",
+            "dist_roll", "dist_pitch", "dist_yaw", "paired",
+        ]
+    finally:
+        imu.stop_recording()
