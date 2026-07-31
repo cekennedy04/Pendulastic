@@ -365,3 +365,107 @@ def test_stop_recording_is_idempotent(tmp_path):
     assert imu.start_recording(path)
     imu.stop_recording()
     imu.stop_recording()   # must not raise
+
+
+def test_on_accel_logs_raw_row_while_recording(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_9_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        dev = imu._IMUDevice("10.0.0.9")
+        imu._devices["10.0.0.9"] = dev
+        imu._roles["10.0.0.9"] = imu.ROLE_PROXIMAL
+        dev.on_accel(np.array([-0.030792, -0.551956, -0.825500]), 1785500949800)
+    finally:
+        imu.stop_recording()
+    with open(tmp_path / "Trial_9_accel.csv", newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert len(rows) == 2
+    _, phone_ts, role, sensor_name, x, y, z = rows[1]
+    assert phone_ts == "1785500949800"
+    assert role == "proximal"
+    assert sensor_name == "Accelerometer"
+    assert x == "-0.030792" and y == "-0.551956" and z == "-0.825500"
+    imu.reset_devices()
+
+
+def test_on_gyro_logs_raw_row_while_recording(tmp_path):
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_10_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        dev = imu._IMUDevice("10.0.0.10")
+        imu._devices["10.0.0.10"] = dev
+        imu._roles["10.0.0.10"] = imu.ROLE_DISTAL
+        dev.accel = np.array([0.0, 0.0, 9.81])
+        dev.on_gyro(np.array([0.018327, -0.023543, 0.002843]), 1785500950869)
+    finally:
+        imu.stop_recording()
+    with open(tmp_path / "Trial_10_gyro.csv", newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[1][2] == "distal"
+    assert rows[1][3] == "Gyroscope"
+    imu.reset_devices()
+
+
+def test_on_mag_logs_raw_row_using_ip_when_role_unassigned(tmp_path):
+    """A third/unassigned phone has no _roles entry — role falls back to IP."""
+    imu.reset_devices()
+    path = str(tmp_path / "Trial_11_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        dev = imu._IMUDevice("10.0.0.11")
+        imu._devices["10.0.0.11"] = dev   # deliberately no _roles entry
+        dev.on_mag(np.array([-23.497269, -29.110579, -33.166870]), 1785500954175)
+    finally:
+        imu.stop_recording()
+    with open(tmp_path / "Trial_11_mag.csv", newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[1][2] == "10.0.0.11"
+    assert rows[1][3] == "Magnetometer"
+    imu.reset_devices()
+
+
+def test_raw_logging_skipped_when_not_recording():
+    imu.reset_devices()
+    assert not imu._recording
+    dev = imu._IMUDevice("10.0.0.12")
+    imu._devices["10.0.0.12"] = dev
+    imu._roles["10.0.0.12"] = imu.ROLE_PROXIMAL
+    # Must not raise, and there is no open writer to touch.
+    dev.on_accel(np.array([0.0, 0.0, 9.81]), 0)
+    dev.on_gyro(np.array([0.0, 0.0, 0.0]), 0)
+    dev.on_mag(np.array([0.0, 0.0, 0.0]), 0)
+    imu.reset_devices()
+
+
+def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
+    """Regression (requirement: non-breaking integration): the fused AHRS
+    quaternion after accel+gyro must be identical whether or not raw logging
+    is active."""
+    imu.reset_devices()
+    imu.clear_zero()
+    dev1 = imu._IMUDevice("10.0.0.13")
+    imu._devices["10.0.0.13"] = dev1
+    imu._roles["10.0.0.13"] = imu.ROLE_DISTAL
+    dev1.last_rx = __import__("time").time()
+    dev1.on_accel(np.array([0.0, 0.0, 9.81]), 0)
+    dev1.on_gyro(np.array([0.2, 0.0, 0.0]), 10)
+
+    imu.reset_devices()
+    imu.clear_zero()
+    dev2 = imu._IMUDevice("10.0.0.13")
+    imu._devices["10.0.0.13"] = dev2
+    imu._roles["10.0.0.13"] = imu.ROLE_DISTAL
+    dev2.last_rx = __import__("time").time()
+    path = str(tmp_path / "Trial_12_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        dev2.on_accel(np.array([0.0, 0.0, 9.81]), 0)
+        dev2.on_gyro(np.array([0.2, 0.0, 0.0]), 10)
+    finally:
+        imu.stop_recording()
+
+    np.testing.assert_allclose(dev1.ahrs.q, dev2.ahrs.q, atol=1e-12)
+    imu.reset_devices()
+    imu.clear_zero()

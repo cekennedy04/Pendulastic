@@ -311,11 +311,17 @@ class _IMUDevice:
         if not self._ahrs_seeded:
             self.ahrs.q = _gravity_seed(self.accel)
             self._ahrs_seeded = True
-        self._touch(ts)
+        now = time.time()
+        if _recording:
+            _log_raw(_roles.get(self.ident, self.ident), "Accelerometer", v, ts, now)
+        self._touch(ts, now)
 
     def on_mag(self, v, ts):
         self.mag = v
-        self._touch(ts)
+        now = time.time()
+        if _recording:
+            _log_raw(_roles.get(self.ident, self.ident), "Magnetometer", v, ts, now)
+        self._touch(ts, now)
 
     @property
     def gyro_hz(self) -> float:
@@ -329,6 +335,8 @@ class _IMUDevice:
     def on_gyro(self, v, ts):
         global _flex_axis, _flex_axis_armed
         now = time.time()
+        if _recording:
+            _log_raw(_roles.get(self.ident, self.ident), "Gyroscope", v, ts, now)
         self.gyro_times.append(now)
         cutoff = now - 3.0
         if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
