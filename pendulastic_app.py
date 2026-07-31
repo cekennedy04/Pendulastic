@@ -604,13 +604,18 @@ class AcquisitionPanel(tk.Frame):
         self.btn_stop.config(state="disabled")
         self._tick_countdown(5)
 
+    def _proceed_to_recording(self) -> None:
+        """Helper to complete countdown and start recording.
+        Clears the countdown timer, resets button state, and calls on_start()."""
+        self._countdown_id = None
+        self.btn_start.config(text="START RECORDING",
+                              command=self._on_start_clicked, bg=_GREEN)
+        self.controller.on_start()
+
     def _tick_countdown(self, n: int) -> None:
         if n == 0:
             if self.controller.is_imu_calibrated():
-                self._countdown_id = None
-                self.btn_start.config(text="START RECORDING",
-                                      command=self._on_start_clicked, bg=_GREEN)
-                self.controller.on_start()
+                self._proceed_to_recording()
                 return
             if self._calib_extension_s < _MAX_CALIB_EXTENSION_S:
                 self._calib_extension_s += 1
@@ -621,10 +626,7 @@ class AcquisitionPanel(tk.Frame):
                     "Sensor Not Stable",
                     "The IMU sensor hasn't settled to a stable reading. "
                     "Start recording anyway?"):
-                self._countdown_id = None
-                self.btn_start.config(text="START RECORDING",
-                                      command=self._on_start_clicked, bg=_GREEN)
-                self.controller.on_start()
+                self._proceed_to_recording()
             else:
                 self._cancel_countdown()
             return
