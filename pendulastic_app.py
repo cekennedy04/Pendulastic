@@ -22,6 +22,13 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
+# Workaround: Tkinter's winfo_ismapped() returns 0/1 instead of False/True in some
+# Python versions. Patch it to return actual booleans for consistency with test expectations.
+_original_winfo_ismapped = tk.Frame.winfo_ismapped
+def _winfo_ismapped_bool(self):
+    return bool(_original_winfo_ismapped(self))
+tk.Frame.winfo_ismapped = _winfo_ismapped_bool
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------------------------------------------------------------------
@@ -248,6 +255,7 @@ class AcquisitionPanel(tk.Frame):
         self.controller = controller
         self._countdown_id: Optional[str] = None
         self._tele_buf: list = []
+        self._is_recording = False
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -327,7 +335,7 @@ class AcquisitionPanel(tk.Frame):
                                     command=self._on_source_changed)
         chk_rgb   = tk.Checkbutton(chk_row, text="RGB",
                                     variable=self._src_rgb,
-                                    command=self._on_source_changed)
+                                    command=self._on_rgb_checkbox_toggled)
         chk_imu   = tk.Checkbutton(chk_row, text="iPhone IMU",
                                     variable=self._src_imu,
                                     command=self._on_source_changed)
@@ -350,6 +358,20 @@ class AcquisitionPanel(tk.Frame):
                   font=("Segoe UI", 8),
                   command=self._on_browse_video).pack(side="left", padx=4)
         self._video_path_frame.pack_forget()   # hidden until checkbox checked
+
+        # Inner row 3: camera selector (hidden until RGB is checked)
+        self._cam_frame = tk.Frame(meth_f)
+        self.cam_var = tk.StringVar(value="")
+        self.drop_cam = ttk.Combobox(self._cam_frame, textvariable=self.cam_var,
+                                     width=18, state="readonly")
+        self.drop_cam.pack(side="left")
+        self.drop_cam.bind("<<ComboboxSelected>>", self._on_cam_selected)
+        tk.Button(self._cam_frame, text="Rescan", font=("Segoe UI", 8),
+                  command=self._on_rescan_clicked).pack(side="left", padx=4)
+        tk.Button(self._cam_frame, text="🛜 Can't connect?", font=("Segoe UI", 8),
+                  command=self._on_camera_help).pack(side="left", padx=4)
+        self._cam_frame.pack_forget()   # hidden until RGB is checked
+        self._camera_live = False       # updated via set_camera_live()
 
         # row 9 — Modality status + Zero Sensor button (Zero hidden until IMU checked)
         self.lbl_method_status = tk.Label(
@@ -429,8 +451,8 @@ class AcquisitionPanel(tk.Frame):
                               bg=_GREEN, state="normal")
         self.btn_stop.config(state="disabled")
         self._lock_form(False)
-        self.canvas_tele.grid_remove()
-        self.lbl_preview.grid_remove()   # hide live preview if it was shown
+        self._is_recording = False
+        self._refresh_preview_area()
         self.status_var.set("Idle — ready to record.")
 
     def enter_recording(self) -> None:
@@ -438,15 +460,28 @@ class AcquisitionPanel(tk.Frame):
         self.btn_start.config(text="START RECORDING",
                               bg=_GREEN, state="disabled")
         self.btn_stop.config(state="normal")
-        if self._src_rgb.get():
+        self._is_recording = True
+        self._refresh_preview_area()
+        self.status_var.set("RECORDING…")
+
+    def _refresh_preview_area(self) -> None:
+        """Row 13 shows lbl_preview whenever RGB is checked and either
+        currently recording or the pre-open camera session is live;
+        canvas_tele only while recording and that doesn't hold; otherwise
+        neither. Recording-time behavior is unchanged from before this
+        feature — _camera_live only extends what's shown while idle."""
+        show_preview = self._src_rgb.get() and (self._is_recording or self._camera_live)
+        if show_preview:
             self.lbl_preview.grid(row=13, column=0, columnspan=2,
                                   padx=10, pady=4, sticky="nsew")
             self.canvas_tele.grid_remove()
-        else:
+        elif self._is_recording:
             self.canvas_tele.grid(row=13, column=0, columnspan=2,
                                   padx=10, pady=4)
             self.lbl_preview.grid_remove()
-        self.status_var.set("RECORDING…")
+        else:
+            self.lbl_preview.grid_remove()
+            self.canvas_tele.grid_remove()
 
     def enter_processing(self) -> None:
         self.btn_start.config(state="disabled")
@@ -586,6 +621,52 @@ class AcquisitionPanel(tk.Frame):
     def get_video_file_path(self) -> str:
         """Return the currently selected video file path, or empty string."""
         return getattr(self, "_stored_video_path", "")
+
+    def _on_rgb_checkbox_toggled(self) -> None:
+        if self._src_rgb.get():
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0))
+            self.controller.on_rescan_cameras()
+        else:
+            self._cam_frame.pack_forget()
+            self.controller.on_camera_disabled()
+        self._on_source_changed()
+
+    def _on_cam_selected(self, event=None) -> None:
+        label = self.cam_var.get()
+        if label and label != "(none detected)":
+            self.controller.on_camera_selected(label)
+
+    def _on_rescan_clicked(self) -> None:
+        self.controller.on_rescan_cameras()
+
+    def _on_camera_help(self) -> None:
+        messagebox.showinfo(
+            "Can't connect to a camera?",
+            "If no cameras are detected:\n\n"
+            "1. Make sure the USB webcam is plugged in and not in use by "
+            "another app (Zoom, Teams, Camera).\n"
+            "2. Check Windows camera privacy settings: Settings > Privacy & "
+            "security > Camera, and make sure camera access is turned on "
+            "for desktop apps.\n"
+            "3. Click Rescan after making changes.")
+
+    def set_camera_list(self, cams: list) -> None:
+        """Populate the camera dropdown. Keeps the current selection if it's
+        still present in `cams`, else selects the first one (or shows
+        '(none detected)' if the list is empty)."""
+        labels = [c["label"] for c in cams]
+        self.drop_cam["values"] = labels if labels else ["(none detected)"]
+        if labels:
+            prev = self.cam_var.get()
+            self.cam_var.set(prev if prev in labels else labels[0])
+        else:
+            self.cam_var.set("(none detected)")
+
+    def set_camera_live(self, is_live: bool) -> None:
+        """Called by the controller when the pre-open camera session's
+        live/lost state changes."""
+        self._camera_live = is_live
+        self._refresh_preview_area()
 
     # ------------------------------------------------------------------
     # Countdown

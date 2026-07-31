@@ -10,11 +10,16 @@ def _root():
 
 class _Ctrl:
     """Minimal fake controller."""
+    def __init__(self):
+        self.calls = []
     def on_start(self): pass
     def on_stop(self): pass
     def on_source_changed(self, sources): pass
     def on_new_trial(self): pass
     def on_back_to_mode_select(self): pass
+    def on_rescan_cameras(self): self.calls.append("rescan")
+    def on_camera_selected(self, label): self.calls.append(("selected", label))
+    def on_camera_disabled(self): self.calls.append("disabled")
 
 
 def test_panel_instantiates():
@@ -323,5 +328,173 @@ def test_get_metadata_includes_video_file_path():
         meta = p.get_metadata()
         assert meta["video_file_path"] == "/data/trial.mp4"
         assert "video_file" in meta["sources"]
+    finally:
+        r.destroy()
+
+
+def test_camera_frame_hidden_by_default():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._cam_frame.winfo_ismapped() is False
+    finally:
+        r.destroy()
+
+
+def test_checking_rgb_shows_camera_frame_and_rescans():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        ctrl = _Ctrl()
+        p = AcquisitionPanel(r, ctrl); p.pack(); r.update()
+        p._src_rgb.set(True)
+        p._on_rgb_checkbox_toggled()
+        r.update()
+        assert p._cam_frame.winfo_ismapped() is True
+        assert "rescan" in ctrl.calls
+    finally:
+        r.destroy()
+
+
+def test_unchecking_rgb_hides_camera_frame_and_disables_camera():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        ctrl = _Ctrl()
+        p = AcquisitionPanel(r, ctrl); p.pack(); r.update()
+        p._src_rgb.set(True)
+        p._on_rgb_checkbox_toggled()
+        p._src_rgb.set(False)
+        p._on_rgb_checkbox_toggled()
+        r.update()
+        assert p._cam_frame.winfo_ismapped() is False
+        assert "disabled" in ctrl.calls
+    finally:
+        r.destroy()
+
+
+def test_set_camera_list_populates_dropdown_and_keeps_selection():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        cams = [
+            {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"},
+            {"index": 1, "backend": 700, "backend_name": "MSMF", "label": "Camera 1 (MSMF)"},
+        ]
+        p.set_camera_list(cams)
+        assert list(p.drop_cam["values"]) == ["Camera 0 (MSMF)", "Camera 1 (MSMF)"]
+        assert p.cam_var.get() == "Camera 0 (MSMF)"
+
+        p.cam_var.set("Camera 1 (MSMF)")
+        p.set_camera_list(cams)   # a rescan that still finds both keeps the selection
+        assert p.cam_var.get() == "Camera 1 (MSMF)"
+    finally:
+        r.destroy()
+
+
+def test_set_camera_list_empty_shows_none_detected():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_list([])
+        assert list(p.drop_cam["values"]) == ["(none detected)"]
+        assert p.cam_var.get() == "(none detected)"
+    finally:
+        r.destroy()
+
+
+def test_selecting_camera_from_dropdown_notifies_controller():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        ctrl = _Ctrl()
+        p = AcquisitionPanel(r, ctrl); p.pack(); r.update()
+        cams = [{"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"}]
+        p.set_camera_list(cams)
+        p.cam_var.set("Camera 0 (MSMF)")
+        p._on_cam_selected()
+        assert ("selected", "Camera 0 (MSMF)") in ctrl.calls
+    finally:
+        r.destroy()
+
+
+def test_rescan_button_notifies_controller():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        ctrl = _Ctrl()
+        p = AcquisitionPanel(r, ctrl); p.pack(); r.update()
+        p._on_rescan_clicked()
+        assert "rescan" in ctrl.calls
+    finally:
+        r.destroy()
+
+
+def test_camera_help_button_exists_and_opens_dialog(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as _m
+    r = _root()
+    try:
+        shown = []
+        monkeypatch.setattr(_m.messagebox, "showinfo",
+                            lambda title, msg: shown.append((title, msg)))
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._on_camera_help()
+        assert len(shown) == 1
+        assert "camera" in shown[0][0].lower() or "connect" in shown[0][0].lower()
+    finally:
+        r.destroy()
+
+
+def test_set_camera_live_shows_preview_while_idle_with_rgb_checked():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_rgb.set(True)
+        p._on_rgb_checkbox_toggled()
+        p.set_camera_live(True)
+        r.update()
+        assert p.lbl_preview.grid_info() != {}
+        assert p.canvas_tele.grid_info() == {}
+    finally:
+        r.destroy()
+
+
+def test_set_camera_live_false_hides_preview_while_idle():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_rgb.set(True)
+        p._on_rgb_checkbox_toggled()
+        p.set_camera_live(True)
+        p.set_camera_live(False)
+        r.update()
+        assert p.lbl_preview.grid_info() == {}
+    finally:
+        r.destroy()
+
+
+def test_rgb_recording_preview_unaffected_by_camera_live_flag():
+    """Regression: enter_recording()'s existing lbl_preview-during-RGB-recording
+    behavior must be unchanged even though set_camera_live() was never called
+    (this is exactly what the existing test_rgb_source_swaps_to_preview_during_recording
+    exercises — this test additionally pins that it holds with _camera_live at
+    its default False)."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._camera_live is False
+        p._src_rgb.set(True)
+        p._on_source_changed()
+        p.enter_recording()
+        r.update()
+        assert p.lbl_preview.grid_info() != {}
+        assert p.canvas_tele.grid_info() == {}
     finally:
         r.destroy()
