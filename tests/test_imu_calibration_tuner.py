@@ -424,3 +424,82 @@ def test_tune_and_persist_force_overwrites_regardless(tmp_path, monkeypatch):
     })
     tuner.tune_and_persist([{"dummy": True}], force=True)
     assert cfgmod.load_config()["beta"] == 0.02
+
+
+def test_ockendon_deg_zero_beta_gives_zero_kappa():
+    assert abs(tuner.ockendon_deg(0.0)) < 1e-9
+
+
+def test_ockendon_deg_matches_formula_for_arbitrary_beta():
+    beta = 45.0
+    expected = 90.0 + beta - math.degrees(
+        math.acos(math.sin(math.radians(beta)) / 1.2))
+    assert abs(tuner.ockendon_deg(beta) - expected) < 1e-9
+
+
+def test_replay_trial_defaults_to_relative_method_when_key_absent():
+    """Backward compatibility: existing callers/tests never set "method"."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, angle = tuner.replay_trial(samples, params)
+    expected_final = 180.0 - math.degrees(2.0 * 0.5)
+    assert abs(angle[-1] - expected_final) < 1.0
+
+
+def test_replay_trial_ockendon_flipped_starts_near_180():
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon_flipped"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert len(pre_release) > 0
+    assert abs(float(np.median(pre_release)) - 180.0) < 1.0
+
+
+def test_replay_trial_ockendon_unflipped_starts_near_zero():
+    """Documents *why* ockendon_flipped is the one likely to pass
+    score_waveform's 180-start gate -- unflipped kappa is ~0 at full
+    extension, the opposite of Pendulastic's clinical convention."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert len(pre_release) > 0
+    assert abs(float(np.median(pre_release))) < 1.0
+
+
+def test_tuning_grid_includes_all_three_methods():
+    methods = {p["method"] for p in tuner.TUNING_GRID}
+    assert methods == {"relative", "ockendon", "ockendon_flipped"}
+
+
+def test_tune_and_persist_persists_method_field(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1, "flex_axis_capture": False,
+                   "gravity_seed": False, "method": "ockendon_flipped"},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "ockendon_flipped"
+
+
+def test_tune_and_persist_defaults_method_when_candidate_lacks_it(tmp_path, monkeypatch):
+    """test_tune_and_persist_saves_when_improving's candidate has no "method"
+    key (pre-Task-12 shape) -- must not KeyError, must default to "relative"."""
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1,
+                   "flex_axis_capture": False, "gravity_seed": False},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "relative"

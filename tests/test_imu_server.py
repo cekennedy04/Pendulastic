@@ -340,3 +340,14 @@ def test_on_accel_on_gyro_on_mag_are_no_ops_for_raw_log_when_not_recording():
     dev.on_gyro(np.array([0., 0., 0.]), ts=10)
     dev.on_mag(np.array([1., 0., 0.]), ts=20)
     imu.reset_devices()
+
+
+def test_quat_to_euler_deg_matches_identity_quaternion():
+    roll, pitch, yaw = imu._quat_to_euler_deg(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert abs(roll) < 1e-9 and abs(pitch) < 1e-9 and abs(yaw) < 1e-9
+
+
+def test_euler_deg_delegates_to_quat_to_euler_deg():
+    ahrs = imu.MadgwickAHRS(beta=0.1)
+    ahrs.update(np.array([0.3, 0.1, -0.2]), np.array([0.0, 0.0, 9.81]), None, 0.05)
+    assert ahrs.euler_deg() == imu._quat_to_euler_deg(ahrs.q)
