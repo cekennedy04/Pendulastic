@@ -36,6 +36,8 @@ uploads/
 OptiTrack_Tracking_Data_Participant_0/
 P001_MSParticipant2_history.csv
 tracking_selections.json
+imu_calibration_config.json
+imu_calibration_config.json.tmp
 
 # Large outputs and scratch
 Model_Analysis_Outputs/

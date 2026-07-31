@@ -1374,8 +1374,19 @@ class App(tk.Tk):
                 source="imu")
             raw_path = os.path.join(
                 DataManager.DATA_DIR, fn_imu.replace(".csv", "_raw.jsonl"))
-            os.makedirs(DataManager.DATA_DIR, exist_ok=True)
-            _imu.start_raw_log(raw_path)
+            try:
+                os.makedirs(DataManager.DATA_DIR, exist_ok=True)
+                _imu.start_raw_log(raw_path)
+            except OSError as e:
+                # Raw logging is purely a diagnostic/auxiliary feature that
+                # feeds the auto-tuning loop -- it must never be able to block
+                # the core acquisition it's attached to. Warn and continue;
+                # this trial simply won't be eligible for auto-tuning.
+                messagebox.showwarning(
+                    "IMU Raw Log",
+                    f"Could not open raw IMU log:\n{type(e).__name__}: {e}\n\n"
+                    "Recording will continue without a raw log (this trial "
+                    "will not be eligible for auto-tuning).")
         self._imu_poll_stop.clear()
         self._imu_poll_thread = threading.Thread(
             target=self._imu_poll_worker, daemon=True)
@@ -1547,11 +1558,31 @@ class App(tk.Tk):
                 best = _tuner.tune_and_persist(raw_samples, source_trial=csv_filename)
                 if best["passes"]:
                     t, angle = _tuner.replay_trial(raw_samples, best["params"])
+                    # replay_trial's own contract (see its docstring) guarantees
+                    # angle[0] is always NaN -- the first tick always precedes any
+                    # processed sample. Callers must finite-filter before reducing;
+                    # score_waveform does this internally, but we save/display the
+                    # raw series here, so we must filter explicitly ourselves or a
+                    # literal "nan" gets written into the persisted trial CSV.
+                    finite_mask = np.isfinite(angle)
+                    t, angle = t[finite_mask], angle[finite_mask]
                     tuned_angles = [float(a) for a in angle]
                     DataManager.save_trial(
                         csv_filename, tuned_angles, meta,
                         timestamps=[float(x) for x in t], source="imu")
                     source_angles["imu"] = tuned_angles
+
+                    # Note on config staleness: ema_alpha applies starting next
+                    # trial (the poll worker reloads config fresh each start),
+                    # but beta/gravity_seed/flex_axis_capture are read once at
+                    # pendulastic_imu_server.py's import time and only take
+                    # effect after that process is restarted. The very next
+                    # trial therefore runs a hybrid parameter set that was never
+                    # actually scored as a combination by the grid search --
+                    # make that visible instead of silent.
+                    print("IMU config updated: EMA smoothing applies next trial; "
+                          "AHRS beta/gravity-seed/flex-axis-capture require an "
+                          "IMU server restart to take effect.")
         except Exception:
             # Broad on purpose: this runs in an unsupervised daemon thread,
             # and imu_calibration_tuner.py has no internal exception handling

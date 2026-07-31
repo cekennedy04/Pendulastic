@@ -289,8 +289,14 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
                    "flex_axis_capture": True, "gravity_seed": True},
         "penalty": 0.4, "passes": True,
     })
+    # replay_trial's real contract always emits a leading NaN (see its
+    # docstring / test_replay_trial_first_tick_is_nan_rest_are_finite) --
+    # include one here so this test actually exercises _run_imu_tuning's
+    # own finite-filtering rather than relying on an unrealistic all-finite
+    # mock return value.
     monkeypatch.setattr(_tuner, "replay_trial", lambda raw, params: (
-        np.array([0.0, 0.05, 0.1]), np.array([180.0, 179.0, 178.0])))
+        np.array([0.0, 0.05, 0.1, 0.15]),
+        np.array([np.nan, 180.0, 179.0, 178.0])))
 
     app = _m.App()
     try:
@@ -311,10 +317,14 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
         # Tk event loop must be pumped once before the callback has run.
         app.update()
 
+        # The leading NaN tick must be dropped, not saved/displayed --
+        # DataManager.save_trial formats angles as f"{a:.3f}", so an
+        # unfiltered NaN would write a literal "nan" into the trial CSV.
         assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
         with open(csv_path, encoding="utf-8") as f:
             content = f.read()
         assert "179.000" in content
+        assert "nan" not in content.lower()
     finally:
         app.destroy()
 

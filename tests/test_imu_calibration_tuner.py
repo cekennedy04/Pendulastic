@@ -380,6 +380,22 @@ def test_tune_and_persist_saves_when_improving(tmp_path, monkeypatch):
     assert saved["source_trial"] == "trial_1.csv"
 
 
+def test_is_improvement_never_lets_a_failing_candidate_beat_a_passing_current():
+    """The no-regression persistence ratchet's single most safety-critical
+    branch: if the current persisted config already passes, a failing
+    candidate must never be considered an improvement -- no matter how low
+    its penalty is. The `passes` gate must dominate `penalty` comparisons
+    entirely; a failing candidate isn't just "worse", it's not eligible to
+    be compared on penalty at all."""
+    current = {"beta": 0.041, "penalty": 5.0, "passes": True}
+
+    candidate_low_penalty = {"beta": 0.02, "penalty": 0.001, "passes": False}
+    assert tuner._is_improvement(candidate_low_penalty, current) is False
+
+    candidate_high_penalty = {"beta": 0.15, "penalty": 1e6, "passes": False}
+    assert tuner._is_improvement(candidate_high_penalty, current) is False
+
+
 def test_tune_and_persist_does_not_overwrite_a_better_existing_config(tmp_path, monkeypatch):
     import imu_calibration_config as cfgmod
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
