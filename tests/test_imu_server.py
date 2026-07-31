@@ -604,3 +604,48 @@ def test_on_accel_on_gyro_on_mag_are_no_ops_for_raw_log_when_not_recording():
     dev.on_gyro(np.array([0., 0., 0.]), ts=10)
     dev.on_mag(np.array([1., 0., 0.]), ts=20)
     imu.reset_devices()
+
+
+def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
+    """Full pipeline: _dispatch() receiving the exact Sensor Stream JSON shapes
+    from the spec must produce three populated raw CSVs plus the fused CSV."""
+    imu.reset_devices()
+    imu.clear_zero()
+    path = str(tmp_path / "Trial_20_imu.csv")
+    assert imu.start_recording(path)
+    try:
+        ip = "192.168.1.50"
+        imu._dispatch("/accelerometer",
+            '{"SensorName":"Accelerometer","Timestamp":1785500949800,'
+            '"x":"-0.030792","y":"-0.551956","z":"-0.825500"}', ip)
+        imu._dispatch("/gyroscope",
+            '{"SensorName":"Gyroscope","Timestamp":1785500950869,'
+            '"x":"0.018327","y":"-0.023543","z":"0.002843"}', ip)
+        imu._dispatch("/magnetometer",
+            '{"SensorName":"Magnetometer","Timestamp":1785500954175,'
+            '"x":"-23.497269","y":"-29.110579","z":"-33.166870"}', ip)
+    finally:
+        imu.stop_recording()
+
+    for suffix, sensor_name, ts, xyz in (
+        ("accel", "Accelerometer", "1785500949800",
+         ("-0.030792", "-0.551956", "-0.825500")),
+        ("gyro", "Gyroscope", "1785500950869",
+         ("0.018327", "-0.023543", "0.002843")),
+        ("mag", "Magnetometer", "1785500954175",
+         ("-23.497269", "-29.110579", "-33.166870")),
+    ):
+        with open(tmp_path / f"Trial_20_{suffix}.csv", newline="",
+                  encoding="utf-8") as fh:
+            rows = list(csv.reader(fh))
+        assert rows[0] == ["timestamp_ms", "phone_ts_ms", "role",
+                            "sensor_name", "x", "y", "z"]
+        assert len(rows) == 2
+        _, phone_ts, role, name, x, y, z = rows[1]
+        assert phone_ts == ts
+        assert role == "proximal"          # first phone seen -> proximal
+        assert name == sensor_name
+        assert (x, y, z) == xyz
+
+    imu.reset_devices()
+    imu.clear_zero()
