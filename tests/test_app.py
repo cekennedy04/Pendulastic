@@ -425,3 +425,103 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
         assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
     finally:
         app.destroy()
+
+
+def test_app_creates_camera_session_when_cv2_available():
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        if _m._CV2_AVAIL:
+            assert app._camera is not None
+        else:
+            assert app._camera is None
+    finally:
+        app.destroy()
+
+
+def test_on_rescan_cameras_populates_dropdown_and_opens_first(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        fake_cams = [
+            {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"},
+        ]
+        opened = []
+        monkeypatch.setattr(app._camera, "rescan", lambda: fake_cams)
+        monkeypatch.setattr(app._camera, "open", lambda cam: opened.append(cam) or True)
+        app.on_rescan_cameras()
+        assert list(app._acq.drop_cam["values"]) == ["Camera 0 (MSMF)"]
+        assert opened == [fake_cams[0]]
+    finally:
+        app.destroy()
+
+
+def test_on_rescan_cameras_with_no_cameras_found(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        monkeypatch.setattr(app._camera, "rescan", lambda: [])
+        app.on_rescan_cameras()
+        assert list(app._acq.drop_cam["values"]) == ["(none detected)"]
+        assert app._acq._camera_live is False
+    finally:
+        app.destroy()
+
+
+def test_on_camera_selected_opens_the_matching_camera(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        fake_cams = [
+            {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"},
+            {"index": 1, "backend": 700, "backend_name": "MSMF", "label": "Camera 1 (MSMF)"},
+        ]
+        app._known_cameras = fake_cams
+        opened = []
+        monkeypatch.setattr(app._camera, "open", lambda cam: opened.append(cam) or True)
+        app.on_camera_selected("Camera 1 (MSMF)")
+        assert opened == [fake_cams[1]]
+    finally:
+        app.destroy()
+
+
+def test_on_camera_disabled_closes_session_and_clears_live_flag(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        closed = []
+        monkeypatch.setattr(app._camera, "close", lambda: closed.append(True))
+        app._acq.set_camera_live(True)
+        app.on_camera_disabled()
+        assert closed == [True]
+        assert app._acq._camera_live is False
+    finally:
+        app.destroy()
+
+
+def test_camera_status_callback_updates_panel_live_flag():
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._on_camera_status("live")
+        app.update()   # process the self.after(0, ...) callback
+        assert app._acq._camera_live is True
+        app._on_camera_status("lost")
+        app.update()
+        assert app._acq._camera_live is False
+    finally:
+        app.destroy()
+
+
+def test_camera_frame_callback_queues_preview_frame():
+    import pendulastic_app as _m
+    import numpy as np
+    app = _m.App()
+    try:
+        app._pose_estimator = None
+        frame = np.zeros((4, 4, 3), dtype="uint8")
+        app._on_camera_frame(frame)
+        queued = app._preview_queue.get_nowait()
+        assert queued is frame
+    finally:
+        app.destroy()

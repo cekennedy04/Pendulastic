@@ -46,11 +46,19 @@ except Exception:
     _motive = None
     _MOTIVE_AVAIL = False
 
+# On Windows, the MSMF backend can hang for 30-120 seconds opening a USB
+# camera because of hardware Media Foundation Transforms. Disabling them
+# makes camera open near-instant. This MUST be set before OpenCV (cv2) is
+# imported. (Same mitigation as master_app.py.)
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 try:
     import cv2 as _cv2
+    from camera_utils import CameraSession
     _CV2_AVAIL = True
 except ImportError:
     _cv2 = None
+    CameraSession = None
     _CV2_AVAIL = False
 
 try:
@@ -1186,6 +1194,11 @@ class App(tk.Tk):
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
+        self._camera = (
+            CameraSession(on_frame=self._on_camera_frame, on_status=self._on_camera_status)
+            if _CV2_AVAIL else None
+        )
+        self._known_cameras: list = []
 
         # Start IMU WebSocket server (port 5000) once for this process
         if _IMU_AVAIL:
@@ -1322,6 +1335,61 @@ class App(tk.Tk):
     def on_source_changed(self, sources: list) -> None:
         """Called by AcquisitionPanel when any source checkbox changes."""
         self._active_sources = list(sources)
+
+    def on_rescan_cameras(self) -> None:
+        if self._camera is None:
+            return
+        self._known_cameras = self._camera.rescan()
+        self._acq.set_camera_list(self._known_cameras)
+        if self._known_cameras:
+            label = self._acq.cam_var.get()
+            cam = next((c for c in self._known_cameras if c["label"] == label),
+                       self._known_cameras[0])
+            self._camera.open(cam)
+        else:
+            self._acq.set_camera_live(False)
+
+    def on_camera_selected(self, label: str) -> None:
+        if self._camera is None:
+            return
+        cam = next((c for c in self._known_cameras if c["label"] == label), None)
+        if cam is None:
+            return
+        if self._camera.active is not None and self._camera.active["label"] == label:
+            return   # already using this camera
+        self._camera.open(cam)
+
+    def on_camera_disabled(self) -> None:
+        if self._camera is not None:
+            self._camera.close()
+        self._acq.set_camera_live(False)
+
+    def _on_camera_frame(self, frame_bgr) -> None:
+        """Runs on CameraSession's background read thread. Applies the same
+        pose-overlay logic _rgb_record_worker used to apply during recording;
+        passes the frame through unchanged otherwise. Never touches Tkinter —
+        hands off via the existing preview queue."""
+        preview = frame_bgr
+        if self._pose_estimator is not None and _mp_draw is not None:
+            try:
+                preview = frame_bgr.copy()
+                rgb_frame = _cv2.cvtColor(preview, _cv2.COLOR_BGR2RGB)
+                results = self._pose_estimator.process(rgb_frame)
+                if results.pose_landmarks:
+                    _mp_draw.draw_landmarks(
+                        preview, results.pose_landmarks, _mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=_mp_styles.get_default_pose_landmarks_style(),
+                    )
+            except Exception:
+                pass
+        try:
+            self._preview_queue.put_nowait(preview)
+        except queue.Full:
+            pass
+
+    def _on_camera_status(self, msg: str) -> None:
+        """Runs on CameraSession's background read thread — marshal to Tk."""
+        self.after(0, lambda m=msg: self._acq.set_camera_live(m == "live"))
 
     # ------------------------------------------------------------------
     # Mode-select routing
@@ -1731,8 +1799,10 @@ class App(tk.Tk):
         except queue.Empty:
             pass
 
-        # Drain preview queue and update acquisition canvas during RGB recording
-        if "rgb" in self._active_sources and self._state == "recording":
+        # Drain preview queue and update acquisition canvas whenever the
+        # camera session is live (idle pre-open preview, or recording).
+        if self._state in ("idle", "recording") and self._camera is not None \
+                and self._camera.active is not None:
             try:
                 frame = self._preview_queue.get_nowait()
                 self._acq.update_preview(frame)
