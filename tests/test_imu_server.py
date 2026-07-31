@@ -7,13 +7,6 @@ import numpy as np
 import pendulastic_imu_server as imu
 
 
-@pytest.fixture(autouse=True)
-def ensure_recording_stopped():
-    """Ensure stop_recording() is called after each test."""
-    yield
-    imu.stop_recording()
-
-
 def test_qconj_negates_vector_part():
     q = np.array([0.9, 0.1, 0.2, 0.3])
     c = imu._qconj(q)
