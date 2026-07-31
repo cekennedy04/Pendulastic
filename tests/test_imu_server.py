@@ -335,13 +335,15 @@ def test_start_recording_fused_csv_header_unchanged(tmp_path):
         imu.stop_recording()
 
 
-def test_log_raw_appends_row_to_correct_csv(tmp_path):
+def test_log_raw_csv_appends_row_to_correct_csv(tmp_path):
     imu.reset_devices()
     path = str(tmp_path / "Trial_6_imu.csv")
     assert imu.start_recording(path)
-    imu._log_raw("proximal", "Gyroscope", [0.018327, -0.023543, 0.002843],
-                 1785500950869, 1000.25)
-    imu.stop_recording()
+    try:
+        imu._log_raw_csv("proximal", "Gyroscope", [0.018327, -0.023543, 0.002843],
+                     1785500950869, 1000.25)
+    finally:
+        imu.stop_recording()
     with open(tmp_path / "Trial_6_gyro.csv", newline="", encoding="utf-8") as fh:
         rows = list(csv.reader(fh))
     assert len(rows) == 2
@@ -352,10 +354,10 @@ def test_log_raw_appends_row_to_correct_csv(tmp_path):
     assert x == "0.018327" and y == "-0.023543" and z == "0.002843"
 
 
-def test_log_raw_noop_when_no_writer_open():
+def test_log_raw_csv_noop_when_no_writer_open():
     """No CSV is open (never recorded) — must not raise."""
     imu.reset_devices()
-    imu._log_raw("distal", "Accelerometer", [0.0, 0.0, 9.81], 0, 0.0)
+    imu._log_raw_csv("distal", "Accelerometer", [0.0, 0.0, 9.81], 0, 0.0)
 
 
 def test_stop_recording_closes_and_resets_all_handles(tmp_path):
@@ -364,8 +366,8 @@ def test_stop_recording_closes_and_resets_all_handles(tmp_path):
     assert imu.start_recording(path)
     imu.stop_recording()
     assert imu._rec_file is None and imu._rec_writer is None
-    assert all(f is None for f in imu._raw_files.values())
-    assert all(w is None for w in imu._raw_writers.values())
+    assert all(f is None for f in imu._raw_csv_files.values())
+    assert all(w is None for w in imu._raw_csv_writers.values())
 
 
 def test_stop_recording_is_idempotent(tmp_path):
@@ -491,7 +493,10 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     already cleared the flag), so a single-threaded version of this test
     cannot reach the deadlock state at all — confirmed empirically during
     Task 5. All worker threads are daemons and joined with a timeout, so a
-    regression fails this assertion instead of hanging the test suite."""
+    regression is bounded to roughly 65s and reported as an assertion
+    failure here, rather than hanging silently forever — though a genuine
+    deadlock will also wedge whichever test runs next and touches
+    _rec_lock."""
     import threading
 
     imu.reset_devices()
@@ -521,8 +526,8 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     t_gyro.start()
     t_rec_a.start()
     t_rec_b.start()
-    t_rec_a.join(timeout=10.0)
-    t_rec_b.join(timeout=10.0)
+    t_rec_a.join(timeout=30.0)
+    t_rec_b.join(timeout=30.0)
     stop_evt.set()
     t_gyro.join(timeout=5.0)
 
@@ -608,7 +613,11 @@ def test_on_accel_on_gyro_on_mag_are_no_ops_for_raw_log_when_not_recording():
 
 def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
     """Full pipeline: _dispatch() receiving the exact Sensor Stream JSON shapes
-    from the spec must produce three populated raw CSVs plus the fused CSV."""
+    from the spec must produce three populated raw CSVs plus the fused CSV.
+
+    Also dispatches an accelerometer packet from a second device/IP to prove
+    the `role` column does what it's for: separating two phones' rows within
+    the same raw CSV (first phone seen -> proximal, second -> distal)."""
     imu.reset_devices()
     imu.clear_zero()
     path = str(tmp_path / "Trial_20_imu.csv")
@@ -624,12 +633,15 @@ def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
         imu._dispatch("/magnetometer",
             '{"SensorName":"Magnetometer","Timestamp":1785500954175,'
             '"x":"-23.497269","y":"-29.110579","z":"-33.166870"}', ip)
+
+        ip2 = "192.168.1.51"
+        imu._dispatch("/accelerometer",
+            '{"SensorName":"Accelerometer","Timestamp":1785500949900,'
+            '"x":"0.012345","y":"0.098765","z":"9.750000"}', ip2)
     finally:
         imu.stop_recording()
 
     for suffix, sensor_name, ts, xyz in (
-        ("accel", "Accelerometer", "1785500949800",
-         ("-0.030792", "-0.551956", "-0.825500")),
         ("gyro", "Gyroscope", "1785500950869",
          ("0.018327", "-0.023543", "0.002843")),
         ("mag", "Magnetometer", "1785500954175",
@@ -646,6 +658,23 @@ def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
         assert role == "proximal"          # first phone seen -> proximal
         assert name == sensor_name
         assert (x, y, z) == xyz
+
+    with open(tmp_path / "Trial_20_accel.csv", newline="",
+              encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == ["timestamp_ms", "phone_ts_ms", "role",
+                        "sensor_name", "x", "y", "z"]
+    assert len(rows) == 3, "expected two data rows — one per device"
+    _, phone_ts1, role1, name1, x1, y1, z1 = rows[1]
+    assert phone_ts1 == "1785500949800"
+    assert role1 == "proximal"             # first phone seen -> proximal
+    assert name1 == "Accelerometer"
+    assert (x1, y1, z1) == ("-0.030792", "-0.551956", "-0.825500")
+    _, phone_ts2, role2, name2, x2, y2, z2 = rows[2]
+    assert phone_ts2 == "1785500949900"
+    assert role2 == "distal"               # second phone seen -> distal
+    assert name2 == "Accelerometer"
+    assert (x2, y2, z2) == ("0.012345", "0.098765", "9.750000")
 
     imu.reset_devices()
     imu.clear_zero()

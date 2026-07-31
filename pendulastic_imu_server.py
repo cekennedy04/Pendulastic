@@ -317,7 +317,7 @@ class _IMUDevice:
         now = time.time()
         _raw_log_write(_roles.get(self.ident), "accel", v, ts)
         if _recording:
-            _log_raw(_roles.get(self.ident, self.ident), "Accelerometer", v, ts, now)
+            _log_raw_csv(_roles.get(self.ident, self.ident), "Accelerometer", v, ts, now)
         self._touch(ts, now)
 
     def on_mag(self, v, ts):
@@ -325,7 +325,7 @@ class _IMUDevice:
         now = time.time()
         _raw_log_write(_roles.get(self.ident), "mag", v, ts)
         if _recording:
-            _log_raw(_roles.get(self.ident, self.ident), "Magnetometer", v, ts, now)
+            _log_raw_csv(_roles.get(self.ident, self.ident), "Magnetometer", v, ts, now)
         self._touch(ts, now)
 
     @property
@@ -342,7 +342,7 @@ class _IMUDevice:
         now = time.time()
         _raw_log_write(_roles.get(self.ident), "gyro", v, ts)
         if _recording:
-            _log_raw(_roles.get(self.ident, self.ident), "Gyroscope", v, ts, now)
+            _log_raw_csv(_roles.get(self.ident, self.ident), "Gyroscope", v, ts, now)
         self.gyro_times.append(now)
         cutoff = now - 3.0
         if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
@@ -481,8 +481,8 @@ _RAW_SENSOR_SUFFIX = {
     "Gyroscope":     "gyro",
     "Magnetometer":  "mag",
 }
-_raw_files:   dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
-_raw_writers: dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
+_raw_csv_files:   dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
+_raw_csv_writers: dict[str, object] = {k: None for k in _RAW_SENSOR_SUFFIX}
 
 
 def _device_for(ip: str) -> _IMUDevice:
@@ -827,8 +827,8 @@ def start_recording(csv_path: str, meta: Optional[dict] = None) -> bool:  # noqa
             rf, rw = _open_raw_csv(f"{prefix}_{suffix}.csv")
             if rf is not None:
                 rf.flush()
-            _raw_files[sensor_name]   = rf
-            _raw_writers[sensor_name] = rw
+            _raw_csv_files[sensor_name]   = rf
+            _raw_csv_writers[sensor_name] = rw
 
         _rec_file, _rec_writer = f, w
         _rec_t0 = time.time()
@@ -850,8 +850,8 @@ def stop_recording():
         finally:
             _rec_file = _rec_writer = None
 
-        for sensor_name in list(_raw_files.keys()):
-            rf = _raw_files[sensor_name]
+        for sensor_name in list(_raw_csv_files.keys()):
+            rf = _raw_csv_files[sensor_name]
             try:
                 if rf is not None:
                     rf.flush()
@@ -859,8 +859,8 @@ def stop_recording():
             except OSError:
                 pass
             finally:
-                _raw_files[sensor_name]   = None
-                _raw_writers[sensor_name] = None
+                _raw_csv_files[sensor_name]   = None
+                _raw_csv_writers[sensor_name] = None
 
 
 def _raw_csv_prefix(csv_path: str) -> str:
@@ -887,11 +887,15 @@ def _open_raw_csv(path: str):
     return f, w
 
 
-def _log_raw(role: str, sensor_name: str, v, ts, now: float):
+def _log_raw_csv(role: str, sensor_name: str, v, ts, now: float):
     """Append one raw-sensor sample to its CSV. Called from on_accel/on_gyro/
-    on_mag while _recording is True, independent of AHRS fusion."""
+    on_mag while _recording is True, independent of AHRS fusion.
+
+    Rows are buffered by the underlying csv.writer/file object and are only
+    guaranteed to be on disk after stop_recording() flushes and closes the
+    file — the same buffering behavior as the fused-CSV logger, _log_sample()."""
     with _rec_lock:
-        w = _raw_writers.get(sensor_name)
+        w = _raw_csv_writers.get(sensor_name)
         if w is None:
             return
         try:
