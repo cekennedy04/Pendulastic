@@ -337,7 +337,7 @@ def test_camera_frame_hidden_by_default():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        assert p._cam_frame.winfo_ismapped() is False
+        assert p._cam_frame.winfo_manager() == ""
     finally:
         r.destroy()
 
@@ -351,7 +351,7 @@ def test_checking_rgb_shows_camera_frame_and_rescans():
         p._src_rgb.set(True)
         p._on_rgb_checkbox_toggled()
         r.update()
-        assert p._cam_frame.winfo_ismapped() is True
+        assert p._cam_frame.winfo_manager() == "pack"
         assert "rescan" in ctrl.calls
     finally:
         r.destroy()
@@ -368,7 +368,7 @@ def test_unchecking_rgb_hides_camera_frame_and_disables_camera():
         p._src_rgb.set(False)
         p._on_rgb_checkbox_toggled()
         r.update()
-        assert p._cam_frame.winfo_ismapped() is False
+        assert p._cam_frame.winfo_manager() == ""
         assert "disabled" in ctrl.calls
     finally:
         r.destroy()

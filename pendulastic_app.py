@@ -22,13 +22,6 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
-# Workaround: Tkinter's winfo_ismapped() returns 0/1 instead of False/True in some
-# Python versions. Patch it to return actual booleans for consistency with test expectations.
-_original_winfo_ismapped = tk.Frame.winfo_ismapped
-def _winfo_ismapped_bool(self):
-    return bool(_original_winfo_ismapped(self))
-tk.Frame.winfo_ismapped = _winfo_ismapped_bool
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------------------------------------------------------------------
