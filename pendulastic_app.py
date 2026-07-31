@@ -356,34 +356,24 @@ class AcquisitionPanel(tk.Frame):
                   command=self._on_browse_video).pack(side="left", padx=4)
         self._video_path_frame.pack_forget()   # hidden until checkbox checked
 
-        # row 9 — Modality status + Zero Sensor button (Zero hidden until IMU checked)
+        # row 9 — Modality status (calibration is now automatic during the
+        # countdown -- see App._tick_calibration_check / AcquisitionPanel's
+        # forced-on countdown checkbox below)
         self.lbl_method_status = tk.Label(
             self, text="● OptiTrack (Motive)", font=("Consolas", 9), fg="green", anchor="w")
         self.lbl_method_status.grid(row=9, column=0, sticky="w", padx=16)
-
-        zero_f = tk.Frame(self)
-        zero_f.grid(row=9, column=1, sticky="w", padx=4)
-        self.btn_zero = tk.Button(
-            zero_f, text="⊙ Zero Sensor", font=("Segoe UI", 8),
-            command=self._on_zero_sensor)
-        self.btn_zero.pack(side="left", padx=2)
-        self.btn_clear_zero = tk.Button(
-            zero_f, text="↺ Clear", font=("Segoe UI", 8),
-            command=self._on_clear_zero)
-        self.btn_clear_zero.pack(side="left", padx=2)
-        zero_f.grid_remove()   # hidden until IMU is checked; toggled in _on_source_changed
-        self._zero_frame = zero_f
 
         # row 10 — separator
         ttk.Separator(self, orient="horizontal").grid(
             row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
-        # row 11 — countdown checkbox
+        # row 11 — countdown checkbox (forced on/locked while IMU is an
+        # active source -- it's the only calibration path now)
         self.countdown_var = tk.BooleanVar(value=False)
-        countdown_chk = tk.Checkbutton(
+        self.countdown_chk = tk.Checkbutton(
             self, text="5-second countdown before recording",
             variable=self.countdown_var)
-        countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self.countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
 
         # row 12 — START / STOP (START never moves from col 0)
         self.btn_start = tk.Button(
@@ -417,8 +407,8 @@ class AcquisitionPanel(tk.Frame):
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
-            self.btn_zero, self.btn_clear_zero, self.btn_back,
+            self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self.btn_back,
         ]
 
         # Initialize status label and zero frame based on default sources
@@ -437,6 +427,7 @@ class AcquisitionPanel(tk.Frame):
         self.canvas_tele.grid_remove()
         self.lbl_preview.grid_remove()   # hide live preview if it was shown
         self.status_var.set("Idle — ready to record.")
+        self._on_source_changed()   # re-apply the IMU-forced countdown lock
 
     def enter_recording(self) -> None:
         self._lock_form(True)
@@ -523,13 +514,15 @@ class AcquisitionPanel(tk.Frame):
         self.controller.on_stop()
 
     def _on_source_changed(self) -> None:
-        """Called on any source checkbox toggle. Updates status label and Zero button visibility."""
+        """Called on any source checkbox toggle. Updates status label and
+        forces the countdown on (IMU trials have no other calibration path
+        now that the manual Zero Sensor button is gone)."""
         sources = self.get_active_sources()
-        # Show/hide Zero Sensor frame
         if self._src_imu.get():
-            self._zero_frame.grid()
+            self.countdown_var.set(True)
+            self.countdown_chk.config(state="disabled")
         else:
-            self._zero_frame.grid_remove()
+            self.countdown_chk.config(state="normal")
         # Show/hide video file path frame
         if self._src_video_file.get():
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
@@ -560,23 +553,6 @@ class AcquisitionPanel(tk.Frame):
         if self._src_rgb.get():        sources.append("rgb")
         if self._src_video_file.get(): sources.append("video_file")
         return sorted(sources)
-
-    def _on_zero_sensor(self) -> None:
-        if _IMU_AVAIL:
-            try:
-                _imu.zero()
-                self.lbl_method_status.config(
-                    text="⚡ Flex once to capture axis...", fg="#B36B00")
-            except Exception as e:
-                messagebox.showerror("Zero Sensor", f"Could not zero sensor:\n{e}")
-
-    def _on_clear_zero(self) -> None:
-        if _IMU_AVAIL:
-            try:
-                _imu.clear_zero()
-            except Exception:
-                pass
-        self._on_source_changed()
 
     def _on_browse_video(self) -> None:
         path = filedialog.askopenfilename(

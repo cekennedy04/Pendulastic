@@ -214,35 +214,6 @@ def test_clear_telemetry_removes_all_items():
         r.destroy()
 
 
-def test_zero_sensor_button_hidden_when_imu_unchecked():
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_imu.set(False)
-        p._on_source_changed()
-        r.update()
-        # _zero_frame (containing btn_zero + btn_clear_zero) should be removed from grid
-        assert p._zero_frame.grid_info() == {}
-    finally:
-        r.destroy()
-
-
-def test_zero_sensor_button_shown_when_imu_checked():
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_imu.set(True)
-        p._on_source_changed()
-        r.update()
-        # _zero_frame should be in the grid; btn_zero widget must also exist
-        assert p._zero_frame.grid_info() != {}
-        assert hasattr(p, "btn_zero") and p.btn_zero.winfo_exists()
-    finally:
-        r.destroy()
-
-
 def test_preview_label_exists():
     from pendulastic_app import AcquisitionPanel
     r = _root()
@@ -442,4 +413,55 @@ def test_countdown_status_shows_stabilizing_then_calibrated():
     finally:
         if p._countdown_id:
             p.after_cancel(p._countdown_id)
+        r.destroy()
+
+
+def test_zero_sensor_ui_removed():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert not hasattr(p, "btn_zero")
+        assert not hasattr(p, "btn_clear_zero")
+        assert not hasattr(p, "_zero_frame")
+        assert not hasattr(p, "_on_zero_sensor")
+        assert not hasattr(p, "_on_clear_zero")
+    finally:
+        r.destroy()
+
+
+def test_countdown_locked_checked_when_imu_active():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert p.countdown_var.get() is True
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        p._src_imu.set(False)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "normal"
+    finally:
+        r.destroy()
+
+
+def test_enter_idle_reapplies_countdown_lock():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        # _lock_form(False) inside enter_idle would otherwise re-enable every
+        # lockable widget including the countdown checkbox -- it must be
+        # re-applied afterward so an IMU trial can't slip the countdown.
+        p.enter_idle()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+    finally:
         r.destroy()
