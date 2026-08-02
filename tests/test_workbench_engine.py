@@ -265,3 +265,24 @@ def test_load_imu_trial_skips_malformed_lines(tmp_path):
         f.write("not valid json\n")
     t, angle = engine.load_imu_trial(str(path))
     assert len(t) == 0 and len(angle) == 0
+
+
+def test_load_optitrack_trial_prefers_rigid_body_when_available(monkeypatch):
+    def fake_rigid_body(path):
+        return np.array([0.0, 1.0]), np.array([180.0, 150.0])
+    monkeypatch.setattr(engine.analysis_pipeline, "_optitrack_knee_angle_series", fake_rigid_body)
+    t, angle, method = engine.load_optitrack_trial("dummy.csv")
+    assert method == "rigid_body"
+    assert list(angle) == [180.0, 150.0]
+
+
+def test_load_optitrack_trial_falls_back_to_marker_pca_on_value_error(monkeypatch):
+    def fake_rigid_body_fails(path):
+        raise ValueError("Could not find both a Thigh-like and a Shank-like body with rotation data")
+    def fake_pca(path):
+        return np.array([0.0, 1.0]), np.array([180.0, 160.0])
+    monkeypatch.setattr(engine.analysis_pipeline, "_optitrack_knee_angle_series", fake_rigid_body_fails)
+    monkeypatch.setattr(engine.pendulastic_pt_score, "load_optitrack", fake_pca)
+    t, angle, method = engine.load_optitrack_trial("dummy.csv")
+    assert method == "marker_pca"
+    assert list(angle) == [180.0, 160.0]

@@ -321,3 +321,31 @@ def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
     t, angle = imu_calibration_tuner.replay_trial(samples, params)
     finite = np.isfinite(t) & np.isfinite(angle)
     return t[finite], angle[finite]
+
+
+def load_optitrack_trial(csv_path: str):
+    """Load an OptiTrack Motive CSV, preferring the deterministic rigid-body
+    rotation-quaternion method (bone-axis-grounded: the angle between the
+    Thigh and Shank rigid bodies' actual local-X axes) and falling back to
+    pendulastic_pt_score's more format-tolerant loader -- which itself
+    prefers marker-triplet PCA for modern Motive exports specifically to
+    avoid tracking-reset corruption in stored rigid-body quaternions --
+    only if the strict rigid-body path raises. Returns (t, angle, method)
+    where method is "rigid_body" or "marker_pca", used to badge which
+    grounding produced the curve (design spec Section 3) so a researcher is
+    never shown a heuristic reconstruction without knowing it.
+
+    Accepted simplification: pendulastic_pt_score.load_optitrack is a
+    format-detecting dispatcher, not a pure PCA function -- for legacy-
+    format files it could theoretically still resolve internally to a
+    quaternion-based method. The two loaders are not cleanly separable
+    without duplicating load_optitrack's CSV-parsing internals, so the
+    "marker_pca" tag here means "used the PCA-preferring fallback loader,"
+    matching its own documented preference, not a byte-for-byte guarantee
+    of which internal path it took."""
+    try:
+        t, angle = analysis_pipeline._optitrack_knee_angle_series(csv_path)
+        return t, angle, "rigid_body"
+    except ValueError:
+        t, angle = pendulastic_pt_score.load_optitrack(csv_path)
+        return t, angle, "marker_pca"
