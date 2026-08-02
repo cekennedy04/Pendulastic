@@ -250,3 +250,39 @@ def windowed_pt_params(t: np.ndarray, angle: np.ndarray) -> dict:
         "omega_max_n": omega_max_n, "f": f, "area_ratio": area_ratio,
         "omega_min_n": omega_min_n,
     }
+
+
+def extrema_jitter(t: np.ndarray, angle: np.ndarray) -> dict:
+    """Peak/trough extrema and their timing. Used to compare cycle-timing
+    offsets between modalities (design spec Section 4's "timing jitter
+    across oscillation cycles") -- a distinct concern from compare_pair's
+    amplitude-based RMSE/MAE."""
+    t = np.asarray(t, dtype=float)
+    angle = np.asarray(angle, dtype=float)
+    finite = np.isfinite(t) & np.isfinite(angle)
+    t, angle = t[finite], angle[finite]
+
+    empty = {"pk_i": np.array([], dtype=int), "tr_i": np.array([], dtype=int),
+             "cycle_times": np.array([])}
+    if len(t) < 10:
+        return empty
+
+    fs = 1.0 / float(np.median(np.diff(t)))
+    sg_w = max(5, int(fs * 0.15) // 2 * 2 + 1)
+    if sg_w >= len(angle):
+        sg_w = len(angle) - 1 if len(angle) % 2 == 0 else len(angle)
+        if sg_w < 5:
+            return empty
+    smooth = savgol_filter(angle, sg_w, polyorder=2)
+
+    span = float(np.nanmax(smooth) - np.nanmin(smooth))
+    prom = max(2.0, 0.05 * span) if span > 0 else 2.0
+    min_dist = max(3, int(fs * 0.3))
+
+    peaks, _ = find_peaks(smooth, prominence=prom, distance=min_dist)
+    troughs, _ = find_peaks(-smooth, prominence=prom, distance=min_dist)
+
+    all_extrema = np.sort(np.concatenate([peaks, troughs]))
+    cycle_times = t[all_extrema] if len(all_extrema) else np.array([])
+
+    return {"pk_i": peaks, "tr_i": troughs, "cycle_times": cycle_times}

@@ -160,3 +160,33 @@ def test_windowed_pt_params_finds_expected_oscillation_count():
     result = engine.windowed_pt_params(t, angle)
     assert result["N"] >= 2.0
     assert result["f"] > 0.5
+
+
+def test_extrema_jitter_finds_known_peak_and_trough_times():
+    fs = 100.0
+    t = np.arange(0, 4.0, 1.0 / fs)
+    angle = 140.0 + 30.0 * np.cos(2 * np.pi * 1.0 * t)
+    result = engine.extrema_jitter(t, angle)
+    assert len(result["tr_i"]) >= 2
+    first_trough_t = t[result["tr_i"][0]]
+    assert abs(first_trough_t - 0.5) < 0.05
+
+
+def test_extrema_jitter_timing_offset_between_two_modalities():
+    fs = 100.0
+    t = np.arange(0, 4.0, 1.0 / fs)
+    angle_a = 140.0 + 30.0 * np.cos(2 * np.pi * 1.0 * t)
+    angle_b = 140.0 + 30.0 * np.cos(2 * np.pi * 1.0 * (t - 0.05))
+    ja = engine.extrema_jitter(t, angle_a)
+    jb = engine.extrema_jitter(t, angle_b)
+    offset = jb["cycle_times"][0] - ja["cycle_times"][0]
+    assert abs(offset - 0.05) < 0.02
+
+
+def test_extrema_jitter_too_short_series_returns_empty():
+    t = np.array([0.0, 0.01])
+    angle = np.array([180.0, 179.0])
+    result = engine.extrema_jitter(t, angle)
+    assert len(result["pk_i"]) == 0
+    assert len(result["tr_i"]) == 0
+    assert len(result["cycle_times"]) == 0
