@@ -580,6 +580,88 @@ def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
         app.destroy()
 
 
+def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clears_video_path(monkeypatch):
+    """Regression: previously the early-return path left self._video_path
+    pointing at a PREVIOUS trial's video file (or "" on the very first
+    trial), and on_stop()'s per-source loop had no way to know RGB never
+    actually started, so it would re-process stale/wrong video as this
+    trial's RGB result. Now _start_rgb_recording must remove "rgb" from
+    _active_sources on failure so on_stop()'s loop skips RGB entirely."""
+    import pendulastic_app as _m
+    if not _m._CV2_AVAIL:
+        return
+    app = _m.App()
+    monkeypatch.setattr(_m.messagebox, "showerror", lambda *a, **kw: None)
+    try:
+        # Simulate a prior trial's video path still hanging around.
+        app._video_path = "C:/data/P1_trial1_rgb.avi"
+        app._active_sources = ["rgb"]
+        assert app._camera.active is None   # no camera selected
+
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        app._start_rgb_recording(meta)
+
+        assert "rgb" not in app._active_sources, \
+            "RGB must be removed from active sources so on_stop() skips it"
+        assert app._video_path == "", \
+            "stale video path from a previous trial must not survive a failed start"
+
+        # Simulate on_stop()'s per-source loop directly: it must find nothing
+        # to process for "rgb" now that it's gone from _active_sources.
+        processed = []
+        for src in app._active_sources:
+            if src == "rgb":
+                processed.append(src)
+        assert processed == [], "on_stop() must not process RGB after a failed start"
+    finally:
+        app.destroy()
+
+
+def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    monkeypatch.setattr(_m, "_CV2_AVAIL", False)
+    monkeypatch.setattr(_m.messagebox, "showerror", lambda *a, **kw: None)
+    try:
+        app._video_path = "C:/data/P1_trial1_rgb.avi"
+        app._active_sources = ["rgb"]
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        app._start_rgb_recording(meta)
+        assert "rgb" not in app._active_sources
+        assert app._video_path == ""
+    finally:
+        app.destroy()
+
+
+def test_on_camera_selected_ignored_while_recording(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._known_cameras = [
+            {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"},
+        ]
+        opened = []
+        monkeypatch.setattr(app._camera, "open", lambda cam: opened.append(cam) or True)
+        app._state = "recording"
+        app.on_camera_selected("Camera 0 (MSMF)")
+        assert opened == [], "must not switch cameras mid-recording"
+    finally:
+        app.destroy()
+
+
+def test_on_rescan_cameras_ignored_while_recording(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        rescanned = []
+        monkeypatch.setattr(app._camera, "rescan", lambda: rescanned.append(True) or [])
+        app._state = "recording"
+        app.on_rescan_cameras()
+        assert rescanned == [], "must not rescan cameras mid-recording"
+    finally:
+        app.destroy()
+
+
 def test_stop_rgb_recording_detaches_writer_but_leaves_camera_live(monkeypatch):
     import pendulastic_app as _m
     if not _m._CV2_AVAIL:

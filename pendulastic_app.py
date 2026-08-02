@@ -367,8 +367,9 @@ class AcquisitionPanel(tk.Frame):
                                      width=18, state="readonly")
         self.drop_cam.pack(side="left")
         self.drop_cam.bind("<<ComboboxSelected>>", self._on_cam_selected)
-        tk.Button(self._cam_frame, text="Rescan", font=("Segoe UI", 8),
-                  command=self._on_rescan_clicked).pack(side="left", padx=4)
+        self.btn_rescan = tk.Button(self._cam_frame, text="Rescan", font=("Segoe UI", 8),
+                  command=self._on_rescan_clicked)
+        self.btn_rescan.pack(side="left", padx=4)
         tk.Button(self._cam_frame, text="🛜 Can't connect?", font=("Segoe UI", 8),
                   command=self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
@@ -437,6 +438,7 @@ class AcquisitionPanel(tk.Frame):
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
             countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
             self.btn_zero, self.btn_clear_zero, self.btn_back,
+            self.drop_cam, self.btn_rescan,
         ]
 
         # Initialize status label and zero frame based on default sources
@@ -1337,6 +1339,8 @@ class App(tk.Tk):
         self._active_sources = list(sources)
 
     def on_rescan_cameras(self) -> None:
+        if self._state == "recording":
+            return
         if self._camera is None:
             return
         self._known_cameras = self._camera.rescan()
@@ -1350,6 +1354,8 @@ class App(tk.Tk):
             self._acq.set_camera_live(False)
 
     def on_camera_selected(self, label: str) -> None:
+        if self._state == "recording":
+            return
         if self._camera is None:
             return
         cam = next((c for c in self._known_cameras if c["label"] == label), None)
@@ -1593,11 +1599,17 @@ class App(tk.Tk):
     def _start_rgb_recording(self, meta: dict) -> None:
         if not _CV2_AVAIL:
             messagebox.showerror("RGB", "OpenCV (cv2) is not installed.")
+            if "rgb" in self._active_sources:
+                self._active_sources.remove("rgb")
+            self._video_path = ""
             return
         if self._camera is None or self._camera.active is None \
                 or self._camera.frame_size is None:
             messagebox.showerror(
                 "RGB", "No camera selected. Click Rescan and pick a camera first.")
+            if "rgb" in self._active_sources:
+                self._active_sources.remove("rgb")
+            self._video_path = ""
             return
         fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])

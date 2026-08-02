@@ -100,6 +100,22 @@ def test_enter_recording_shows_telemetry():
         r.destroy()
 
 
+def test_enter_recording_locks_camera_dropdown_and_rescan_button():
+    """Regression: mid-recording camera switches orphan the attached writer
+    (CameraSession.open() -> close() drops the writer without releasing it).
+    The dropdown and Rescan button must be disabled during recording, same as
+    every other input _lock_form covers."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_recording(); r.update()
+        assert str(p.drop_cam.cget("state")) == "disabled"
+        assert str(p.btn_rescan.cget("state")) == "disabled"
+    finally:
+        r.destroy()
+
+
 def test_enter_idle_hides_telemetry():
     from pendulastic_app import AcquisitionPanel
     r = _root()
