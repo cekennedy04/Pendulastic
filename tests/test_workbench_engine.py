@@ -286,3 +286,33 @@ def test_load_optitrack_trial_falls_back_to_marker_pca_on_value_error(monkeypatc
     t, angle, method = engine.load_optitrack_trial("dummy.csv")
     assert method == "marker_pca"
     assert list(angle) == [180.0, 160.0]
+
+
+def test_load_video_trial_isolates_one_model_failure(monkeypatch):
+    def good_model(path):
+        return np.array([0.0, 1.0]), np.array([180.0, 150.0])
+    def bad_model(path):
+        raise RuntimeError("ONNX weights missing")
+    monkeypatch.setattr(engine.analysis_pipeline, "MODEL_FUNCTIONS",
+                        {"good": good_model, "bad": bad_model})
+    results = engine.load_video_trial("dummy.mp4", ["good", "bad"])
+    t, angle = results["good"]
+    assert list(angle) == [180.0, 150.0]
+    assert "error" in results["bad"]
+    assert "ONNX weights missing" in results["bad"]["error"]
+
+
+def test_load_video_trial_reports_progress(monkeypatch):
+    def m1(path):
+        return np.array([0.0]), np.array([180.0])
+    def m2(path):
+        return np.array([0.0]), np.array([180.0])
+    monkeypatch.setattr(engine.analysis_pipeline, "MODEL_FUNCTIONS", {"m1": m1, "m2": m2})
+    seen = []
+    engine.load_video_trial("dummy.mp4", ["m1", "m2"], progress_cb=seen.append)
+    assert seen == [0.5, 1.0]
+
+
+def test_load_video_trial_unknown_model_name_reports_error():
+    results = engine.load_video_trial("dummy.mp4", ["nonexistent_model_xyz"])
+    assert "error" in results["nonexistent_model_xyz"]

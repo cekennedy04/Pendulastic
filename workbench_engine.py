@@ -349,3 +349,29 @@ def load_optitrack_trial(csv_path: str):
     except ValueError:
         t, angle = pendulastic_pt_score.load_optitrack(csv_path)
         return t, angle, "marker_pca"
+
+
+def load_video_trial(video_path: str, models: list,
+                     progress_cb: Optional[callable] = None) -> dict:
+    """Run each requested HPE model from analysis_pipeline.MODEL_FUNCTIONS
+    over video_path. One model failing (missing ONNX weights, decode
+    failure) does not abort the others -- its entry becomes {"error": str}
+    instead of a (t, angle) tuple (design spec Section 3). This is the slow
+    step (full-video pose inference x N models); callers on a Tkinter UI
+    thread must run this on a background thread and use progress_cb to
+    update a progress indicator."""
+    results = {}
+    n = max(1, len(models))
+    for i, name in enumerate(models):
+        model_func = analysis_pipeline.MODEL_FUNCTIONS.get(name)
+        if model_func is None:
+            results[name] = {"error": f"Unknown model {name!r}"}
+        else:
+            try:
+                t, angle = model_func(video_path)
+                results[name] = (np.asarray(t, dtype=float), np.asarray(angle, dtype=float))
+            except Exception as e:
+                results[name] = {"error": f"{type(e).__name__}: {e}"}
+        if progress_cb is not None:
+            progress_cb((i + 1) / n)
+    return results
