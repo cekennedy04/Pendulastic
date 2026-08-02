@@ -465,3 +465,31 @@ def test_enter_idle_reapplies_countdown_lock():
         assert str(p.countdown_chk.cget("state")) == "disabled"
     finally:
         r.destroy()
+
+
+def test_cancel_countdown_reapplies_countdown_lock():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+
+        p.pid_var.set("P1")
+        p.countdown_var.set(True)
+        p._on_start_clicked()
+        r.update()
+        assert p.btn_start.cget("text") == "CANCEL"
+
+        # _lock_form(False) inside _cancel_countdown would otherwise
+        # re-enable every lockable widget including the countdown checkbox
+        # -- reopening the "uncheck it and skip calibration" bug. It must be
+        # re-applied afterward so an IMU trial can't slip the countdown.
+        p._cancel_countdown()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        assert p.countdown_var.get() is True
+    finally:
+        r.destroy()

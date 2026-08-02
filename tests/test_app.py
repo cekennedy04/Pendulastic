@@ -450,10 +450,15 @@ def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
         app._state = "idle"
         app._acq._countdown_id = "sentinel"   # any non-None value marks countdown active
         zero_calls = []
-        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
-        monkeypatch.setattr(_m._imu, "get_state", lambda: {
-            "angles": {"pitch": 10.0, "roll": 0.0},
-        })
+        # Mirror the real zero(): it retares the offset, so subsequent
+        # get_state() calls report angles relative to the new zero (~0)
+        # instead of the pre-tare pose. A buggy edge-trigger that doesn't
+        # discard the stale buffer will see this jump as "not stable" and
+        # re-fire zero() a second time for one continuous physical hold.
+        state = {"pitch": 10.0, "roll": 0.0}
+        monkeypatch.setattr(_m._imu, "zero", lambda: (zero_calls.append(1),
+                                                       state.update(pitch=0.0, roll=0.0)))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
         for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
             app._tick_calibration_check()
         assert len(zero_calls) == 1

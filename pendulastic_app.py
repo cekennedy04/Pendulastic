@@ -411,7 +411,7 @@ class AcquisitionPanel(tk.Frame):
             self.btn_back,
         ]
 
-        # Initialize status label and zero frame based on default sources
+        # Initialize status label and countdown lock based on default sources
         self._on_source_changed()
 
     # ------------------------------------------------------------------
@@ -427,7 +427,7 @@ class AcquisitionPanel(tk.Frame):
         self.canvas_tele.grid_remove()
         self.lbl_preview.grid_remove()   # hide live preview if it was shown
         self.status_var.set("Idle — ready to record.")
-        self._on_source_changed()   # re-apply the IMU-forced countdown lock
+        self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
 
     def enter_recording(self) -> None:
         self._lock_form(True)
@@ -513,16 +513,20 @@ class AcquisitionPanel(tk.Frame):
     def _on_stop_clicked(self) -> None:
         self.controller.on_stop()
 
-    def _on_source_changed(self) -> None:
-        """Called on any source checkbox toggle. Updates status label and
-        forces the countdown on (IMU trials have no other calibration path
-        now that the manual Zero Sensor button is gone)."""
-        sources = self.get_active_sources()
+    def _apply_countdown_lock(self) -> None:
+        """IMU trials have no calibration path other than the countdown."""
         if self._src_imu.get():
             self.countdown_var.set(True)
             self.countdown_chk.config(state="disabled")
         else:
             self.countdown_chk.config(state="normal")
+
+    def _on_source_changed(self) -> None:
+        """Called on any source checkbox toggle. Updates status label and
+        forces the countdown on (IMU trials have no other calibration path
+        now that the manual Zero Sensor button is gone)."""
+        sources = self.get_active_sources()
+        self._apply_countdown_lock()
         # Show/hide video file path frame
         if self._src_video_file.get():
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
@@ -600,8 +604,10 @@ class AcquisitionPanel(tk.Frame):
                 return
             if messagebox.askyesno(
                     "Sensor Not Stable",
-                    "The IMU sensor hasn't settled to a stable reading. "
-                    "Start recording anyway?"):
+                    "The IMU sensor hasn't settled to a stable reading, so this "
+                    "trial could not be calibrated. Recording now will reuse the "
+                    "calibration from earlier in this session — the angles may "
+                    "be wrong. Start anyway?"):
                 self._proceed_to_recording()
             else:
                 self._cancel_countdown()
@@ -623,6 +629,7 @@ class AcquisitionPanel(tk.Frame):
                               bg=_GREEN, state="normal")
         self.btn_stop.config(state="disabled")
         self._lock_form(False)
+        self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
         self.status_var.set("Countdown cancelled — ready to record.")
 
     # ------------------------------------------------------------------
@@ -1746,6 +1753,10 @@ class App(tk.Tk):
             if stable and not self._calib_was_stable:
                 _imu.zero()
                 self._calib_ever_stable = True
+                self._calib_buffer = []      # post-tare readings jump toward 0;
+                                              # don't compare across the tare
+                self._calib_was_stable = True
+                return
             self._calib_was_stable = stable
         except Exception:
             pass
