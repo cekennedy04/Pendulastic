@@ -190,3 +190,78 @@ def test_extrema_jitter_too_short_series_returns_empty():
     assert len(result["pk_i"]) == 0
     assert len(result["tr_i"]) == 0
     assert len(result["cycle_times"]) == 0
+
+
+def _write_jsonl(path, samples):
+    with open(path, "w", encoding="utf-8") as f:
+        for s in samples:
+            f.write(json.dumps(s) + "\n")
+
+
+def _solo_hold_then_burst_samples():
+    """Same fixture shape as tests/test_imu_calibration_tuner.py's own
+    helper: hold still for 1s, a scripted 2.0 rad/s burst around Y for
+    0.5s, then hold again."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    samples.append({"t": t, "role": "distal", "sensor": "accel",
+                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+    for _ in range(100):
+        t += dt
+        ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+    for _ in range(50):
+        t += dt
+        ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": ts_ms})
+    for _ in range(100):
+        t += dt
+        ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+    return samples
+
+
+def test_load_imu_trial_reproduces_hand_computed_rotation(tmp_path):
+    path = tmp_path / "trial_raw.jsonl"
+    _write_jsonl(path, _solo_hold_then_burst_samples())
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "relative"}
+    t, angle = engine.load_imu_trial(str(path), config=config)
+    expected_final = 180.0 - math.degrees(2.0 * 0.5)
+    assert abs(angle[-1] - expected_final) < 1.0
+    assert np.isfinite(angle).all()
+    assert np.isfinite(t).all()
+
+
+def test_load_imu_trial_ft_ratio_override_changes_ockendon_output(tmp_path):
+    path = tmp_path / "trial_raw.jsonl"
+    _write_jsonl(path, _solo_hold_then_burst_samples())
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "ockendon"}
+    t1, angle1 = engine.load_imu_trial(str(path), config=config)
+    t2, angle2 = engine.load_imu_trial(str(path), config=config, ft_ratio=1.5)
+    assert abs(angle1[-1] - angle2[-1]) > 0.5
+
+
+def test_load_imu_trial_method_override_forces_ockendon(tmp_path):
+    path = tmp_path / "trial_raw.jsonl"
+    _write_jsonl(path, _solo_hold_then_burst_samples())
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "relative"}
+    t_rel, angle_rel = engine.load_imu_trial(str(path), config=config)
+    t_ock, angle_ock = engine.load_imu_trial(str(path), config=config, method="ockendon")
+    assert abs(angle_rel[-1] - angle_ock[-1]) > 1.0
+
+
+def test_load_imu_trial_skips_malformed_lines(tmp_path):
+    path = tmp_path / "trial_raw.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{"t": 0.0, "role": "distal", "sensor": "accel", "v": [0,0,9.81], "phone_ts_ms": 0}\n')
+        f.write("not valid json\n")
+    t, angle = engine.load_imu_trial(str(path))
+    assert len(t) == 0 and len(angle) == 0

@@ -286,3 +286,38 @@ def extrema_jitter(t: np.ndarray, angle: np.ndarray) -> dict:
     cycle_times = t[all_extrema] if len(all_extrema) else np.array([])
 
     return {"pk_i": peaks, "tr_i": troughs, "cycle_times": cycle_times}
+
+
+def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
+                   ft_ratio: Optional[float] = None,
+                   method: Optional[str] = None):
+    """Load a phone's raw accel/gyro/mag JSONL and run it through the
+    Madgwick AHRS replay engine (imu_calibration_tuner.replay_trial),
+    returning the finite-filtered (t, angle) knee-angle series.
+
+    config defaults to the currently-persisted imu_calibration_config;
+    ft_ratio/method optionally override the config's own values for this
+    call only (the Ockendon-personalization workflow, design spec Section
+    3a) without touching the persisted config file."""
+    samples = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                samples.append(json.loads(line))
+            except ValueError:
+                continue
+
+    if config is None:
+        config = imu_calibration_config.load_config()
+    params = dict(config)
+    if method is not None:
+        params["method"] = method
+    if ft_ratio is not None:
+        params["ft_ratio"] = ft_ratio
+
+    t, angle = imu_calibration_tuner.replay_trial(samples, params)
+    finite = np.isfinite(t) & np.isfinite(angle)
+    return t[finite], angle[finite]
