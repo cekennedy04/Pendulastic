@@ -316,3 +316,22 @@ def test_load_video_trial_reports_progress(monkeypatch):
 def test_load_video_trial_unknown_model_name_reports_error():
     results = engine.load_video_trial("dummy.mp4", ["nonexistent_model_xyz"])
     assert "error" in results["nonexistent_model_xyz"]
+
+
+def test_export_session_bundles_all_three_sections():
+    trial_meta = {"imu_path": "a.jsonl", "video_path": "b.mp4", "optitrack_path": "c.csv"}
+    annotations = {"Release Start": (42, 0.7), "Maximum Flexion": (88, 1.47)}
+    metrics = {"mediapipe": {"rmse_deg": 5.2, "mae_deg": 3.1}}
+    result = engine.export_session(trial_meta, annotations, metrics)
+    assert result["trial"] == trial_meta
+    assert result["annotations"]["Release Start"] == {"frame_index": 42, "t_sec": 0.7}
+    assert result["metrics"] == metrics
+
+
+def test_export_session_round_trips_through_json(tmp_path):
+    result = engine.export_session(
+        {"imu_path": "a.jsonl"}, {"Rest/Settled": (10, 0.1)}, {"imu": {"rmse_deg": 1.0}})
+    path = tmp_path / "session.json"
+    path.write_text(json.dumps(result), encoding="utf-8")
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    assert reloaded == result

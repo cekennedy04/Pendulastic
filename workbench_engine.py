@@ -375,3 +375,19 @@ def load_video_trial(video_path: str, models: list,
         if progress_cb is not None:
             progress_cb((i + 1) / n)
     return results
+
+
+def export_session(trial_meta: dict, annotations: dict, metrics: dict) -> dict:
+    """Bundle a workbench session into a JSON-serializable dict (design spec
+    Section 6): trial metadata, the fixed-milestone annotation set, and the
+    pairwise metrics computed against the chosen reference. Caller is
+    responsible for writing this to disk -- kept as a pure dict-builder
+    here so it's testable without touching the filesystem."""
+    return {
+        "trial": dict(trial_meta),
+        "annotations": {
+            label: {"frame_index": int(fi), "t_sec": float(t)}
+            for label, (fi, t) in annotations.items()
+        },
+        "metrics": dict(metrics),
+    }
