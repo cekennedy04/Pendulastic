@@ -1744,7 +1744,14 @@ class App(tk.Tk):
             if len(self._calib_buffer) > _CALIB_BUFFER_SAMPLES:
                 self._calib_buffer.pop(0)
             if len(self._calib_buffer) < _CALIB_BUFFER_SAMPLES:
-                self._calib_was_stable = False
+                # Don't touch _calib_was_stable here: after a fire clears the
+                # buffer, it's latched True and must stay latched while the
+                # buffer refills with post-tare samples -- otherwise this
+                # branch un-latches it every tick, and the moment the buffer
+                # is full again (still genuinely stable) the edge falsely
+                # re-triggers, re-taring every ~1s for one continuous hold.
+                # on_countdown_start() already resets it to False at the
+                # start of every countdown, so the cold-start case is fine.
                 return
             pitches = [p for p, _ in self._calib_buffer]
             rolls   = [r for _, r in self._calib_buffer]

@@ -459,7 +459,11 @@ def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
         monkeypatch.setattr(_m._imu, "zero", lambda: (zero_calls.append(1),
                                                        state.update(pitch=0.0, roll=0.0)))
         monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
-        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+        # Run well past several buffer-refill cycles (not just one) -- a fire
+        # that only survives to the next refill would still look "fixed" on
+        # a short run but re-trigger every _CALIB_BUFFER_SAMPLES ticks after
+        # that for as long as the hold continues.
+        for _ in range(4 * _m._CALIB_BUFFER_SAMPLES + 10):
             app._tick_calibration_check()
         assert len(zero_calls) == 1
         assert app._calib_ever_stable is True
