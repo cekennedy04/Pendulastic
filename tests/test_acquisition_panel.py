@@ -15,6 +15,8 @@ class _Ctrl:
     def on_source_changed(self, sources): pass
     def on_new_trial(self): pass
     def on_back_to_mode_select(self): pass
+    def on_countdown_start(self): pass
+    def is_imu_calibrated(self): return True
 
 
 def test_panel_instantiates():
@@ -212,35 +214,6 @@ def test_clear_telemetry_removes_all_items():
         r.destroy()
 
 
-def test_zero_sensor_button_hidden_when_imu_unchecked():
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_imu.set(False)
-        p._on_source_changed()
-        r.update()
-        # _zero_frame (containing btn_zero + btn_clear_zero) should be removed from grid
-        assert p._zero_frame.grid_info() == {}
-    finally:
-        r.destroy()
-
-
-def test_zero_sensor_button_shown_when_imu_checked():
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_imu.set(True)
-        p._on_source_changed()
-        r.update()
-        # _zero_frame should be in the grid; btn_zero widget must also exist
-        assert p._zero_frame.grid_info() != {}
-        assert hasattr(p, "btn_zero") and p.btn_zero.winfo_exists()
-    finally:
-        r.destroy()
-
-
 def test_preview_label_exists():
     from pendulastic_app import AcquisitionPanel
     r = _root()
@@ -323,5 +296,200 @@ def test_get_metadata_includes_video_file_path():
         meta = p.get_metadata()
         assert meta["video_file_path"] == "/data/trial.mp4"
         assert "video_file" in meta["sources"]
+    finally:
+        r.destroy()
+
+
+def test_start_countdown_calls_on_countdown_start():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def on_countdown_start(self): calls.append("countdown_start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p.pid_var.set("P1")
+        p.countdown_var.set(True)
+        p._on_start_clicked()
+        r.update()
+        assert "countdown_start" in calls
+        assert p._calib_extension_s == 0
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_extends_when_not_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = 0
+        p._tick_countdown(0)
+        r.update()
+        assert "start" not in calls
+        assert p._calib_extension_s == 1
+        assert "Hold steady" in p.status_var.get()
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_proceeds_when_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return True
+            def on_start(self): calls.append("start")
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = 0
+        p._tick_countdown(0)
+        r.update()
+        assert "start" in calls
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_confirm_dialog_accept_proceeds(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as _m
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **kw: True)
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = _m._MAX_CALIB_EXTENSION_S
+        p._tick_countdown(0)
+        r.update()
+        assert "start" in calls
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_confirm_dialog_decline_cancels(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as _m
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def is_imu_calibrated(self): return False
+            def on_start(self): calls.append("start")
+        monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **kw: False)
+        p = AcquisitionPanel(r, C()); p.pack()
+        p._calib_extension_s = _m._MAX_CALIB_EXTENSION_S
+        p._tick_countdown(0)
+        r.update()
+        assert "start" not in calls
+        assert p.btn_start.cget("text") == "START RECORDING"
+    finally:
+        r.destroy()
+
+
+def test_countdown_status_shows_stabilizing_then_calibrated():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        class C(_Ctrl):
+            calibrated = False
+            def is_imu_calibrated(self): return self.calibrated
+        ctrl = C()
+        p = AcquisitionPanel(r, ctrl); p.pack()
+        p._src_imu.set(True)
+        p._tick_countdown(3)
+        r.update()
+        assert "stabilizing" in p.status_var.get()
+        ctrl.calibrated = True
+        p._tick_countdown(2)
+        r.update()
+        assert "calibrated" in p.status_var.get()
+    finally:
+        if p._countdown_id:
+            p.after_cancel(p._countdown_id)
+        r.destroy()
+
+
+def test_zero_sensor_ui_removed():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert not hasattr(p, "btn_zero")
+        assert not hasattr(p, "btn_clear_zero")
+        assert not hasattr(p, "_zero_frame")
+        assert not hasattr(p, "_on_zero_sensor")
+        assert not hasattr(p, "_on_clear_zero")
+    finally:
+        r.destroy()
+
+
+def test_countdown_locked_checked_when_imu_active():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert p.countdown_var.get() is True
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        p._src_imu.set(False)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "normal"
+    finally:
+        r.destroy()
+
+
+def test_enter_idle_reapplies_countdown_lock():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        # _lock_form(False) inside enter_idle would otherwise re-enable every
+        # lockable widget including the countdown checkbox -- it must be
+        # re-applied afterward so an IMU trial can't slip the countdown.
+        p.enter_idle()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+    finally:
+        r.destroy()
+
+
+def test_cancel_countdown_reapplies_countdown_lock():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+
+        p.pid_var.set("P1")
+        p.countdown_var.set(True)
+        p._on_start_clicked()
+        r.update()
+        assert p.btn_start.cget("text") == "CANCEL"
+
+        # _lock_form(False) inside _cancel_countdown would otherwise
+        # re-enable every lockable widget including the countdown checkbox
+        # -- reopening the "uncheck it and skip calibration" bug. It must be
+        # re-applied afterward so an IMU trial can't slip the countdown.
+        p._cancel_countdown()
+        r.update()
+        assert str(p.countdown_chk.cget("state")) == "disabled"
+        assert p.countdown_var.get() is True
     finally:
         r.destroy()

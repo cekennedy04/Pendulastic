@@ -96,6 +96,10 @@ _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
 
+_CALIB_STABILITY_RANGE_DEG = 2.0   # max peak-to-peak pitch/roll swing to count as "stable"
+_CALIB_BUFFER_SAMPLES = 20         # ~1s of samples at the 50ms _tick() cadence
+_MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
+
 # ---------------------------------------------------------------------------
 # DataManager
 # ---------------------------------------------------------------------------
@@ -248,6 +252,7 @@ class AcquisitionPanel(tk.Frame):
         self.controller = controller
         self._countdown_id: Optional[str] = None
         self._tele_buf: list = []
+        self._calib_extension_s: int = 0
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -351,34 +356,24 @@ class AcquisitionPanel(tk.Frame):
                   command=self._on_browse_video).pack(side="left", padx=4)
         self._video_path_frame.pack_forget()   # hidden until checkbox checked
 
-        # row 9 — Modality status + Zero Sensor button (Zero hidden until IMU checked)
+        # row 9 — Modality status (calibration is now automatic during the
+        # countdown -- see App._tick_calibration_check / AcquisitionPanel's
+        # forced-on countdown checkbox below)
         self.lbl_method_status = tk.Label(
             self, text="● OptiTrack (Motive)", font=("Consolas", 9), fg="green", anchor="w")
         self.lbl_method_status.grid(row=9, column=0, sticky="w", padx=16)
-
-        zero_f = tk.Frame(self)
-        zero_f.grid(row=9, column=1, sticky="w", padx=4)
-        self.btn_zero = tk.Button(
-            zero_f, text="⊙ Zero Sensor", font=("Segoe UI", 8),
-            command=self._on_zero_sensor)
-        self.btn_zero.pack(side="left", padx=2)
-        self.btn_clear_zero = tk.Button(
-            zero_f, text="↺ Clear", font=("Segoe UI", 8),
-            command=self._on_clear_zero)
-        self.btn_clear_zero.pack(side="left", padx=2)
-        zero_f.grid_remove()   # hidden until IMU is checked; toggled in _on_source_changed
-        self._zero_frame = zero_f
 
         # row 10 — separator
         ttk.Separator(self, orient="horizontal").grid(
             row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
-        # row 11 — countdown checkbox
+        # row 11 — countdown checkbox (forced on/locked while IMU is an
+        # active source -- it's the only calibration path now)
         self.countdown_var = tk.BooleanVar(value=False)
-        countdown_chk = tk.Checkbutton(
+        self.countdown_chk = tk.Checkbutton(
             self, text="5-second countdown before recording",
             variable=self.countdown_var)
-        countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self.countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
 
         # row 12 — START / STOP (START never moves from col 0)
         self.btn_start = tk.Button(
@@ -412,11 +407,11 @@ class AcquisitionPanel(tk.Frame):
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
-            self.btn_zero, self.btn_clear_zero, self.btn_back,
+            self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self.btn_back,
         ]
 
-        # Initialize status label and zero frame based on default sources
+        # Initialize status label and countdown lock based on default sources
         self._on_source_changed()
 
     # ------------------------------------------------------------------
@@ -432,6 +427,7 @@ class AcquisitionPanel(tk.Frame):
         self.canvas_tele.grid_remove()
         self.lbl_preview.grid_remove()   # hide live preview if it was shown
         self.status_var.set("Idle — ready to record.")
+        self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
 
     def enter_recording(self) -> None:
         self._lock_form(True)
@@ -517,14 +513,20 @@ class AcquisitionPanel(tk.Frame):
     def _on_stop_clicked(self) -> None:
         self.controller.on_stop()
 
-    def _on_source_changed(self) -> None:
-        """Called on any source checkbox toggle. Updates status label and Zero button visibility."""
-        sources = self.get_active_sources()
-        # Show/hide Zero Sensor frame
+    def _apply_countdown_lock(self) -> None:
+        """IMU trials have no calibration path other than the countdown."""
         if self._src_imu.get():
-            self._zero_frame.grid()
+            self.countdown_var.set(True)
+            self.countdown_chk.config(state="disabled")
         else:
-            self._zero_frame.grid_remove()
+            self.countdown_chk.config(state="normal")
+
+    def _on_source_changed(self) -> None:
+        """Called on any source checkbox toggle. Updates status label and
+        forces the countdown on (IMU trials have no other calibration path
+        now that the manual Zero Sensor button is gone)."""
+        sources = self.get_active_sources()
+        self._apply_countdown_lock()
         # Show/hide video file path frame
         if self._src_video_file.get():
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
@@ -556,23 +558,6 @@ class AcquisitionPanel(tk.Frame):
         if self._src_video_file.get(): sources.append("video_file")
         return sorted(sources)
 
-    def _on_zero_sensor(self) -> None:
-        if _IMU_AVAIL:
-            try:
-                _imu.zero()
-                self.lbl_method_status.config(
-                    text="⚡ Flex once to capture axis...", fg="#B36B00")
-            except Exception as e:
-                messagebox.showerror("Zero Sensor", f"Could not zero sensor:\n{e}")
-
-    def _on_clear_zero(self) -> None:
-        if _IMU_AVAIL:
-            try:
-                _imu.clear_zero()
-            except Exception:
-                pass
-        self._on_source_changed()
-
     def _on_browse_video(self) -> None:
         path = filedialog.askopenfilename(
             title="Select pre-recorded video",
@@ -591,19 +576,48 @@ class AcquisitionPanel(tk.Frame):
     # Countdown
     # ------------------------------------------------------------------
     def _start_countdown(self) -> None:
+        self.controller.on_countdown_start()
+        self._calib_extension_s = 0
         self._lock_form(True)
         self.btn_start.config(text="CANCEL",
                               command=self._cancel_countdown, bg=_AMBER)
         self.btn_stop.config(state="disabled")
         self._tick_countdown(5)
 
+    def _proceed_to_recording(self) -> None:
+        """Helper to complete countdown and start recording.
+        Clears the countdown timer, resets button state, and calls on_start()."""
+        self._countdown_id = None
+        self.btn_start.config(text="START RECORDING",
+                              command=self._on_start_clicked, bg=_GREEN)
+        self.controller.on_start()
+
     def _tick_countdown(self, n: int) -> None:
         if n == 0:
-            self.btn_start.config(text="START RECORDING",
-                                  command=self._on_start_clicked, bg=_GREEN)
-            self.controller.on_start()
+            if self.controller.is_imu_calibrated():
+                self._proceed_to_recording()
+                return
+            if self._calib_extension_s < _MAX_CALIB_EXTENSION_S:
+                self._calib_extension_s += 1
+                self.status_var.set("Hold steady…")
+                self._countdown_id = self.after(1000, lambda: self._tick_countdown(0))
+                return
+            if messagebox.askyesno(
+                    "Sensor Not Stable",
+                    "The IMU sensor hasn't settled to a stable reading, so this "
+                    "trial could not be calibrated. Recording now will reuse the "
+                    "calibration from earlier in this session — the angles may "
+                    "be wrong. Start anyway?"):
+                self._proceed_to_recording()
+            else:
+                self._cancel_countdown()
             return
-        self.status_var.set(f"Starting in {n}…")
+        if "imu" in self.get_active_sources():
+            calib_suffix = (" — ✓ calibrated" if self.controller.is_imu_calibrated()
+                           else " — stabilizing…")
+        else:
+            calib_suffix = ""
+        self.status_var.set(f"Starting in {n}…{calib_suffix}")
         self._countdown_id = self.after(1000, lambda: self._tick_countdown(n - 1))
 
     def _cancel_countdown(self) -> None:
@@ -615,6 +629,7 @@ class AcquisitionPanel(tk.Frame):
                               bg=_GREEN, state="normal")
         self.btn_stop.config(state="disabled")
         self._lock_form(False)
+        self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
         self.status_var.set("Countdown cancelled — ready to record.")
 
     # ------------------------------------------------------------------
@@ -1112,6 +1127,9 @@ class App(tk.Tk):
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
+        self._calib_buffer:      list = []     # trailing (pitch, roll) samples during countdown
+        self._calib_was_stable:  bool = False   # edge-trigger state for auto-tare
+        self._calib_ever_stable: bool = False   # True once calibrated this countdown
 
         # Start IMU WebSocket server (port 5000) once for this process
         if _IMU_AVAIL:
@@ -1248,6 +1266,20 @@ class App(tk.Tk):
     def on_source_changed(self, sources: list) -> None:
         """Called by AcquisitionPanel when any source checkbox changes."""
         self._active_sources = list(sources)
+
+    def on_countdown_start(self) -> None:
+        """Called by AcquisitionPanel at the start of each countdown; resets
+        the auto-tare stability tracking for this fresh countdown window."""
+        self._calib_buffer = []
+        self._calib_was_stable = False
+        self._calib_ever_stable = False
+
+    def is_imu_calibrated(self) -> bool:
+        """True if calibration isn't required (imu not an active source) or
+        has already succeeded at least once this countdown."""
+        if "imu" not in self._active_sources:
+            return True
+        return self._calib_ever_stable
 
     # ------------------------------------------------------------------
     # Mode-select routing
@@ -1690,7 +1722,51 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        self._tick_calibration_check()
+
         self.after(50, self._tick)
+
+    def _tick_calibration_check(self) -> None:
+        """Countdown auto-tare: continuously watch for a stable hold and
+        re-tare (edge-triggered) each time a new stable window begins.
+        Active only while AcquisitionPanel's countdown is running."""
+        if not (_IMU_AVAIL and "imu" in self._active_sources
+                and self._state == "idle"
+                and self._acq._countdown_id is not None):
+            return
+        try:
+            st = _imu.get_state()
+            ang = st.get("angles", {})
+            pitch, roll = ang.get("pitch"), ang.get("roll")
+            if pitch is None or roll is None or not (math.isfinite(pitch) and math.isfinite(roll)):
+                return
+            self._calib_buffer.append((pitch, roll))
+            if len(self._calib_buffer) > _CALIB_BUFFER_SAMPLES:
+                self._calib_buffer.pop(0)
+            if len(self._calib_buffer) < _CALIB_BUFFER_SAMPLES:
+                # Don't touch _calib_was_stable here: after a fire clears the
+                # buffer, it's latched True and must stay latched while the
+                # buffer refills with post-tare samples -- otherwise this
+                # branch un-latches it every tick, and the moment the buffer
+                # is full again (still genuinely stable) the edge falsely
+                # re-triggers, re-taring every ~1s for one continuous hold.
+                # on_countdown_start() already resets it to False at the
+                # start of every countdown, so the cold-start case is fine.
+                return
+            pitches = [p for p, _ in self._calib_buffer]
+            rolls   = [r for _, r in self._calib_buffer]
+            stable = (max(pitches) - min(pitches) < _CALIB_STABILITY_RANGE_DEG
+                     and max(rolls) - min(rolls) < _CALIB_STABILITY_RANGE_DEG)
+            if stable and not self._calib_was_stable:
+                _imu.zero()
+                self._calib_ever_stable = True
+                self._calib_buffer = []      # post-tare readings jump toward 0;
+                                              # don't compare across the tare
+                self._calib_was_stable = True
+                return
+            self._calib_was_stable = stable
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Teardown
