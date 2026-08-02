@@ -103,3 +103,60 @@ def test_compare_pair_no_overlap_returns_error():
     y = np.full_like(t1, 180.0)
     result = engine.compare_pair(t1, y, t2, y)
     assert result["status"] == "error"
+
+
+def test_windowed_pt_params_zero_for_flat_signal():
+    t = np.arange(0, 3.0, 1 / 60)
+    angle = np.full_like(t, 180.0)
+    result = engine.windowed_pt_params(t, angle)
+    assert result["area_ratio"] == 0.0
+    assert result["N"] == 0.0
+
+
+def test_windowed_pt_params_area_ratio_lower_than_naive_unwindowed_calc():
+    """Regression test for diagnose_area_ratio.py's own P5 T3/T5 finding:
+    naively integrating P+/P- over the full series (including a long
+    resting tail) inflates area_ratio relative to windowing to the active
+    oscillation only.
+
+    The tail is a slow one-directional ramp (145 -> 140), not a perfectly
+    flat value: phi_inf is estimated from only the *last* second of the
+    series (~140, the ramp's endpoint), so for nearly the entire 15s tail
+    angle > phi_inf, feeding almost exclusively into P_minus with no
+    offsetting P_plus contribution -- a genuinely one-directional,
+    non-self-cancelling imbalance whose size scales with tail duration. (A
+    perfectly flat tail wouldn't exercise this: it would sit exactly at
+    whatever phi_inf gets estimated from it either way, contributing ~zero
+    net area regardless of windowing.) _active_window_end ends the active
+    window shortly after the oscillation's last real extremum (~4.5s),
+    well before the ramp even starts, so windowed_pt_params never sees it."""
+    fs = 60.0
+    t_osc = np.arange(0, 4.0, 1.0 / fs)
+    decay = np.exp(-0.5 * t_osc)
+    osc = 140.0 + 40.0 * decay * np.cos(2 * np.pi * 1.0 * t_osc)
+    t_tail = np.arange(t_osc[-1] + 1.0 / fs, t_osc[-1] + 15.0, 1.0 / fs)
+    tail = np.linspace(145.0, 140.0, len(t_tail))
+    t = np.concatenate([t_osc, t_tail])
+    angle = np.concatenate([osc, tail])
+
+    windowed = engine.windowed_pt_params(t, angle)
+
+    phi_inf = float(np.median(angle[-int(fs):]))
+    phi_full = phi_inf - angle
+    dt_full = np.diff(t)
+    phi_mid_full = (phi_full[:-1] + phi_full[1:]) / 2.0
+    p_plus_full = float(np.sum(dt_full * np.maximum(phi_mid_full, 0)))
+    p_minus_full = float(np.sum(dt_full * np.maximum(-phi_mid_full, 0)))
+    naive_area_ratio = abs(p_plus_full - p_minus_full) / (p_plus_full + p_minus_full)
+
+    assert windowed["area_ratio"] < naive_area_ratio
+
+
+def test_windowed_pt_params_finds_expected_oscillation_count():
+    fs = 100.0
+    t = np.arange(0, 4.0, 1.0 / fs)
+    decay = np.exp(-0.4 * t)
+    angle = 140.0 + 40.0 * decay * np.cos(2 * np.pi * 1.0 * t)
+    result = engine.windowed_pt_params(t, angle)
+    assert result["N"] >= 2.0
+    assert result["f"] > 0.5
