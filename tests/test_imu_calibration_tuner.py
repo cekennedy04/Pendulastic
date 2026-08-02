@@ -503,3 +503,26 @@ def test_tune_and_persist_defaults_method_when_candidate_lacks_it(tmp_path, monk
     })
     tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
     assert cfgmod.load_config()["method"] == "relative"
+
+
+def test_ockendon_deg_custom_ratio_differs_from_default():
+    beta = 45.0
+    default = tuner.ockendon_deg(beta)
+    custom = tuner.ockendon_deg(beta, ft_ratio=1.5)
+    assert abs(custom - default) > 0.5
+
+
+def test_ockendon_deg_default_ratio_matches_explicit_constant():
+    beta = 30.0
+    assert tuner.ockendon_deg(beta) == tuner.ockendon_deg(beta, ft_ratio=tuner.OCKENDON_FT_RATIO)
+
+
+def test_replay_trial_ft_ratio_changes_ockendon_output():
+    """Confirms replay_trial actually threads params["ft_ratio"] through to
+    ockendon_deg, not just that the function itself accepts the parameter."""
+    samples = _solo_hold_then_burst_samples()
+    base_params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+                   "gravity_seed": True, "method": "ockendon"}
+    t1, angle1 = tuner.replay_trial(samples, base_params)
+    t2, angle2 = tuner.replay_trial(samples, {**base_params, "ft_ratio": 1.5})
+    assert abs(angle1[-1] - angle2[-1]) > 0.5

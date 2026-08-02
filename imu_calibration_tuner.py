@@ -42,14 +42,16 @@ TUNING_GRID = [
 OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
 
 
-def ockendon_deg(beta_deg: float) -> float:
+def ockendon_deg(beta_deg: float, ft_ratio: float = OCKENDON_FT_RATIO) -> float:
     """Ockendon & Gilbert's tibial-inclination knee-flexion model: maps a
     single measured tibial inclination (beta, degrees from horizontal) to
-    knee flexion kappa, using the anatomical femur:tibia ratio constant.
-    |sin(beta)| <= 1 < OCKENDON_FT_RATIO always, so the arccos argument is
-    always in-domain -- no clamping needed."""
+    knee flexion kappa, using the femur:tibia ratio constant. ft_ratio
+    defaults to the population constant OCKENDON_FT_RATIO but may be
+    overridden with a per-participant measured ratio (personalization,
+    workbench design spec Section 3a). |sin(beta)| <= 1 < any realistic
+    ft_ratio, so the arccos argument stays in-domain -- no clamping needed."""
     beta = math.radians(beta_deg)
-    return 90.0 + beta_deg - math.degrees(math.acos(math.sin(beta) / OCKENDON_FT_RATIO))
+    return 90.0 + beta_deg - math.degrees(math.acos(math.sin(beta) / ft_ratio))
 
 
 class _RoleState:
@@ -236,7 +238,8 @@ def replay_trial(raw_samples: list, params: dict):
     if method == "relative":
         angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
     else:
-        kappas = np.array([ockendon_deg(_beta_from_quats(q)) for q in tick_quats])
+        ft_ratio = params.get("ft_ratio", OCKENDON_FT_RATIO)
+        kappas = np.array([ockendon_deg(_beta_from_quats(q), ft_ratio) for q in tick_quats])
         angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
 
     alpha = params["ema_alpha"]
