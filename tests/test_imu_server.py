@@ -678,3 +678,14 @@ def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
 
     imu.reset_devices()
     imu.clear_zero()
+
+
+def test_quat_to_euler_deg_matches_identity_quaternion():
+    roll, pitch, yaw = imu._quat_to_euler_deg(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert abs(roll) < 1e-9 and abs(pitch) < 1e-9 and abs(yaw) < 1e-9
+
+
+def test_euler_deg_delegates_to_quat_to_euler_deg():
+    ahrs = imu.MadgwickAHRS(beta=0.1)
+    ahrs.update(np.array([0.3, 0.1, -0.2]), np.array([0.0, 0.0, 9.81]), None, 0.05)
+    assert ahrs.euler_deg() == imu._quat_to_euler_deg(ahrs.q)

@@ -197,12 +197,18 @@ class MadgwickAHRS:
     def euler_deg(self) -> tuple[float, float, float]:
         """Return (roll, pitch, yaw) in degrees — ZYX convention.
         roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
-        q1, q2, q3, q4 = self.q
-        roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
-        sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
-        pitch = math.asin(sin_p)
-        yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
-        return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+        return _quat_to_euler_deg(self.q)
+
+
+def _quat_to_euler_deg(q) -> tuple[float, float, float]:
+    """Return (roll, pitch, yaw) in degrees — ZYX convention.
+    roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
+    q1, q2, q3, q4 = q
+    roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
+    sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
+    pitch = math.asin(sin_p)
+    yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
+    return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
 
 
 def wrap180(deg: float) -> float:

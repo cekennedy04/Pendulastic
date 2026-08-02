@@ -18,6 +18,7 @@ def test_save_then_load_roundtrips(tmp_path, monkeypatch):
         "flex_axis_capture": False, "gravity_seed": True,
         "penalty": 1.23, "passes": True,
         "tuned_at": "2026-07-30T00:00:00+00:00", "source_trial": "PID_1_imu.csv",
+        "method": "ockendon",
     }
     cfgmod.save_config(written)
     assert cfgmod.load_config() == written
@@ -52,3 +53,13 @@ def test_load_config_falls_back_on_wrong_type(tmp_path, monkeypatch):
     path.write_text(json.dumps(bad), encoding="utf-8")
     monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(path))
     assert cfgmod.load_config() == cfgmod.DEFAULT_CONFIG
+
+
+def test_load_config_fills_default_method_for_legacy_configs_missing_it(tmp_path, monkeypatch):
+    path = tmp_path / "cfg.json"
+    legacy = {k: v for k, v in cfgmod.DEFAULT_CONFIG.items() if k != "method"}
+    legacy.update({"beta": 0.08, "ema_alpha": 0.1,
+                  "flex_axis_capture": False, "gravity_seed": False})
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(path))
+    assert cfgmod.load_config()["method"] == "relative"

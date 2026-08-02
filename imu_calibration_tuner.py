@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 
 from pendulastic_imu_server import (
-    MadgwickAHRS, _gravity_seed, _qconj, _qmul,
+    MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
 )
 from pendulastic_pt_score import compute_pt_params
@@ -31,12 +31,25 @@ TICK_S = 0.05
 
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
-     "flex_axis_capture": fac, "gravity_seed": gs}
+     "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
     for beta in (0.02, 0.041, 0.08, 0.15)
     for alpha in (0.1, 0.3, 0.5)
     for fac in (True, False)
     for gs in (True, False)
+    for method in ("relative", "ockendon", "ockendon_flipped")
 ]
+
+OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
+
+
+def ockendon_deg(beta_deg: float) -> float:
+    """Ockendon & Gilbert's tibial-inclination knee-flexion model: maps a
+    single measured tibial inclination (beta, degrees from horizontal) to
+    knee flexion kappa, using the anatomical femur:tibia ratio constant.
+    |sin(beta)| <= 1 < OCKENDON_FT_RATIO always, so the arccos argument is
+    always in-domain -- no clamping needed."""
+    beta = math.radians(beta_deg)
+    return 90.0 + beta_deg - math.degrees(math.acos(math.sin(beta) / OCKENDON_FT_RATIO))
 
 
 class _RoleState:
@@ -205,8 +218,26 @@ def replay_trial(raw_samples: list, params: dict):
             swing = 2.0 * math.degrees(math.acos(dot))
         return swing
 
+    def _beta_from_quats(quats: dict) -> float:
+        """Zero-referenced tibial (distal-segment) pitch, degrees -- the beta
+        Ockendon & Gilbert's model takes as input. Distal preferred over
+        proximal, matching _swing_from_quats' solo fallback preference; the
+        model only ever needs the single shank-mounted sensor."""
+        solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
+            ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
+        if solo_role is None or solo_role not in q_zero:
+            return float("nan")
+        _, pitch_cur, _ = _quat_to_euler_deg(quats[solo_role])
+        _, pitch_zero, _ = _quat_to_euler_deg(q_zero[solo_role])
+        return wrap180(pitch_cur - pitch_zero)
+
     t_arr = tick_times - t0
-    angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
+    method = params.get("method", "relative")
+    if method == "relative":
+        angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
+    else:
+        kappas = np.array([ockendon_deg(_beta_from_quats(q)) for q in tick_quats])
+        angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
 
     alpha = params["ema_alpha"]
     ema = None
@@ -408,6 +439,7 @@ def tune_and_persist(raw_samples: list, source_trial: str = "",
             "ema_alpha": best["params"]["ema_alpha"],
             "flex_axis_capture": best["params"]["flex_axis_capture"],
             "gravity_seed": best["params"]["gravity_seed"],
+            "method": best["params"].get("method", "relative"),
             "penalty": best["penalty"],
             "passes": best["passes"],
             "tuned_at": _now_iso(),
