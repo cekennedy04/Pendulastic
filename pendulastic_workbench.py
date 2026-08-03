@@ -214,9 +214,20 @@ class WorkbenchView(tk.Frame):
         self._metrics_text.pack(fill="x", padx=8, pady=4)
 
     def set_traces(self, traces: dict) -> None:
-        """traces: {label: (t, angle)}. Rebuilds the plot, the visibility
-        checkboxes (each paired with a manual lag-override field, design
-        spec Section 4), and the reference-selector menu from scratch."""
+        """traces: {label: (t, angle)}. Rebuilds the plot and the visibility/
+        lag-override widgets, but preserves each *already-present* label's
+        chosen visibility, lag override, and (if still present) the
+        manually-selected reference -- set_traces() is called a second time
+        when async HPE video models finish after IMU/OptiTrack have already
+        loaded (design spec Section 3), and a researcher who configured
+        their comparison during that "slow step" wait must not have it
+        silently reset out from under them. Only genuinely new labels get
+        fresh defaults."""
+        prev_reference = self._reference_var.get()
+        prev_visible    = dict(self._visible_vars)
+        prev_lag        = dict(self._lag_override_vars)
+        prev_scrub_t    = self.current_time_sec()
+
         self._traces = traces
         for widget in self._visibility_frame.winfo_children():
             widget.destroy()
@@ -231,12 +242,12 @@ class WorkbenchView(tk.Frame):
             row = tk.Frame(self._visibility_frame)
             row.pack(side="left", padx=4)
 
-            var = tk.BooleanVar(value=True)
+            var = prev_visible[label] if label in prev_visible else tk.BooleanVar(value=True)
             self._visible_vars[label] = var
             tk.Checkbutton(row, text=label, variable=var,
                           command=self._on_visibility_changed).pack(side="left")
 
-            lag_var = tk.StringVar(value="")
+            lag_var = prev_lag[label] if label in prev_lag else tk.StringVar(value="")
             self._lag_override_vars[label] = lag_var
             tk.Label(row, text="lag(s):", font=("Segoe UI", 7)).pack(side="left")
             lag_entry = tk.Entry(row, textvariable=lag_var, width=6)
@@ -245,20 +256,28 @@ class WorkbenchView(tk.Frame):
             lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
 
             line, = self._ax.plot(t, angle, label=label)
+            line.set_visible(var.get())
             self._trace_lines[label] = line
 
-        self._ax.legend(fontsize=8)
-        self._axvline = self._ax.axvline(0, color="#94A3B8", linewidth=0.8)
+        self._ax.legend(
+            [l for l in self._trace_lines.values() if l.get_visible()],
+            [lbl for lbl, l in self._trace_lines.items() if l.get_visible()],
+            fontsize=8)
+        self._axvline = self._ax.axvline(prev_scrub_t, color="#94A3B8", linewidth=0.8)
 
         menu = self._reference_menu["menu"]
         menu.delete(0, "end")
         for label in traces:
             menu.add_command(label=label,
                             command=lambda l=label: self._reference_var.set(l))
-        default_ref = self._default_reference(traces)
-        if default_ref:
-            self._reference_var.set(default_ref)
+        if prev_reference and prev_reference in traces:
+            self._reference_var.set(prev_reference)
+        else:
+            default_ref = self._default_reference(traces)
+            if default_ref:
+                self._reference_var.set(default_ref)
 
+        self._redraw_annotations()
         self._plot_canvas.draw_idle()
 
     def _default_reference(self, traces: dict) -> str:
@@ -378,7 +397,10 @@ class WorkbenchView(tk.Frame):
         fi = self.current_frame_index()
         t_sec = self.current_time_sec()
         self._annotations[label] = (fi, t_sec)
+        self._draw_milestone_artist(label, t_sec)
+        self._plot_canvas.draw_idle()
 
+    def _draw_milestone_artist(self, label: str, t_sec: float) -> None:
         if not hasattr(self, "_annotation_artists"):
             self._annotation_artists = {}
         if label in self._annotation_artists:
@@ -387,7 +409,17 @@ class WorkbenchView(tk.Frame):
             label, xy=(t_sec, self._ax.get_ylim()[1]),
             rotation=90, va="top", ha="right", fontsize=7, color="#DC2626")
         self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
-        self._plot_canvas.draw_idle()
+
+    def _redraw_annotations(self) -> None:
+        """set_traces()'s _ax.clear() wipes the plotted milestone markers,
+        but self._annotations (the data get_annotations()/export reads)
+        is untouched by it -- only the visual artists need recreating so
+        a researcher's already-marked milestones don't appear to vanish
+        the next time set_traces() runs (e.g. when async HPE results
+        merge in after IMU/OptiTrack already loaded)."""
+        self._annotation_artists = {}
+        for label, (_fi, t_sec) in self._annotations.items():
+            self._draw_milestone_artist(label, t_sec)
 
     def get_annotations(self) -> dict:
         return dict(self._annotations)
