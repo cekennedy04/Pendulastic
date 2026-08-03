@@ -484,17 +484,19 @@ def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
 
 def _rec_loop(tag, tmp_path, stop_evt, n_iters=50):
     """Shared helper: repeatedly start/stop a recording. Checks stop_evt
-    each iteration so a merely-slow (not deadlocked) run can be
-    interrupted promptly instead of becoming an unbounded zombie thread —
-    extracted from test_concurrent_start_recording_and_gyro_callbacks_do_
-    not_deadlock while investigating an intermittent full-suite crash
-    (Windows fatal exception, code 0x80000003): under heavy full-suite
-    system load, this loop's 50 start/stop cycles could take longer than
-    the test's bounded join, leaving it running unsupervised for however
-    long the remaining iterations took — including well into later,
-    unrelated tests that also touch pendulastic_imu_server's shared
-    global state. See test_rec_loop_stops_promptly_when_signaled_even_if_slow
-    for the regression pin."""
+    each iteration so a merely-slow (not deadlocked, not lock-starved) run
+    can be interrupted promptly between iterations instead of becoming an
+    unbounded zombie thread — extracted from test_concurrent_start_
+    recording_and_gyro_callbacks_do_not_deadlock while investigating an
+    intermittent full-suite crash (Windows fatal exception, code
+    0x80000003). This alone was NOT sufficient to fix that crash: the
+    actual root cause was gyro_loop starving these threads' _lock
+    acquisition *inside* a single start_recording() call (see its
+    docstring) -- this per-iteration check only helps once a thread
+    actually gets to complete a call. Kept anyway as defense in depth: it
+    bounds the zombie-thread window for any other reason a call might run
+    long. See test_rec_loop_stops_promptly_when_signaled_even_if_slow for
+    the regression pin on this specific contract."""
     for n in range(n_iters):
         if stop_evt.is_set():
             break
@@ -552,11 +554,29 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     failure here, rather than hanging silently forever. A genuine deadlock
     will still wedge whichever test runs next and touches _rec_lock (that
     risk is inherent to actually catching a deadlock at all) -- but a
-    merely-slow-under-load run (the observed intermittent full-suite
-    crash's actual cause) no longer leaves permanent zombie threads: both
-    rec threads get a bounded follow-up join after stop_evt is set, giving
-    them the same chance to notice it that gyro already had."""
+    merely-slow-under-load run no longer leaves permanent zombie threads:
+    both rec threads get a bounded follow-up join after stop_evt is set,
+    giving them the same chance to notice it that gyro already had.
+
+    gyro_loop sleeps briefly (1ms, not time.sleep(0)) after releasing
+    _lock each iteration. Without it, this tight acquire/release/
+    immediately-reacquire spin against the same threading.RLock can
+    starve the rec threads' own _lock acquisition (inside sync_status(),
+    the first thing start_recording() calls) for tens of seconds under
+    real CPU contention -- this, not test slowness alone, was the actual
+    root cause of an intermittent full-suite crash (Windows fatal
+    exception, code 0x80000003): the rec threads were captured blocked on
+    `with _lock:` itself, never reaching their next per-iteration
+    stop_evt check at all, while gyro_loop's thread held _lock deep
+    inside a numpy call at the moment a GC cycle triggered. time.sleep(0)
+    was tried first and measurably reduced (but did not eliminate) the
+    crash's reproduction rate across repeated full-suite runs: on
+    Windows, Sleep(0) only yields to already-ready threads, and a thread
+    blocked on a mutex isn't necessarily made ready the instant it's
+    released -- it needs an actual OS wake/schedule, which a real (if
+    tiny) sleep duration forces much more reliably than a zero-length one."""
     import threading
+    import time
 
     imu.reset_devices()
     imu._devices["10.0.0.20"] = imu._IMUDevice("10.0.0.20")
@@ -571,6 +591,7 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
         while not stop_evt.is_set():
             with imu._lock:
                 dev.on_gyro(np.array([0.01, 0.0, 0.0]), i)
+            time.sleep(0.001)   # real sleep so rec threads can win the RLock too
             i += 1
 
     t_gyro = threading.Thread(target=gyro_loop, daemon=True)
