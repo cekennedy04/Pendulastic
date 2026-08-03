@@ -154,3 +154,62 @@ def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
     exts = " ".join(pattern for _label, pattern in captured["filetypes"])
     assert "*.jsonl" in exts
     assert "*.csv" in exts
+
+
+def test_trial_load_panel_back_button_calls_controller():
+    from pendulastic_workbench import TrialLoadPanel
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_back_to_mode_select(self):
+            calls.append("back")
+    p = TrialLoadPanel(r, C())
+    p.pack()
+    p._back_button.invoke()
+    assert calls == ["back"]
+
+
+def test_workbench_view_load_another_button_calls_controller():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_workbench_load_another(self):
+            calls.append("load_another")
+    wv = WorkbenchView(r, C())
+    wv.pack()
+    wv._load_another_button.invoke()
+    assert calls == ["load_another"]
+
+
+def test_standalone_app_back_to_mode_select_is_a_genuine_noop():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app._load_panel.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_back_to_mode_select()   # must not raise
+        app.update()
+        # Still showing whatever was showing before -- nothing changed.
+        assert app._workbench_view.winfo_ismapped()
+        assert not app._load_panel.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_standalone_app_load_another_returns_to_load_panel():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app._load_panel.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_workbench_load_another()
+        app.update()
+        assert app._load_panel.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+    finally:
+        app.destroy()

@@ -66,36 +66,41 @@ class TrialLoadPanel(tk.Frame):
     def _build_widgets(self) -> None:
         pad = {"padx": 12, "pady": 6}
 
-        tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
-                ).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+        self._back_button = tk.Button(
+            self, text="← Back to Main Menu",
+            command=lambda: self.controller.on_back_to_mode_select())
+        self._back_button.grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 0))
 
-        self._file_row(1, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
+        tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
+                ).grid(row=1, column=0, columnspan=3, sticky="w", **pad)
+
+        self._file_row(2, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
                        [("IMU log", "*.jsonl *.csv"), ("All files", "*.*")], name="imu")
-        self._file_row(2, "Video (.mp4/.avi)", self._video_path,
+        self._file_row(3, "Video (.mp4/.avi)", self._video_path,
                        [("Video", "*.mp4 *.avi"), ("All files", "*.*")], name="video")
-        self._file_row(3, "OptiTrack CSV", self._optitrack_path,
+        self._file_row(4, "OptiTrack CSV", self._optitrack_path,
                        [("CSV", "*.csv"), ("All files", "*.*")], name="optitrack")
 
         tk.Label(self, text="HPE models to run:").grid(
-            row=4, column=0, sticky="nw", **pad)
+            row=5, column=0, sticky="nw", **pad)
         model_frame = tk.Frame(self)
-        model_frame.grid(row=4, column=1, columnspan=2, sticky="w", **pad)
+        model_frame.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
         for i, name in enumerate(analysis_pipeline.MODEL_FUNCTIONS):
             tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name]
                           ).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
 
         tk.Label(self, text="Femur length (cm, optional):").grid(
-            row=5, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
-            row=5, column=1, sticky="w", **pad)
-
-        tk.Label(self, text="Tibia length (cm, optional):").grid(
             row=6, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
+        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
             row=6, column=1, sticky="w", **pad)
 
+        tk.Label(self, text="Tibia length (cm, optional):").grid(
+            row=7, column=0, sticky="w", **pad)
+        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
+            row=7, column=1, sticky="w", **pad)
+
         tk.Button(self, text="Load Trial", command=self._on_load_clicked
-                 ).grid(row=7, column=0, columnspan=3, pady=16)
+                 ).grid(row=8, column=0, columnspan=3, pady=16)
 
     def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
@@ -191,6 +196,10 @@ class WorkbenchView(tk.Frame):
         self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
         self._reference_menu.pack(side="left", padx=6)
         self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
+        self._load_another_button = tk.Button(
+            top_controls, text="← Load Different Trial",
+            command=lambda: self.controller.on_workbench_load_another())
+        self._load_another_button.pack(side="right", padx=6)
 
         annot_toolbar = tk.Frame(self._right)
         annot_toolbar.pack(fill="x", padx=8, pady=4)
@@ -516,6 +525,16 @@ class App(tk.Tk):
 
     def get_trial_meta(self) -> dict:
         return dict(self._trial_meta)
+
+    def on_back_to_mode_select(self) -> None:
+        """No-op in standalone mode -- there is no landing screen to return
+        to here; this only exists so TrialLoadPanel's back button has a
+        controller method to call regardless of which App hosts it."""
+        pass
+
+    def on_workbench_load_another(self) -> None:
+        self._workbench_view.pack_forget()
+        self._load_panel.pack(fill="both", expand=True)
 
     def on_load_trial(self, selection: dict) -> None:
         """Loads whichever of the three modalities were selected (design
