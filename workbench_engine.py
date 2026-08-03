@@ -402,15 +402,20 @@ def _read_split_csv_samples(anchor_path: str) -> list:
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
                    ft_ratio: Optional[float] = None,
                    method: Optional[str] = None):
-    """Load a phone's raw accel/gyro/mag JSONL and run it through the
-    Madgwick AHRS replay engine (imu_calibration_tuner.replay_trial),
-    returning the finite-filtered (t, angle) knee-angle series.
+    """Load a phone's raw accel/gyro/mag samples -- either a JSONL raw log
+    (start_raw_log()'s format) or the older split-CSV sibling format
+    (_imu/_gyro/_accel/_mag.csv) -- and run them through the Madgwick AHRS
+    replay engine (imu_calibration_tuner.replay_trial), returning the
+    finite-filtered (t, angle) knee-angle series.
 
     config defaults to the currently-persisted imu_calibration_config;
     ft_ratio/method optionally override the config's own values for this
     call only (the Ockendon-personalization workflow, design spec Section
     3a) without touching the persisted config file."""
-    samples = _read_jsonl_samples(jsonl_path)
+    if jsonl_path.endswith(".jsonl"):
+        samples = _read_jsonl_samples(jsonl_path)
+    else:
+        samples = _read_split_csv_samples(jsonl_path)
     return _replay_samples(samples, config, ft_ratio, method)
 
 

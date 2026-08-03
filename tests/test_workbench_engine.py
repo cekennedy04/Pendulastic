@@ -117,6 +117,34 @@ def test_derive_split_csv_siblings_from_non_imu_anchor(tmp_path):
     assert derived["imu"] == str(paths["imu"])
 
 
+def test_load_imu_trial_dispatches_to_split_csv_for_non_jsonl_path(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "relative"}
+    t, angle = engine.load_imu_trial(str(paths["gyro"]), config=config)
+    # Explicit non-empty checks, not just np.isfinite(t).all() -- that's
+    # vacuously True on an empty array, so it wouldn't fail against the
+    # pre-fix code (a CSV path fed through the JSONL reader silently
+    # yields zero samples via its per-line `except ValueError: continue`,
+    # and replay_trial([]) returns two EMPTY arrays rather than raising).
+    assert len(t) > 0
+    assert len(angle) > 0
+    assert np.isfinite(t).all()
+    assert np.isfinite(angle).all()
+
+
+def test_load_imu_trial_same_result_regardless_of_which_sibling_is_the_anchor(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "relative"}
+    results = [engine.load_imu_trial(str(paths[k]), config=config)
+              for k in ("gyro", "accel", "mag", "imu")]
+    assert len(results[0][0]) > 0, "sanity check: the fixture must actually produce samples"
+    for t, angle in results[1:]:
+        assert list(t) == list(results[0][0])
+        assert list(angle) == list(results[0][1])
+
+
 def _decaying_oscillation_with_tail(n_osc_cycles=4, tail_s=10.0, fs=100.0):
     """Synthetic knee-angle-like signal: decaying oscillation for a few
     cycles (mirrors a real pendulum-test trial), then a long flat resting
