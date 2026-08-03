@@ -60,6 +60,7 @@ class TrialLoadPanel(tk.Frame):
         self._tibia_cm = tk.StringVar(value="")
         self._model_vars = {name: tk.BooleanVar(value=False)
                             for name in analysis_pipeline.MODEL_FUNCTIONS}
+        self._browse_buttons: dict = {}
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -68,12 +69,12 @@ class TrialLoadPanel(tk.Frame):
         tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
                 ).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
 
-        self._file_row(1, "Phone IMU raw log (.jsonl)", self._imu_path,
-                       [("JSONL", "*.jsonl"), ("All files", "*.*")])
+        self._file_row(1, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
+                       [("IMU log", "*.jsonl *.csv"), ("All files", "*.*")], name="imu")
         self._file_row(2, "Video (.mp4/.avi)", self._video_path,
-                       [("Video", "*.mp4 *.avi"), ("All files", "*.*")])
+                       [("Video", "*.mp4 *.avi"), ("All files", "*.*")], name="video")
         self._file_row(3, "OptiTrack CSV", self._optitrack_path,
-                       [("CSV", "*.csv"), ("All files", "*.*")])
+                       [("CSV", "*.csv"), ("All files", "*.*")], name="optitrack")
 
         tk.Label(self, text="HPE models to run:").grid(
             row=4, column=0, sticky="nw", **pad)
@@ -96,13 +97,15 @@ class TrialLoadPanel(tk.Frame):
         tk.Button(self, text="Load Trial", command=self._on_load_clicked
                  ).grid(row=7, column=0, columnspan=3, pady=16)
 
-    def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes) -> None:
+    def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
+                  name: str) -> None:
         tk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
         tk.Entry(self, textvariable=var, width=48, state="readonly").grid(
             row=row, column=1, sticky="we", padx=4)
-        tk.Button(self, text="Browse...",
-                 command=lambda: self._browse(var, filetypes)).grid(
-            row=row, column=2, sticky="w", padx=4)
+        btn = tk.Button(self, text="Browse...",
+                       command=lambda: self._browse(var, filetypes))
+        btn.grid(row=row, column=2, sticky="w", padx=4)
+        self._browse_buttons[name] = btn
 
     def _browse(self, var: tk.StringVar, filetypes) -> None:
         path = filedialog.askopenfilename(filetypes=filetypes)

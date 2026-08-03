@@ -134,3 +134,23 @@ def test_set_traces_repositions_scrub_indicator_to_current_time():
     r.update()
 
     assert wv._axvline.get_xdata()[0] == expected_t
+
+
+def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
+    from pendulastic_workbench import TrialLoadPanel
+    import pendulastic_workbench as _m
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    p.pack()
+
+    captured = {}
+    def fake_askopenfilename(**kwargs):
+        captured.update(kwargs)
+        return ""
+    monkeypatch.setattr(_m.filedialog, "askopenfilename", fake_askopenfilename)
+
+    p._browse_buttons["imu"].invoke()
+
+    exts = " ".join(pattern for _label, pattern in captured["filetypes"])
+    assert "*.jsonl" in exts
+    assert "*.csv" in exts
