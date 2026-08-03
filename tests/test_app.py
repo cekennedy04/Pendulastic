@@ -651,3 +651,79 @@ def test_enter_workbench_mode_shows_message_when_unavailable(monkeypatch):
         assert app._state == "mode_select"
     finally:
         app.destroy()
+
+
+def test_on_load_trial_imu_only_switches_to_workbench_view(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0, 0.05]), np.array([180.0, 170.0])))
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        app.on_load_trial({
+            "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+        assert app._workbench_view.winfo_ismapped()
+        assert not app._workbench_load.winfo_ismapped()
+        assert "imu" in app._workbench_view._traces
+    finally:
+        app.destroy()
+
+
+def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0]), np.array([180.0])))
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.on_load_trial({
+            "imu_path": "some/trial.jsonl", "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": 45.0, "tibia_length_cm": 38.0,
+        })
+        app.update()
+        meta = app.get_trial_meta()
+        assert meta["imu_path"] == "some/trial.jsonl"
+        assert meta["femur_length_cm"] == 45.0
+    finally:
+        app.destroy()
+
+
+def test_on_workbench_load_another_returns_to_trial_load_panel(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app._workbench_load.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_workbench_load_another()
+        app.update()
+        assert app._workbench_load.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+    finally:
+        app.destroy()
