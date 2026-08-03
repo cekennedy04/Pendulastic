@@ -4,6 +4,118 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import numpy as np
 import workbench_engine as engine
 
+_SPLIT_CSV_HEADER = "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
+
+
+def _write_split_csv(path, rows):
+    """rows: list of (timestamp_ms, phone_ts_ms, role, sensor_name, x, y, z) tuples."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(_SPLIT_CSV_HEADER)
+        for row in rows:
+            f.write(",".join(str(v) for v in row) + "\n")
+
+
+def _write_solo_split_csv_trial(tmp_path, prefix="Trial_1"):
+    """Three well-formed sibling CSVs (gyro/accel/mag), solo/proximal-only
+    role: hold still for 1s, a scripted 2.0 rad/s gyro burst around Y for
+    0.5s, then hold again -- the same shape (and ~2.5s total duration) as
+    this file's own _solo_hold_then_burst_samples(). The duration matters:
+    replay_trial ticks at a 50ms cadence, so a too-short fixture (e.g. a
+    handful of samples spanning only a few milliseconds) ticks zero times
+    and every test below would pass vacuously on empty arrays rather than
+    actually exercising anything -- verified empirically against the real
+    engine before writing this plan (254 samples in, 51 ticks out, 50/51
+    finite, matching _solo_hold_then_burst_samples()'s own expected final
+    angle of 180 - degrees(2.0 * 0.5) = 122.7 deg)."""
+    gyro_path  = tmp_path / f"{prefix}_gyro.csv"
+    accel_path = tmp_path / f"{prefix}_accel.csv"
+    mag_path   = tmp_path / f"{prefix}_mag.csv"
+    imu_path   = tmp_path / f"{prefix}_imu.csv"
+
+    gyro_rows = []
+    t_ms = 0.0
+    for _ in range(100):
+        t_ms += 10.0
+        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
+    for _ in range(50):
+        t_ms += 10.0
+        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 2.0, 0.0))
+    for _ in range(100):
+        t_ms += 10.0
+        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
+    _write_split_csv(gyro_path, gyro_rows)
+
+    _write_split_csv(accel_path, [
+        (0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81),
+        (t_ms, int(t_ms), "proximal", "Accelerometer", 0.0, 0.0, 9.81),
+    ])
+    _write_split_csv(mag_path, [
+        (1.0, 1, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (t_ms, int(t_ms), "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+    imu_path.write_text("# participant,test\n", encoding="utf-8")
+    return {"gyro": gyro_path, "accel": accel_path, "mag": mag_path, "imu": imu_path}
+
+
+def test_read_split_csv_samples_merges_and_sorts_chronologically(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    samples = engine._read_split_csv_samples(str(paths["gyro"]))
+    assert len(samples) == 254   # 250 gyro + 2 accel + 2 mag
+    ts = [s["t"] for s in samples]
+    assert ts == sorted(ts)
+    assert {s["sensor"] for s in samples} == {"gyro", "accel", "mag"}
+    assert all(s["role"] == "proximal" for s in samples)
+    first_accel = next(s for s in samples if s["sensor"] == "accel")
+    assert first_accel["v"] == [0.0, 0.0, 9.81]
+    assert first_accel["t"] == 0.0
+    assert first_accel["phone_ts_ms"] == 0
+
+
+def test_read_split_csv_samples_missing_sibling_names_the_file(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    os.remove(paths["accel"])
+    try:
+        engine._read_split_csv_samples(str(paths["gyro"]))
+        assert False, "expected FileNotFoundError"
+    except FileNotFoundError as e:
+        assert "accel" in str(e)
+
+
+def test_read_split_csv_samples_malformed_header_names_the_file(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    with open(paths["mag"], "w", encoding="utf-8") as f:
+        f.write("wrong,header,columns\n")
+        f.write("1,2,3\n")
+    try:
+        engine._read_split_csv_samples(str(paths["gyro"]))
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "mag" in str(e).lower() or str(paths["mag"]) in str(e)
+
+
+def test_read_split_csv_samples_unrecognized_sensor_name(tmp_path):
+    paths = _write_solo_split_csv_trial(tmp_path)
+    _write_split_csv(paths["accel"], [
+        (999.0, 999, "proximal", "Barometer", 0.0, 0.0, 9.81),
+    ])
+    try:
+        engine._read_split_csv_samples(str(paths["gyro"]))
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Barometer" in str(e)
+
+
+def test_derive_split_csv_siblings_from_non_imu_anchor(tmp_path):
+    """A _gyro.csv/_accel.csv/_mag.csv anchor must not be treated as if it
+    were _imu.csv -- the derivation must identify the anchor's actual
+    suffix, not assume a fixed one."""
+    paths = _write_solo_split_csv_trial(tmp_path)
+    derived = engine._derive_split_csv_siblings(str(paths["accel"]))
+    assert derived["gyro"] == str(paths["gyro"])
+    assert derived["accel"] == str(paths["accel"])
+    assert derived["mag"] == str(paths["mag"])
+    assert derived["imu"] == str(paths["imu"])
+
 
 def _decaying_oscillation_with_tail(n_osc_cycles=4, tail_s=10.0, fs=100.0):
     """Synthetic knee-angle-like signal: decaying oscillation for a few
