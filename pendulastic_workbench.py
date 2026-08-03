@@ -195,6 +195,7 @@ class WorkbenchView(tk.Frame):
         self._ax.set_ylabel("Knee Angle (deg)")
         self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
         self._plot_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
+        self._fig.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
         self._metrics_text = tk.Text(self._right, height=8, state="disabled")
         self._metrics_text.pack(fill="x", padx=8, pady=4)
@@ -381,6 +382,21 @@ class WorkbenchView(tk.Frame):
     def _on_scrub(self, value_str: str) -> None:
         fi = int(round(float(value_str)))
         self.seek_to_frame(fi)
+        if hasattr(self, "_axvline"):
+            t_now = self.current_time_sec()
+            self._axvline.set_xdata([t_now, t_now])
+            self._plot_canvas.draw_idle()
+
+    def _on_plot_click(self, event) -> None:
+        """Clicking the plot seeks the video to the nearest frame --
+        generalizes pendulastic_viewer.py's single-purpose release-frame
+        click handler into an arbitrary seek (design spec Section 5)."""
+        if event.inaxes is not self._ax or event.xdata is None or self._fps <= 0:
+            return
+        fi = int(round(event.xdata * self._fps))
+        fi = max(0, min(fi, self._n_frames - 1))
+        self._scrub_var.set(fi)
+        self._on_scrub(str(fi))
 
     def current_frame_index(self) -> int:
         """Reads the scrubber's bound Tkinter variable directly -- never
