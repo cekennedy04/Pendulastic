@@ -482,6 +482,61 @@ def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
     imu.clear_zero()
 
 
+def _rec_loop(tag, tmp_path, stop_evt, n_iters=50):
+    """Shared helper: repeatedly start/stop a recording. Checks stop_evt
+    each iteration so a merely-slow (not deadlocked) run can be
+    interrupted promptly instead of becoming an unbounded zombie thread —
+    extracted from test_concurrent_start_recording_and_gyro_callbacks_do_
+    not_deadlock while investigating an intermittent full-suite crash
+    (Windows fatal exception, code 0x80000003): under heavy full-suite
+    system load, this loop's 50 start/stop cycles could take longer than
+    the test's bounded join, leaving it running unsupervised for however
+    long the remaining iterations took — including well into later,
+    unrelated tests that also touch pendulastic_imu_server's shared
+    global state. See test_rec_loop_stops_promptly_when_signaled_even_if_slow
+    for the regression pin."""
+    for n in range(n_iters):
+        if stop_evt.is_set():
+            break
+        path = str(tmp_path / f"Trial_deadlock_{tag}_{n}_imu.csv")
+        imu.start_recording(path)
+        imu.stop_recording()
+
+
+def test_rec_loop_stops_promptly_when_signaled_even_if_slow(monkeypatch, tmp_path):
+    """Regression pin for the zombie-thread gap that caused an intermittent
+    full-suite crash: _rec_loop must notice stop_evt within its bounded
+    per-iteration check, even when start_recording() is slow, rather than
+    blindly running to completion. Reproduces the mechanism deterministically:
+    start_recording is monkeypatched to sleep 50ms/call (100 iterations would
+    take ~5s), so a correctly-interruptible loop signaled after ~120ms must
+    exit within a short bounded join -- an uninterruptible loop would still
+    be alive well past it."""
+    import threading
+    import time
+
+    real_start = imu.start_recording
+
+    def slow_start_recording(path):
+        time.sleep(0.05)
+        return real_start(path)
+
+    monkeypatch.setattr(imu, "start_recording", slow_start_recording)
+
+    stop_evt = threading.Event()
+    t = threading.Thread(target=_rec_loop, args=("x", tmp_path, stop_evt, 100), daemon=True)
+    t.start()
+    time.sleep(0.12)   # let it get a couple of slow iterations in
+    stop_evt.set()
+    t.join(timeout=1.0)
+
+    assert not t.is_alive(), (
+        "_rec_loop did not notice stop_evt promptly -- a merely-slow run "
+        "must be interruptible, not left running as an unbounded zombie thread")
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path):
     """Regression for the _lock/_rec_lock ordering hazard fixed in Task 2:
     on_gyro() acquires _rec_lock while its caller already holds _lock (as
@@ -494,9 +549,13 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     cannot reach the deadlock state at all — confirmed empirically during
     Task 5. All worker threads are daemons and joined with a timeout, so a
     regression is bounded to roughly 65s and reported as an assertion
-    failure here, rather than hanging silently forever — though a genuine
-    deadlock will also wedge whichever test runs next and touches
-    _rec_lock."""
+    failure here, rather than hanging silently forever. A genuine deadlock
+    will still wedge whichever test runs next and touches _rec_lock (that
+    risk is inherent to actually catching a deadlock at all) -- but a
+    merely-slow-under-load run (the observed intermittent full-suite
+    crash's actual cause) no longer leaves permanent zombie threads: both
+    rec threads get a bounded follow-up join after stop_evt is set, giving
+    them the same chance to notice it that gyro already had."""
     import threading
 
     imu.reset_devices()
@@ -514,15 +573,9 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
                 dev.on_gyro(np.array([0.01, 0.0, 0.0]), i)
             i += 1
 
-    def rec_loop(tag):
-        for n in range(50):
-            path = str(tmp_path / f"Trial_deadlock_{tag}_{n}_imu.csv")
-            imu.start_recording(path)
-            imu.stop_recording()
-
     t_gyro = threading.Thread(target=gyro_loop, daemon=True)
-    t_rec_a = threading.Thread(target=rec_loop, args=("a",), daemon=True)
-    t_rec_b = threading.Thread(target=rec_loop, args=("b",), daemon=True)
+    t_rec_a = threading.Thread(target=_rec_loop, args=("a", tmp_path, stop_evt), daemon=True)
+    t_rec_b = threading.Thread(target=_rec_loop, args=("b", tmp_path, stop_evt), daemon=True)
     t_gyro.start()
     t_rec_a.start()
     t_rec_b.start()
@@ -530,6 +583,10 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     t_rec_b.join(timeout=30.0)
     stop_evt.set()
     t_gyro.join(timeout=5.0)
+    # Bounded follow-up chance for the rec threads to notice stop_evt too --
+    # closes the zombie-thread gap for a merely-slow (not deadlocked) run.
+    t_rec_a.join(timeout=5.0)
+    t_rec_b.join(timeout=5.0)
 
     assert not t_rec_a.is_alive(), \
         "start_recording()/stop_recording() (thread a) hung — lock-order regression"
