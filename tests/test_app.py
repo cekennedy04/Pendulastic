@@ -599,3 +599,55 @@ def test_is_imu_calibrated_reflects_ever_stable_when_imu_active():
         assert app.is_imu_calibrated() is True
     finally:
         app.destroy()
+
+
+def test_enter_workbench_mode_shows_trial_load_panel():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        assert app._workbench_load.winfo_ismapped()
+        assert not app._mode_select.winfo_ismapped()
+        assert app._state == "workbench_load"
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_mode_select_hides_workbench_panels():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app._workbench_load.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._mode_select.winfo_ismapped()
+        assert not app._workbench_load.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
+def test_enter_workbench_mode_shows_message_when_unavailable(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", False)
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        assert len(shown) == 1
+        assert app._mode_select.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()

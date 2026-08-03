@@ -91,6 +91,15 @@ except Exception:
     FigureCanvasTkAgg = Figure = None
     _MPL_AVAIL = False
 
+try:
+    from pendulastic_workbench import TrialLoadPanel, WorkbenchView
+    import workbench_engine as _wb_engine
+    _WORKBENCH_AVAIL = True
+except Exception:
+    TrialLoadPanel = WorkbenchView = None
+    _wb_engine = None
+    _WORKBENCH_AVAIL = False
+
 _GREEN = "#1e7d34"
 _RED   = "#a31515"
 _BLUE  = "#1f3a93"
@@ -743,6 +752,15 @@ class ModeSelectView(tk.Frame):
             command=self.controller._enter_upload_mode,
         ).grid(row=2, column=1, padx=40, pady=16, sticky="n")
 
+        tk.Button(
+            self,
+            text="Multi-Modal Comparison\nIMU · OptiTrack · Video",
+            font=("Segoe UI", 12, "bold"),
+            bg=_AMBER, fg="white",
+            width=24, height=4,
+            command=self.controller._enter_workbench_mode,
+        ).grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+
 
 # ---------------------------------------------------------------------------
 # UploadMetaView
@@ -1149,6 +1167,15 @@ class App(tk.Tk):
         self._upload_meta = UploadMetaView(self, controller=self)
         self._acq  = AcquisitionPanel(self, controller=self)
         self._post = PostProcessingPanel(self, controller=self)
+
+        self._workbench_trial_meta: dict = {}
+        self._workbench_status_var = tk.StringVar(value="")
+        if _WORKBENCH_AVAIL:
+            self._workbench_load = TrialLoadPanel(self, controller=self)
+            self._workbench_view = WorkbenchView(self, controller=self)
+            tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
+                side="bottom", fill="x", padx=8, pady=2)
+
         self._mode_select.pack(fill="both", expand=True)
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1312,6 +1339,17 @@ class App(tk.Tk):
         self._upload_meta.pack(fill="both", expand=True)
         self._state = "upload_meta"
 
+    def _enter_workbench_mode(self) -> None:
+        if not _WORKBENCH_AVAIL:
+            messagebox.showinfo(
+                "Workbench Unavailable",
+                "The Multi-Modal Comparison workbench could not be loaded in this "
+                "environment (a required dependency is missing).")
+            return
+        self._mode_select.pack_forget()
+        self._workbench_load.pack(fill="both", expand=True)
+        self._state = "workbench_load"
+
     def _upload_back_to_select(self) -> None:
         if self._state == "upload_processing":
             return
@@ -1323,6 +1361,9 @@ class App(tk.Tk):
         self._acq.pack_forget()
         self._post.pack_forget()
         self._upload_meta.pack_forget()
+        if _WORKBENCH_AVAIL:
+            self._workbench_load.pack_forget()
+            self._workbench_view.pack_forget()
         self._mode_select.pack(fill="both", expand=True)
         self._state        = "mode_select"
         self._active_sources  = []
