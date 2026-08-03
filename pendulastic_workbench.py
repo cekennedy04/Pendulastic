@@ -18,11 +18,28 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
+import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
 import analysis_pipeline
 import workbench_engine as engine
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
                     "Maximum Flexion", "Rest/Settled"]
+
+
+def _mean_nearest_extremum_offset(ref_times, test_times) -> Optional[float]:
+    """Mean absolute time offset between each ref extremum and its nearest
+    test extremum -- the "timing jitter across oscillation cycles" metric
+    (design spec Section 4). Returns None if either curve has no detected
+    extrema (nothing to compare)."""
+    if len(ref_times) == 0 or len(test_times) == 0:
+        return None
+    offsets = [float(np.min(np.abs(test_times - rt))) for rt in ref_times]
+    return float(np.mean(offsets))
 
 
 class TrialLoadPanel(tk.Frame):
@@ -137,6 +154,11 @@ class WorkbenchView(tk.Frame):
         self._n_frames: int = 0
         self._photo = None   # keep a reference so Tk doesn't garbage-collect it
         self._scrub_var = tk.DoubleVar(value=0.0)
+        self._traces: dict = {}          # {label: (t, angle)}
+        self._trace_lines: dict = {}     # {label: matplotlib Line2D}
+        self._visible_vars: dict = {}    # {label: tk.BooleanVar}
+        self._lag_override_vars: dict = {}   # {label: tk.StringVar}, blank = auto
+        self._reference_var = tk.StringVar(value="")
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -156,6 +178,182 @@ class WorkbenchView(tk.Frame):
 
         self._right = tk.Frame(paned)
         paned.add(self._right, weight=1)
+
+        top_controls = tk.Frame(self._right)
+        top_controls.pack(fill="x", padx=8, pady=4)
+        tk.Label(top_controls, text="Reference:").pack(side="left")
+        self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
+        self._reference_menu.pack(side="left", padx=6)
+        self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
+
+        self._visibility_frame = tk.Frame(self._right)
+        self._visibility_frame.pack(fill="x", padx=8, pady=4)
+
+        self._fig = Figure(figsize=(6, 4), dpi=100)
+        self._ax = self._fig.add_subplot(111)
+        self._ax.set_xlabel("Time (s)")
+        self._ax.set_ylabel("Knee Angle (deg)")
+        self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
+        self._plot_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
+
+        self._metrics_text = tk.Text(self._right, height=8, state="disabled")
+        self._metrics_text.pack(fill="x", padx=8, pady=4)
+
+    def set_traces(self, traces: dict) -> None:
+        """traces: {label: (t, angle)}. Rebuilds the plot, the visibility
+        checkboxes (each paired with a manual lag-override field, design
+        spec Section 4), and the reference-selector menu from scratch."""
+        self._traces = traces
+        for widget in self._visibility_frame.winfo_children():
+            widget.destroy()
+        self._ax.clear()
+        self._ax.set_xlabel("Time (s)")
+        self._ax.set_ylabel("Knee Angle (deg)")
+        self._trace_lines = {}
+        self._visible_vars = {}
+        self._lag_override_vars = {}
+
+        for label, (t, angle) in traces.items():
+            row = tk.Frame(self._visibility_frame)
+            row.pack(side="left", padx=4)
+
+            var = tk.BooleanVar(value=True)
+            self._visible_vars[label] = var
+            tk.Checkbutton(row, text=label, variable=var,
+                          command=self._on_visibility_changed).pack(side="left")
+
+            lag_var = tk.StringVar(value="")
+            self._lag_override_vars[label] = lag_var
+            tk.Label(row, text="lag(s):", font=("Segoe UI", 7)).pack(side="left")
+            lag_entry = tk.Entry(row, textvariable=lag_var, width=6)
+            lag_entry.pack(side="left")
+            lag_entry.bind("<Return>", lambda e: self._recompute_metrics())
+            lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
+
+            line, = self._ax.plot(t, angle, label=label)
+            self._trace_lines[label] = line
+
+        self._ax.legend(fontsize=8)
+        self._axvline = self._ax.axvline(0, color="#94A3B8", linewidth=0.8)
+
+        menu = self._reference_menu["menu"]
+        menu.delete(0, "end")
+        for label in traces:
+            menu.add_command(label=label,
+                            command=lambda l=label: self._reference_var.set(l))
+        default_ref = self._default_reference(traces)
+        if default_ref:
+            self._reference_var.set(default_ref)
+
+        self._plot_canvas.draw_idle()
+
+    def _default_reference(self, traces: dict) -> str:
+        """OptiTrack present -> OptiTrack; else IMU present -> IMU; else the
+        first-loaded HPE model (design spec Section 4)."""
+        if "optitrack" in traces:
+            return "optitrack"
+        if "imu" in traces:
+            return "imu"
+        return next(iter(traces), "")
+
+    def _on_visibility_changed(self) -> None:
+        for label, line in self._trace_lines.items():
+            line.set_visible(self._visible_vars[label].get())
+        self._ax.legend(
+            [l for l in self._trace_lines.values() if l.get_visible()],
+            [lbl for lbl, l in self._trace_lines.items() if l.get_visible()],
+            fontsize=8)
+        self._plot_canvas.draw_idle()
+        self._recompute_metrics()
+
+    def _lag_override_for(self, label: str) -> Optional[float]:
+        raw = self._lag_override_vars.get(label)
+        if raw is None:
+            return None
+        text = raw.get().strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def get_metrics_snapshot(self) -> dict:
+        """Two distinct metric families (design spec Sections 4 and 4a),
+        computed only over *visible* traces (hiding a trace excludes it
+        from both):
+
+        - "per_trace": each visible trace's own windowed_pt_params
+          (area_ratio, N, f, etc.) -- a per-modality diagnostic, not a
+          comparison. Includes the reference trace itself.
+        - "vs_reference": every other visible trace's compare_pair result
+          against the reference-selector's chosen reference, plus a
+          timing_offset_sec (extrema_jitter-based "timing jitter across
+          oscillation cycles" metric). Manual per-trace lag overrides are
+          honored here.
+
+        Both the live display (_recompute_metrics) and export (Task 14)
+        call this one method, so what a researcher sees is exactly what
+        gets exported."""
+        ref_label = self._reference_var.get()
+        out = {"reference": ref_label, "per_trace": {}, "vs_reference": {}}
+        if not ref_label or ref_label not in self._traces:
+            return out
+
+        for label, (t, y) in self._traces.items():
+            if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
+                continue
+            out["per_trace"][label] = engine.windowed_pt_params(t, y)
+
+        ref_t, ref_y = self._traces[ref_label]
+        ref_jitter = engine.extrema_jitter(ref_t, ref_y)
+
+        for label, (t, y) in self._traces.items():
+            if label == ref_label:
+                continue
+            if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
+                continue
+            lag_override = self._lag_override_for(label)
+            result = engine.compare_pair(ref_t, ref_y, t, y, lag_override_sec=lag_override)
+            if result["status"] == "ok":
+                test_jitter = engine.extrema_jitter(t, y)
+                result = dict(result)
+                result["timing_offset_sec"] = _mean_nearest_extremum_offset(
+                    ref_jitter["cycle_times"], test_jitter["cycle_times"])
+            out["vs_reference"][label] = result
+        return out
+
+    def _recompute_metrics(self) -> None:
+        """Renders get_metrics_snapshot() as text in the metrics readout:
+        one line per visible trace's own PT parameters, then one line per
+        non-reference visible trace's comparison against the reference."""
+        snapshot = self.get_metrics_snapshot()
+        self._metrics_text.configure(state="normal")
+        self._metrics_text.delete("1.0", "end")
+        ref_label = snapshot["reference"]
+        if not ref_label:
+            self._metrics_text.configure(state="disabled")
+            return
+
+        for label, pt in snapshot["per_trace"].items():
+            self._metrics_text.insert(
+                "end",
+                f"{label}: area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
+                f"f={pt['f']:.2f} Hz\n")
+
+        self._metrics_text.insert("end", "\n")
+
+        for label, result in snapshot["vs_reference"].items():
+            if result["status"] == "ok":
+                jitter_str = (f"{result['timing_offset_sec']:.3f}s"
+                             if result["timing_offset_sec"] is not None else "n/a")
+                line = (f"{label} vs {ref_label}: RMSE={result['rmse_deg']:.1f} deg  "
+                       f"MAE={result['mae_deg']:.1f} deg  lag={result['lag_sec']:.2f}s  "
+                       f"jitter={jitter_str}\n")
+            else:
+                line = f"{label} vs {ref_label}: {result['error']}\n"
+            self._metrics_text.insert("end", line)
+        self._metrics_text.configure(state="disabled")
 
     def load_video(self, path: str) -> None:
         if self._cap is not None:
