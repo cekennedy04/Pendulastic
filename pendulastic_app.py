@@ -1024,9 +1024,16 @@ class PostProcessingPanel(tk.Frame):
                 continue
             t   = np.arange(len(angles), dtype=float) / fps
             arr = np.array(angles, dtype=float)
-            should_detrend = (src == "imu")
+            # IMU trials are now always freshly auto-tared and recorded at a
+            # verified-usable sample rate (see App._tick_calibration_check and
+            # the gyro-rate warning), so the drift this compensated for is no
+            # longer expected -- global linear detrending before release
+            # detection was instead corrupting the release-point amplitude
+            # and silently discarding valid trials. imu_calibration_tuner.py's
+            # own truthfulness gate already treats raw signal as authoritative
+            # for IMU data; match that here.
             try:
-                p = compute_pt_params(t, arr, detrend=should_detrend)
+                p = compute_pt_params(t, arr, detrend=False)
             except TypeError:
                 p = compute_pt_params(t, arr)   # backward compat
             if p is None:
