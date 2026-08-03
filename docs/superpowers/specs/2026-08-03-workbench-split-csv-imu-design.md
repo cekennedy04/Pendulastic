@@ -62,9 +62,15 @@ names) and have the other three paths derived from it.
 
 ## 4. Architecture
 
-**Sibling-path derivation:** given any one of the four sibling paths, derive the other
-three by suffix substitution in the same directory
-(`Trial_N_imu.csv` ↔ `Trial_N_gyro.csv` ↔ `Trial_N_accel.csv` ↔ `Trial_N_mag.csv`).
+**Sibling-path derivation:** the four known suffixes are `_imu.csv`, `_gyro.csv`,
+`_accel.csv`, `_mag.csv`. Derivation must first determine *which one of these four* the
+given anchor path actually ends with — never assume a fixed suffix (e.g. always
+assuming the anchor is `_imu.csv`) — strip that matched suffix to recover the clean
+`Trial_N` prefix, then construct each of the other three suffixes from that prefix.
+This works identically regardless of which of the four sibling files was clicked,
+including a `_gyro.csv`/`_accel.csv`/`_mag.csv` anchor (a naive fixed-suffix
+`str.replace()` would silently no-op or produce a malformed doubled-suffix path in
+that case instead of the correct sibling paths).
 
 **Header validation (closes the "wrong/malformed file" gap):** for each of the three
 *raw* sibling files (gyro/accel/mag — never `_imu.csv` itself, which isn't read),
@@ -124,13 +130,20 @@ written to `tmp_path` (matching this file's existing fixture conventions):
    returns a merged, chronologically-sorted list with correctly mapped `sensor`/`role`/`v`
    fields; feeding it through `load_imu_trial()` produces a finite, non-empty `(t, angle)`
    series matching what `load_imu_trial()` on an equivalent JSONL log would produce.
-2. **Anchor-file independence** — passing the `_gyro.csv` path vs. the `_imu.csv` path
-   (both pointing at the same trial) produces identical results.
+2. **Anchor-file independence** — passing the `_gyro.csv` path, the `_accel.csv` path,
+   the `_mag.csv` path, and the `_imu.csv` path (all four pointing at the same trial)
+   all produce identical results. Specifically covers the suffix-derivation fix above:
+   a `_gyro.csv`/`_accel.csv`/`_mag.csv` anchor must not be treated as if it were
+   `_imu.csv`.
 3. **Missing sibling** — delete one raw sibling file, confirm `FileNotFoundError` names
    that specific file.
 4. **Malformed header** — one sibling file has a wrong/missing header row, confirm a
    `ValueError` naming that file, raised before any row-parsing is attempted.
-5. **Solo-role trial** — samples with only `"proximal"` role (matching
+5. **Unrecognized sensor name** — one otherwise well-formed sibling file has a row with
+   an unexpected `sensor_name` value (e.g. `"Barometer"`), confirm a `ValueError` naming
+   the offending file and value, raised before that row (or any after it) reaches
+   `replay_trial()`.
+6. **Solo-role trial** — samples with only `"proximal"` role (matching
    `Participant_13_left`'s real data) still produce a valid angle series, exercising the
    same solo-mode branch live sessions use.
 
