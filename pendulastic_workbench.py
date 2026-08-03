@@ -15,6 +15,9 @@ from typing import Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import cv2
+from PIL import Image, ImageTk
+
 import analysis_pipeline
 import workbench_engine as engine
 
@@ -118,3 +121,74 @@ class TrialLoadPanel(tk.Frame):
                                  "Select at least one of: IMU log, video, OptiTrack CSV.")
             return
         self.controller.on_load_trial(selection)
+
+
+class WorkbenchView(tk.Frame):
+    """Main workbench panel: synced video scrubber + multi-trace plot +
+    annotation toolbar + metrics readout (built up across Tasks 11-14).
+
+    controller: App instance."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._fps: float = 30.0
+        self._n_frames: int = 0
+        self._photo = None   # keep a reference so Tk doesn't garbage-collect it
+        self._scrub_var = tk.DoubleVar(value=0.0)
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned.pack(fill="both", expand=True)
+
+        left = tk.Frame(paned)
+        paned.add(left, weight=1)
+
+        self._video_label = tk.Label(left, bg="black")
+        self._video_label.pack(fill="both", expand=True)
+
+        self._scrubber = ttk.Scale(left, from_=0, to=0, orient="horizontal",
+                                   variable=self._scrub_var,
+                                   command=self._on_scrub)
+        self._scrubber.pack(fill="x", padx=8, pady=4)
+
+        self._right = tk.Frame(paned)
+        paned.add(self._right, weight=1)
+
+    def load_video(self, path: str) -> None:
+        if self._cap is not None:
+            self._cap.release()
+        self._cap = cv2.VideoCapture(path)
+        self._fps = self._cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self._n_frames = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        self._scrubber.configure(to=max(0, self._n_frames - 1))
+        self._scrub_var.set(0)
+        self.seek_to_frame(0)
+
+    def seek_to_frame(self, fi: int) -> None:
+        if self._cap is None:
+            return
+        fi = max(0, min(fi, self._n_frames - 1))
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ret, frame = self._cap.read()
+        if not ret or frame is None:
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        self._photo = ImageTk.PhotoImage(img)
+        self._video_label.configure(image=self._photo)
+
+    def _on_scrub(self, value_str: str) -> None:
+        fi = int(round(float(value_str)))
+        self.seek_to_frame(fi)
+
+    def current_frame_index(self) -> int:
+        """Reads the scrubber's bound Tkinter variable directly -- never
+        infers the frame from canvas paint state (design spec Section 6's
+        stale-frame binding requirement)."""
+        return int(round(self._scrub_var.get()))
+
+    def current_time_sec(self) -> float:
+        return self.current_frame_index() / self._fps if self._fps > 0 else 0.0
