@@ -288,17 +288,7 @@ def extrema_jitter(t: np.ndarray, angle: np.ndarray) -> dict:
     return {"pk_i": peaks, "tr_i": troughs, "cycle_times": cycle_times}
 
 
-def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
-                   ft_ratio: Optional[float] = None,
-                   method: Optional[str] = None):
-    """Load a phone's raw accel/gyro/mag JSONL and run it through the
-    Madgwick AHRS replay engine (imu_calibration_tuner.replay_trial),
-    returning the finite-filtered (t, angle) knee-angle series.
-
-    config defaults to the currently-persisted imu_calibration_config;
-    ft_ratio/method optionally override the config's own values for this
-    call only (the Ockendon-personalization workflow, design spec Section
-    3a) without touching the persisted config file."""
+def _read_jsonl_samples(jsonl_path: str) -> list:
     samples = []
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -309,7 +299,11 @@ def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
                 samples.append(json.loads(line))
             except ValueError:
                 continue
+    return samples
 
+
+def _replay_samples(samples: list, config: Optional[dict],
+                    ft_ratio: Optional[float], method: Optional[str]):
     if config is None:
         config = imu_calibration_config.load_config()
     params = dict(config)
@@ -321,6 +315,21 @@ def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
     t, angle = imu_calibration_tuner.replay_trial(samples, params)
     finite = np.isfinite(t) & np.isfinite(angle)
     return t[finite], angle[finite]
+
+
+def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
+                   ft_ratio: Optional[float] = None,
+                   method: Optional[str] = None):
+    """Load a phone's raw accel/gyro/mag JSONL and run it through the
+    Madgwick AHRS replay engine (imu_calibration_tuner.replay_trial),
+    returning the finite-filtered (t, angle) knee-angle series.
+
+    config defaults to the currently-persisted imu_calibration_config;
+    ft_ratio/method optionally override the config's own values for this
+    call only (the Ockendon-personalization workflow, design spec Section
+    3a) without touching the persisted config file."""
+    samples = _read_jsonl_samples(jsonl_path)
+    return _replay_samples(samples, config, ft_ratio, method)
 
 
 def load_optitrack_trial(csv_path: str):
