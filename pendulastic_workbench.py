@@ -9,6 +9,7 @@ See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Optional
 
@@ -159,6 +160,8 @@ class WorkbenchView(tk.Frame):
         self._visible_vars: dict = {}    # {label: tk.BooleanVar}
         self._lag_override_vars: dict = {}   # {label: tk.StringVar}, blank = auto
         self._reference_var = tk.StringVar(value="")
+        self._annotations: dict = {}     # {label: (frame_index, t_sec)}
+        self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -185,6 +188,16 @@ class WorkbenchView(tk.Frame):
         self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
         self._reference_menu.pack(side="left", padx=6)
         self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
+
+        annot_toolbar = tk.Frame(self._right)
+        annot_toolbar.pack(fill="x", padx=8, pady=4)
+        tk.Label(annot_toolbar, text="Milestone:").pack(side="left")
+        ttk.OptionMenu(annot_toolbar, self._pending_milestone,
+                      MILESTONE_LABELS[0], *MILESTONE_LABELS).pack(side="left", padx=6)
+        tk.Button(annot_toolbar, text="Mark Here",
+                 command=self._on_mark_milestone).pack(side="left", padx=6)
+        tk.Button(annot_toolbar, text="Export Session...",
+                 command=self._on_export_clicked).pack(side="right", padx=6)
 
         self._visibility_frame = tk.Frame(self._right)
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
@@ -355,6 +368,43 @@ class WorkbenchView(tk.Frame):
                 line = f"{label} vs {ref_label}: {result['error']}\n"
             self._metrics_text.insert("end", line)
         self._metrics_text.configure(state="disabled")
+
+    def _on_mark_milestone(self) -> None:
+        """Stale-frame binding (design spec Section 6): reads
+        current_frame_index()/current_time_sec(), which read the scrubber's
+        bound Tkinter variable directly -- never whatever frame the video
+        canvas has actually finished painting."""
+        label = self._pending_milestone.get()
+        fi = self.current_frame_index()
+        t_sec = self.current_time_sec()
+        self._annotations[label] = (fi, t_sec)
+
+        if not hasattr(self, "_annotation_artists"):
+            self._annotation_artists = {}
+        if label in self._annotation_artists:
+            self._annotation_artists[label].remove()
+        self._annotation_artists[label] = self._ax.annotate(
+            label, xy=(t_sec, self._ax.get_ylim()[1]),
+            rotation=90, va="top", ha="right", fontsize=7, color="#DC2626")
+        self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
+        self._plot_canvas.draw_idle()
+
+    def get_annotations(self) -> dict:
+        return dict(self._annotations)
+
+    def export_session_to(self, out_path: str, trial_meta: dict) -> None:
+        session = engine.export_session(
+            trial_meta, self.get_annotations(), self.get_metrics_snapshot())
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(session, f, indent=2)
+
+    def _on_export_clicked(self) -> None:
+        out_path = filedialog.asksaveasfilename(
+            defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not out_path:
+            return
+        self.export_session_to(out_path, self.controller.get_trial_meta())
+        messagebox.showinfo("Export complete", f"Session exported to {out_path}")
 
     def load_video(self, path: str) -> None:
         if self._cap is not None:
