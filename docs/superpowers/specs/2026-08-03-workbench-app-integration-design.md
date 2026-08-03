@@ -174,6 +174,17 @@ never raises `AttributeError` when `_WORKBENCH_AVAIL` is `False`.
     whole program — a welcome side effect, not additional scope, since the same button
     is needed for the embedded case regardless).
 
+**Maintenance note:** `TrialLoadPanel`/`WorkbenchView` are shared code driven by duck
+typing, not a shared base class or `Protocol` — nothing enforces that
+`pendulastic_app.App` and `pendulastic_workbench.App` implement the same controller
+method set beyond convention. A future change that adds a new controller call from
+either panel (e.g. a new button) must add a matching method to *both* `App` classes, or
+the untested one breaks with an `AttributeError` at click-time, not at import time. This
+is a deliberate tradeoff, not an oversight — with exactly two implementations, a formal
+interface is more machinery than the problem warrants. Testing Plan items 4-7 below are
+what actually catches drift between the two: every controller method either panel calls
+must have a test on both `App` classes.
+
 ---
 
 ## 6. Testing Plan
