@@ -456,3 +456,111 @@ class WorkbenchView(tk.Frame):
 
     def current_time_sec(self) -> float:
         return self.current_frame_index() / self._fps if self._fps > 0 else 0.0
+
+
+class App(tk.Tk):
+    """Owns panel switching between TrialLoadPanel and WorkbenchView,
+    matching pendulastic_app.py's App class pattern (pack/pack_forget
+    between pre-built panel instances)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Pendulastic Workbench")
+        self.geometry("1200x800")
+        self.resizable(True, True)
+        self.minsize(900, 600)
+
+        self._trial_meta: dict = {}
+        self._status_var = tk.StringVar(value="")
+
+        self._load_panel = TrialLoadPanel(self, controller=self)
+        self._workbench_view = WorkbenchView(self, controller=self)
+        self._load_panel.pack(fill="both", expand=True)
+        tk.Label(self, textvariable=self._status_var, anchor="w").pack(
+            side="bottom", fill="x", padx=8, pady=2)
+
+    def get_trial_meta(self) -> dict:
+        return dict(self._trial_meta)
+
+    def on_load_trial(self, selection: dict) -> None:
+        """Loads whichever of the three modalities were selected (design
+        spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
+        Video HPE model inference runs on a background thread since it's
+        the slow step (design spec Section 3); IMU/OptiTrack loading is
+        fast enough to run inline."""
+        traces = {}
+        self._trial_meta = {
+            "imu_path": selection["imu_path"],
+            "video_path": selection["video_path"],
+            "optitrack_path": selection["optitrack_path"],
+            "models": selection["models"],
+            "femur_length_cm": selection["femur_length_cm"],
+            "tibia_length_cm": selection["tibia_length_cm"],
+        }
+
+        if selection["imu_path"]:
+            ft_ratio = None
+            method_override = None
+            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+                # Supplying limb lengths means the researcher wants to validate
+                # the personalized-ratio Ockendon path (Section 3a) -- ft_ratio
+                # alone does nothing unless the IMU trace actually runs through
+                # ockendon_deg, so force the method rather than silently no-op
+                # if the persisted tuning config's method is "relative".
+                method_override = "ockendon_flipped"
+            try:
+                t, angle = engine.load_imu_trial(
+                    selection["imu_path"], ft_ratio=ft_ratio, method=method_override)
+                traces["imu"] = (t, angle)
+            except Exception as e:
+                messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+
+        if selection["optitrack_path"]:
+            try:
+                t, angle, method = engine.load_optitrack_trial(selection["optitrack_path"])
+                traces["optitrack"] = (t, angle)
+                self._trial_meta["optitrack_method"] = method
+            except Exception as e:
+                messagebox.showerror("OptiTrack load error", f"{type(e).__name__}: {e}")
+
+        self._load_panel.pack_forget()
+        self._workbench_view.pack(fill="both", expand=True)
+        self._workbench_view.set_traces(traces)
+
+        if selection["video_path"]:
+            self._workbench_view.load_video(selection["video_path"])
+            if selection["models"]:
+                self._load_video_models_async(selection["video_path"], selection["models"], traces)
+
+    def _load_video_models_async(self, video_path: str, models: list, traces: dict) -> None:
+        """Runs load_video_trial on a background thread (design spec
+        Section 3: full-video pose inference x N models is the slow step)
+        and surfaces progress via progress_cb -- Tkinter widgets may only
+        be touched from the main thread, so both the progress update and
+        the final traces update are marshalled through self.after(0, ...)."""
+        import threading
+
+        self._status_var.set(f"Running {len(models)} HPE model(s)... 0%")
+
+        def on_progress(fraction: float) -> None:
+            self.after(0, lambda: self._status_var.set(
+                f"Running {len(models)} HPE model(s)... {fraction * 100:.0f}%"))
+
+        def worker():
+            results = engine.load_video_trial(video_path, models, progress_cb=on_progress)
+            def apply():
+                for name, result in results.items():
+                    if isinstance(result, dict) and "error" in result:
+                        print(f"[warn] model {name!r} failed: {result['error']}")
+                        continue
+                    traces[name] = result
+                self._workbench_view.set_traces(traces)
+                self._status_var.set("")
+            self.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
+if __name__ == "__main__":
+    App().mainloop()
