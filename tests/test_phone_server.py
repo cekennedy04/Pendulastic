@@ -70,3 +70,71 @@ def test_clock_sync_estimator_window_is_bounded():
         t0 = float(i * 10)
         est.add_sample(t0=t0, t1=t0 + 500.0, t2=t0 + 2.0)
     assert len(est._samples) <= pps.CLOCK_SYNC_WINDOW
+
+
+import struct
+
+
+def _mask(payload: bytes, mask_key: bytes) -> bytes:
+    full = bytes(mask_key[i % 4] for i in range(len(payload)))
+    return bytes(p ^ m for p, m in zip(payload, full))
+
+
+def _build_masked_frame(opcode: int, payload: bytes) -> bytes:
+    mask_key = b"\x01\x02\x03\x04"
+    plen = len(payload)
+    if plen <= 125:
+        hdr = bytes([0x80 | opcode, 0x80 | plen])
+    elif plen <= 0xFFFF:
+        hdr = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack(">H", plen)
+    else:
+        hdr = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack(">Q", plen)
+    return hdr + mask_key + _mask(payload, mask_key)
+
+
+def test_compute_ws_accept_key_matches_rfc6455_example():
+    # RFC 6455 section 1.3 worked example.
+    assert pps.compute_ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+
+
+def test_read_ws_frame_unmasks_text_payload():
+    raw = _build_masked_frame(0x1, b'{"type":"sync_resp"}')
+    buf = bytearray(raw)
+    def recv_exact(n):
+        chunk = bytes(buf[:n]); del buf[:n]; return chunk
+    opcode, payload = pps.read_ws_frame(recv_exact)
+    assert opcode == 0x1
+    assert payload == b'{"type":"sync_resp"}'
+
+
+def test_read_ws_frame_handles_extended_length_and_binary_opcode():
+    big_payload = b"\xff" * 200
+    raw = _build_masked_frame(0x2, big_payload)
+    buf = bytearray(raw)
+    def recv_exact(n):
+        chunk = bytes(buf[:n]); del buf[:n]; return chunk
+    opcode, payload = pps.read_ws_frame(recv_exact)
+    assert opcode == 0x2
+    assert payload == big_payload
+
+
+def test_build_ws_text_frame_is_unmasked_and_round_trips():
+    frame = pps.build_ws_text_frame('{"type":"sync_req","t0":123}')
+    assert frame[0] == 0x81          # FIN + text opcode
+    assert (frame[1] & 0x80) == 0    # server frames are never masked
+    buf = bytearray(frame)
+    def recv_exact(n):
+        chunk = bytes(buf[:n]); del buf[:n]; return chunk
+    # read_ws_frame supports unmasked frames too (mask bit optional on read)
+    opcode, payload = pps.read_ws_frame(recv_exact)
+    assert opcode == 0x1
+    assert payload == b'{"type":"sync_req","t0":123}'
+
+
+def test_parse_stream_frame_payload_extracts_header_and_jpeg():
+    header = struct.pack("<II", 42, 1_700_000_123 & 0xFFFFFFFF)
+    payload = header + b"\xff\xd8\xff\xe0FAKEJPEGBYTES"
+    idx, ts, jpeg = pps.parse_stream_frame_payload(payload)
+    assert idx == 42
+    assert ts == 1_700_000_123 & 0xFFFFFFFF
+    assert jpeg == b"\xff\xd8\xff\xe0FAKEJPEGBYTES"

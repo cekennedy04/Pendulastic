@@ -197,6 +197,65 @@ class ClockSyncEstimator:
         return self._offset_ms
 
 
+# ─── WebSocket frame protocol primitives (synchronous, used by the single-port
+# HTTPS+WS stream server) ────────────────────────────────────────────────────
+
+def compute_ws_accept_key(sec_websocket_key: str) -> str:
+    return base64.b64encode(
+        hashlib.sha1((sec_websocket_key + _WS_MAGIC).encode("ascii")).digest()
+    ).decode("ascii")
+
+
+def read_ws_frame(recv_exact):
+    """Read one WS frame using `recv_exact(n) -> bytes` (must return exactly
+    n bytes; raises/returns short on EOF, caller's problem). Returns
+    (opcode, unmasked_payload). Supports both masked (client->server) and
+    unmasked (server->server, used only by tests) frames."""
+    hdr = recv_exact(2)
+    opcode  = hdr[0] & 0x0F
+    is_mask = bool(hdr[1] & 0x80)
+    plen    = hdr[1] & 0x7F
+    if plen == 126:
+        plen = struct.unpack(">H", recv_exact(2))[0]
+    elif plen == 127:
+        plen = struct.unpack(">Q", recv_exact(8))[0]
+    mask_key = recv_exact(4) if is_mask else b""
+    payload  = recv_exact(plen) if plen else b""
+    if is_mask and mask_key and payload:
+        pa = bytearray(payload)
+        for i in range(len(pa)):
+            pa[i] ^= mask_key[i % 4]
+        payload = bytes(pa)
+    return opcode, payload
+
+
+def _build_ws_frame(opcode: int, payload: bytes) -> bytes:
+    plen = len(payload)
+    if plen <= 125:
+        hdr = bytes([0x80 | opcode, plen])
+    elif plen <= 0xFFFF:
+        hdr = bytes([0x80 | opcode, 126]) + struct.pack(">H", plen)
+    else:
+        hdr = bytes([0x80 | opcode, 127]) + struct.pack(">Q", plen)
+    return hdr + payload
+
+
+def build_ws_text_frame(text: str) -> bytes:
+    return _build_ws_frame(0x1, text.encode("utf-8"))
+
+
+def build_ws_close_frame() -> bytes:
+    return _build_ws_frame(0x8, b"")
+
+
+def parse_stream_frame_payload(payload: bytes) -> tuple[int, int, bytes]:
+    """8-byte header (frame_index uint32LE, phone capture timestamp ms
+    mod 2**32, uint32LE) + raw JPEG bytes — same shape as the dormant
+    mobile app's useWebSocketStream.ts sendFrame() header."""
+    frame_index, phone_ts_ms = struct.unpack("<II", payload[:8])
+    return frame_index, phone_ts_ms, payload[8:]
+
+
 # ─── IP discovery ─────────────────────────────────────────────────────────────
 
 def _score_ip(ip: str) -> int:
