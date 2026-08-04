@@ -114,8 +114,24 @@ def save_trial(participant_id: str, leg: str, session_label: str, date: str,
         raise ValueError(f"date must be YYYY-MM-DD, got {date!r}") from e
 
     pid = normalize_participant_id(participant_id)
-    history = load_history(pid)
-    history.pop("_skipped", None)
+    path = _history_path(pid)
+    # Read the raw JSON directly -- NOT via load_history(), which builds a
+    # fresh skeleton and drops any session/top-level key it doesn't
+    # recognize. Going through load_history() here would silently and
+    # permanently erase that data from disk on every save. setdefault()
+    # below preserves anything already present untouched.
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raw = _empty_history(pid)
+    except (OSError, ValueError):
+        raw = _empty_history(pid)
+
+    raw.setdefault("participant_id", pid)
+    legs = raw.setdefault("legs", {})
+    leg_data = legs.setdefault(leg, {})
+    sessions = leg_data.setdefault("sessions", [])
 
     session = {
         "label": session_label,
@@ -131,20 +147,19 @@ def save_trial(participant_id: str, leg: str, session_label: str, date: str,
         },
     }
 
-    sessions = history["legs"][leg]["sessions"]
     for i, existing in enumerate(sessions):
-        if existing["label"] == session_label and existing["date"] == date:
+        if (isinstance(existing, dict) and existing.get("label") == session_label
+                and existing.get("date") == date):
             sessions[i] = session
             break
     else:
         sessions.append(session)
 
-    dir_path = os.path.join(PARTICIPANTS_DIR, pid)
+    dir_path = os.path.dirname(path)
     os.makedirs(dir_path, exist_ok=True)
-    path = os.path.join(dir_path, "history.json")
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
+        json.dump(raw, f, indent=2)
     os.replace(tmp_path, path)
 
 

@@ -128,6 +128,42 @@ def test_save_trial_upserts_matching_label_and_date():
     assert sessions[0]["traces"]["imu"]["metrics"]["pt_score"] == 0.5
 
 
+def test_save_trial_preserves_malformed_session_and_unrecognized_top_level_key():
+    path = os.path.join(storage.PARTICIPANTS_DIR, "P5")
+    os.makedirs(path, exist_ok=True)
+    good_session = {
+        "label": "Initial", "date": "2026-07-07", "reference_trace": "imu",
+        "traces": {"imu": {"t": [0.0], "angle": [140.0],
+                           "metrics": {"pt_score": 0.1, "mas": "0"}}},
+    }
+    malformed_session = {"label": "Broken", "date": "2026-07-01"}  # missing traces/reference_trace
+    raw = {
+        "participant_id": "P5",
+        "schema_version": 1,
+        "legs": {"left": {"sessions": [good_session, malformed_session]},
+                 "right": {"sessions": []}},
+    }
+    history_path = os.path.join(path, "history.json")
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(raw, f)
+
+    traces, metrics = _traces_and_metrics()
+    storage.save_trial("P5", "left", "Post-Training", "2026-07-17", traces, metrics, "imu")
+
+    with open(history_path, "r", encoding="utf-8") as f:
+        on_disk = json.load(f)
+
+    assert on_disk["schema_version"] == 1
+    sessions = on_disk["legs"]["left"]["sessions"]
+    labels = [s["label"] for s in sessions]
+    assert "Broken" in labels
+    broken = next(s for s in sessions if s["label"] == "Broken")
+    assert broken == malformed_session
+    assert "Initial" in labels
+    assert "Post-Training" in labels
+    assert len(sessions) == 3
+
+
 def test_list_participant_ids_normalizes_and_sorts():
     traces, metrics = _traces_and_metrics()
     storage.save_trial("p9", "left", "Initial", "2026-07-07", traces, metrics, "imu")
