@@ -27,6 +27,7 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import pendulastic_storage
 import pendulastic_pt_score
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
@@ -211,6 +212,8 @@ class WorkbenchView(tk.Frame):
                  command=self._on_mark_milestone).pack(side="left", padx=6)
         tk.Button(annot_toolbar, text="Export Session...",
                  command=self._on_export_clicked).pack(side="right", padx=6)
+        tk.Button(annot_toolbar, text="Save Trial to Dashboard",
+                 command=self._on_save_trial_clicked).pack(side="right", padx=6)
 
         self._visibility_frame = tk.Frame(self._right)
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
@@ -473,6 +476,101 @@ class WorkbenchView(tk.Frame):
             return
         self.export_session_to(out_path, self.controller.get_trial_meta())
         messagebox.showinfo("Export complete", f"Session exported to {out_path}")
+
+    def _save_current_trial(self, participant_id: str, leg: str,
+                            session_label: str, date: str) -> None:
+        """Core save logic, factored out of the dialog's Save button so
+        tests can call it directly without simulating Toplevel widgets."""
+        snapshot = self.get_metrics_snapshot()
+        visible_traces = {
+            label: (t, y) for label, (t, y) in self._traces.items()
+            if self._visible_vars.get(label, tk.BooleanVar(value=True)).get()
+        }
+        metrics_by_label = {
+            label: snapshot["per_trace"][label] for label in visible_traces
+            if label in snapshot["per_trace"]
+        }
+        pendulastic_storage.save_trial(
+            participant_id, leg, session_label, date,
+            visible_traces, metrics_by_label, self._reference_var.get())
+
+    def _reference_trace_pt_score(self):
+        """The current reference trace's pt_score (float), or None if
+        there's no reference trace or its pt_score is None (insufficient
+        signal). The save dialog refuses to save when this is None."""
+        snapshot = self.get_metrics_snapshot()
+        ref_label = self._reference_var.get()
+        per_trace = snapshot["per_trace"].get(ref_label)
+        if per_trace is None:
+            return None
+        return per_trace["pt_score"]
+
+    def _on_save_trial_clicked(self) -> None:
+        import datetime as _datetime
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Save Trial to Dashboard")
+        dialog.transient(self)
+
+        participant_var = tk.StringVar(value="")
+        leg_var = tk.StringVar(value="left")
+        label_var = tk.StringVar(value="")
+        date_var = tk.StringVar(value=_datetime.date.today().isoformat())
+        status_var = tk.StringVar(value="")
+
+        tk.Label(dialog, text="Participant ID:").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=participant_var).grid(row=0, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, text="Leg:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.OptionMenu(dialog, leg_var, "left", "left", "right").grid(
+            row=1, column=1, sticky="w", padx=8, pady=4)
+
+        tk.Label(dialog, text="Session label:").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=label_var).grid(row=2, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, text="Date (YYYY-MM-DD):").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=date_var).grid(row=3, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, textvariable=status_var, fg="#B45309").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+
+        def on_confirm() -> None:
+            participant_id = participant_var.get().strip()
+            session_label = label_var.get().strip()
+            date = date_var.get().strip()
+            if not participant_id or not session_label:
+                status_var.set("Participant ID and session label are required.")
+                return
+            try:
+                _datetime.datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                status_var.set("Date must be YYYY-MM-DD.")
+                return
+            if self._reference_trace_pt_score() is None:
+                status_var.set(
+                    "Reference trace has no usable PT score (insufficient signal) -- "
+                    "cannot save.")
+                return
+
+            leg = leg_var.get()
+            existing = pendulastic_storage.load_history(participant_id)
+            already_present = any(
+                s["label"] == session_label and s["date"] == date
+                for s in existing["legs"][leg]["sessions"])
+            if already_present and not messagebox.askyesno(
+                    "Overwrite session?",
+                    f"A session '{session_label}' on {date} already exists for "
+                    f"{participant_id}/{leg}. Overwrite it?"):
+                return
+
+            self._save_current_trial(participant_id, leg, session_label, date)
+            dialog.destroy()
+            messagebox.showinfo("Saved", f"Trial saved to {participant_id}/{leg}.")
+
+        button_row = tk.Frame(dialog)
+        button_row.grid(row=5, column=0, columnspan=2, pady=8)
+        tk.Button(button_row, text="Save", command=on_confirm).pack(side="left", padx=6)
+        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
 
     def load_video(self, path: str) -> None:
         if self._cap is not None:

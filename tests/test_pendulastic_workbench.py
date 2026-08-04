@@ -227,6 +227,52 @@ def test_recompute_metrics_shows_na_for_insufficient_signal():
     assert "PT(7p)=n/a (insufficient signal)" in text
 
 
+def test_save_current_trial_persists_only_visible_traces():
+    import pendulastic_storage
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    wv._visible_vars["optitrack"].set(False)   # hide optitrack
+    r.update()
+
+    wv._save_current_trial("test-p1", "left", "Initial", "2026-07-07")
+
+    history = pendulastic_storage.load_history("test-p1")
+    sessions = history["legs"]["left"]["sessions"]
+    assert len(sessions) == 1
+    saved_traces = sessions[0]["traces"]
+    assert set(saved_traces.keys()) == {"imu"}
+    assert "pt_score" in saved_traces["imu"]["metrics"]
+
+
+def test_reference_trace_pt_score_returns_none_for_insufficient_signal():
+    """A session without a usable PT score for its reference trace isn't
+    useful to a longitudinal PT-score dashboard (design spec Section 7) --
+    the save dialog's Save button refuses to proceed when this returns
+    None. Tested directly against the helper rather than by simulating
+    the Toplevel dialog's widgets."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    t = np.linspace(0, 4, 400)
+    wv.set_traces({"flat": (t, np.full_like(t, 140.0))})   # flat signal -> insufficient
+    r.update()
+    assert wv._reference_var.get() == "flat"
+
+    assert wv._reference_trace_pt_score() is None
+
+
+def test_reference_trace_pt_score_returns_float_for_valid_signal():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    assert isinstance(wv._reference_trace_pt_score(), float)
+
+
 def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
     from pendulastic_workbench import TrialLoadPanel
     import pendulastic_workbench as _m
