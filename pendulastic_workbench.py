@@ -9,6 +9,7 @@ See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from typing import Optional
@@ -27,6 +28,7 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import workbench_style as ws
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
                     "Maximum Flexion", "Rest/Settled"]
@@ -51,11 +53,14 @@ class TrialLoadPanel(tk.Frame):
     controller: App instance -- receives on_load_trial(selection: dict)."""
 
     def __init__(self, parent, controller) -> None:
-        super().__init__(parent)
+        super().__init__(parent, bg=ws.PALETTE["BG"])
         self.controller = controller
         self._imu_path = tk.StringVar(value="")
         self._video_path = tk.StringVar(value="")
         self._optitrack_path = tk.StringVar(value="")
+        self._participant_id = tk.StringVar(value="")
+        self._session_date = tk.StringVar(
+            value=datetime.datetime.now().strftime("%Y-%m-%d"))
         self._femur_cm = tk.StringVar(value="")
         self._tibia_cm = tk.StringVar(value="")
         self._model_vars = {name: tk.BooleanVar(value=False)
@@ -64,52 +69,79 @@ class TrialLoadPanel(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        pad = {"padx": 12, "pady": 6}
+        header = tk.Frame(self, bg=ws.PALETTE["BG"])
+        header.pack(fill="x", padx=12, pady=(10, 4))
+        self._back_button = ws.secondary_button(
+            header, "← Back to Main Menu",
+            lambda: self.controller.on_back_to_mode_select())
+        self._back_button.pack(side="left")
+        tk.Label(header, text="Pendulastic Workbench", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_TITLE).pack(side="left", padx=(16, 0))
 
-        self._back_button = tk.Button(
-            self, text="← Back to Main Menu",
-            command=lambda: self.controller.on_back_to_mode_select())
-        self._back_button.grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 0))
-
-        tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
-                ).grid(row=1, column=0, columnspan=3, sticky="w", **pad)
-
-        self._file_row(2, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
+        files_card = ws.card_frame(self, "TRIAL FILES")
+        files_card.pack(fill="x", padx=12, pady=6)
+        self._file_row(files_card, "Phone IMU raw log (.jsonl or split CSV)",
+                       self._imu_path,
                        [("IMU log", "*.jsonl *.csv"), ("All files", "*.*")], name="imu")
-        self._file_row(3, "Video (.mp4/.avi)", self._video_path,
+        self._file_row(files_card, "Video (.mp4/.avi)", self._video_path,
                        [("Video", "*.mp4 *.avi"), ("All files", "*.*")], name="video")
-        self._file_row(4, "OptiTrack CSV", self._optitrack_path,
+        self._file_row(files_card, "OptiTrack CSV", self._optitrack_path,
                        [("CSV", "*.csv"), ("All files", "*.*")], name="optitrack")
 
-        tk.Label(self, text="HPE models to run:").grid(
-            row=5, column=0, sticky="nw", **pad)
-        model_frame = tk.Frame(self)
-        model_frame.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
+        session_card = ws.card_frame(self, "PARTICIPANT & SESSION")
+        session_card.pack(fill="x", padx=12, pady=6)
+        srow = tk.Frame(session_card, bg=ws.PALETTE["PANEL"])
+        srow.pack(fill="x")
+        tk.Label(srow, text="Participant ID:", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(srow, textvariable=self._participant_id, width=18,
+                 font=ws.FONT_BODY).grid(row=0, column=1, sticky="w", padx=(0, 20), pady=4)
+        tk.Label(srow, text="Session Date:", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=2, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(srow, textvariable=self._session_date, width=12,
+                 font=ws.FONT_BODY).grid(row=0, column=3, sticky="w", pady=4)
+
+        models_card = ws.card_frame(self, "HPE MODELS TO RUN")
+        models_card.pack(fill="x", padx=12, pady=6)
+        model_frame = tk.Frame(models_card, bg=ws.PALETTE["PANEL"])
+        model_frame.pack(fill="x")
         for i, name in enumerate(analysis_pipeline.MODEL_FUNCTIONS):
-            tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name]
-                          ).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
+            tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name],
+                          bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+                          selectcolor=ws.PALETTE["SURFACE"],
+                          activebackground=ws.PALETTE["PANEL"],
+                          activeforeground=ws.PALETTE["FG"]
+                         ).grid(row=i // 3, column=i % 3, sticky="w", padx=4, pady=2)
 
-        tk.Label(self, text="Femur length (cm, optional):").grid(
-            row=6, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
-            row=6, column=1, sticky="w", **pad)
+        pers_card = ws.card_frame(self, "PERSONALIZATION (OPTIONAL)")
+        pers_card.pack(fill="x", padx=12, pady=6)
+        prow = tk.Frame(pers_card, bg=ws.PALETTE["PANEL"])
+        prow.pack(fill="x")
+        tk.Label(prow, text="Femur length (cm):", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(prow, textvariable=self._femur_cm, width=10,
+                 font=ws.FONT_BODY).grid(row=0, column=1, sticky="w", padx=(0, 20), pady=4)
+        tk.Label(prow, text="Tibia length (cm):", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=2, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(prow, textvariable=self._tibia_cm, width=10,
+                 font=ws.FONT_BODY).grid(row=0, column=3, sticky="w", pady=4)
 
-        tk.Label(self, text="Tibia length (cm, optional):").grid(
-            row=7, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
-            row=7, column=1, sticky="w", **pad)
+        ws.primary_button(self, "Load Trial", self._on_load_clicked).pack(pady=16)
 
-        tk.Button(self, text="Load Trial", command=self._on_load_clicked
-                 ).grid(row=8, column=0, columnspan=3, pady=16)
-
-    def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
+    def _file_row(self, parent, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
-        tk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
-        tk.Entry(self, textvariable=var, width=48, state="readonly").grid(
-            row=row, column=1, sticky="we", padx=4)
-        btn = tk.Button(self, text="Browse...",
-                       command=lambda: self._browse(var, filetypes))
-        btn.grid(row=row, column=2, sticky="w", padx=4)
+        row = tk.Frame(parent, bg=ws.PALETTE["PANEL"])
+        row.pack(fill="x", pady=3)
+        tk.Label(row, text=label, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                 font=ws.FONT_BODY, width=32, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=40, state="readonly",
+                 font=ws.FONT_BODY).pack(side="left", padx=4, fill="x", expand=True)
+        btn = ws.secondary_button(row, "Browse...", lambda: self._browse(var, filetypes))
+        btn.pack(side="left", padx=4)
         self._browse_buttons[name] = btn
 
     def _browse(self, var: tk.StringVar, filetypes) -> None:
@@ -134,6 +166,8 @@ class TrialLoadPanel(tk.Frame):
             "imu_path": self._imu_path.get() or None,
             "video_path": self._video_path.get() or None,
             "optitrack_path": self._optitrack_path.get() or None,
+            "participant_id": self._participant_id.get().strip(),
+            "session_date": self._session_date.get().strip(),
             "models": [name for name, var in self._model_vars.items() if var.get()],
             "femur_length_cm": _parse_float(self._femur_cm.get()),
             "tibia_length_cm": _parse_float(self._tibia_cm.get()),
@@ -547,6 +581,8 @@ class App(tk.Tk):
             "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
+            "participant_id": selection["participant_id"],
+            "session_date": selection["session_date"],
             "models": selection["models"],
             "femur_length_cm": selection["femur_length_cm"],
             "tibia_length_cm": selection["tibia_length_cm"],

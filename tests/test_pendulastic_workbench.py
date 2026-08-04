@@ -169,6 +169,27 @@ def test_trial_load_panel_back_button_calls_controller():
     assert calls == ["back"]
 
 
+def test_trial_load_panel_get_selection_includes_participant_and_session_date():
+    from pendulastic_workbench import TrialLoadPanel
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    p.pack()
+    p._participant_id.set("P5")
+    p._session_date.set("2026-08-04")
+    selection = p.get_selection()
+    assert selection["participant_id"] == "P5"
+    assert selection["session_date"] == "2026-08-04"
+
+
+def test_trial_load_panel_session_date_defaults_to_today():
+    import datetime
+    from pendulastic_workbench import TrialLoadPanel
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    expected = datetime.datetime.now().strftime("%Y-%m-%d")
+    assert p.get_selection()["session_date"] == expected
+
+
 def test_workbench_view_load_another_button_calls_controller():
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
