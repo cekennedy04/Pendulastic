@@ -2314,7 +2314,7 @@ def parse_motive_csv(csv_path, target_points=None):
 def _optitrack_knee_angle_series(optitrack_csv):
     """
     Reconstruct the knee angle (deg) over time from a Motive Thigh/Shank export
-    using the rigid-body ROTATION quaternions (mirrors joint_angle_processor.py):
+    using the rigid-body ROTATION quaternions:
     knee angle = angle between the two segments' local-X axes.
 
     Uses parse_motive_csv() with TARGET_POINTS to isolate only the needed column
