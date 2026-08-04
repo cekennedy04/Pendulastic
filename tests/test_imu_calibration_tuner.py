@@ -3,35 +3,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 import imu_calibration_tuner as tuner
+import pendulastic_imu_server as imu
 
 
 def _solo_hold_then_burst_samples():
     """Synthetic single-phone (distal) raw log: hold still for 1s (seeds AHRS
     to identity via gravity_seed, then holds), then a scripted 0.5s gyro burst
-    of exactly 2.0 rad/s around Y — a known, hand-computable rotation."""
+    of exactly 2.0 rad/s around Y — a known, hand-computable rotation. Accel
+    streams continuously (not just once at t=0) at gravity, matching a real
+    device, since the stillness gate now requires a full accel window too."""
     samples = []
     t = 0.0
     dt = 0.01
     ts_ms = 0
-    # Seed once, then hold (gyro ~0) for 1.0s.
-    samples.append({"t": t, "role": "distal", "sensor": "accel",
-                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
     n_hold = 100
     for i in range(n_hold):
-        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
     # Deliberate burst: 2.0 rad/s around Y for 0.5s (50 steps) -> 1.0 rad total.
     n_burst = 50
     for i in range(n_burst):
-        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [0.0, 2.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
     # Settle: hold again so there's enough trailing data.
     for i in range(100):
-        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
     return samples
 
 
@@ -55,28 +61,33 @@ def _solo_hold_with_bias_then_burst_samples(bias):
     stationary MEMS gyro would report (it doesn't only appear while still).
     The hold phase is what the gyro-bias calibration should measure from;
     if correctly subtracted, the burst should still integrate to the same
-    true rotation as the zero-bias case."""
+    true rotation as the zero-bias case. Accel streams continuously at
+    gravity throughout, matching a real device."""
     samples = []
     t = 0.0
     dt = 0.01
     ts_ms = 0
     bx, by, bz = bias
-    samples.append({"t": t, "role": "distal", "sensor": "accel",
-                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
     n_hold = 100
     for i in range(n_hold):
-        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
     n_burst = 50
     for i in range(n_burst):
-        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [bx, 2.0 + by, bz], "phone_ts_ms": ts_ms})
-    for i in range(100):
         t += dt; ts_ms += 10
+    for i in range(100):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
     return samples
 
 
@@ -103,6 +114,92 @@ def test_replay_trial_subtracts_calibrated_gyro_bias():
         f"bias-corrected run ({angle_biased[-1]:.2f} deg) should match the "
         f"zero-bias control ({angle_clean[-1]:.2f} deg) once the injected "
         f"bias is properly measured and subtracted")
+
+
+def _solo_handling_then_hold_then_burst_samples():
+    """Synthetic single-phone (distal) raw log with a REALISTIC contamination
+    scenario: 1.5s of examiner handling (gyro OSCILLATING DIRECTION on one
+    axis, at 3x GYRO_STATIONARY_MAX_RAD_S -- comparable to the 12.7 deg/s
+    case that motivated this fix -- with accel also swinging past
+    ACCEL_STATIONARY_MAX_MPS2, i.e. NOT genuinely still), then a genuine
+    1.0s still hold, then the same scripted burst as
+    _solo_hold_then_burst_samples(). The bias calibration must fire from the
+    genuine hold, never from the handling window. Scaled relative to the
+    actual thresholds (not a hardcoded literal) so this test stays correct
+    regardless of what Task 1 picked. Oscillating direction, not just
+    varying magnitude, matches how _is_stationary_window's per-axis check
+    actually works (see Task 2). gyro_amp is also capped below (a margin
+    under) _FLEX_CAPTURE_THRESHOLD: that threshold gates a SEPARATE,
+    pre-existing onset/flex-axis-capture mechanism keyed off a single
+    sample's raw magnitude (not this test's target, the stillness gate's
+    peak-to-peak check) -- with the current constants (0.9 rad/s stationary
+    bound vs. 1.0 rad/s capture threshold) an uncapped 3x multiplier would
+    itself exceed the capture threshold and trip onset on the handling
+    window's very first sample, corrupting flex_axis before the real burst
+    and making the test fail for an unrelated reason."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    gyro_amp = min(imu.GYRO_STATIONARY_MAX_RAD_S * 3.0,
+                   imu._FLEX_CAPTURE_THRESHOLD * 0.7)
+    accel_half_amp = imu.ACCEL_STATIONARY_MAX_MPS2 * 1.5
+
+    n_handling = 150
+    for i in range(n_handling):
+        gv = [gyro_amp, 0.0, 0.0] if i % 2 == 0 else [-gyro_amp, 0.0, 0.0]
+        av = [0.0, 0.0, 9.81 + accel_half_amp] if i % 2 == 0 else [0.0, 0.0, 9.81 - accel_half_amp]
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": av, "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": gv, "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    n_hold = 100
+    for i in range(n_hold):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    n_burst = 50
+    for i in range(n_burst):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    for i in range(100):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    return samples
+
+
+def test_replay_trial_ignores_handling_window_when_calibrating_bias():
+    """The core regression test for this fix: a pre-burst window with real
+    (not fused-angle-smoothed) raw gyro/accel handling motion must not be
+    averaged into gyro_bias. Only the genuine still hold that follows it
+    should be used -- so the final swing angle must match the clean,
+    no-handling control run (_solo_hold_then_burst_samples), not be distorted
+    by treating the handling window's motion as "bias."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    clean_samples = _solo_hold_then_burst_samples()
+    handled_samples = _solo_handling_then_hold_then_burst_samples()
+
+    t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
+    t_handled, angle_handled = tuner.replay_trial(handled_samples, params)
+
+    assert abs(angle_handled[-1] - angle_clean[-1]) < 1.0, (
+        f"handling-contaminated run ({angle_handled[-1]:.2f} deg) should match "
+        f"the clean control ({angle_clean[-1]:.2f} deg) -- the handling window "
+        f"must be rejected by the stillness gate, not averaged into gyro_bias")
 
 
 def test_replay_trial_first_tick_is_nan_rest_are_finite():

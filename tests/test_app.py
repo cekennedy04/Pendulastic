@@ -431,11 +431,9 @@ def test_on_countdown_start_resets_calibration_state():
     from pendulastic_app import App
     app = App()
     try:
-        app._calib_buffer = [(1.0, 2.0)]
         app._calib_was_stable = True
         app._calib_ever_stable = True
         app.on_countdown_start()
-        assert app._calib_buffer == []
         assert app._calib_was_stable is False
         assert app._calib_ever_stable is False
     finally:
@@ -444,28 +442,32 @@ def test_on_countdown_start_resets_calibration_state():
 
 def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
     import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = True
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
     app = _m.App()
     try:
         app._active_sources = ["imu"]
         app._state = "idle"
         app._acq._countdown_id = "sentinel"   # any non-None value marks countdown active
-        zero_calls = []
-        # Mirror the real zero(): it retares the offset, so subsequent
-        # get_state() calls report angles relative to the new zero (~0)
-        # instead of the pre-tare pose. A buggy edge-trigger that doesn't
-        # discard the stale buffer will see this jump as "not stable" and
-        # re-fire zero() a second time for one continuous physical hold.
-        state = {"pitch": 10.0, "roll": 0.0}
-        monkeypatch.setattr(_m._imu, "zero", lambda: (zero_calls.append(1),
-                                                       state.update(pitch=0.0, roll=0.0)))
-        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
-        # Run well past several buffer-refill cycles (not just one) -- a fire
-        # that only survives to the next refill would still look "fixed" on
-        # a short run but re-trigger every _CALIB_BUFFER_SAMPLES ticks after
-        # that for as long as the hold continues.
-        for _ in range(4 * _m._CALIB_BUFFER_SAMPLES + 10):
+        # Run multiple times to verify zero() only fires once during stable period
+        for _ in range(50):
             app._tick_calibration_check()
-        assert len(zero_calls) == 1
+        assert len(zero_calls) == 1, "zero() must only fire once when is_stationary() is continuously True"
         assert app._calib_ever_stable is True
     finally:
         app._acq._countdown_id = None
@@ -474,32 +476,44 @@ def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
 
 def test_tick_calibration_refires_after_drift_then_restabilizing(monkeypatch):
     import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = True
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
     app = _m.App()
     try:
         app._active_sources = ["imu"]
         app._state = "idle"
         app._acq._countdown_id = "sentinel"
-        zero_calls = []
-        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
-        state = {"pitch": 10.0, "roll": 0.0}
-        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
 
-        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
-            app._tick_calibration_check()
+        # First stable period
+        mock_imu.is_stationary_val = True
+        app._tick_calibration_check()
         assert len(zero_calls) == 1
 
-        # Drift: feed a swinging pitch that exceeds the stability range so the
-        # buffer's peak-to-peak range fails, resetting the edge-trigger.
-        for i in range(_m._CALIB_BUFFER_SAMPLES):
-            state["pitch"] = 10.0 + (i % 2) * 10.0   # alternates 10/20 -> 10 deg swing
+        # Drift: report as unstable, resetting the edge-trigger
+        mock_imu.is_stationary_val = False
+        for _ in range(10):
             app._tick_calibration_check()
-        assert len(zero_calls) == 1, "must not re-fire while still unstable"
+        assert len(zero_calls) == 1, "must not re-fire while unstable"
 
-        # Re-stabilize at a new position.
-        state["pitch"] = 45.0
-        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
-            app._tick_calibration_check()
-        assert len(zero_calls) == 2, "must re-fire on the next new stable window"
+        # Re-stabilize: report as stationary again
+        mock_imu.is_stationary_val = True
+        app._tick_calibration_check()
+        assert len(zero_calls) == 2, "must re-fire on the next stable window"
     finally:
         app._acq._countdown_id = None
         app.destroy()
@@ -507,19 +521,33 @@ def test_tick_calibration_refires_after_drift_then_restabilizing(monkeypatch):
 
 def test_tick_calibration_skipped_outside_countdown(monkeypatch):
     import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = True
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
     app = _m.App()
     try:
         app._active_sources = ["imu"]
+        app._state = "idle"
         app._acq._countdown_id = None   # no countdown running
-        zero_calls = []
-        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
-        monkeypatch.setattr(_m._imu, "get_state", lambda: {
-            "angles": {"pitch": 10.0, "roll": 0.0},
-        })
-        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+        # Even though is_stationary() returns True, zero() should not be called
+        # when _countdown_id is None (countdown not active)
+        for _ in range(5):
             app._tick_calibration_check()
         assert zero_calls == []
-        assert app._calib_buffer == []
     finally:
         app.destroy()
 
@@ -530,22 +558,33 @@ def test_tick_calibration_stops_after_countdown_completes_naturally(monkeypatch)
     which clears _countdown_id. Even if the subject holds steady during recording
     (stable buffer), zero() must not fire mid-trial."""
     import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = True
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
     app = _m.App()
     try:
         app._active_sources = ["imu"]
         app._state = "idle"
-        zero_calls = []
-        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
-        monkeypatch.setattr(_m._imu, "get_state", lambda: {
-            "angles": {"pitch": 10.0, "roll": 0.0},
-        })
 
         # Start countdown manually by setting _countdown_id to a sentinel
         app._acq._countdown_id = "active"
 
-        # Fill buffer while in countdown — should fire once when stable
-        for _ in range(_m._CALIB_BUFFER_SAMPLES):
-            app._tick_calibration_check()
+        # Call calibration check with stable readings during countdown — should fire once
+        app._tick_calibration_check()
         assert len(zero_calls) == 1, "Must fire once during stable countdown"
 
         # Mock on_start to avoid full recording startup (which would try to
@@ -566,8 +605,8 @@ def test_tick_calibration_stops_after_countdown_completes_naturally(monkeypatch)
 
         # Now call calibration check multiple times with stable readings
         # It should NOT fire zero() because state is "recording" not "idle",
-        # even though _countdown_id was cleared and buffer is stable
-        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+        # even though is_stationary() returns True
+        for _ in range(5):
             app._tick_calibration_check()
 
         # This should still be 1 — no re-fire during recording
@@ -839,4 +878,115 @@ def test_on_load_trial_raw_diagnostics_failure_does_not_block_trial_load(tmp_pat
         assert "imu" in app._workbench_view._traces
         assert app._workbench_raw_diagnostics is None
     finally:
+        app.destroy()
+
+
+def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
+    """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
+    not on a fused pitch/roll buffer it maintains itself."""
+    import pendulastic_app as _m, types
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = True
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._acq._countdown_id = "sentinel"
+        app._tick_calibration_check()
+        assert len(zero_calls) == 1
+        assert app._calib_ever_stable is True
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+def test_tick_calibration_check_does_not_fire_when_imu_reports_not_stationary(monkeypatch):
+    import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = False
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._acq._countdown_id = "sentinel"
+        app._tick_calibration_check()
+        assert zero_calls == []
+        assert app._calib_ever_stable is False
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+def test_tick_calibration_check_refires_after_drift_then_restabilizing(monkeypatch):
+    """Edge-trigger behavior must be preserved: False->True fires once, stays
+    latched while True, then re-fires on the next False->True transition."""
+    import pendulastic_app as _m
+    zero_calls = []
+
+    class MockIMU:
+        def __init__(self):
+            self.is_stationary_val = False
+        def zero(self):
+            zero_calls.append(1)
+        def is_stationary(self):
+            return self.is_stationary_val
+        def start(self):
+            pass
+        def stop(self):
+            pass
+
+    mock_imu = MockIMU()
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    monkeypatch.setattr(_m, "_imu", mock_imu)
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._acq._countdown_id = "sentinel"
+
+        mock_imu.is_stationary_val = True
+        app._tick_calibration_check()
+        app._tick_calibration_check()
+        app._tick_calibration_check()
+        assert len(zero_calls) == 1, "must not re-fire every tick while continuously stationary"
+
+        mock_imu.is_stationary_val = False
+        app._tick_calibration_check()
+        assert len(zero_calls) == 1
+
+        mock_imu.is_stationary_val = True
+        app._tick_calibration_check()
+        assert len(zero_calls) == 2, "must re-fire on the next stable window"
+    finally:
+        app._acq._countdown_id = None
         app.destroy()
