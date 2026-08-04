@@ -152,7 +152,6 @@ class MasterApp:
 
         # ---- iPhone IMU goniometer ----
         self.var_record_imu = tk.BooleanVar(value=_IMU_AVAIL)
-        self.var_session    = tk.StringVar(value="pre")
         self._imu_recording = False
         self._imu_csv_path  = ""
         self._sync_after_id = None                # pending after() for status poll
@@ -208,12 +207,10 @@ class MasterApp:
                                               "Other Motor Impairment"])
         self.drop_diag.grid(row=5, column=1, sticky="w", **pad)
 
-        # --- Session tag (pre / post intervention) ---
-        tk.Label(self.root, text="Session:").grid(row=6, column=0, sticky="e", **pad)
-        self.drop_session = ttk.Combobox(self.root, textvariable=self.var_session,
-                                          width=25, state="readonly",
-                                          values=["pre", "post"])
-        self.drop_session.grid(row=6, column=1, sticky="w", **pad)
+        # --- Characterization (free-typed: pre / post / anything else) ---
+        tk.Label(self.root, text="Characterization:").grid(row=6, column=0, sticky="e", **pad)
+        self.entry_characterization = tk.Entry(self.root, width=28)
+        self.entry_characterization.grid(row=6, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
             row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
@@ -241,46 +238,38 @@ class MasterApp:
                                     padx=10, pady=(0, 4))
         self._cam_status_rows = []
 
-        # --- Camera Position 1-3 ---
-        tk.Label(self.root, text="Camera Position:").grid(row=11, column=0, sticky="e", **pad)
-        self.var_pos = tk.StringVar(value="1")
-        self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
+        # --- Leg ---
+        tk.Label(self.root, text="Leg:").grid(row=11, column=0, sticky="e", **pad)
+        self.var_leg = tk.StringVar(value="Right")
+        self.drop_leg = ttk.Combobox(self.root, textvariable=self.var_leg, width=25,
                                      state="readonly",
-                                     values=["1", "2", "3"])
-        self.drop_pos.grid(row=11, column=1, sticky="w", **pad)
-
-        # --- Camera Height ---
-        tk.Label(self.root, text="Camera Height:").grid(row=12, column=0, sticky="e", **pad)
-        self.var_height = tk.StringVar(value="Joint-Level")
-        self.drop_height = ttk.Combobox(self.root, textvariable=self.var_height, width=25,
-                                        state="readonly",
-                                        values=["Low", "Joint-Level", "High"])
-        self.drop_height.grid(row=12, column=1, sticky="w", **pad)
+                                     values=["Right", "Left"])
+        self.drop_leg.grid(row=11, column=1, sticky="w", **pad)
 
         # --- Trial Number ---
-        tk.Label(self.root, text="Trial Number:").grid(row=13, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Trial Number:").grid(row=12, column=0, sticky="e", **pad)
         self.var_trial = tk.StringVar(value="1")
         self.drop_trial = ttk.Combobox(self.root, textvariable=self.var_trial, width=25,
                                        state="readonly",
                                        values=["1", "2", "3", "4", "5"])
-        self.drop_trial.grid(row=13, column=1, sticky="w", **pad)
+        self.drop_trial.grid(row=12, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Control buttons ---
         self.btn_start = tk.Button(self.root, text="START RECORDING",
                                    bg="#1e7d34", fg="white",
                                    font=("Segoe UI", 11, "bold"),
                                    width=18, height=2, command=self._on_start_clicked)
-        self.btn_start.grid(row=15, column=0, padx=10, pady=12)
+        self.btn_start.grid(row=14, column=0, padx=10, pady=12)
 
         self.btn_stop = tk.Button(self.root, text="STOP",
                                   bg="#a31515", fg="white",
                                   font=("Segoe UI", 11, "bold"),
                                   width=18, height=2, command=self.stop_recording,
                                   state="disabled")
-        self.btn_stop.grid(row=15, column=1, padx=10, pady=12)
+        self.btn_stop.grid(row=14, column=1, padx=10, pady=12)
 
         # --- Countdown checkbox ---
         self.var_delayed = tk.BooleanVar(value=False)
@@ -288,12 +277,12 @@ class MasterApp:
             self.root, text="5-second countdown before recording",
             variable=self.var_delayed, font=("Segoe UI", 10),
         )
-        self.chk_delayed.grid(row=16, column=0, columnspan=2, pady=(0, 6))
+        self.chk_delayed.grid(row=15, column=0, columnspan=2, pady=(0, 6))
 
         # --- iPhone IMU goniometer (optional third modality) ---
         imu_frame = tk.LabelFrame(self.root, text="iPhone IMU Goniometer",
                                   font=("Segoe UI", 9, "bold"))
-        imu_frame.grid(row=20, column=0, columnspan=2, sticky="ew",
+        imu_frame.grid(row=19, column=0, columnspan=2, sticky="ew",
                        padx=10, pady=(0, 6))
         self.chk_imu = tk.Checkbutton(
             imu_frame, text="Record iPhone IMU (.csv)",
@@ -307,21 +296,21 @@ class MasterApp:
         self.lbl_imu.pack(anchor="w", padx=8, pady=(0, 4))
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=17, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Batch evaluation (active only when not recording) ---
         self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
                                       bg="#1f3a93", fg="white",
                                       font=("Segoe UI", 12, "bold"),
                                       height=2, command=self.start_batch_evaluation)
-        self.btn_evaluate.grid(row=18, column=0, columnspan=2, sticky="ew",
+        self.btn_evaluate.grid(row=17, column=0, columnspan=2, sticky="ew",
                                padx=10, pady=(0, 8))
 
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=19, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=18, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
 
         # Detect the camera now that all widgets exist.
@@ -1054,11 +1043,11 @@ class MasterApp:
     def _lock_inputs(self, locked):
         state = "disabled" if locked else "normal"
         ro_state = "disabled" if locked else "readonly"
-        for w in (self.entry_id, self.entry_age, self.entry_weight):
+        for w in (self.entry_id, self.entry_age, self.entry_weight,
+                  self.entry_characterization):
             w.config(state=state)
-        for w in (self.drop_sex, self.drop_diag, self.drop_pos,
-                  self.drop_height, self.drop_trial, self.drop_cam,
-                  self.drop_session):
+        for w in (self.drop_sex, self.drop_diag, self.drop_leg,
+                  self.drop_trial, self.drop_cam):
             w.config(state=ro_state)
         # Camera rescan and batch evaluation are only available when not recording.
         self.btn_rescan.config(state=state)
