@@ -347,3 +347,39 @@ def test_standalone_app_load_another_returns_to_load_panel():
         assert not app._workbench_view.winfo_ismapped()
     finally:
         app.destroy()
+
+
+def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkeypatch):
+    from pendulastic_workbench import App
+    import pendulastic_workbench as _m
+    import numpy as np
+
+    fake_validations = {
+        "accel": {"ok": True, "rows": [], "path": "a.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
+        "gyro":  {"ok": True, "rows": [], "path": "g.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
+        "mag":   {"ok": True, "rows": [], "path": "m.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
+        "imu":   {"ok": True, "rows": [{"hip_pitch_deg": "180.0"}], "path": "i.csv",
+                  "error": None, "n_samples": 1, "fs_eff": 100.0},
+    }
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial_from_components": staticmethod(
+            lambda validations, ft_ratio=None, method=None:
+                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"]))
+    })()
+    monkeypatch.setattr(_m, "engine", fake_engine)
+
+    app = App()
+    try:
+        app.update()
+        app.on_load_trial({
+            "imu_format": "split_csv", "imu_path": None, "imu_components": fake_validations,
+            "video_path": None, "optitrack_path": None, "models": [],
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+        assert "imu" in app._workbench_view._traces
+        assert app._trial_meta["imu_paths"] == {
+            "accel": "a.csv", "gyro": "g.csv", "mag": "m.csv", "imu": "i.csv"}
+        assert app._trial_meta["imu_reference"] == [{"hip_pitch_deg": "180.0"}]
+    finally:
+        app.destroy()

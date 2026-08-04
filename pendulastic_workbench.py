@@ -619,10 +619,13 @@ class App(tk.Tk):
         spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
         Video HPE model inference runs on a background thread since it's
         the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline."""
+        fast enough to run inline. IMU input is either a single JSONL raw
+        log or four independently-validated split-CSV components (design
+        spec 2026-08-04-sequential-csv-intake) -- TrialLoadPanel.get_selection()
+        distinguishes the two via selection["imu_format"]."""
         traces = {}
+        imu_format = selection.get("imu_format", "jsonl")
         self._trial_meta = {
-            "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
             "models": selection["models"],
@@ -630,17 +633,25 @@ class App(tk.Tk):
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
-        if selection["imu_path"]:
-            ft_ratio = None
-            method_override = None
-            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-                # Supplying limb lengths means the researcher wants to validate
-                # the personalized-ratio Ockendon path (Section 3a) -- ft_ratio
-                # alone does nothing unless the IMU trace actually runs through
-                # ockendon_deg, so force the method rather than silently no-op
-                # if the persisted tuning config's method is "relative".
-                method_override = "ockendon_flipped"
+        ft_ratio = None
+        method_override = None
+        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+            method_override = "ockendon_flipped"
+
+        if imu_format == "split_csv":
+            components = selection.get("imu_components", {})
+            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
+                try:
+                    t, angle, imu_reference = engine.load_imu_trial_from_components(
+                        components, ft_ratio=ft_ratio, method=method_override)
+                    traces["imu"] = (t, angle)
+                    self._trial_meta["imu_paths"] = {k: components[k]["path"] for k in components}
+                    self._trial_meta["imu_reference"] = imu_reference
+                except Exception as e:
+                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+        elif selection["imu_path"]:
+            self._trial_meta["imu_path"] = selection["imu_path"]
             try:
                 t, angle = engine.load_imu_trial(
                     selection["imu_path"], ft_ratio=ft_ratio, method=method_override)
