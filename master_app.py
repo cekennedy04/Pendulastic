@@ -521,6 +521,12 @@ class MasterApp:
                 float(weight)
             except ValueError:
                 raise ValueError("Weight must be a number (e.g. 72.5).")
+
+        characterization = self.entry_characterization.get().strip()
+        if not characterization:
+            raise ValueError("Characterization cannot be empty.")
+        if any(ch in illegal for ch in characterization):
+            raise ValueError('Characterization contains illegal characters: < > : " / \\ | ? *')
         return pid
 
     # ------------------------------------------------------------------
