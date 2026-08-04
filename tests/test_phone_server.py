@@ -138,3 +138,30 @@ def test_parse_stream_frame_payload_extracts_header_and_jpeg():
     assert idx == 42
     assert ts == 1_700_000_123 & 0xFFFFFFFF
     assert jpeg == b"\xff\xd8\xff\xe0FAKEJPEGBYTES"
+
+
+def test_stream_page_is_well_formed_utf8_html():
+    # _STREAM_PAGE is a str (same convention as the existing _TRACKING_PAGE),
+    # encoded to bytes at the point of use — not stored as bytes itself.
+    assert isinstance(pps._STREAM_PAGE, str)
+    assert pps._STREAM_PAGE.strip().startswith("<!DOCTYPE html>")
+    pps._STREAM_PAGE.encode("utf-8")   # must not raise
+
+
+def test_stream_page_requests_capped_resolution_and_quality():
+    text = pps._STREAM_PAGE
+    assert "1280" in text and "720" in text
+    assert "0.7" in text   # JPEG quality passed to canvas.toBlob
+
+
+def test_stream_page_uses_wake_lock_and_reconnects():
+    text = pps._STREAM_PAGE
+    assert "wakeLock" in text
+    assert "visibilitychange" in text
+    assert "new WebSocket" in text
+
+
+def test_stream_page_has_no_mediapipe_dependency():
+    # This page must stay a minimal camera-only page (design decision) —
+    # it must not grow the _TRACKING_PAGE's MediaPipe/pose dependency.
+    assert "mediapipe" not in pps._STREAM_PAGE.lower()

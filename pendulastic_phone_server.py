@@ -1212,6 +1212,169 @@ def _build_page(ws_host: str, ws_port: int) -> bytes:
     return _TRACKING_PAGE.encode("utf-8")
 
 
+# ─── minimal phone-camera streaming page (no MediaPipe — recording only) ──────
+
+_STREAM_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Pendulastic — Phone Camera</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e2e8f0}
+#video{width:100%;height:100%;object-fit:contain;display:block}
+#status{position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.72);padding:6px 16px;border-radius:20px;font-size:14px;
+  white-space:nowrap;z-index:20}
+#rec{position:absolute;top:12px;right:12px;display:none;align-items:center;gap:6px;
+  background:rgba(0,0,0,.65);padding:6px 12px;border-radius:20px;z-index:20;
+  font-variant-numeric:tabular-nums;font-size:13px}
+#dot{width:10px;height:10px;border-radius:50%;background:#ef4444;
+  animation:blink 1s step-start infinite}
+@keyframes blink{50%{opacity:0.15}}
+#error{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.9);color:#fca5a5;padding:24px;text-align:center;font-size:14px;
+  z-index:30}
+#warn{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.72);padding:6px 16px;border-radius:12px;font-size:12px;
+  color:#fbbf24;z-index:20;display:none}
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<div id="status">Starting camera...</div>
+<div id="rec"><span id="dot"></span><span id="elapsed">0:00</span></div>
+<div id="warn">Keep this screen on and Safari in the foreground while recording.</div>
+<div id="error"></div>
+<canvas id="canvas" style="display:none"></canvas>
+<script>
+const RES_W = 1280, RES_H = 720, JPEG_QUALITY = 0.7;
+const statusEl = document.getElementById('status');
+const errorEl  = document.getElementById('error');
+const recEl    = document.getElementById('rec');
+const elapsedEl= document.getElementById('elapsed');
+const warnEl   = document.getElementById('warn');
+const video    = document.getElementById('video');
+const canvas   = document.getElementById('canvas');
+const ctx      = canvas.getContext('2d');
+
+let ws = null, closedByUser = false, backoff = 500;
+let frameIndex = 0, startedAt = null, elapsedTimer = null;
+let wakeLock = null;
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = 'flex';
+}
+
+async function acquireWakeLock() {
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) { /* not fatal — the on-screen warning covers it */ }
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible') await acquireWakeLock();
+});
+
+function startElapsedTimer() {
+  startedAt = Date.now();
+  recEl.style.display = 'flex';
+  elapsedTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - startedAt) / 1000);
+    elapsedEl.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }, 1000);
+}
+
+function connectWs() {
+  if (closedByUser) return;
+  statusEl.textContent = 'Connecting...';
+  ws = new WebSocket('wss://' + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    statusEl.textContent = 'Live';
+    backoff = 500;
+    warnEl.style.display = 'block';
+    if (!startedAt) startElapsedTimer();
+  };
+  ws.onmessage = (event) => {
+    if (typeof event.data !== 'string') return;
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'sync_req') {
+        ws.send(JSON.stringify({type: 'sync_resp', t0: msg.t0, t1: Date.now()}));
+      }
+    } catch (e) { /* ignore unparseable control messages */ }
+  };
+  ws.onerror = () => { statusEl.textContent = 'Connection error'; };
+  ws.onclose = () => {
+    if (closedByUser) return;
+    statusEl.textContent = 'Reconnecting...';
+    setTimeout(connectWs, backoff);
+    backoff = Math.min(backoff * 2, 8000);
+  };
+}
+
+function sendFrame(blob) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  blob.arrayBuffer().then(buf => {
+    const header = new ArrayBuffer(8);
+    const view = new DataView(header);
+    view.setUint32(0, frameIndex, true);
+    view.setUint32(4, Date.now() >>> 0, true);
+    frameIndex += 1;
+    const combined = new Uint8Array(8 + buf.byteLength);
+    combined.set(new Uint8Array(header), 0);
+    combined.set(new Uint8Array(buf), 8);
+    ws.send(combined.buffer);
+  });
+}
+
+function captureLoop() {
+  if (video.videoWidth) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => { if (blob) sendFrame(blob); }, 'image/jpeg', JPEG_QUALITY);
+  }
+  if (video.requestVideoFrameCallback) {
+    video.requestVideoFrameCallback(captureLoop);
+  } else {
+    requestAnimationFrame(captureLoop);
+  }
+}
+
+async function init() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {facingMode: 'environment', width: {ideal: RES_W, max: RES_W},
+              height: {ideal: RES_H, max: RES_H}},
+      audio: false
+    });
+    video.srcObject = stream;
+    await new Promise(res => { video.onloadedmetadata = res; });
+    await video.play();
+    await acquireWakeLock();
+    connectWs();
+    if (video.requestVideoFrameCallback) {
+      video.requestVideoFrameCallback(captureLoop);
+    } else {
+      requestAnimationFrame(captureLoop);
+    }
+  } catch (e) {
+    showError('Could not start the camera: ' + e.message);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
+
 # ─── HTTP server ──────────────────────────────────────────────────────────────
 
 class _PageHandler(BaseHTTPRequestHandler):
