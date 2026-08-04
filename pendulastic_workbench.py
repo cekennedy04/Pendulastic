@@ -27,6 +27,7 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import pendulastic_pt_score
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
                     "Maximum Flexion", "Rest/Settled"]
@@ -329,8 +330,15 @@ class WorkbenchView(tk.Frame):
         from both):
 
         - "per_trace": each visible trace's own windowed_pt_params
-          (area_ratio, N, f, etc.) -- a per-modality diagnostic, not a
-          comparison. Includes the reference trace itself.
+          (area_ratio, N, f, etc.) as the sub-metric breakdown, plus the
+          composite Popović PT score and MAS estimate (pt_score, mas) --
+          computed from pendulastic_pt_score.compute_pt_params (the
+          function HEALTHY_REF was calibrated against), NOT from the
+          windowed params, whose omega_min_n/phi_max_ratio/area_ratio are
+          on different scales. pt_score/mas are both None together when
+          compute_pt_params returns None (insufficient signal) for that
+          trace. A per-modality diagnostic, not a comparison. Includes the
+          reference trace itself.
         - "vs_reference": every other visible trace's compare_pair result
           against the reference-selector's chosen reference, plus a
           timing_offset_sec (extrema_jitter-based "timing jitter across
@@ -348,7 +356,15 @@ class WorkbenchView(tk.Frame):
         for label, (t, y) in self._traces.items():
             if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
                 continue
-            out["per_trace"][label] = engine.windowed_pt_params(t, y)
+            params = engine.windowed_pt_params(t, y)
+            full_params = pendulastic_pt_score.compute_pt_params(t, y)
+            if full_params is not None:
+                params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
+                params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+            else:
+                params["pt_score"] = None
+                params["mas"] = None
+            out["per_trace"][label] = params
 
         ref_t, ref_y = self._traces[ref_label]
         ref_jitter = engine.extrema_jitter(ref_t, ref_y)
@@ -381,10 +397,18 @@ class WorkbenchView(tk.Frame):
             return
 
         for label, pt in snapshot["per_trace"].items():
+            if pt["pt_score"] is not None:
+                pt_str = f"PT(7p)={pt['pt_score']:.3f} (MAS {pt['mas']})"
+            else:
+                pt_str = "PT(7p)=n/a (insufficient signal)"
             self._metrics_text.insert(
                 "end",
-                f"{label}: area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
-                f"f={pt['f']:.2f} Hz\n")
+                f"{label}: {pt_str}  "
+                f"area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
+                f"f={pt['f']:.2f} Hz\n"
+                f"    R2n={pt['R2n']:.3f}  phi_max_ratio={pt['phi_max_ratio']:.3f}  "
+                f"omega_max_n={pt['omega_max_n']:.2f}  "
+                f"omega_min_n={pt['omega_min_n']:.3f}\n")
 
         self._metrics_text.insert("end", "\n")
 
