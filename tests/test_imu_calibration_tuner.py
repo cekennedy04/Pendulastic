@@ -49,6 +49,62 @@ def test_replay_trial_matches_hand_computed_rotation():
         f"expected ~{expected_final:.2f} deg, got {angle[-1]:.2f} deg")
 
 
+def _solo_hold_with_bias_then_burst_samples(bias):
+    """Like _solo_hold_then_burst_samples, but every gyro sample -- hold,
+    burst, and settle alike -- carries a constant additive bias, as a real
+    stationary MEMS gyro would report (it doesn't only appear while still).
+    The hold phase is what the gyro-bias calibration should measure from;
+    if correctly subtracted, the burst should still integrate to the same
+    true rotation as the zero-bias case."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    bx, by, bz = bias
+    samples.append({"t": t, "role": "distal", "sensor": "accel",
+                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+    n_hold = 100
+    for i in range(n_hold):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+    n_burst = 50
+    for i in range(n_burst):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, 2.0 + by, bz], "phone_ts_ms": ts_ms})
+    for i in range(100):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+    return samples
+
+
+def test_replay_trial_subtracts_calibrated_gyro_bias():
+    """A constant gyro bias present throughout the log (not just while still)
+    must be measured from a genuinely stable pre-burst hold and subtracted
+    from the burst too, so the biased trial's final angle matches a zero-bias
+    control run -- not the leftover discrepancy an uncorrected bias would
+    accumulate over the ~1.5s trial. Uses a realistic nonzero beta (accel
+    correction must be active for the stability check itself to hold pitch/
+    roll flat during the injected-bias hold) and compares against a
+    zero-bias control rather than a hand-derived constant, so the same
+    stale-accel-during-burst artifact common to both runs cancels out."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    clean_samples = _solo_hold_with_bias_then_burst_samples((0.0, 0.0, 0.0))
+    bias = (0.05, -0.08, 0.03)   # rad/s, comparable to a real MEMS offset
+    biased_samples = _solo_hold_with_bias_then_burst_samples(bias)
+
+    t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
+    t_biased, angle_biased = tuner.replay_trial(biased_samples, params)
+
+    assert abs(angle_biased[-1] - angle_clean[-1]) < 1.0, (
+        f"bias-corrected run ({angle_biased[-1]:.2f} deg) should match the "
+        f"zero-bias control ({angle_clean[-1]:.2f} deg) once the injected "
+        f"bias is properly measured and subtracted")
+
+
 def test_replay_trial_first_tick_is_nan_rest_are_finite():
     """Contract: tick 0 always precedes any processed sample (tick_times[0]
     always equals raw_samples[0]["t"] exactly), so no device state exists yet

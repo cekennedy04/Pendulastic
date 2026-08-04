@@ -132,6 +132,67 @@ def test_dynamic_beta_skips_correction_during_impact():
         err_msg="Impact accel should not distort orientation (correction skipped)")
 
 
+def test_calibrate_gyro_bias_uses_trailing_hold_buffer_mean():
+    """calibrate_gyro_bias() must set gyro_bias to the mean of the buffered
+    raw samples, once enough have accumulated."""
+    dev = imu._IMUDevice("12.0.0.1")
+    bias = np.array([0.02, -0.03, 0.01])
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES):
+        dev._gyro_hold_buf.append((now - 0.01 * i, bias.copy()))
+    dev.calibrate_gyro_bias()
+    np.testing.assert_allclose(dev.gyro_bias, bias, atol=1e-9)
+
+
+def test_calibrate_gyro_bias_leaves_zero_with_too_few_samples():
+    """Below GYRO_BIAS_MIN_SAMPLES the estimate is untrustworthy; gyro_bias
+    must stay at its previous value (zero, for a fresh device) rather than
+    being set from a handful of noisy samples."""
+    dev = imu._IMUDevice("12.0.0.2")
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES - 1):
+        dev._gyro_hold_buf.append((now - 0.01 * i, np.array([1.0, 1.0, 1.0])))
+    dev.calibrate_gyro_bias()
+    np.testing.assert_array_equal(dev.gyro_bias, np.zeros(3))
+
+
+def test_on_gyro_subtracts_calibrated_bias_before_ahrs_update():
+    """Once a bias is calibrated, feeding gyro readings equal to that bias
+    (i.e. the device is still holding at the same static offset) must leave
+    the AHRS quaternion effectively unchanged — the bias-corrected angular
+    velocity fed to the filter should be ~0, not the raw biased value."""
+    dev = imu._IMUDevice("12.0.0.3")
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    dev.gyro_bias = np.array([0.02, -0.03, 0.01])
+    q_before = dev.ahrs.q.copy()
+    dev.on_gyro(dev.gyro_bias.copy(), ts=1000)
+    np.testing.assert_allclose(dev.ahrs.q, q_before, atol=1e-3,
+        err_msg="A gyro reading equal to the calibrated bias should not "
+                "rotate the AHRS quaternion once bias is subtracted")
+
+
+def test_zero_calibrates_gyro_bias_for_connected_device():
+    """zero() must call calibrate_gyro_bias() on each connected device, so a
+    device that was held still just before zeroing gets its bias measured."""
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["12.0.0.4"] = imu._IMUDevice("12.0.0.4")
+    imu._roles["12.0.0.4"]   = imu.ROLE_DISTAL
+    dev = imu._devices["12.0.0.4"]
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    dev.last_rx = __import__("time").time()
+    bias = np.array([0.015, 0.0, -0.02])
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES + 5):
+        dev._gyro_hold_buf.append((now - 0.01 * i, bias.copy()))
+
+    imu.zero()
+
+    np.testing.assert_allclose(dev.gyro_bias, bias, atol=1e-9)
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_flex_axis_captured_on_first_motion_after_zero():
     """After zero(), the first gyro burst above threshold must populate _flex_axis."""
     imu.reset_devices()
