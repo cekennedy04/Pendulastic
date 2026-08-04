@@ -94,9 +94,9 @@ Placeholder constants in this spec get replaced with measured ones before Task 2
 
 ### 3.3 Live wiring
 
-`_IMUDevice` gains a new raw buffer, `_accel_hold_buf`, appended in `on_accel()` (or wherever accel
-samples are currently received) exactly the way `_gyro_hold_buf` is already appended in `on_gyro()`
-— trailing `GYRO_BIAS_WINDOW_S`, pruned the same way. `_IMUDevice.is_stationary() -> bool` calls
+`_IMUDevice` gains a new raw buffer, `_accel_hold_buf`, appended in `on_accel(self, v, ts)`
+(`pendulastic_imu_server.py:334`) exactly the way `_gyro_hold_buf` is already appended in
+`on_gyro()` — trailing `GYRO_BIAS_WINDOW_S`, pruned the same way. `_IMUDevice.is_stationary() -> bool` calls
 `_is_stationary_window(self._gyro_hold_buf, self._accel_hold_buf, now)`.
 
 `App`'s countdown poll loop (finishing the stalled auto-tare plan's gating — see Section 2) checks
