@@ -651,6 +651,21 @@ class MasterApp:
             participant_dir, video_path, rel_path = self._build_paths(pid)
             leg = self.var_leg.get()
             characterization = self.entry_characterization.get().strip()
+
+            # Collapsing Position/Height out of the folder tree means Leg +
+            # Characterization + Trial Number are now the only discriminators,
+            # so a repeated combination can silently overwrite a prior take's
+            # video (and its IMU CSV / Motive mirror) — confirm before that
+            # happens instead of clobbering already-collected data.
+            if os.path.exists(video_path) and not messagebox.askyesno(
+                    "Trial Already Recorded",
+                    f"{os.path.basename(video_path)} already exists for "
+                    f"{leg} / {characterization}.\n\n"
+                    "Recording again will overwrite that trial's video, IMU CSV, "
+                    "and Motive take.\n\nOverwrite it?"):
+                self.var_status.set("Idle - recording cancelled (trial already exists).")
+                return
+
             self._write_metadata(participant_dir, pid)
 
             # Make sure the camera is live (it normally already is). Opening here
