@@ -1169,6 +1169,7 @@ class App(tk.Tk):
         self._post = PostProcessingPanel(self, controller=self)
 
         self._workbench_trial_meta: dict = {}
+        self._workbench_imu_reference: list = []
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
             self._workbench_load = TrialLoadPanel(self, controller=self)
@@ -1358,10 +1359,12 @@ class App(tk.Tk):
         spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
         Video HPE model inference runs on a background thread since it's
         the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline."""
+        fast enough to run inline. IMU input is either a single JSONL raw
+        log or four independently-validated split-CSV components (design
+        spec 2026-08-04-sequential-csv-intake)."""
         traces = {}
+        imu_format = selection.get("imu_format", "jsonl")
         self._workbench_trial_meta = {
-            "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
             "models": selection["models"],
@@ -1369,12 +1372,36 @@ class App(tk.Tk):
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
-        if selection["imu_path"]:
-            ft_ratio = None
-            method_override = None
-            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-                method_override = "ockendon_flipped"
+        ft_ratio = None
+        method_override = None
+        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
+            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+            method_override = "ockendon_flipped"
+
+        if imu_format == "split_csv":
+            components = selection.get("imu_components", {})
+            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
+                try:
+                    t, angle, imu_reference = _wb_engine.load_imu_trial_from_components(
+                        components, ft_ratio=ft_ratio, method=method_override)
+                    traces["imu"] = (t, angle)
+                    self._workbench_trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._workbench_trial_meta so it never flows
+                    # into export_session()'s output -- it can be megabytes
+                    # for a real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._workbench_imu_reference = imu_reference
+                except Exception as e:
+                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+        elif selection["imu_path"]:
+            self._workbench_trial_meta["imu_path"] = selection["imu_path"]
             try:
                 t, angle = _wb_engine.load_imu_trial(
                     selection["imu_path"], ft_ratio=ft_ratio, method=method_override)

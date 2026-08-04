@@ -55,6 +55,12 @@ class TrialLoadPanel(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self._imu_path = tk.StringVar(value="")
+        self._imu_format = tk.StringVar(value="jsonl")
+        self._component_paths = {k: tk.StringVar(value="")
+                                 for k in ("accel", "gyro", "mag", "imu")}
+        self._component_status = {k: tk.StringVar(value="")
+                                  for k in ("accel", "gyro", "mag", "imu")}
+        self._component_validations: dict = {}
         self._video_path = tk.StringVar(value="")
         self._optitrack_path = tk.StringVar(value="")
         self._femur_cm = tk.StringVar(value="")
@@ -75,40 +81,101 @@ class TrialLoadPanel(tk.Frame):
         tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
                 ).grid(row=1, column=0, columnspan=3, sticky="w", **pad)
 
-        self._file_row(2, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
-                       [("IMU log", "*.jsonl *.csv"), ("All files", "*.*")], name="imu")
-        self._file_row(3, "Video (.mp4/.avi)", self._video_path,
+        tk.Label(self, text="IMU format:").grid(row=2, column=0, sticky="w", **pad)
+        format_frame = tk.Frame(self)
+        format_frame.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
+        tk.Radiobutton(format_frame, text="Single raw log (.jsonl)", variable=self._imu_format,
+                      value="jsonl", command=self._on_imu_format_changed).pack(side="left")
+        tk.Radiobutton(format_frame, text="Split CSV (4 files)", variable=self._imu_format,
+                      value="split_csv", command=self._on_imu_format_changed
+                      ).pack(side="left", padx=(12, 0))
+
+        self._imu_jsonl_frame = tk.Frame(self)
+        self._file_row(self._imu_jsonl_frame, 0, "Phone IMU raw log (.jsonl)", self._imu_path,
+                       [("IMU log", "*.jsonl"), ("All files", "*.*")], name="imu")
+        self._imu_jsonl_frame.grid(row=3, column=0, columnspan=3, sticky="we")
+
+        self._imu_split_frame = tk.Frame(self)
+        self._build_split_csv_rows(self._imu_split_frame)
+        self._imu_split_frame.grid(row=3, column=0, columnspan=3, sticky="we")
+
+        self._on_imu_format_changed()
+
+        self._file_row(self, 4, "Video (.mp4/.avi)", self._video_path,
                        [("Video", "*.mp4 *.avi"), ("All files", "*.*")], name="video")
-        self._file_row(4, "OptiTrack CSV", self._optitrack_path,
+        self._file_row(self, 5, "OptiTrack CSV", self._optitrack_path,
                        [("CSV", "*.csv"), ("All files", "*.*")], name="optitrack")
 
         tk.Label(self, text="HPE models to run:").grid(
-            row=5, column=0, sticky="nw", **pad)
+            row=6, column=0, sticky="nw", **pad)
         model_frame = tk.Frame(self)
-        model_frame.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
+        model_frame.grid(row=6, column=1, columnspan=2, sticky="w", **pad)
         for i, name in enumerate(analysis_pipeline.MODEL_FUNCTIONS):
             tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name]
                           ).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
 
         tk.Label(self, text="Femur length (cm, optional):").grid(
-            row=6, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
-            row=6, column=1, sticky="w", **pad)
-
-        tk.Label(self, text="Tibia length (cm, optional):").grid(
             row=7, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
+        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
             row=7, column=1, sticky="w", **pad)
 
-        tk.Button(self, text="Load Trial", command=self._on_load_clicked
-                 ).grid(row=8, column=0, columnspan=3, pady=16)
+        tk.Label(self, text="Tibia length (cm, optional):").grid(
+            row=8, column=0, sticky="w", **pad)
+        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
+            row=8, column=1, sticky="w", **pad)
 
-    def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
+        tk.Button(self, text="Load Trial", command=self._on_load_clicked
+                 ).grid(row=9, column=0, columnspan=3, pady=16)
+
+    _COMPONENT_LABELS = {"accel": "Accelerometer", "gyro": "Gyroscope",
+                         "mag": "Magnetometer", "imu": "Raw IMU"}
+    _COMPONENT_FILETYPES = [("CSV", "*.csv"), ("All files", "*.*")]
+
+    def _build_split_csv_rows(self, parent) -> None:
+        for i, kind in enumerate(("accel", "gyro", "mag", "imu")):
+            tk.Label(parent, text=self._COMPONENT_LABELS[kind]).grid(
+                row=i, column=0, sticky="w", padx=12, pady=4)
+            tk.Entry(parent, textvariable=self._component_paths[kind], width=36,
+                    state="readonly").grid(row=i, column=1, sticky="we", padx=4)
+            tk.Button(parent, text="Browse...",
+                     command=lambda k=kind: self._browse_component(k)
+                     ).grid(row=i, column=2, sticky="w", padx=4)
+            tk.Label(parent, textvariable=self._component_status[kind], anchor="w",
+                    justify="left", wraplength=260
+                    ).grid(row=i, column=3, sticky="w", padx=(8, 12))
+
+    def _on_imu_format_changed(self) -> None:
+        if self._imu_format.get() == "split_csv":
+            self._imu_jsonl_frame.grid_remove()
+            self._imu_split_frame.grid()
+        else:
+            self._imu_split_frame.grid_remove()
+            self._imu_jsonl_frame.grid()
+
+    def _browse_component(self, kind: str) -> None:
+        path = filedialog.askopenfilename(filetypes=self._COMPONENT_FILETYPES)
+        if not path:
+            return
+        # Validate first, then update the path StringVar and the status
+        # label together from the same result -- never leave a stale
+        # ok=True validation (from a PREVIOUS successful browse) associated
+        # with a path the UI is now displaying that wasn't actually
+        # validated (e.g. if this browse's validation fails).
+        result = engine.validate_component_csv(path, kind)
+        self._component_validations[kind] = dict(result, path=path)
+        self._component_paths[kind].set(path)
+        if result["ok"]:
+            self._component_status[kind].set(
+                f"✓ {result['n_samples']} samples @ {result['fs_eff']:.1f} Hz")
+        else:
+            self._component_status[kind].set(f"✗ {os.path.basename(path)}: {result['error']}")
+
+    def _file_row(self, parent, row: int, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
-        tk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
-        tk.Entry(self, textvariable=var, width=48, state="readonly").grid(
+        tk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
+        tk.Entry(parent, textvariable=var, width=48, state="readonly").grid(
             row=row, column=1, sticky="we", padx=4)
-        btn = tk.Button(self, text="Browse...",
+        btn = tk.Button(parent, text="Browse...",
                        command=lambda: self._browse(var, filetypes))
         btn.grid(row=row, column=2, sticky="w", padx=4)
         self._browse_buttons[name] = btn
@@ -131,8 +198,11 @@ class TrialLoadPanel(tk.Frame):
             except ValueError:
                 return None
 
+        imu_format = self._imu_format.get()
         return {
+            "imu_format": imu_format,
             "imu_path": self._imu_path.get() or None,
+            "imu_components": dict(self._component_validations) if imu_format == "split_csv" else {},
             "video_path": self._video_path.get() or None,
             "optitrack_path": self._optitrack_path.get() or None,
             "models": [name for name, var in self._model_vars.items() if var.get()],
@@ -142,8 +212,22 @@ class TrialLoadPanel(tk.Frame):
 
     def _on_load_clicked(self) -> None:
         selection = self.get_selection()
-        if not any([selection["imu_path"], selection["video_path"],
-                   selection["optitrack_path"]]):
+
+        if selection["imu_format"] == "split_csv":
+            has_any = any(self._component_paths[k].get() for k in ("accel", "gyro", "mag", "imu"))
+            missing_or_invalid = [k for k in ("accel", "gyro", "mag", "imu")
+                                  if not selection["imu_components"].get(k, {}).get("ok")]
+            if has_any and missing_or_invalid:
+                messagebox.showerror(
+                    "Incomplete IMU intake",
+                    "The following component(s) still need a valid file before the IMU "
+                    "trace can be bound: " + ", ".join(missing_or_invalid))
+                return
+            imu_ready = has_any and not missing_or_invalid
+        else:
+            imu_ready = bool(selection["imu_path"])
+
+        if not any([imu_ready, selection["video_path"], selection["optitrack_path"]]):
             messagebox.showerror("No trial data",
                                  "Select at least one of: IMU log, video, OptiTrack CSV.")
             return
@@ -539,6 +623,7 @@ class App(tk.Tk):
         self.minsize(900, 600)
 
         self._trial_meta: dict = {}
+        self._imu_reference: list = []
         self._status_var = tk.StringVar(value="")
 
         self._load_panel = TrialLoadPanel(self, controller=self)
@@ -565,10 +650,13 @@ class App(tk.Tk):
         spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
         Video HPE model inference runs on a background thread since it's
         the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline."""
+        fast enough to run inline. IMU input is either a single JSONL raw
+        log or four independently-validated split-CSV components (design
+        spec 2026-08-04-sequential-csv-intake) -- TrialLoadPanel.get_selection()
+        distinguishes the two via selection["imu_format"]."""
         traces = {}
+        imu_format = selection.get("imu_format", "jsonl")
         self._trial_meta = {
-            "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
             "models": selection["models"],
@@ -576,17 +664,36 @@ class App(tk.Tk):
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
-        if selection["imu_path"]:
-            ft_ratio = None
-            method_override = None
-            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-                # Supplying limb lengths means the researcher wants to validate
-                # the personalized-ratio Ockendon path (Section 3a) -- ft_ratio
-                # alone does nothing unless the IMU trace actually runs through
-                # ockendon_deg, so force the method rather than silently no-op
-                # if the persisted tuning config's method is "relative".
-                method_override = "ockendon_flipped"
+        ft_ratio = None
+        method_override = None
+        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
+            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+            method_override = "ockendon_flipped"
+
+        if imu_format == "split_csv":
+            components = selection.get("imu_components", {})
+            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
+                try:
+                    t, angle, imu_reference = engine.load_imu_trial_from_components(
+                        components, ft_ratio=ft_ratio, method=method_override)
+                    traces["imu"] = (t, angle)
+                    self._trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._trial_meta so it never flows into
+                    # export_session()'s output -- it can be megabytes for a
+                    # real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._imu_reference = imu_reference
+                except Exception as e:
+                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+        elif selection["imu_path"]:
+            self._trial_meta["imu_path"] = selection["imu_path"]
             try:
                 t, angle = engine.load_imu_trial(
                     selection["imu_path"], ft_ratio=ft_ratio, method=method_override)
