@@ -83,3 +83,34 @@ def test_sorted_sessions_with_trace_excludes_unparseable_dates():
 
     assert len(result) == 1
     assert result[0]["label"] == "Initial"
+
+
+def test_render_dashboard_bar_chart_covers_all_params():
+    history = _history([_session("Initial", "2026-07-07")])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_bar = fig.axes[1]
+    xtick_labels = [t.get_text() for t in ax_bar.get_xticklabels()]
+    assert xtick_labels == dash.PARAM_KEYS
+
+
+def test_render_dashboard_bar_chart_drops_session_missing_a_param():
+    """Strict single-trace filtering (design spec Section 6): a session
+    whose selected-trace metrics are missing one of the 7 params must be
+    dropped from the bar chart entirely, never partially rendered or
+    backfilled from another trace in that same session."""
+    complete = _session("Initial", "2026-07-07")
+    incomplete_metrics = {"R2n": 0.9, "N": 6.0, "pt_score": 0.1, "mas": "0"}
+    incomplete = _session("Post-Training", "2026-07-17", extra_metrics=incomplete_metrics)
+    history = _history([complete, incomplete])
+
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_bar = fig.axes[1]
+    legend = ax_bar.get_legend()
+    labels = [t.get_text() for t in legend.get_texts()]
+    assert labels == ["Initial"]
+
+
+def test_render_dashboard_bar_chart_empty_sessions_does_not_raise():
+    history = _history([])
+    fig = dash.render_dashboard(history, "left", "imu")
+    assert fig.axes[1].get_legend() is None

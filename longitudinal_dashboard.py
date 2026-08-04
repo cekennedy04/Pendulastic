@@ -74,9 +74,38 @@ def _render_waveform_overlay(ax, sessions: list, trace_label: str) -> None:
 
 
 def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
-    """Placeholder body -- filled in by Task 6."""
     ax.set_ylabel("Parameter value")
     ax.set_title("Parameter comparison vs healthy reference")
+
+    # Strict single-trace filtering: every bar in a session's group comes
+    # from traces[trace_label]["metrics"] only -- never from another trace
+    # present in the same session, even as a fallback for a missing param.
+    # A session missing any of the 7 params is dropped whole, not
+    # partially filled, so a grouped bar never mixes readings from two
+    # different sensors (design spec Section 6).
+    usable = [s for s in sessions
+             if all(key in s["traces"][trace_label]["metrics"] for key in PARAM_KEYS)]
+    if not usable:
+        return
+
+    n_sessions = len(usable)
+    n_params = len(PARAM_KEYS)
+    width = 0.8 / n_sessions
+    x = list(range(n_params))
+
+    for i, session in enumerate(usable):
+        metrics = session["traces"][trace_label]["metrics"]
+        values = [metrics[key] for key in PARAM_KEYS]
+        offsets = [xi + i * width for xi in x]
+        ax.bar(offsets, values, width=width, label=session["label"])
+
+    for i, key in enumerate(PARAM_KEYS):
+        ax.hlines(HEALTHY_REF[key], i - 0.1, i + n_sessions * width, colors="black",
+                  linestyles="dashed", linewidth=1)
+
+    ax.set_xticks([xi + (n_sessions * width) / 2 for xi in x])
+    ax.set_xticklabels(PARAM_KEYS, rotation=30, ha="right")
+    ax.legend(fontsize=8)
 
 
 def _render_pt_trend(ax, sessions: list, trace_label: str) -> None:
