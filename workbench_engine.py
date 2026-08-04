@@ -457,103 +457,27 @@ def load_imu_trial_from_components(validations: dict, config: Optional[dict] = N
     return t, angle, bound["imu_reference"]
 
 
-_SPLIT_CSV_SUFFIXES = {"imu": "_imu.csv", "gyro": "_gyro.csv",
-                       "accel": "_accel.csv", "mag": "_mag.csv"}
-_SPLIT_CSV_HEADER = ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"]
-_SENSOR_NAME_MAP = {"Gyroscope": "gyro", "Accelerometer": "accel", "Magnetometer": "mag"}
-
-
-def _derive_split_csv_siblings(anchor_path: str) -> dict:
-    """Given any one of the four sibling paths (_imu/_gyro/_accel/_mag.csv),
-    identify which suffix the anchor actually ends with and derive the
-    other three from the recovered trial prefix. Never assumes a fixed
-    suffix -- a _gyro.csv/_accel.csv/_mag.csv anchor must derive correctly
-    too, not just an _imu.csv one."""
-    matched_key = None
-    matched_suffix = None
-    for key, suffix in _SPLIT_CSV_SUFFIXES.items():
-        if anchor_path.endswith(suffix):
-            matched_key = key
-            matched_suffix = suffix
-            break
-    if matched_key is None:
-        raise ValueError(
-            f"{anchor_path!r} does not match any known split-CSV suffix "
-            f"({', '.join(_SPLIT_CSV_SUFFIXES.values())}).")
-    prefix = anchor_path[:-len(matched_suffix)]
-    return {key: prefix + suffix for key, suffix in _SPLIT_CSV_SUFFIXES.items()}
-
-
-def _read_one_split_csv(path: str, sensor_kind: str) -> list:
-    """Read one raw split-CSV sibling (gyro/accel/mag), validating its
-    header before parsing any rows -- a file that doesn't match the
-    expected shape fails immediately with a clear message instead of an
-    obscure crash inside replay_trial()."""
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Missing {sensor_kind} sibling file: expected at {path!r}")
-    samples = []
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
-        try:
-            header = next(reader)
-        except StopIteration:
-            raise ValueError(f"{path!r} is empty (expected header {_SPLIT_CSV_HEADER}).")
-        if header != _SPLIT_CSV_HEADER:
-            raise ValueError(
-                f"{path!r} has an unexpected header {header!r}; "
-                f"expected {_SPLIT_CSV_HEADER}.")
-        for row_num, row in enumerate(reader, start=2):
-            if len(row) != len(_SPLIT_CSV_HEADER):
-                raise ValueError(
-                    f"{path!r} row {row_num} has {len(row)} columns; "
-                    f"expected {len(_SPLIT_CSV_HEADER)}.")
-            timestamp_ms, phone_ts_ms, role, sensor_name, x, y, z = row
-            sensor = _SENSOR_NAME_MAP.get(sensor_name)
-            if sensor is None:
-                raise ValueError(
-                    f"{path!r} row {row_num} has unrecognized sensor_name "
-                    f"{sensor_name!r}; expected one of {list(_SENSOR_NAME_MAP)}.")
-            samples.append({
-                "t": float(timestamp_ms) / 1000.0,
-                "role": role,
-                "sensor": sensor,
-                "v": [float(x), float(y), float(z)],
-                "phone_ts_ms": int(float(phone_ts_ms)),
-            })
-    return samples
-
-
-def _read_split_csv_samples(anchor_path: str) -> list:
-    """Read the three raw split-CSV siblings (gyro/accel/mag) for the
-    trial anchored by anchor_path (any one of the four sibling files),
-    merge them, and sort chronologically -- satisfying replay_trial's
-    "chronologically-sorted list" contract."""
-    paths = _derive_split_csv_siblings(anchor_path)
-    samples = []
-    for kind in ("gyro", "accel", "mag"):
-        samples.extend(_read_one_split_csv(paths[kind], kind))
-    samples.sort(key=lambda s: s["t"])
-    return samples
-
-
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
                    ft_ratio: Optional[float] = None,
                    method: Optional[str] = None):
-    """Load a phone's raw accel/gyro/mag samples -- either a JSONL raw log
-    (start_raw_log()'s format) or the older split-CSV sibling format
-    (_imu/_gyro/_accel/_mag.csv) -- and run them through the Madgwick AHRS
+    """Load a phone's raw accel/gyro/mag samples from a JSONL raw log
+    (start_raw_log()'s format) and run them through the Madgwick AHRS
     replay engine (imu_calibration_tuner.replay_trial), returning the
     finite-filtered (t, angle) knee-angle series.
+
+    Split-CSV trials no longer go through this function -- use
+    load_imu_trial_from_components() with four validate_component_csv()
+    results instead (design spec 2026-08-04-sequential-csv-intake).
 
     config defaults to the currently-persisted imu_calibration_config;
     ft_ratio/method optionally override the config's own values for this
     call only (the Ockendon-personalization workflow, design spec Section
     3a) without touching the persisted config file."""
-    if jsonl_path.endswith(".jsonl"):
-        samples = _read_jsonl_samples(jsonl_path)
-    else:
-        samples = _read_split_csv_samples(jsonl_path)
+    if not jsonl_path.endswith(".jsonl"):
+        raise ValueError(
+            f"load_imu_trial() only accepts a .jsonl path; got {jsonl_path!r}. "
+            f"Split-CSV trials must go through load_imu_trial_from_components().")
+    samples = _read_jsonl_samples(jsonl_path)
     return _replay_samples(samples, config, ft_ratio, method)
 
 
