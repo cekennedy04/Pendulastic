@@ -727,3 +727,65 @@ def test_on_workbench_load_another_returns_to_trial_load_panel(monkeypatch):
         assert not app._workbench_view.winfo_ismapped()
     finally:
         app.destroy()
+
+
+def test_on_load_trial_populates_raw_diagnostics_when_imu_selected(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0]), np.array([180.0]))),
+        "compute_raw_sensor_diagnostics": staticmethod(
+            lambda path: {"peak_gyro_velocity_dps": 42.0, "accel_release_time_sec": 1.23}),
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.on_load_trial({
+            "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+        assert app._workbench_raw_diagnostics == {
+            "peak_gyro_velocity_dps": 42.0, "accel_release_time_sec": 1.23}
+    finally:
+        app.destroy()
+
+
+def test_on_load_trial_raw_diagnostics_failure_does_not_block_trial_load(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+
+    def raise_error(path):
+        raise ValueError("synthetic failure")
+
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0]), np.array([180.0]))),
+        "compute_raw_sensor_diagnostics": staticmethod(raise_error),
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.on_load_trial({
+            "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+        assert app._workbench_view.winfo_ismapped()
+        assert "imu" in app._workbench_view._traces
+        assert app._workbench_raw_diagnostics is None
+    finally:
+        app.destroy()

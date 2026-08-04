@@ -1169,6 +1169,7 @@ class App(tk.Tk):
         self._post = PostProcessingPanel(self, controller=self)
 
         self._workbench_trial_meta: dict = {}
+        self._workbench_raw_diagnostics: Optional[dict] = None
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
             self._workbench_load = TrialLoadPanel(self, controller=self)
@@ -1369,6 +1370,7 @@ class App(tk.Tk):
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
+        self._workbench_raw_diagnostics = None
         if selection["imu_path"]:
             ft_ratio = None
             method_override = None
@@ -1381,6 +1383,12 @@ class App(tk.Tk):
                 traces["imu"] = (t, angle)
             except Exception as e:
                 messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+
+            try:
+                self._workbench_raw_diagnostics = _wb_engine.compute_raw_sensor_diagnostics(
+                    selection["imu_path"])
+            except Exception:
+                pass   # supplementary cross-check only -- never blocks the trial load
 
         if selection["optitrack_path"]:
             try:
