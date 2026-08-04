@@ -681,6 +681,8 @@ class App(tk.Tk):
         self.geometry("1200x800")
         self.resizable(True, True)
         self.minsize(900, 600)
+        ws.apply_ttk_theme(self)
+        self.configure(bg=ws.PALETTE["BG"])
 
         self._trial_meta: dict = {}
         self._status_var = tk.StringVar(value="")
@@ -688,8 +690,9 @@ class App(tk.Tk):
         self._load_panel = TrialLoadPanel(self, controller=self)
         self._workbench_view = WorkbenchView(self, controller=self)
         self._load_panel.pack(fill="both", expand=True)
-        tk.Label(self, textvariable=self._status_var, anchor="w").pack(
-            side="bottom", fill="x", padx=8, pady=2)
+        tk.Label(self, textvariable=self._status_var, anchor="w",
+                bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
+                font=ws.FONT_SMALL).pack(side="bottom", fill="x", padx=8, pady=2)
 
     def get_trial_meta(self) -> dict:
         return dict(self._trial_meta)
