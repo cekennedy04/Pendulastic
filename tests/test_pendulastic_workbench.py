@@ -234,3 +234,33 @@ def test_standalone_app_load_another_returns_to_load_panel():
         assert not app._workbench_view.winfo_ismapped()
     finally:
         app.destroy()
+
+
+def test_workbench_view_per_trace_tree_populates_from_traces():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    rows = [wv._per_trace_tree.item(i)["values"] for i in wv._per_trace_tree.get_children()]
+    labels = [row[0] for row in rows]
+    assert "imu" in labels
+    assert "optitrack" in labels
+
+
+def test_workbench_view_vs_ref_tree_shows_placeholder_when_no_traces():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    r.update()
+    rows = [wv._vs_ref_tree.item(i)["values"] for i in wv._vs_ref_tree.get_children()]
+    assert rows == [["No data yet", "", "", "", "", "", ""]]
+
+
+def test_workbench_view_per_trace_tree_column_widths_are_fixed():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    r.update()
+    for col in wv._PER_TRACE_COLS[1:]:
+        assert wv._per_trace_tree.column(col)["stretch"] == 0

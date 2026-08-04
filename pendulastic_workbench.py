@@ -190,7 +190,7 @@ class WorkbenchView(tk.Frame):
     controller: App instance."""
 
     def __init__(self, parent, controller) -> None:
-        super().__init__(parent)
+        super().__init__(parent, bg=ws.PALETTE["BG"])
         self.controller = controller
         self._cap: Optional[cv2.VideoCapture] = None
         self._fps: float = 30.0
@@ -206,58 +206,109 @@ class WorkbenchView(tk.Frame):
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
         self._build_widgets()
 
+    _PER_TRACE_COLS = ("label", "area_ratio", "N", "f_hz", "R2n",
+                       "omega_max_n", "omega_min_n")
+    _PER_TRACE_HDRS = ("Trace", "Area Ratio", "N", "f (Hz)", "R2n",
+                       "ωmax_n", "ωmin_n")
+    _PER_TRACE_W    = (110, 90, 60, 70, 70, 80, 80)
+
+    _VS_REF_COLS = ("label", "reference", "rmse_deg", "mae_deg", "lag_sec",
+                    "timing_offset_sec", "status")
+    _VS_REF_HDRS = ("Trace", "Reference", "RMSE (deg)", "MAE (deg)",
+                    "Lag (s)", "Timing Offset (s)", "Status")
+    _VS_REF_W    = (100, 100, 90, 90, 70, 130, 110)
+
     def _build_widgets(self) -> None:
         paned = ttk.PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True)
 
-        left = tk.Frame(paned)
+        left = tk.Frame(paned, bg=ws.PALETTE["BG"])
         paned.add(left, weight=1)
 
-        self._video_label = tk.Label(left, bg="black")
-        self._video_label.pack(fill="both", expand=True)
+        self._video_label = tk.Label(left, bg="black",
+                                     highlightbackground=ws.PALETTE["BORDER"],
+                                     highlightthickness=1)
+        self._video_label.pack(fill="both", expand=True, padx=8, pady=8)
 
         self._scrubber = ttk.Scale(left, from_=0, to=0, orient="horizontal",
-                                   variable=self._scrub_var,
-                                   command=self._on_scrub)
+                                   variable=self._scrub_var, command=self._on_scrub)
         self._scrubber.pack(fill="x", padx=8, pady=4)
 
-        self._right = tk.Frame(paned)
+        self._right = tk.Frame(paned, bg=ws.PALETTE["BG"])
         paned.add(self._right, weight=1)
 
-        top_controls = tk.Frame(self._right)
+        top_controls = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         top_controls.pack(fill="x", padx=8, pady=4)
-        tk.Label(top_controls, text="Reference:").pack(side="left")
+        tk.Label(top_controls, text="Reference:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
         self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
         self._reference_menu.pack(side="left", padx=6)
         self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
-        self._load_another_button = tk.Button(
-            top_controls, text="← Load Different Trial",
-            command=lambda: self.controller.on_workbench_load_another())
+        self._load_another_button = ws.secondary_button(
+            top_controls, "← Load Different Trial",
+            lambda: self.controller.on_workbench_load_another())
         self._load_another_button.pack(side="right", padx=6)
 
-        annot_toolbar = tk.Frame(self._right)
+        annot_toolbar = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         annot_toolbar.pack(fill="x", padx=8, pady=4)
-        tk.Label(annot_toolbar, text="Milestone:").pack(side="left")
+        tk.Label(annot_toolbar, text="Milestone:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
         ttk.OptionMenu(annot_toolbar, self._pending_milestone,
                       MILESTONE_LABELS[0], *MILESTONE_LABELS).pack(side="left", padx=6)
-        tk.Button(annot_toolbar, text="Mark Here",
-                 command=self._on_mark_milestone).pack(side="left", padx=6)
-        tk.Button(annot_toolbar, text="Export Session...",
-                 command=self._on_export_clicked).pack(side="right", padx=6)
+        ws.secondary_button(annot_toolbar, "Mark Here",
+                            self._on_mark_milestone).pack(side="left", padx=6)
+        ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
+                            self._on_export_clicked).pack(side="right", padx=6)
 
-        self._visibility_frame = tk.Frame(self._right)
+        self._visibility_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
 
         self._fig = Figure(figsize=(6, 4), dpi=100)
+        self._fig.patch.set_facecolor(ws.PALETTE["BG"])
         self._ax = self._fig.add_subplot(111)
-        self._ax.set_xlabel("Time (s)")
-        self._ax.set_ylabel("Knee Angle (deg)")
+        self._style_axes()
         self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
         self._plot_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
         self._fig.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
-        self._metrics_text = tk.Text(self._right, height=8, state="disabled")
-        self._metrics_text.pack(fill="x", padx=8, pady=4)
+        tables_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
+        tables_frame.pack(fill="x", padx=8, pady=4)
+
+        per_trace_card = ws.card_frame(tables_frame, "PER-TRACE METRICS")
+        per_trace_card.pack(fill="x", pady=(0, 6))
+        self._per_trace_tree = self._make_metrics_treeview(
+            per_trace_card, self._PER_TRACE_COLS, self._PER_TRACE_HDRS, self._PER_TRACE_W)
+
+        vs_ref_card = ws.card_frame(tables_frame, "VS-REFERENCE METRICS")
+        vs_ref_card.pack(fill="x")
+        self._vs_ref_tree = self._make_metrics_treeview(
+            vs_ref_card, self._VS_REF_COLS, self._VS_REF_HDRS, self._VS_REF_W)
+
+        self._recompute_metrics()
+
+    def _style_axes(self) -> None:
+        self._ax.set_facecolor(ws.PALETTE["SURFACE"])
+        self._ax.set_xlabel("Time (s)", color=ws.PALETTE["FG2"])
+        self._ax.set_ylabel("Knee Angle (deg)", color=ws.PALETTE["FG2"])
+        self._ax.tick_params(colors=ws.PALETTE["FG2"])
+        for spine in self._ax.spines.values():
+            spine.set_color(ws.PALETTE["BORDER"])
+        self._ax.grid(True, color=ws.PALETTE["BORDER"], linewidth=0.5, alpha=0.6)
+
+    def _make_metrics_treeview(self, parent, cols, hdrs, widths) -> ttk.Treeview:
+        wrap = tk.Frame(parent, bg=ws.PALETTE["PANEL"])
+        wrap.pack(fill="x")
+        tree = ttk.Treeview(wrap, style="Workbench.Treeview", columns=cols,
+                            show="headings", height=4, selectmode="none")
+        for key, hdr, w in zip(cols, hdrs, widths):
+            tree.heading(key, text=hdr)
+            tree.column(key, width=w, anchor="center", stretch=False)
+        tree.column(cols[0], anchor="w", stretch=True)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        return tree
 
     def set_traces(self, traces: dict) -> None:
         """traces: {label: (t, angle)}. Rebuilds the plot and the visibility/
@@ -278,8 +329,7 @@ class WorkbenchView(tk.Frame):
         for widget in self._visibility_frame.winfo_children():
             widget.destroy()
         self._ax.clear()
-        self._ax.set_xlabel("Time (s)")
-        self._ax.set_ylabel("Knee Angle (deg)")
+        self._style_axes()
         self._trace_lines = {}
         self._visible_vars = {}
         self._lag_override_vars = {}
@@ -403,36 +453,41 @@ class WorkbenchView(tk.Frame):
         return out
 
     def _recompute_metrics(self) -> None:
-        """Renders get_metrics_snapshot() as text in the metrics readout:
-        one line per visible trace's own PT parameters, then one line per
-        non-reference visible trace's comparison against the reference."""
+        """Populates both metrics Treeview tables from get_metrics_snapshot()
+        -- the same method CSV export (Task 5) reads from, so displayed and
+        exported values are always identical. Shows a single 'No data yet'
+        placeholder row per table when its source dict is empty, rather
+        than rendering a blank (ambiguous empty-vs-broken) table."""
         snapshot = self.get_metrics_snapshot()
-        self._metrics_text.configure(state="normal")
-        self._metrics_text.delete("1.0", "end")
-        ref_label = snapshot["reference"]
-        if not ref_label:
-            self._metrics_text.configure(state="disabled")
-            return
 
+        for tree in (self._per_trace_tree, self._vs_ref_tree):
+            for item in tree.get_children():
+                tree.delete(item)
+
+        if not snapshot["per_trace"]:
+            self._per_trace_tree.insert(
+                "", "end", values=("No data yet", "", "", "", "", "", ""))
         for label, pt in snapshot["per_trace"].items():
-            self._metrics_text.insert(
-                "end",
-                f"{label}: area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
-                f"f={pt['f']:.2f} Hz\n")
+            self._per_trace_tree.insert("", "end", values=(
+                label, f"{pt['area_ratio']:.3f}", f"{pt['N']:.1f}",
+                f"{pt['f']:.2f}", f"{pt['R2n']:.3f}",
+                f"{pt['omega_max_n']:.3f}", f"{pt['omega_min_n']:.3f}"))
 
-        self._metrics_text.insert("end", "\n")
-
+        if not snapshot["vs_reference"]:
+            self._vs_ref_tree.insert(
+                "", "end", values=("No data yet", "", "", "", "", "", ""))
+        ref_label = snapshot["reference"]
         for label, result in snapshot["vs_reference"].items():
             if result["status"] == "ok":
-                jitter_str = (f"{result['timing_offset_sec']:.3f}s"
+                jitter_str = (f"{result['timing_offset_sec']:.3f}"
                              if result["timing_offset_sec"] is not None else "n/a")
-                line = (f"{label} vs {ref_label}: RMSE={result['rmse_deg']:.1f} deg  "
-                       f"MAE={result['mae_deg']:.1f} deg  lag={result['lag_sec']:.2f}s  "
-                       f"jitter={jitter_str}\n")
+                self._vs_ref_tree.insert("", "end", values=(
+                    label, ref_label, f"{result['rmse_deg']:.2f}",
+                    f"{result['mae_deg']:.2f}", f"{result['lag_sec']:.2f}",
+                    jitter_str, "ok"))
             else:
-                line = f"{label} vs {ref_label}: {result['error']}\n"
-            self._metrics_text.insert("end", line)
-        self._metrics_text.configure(state="disabled")
+                self._vs_ref_tree.insert("", "end", values=(
+                    label, ref_label, "", "", "", "", result["error"]))
 
     def _on_mark_milestone(self) -> None:
         """Stale-frame binding (design spec Section 6): reads
