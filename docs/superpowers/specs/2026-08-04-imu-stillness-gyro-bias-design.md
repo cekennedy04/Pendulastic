@@ -91,15 +91,19 @@ Returns `True` only when, over a window spanning the full `GYRO_BIAS_WINDOW_S` (
 buffer's oldest sample to be at least `0.95 * GYRO_BIAS_WINDOW_S` old — not just "has enough
 entries," the same guard the existing WIP already has for its fused-angle version):
 
-- **Raw gyro:** peak-to-peak of `‖gyro‖` across the window is below `GYRO_STATIONARY_MAX_DPS`.
-- **Raw accel:** peak-to-peak of `‖accel‖` across the window is below `ACCEL_STATIONARY_MAX_MPS2`.
+- **Raw gyro:** peak-to-peak of `‖gyro‖` across the window is below `GYRO_STATIONARY_MAX_RAD_S`.
+  Raw gyro samples in this codebase are in **rad/s**, matching `_FLEX_CAPTURE_THRESHOLD = 1.0` rad/s
+  (`pendulastic_imu_server.py:476`, compared directly against raw `v` with no conversion) — not
+  deg/s. The "12.7°/s" contamination case cited throughout this spec is ≈0.222 rad/s in these units.
+- **Raw accel:** peak-to-peak of `‖accel‖` across the window is below `ACCEL_STATIONARY_MAX_MPS2`
+  (m/s², matching `accel` values elsewhere in this file, e.g. gravity ≈9.81).
 
 Both conditions required — gyro alone would miss linear-acceleration handling (sliding the limb
 without rotating it much); accel alone would miss rotational handling.
 
 ### 3.2 Threshold values — determined empirically, not guessed
 
-`GYRO_STATIONARY_MAX_DPS` and `ACCEL_STATIONARY_MAX_MPS2` are **not** hardcoded from first
+`GYRO_STATIONARY_MAX_RAD_S` and `ACCEL_STATIONARY_MAX_MPS2` are **not** hardcoded from first
 principles. Task 1 of the implementation plan pulls real pre-release segments from existing
 `data/*_imu_raw.jsonl` recordings — including whichever trial produced the 12.7°/s contamination
 case — and computes actual raw gyro/accel variance during known-still vs. known-handled windows,
