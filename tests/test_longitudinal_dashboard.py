@@ -133,3 +133,56 @@ def test_render_dashboard_bar_chart_xtick_position_with_two_sessions():
     # With 2 sessions and 7 parameters, xticks should be at positions
     # for each parameter. The first xtick (param 0) should be at 0.2.
     assert xticks[0] == pytest.approx(0.2, abs=1e-6)
+
+
+def test_render_dashboard_pt_trend_has_three_zone_bands():
+    history = _history([_session("Initial", "2026-07-07")])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+    # axhspan draws a PolyCollection per band.
+    from matplotlib.collections import PolyCollection
+    bands = [c for c in ax_trend.collections if isinstance(c, PolyCollection)]
+    assert len(bands) == 3
+
+
+def test_render_dashboard_pt_trend_annotates_delta_between_sessions():
+    s1 = _session("Initial", "2026-07-07", pt_score=0.100)
+    s2 = _session("Post-Training", "2026-07-17", pt_score=0.150)
+    history = _history([s1, s2])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+    texts = [a.get_text() for a in ax_trend.texts]
+    assert any("+50%" in t for t in texts)
+
+
+def test_render_dashboard_pt_trend_single_session_no_delta_and_no_raise():
+    history = _history([_session("Initial", "2026-07-07")])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+    assert ax_trend.texts == ()  or list(ax_trend.texts) == []
+
+
+def test_render_dashboard_pt_trend_excludes_none_pt_score_session():
+    """A session whose selected trace has pt_score=None (insufficient
+    signal, design spec Section 2) must be excluded from the trend line
+    and from Delta% calculations against its neighbors -- as if it lacked
+    trace_label entirely, for trend purposes only. It may still appear in
+    the waveform overlay (Task 5) and the bar chart (Task 6)."""
+    s1 = _session("Initial", "2026-07-07", pt_score=0.100)
+    s2 = _session("Mid", "2026-07-12", pt_score=None)
+    s3 = _session("Post-Training", "2026-07-17", pt_score=0.150)
+    history = _history([s1, s2, s3])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+
+    line = ax_trend.lines[0]
+    assert list(line.get_ydata()) == [0.100, 0.150]
+    texts = [a.get_text() for a in ax_trend.texts]
+    assert any("+50%" in t for t in texts)   # delta computed across Initial -> Post-Training directly
+
+
+def test_render_dashboard_pt_trend_all_none_does_not_raise():
+    history = _history([_session("Initial", "2026-07-07", pt_score=None)])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+    assert len(ax_trend.lines) == 0

@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from matplotlib.figure import Figure
+from matplotlib.collections import PolyCollection
 
 from pendulastic_pt_score import HEALTHY_REF, PT_HEALTHY_MAX, PT_BORDERLINE_MAX
 
@@ -109,7 +110,51 @@ def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
 
 
 def _render_pt_trend(ax, sessions: list, trace_label: str) -> None:
-    """Placeholder body -- filled in by Task 7."""
     ax.set_xlabel("Session")
     ax.set_ylabel("PT score")
     ax.set_title("Longitudinal PT score trend")
+
+    # A session whose selected trace has pt_score=None (insufficient
+    # signal) is excluded from the trend line and from Delta% against its
+    # neighbors -- as if it lacked trace_label entirely, for trend
+    # purposes only (design spec Section 2/6). It's still eligible for
+    # the waveform overlay and bar chart, which don't filter on this.
+    usable = [s for s in sessions
+             if s["traces"][trace_label]["metrics"]["pt_score"] is not None]
+
+    # Helper to create zone band as a PolyCollection
+    def _add_band(ymin, ymax, color):
+        # Create a band from x=-1 to x=n_sessions (with padding for visibility)
+        # Use PolyCollection to match test expectations
+        verts = [
+            [(-0.5, ymin), (-0.5, ymax), (len(usable) - 0.5, ymax), (len(usable) - 0.5, ymin)],
+        ]
+        poly = PolyCollection(verts, facecolors=color, alpha=0.15, edgecolors="none")
+        ax.add_collection(poly)
+
+    if not usable:
+        _add_band(0, PT_HEALTHY_MAX, "#22C55E")
+        _add_band(PT_HEALTHY_MAX, PT_BORDERLINE_MAX, "#EAB308")
+        _add_band(PT_BORDERLINE_MAX, PT_BORDERLINE_MAX * 1.5, "#EF4444")
+        return
+
+    scores = [s["traces"][trace_label]["metrics"]["pt_score"] for s in usable]
+    ylim_max = max(PT_BORDERLINE_MAX * 1.5, max(scores) * 1.2)
+    _add_band(0, PT_HEALTHY_MAX, "#22C55E")
+    _add_band(PT_HEALTHY_MAX, PT_BORDERLINE_MAX, "#EAB308")
+    _add_band(PT_BORDERLINE_MAX, ylim_max, "#EF4444")
+    ax.set_ylim(0, ylim_max)
+
+    labels = [s["label"] for s in usable]
+    xs = list(range(len(usable)))
+    ax.plot(xs, scores, marker="o", color="#1D4ED8")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+
+    for i in range(1, len(scores)):
+        prev, curr = scores[i - 1], scores[i]
+        if prev == 0:
+            continue
+        pct = (curr - prev) / prev * 100.0
+        ax.annotate(f"{pct:+.0f}%", xy=(i, curr), xytext=(0, 8),
+                   textcoords="offset points", ha="center", fontsize=8)
