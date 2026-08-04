@@ -100,10 +100,10 @@ def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
         ax.bar(offsets, values, width=width, label=session["label"])
 
     for i, key in enumerate(PARAM_KEYS):
-        ax.hlines(HEALTHY_REF[key], i - 0.1, i + n_sessions * width, colors="black",
+        ax.hlines(HEALTHY_REF[key], i - width / 2, i + (n_sessions - 0.5) * width, colors="black",
                   linestyles="dashed", linewidth=1)
 
-    ax.set_xticks([xi + (n_sessions * width) / 2 for xi in x])
+    ax.set_xticks([xi + width * (n_sessions - 1) / 2 for xi in x])
     ax.set_xticklabels(PARAM_KEYS, rotation=30, ha="right")
     ax.legend(fontsize=8)
 

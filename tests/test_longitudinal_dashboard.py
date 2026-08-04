@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import pytest
 import longitudinal_dashboard as dash
 
 
@@ -114,3 +115,21 @@ def test_render_dashboard_bar_chart_empty_sessions_does_not_raise():
     history = _history([])
     fig = dash.render_dashboard(history, "left", "imu")
     assert fig.axes[1].get_legend() is None
+
+
+def test_render_dashboard_bar_chart_xtick_position_with_two_sessions():
+    """Verify that xtick positions are centered on the bar group.
+    With 2 sessions, width = 0.8 / 2 = 0.4.
+    For parameter 0 (xi=0), the group center should be at:
+    0 + 0.4 * (2 - 1) / 2 = 0.2"""
+    s1 = _session("Initial", "2026-07-07")
+    s2 = _session("Follow-up", "2026-07-17")
+    history = _history([s1, s2])
+
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_bar = fig.axes[1]
+    xticks = ax_bar.get_xticks()
+
+    # With 2 sessions and 7 parameters, xticks should be at positions
+    # for each parameter. The first xtick (param 0) should be at 0.2.
+    assert xticks[0] == pytest.approx(0.2, abs=1e-6)
