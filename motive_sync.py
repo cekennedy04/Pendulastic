@@ -53,8 +53,11 @@ MOTIVE_COMMAND_PORT = 1510       # NatNet command port (Motive default).
 NAT_REQUEST = 2                  # NatNet message id for a remote command.
 
 # Mirror the laptop's folder tree under here using the packet's 'relpath', so the
-# post-processing pipeline finds the identical Participant/Leg/Characterization tree.
+# OptiTrack tree matches the acquisition tree (Participant/Leg/Characterization).
 # Motive's SetCurrentSession is pointed at the sanitized version of this path.
+# Note: analysis_pipeline.py and other downstream analysis scripts still expect
+# the older Participant/Position/Height layout -- updating them is tracked as a
+# separate follow-up task, not done here.
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "OptiTrack_Recordings")
 

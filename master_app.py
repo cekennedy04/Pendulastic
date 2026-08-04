@@ -526,6 +526,8 @@ class MasterApp:
             raise ValueError("Characterization cannot be empty.")
         if any(ch in illegal for ch in characterization):
             raise ValueError('Characterization contains illegal characters: < > : " / \\ | ? *')
+        if characterization in (".", ".."):
+            raise ValueError('Characterization cannot be "." or "..".')
         return pid
 
     # ------------------------------------------------------------------
