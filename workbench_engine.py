@@ -418,6 +418,45 @@ def validate_component_csv(path: str, kind: str) -> dict:
     return {"ok": True, "error": None, "n_samples": len(rows), "fs_eff": fs_eff, "rows": rows}
 
 
+def bind_split_csv_components(validations: dict) -> dict:
+    """Merge four independently-validated component results (Task 1's
+    validate_component_csv, one call per kind) into the chronologically-
+    sorted fusion sample list replay_trial() expects, plus a separate
+    imu_reference list that is never merged into it (design spec Section 5
+    -- the raw IMU file stays a cross-check field, not a fusion input).
+
+    Defensive re-check: raises ValueError naming any kind that's missing
+    or not ok. The intended caller (the guided-intake UI) only reaches
+    this once all four slots are green, so this should never trigger in
+    normal use."""
+    not_ready = [kind for kind in ("accel", "gyro", "mag", "imu")
+                if not validations.get(kind, {}).get("ok")]
+    if not_ready:
+        raise ValueError(
+            f"Cannot bind split-CSV components: not yet validated: {', '.join(not_ready)}.")
+
+    fusion_samples = []
+    for kind in ("accel", "gyro", "mag"):
+        fusion_samples.extend(validations[kind]["rows"])
+    fusion_samples.sort(key=lambda s: s["t"])
+
+    return {"fusion_samples": fusion_samples, "imu_reference": validations["imu"]["rows"]}
+
+
+def load_imu_trial_from_components(validations: dict, config: Optional[dict] = None,
+                                   ft_ratio: Optional[float] = None,
+                                   method: Optional[str] = None):
+    """Split-CSV counterpart to load_imu_trial(): binds four independently-
+    validated component results and runs the merged accel/gyro/mag samples
+    through the same Madgwick AHRS replay engine used everywhere else in
+    this project. Returns (t, angle, imu_reference) -- imu_reference is
+    the raw IMU file's parsed rows, attached for cross-check purposes
+    only; it is never fed into fusion (design spec Section 1)."""
+    bound = bind_split_csv_components(validations)
+    t, angle = _replay_samples(bound["fusion_samples"], config, ft_ratio, method)
+    return t, angle, bound["imu_reference"]
+
+
 _SPLIT_CSV_SUFFIXES = {"imu": "_imu.csv", "gyro": "_gyro.csv",
                        "accel": "_accel.csv", "mag": "_mag.csv"}
 _SPLIT_CSV_HEADER = ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"]

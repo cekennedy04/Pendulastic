@@ -304,6 +304,95 @@ def test_load_imu_trial_same_result_regardless_of_which_sibling_is_the_anchor(tm
         assert list(angle) == list(results[0][1])
 
 
+def _write_full_component_set(tmp_path, prefix="Trial_1", fs=100.0, n=150):
+    """All four component files, well-formed, at a consistent fs above the
+    fusion floor -- unlike the old _write_solo_split_csv_trial fixture
+    (kept for now, removed in Task 3), whose 2-row accel/mag files were
+    fine for fusion (which only needs occasional accel/mag correction
+    samples) but would fail this feature's own fs_eff floor if reused
+    here, since fs_eff is now computed per-file, not just at fusion time."""
+    dt_ms = 1000.0 / fs
+    gyro_rows, accel_rows, mag_rows, imu_rows = [], [], [], []
+
+    # Create a motion pattern: hold still for ~0.5s, burst for ~0.5s, hold still for ~0.5s
+    hold_samples = int(n / 3)
+    burst_samples = int(n / 3)
+
+    for i in range(n):
+        t_ms = i * dt_ms
+        # Add gyro burst in the middle third
+        if hold_samples <= i < hold_samples + burst_samples:
+            gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 2.0, 0.0))
+        else:
+            gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
+
+        accel_rows.append((t_ms, int(t_ms), "proximal", "Accelerometer", 0.0, 0.0, 9.81))
+        mag_rows.append((t_ms, int(t_ms), "proximal", "Magnetometer", -50.0, 20.0, 30.0))
+        t_epoch = 1_700_000_000.0 + i / fs
+        imu_rows.append((t_epoch, i / fs, int(t_ms), t_epoch,
+                         0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True))
+
+    paths = {
+        "gyro": tmp_path / f"{prefix}_gyro.csv", "accel": tmp_path / f"{prefix}_accel.csv",
+        "mag": tmp_path / f"{prefix}_mag.csv", "imu": tmp_path / f"{prefix}_imu.csv",
+    }
+    _write_component_csv(paths["gyro"], "gyro", gyro_rows)
+    _write_component_csv(paths["accel"], "accel", accel_rows)
+    _write_component_csv(paths["mag"], "mag", mag_rows)
+    _write_component_csv(paths["imu"], "imu", imu_rows)
+    return {kind: engine.validate_component_csv(str(p), kind) for kind, p in paths.items()}
+
+
+def test_bind_split_csv_components_merges_and_sorts_fusion_samples(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    bound = engine.bind_split_csv_components(validations)
+    ts = [s["t"] for s in bound["fusion_samples"]]
+    assert ts == sorted(ts)
+    assert {s["sensor"] for s in bound["fusion_samples"]} == {"gyro", "accel", "mag"}
+    assert len(bound["fusion_samples"]) == 450   # 150 rows x 3 sensors
+
+
+def test_bind_split_csv_components_keeps_imu_reference_separate(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    bound = engine.bind_split_csv_components(validations)
+    assert len(bound["imu_reference"]) == 150
+    assert all(s["sensor"] != "imu" for s in bound["fusion_samples"])
+    assert bound["imu_reference"][0]["hip_pitch_deg"] == "180.0"
+
+
+def test_bind_split_csv_components_raises_on_incomplete_set(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    del validations["mag"]
+    try:
+        engine.bind_split_csv_components(validations)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "mag" in str(e)
+
+
+def test_bind_split_csv_components_raises_when_one_kind_not_ok(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    validations["gyro"] = {"ok": False, "error": "bad", "n_samples": 0,
+                           "fs_eff": None, "rows": []}
+    try:
+        engine.bind_split_csv_components(validations)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "gyro" in str(e)
+
+
+def test_load_imu_trial_from_components_produces_finite_angle_series(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+             "gravity_seed": True, "method": "relative"}
+    t, angle, imu_reference = engine.load_imu_trial_from_components(validations, config=config)
+    assert len(t) > 0
+    assert len(angle) > 0
+    assert np.isfinite(t).all()
+    assert np.isfinite(angle).all()
+    assert len(imu_reference) == 150
+
+
 def _decaying_oscillation_with_tail(n_osc_cycles=4, tail_s=10.0, fs=100.0):
     """Synthetic knee-angle-like signal: decaying oscillation for a few
     cycles (mirrors a real pendulum-test trial), then a long flat resting
