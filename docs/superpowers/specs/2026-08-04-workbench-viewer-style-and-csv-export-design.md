@@ -148,12 +148,25 @@ the dark palette:
   row count and correct `participant_id`/`session_date` threading onto
   every row; a `vs_reference` entry with `status != "ok"` still produces a
   row (with metric fields blank/`None`) rather than being silently dropped.
-- **UI**: manual smoke test only — load a real multi-modal trial, confirm
-  dark theme renders correctly at multiple window sizes (Treeview columns
-  must not truncate per Section 4), export all four CSVs and the JSON,
-  reopen each CSV in a plain-text viewer and in `pandas.read_csv` to
-  confirm no parse errors. Matches this repo's existing precedent of not
-  unit-testing Tkinter panels directly.
+- **UI**: `tests/test_pendulastic_workbench.py` already unit-tests
+  `TrialLoadPanel`/`WorkbenchView` via a headless `tk.Tk()` +
+  `.withdraw()` root and widget `.invoke()`/state assertions (contrary to
+  the original Workbench design spec's "manual smoke test only" framing —
+  that precedent no longer holds now that this test file exists). New
+  behavior gets the same treatment: `get_selection()` includes
+  `participant_id`/`session_date`, CSV export menu items are
+  enabled/disabled correctly based on `self._traces`/`self._annotations`,
+  and the two new Treeview tables populate with the right row counts from
+  a `set_traces()` fixture. Existing tests
+  (`test_trial_load_panel_back_button_calls_controller`,
+  `test_workbench_view_load_another_button_calls_controller`,
+  `test_imu_browse_button_accepts_csv_and_jsonl`, and the `set_traces()`
+  state-preservation suite) must keep passing unmodified — they assert on
+  `self._back_button`, `self._load_another_button`,
+  `self._browse_buttons["imu"]` by exact attribute name, which the
+  restyle must preserve. A manual smoke test remains valuable in addition
+  (visual dark-theme rendering and Treeview column truncation are not
+  practical to assert headlessly) but is not the only verification.
 
 ## 7. Explicitly Out of Scope
 
