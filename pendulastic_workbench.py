@@ -139,7 +139,8 @@ class TrialLoadPanel(tk.Frame):
             tk.Button(parent, text="Browse...",
                      command=lambda k=kind: self._browse_component(k)
                      ).grid(row=i, column=2, sticky="w", padx=4)
-            tk.Label(parent, textvariable=self._component_status[kind], anchor="w", width=32
+            tk.Label(parent, textvariable=self._component_status[kind], anchor="w",
+                    justify="left", wraplength=260
                     ).grid(row=i, column=3, sticky="w", padx=(8, 12))
 
     def _on_imu_format_changed(self) -> None:
@@ -154,14 +155,19 @@ class TrialLoadPanel(tk.Frame):
         path = filedialog.askopenfilename(filetypes=self._COMPONENT_FILETYPES)
         if not path:
             return
-        self._component_paths[kind].set(path)
+        # Validate first, then update the path StringVar and the status
+        # label together from the same result -- never leave a stale
+        # ok=True validation (from a PREVIOUS successful browse) associated
+        # with a path the UI is now displaying that wasn't actually
+        # validated (e.g. if this browse's validation fails).
         result = engine.validate_component_csv(path, kind)
         self._component_validations[kind] = dict(result, path=path)
+        self._component_paths[kind].set(path)
         if result["ok"]:
             self._component_status[kind].set(
                 f"✓ {result['n_samples']} samples @ {result['fs_eff']:.1f} Hz")
         else:
-            self._component_status[kind].set(f"✗ {result['error']}")
+            self._component_status[kind].set(f"✗ {os.path.basename(path)}: {result['error']}")
 
     def _file_row(self, parent, row: int, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
@@ -593,6 +599,7 @@ class App(tk.Tk):
         self.minsize(900, 600)
 
         self._trial_meta: dict = {}
+        self._imu_reference: list = []
         self._status_var = tk.StringVar(value="")
 
         self._load_panel = TrialLoadPanel(self, controller=self)
@@ -636,6 +643,10 @@ class App(tk.Tk):
         ft_ratio = None
         method_override = None
         if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
             ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
             method_override = "ockendon_flipped"
 
@@ -646,8 +657,15 @@ class App(tk.Tk):
                     t, angle, imu_reference = engine.load_imu_trial_from_components(
                         components, ft_ratio=ft_ratio, method=method_override)
                     traces["imu"] = (t, angle)
-                    self._trial_meta["imu_paths"] = {k: components[k]["path"] for k in components}
-                    self._trial_meta["imu_reference"] = imu_reference
+                    self._trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._trial_meta so it never flows into
+                    # export_session()'s output -- it can be megabytes for a
+                    # real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._imu_reference = imu_reference
                 except Exception as e:
                     messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
         elif selection["imu_path"]:

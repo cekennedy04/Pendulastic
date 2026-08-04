@@ -1169,6 +1169,7 @@ class App(tk.Tk):
         self._post = PostProcessingPanel(self, controller=self)
 
         self._workbench_trial_meta: dict = {}
+        self._workbench_imu_reference: list = []
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
             self._workbench_load = TrialLoadPanel(self, controller=self)
@@ -1374,6 +1375,10 @@ class App(tk.Tk):
         ft_ratio = None
         method_override = None
         if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
             ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
             method_override = "ockendon_flipped"
 
@@ -1384,8 +1389,15 @@ class App(tk.Tk):
                     t, angle, imu_reference = _wb_engine.load_imu_trial_from_components(
                         components, ft_ratio=ft_ratio, method=method_override)
                     traces["imu"] = (t, angle)
-                    self._workbench_trial_meta["imu_paths"] = {k: components[k]["path"] for k in components}
-                    self._workbench_trial_meta["imu_reference"] = imu_reference
+                    self._workbench_trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._workbench_trial_meta so it never flows
+                    # into export_session()'s output -- it can be megabytes
+                    # for a real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._workbench_imu_reference = imu_reference
                 except Exception as e:
                     messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
         elif selection["imu_path"]:

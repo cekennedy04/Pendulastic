@@ -340,82 +340,120 @@ def validate_component_csv(path: str, kind: str) -> dict:
     """Validate one phone-IMU component CSV (kind: "accel"/"gyro"/"mag"/"imu")
     independently of the other three: header shape, per-row sensor_name
     consistency (accel/gyro/mag only -- imu has no sensor_name column),
-    timestamp monotonicity, and fs_eff against _MIN_FS_FOR_FUSION_HZ.
+    timestamp monotonicity/finiteness, and fs_eff against
+    _MIN_FS_FOR_FUSION_HZ.
+
+    fs_eff is the mean rate over the full span -- (n-1) / (t[-1] - t[0]) --
+    rather than 1/median(diff(t)): real phone data arrives in bursts, so a
+    median-gap estimate measures intra-burst spacing, not the actual stream
+    rate (20-48x inflation observed on real recordings).
+
+    Any leading lines starting with "#" are skipped before the header row
+    is read -- the real recorder (pendulastic_imu_server.start_recording())
+    writes a "#"-prefixed metadata preamble before the real header for the
+    imu kind; harmless to apply to all kinds since accel/gyro/mag files
+    have no such preamble in practice.
 
     Never raises -- always returns {"ok", "error", "n_samples", "fs_eff",
     "rows"}, since the guided-intake UI needs a result for any slot, valid
-    or not, to drive that slot's status readout (design spec Section 4)."""
-    header = _COMPONENT_HEADERS[kind]
-    if not os.path.exists(path):
-        return _empty_component_validation(f"{path!r} does not exist.")
-
-    rows = []
-    prev_t = None
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
-        try:
-            actual_header = next(reader)
-        except StopIteration:
-            return _empty_component_validation(
-                f"{path!r} is empty (expected header {header}).")
-        if actual_header != header:
-            return _empty_component_validation(
-                f"{path!r} has an unexpected header {actual_header!r}; expected {header}.")
-
-        for row_num, row in enumerate(reader, start=2):
-            if len(row) != len(header):
-                return _empty_component_validation(
-                    f"{path!r} row {row_num} has {len(row)} columns; expected {len(header)}.")
-            record = dict(zip(header, row))
-
-            try:
-                if kind in _COMPONENT_SENSOR_NAME:
-                    expected_sensor = _COMPONENT_SENSOR_NAME[kind]
-                    actual_sensor = record["sensor_name"]
-                    if actual_sensor != expected_sensor:
-                        return _empty_component_validation(
-                            f"{path!r} row {row_num} has sensor_name {actual_sensor!r}; "
-                            f"expected {expected_sensor!r} for the {kind} slot.")
-                    t = float(record["timestamp_ms"]) / 1000.0
-                    sample = {
-                        "t": t, "role": record["role"], "sensor": kind,
-                        "v": [float(record["x"]), float(record["y"]), float(record["z"])],
-                        "phone_ts_ms": int(float(record["phone_ts_ms"])),
-                    }
-                else:
-                    t = float(record["t_epoch"])
-                    sample = dict(record)
-                    sample["t_epoch"] = t
-            except ValueError as e:
-                return _empty_component_validation(
-                    f"{path!r} row {row_num} has a non-numeric value: {str(e)}")
-
-            if prev_t is not None and t < prev_t:
-                return _empty_component_validation(
-                    f"{path!r} row {row_num} has timestamp {t} which is earlier than "
-                    f"the previous row's {prev_t} -- timestamps must be non-decreasing.")
-            prev_t = t
-            rows.append(sample)
-
-    if len(rows) < 2:
-        return _empty_component_validation(
-            f"{path!r} has only {len(rows)} data row(s); at least 2 are needed to "
-            f"compute an effective sample rate.")
-
-    times = [r["t"] if kind in _COMPONENT_SENSOR_NAME else r["t_epoch"] for r in rows]
+    or not, to drive that slot's status readout (design spec Section 4).
+    The whole body runs under a broad exception backstop (beyond the
+    specific ValueError handling below) to catch UnicodeDecodeError
+    (non-UTF-8/binary file), PermissionError/OSError (locked file or a
+    directory path), OverflowError (e.g. `inf` in an int-parsed field),
+    KeyError (unrecognized kind), and anything else not anticipated above."""
     try:
-        fs_eff = 1.0 / float(np.median(np.diff(times)))
-    except (ZeroDivisionError, RuntimeError):
-        return _empty_component_validation(
-            f"{path!r} has timestamps with zero or invalid gaps (possibly all identical); "
-            f"cannot compute an effective sample rate.")
+        header = _COMPONENT_HEADERS.get(kind)
+        if header is None:
+            return _empty_component_validation(
+                f"Unrecognized component kind {kind!r}; expected one of "
+                f"{sorted(_COMPONENT_HEADERS)}.")
+        if not os.path.exists(path):
+            return _empty_component_validation(f"{path!r} does not exist.")
 
-    if fs_eff < _MIN_FS_FOR_FUSION_HZ:
-        return _empty_component_validation(
-            f"{path!r} has an effective sample rate of {fs_eff:.2f} Hz, below the "
-            f"{_MIN_FS_FOR_FUSION_HZ} Hz floor required for fusion.")
+        rows = []
+        prev_t = None
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            actual_header = None
+            for candidate in reader:
+                if not candidate or candidate[0].startswith("#"):
+                    continue
+                actual_header = candidate
+                break
+            if actual_header is None:
+                return _empty_component_validation(
+                    f"{path!r} is empty (expected header {header}).")
+            if actual_header != header:
+                return _empty_component_validation(
+                    f"{path!r} has an unexpected header {actual_header!r}; expected {header}.")
 
-    return {"ok": True, "error": None, "n_samples": len(rows), "fs_eff": fs_eff, "rows": rows}
+            for row_num, row in enumerate(reader, start=2):
+                if len(row) != len(header):
+                    return _empty_component_validation(
+                        f"{path!r} row {row_num} has {len(row)} columns; expected {len(header)}.")
+                record = dict(zip(header, row))
+
+                try:
+                    if kind in _COMPONENT_SENSOR_NAME:
+                        expected_sensor = _COMPONENT_SENSOR_NAME[kind]
+                        actual_sensor = record["sensor_name"]
+                        if actual_sensor != expected_sensor:
+                            return _empty_component_validation(
+                                f"{path!r} row {row_num} has sensor_name {actual_sensor!r}; "
+                                f"expected {expected_sensor!r} for the {kind} slot.")
+                        t = float(record["timestamp_ms"]) / 1000.0
+                        sample = {
+                            "t": t, "role": record["role"], "sensor": kind,
+                            "v": [float(record["x"]), float(record["y"]), float(record["z"])],
+                            "phone_ts_ms": int(float(record["phone_ts_ms"])),
+                        }
+                    else:
+                        t = float(record["t_epoch"])
+                        sample = dict(record)
+                        sample["t_epoch"] = t
+                except ValueError as e:
+                    return _empty_component_validation(
+                        f"{path!r} row {row_num} has a non-numeric value: {str(e)}")
+
+                if not math.isfinite(t):
+                    return _empty_component_validation(
+                        f"{path!r} row {row_num} has a non-finite timestamp {t!r} -- "
+                        f"timestamps must be finite.")
+
+                if prev_t is not None and t < prev_t:
+                    return _empty_component_validation(
+                        f"{path!r} row {row_num} has timestamp {t} which is earlier than "
+                        f"the previous row's {prev_t} -- timestamps must be non-decreasing.")
+                prev_t = t
+                rows.append(sample)
+
+        if len(rows) < 2:
+            return _empty_component_validation(
+                f"{path!r} has only {len(rows)} data row(s); at least 2 are needed to "
+                f"compute an effective sample rate.")
+
+        times = [r["t"] if kind in _COMPONENT_SENSOR_NAME else r["t_epoch"] for r in rows]
+        span = times[-1] - times[0]
+        if span <= 0:
+            return _empty_component_validation(
+                f"{path!r} has timestamps with a zero or invalid span (possibly all "
+                f"identical); cannot compute an effective sample rate.")
+        fs_eff = (len(times) - 1) / span
+
+        if not math.isfinite(fs_eff):
+            return _empty_component_validation(
+                f"{path!r} produced a non-finite effective sample rate; cannot validate.")
+
+        if fs_eff < _MIN_FS_FOR_FUSION_HZ:
+            return _empty_component_validation(
+                f"{path!r} has an effective sample rate of {fs_eff:.2f} Hz, below the "
+                f"{_MIN_FS_FOR_FUSION_HZ} Hz floor required for fusion.")
+
+        return {"ok": True, "error": None, "n_samples": len(rows), "fs_eff": fs_eff, "rows": rows}
+    except Exception as e:
+        return _empty_component_validation(
+            f"{path!r} failed validation: {type(e).__name__}: {e}")
 
 
 def bind_split_csv_components(validations: dict) -> dict:
@@ -473,7 +511,7 @@ def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
     ft_ratio/method optionally override the config's own values for this
     call only (the Ockendon-personalization workflow, design spec Section
     3a) without touching the persisted config file."""
-    if not jsonl_path.endswith(".jsonl"):
+    if not jsonl_path.lower().endswith(".jsonl"):
         raise ValueError(
             f"load_imu_trial() only accepts a .jsonl path; got {jsonl_path!r}. "
             f"Split-CSV trials must go through load_imu_trial_from_components().")

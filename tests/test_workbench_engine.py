@@ -163,13 +163,148 @@ def test_validate_component_csv_identical_timestamps_zero_gap(tmp_path):
     assert "zero" in result["error"].lower() or "invalid gaps" in result["error"].lower()
 
 
+def test_validate_component_csv_imu_skips_hash_preamble(tmp_path):
+    """Regression for the real recorder's start_recording() preamble: it
+    writes a few '# key,value' metadata lines plus '# sync_state',
+    '# sync_offset_s', '# sync_jitter_s' rows before the real 14-column
+    header row. validate_component_csv must skip them rather than treating
+    the first preamble line as the header (0 of 9 real _imu.csv files in
+    this repo's Recordings/ folder validated before this fix)."""
+    path = tmp_path / "Trial_1_imu.csv"
+    header = ",".join(engine._COMPONENT_HEADERS["imu"]) + "\n"
+    rows = _imu_reference_rows_100hz(n=10)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("# session_id,abc123\n")
+        f.write("# participant,P1\n")
+        f.write("# sync_state,synced\n")
+        f.write("# sync_offset_s,0.012345\n")
+        f.write("# sync_jitter_s,0.000210\n")
+        f.write(header)
+        for row in rows:
+            f.write(",".join(str(v) for v in row) + "\n")
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is True
+    assert result["n_samples"] == 10
+
+
+def test_validate_component_csv_wrong_header_imu(tmp_path):
+    """Header-mismatch check for the imu kind specifically -- only gyro was
+    previously covered."""
+    path = tmp_path / "bad_header_imu.csv"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("wrong,header,columns\n1,2,3\n")
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "bad_header_imu.csv" in result["error"]
+
+
+def test_validate_component_csv_non_monotonic_timestamps_imu(tmp_path):
+    """Monotonicity-violation check for the imu kind's t_epoch column --
+    previously only accel/gyro/mag were covered."""
+    rows = list(_imu_reference_rows_100hz(n=5))
+    bad = list(rows[3])
+    bad[0] = rows[1][0]   # earlier t_epoch than row index 2's (the previous row)
+    rows[3] = tuple(bad)
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", rows)
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "row 5" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_below_floor_imu(tmp_path):
+    """fs-floor check for the imu kind -- previously only accel was
+    covered."""
+    rows = [(1_700_000_000.0 + i * 0.5, i * 0.5, int(i * 500), 1_700_000_000.0 + i * 0.5,
+            0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True)
+           for i in range(5)]   # 500ms spacing == 2 Hz, below the 10 Hz floor
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", rows)
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "2.00 Hz" in result["error"]
+
+
+def test_validate_component_csv_column_count_mismatch(tmp_path):
+    """No existing test reached the column-count-mismatch branch: the old
+    wrong-header test fails earlier, at the header check, before column
+    count is ever checked."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n")
+        f.write("0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n")
+        f.write("10.0,10,proximal,Accelerometer,0.0,0.0\n")   # missing z
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 3" in result["error"]
+    assert "columns" in result["error"].lower()
+
+
+def test_validate_component_csv_empty_file(tmp_path):
+    """A file with zero lines (header row completely missing) must return
+    a graceful ok=False rather than raising."""
+    path = tmp_path / "empty.csv"
+    path.write_text("", encoding="utf-8")
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert result["rows"] == []
+
+
+def test_validate_component_csv_unrecognized_kind(tmp_path):
+    """An unrecognized kind must return a graceful ok=False rather than
+    raising KeyError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz())
+    result = engine.validate_component_csv(str(path), "barometer")
+    assert result["ok"] is False
+    assert "barometer" in result["error"]
+
+
+def test_validate_component_csv_nan_timestamp_rejected(tmp_path):
+    """A NaN timestamp must not silently pass validation: t < prev_t is
+    False for NaN (defeats monotonicity), and fs_eff < floor is False for
+    NaN (defeats the fs floor check) -- must be caught explicitly."""
+    rows = list(_accel_rows_100hz(n=5))
+    bad = list(rows[2])
+    bad[0] = float("nan")
+    rows[2] = tuple(bad)
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
+def test_validate_component_csv_inf_numeric_field_does_not_raise(tmp_path):
+    """`inf` in phone_ts_ms raises OverflowError from int(float('inf'));
+    validate_component_csv must catch it and return ok=False, not raise."""
+    rows = list(_accel_rows_100hz(n=5))
+    bad = list(rows[2])
+    bad[1] = float("inf")   # phone_ts_ms field
+    rows[2] = tuple(bad)
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
+def test_validate_component_csv_binary_file_does_not_raise(tmp_path):
+    """A non-UTF-8/binary file (realistic since the UI's file filter
+    includes 'All files *.*') must not raise UnicodeDecodeError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01\x02\x03garbage binary data\xfa\xfb")
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
 def _write_full_component_set(tmp_path, prefix="Trial_1", fs=100.0, n=150):
     """All four component files, well-formed, at a consistent fs above the
-    fusion floor -- unlike the old _write_solo_split_csv_trial fixture
-    (kept for now, removed in Task 3), whose 2-row accel/mag files were
-    fine for fusion (which only needs occasional accel/mag correction
-    samples) but would fail this feature's own fs_eff floor if reused
-    here, since fs_eff is now computed per-file, not just at fusion time."""
+    fusion floor. The gyro rows include a real burst of motion (not
+    all-zero) in the middle third of the trial: the AHRS replay engine's
+    motion-detection threshold produces empty output for an all-still gyro
+    signal, so a fixture meant to exercise load_imu_trial_from_components()
+    end-to-end (not just validate_component_csv() in isolation) needs an
+    actual rotation to fuse."""
     dt_ms = 1000.0 / fs
     gyro_rows, accel_rows, mag_rows, imu_rows = [], [], [], []
 

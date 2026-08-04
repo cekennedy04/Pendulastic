@@ -744,7 +744,8 @@ def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkey
         assert "imu" in app._workbench_view._traces
         meta = app.get_trial_meta()
         assert meta["imu_paths"] == {"accel": "a.csv", "gyro": "g.csv", "mag": "m.csv", "imu": "i.csv"}
-        assert meta["imu_reference"] == [{"hip_pitch_deg": "180.0"}]
+        assert "imu_reference" not in meta
+        assert app._workbench_imu_reference == [{"hip_pitch_deg": "180.0"}]
     finally:
         app.destroy()
 
