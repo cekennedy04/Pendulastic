@@ -95,10 +95,17 @@ def _accel_release_time(anchor_path: str) -> Optional[float]:
   applied via `scipy.signal.filtfilt` for zero-phase filtering — critical here, since
   a non-zero-phase filter would reintroduce exactly the phase-lag distortion this
   feature exists to avoid).
-- Runs the same adaptive-threshold detection logic as
-  `pendulastic_pt_score._detect_release` (baseline from the first ~0.6s, threshold at
-  8% of the signal's own range, floored at 2.0) against the filtered tilt-magnitude
-  signal, and returns the detected timestamp.
+- Runs an adapted version of `pendulastic_pt_score._detect_release`'s detection logic
+  against the filtered tilt-magnitude signal: baseline from the first ~0.6s, threshold
+  at 8% of the signal's own range (`thresh = 0.08 * signal_range`). Unlike
+  `_detect_release`, this has **no fixed absolute floor** on the threshold —
+  `_detect_release`'s `max(2.0, ...)` floor is calibrated for degree-scale angle
+  signals and doesn't generalize to accel-magnitude data, whose units vary by source
+  (the real `Participant_13_left` files are in g-units, magnitude ~1.0 at rest; this
+  project's own earlier test fixtures happened to use m/s²-units, ~9.81) — a fixed
+  floor would silently behave inconsistently across unit systems, while the
+  percentile-based component alone self-scales to whatever range the signal actually
+  has, regardless of units.
 
 ---
 
