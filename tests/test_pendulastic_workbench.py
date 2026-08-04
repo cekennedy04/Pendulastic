@@ -186,11 +186,22 @@ def test_get_metrics_snapshot_pt_score_none_for_insufficient_signal():
     assert pt["mas"] is None
 
 
+def _per_trace_row(wv, label):
+    """Look up a labeled row's values tuple in the PER-TRACE METRICS
+    Treeview, keyed by the column order in WorkbenchView._PER_TRACE_COLS."""
+    for item in wv._per_trace_tree.get_children():
+        values = wv._per_trace_tree.item(item)["values"]
+        if values[0] == label:
+            return dict(zip(wv._PER_TRACE_COLS, values))
+    raise AssertionError(f"no per-trace row for label {label!r}")
+
+
 def test_recompute_metrics_shows_pt_score_and_submetric_breakdown():
-    """The readout text must surface the disambiguated composite PT score
-    (labeled distinctly from pendulastic_app.py's PT= line, which uses a
+    """The PER-TRACE METRICS table must surface the disambiguated composite
+    PT score (distinct from pendulastic_app.py's PT= line, which uses a
     different 4-parameter formula) and the full 7-parameter windowed
-    breakdown per trace."""
+    breakdown per trace, restyled into the Treeview (post dark-theme
+    restyle) rather than the old free-text readout."""
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
     wv = WorkbenchView(r, _Ctrl())
@@ -201,20 +212,24 @@ def test_recompute_metrics_shows_pt_score_and_submetric_breakdown():
     wv.set_traces({"imu": (t, angle)})
     r.update()
 
-    text = wv._metrics_text.get("1.0", "end")
     snapshot = wv.get_metrics_snapshot()
     pt = snapshot["per_trace"]["imu"]
-    assert f"PT(7p)={pt['pt_score']:.3f}" in text
-    assert f"MAS {pt['mas']}" in text
-    assert "R2n=" in text
-    assert "phi_max_ratio=" in text
-    assert "omega_max_n=" in text
-    assert "omega_min_n=" in text
+    row = _per_trace_row(wv, "imu")
+    assert row["pt_score"] == f"{pt['pt_score']:.3f}"
+    # Treeview round-trips numeric-looking string values (e.g. mas="4") back
+    # as int via Tcl, so compare as strings rather than assuming the type
+    # inserted is the type read back.
+    assert str(row["mas"]) == pt["mas"]
+    assert row["R2n"] == f"{pt['R2n']:.3f}"
+    assert row["phi_max_ratio"] == f"{pt['phi_max_ratio']:.3f}"
+    assert row["omega_max_n"] == f"{pt['omega_max_n']:.3f}"
+    assert row["omega_min_n"] == f"{pt['omega_min_n']:.3f}"
 
 
 def test_recompute_metrics_shows_na_for_insufficient_signal():
     """A trace too short/flat for compute_pt_params must render an explicit
-    'n/a' rather than a fabricated PT=0.000 or a crash."""
+    'n/a' in the PT score/MAS columns rather than a fabricated 0.000 or a
+    crash."""
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
     wv = WorkbenchView(r, _Ctrl())
@@ -223,8 +238,9 @@ def test_recompute_metrics_shows_na_for_insufficient_signal():
     wv.set_traces({"imu": (t, angle)})
     r.update()
 
-    text = wv._metrics_text.get("1.0", "end")
-    assert "PT(7p)=n/a (insufficient signal)" in text
+    row = _per_trace_row(wv, "imu")
+    assert row["pt_score"] == "n/a"
+    assert row["mas"] == "n/a"
 
 
 def test_imu_jsonl_browse_button_only_accepts_jsonl(monkeypatch):
@@ -247,25 +263,31 @@ def test_imu_jsonl_browse_button_only_accepts_jsonl(monkeypatch):
     assert "*.csv" not in exts
 
 
+def _is_packed(widget) -> bool:
+    """pack_info() truthiness rather than winfo_ismapped() -- the latter
+    requires the toplevel to actually be mapped on screen, which doesn't
+    hold for the shared withdrawn test root (see _get_root()). Unlike
+    grid_info() (which returns {} once removed), pack_info() raises
+    TclError once a widget has been pack_forget()'d, so this normalizes
+    that into the same truthiness check headlessly."""
+    try:
+        return bool(widget.pack_info())
+    except tk.TclError:
+        return False
+
+
 def test_split_csv_format_hides_jsonl_row_and_shows_component_rows():
-    # Uses grid_info() truthiness rather than winfo_ismapped() -- the
-    # latter requires the toplevel to actually be mapped on screen, which
-    # doesn't hold for the shared withdrawn test root (see _get_root()).
-    # grid_info() returns {} once a widget is grid_remove()'d and a
-    # populated dict once it's grid()'d back, without needing a real
-    # screen render, so it verifies the same "which frame is currently
-    # gridded" behavior headlessly.
     from pendulastic_workbench import TrialLoadPanel
     r = _get_root()
     p = TrialLoadPanel(r, _Ctrl())
     p.pack()
-    assert p._imu_jsonl_frame.grid_info()
-    assert not p._imu_split_frame.grid_info()
+    assert _is_packed(p._imu_jsonl_frame)
+    assert not _is_packed(p._imu_split_frame)
 
     p._imu_format.set("split_csv")
     p._on_imu_format_changed()
-    assert not p._imu_jsonl_frame.grid_info()
-    assert p._imu_split_frame.grid_info()
+    assert not _is_packed(p._imu_jsonl_frame)
+    assert _is_packed(p._imu_split_frame)
 
 
 def test_component_browse_validates_and_updates_status(tmp_path, monkeypatch):
@@ -485,8 +507,9 @@ def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkey
         app.update()
         app.on_load_trial({
             "imu_format": "split_csv", "imu_path": None, "imu_components": fake_validations,
-            "video_path": None, "optitrack_path": None, "models": [],
-            "femur_length_cm": None, "tibia_length_cm": None,
+            "video_path": None, "optitrack_path": None,
+            "participant_id": "", "session_date": "",
+            "models": [], "femur_length_cm": None, "tibia_length_cm": None,
         })
         app.update()
         assert "imu" in app._workbench_view._traces

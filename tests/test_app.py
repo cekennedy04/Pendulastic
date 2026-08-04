@@ -745,8 +745,9 @@ def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkey
         app.update()
         app.on_load_trial({
             "imu_format": "split_csv", "imu_path": None, "imu_components": fake_validations,
-            "video_path": None, "optitrack_path": None, "models": [],
-            "femur_length_cm": None, "tibia_length_cm": None,
+            "video_path": None, "optitrack_path": None,
+            "participant_id": "", "session_date": "",
+            "models": [], "femur_length_cm": None, "tibia_length_cm": None,
         })
         app.update()
         assert "imu" in app._workbench_view._traces
