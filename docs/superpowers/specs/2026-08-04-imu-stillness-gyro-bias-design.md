@@ -91,12 +91,19 @@ Returns `True` only when, over a window spanning the full `GYRO_BIAS_WINDOW_S` (
 buffer's oldest sample to be at least `0.95 * GYRO_BIAS_WINDOW_S` old — not just "has enough
 entries," the same guard the existing WIP already has for its fused-angle version):
 
-- **Raw gyro:** peak-to-peak of `‖gyro‖` across the window is below `GYRO_STATIONARY_MAX_RAD_S`.
-  Raw gyro samples in this codebase are in **rad/s**, matching `_FLEX_CAPTURE_THRESHOLD = 1.0` rad/s
-  (`pendulastic_imu_server.py:476`, compared directly against raw `v` with no conversion) — not
-  deg/s. The "12.7°/s" contamination case cited throughout this spec is ≈0.222 rad/s in these units.
-- **Raw accel:** peak-to-peak of `‖accel‖` across the window is below `ACCEL_STATIONARY_MAX_MPS2`
-  (m/s², matching `accel` values elsewhere in this file, e.g. gravity ≈9.81).
+- **Raw gyro:** the **per-axis** peak-to-peak range (max component's `max(x) - min(x)`,
+  `max(y) - min(y)`, or `max(z) - min(z)`, whichever is largest — not the peak-to-peak of the
+  combined magnitude `‖gyro‖`) across the window is below `GYRO_STATIONARY_MAX_RAD_S`. Per-axis,
+  not magnitude, because a signal that oscillates *direction* at roughly constant magnitude (e.g.
+  alternating +0.22/-0.22 rad/s on one axis — exactly what examiner handling looks like) has a
+  peak-to-peak magnitude near zero even though the sensor is clearly moving; only a per-axis check
+  catches it. This mirrors why the fused-angle version this replaces checked pitch *and* roll
+  independently, not a single combined angle. Raw gyro samples in this codebase are in **rad/s**,
+  matching `_FLEX_CAPTURE_THRESHOLD = 1.0` rad/s (`pendulastic_imu_server.py:476`, compared directly
+  against raw `v` with no conversion) — not deg/s. The "12.7°/s" contamination case cited throughout
+  this spec is ≈0.222 rad/s in these units.
+- **Raw accel:** the same per-axis peak-to-peak check, below `ACCEL_STATIONARY_MAX_MPS2` (m/s²,
+  matching `accel` values elsewhere in this file, e.g. gravity ≈9.81).
 
 Both conditions required — gyro alone would miss linear-acceleration handling (sliding the limb
 without rotating it much); accel alone would miss rotational handling.
