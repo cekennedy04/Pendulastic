@@ -1,12 +1,10 @@
 """
 workbench_style.py
 ===================
-Dark palette + ttk theme + small widget builders for the Pendulastic
-Workbench UI (TrialLoadPanel, WorkbenchView). Palette values are copied
-from pendulastic_viewer.py's _C dict (not imported -- pendulastic_workbench.py
-must not pull in pendulastic_viewer.py's cv2/mediapipe/ultralytics
-dependency chain just for six color strings; pendulastic_viewer.py itself
-is not modified by this module).
+Light palette + ttk theme + small widget builders for the Pendulastic
+Workbench UI (TrialLoadPanel, WorkbenchView). White/bright background with
+strong-contrast text and a vivid blue accent, for easier readability than
+the original dark theme.
 
 See docs/superpowers/specs/2026-08-04-workbench-viewer-style-and-csv-export-design.md.
 """
@@ -16,15 +14,15 @@ import tkinter as tk
 from tkinter import ttk
 
 PALETTE = {
-    "BG":      "#0B1928",
-    "SURFACE": "#112040",
-    "PANEL":   "#0D2238",
-    "BTN":     "#1A3A5C",
-    "BTN_ACT": "#2A6090",
-    "FG":      "#C8E0F5",
-    "FG2":     "#5A8AB0",
-    "FG3":     "#2E5070",
-    "BORDER":  "#1C3A5E",
+    "BG":      "#FFFFFF",
+    "SURFACE": "#FFFFFF",
+    "PANEL":   "#F5F8FC",
+    "BTN":     "#DCEAFE",
+    "BTN_ACT": "#2563EB",
+    "FG":      "#0F172A",
+    "FG2":     "#475569",
+    "FG3":     "#64748B",
+    "BORDER":  "#CBD5E1",
     "MONO":    "Consolas",
 }
 
