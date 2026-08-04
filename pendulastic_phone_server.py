@@ -56,6 +56,12 @@ CLOCK_SYNC_INITIAL_ROUNDS = 5
 CLOCK_SYNC_RESYNC_INTERVAL_S = 30.0
 MAX_FRAME_TS_JUMP_MS = 2000   # implausible jump vs. previous frame -> drop
 
+PHONE_TARGET_FPS            = 24.0
+PHONE_DEGRADED_FPS          = 12.0
+PHONE_DEGRADED_HYSTERESIS_S = 2.5
+PHONE_LOST_TIMEOUT_S        = 5.0
+PHONE_WAITING_HINT_S        = 15.0
+
 stream_frame_queue: "queue.Queue[dict]" = queue.Queue(maxsize=4)
 
 _stream_server = None

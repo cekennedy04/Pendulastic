@@ -5,8 +5,19 @@ Used by both master_app.py (enumerate_cameras()/read_with_warmup() only —
 master_app manages its own capture/preview loop directly) and
 pendulastic_app.py (also uses CameraSession — see below).
 """
+import os
 import threading
 import time
+
+# On Windows, the MSMF backend can hang for 30-120 seconds opening a USB
+# camera because of hardware Media Foundation Transforms. Disabling them
+# makes camera open near-instant. This MUST be set before OpenCV (cv2) is
+# imported. Both master_app.py and pendulastic_app.py already set this
+# themselves before importing this module, so setdefault() here is normally
+# a no-op in production — but it makes this module correct on its own for
+# anything (e.g. tests) that imports it directly with no mitigation applied
+# anywhere else.
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 import cv2
 
@@ -195,6 +206,14 @@ class CameraSession:
         try:
             while not stop_evt.is_set():
                 ret, frame = cap.read()
+                if stop_evt.is_set():
+                    # close() gave up waiting on this thread while we were
+                    # blocked inside cap.read() above (the stalled-device
+                    # path). self._writer/self._on_frame are session-level,
+                    # not per-thread — by the time this blocked read finally
+                    # returns, they may already belong to a newer session.
+                    # Bail before touching either.
+                    break
                 if not ret or frame is None:
                     miss += 1
                     if miss > self._LOSS_THRESHOLD:   # more than 30 consecutive failures
@@ -230,3 +249,161 @@ class CameraSession:
                 self.active = None
                 self._frame_size = None
                 self._safe_status("lost")
+
+
+class PhoneCameraSession:
+    """Mirrors CameraSession's public surface (open/close/attach_writer/
+    detach_writer/.active/.frame_size/on_frame/on_status) but is backed by
+    pendulastic_phone_server's single-port HTTPS+WS stream server instead of
+    cv2.VideoCapture. Does not implement rescan() — dropdown population for
+    the static phone entry is handled once, at the App level, not per
+    session type."""
+
+    def __init__(self, on_frame, on_status=None, server_module=None):
+        if server_module is None:
+            import pendulastic_phone_server as server_module
+        self._server = server_module
+        self._on_frame = on_frame
+        self._on_status = on_status or (lambda msg: None)
+        self.active = None
+        self._frame_size = None
+        self._writer = None
+        self._ts_sink = None
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop_evt = None
+
+    @property
+    def frame_size(self):
+        return self._frame_size
+
+    def open(self, cam: dict) -> bool:
+        self.close()
+        self._server.start_stream_server()
+        self.active = dict(cam)
+        self._safe_status("waiting for phone")
+        stop_evt = threading.Event()
+        self._stop_evt = stop_evt
+        thread = threading.Thread(target=self._consume_loop, args=(stop_evt,), daemon=True)
+        self._thread = thread
+        thread.start()
+        return True
+
+    def close(self) -> None:
+        if self._stop_evt is not None:
+            self._stop_evt.set()
+        thread = self._thread
+        self._thread = None
+        self._stop_evt = None
+        with self._lock:
+            self._writer = None
+            self._ts_sink = None
+        self.active = None
+        self._frame_size = None
+        if thread is not None:
+            thread.join(timeout=2.0)
+            # Only stop the server if a session was actually running —
+            # open() calls close() unconditionally first to drop any prior
+            # session, and that no-op call must not double-stop the server.
+            self._server.stop_stream_server()
+
+    def attach_writer(self, writer) -> None:
+        with self._lock:
+            self._writer = writer
+
+    def detach_writer(self):
+        with self._lock:
+            w, self._writer = self._writer, None
+        return w
+
+    def attach_timestamp_sink(self, callback) -> None:
+        with self._lock:
+            self._ts_sink = callback
+
+    def detach_timestamp_sink(self) -> None:
+        with self._lock:
+            self._ts_sink = None
+
+    def _safe_status(self, msg: str) -> None:
+        try:
+            self._on_status(msg)
+        except Exception:
+            pass
+
+    def _consume_loop(self, stop_evt) -> None:
+        q = self._server.stream_frame_queue
+        degraded_fps = self._server.PHONE_DEGRADED_FPS
+        hysteresis_s = self._server.PHONE_DEGRADED_HYSTERESIS_S
+        lost_timeout = self._server.PHONE_LOST_TIMEOUT_S
+        waiting_hint_s = self._server.PHONE_WAITING_HINT_S
+
+        went_live = False
+        hinted_waiting = False
+        opened_at = time.time()
+        last_frame_at = None
+        low_fps_since = None
+        currently_degraded = False
+        recent_ts = []   # rolling list of frame arrival times (seconds) for fps estimate
+
+        while not stop_evt.is_set():
+            try:
+                # Short poll interval so waiting-hint/degraded/lost timeouts
+                # (which can be as short as a couple hundred ms) are checked
+                # promptly rather than only once every full poll cycle.
+                item = q.get(timeout=0.05)
+            except Exception:
+                item = None
+
+            now = time.time()
+            if not went_live and not hinted_waiting and (now - opened_at) >= waiting_hint_s:
+                hinted_waiting = True
+                self._safe_status(
+                    "Still waiting for phone - check it's on the same network "
+                    "and the certificate warning was accepted.")
+            if item is not None:
+                last_frame_at = now
+                recent_ts.append(now)
+                recent_ts = [t for t in recent_ts if now - t <= 1.0]
+                fps = float(len(recent_ts))
+
+                if not went_live:
+                    went_live = True
+                    self._safe_status("live")
+
+                if self._frame_size is None:
+                    h, w = item["frame"].shape[:2]
+                    self._frame_size = (w, h)
+
+                if fps < degraded_fps:
+                    if low_fps_since is None:
+                        low_fps_since = now
+                    elif not currently_degraded and (now - low_fps_since) >= hysteresis_s:
+                        currently_degraded = True
+                        self._safe_status(f"degraded: {int(fps)}fps")
+                else:
+                    low_fps_since = None
+                    currently_degraded = False
+
+                with self._lock:
+                    w = self._writer
+                    sink = self._ts_sink
+                if w is not None:
+                    try:
+                        w.write(item["frame"])
+                    except Exception:
+                        pass
+                if sink is not None and item["desktop_ts_ms"] is not None:
+                    try:
+                        sink(item["frame_index"], item["desktop_ts_ms"])
+                    except Exception:
+                        pass
+                try:
+                    self._on_frame(item["frame"])
+                except Exception:
+                    pass
+            else:
+                if went_live and last_frame_at is not None and (now - last_frame_at) >= lost_timeout:
+                    self._safe_status("lost")
+                    went_live = False
+                    hinted_waiting = False   # re-engage the waiting-hint for the new gap
+                    opened_at = now

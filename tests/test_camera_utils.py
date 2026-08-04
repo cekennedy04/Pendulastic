@@ -263,6 +263,82 @@ def test_close_detaches_from_a_stalled_read_without_use_after_release_race():
         assert cap.released is True, "orphaned thread must release its own capture on exit"
 
 
+def test_stale_frame_from_abandoned_thread_does_not_leak_into_newer_session():
+    """Regression for finding 4: if close() gives up waiting on a stalled
+    read() (the Task-2 detach path) and this same CameraSession object is
+    then reused for a NEW session (new capture, new writer attached -- the
+    real production shape, since open() calls close() internally), the
+    eventual return of the OLD blocked read() must not write into the NEW
+    writer or call on_frame with stale data. self._writer/self._on_frame
+    are session-level attributes, not per-thread -- without the early
+    stop_evt re-check right after cap.read() returns, the abandoned thread
+    would keep looping forever (this fake capture never fails once
+    released) grabbing whatever writer/on_frame the CURRENT session has at
+    that instant."""
+    release_evt = threading.Event()
+    old_cap = _BlockingFakeCap(release_evt)
+    frames_received = []
+    sess = camera_utils.CameraSession(
+        on_frame=lambda f: frames_received.append(f),
+        capture_factory=lambda idx, backend: old_cap)
+    try:
+        assert sess.open(_FAKE_CAM) is True
+        assert sess._thread is not None
+        time.sleep(0.05)   # let a frame or two flow before it stalls
+
+        class _FakeWriter:
+            def __init__(self):
+                self.frames = []
+            def write(self, f):
+                self.frames.append(f)
+
+        # Re-open with a fresh, non-blocking capture. open()'s internal
+        # close() will time out waiting on the still-blocked old thread and
+        # detach from it (same path the Task 2 test exercises) rather than
+        # hang or release out from under it.
+        new_cap = _FakeCap()
+        sess._capture_factory = lambda idx, backend: new_cap
+        start = time.time()
+        assert sess.open(_FAKE_CAM) is True
+        assert time.time() - start < 4.0, \
+            "open()'s internal close() should give up promptly, not hang"
+
+        new_writer = _FakeWriter()
+        sess.attach_writer(new_writer)
+        time.sleep(0.1)
+        assert len(new_writer.frames) > 0, \
+            "new session should be streaming to the new writer"
+        new_writer_frames_at_close = list(new_writer.frames)
+
+        # Close the NEW session too (joins its fast, non-blocking thread
+        # promptly) so nothing legitimate is streaming any more -- isolates
+        # the check below to only the abandoned OLD thread's behavior.
+        sess.close()
+        n_frames_before_release = len(frames_received)
+
+        # Now let the OLD blocked read() finally return "frame-blocked". Its
+        # own on_frame callback reference is untouched by close() (unlike
+        # self._writer, which close() does clear) -- that's the leak this
+        # fix closes.
+        release_evt.set()
+        time.sleep(0.3)
+
+        assert new_writer.frames == new_writer_frames_at_close, \
+            "a stale frame from the abandoned OLD session leaked into the NEW writer"
+        assert "frame-blocked" not in frames_received, \
+            "a stale frame from the abandoned OLD session leaked into on_frame"
+        assert len(frames_received) == n_frames_before_release, \
+            "the abandoned old thread must not deliver any more frames at all " \
+            "once its own stop_evt was set"
+    finally:
+        sess.close()
+        deadline = time.time() + 2.0
+        while not old_cap.released and time.time() < deadline:
+            time.sleep(0.01)
+        assert old_cap.released is True, \
+            "the abandoned thread must still release its own (old) capture on exit"
+
+
 def test_open_twice_releases_first_capture_and_routes_frames_from_second_only():
     caps = []
     frames_by_cap_index = {}
@@ -309,3 +385,154 @@ def test_open_twice_releases_first_capture_and_routes_frames_from_second_only():
             "first (closed) capture kept being read from after the second open()"
     finally:
         sess.close()
+
+
+class _FakeServerModule:
+    """Stands in for pendulastic_phone_server in PhoneCameraSession tests —
+    a real queue.Queue, but start/stop are just call-tracking, no sockets."""
+    def __init__(self):
+        import queue as _q
+        self.stream_frame_queue = _q.Queue(maxsize=4)
+        self.started = []
+        self.stopped = 0
+        self.PHONE_TARGET_FPS = 24.0
+        self.PHONE_DEGRADED_FPS = 12.0
+        self.PHONE_DEGRADED_HYSTERESIS_S = 0.2   # short, for fast tests
+        self.PHONE_LOST_TIMEOUT_S = 0.3          # short, for fast tests
+        self.PHONE_WAITING_HINT_S = 0.15         # short, for fast tests
+
+    def start_stream_server(self, cert_dir=None, port=None):
+        self.started.append((cert_dir, port))
+        return "192.168.1.50", 8880
+
+    def stop_stream_server(self):
+        self.stopped += 1
+
+
+def _push_frame(server, frame_index=0, desktop_ts_ms=1000):
+    import numpy as np
+    server.stream_frame_queue.put_nowait({
+        "frame": np.zeros((4, 4, 3), dtype="uint8"),
+        "frame_index": frame_index, "phone_ts_ms": desktop_ts_ms, "desktop_ts_ms": desktop_ts_ms,
+    })
+
+
+def test_phone_camera_session_open_starts_server_and_sets_active():
+    server = _FakeServerModule()
+    sess = camera_utils.PhoneCameraSession(on_frame=lambda f: None, server_module=server)
+    ok = sess.open({"kind": "phone", "label": "Phone"})
+    assert ok is True
+    assert sess.active == {"kind": "phone", "label": "Phone"}
+    assert len(server.started) == 1
+    sess.close()
+
+
+def test_phone_camera_session_reports_waiting_then_live_on_first_frame():
+    server = _FakeServerModule()
+    statuses = []
+    sess = camera_utils.PhoneCameraSession(
+        on_frame=lambda f: None, on_status=statuses.append, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    assert "waiting for phone" in statuses
+    _push_frame(server)
+    import time
+    for _ in range(50):
+        if "live" in statuses:
+            break
+        time.sleep(0.02)
+    assert "live" in statuses
+    sess.close()
+
+
+def test_phone_camera_session_frame_size_from_decoded_frame():
+    server = _FakeServerModule()
+    sess = camera_utils.PhoneCameraSession(on_frame=lambda f: None, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    _push_frame(server)
+    import time
+    for _ in range(50):
+        if sess.frame_size is not None:
+            break
+        time.sleep(0.02)
+    assert sess.frame_size == (4, 4)
+    sess.close()
+
+
+def test_phone_camera_session_attach_writer_writes_frames():
+    server = _FakeServerModule()
+    got = []
+    sess = camera_utils.PhoneCameraSession(on_frame=got.append, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+
+    class _FakeWriter:
+        def __init__(self): self.frames = []
+        def write(self, f): self.frames.append(f)
+
+    writer = _FakeWriter()
+    sess.attach_writer(writer)
+    _push_frame(server)
+    import time
+    for _ in range(50):
+        if got:
+            break
+        time.sleep(0.02)
+    assert len(writer.frames) == 1
+    assert len(got) == 1
+    sess.close()
+
+
+def test_phone_camera_session_close_stops_server_and_clears_active():
+    server = _FakeServerModule()
+    sess = camera_utils.PhoneCameraSession(on_frame=lambda f: None, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    sess.close()
+    assert server.stopped == 1
+    assert sess.active is None
+
+
+def test_phone_camera_session_degraded_status_after_sustained_low_fps():
+    server = _FakeServerModule()   # PHONE_DEGRADED_HYSTERESIS_S=0.2, PHONE_LOST_TIMEOUT_S=0.3
+    statuses = []
+    sess = camera_utils.PhoneCameraSession(
+        on_frame=lambda f: None, on_status=statuses.append, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    import time
+    # Sustained LOW-but-nonzero rate (~10fps, under PHONE_DEGRADED_FPS=12.0),
+    # spaced well under PHONE_LOST_TIMEOUT_S so the session never drops to
+    # "lost" — distinct from a full stop, which should go straight to "lost".
+    for i in range(8):
+        _push_frame(server, frame_index=i)
+        time.sleep(0.1)
+        if any(s.startswith("degraded:") for s in statuses):
+            break
+    assert any(s.startswith("degraded:") for s in statuses)
+    assert "lost" not in statuses
+    sess.close()
+
+
+def test_phone_camera_session_hints_after_prolonged_no_frames(monkeypatch):
+    server = _FakeServerModule()   # PHONE_WAITING_HINT_S = 0.15 in the fake
+    statuses = []
+    sess = camera_utils.PhoneCameraSession(
+        on_frame=lambda f: None, on_status=statuses.append, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})   # no frames ever pushed
+    import time
+    time.sleep(0.4)
+    assert any("waiting" in s.lower() and s != "waiting for phone" for s in statuses), statuses
+    sess.close()
+
+
+def test_phone_camera_session_timestamp_sink_receives_desktop_ts():
+    server = _FakeServerModule()
+    sess = camera_utils.PhoneCameraSession(on_frame=lambda f: None, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    got = []
+    sess.attach_timestamp_sink(lambda idx, ts: got.append((idx, ts)))
+    _push_frame(server, frame_index=5, desktop_ts_ms=9999)
+    import time
+    for _ in range(50):
+        if got:
+            break
+        time.sleep(0.02)
+    assert got == [(5, 9999)]
+    sess.close()
