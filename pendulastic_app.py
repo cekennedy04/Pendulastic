@@ -1401,6 +1401,7 @@ class App(tk.Tk):
         self._workbench_load.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
         self._workbench_view.set_traces(traces)
+        self._workbench_view.set_raw_diagnostics(self._workbench_raw_diagnostics)
 
         if selection["video_path"]:
             self._workbench_view.load_video(selection["video_path"])

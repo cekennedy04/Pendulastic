@@ -170,6 +170,7 @@ class WorkbenchView(tk.Frame):
         self._reference_var = tk.StringVar(value="")
         self._annotations: dict = {}     # {label: (frame_index, t_sec)}
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
+        self._raw_diagnostics: Optional[dict] = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -398,6 +399,22 @@ class WorkbenchView(tk.Frame):
             else:
                 line = f"{label} vs {ref_label}: {result['error']}\n"
             self._metrics_text.insert("end", line)
+
+        if self._raw_diagnostics is not None:
+            self._metrics_text.insert(
+                "end", "\nRaw Sensor Cross-Checks (independent of PT score fusion):\n")
+            peak_vel = self._raw_diagnostics["peak_gyro_velocity_dps"]
+            self._metrics_text.insert(
+                "end", f"  Peak angular velocity (raw gyro): {peak_vel:.1f} deg/s\n")
+            release_t = self._raw_diagnostics["accel_release_time_sec"]
+            if release_t is not None:
+                self._metrics_text.insert(
+                    "end", f"  Release detected (raw accel, 5Hz low-pass): t={release_t:.2f}s\n")
+            else:
+                self._metrics_text.insert(
+                    "end", "  Release detected (raw accel, 5Hz low-pass): "
+                          "unavailable (sample rate too low)\n")
+
         self._metrics_text.configure(state="disabled")
 
     def _on_mark_milestone(self) -> None:
@@ -435,6 +452,10 @@ class WorkbenchView(tk.Frame):
 
     def get_annotations(self) -> dict:
         return dict(self._annotations)
+
+    def set_raw_diagnostics(self, diagnostics: Optional[dict]) -> None:
+        self._raw_diagnostics = diagnostics
+        self._recompute_metrics()
 
     def export_session_to(self, out_path: str, trial_meta: dict) -> None:
         session = engine.export_session(
