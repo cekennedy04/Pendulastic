@@ -17,7 +17,7 @@ import os
 from typing import Optional
 
 import numpy as np
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks, savgol_filter, butter, filtfilt
 
 import analysis_pipeline
 import imu_calibration_config
@@ -410,6 +410,55 @@ def _peak_raw_gyro_velocity(anchor_path: str) -> float:
     magnitudes = [math.sqrt(s["v"][0] ** 2 + s["v"][1] ** 2 + s["v"][2] ** 2)
                  for s in samples]
     return max(magnitudes)
+
+
+_MIN_FS_FOR_5HZ_CUTOFF_HZ = 20.0
+_ACCEL_LOWPASS_CUTOFF_HZ = 5.0
+_ACCEL_RELEASE_BASELINE_SEC = 0.6
+
+
+def _accel_release_time(anchor_path: str) -> Optional[float]:
+    """Independent release-event estimate from raw accelerometer
+    magnitude, low-pass filtered to separate genuine limb-drop change from
+    linear-acceleration noise (muscle twitches, sensor jolts). Returns
+    None if the file's actual sample rate can't support a meaningful 5 Hz
+    cutoff, or if no release is ever detected -- never fabricates a value
+    from data that can't support it."""
+    paths = _derive_split_csv_siblings(anchor_path)
+    samples = _read_one_split_csv(paths["accel"], "accel")
+    t = np.array([s["t"] for s in samples], dtype=float)
+    mag = np.array([math.sqrt(s["v"][0] ** 2 + s["v"][1] ** 2 + s["v"][2] ** 2)
+                    for s in samples])
+
+    if len(t) < 2:
+        return None
+    fs_eff = 1.0 / float(np.median(np.diff(t)))
+    if fs_eff < _MIN_FS_FOR_5HZ_CUTOFF_HZ:
+        return None
+
+    b, a = butter(4, _ACCEL_LOWPASS_CUTOFF_HZ, btype="low", fs=fs_eff)
+    filtered = filtfilt(b, a, mag)
+
+    bi = max(3, int(np.searchsorted(t, t[0] + _ACCEL_RELEASE_BASELINE_SEC)))
+    bi = min(bi, len(t) - 1)
+    baseline = float(np.median(filtered[:bi]))
+    signal_range = float(np.percentile(filtered, 97) - np.percentile(filtered, 3))
+    thresh = 0.08 * signal_range
+    for i in range(bi, len(t)):
+        if abs(filtered[i] - baseline) > thresh:
+            return float(t[max(0, i - 2)])
+    return None
+
+
+def compute_raw_sensor_diagnostics(anchor_path: str) -> dict:
+    """Two supplementary, non-blocking cross-checks computed directly from
+    raw gyro/accel data (bypassing AHRS fusion entirely) -- see design
+    spec Sections 3-4. Never touches load_imu_trial's fused-angle
+    PT-score path."""
+    return {
+        "peak_gyro_velocity_dps": _peak_raw_gyro_velocity(anchor_path),
+        "accel_release_time_sec": _accel_release_time(anchor_path),
+    }
 
 
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,

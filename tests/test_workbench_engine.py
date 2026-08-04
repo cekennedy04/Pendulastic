@@ -495,3 +495,75 @@ def test_peak_raw_gyro_velocity_finds_known_burst(tmp_path):
 
     peak = engine._peak_raw_gyro_velocity(str(prefix) + "_gyro.csv")
     assert peak == 5.0
+
+
+def _write_accel_release_csv(path, fs_hz, baseline=1.0, step=1.5,
+                             release_t_sec=1.0, duration_sec=3.0):
+    """Synthetic single-axis accel signal (y=z=0, so magnitude == |x|):
+    steady baseline until release_t_sec, then steps to a new level and
+    stays there -- a clean, unambiguous magnitude change for the release
+    detector to find. Verified empirically before writing this plan: this
+    exact shape detects within ~0.1s of release_t_sec at 50/100/200 Hz."""
+    dt = 1.0 / fs_hz
+    n = int(duration_sec / dt)
+    rows = []
+    for i in range(n):
+        t_ms = i * dt * 1000.0
+        x = step if (i * dt) >= release_t_sec else baseline
+        rows.append((t_ms, int(t_ms), "proximal", "Accelerometer", x, 0.0, 0.0))
+    _write_split_csv(path, rows)
+
+
+def test_accel_release_time_detects_known_step(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=100.0, release_t_sec=1.0)
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (2900.0, 2900, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (2900.0, 2900, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+    assert release_t is not None
+    assert abs(release_t - 1.0) < 0.15
+
+
+def test_accel_release_time_adapts_to_actual_sample_rate(tmp_path):
+    """Same release shape at two different sample rates -- both must detect
+    near the same known release time, proving the filter design adapts to
+    each file's own fs_eff rather than assuming one fixed rate."""
+    for fs_hz in (50.0, 200.0):
+        prefix = tmp_path / f"Trial_{int(fs_hz)}"
+        _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=fs_hz, release_t_sec=1.0)
+        release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+        assert release_t is not None
+        assert abs(release_t - 1.0) < 0.15, f"fs_hz={fs_hz}: got {release_t}"
+
+
+def test_accel_release_time_returns_none_below_nyquist_guard(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=5.0, release_t_sec=1.0)
+    release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+    assert release_t is None
+
+
+def test_compute_raw_sensor_diagnostics_returns_both_keys(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=100.0, release_t_sec=1.0)
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (1000.0, 1000, "proximal", "Gyroscope", 3.0, 4.0, 0.0),
+        (2900.0, 2900, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (2900.0, 2900, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    diagnostics = engine.compute_raw_sensor_diagnostics(str(prefix) + "_imu.csv")
+    assert diagnostics["peak_gyro_velocity_dps"] == 5.0
+    assert diagnostics["accel_release_time_sec"] is not None
+    assert abs(diagnostics["accel_release_time_sec"] - 1.0) < 0.15
