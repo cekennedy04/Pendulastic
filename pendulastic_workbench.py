@@ -220,7 +220,8 @@ class WorkbenchView(tk.Frame):
     _VS_REF_W    = (100, 100, 90, 90, 70, 130, 110)
 
     def _build_widgets(self) -> None:
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = ttk.PanedWindow(self, orient="horizontal",
+                                style=ws.STYLE_PANEDWINDOW)
         paned.pack(fill="both", expand=True)
 
         left = tk.Frame(paned, bg=ws.PALETTE["BG"])
@@ -232,6 +233,7 @@ class WorkbenchView(tk.Frame):
         self._video_label.pack(fill="both", expand=True, padx=8, pady=8)
 
         self._scrubber = ttk.Scale(left, from_=0, to=0, orient="horizontal",
+                                   style=ws.STYLE_SCALE,
                                    variable=self._scrub_var, command=self._on_scrub)
         self._scrubber.pack(fill="x", padx=8, pady=4)
 
@@ -242,7 +244,8 @@ class WorkbenchView(tk.Frame):
         top_controls.pack(fill="x", padx=8, pady=4)
         tk.Label(top_controls, text="Reference:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
-        self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
+        self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "",
+                                              style=ws.STYLE_MENUBUTTON)
         self._reference_menu.pack(side="left", padx=6)
         self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
         self._load_another_button = ws.secondary_button(
@@ -255,7 +258,8 @@ class WorkbenchView(tk.Frame):
         tk.Label(annot_toolbar, text="Milestone:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
         ttk.OptionMenu(annot_toolbar, self._pending_milestone,
-                      MILESTONE_LABELS[0], *MILESTONE_LABELS).pack(side="left", padx=6)
+                      MILESTONE_LABELS[0], *MILESTONE_LABELS,
+                      style=ws.STYLE_MENUBUTTON).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Mark Here",
                             self._on_mark_milestone).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
@@ -283,16 +287,18 @@ class WorkbenchView(tk.Frame):
         self._visibility_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
 
-        self._fig = Figure(figsize=(6, 4), dpi=100)
-        self._fig.patch.set_facecolor(ws.PALETTE["BG"])
-        self._ax = self._fig.add_subplot(111)
-        self._style_axes()
-        self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
-        self._plot_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
-        self._fig.canvas.mpl_connect("button_press_event", self._on_plot_click)
-
+        # Pack order matters here (and is the reason the tables are built
+        # before the plot canvas even though they render *below* it): pack
+        # honors each child's requested size in packing order and only hands
+        # leftover space to expand=True children. With the plot canvas packed
+        # first, its 400px requested figure height was claimed before the
+        # tables were considered, and at App's own minsize(900, 600) the
+        # vs-reference table got 0 height and never mapped. Packing the tables
+        # first with side="bottom" reserves their requested height (and keeps
+        # them visually below the plot), leaving the canvas to absorb whatever
+        # remains.
         tables_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
-        tables_frame.pack(fill="x", padx=8, pady=4)
+        tables_frame.pack(side="bottom", fill="x", padx=8, pady=4)
 
         per_trace_card = ws.card_frame(tables_frame, "PER-TRACE METRICS")
         per_trace_card.pack(fill="x", pady=(0, 6))
@@ -303,6 +309,15 @@ class WorkbenchView(tk.Frame):
         vs_ref_card.pack(fill="x")
         self._vs_ref_tree = self._make_metrics_treeview(
             vs_ref_card, self._VS_REF_COLS, self._VS_REF_HDRS, self._VS_REF_W)
+
+        self._fig = Figure(figsize=(6, 4), dpi=100)
+        self._fig.patch.set_facecolor(ws.PALETTE["BG"])
+        self._ax = self._fig.add_subplot(111)
+        self._style_axes()
+        self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
+        self._plot_canvas.get_tk_widget().pack(side="top", fill="both", expand=True,
+                                               padx=8, pady=4)
+        self._fig.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
         self._recompute_metrics()
 
@@ -318,13 +333,14 @@ class WorkbenchView(tk.Frame):
     def _make_metrics_treeview(self, parent, cols, hdrs, widths) -> ttk.Treeview:
         wrap = tk.Frame(parent, bg=ws.PALETTE["PANEL"])
         wrap.pack(fill="x")
-        tree = ttk.Treeview(wrap, style="Workbench.Treeview", columns=cols,
+        tree = ttk.Treeview(wrap, style=ws.STYLE_TREEVIEW, columns=cols,
                             show="headings", height=4, selectmode="none")
         for key, hdr, w in zip(cols, hdrs, widths):
             tree.heading(key, text=hdr)
             tree.column(key, width=w, anchor="center", stretch=False)
         tree.column(cols[0], anchor="w", stretch=True)
-        sb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        sb = ttk.Scrollbar(wrap, orient="vertical", style=ws.STYLE_SCROLLBAR,
+                           command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="x", expand=True)
         sb.pack(side="right", fill="y")
@@ -355,18 +371,35 @@ class WorkbenchView(tk.Frame):
         self._lag_override_vars = {}
 
         for label, (t, angle) in traces.items():
-            row = tk.Frame(self._visibility_frame)
+            # Styled "chip" per trace (design spec Section 4) -- card-colored
+            # with a border and consistent padding, so this row reads as part
+            # of the dark toolbar stack instead of a band of default-gray
+            # system widgets between the toolbar and the plot.
+            row = tk.Frame(self._visibility_frame, bg=ws.PALETTE["PANEL"],
+                           padx=6, pady=3,
+                           highlightbackground=ws.PALETTE["BORDER"],
+                           highlightthickness=1)
             row.pack(side="left", padx=4)
 
             var = prev_visible[label] if label in prev_visible else tk.BooleanVar(value=True)
             self._visible_vars[label] = var
             tk.Checkbutton(row, text=label, variable=var,
-                          command=self._on_visibility_changed).pack(side="left")
+                          command=self._on_visibility_changed,
+                          bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                          font=ws.FONT_BODY, selectcolor=ws.PALETTE["SURFACE"],
+                          activebackground=ws.PALETTE["PANEL"],
+                          activeforeground=ws.PALETTE["FG"]).pack(side="left")
 
             lag_var = prev_lag[label] if label in prev_lag else tk.StringVar(value="")
             self._lag_override_vars[label] = lag_var
-            tk.Label(row, text="lag(s):", font=("Segoe UI", 7)).pack(side="left")
-            lag_entry = tk.Entry(row, textvariable=lag_var, width=6)
+            tk.Label(row, text="lag(s):", bg=ws.PALETTE["PANEL"],
+                     fg=ws.PALETTE["FG2"], font=ws.FONT_SMALL).pack(side="left")
+            lag_entry = tk.Entry(row, textvariable=lag_var, width=6,
+                                 bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"],
+                                 insertbackground=ws.PALETTE["FG"],
+                                 relief="flat", highlightthickness=1,
+                                 highlightbackground=ws.PALETTE["BORDER"],
+                                 font=ws.FONT_BODY)
             lag_entry.pack(side="left")
             lag_entry.bind("<Return>", lambda e: self._recompute_metrics())
             lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
@@ -593,9 +626,19 @@ class WorkbenchView(tk.Frame):
             w.writerows(rows)
         messagebox.showinfo("Exported", f"Saved to:\n{out_path}")
 
+    def _visible_traces(self) -> dict:
+        """Only the currently-checked traces, mirroring the visibility filter
+        get_metrics_snapshot() applies (a trace with no visibility var is
+        treated as visible). Without this the traces CSV would export hidden
+        traces that the per-trace and vs-reference CSVs -- both fed from
+        get_metrics_snapshot() -- have already excluded."""
+        return {label: pair for label, pair in self._traces.items()
+                if self._visible_vars.get(label, tk.BooleanVar(value=True)).get()}
+
     def _on_export_traces_csv(self) -> None:
         participant_id, session_date = self._meta_ids()
-        fieldnames, rows = engine.traces_to_csv_rows(self._traces, participant_id, session_date)
+        fieldnames, rows = engine.traces_to_csv_rows(
+            self._visible_traces(), participant_id, session_date)
         self._prompt_and_write_csv("traces", fieldnames, rows)
 
     def _on_export_per_trace_csv(self) -> None:

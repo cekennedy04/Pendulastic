@@ -319,3 +319,63 @@ def test_export_traces_csv_writes_expected_rows(tmp_path, monkeypatch):
     assert rows[0]["participant_id"] == "P5"
     assert rows[0]["session_date"] == "2026-08-04"
     assert rows[0]["label"] == "imu"
+
+
+def test_metrics_tables_are_visible_at_app_minimum_window_size():
+    """Regression for the pack-order bug that made the vs-reference table
+    invisible at App's own minsize(900, 600): the plot canvas was packed
+    with expand=True *before* the tables, so it claimed its 400px requested
+    figure height first and the tables were squeezed to 0 height (no
+    scrollbar, no indication they existed). Uses a Toplevel of the shared
+    root -- not a second tk.Tk() -- so it stays independent of whatever
+    else the suite has packed into the shared root, and pack_propagate(False)
+    pins it to exactly the app's minimum size."""
+    from pendulastic_workbench import WorkbenchView
+    import tkinter as _tk
+    r = _get_root()
+    top = _tk.Toplevel(r)
+    try:
+        top.withdraw()
+        top.geometry("900x600")
+        top.pack_propagate(False)
+        r.update()
+
+        wv = WorkbenchView(top, _Ctrl())
+        wv.pack(fill="both", expand=True)
+        wv.set_traces(_traces("imu", "optitrack"))
+        r.update()
+        r.update_idletasks()
+
+        assert top.winfo_height() == 600
+        assert wv._vs_ref_tree.winfo_height() > 0
+        assert wv._per_trace_tree.winfo_height() > 0
+    finally:
+        top.destroy()
+
+
+def test_export_traces_csv_excludes_hidden_traces(tmp_path, monkeypatch):
+    """The per-trace and vs-reference CSVs are fed from get_metrics_snapshot(),
+    which only covers *visible* traces. The traces CSV must apply the same
+    filter, or unchecking a trace would drop it from two of the three
+    exported CSVs while silently leaving it in the third."""
+    from pendulastic_workbench import WorkbenchView
+    import pendulastic_workbench as _m
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    wv._visible_vars["optitrack"].set(False)
+    wv._on_visibility_changed()
+    r.update()
+
+    out_path = tmp_path / "traces.csv"
+    monkeypatch.setattr(_m.filedialog, "asksaveasfilename", lambda **kw: str(out_path))
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **kw: None)
+    wv._on_export_traces_csv()
+
+    import csv as _csv
+    with open(out_path, newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    assert {row["label"] for row in rows} == {"imu"}
+    assert len(rows) == 100

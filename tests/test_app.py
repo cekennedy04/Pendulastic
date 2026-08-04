@@ -672,6 +672,7 @@ def test_on_load_trial_imu_only_switches_to_workbench_view(tmp_path, monkeypatch
         app.on_load_trial({
             "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
             "optitrack_path": None, "models": [],
+            "participant_id": "", "session_date": "2026-08-04",
             "femur_length_cm": None, "tibia_length_cm": None,
         })
         app.update()
@@ -700,12 +701,19 @@ def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
         app.on_load_trial({
             "imu_path": "some/trial.jsonl", "video_path": None,
             "optitrack_path": None, "models": [],
+            "participant_id": "P5", "session_date": "2026-08-04",
             "femur_length_cm": 45.0, "tibia_length_cm": 38.0,
         })
         app.update()
         meta = app.get_trial_meta()
         assert meta["imu_path"] == "some/trial.jsonl"
         assert meta["femur_length_cm"] == 45.0
+        # Regression: the embedded-Workbench path used to drop these two
+        # keys, so every CSV exported from the main app got blank
+        # participant_id/session_date columns (WorkbenchView._meta_ids()
+        # falls back to "" via .get(), so it failed silently).
+        assert meta["participant_id"] == "P5"
+        assert meta["session_date"] == "2026-08-04"
     finally:
         app.destroy()
 
