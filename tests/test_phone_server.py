@@ -38,3 +38,35 @@ def test_call_with_different_ip_regenerates_cert(tmp_path):
     with open(cert_path, "rb") as f:
         cert2 = x509.load_pem_x509_certificate(f.read())
     assert cert1.serial_number != cert2.serial_number
+
+
+def test_clock_sync_estimator_none_before_any_samples():
+    est = pps.ClockSyncEstimator()
+    assert est.offset_ms is None
+
+
+def test_clock_sync_estimator_computes_offset_from_consistent_samples():
+    est = pps.ClockSyncEstimator()
+    # Phone clock is exactly 500ms ahead of desktop clock; near-zero RTT.
+    for t0 in (1000.0, 1010.0, 1020.0, 1030.0, 1040.0):
+        est.add_sample(t0=t0, t1=t0 + 500.0, t2=t0 + 2.0)
+    assert est.offset_ms is not None
+    assert abs(est.offset_ms - 500.0) < 5.0
+
+
+def test_clock_sync_estimator_rejects_rtt_outlier():
+    est = pps.ClockSyncEstimator()
+    for t0 in (1000.0, 1010.0, 1020.0, 1030.0):
+        est.add_sample(t0=t0, t1=t0 + 500.0, t2=t0 + 2.0)
+    # One sample with a huge RTT (Wi-Fi power-save latency spike) and a
+    # correspondingly skewed apparent offset — must be filtered out.
+    est.add_sample(t0=1040.0, t1=1040.0 + 500.0 + 300.0, t2=1040.0 + 600.0)
+    assert abs(est.offset_ms - 500.0) < 5.0
+
+
+def test_clock_sync_estimator_window_is_bounded():
+    est = pps.ClockSyncEstimator()
+    for i in range(50):
+        t0 = float(i * 10)
+        est.add_sample(t0=t0, t1=t0 + 500.0, t2=t0 + 2.0)
+    assert len(est._samples) <= pps.CLOCK_SYNC_WINDOW

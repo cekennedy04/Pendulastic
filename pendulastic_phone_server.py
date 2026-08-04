@@ -45,6 +45,9 @@ from cryptography.x509.oid import NameOID
 PORT_HTTP: int = 8877
 PORT_WS:   int = 8878
 
+CLOCK_SYNC_WINDOW = 10
+CLOCK_SYNC_MAD_K  = 3.0
+
 # Uploaded video paths — one entry per completed upload.
 upload_queue: "queue.Queue[str]" = queue.Queue()
 
@@ -153,6 +156,45 @@ def get_or_create_self_signed_cert(cert_dir: str, common_name: str) -> tuple[str
             serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption()))
     return cert_path, key_path
+
+
+# ─── Clock synchronization (NTP-style, outlier-filtered) ───────────────────────
+
+class ClockSyncEstimator:
+    """Rolling window of (t0, t1, t2) round-trip samples -> a filtered
+    phone-clock-to-desktop-clock offset in milliseconds. t0=desktop send,
+    t1=phone echo, t2=desktop receive. A single Wi-Fi power-save latency
+    spike must not skew the offset — RTT outliers are rejected via a
+    median/MAD filter before the offset is (re)computed."""
+
+    def __init__(self):
+        import collections
+        self._samples = collections.deque(maxlen=CLOCK_SYNC_WINDOW)
+        self._offset_ms = None
+
+    def add_sample(self, t0: float, t1: float, t2: float) -> None:
+        rtt    = t2 - t0
+        offset = t1 - (t0 + t2) / 2.0
+        self._samples.append((rtt, offset))
+        self._recompute()
+
+    def _recompute(self) -> None:
+        if not self._samples:
+            self._offset_ms = None
+            return
+        rtts = sorted(r for r, _ in self._samples)
+        n = len(rtts)
+        median_rtt = rtts[n // 2] if n % 2 else (rtts[n // 2 - 1] + rtts[n // 2]) / 2.0
+        deviations = sorted(abs(r - median_rtt) for r, _ in self._samples)
+        mad = deviations[len(deviations) // 2] or 1.0   # avoid div-by-zero when all equal
+        kept = [o for r, o in self._samples if abs(r - median_rtt) <= CLOCK_SYNC_MAD_K * mad]
+        if not kept:
+            kept = [o for _, o in self._samples]   # degenerate: keep everything rather than nothing
+        self._offset_ms = sum(kept) / len(kept)
+
+    @property
+    def offset_ms(self):
+        return self._offset_ms
 
 
 # ─── IP discovery ─────────────────────────────────────────────────────────────
