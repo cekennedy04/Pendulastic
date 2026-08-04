@@ -12,7 +12,11 @@ def _get_root():
     global _root_window
     if _root_window is None:
         _root_window = tk.Tk()
-        _root_window.withdraw()
+        # Deliberately not withdrawn: Tk never maps a withdrawn toplevel's
+        # children, so winfo_ismapped() would be False for every widget
+        # regardless of grid()/grid_remove() state, breaking any test that
+        # checks visibility (e.g. the split-CSV format toggle).
+        _root_window.deiconify()
     return _root_window
 
 
@@ -136,7 +140,7 @@ def test_set_traces_repositions_scrub_indicator_to_current_time():
     assert wv._axvline.get_xdata()[0] == expected_t
 
 
-def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
+def test_imu_jsonl_browse_button_only_accepts_jsonl(monkeypatch):
     from pendulastic_workbench import TrialLoadPanel
     import pendulastic_workbench as _m
     r = _get_root()
@@ -153,7 +157,136 @@ def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
 
     exts = " ".join(pattern for _label, pattern in captured["filetypes"])
     assert "*.jsonl" in exts
-    assert "*.csv" in exts
+    assert "*.csv" not in exts
+
+
+def test_split_csv_format_hides_jsonl_row_and_shows_component_rows():
+    from pendulastic_workbench import TrialLoadPanel
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    p.pack()
+    r.update()
+    assert p._imu_jsonl_frame.winfo_ismapped()
+    assert not p._imu_split_frame.winfo_ismapped()
+
+    p._imu_format.set("split_csv")
+    p._on_imu_format_changed()
+    r.update()
+    assert not p._imu_jsonl_frame.winfo_ismapped()
+    assert p._imu_split_frame.winfo_ismapped()
+
+
+def test_component_browse_validates_and_updates_status(tmp_path, monkeypatch):
+    from pendulastic_workbench import TrialLoadPanel
+    import pendulastic_workbench as _m
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    p.pack()
+
+    path = tmp_path / "Trial_1_accel.csv"
+    path.write_text(
+        "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
+        "0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n"
+        "10.0,10,proximal,Accelerometer,0.0,0.0,9.81\n",
+        encoding="utf-8")
+    monkeypatch.setattr(_m.filedialog, "askopenfilename", lambda **kw: str(path))
+
+    p._browse_component("accel")
+
+    assert p._component_paths["accel"].get() == str(path)
+    assert p._component_validations["accel"]["ok"] is True
+    assert "100.0 Hz" in p._component_status["accel"].get()
+    assert p._component_validations["accel"]["path"] == str(path)
+
+
+def test_component_browse_shows_error_status_on_invalid_file(tmp_path, monkeypatch):
+    from pendulastic_workbench import TrialLoadPanel
+    import pendulastic_workbench as _m
+    r = _get_root()
+    p = TrialLoadPanel(r, _Ctrl())
+    p.pack()
+
+    path = tmp_path / "bad.csv"
+    path.write_text("wrong,header\n1,2\n", encoding="utf-8")
+    monkeypatch.setattr(_m.filedialog, "askopenfilename", lambda **kw: str(path))
+
+    p._browse_component("gyro")
+
+    assert p._component_validations["gyro"]["ok"] is False
+    assert p._component_status["gyro"].get().startswith("✗")
+
+
+def test_load_trial_blocks_on_incomplete_split_csv_slots(tmp_path, monkeypatch):
+    from pendulastic_workbench import TrialLoadPanel
+    import pendulastic_workbench as _m
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_load_trial(self, selection):
+            calls.append(selection)
+    p = TrialLoadPanel(r, C())
+    p.pack()
+    p._imu_format.set("split_csv")
+    p._on_imu_format_changed()
+
+    path = tmp_path / "Trial_1_accel.csv"
+    path.write_text(
+        "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
+        "0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n"
+        "10.0,10,proximal,Accelerometer,0.0,0.0,9.81\n",
+        encoding="utf-8")
+    monkeypatch.setattr(_m.filedialog, "askopenfilename", lambda **kw: str(path))
+    p._browse_component("accel")   # only 1 of 4 filled
+
+    errors = []
+    monkeypatch.setattr(_m.messagebox, "showerror", lambda title, msg: errors.append(msg))
+    p._on_load_clicked()
+
+    assert calls == []
+    assert len(errors) == 1
+    assert "gyro" in errors[0] and "mag" in errors[0] and "imu" in errors[0]
+
+
+def test_load_trial_proceeds_when_all_four_split_csv_slots_are_valid(tmp_path, monkeypatch):
+    from pendulastic_workbench import TrialLoadPanel
+    import pendulastic_workbench as _m
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_load_trial(self, selection):
+            calls.append(selection)
+    p = TrialLoadPanel(r, C())
+    p.pack()
+    p._imu_format.set("split_csv")
+    p._on_imu_format_changed()
+
+    csv_bodies = {
+        "accel": "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n10.0,10,proximal,Accelerometer,0.0,0.0,9.81\n",
+        "gyro":  "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n0.0,0,proximal,Gyroscope,0.0,0.0,0.0\n10.0,10,proximal,Gyroscope,0.0,0.0,0.0\n",
+        "mag":   "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n0.0,0,proximal,Magnetometer,-50.0,20.0,30.0\n10.0,10,proximal,Magnetometer,-50.0,20.0,30.0\n",
+        "imu":   "t_epoch,t_rel,phone_ts_ms,t_phone_aligned,hip_roll_deg,hip_pitch_deg,hip_yaw_deg,prox_roll,prox_pitch,prox_yaw,dist_roll,dist_pitch,dist_yaw,paired\n"
+                 "1700000000.0,0.0,0,1700000000.0,0.0,180.0,0.0,0.0,90.0,0.0,0.0,90.0,0.0,True\n"
+                 "1700000000.01,0.01,10,1700000000.01,0.0,180.0,0.0,0.0,90.0,0.0,0.0,90.0,0.0,True\n",
+    }
+    paths = {}
+    for kind, body in csv_bodies.items():
+        path = tmp_path / f"Trial_1_{kind}.csv"
+        path.write_text(body, encoding="utf-8")
+        paths[kind] = path
+
+    _next_kind = ["accel"]
+    monkeypatch.setattr(_m.filedialog, "askopenfilename",
+                        lambda **kw: str(paths[_next_kind[0]]))
+    for kind in ("accel", "gyro", "mag", "imu"):
+        _next_kind[0] = kind
+        p._browse_component(kind)
+
+    p._on_load_clicked()
+
+    assert len(calls) == 1
+    selection = calls[0]
+    assert selection["imu_format"] == "split_csv"
+    assert all(selection["imu_components"][k]["ok"] for k in ("accel", "gyro", "mag", "imu"))
 
 
 def test_trial_load_panel_back_button_calls_controller():
