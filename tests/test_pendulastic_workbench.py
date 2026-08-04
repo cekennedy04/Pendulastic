@@ -136,6 +136,52 @@ def test_set_traces_repositions_scrub_indicator_to_current_time():
     assert wv._axvline.get_xdata()[0] == expected_t
 
 
+def test_get_metrics_snapshot_includes_pt_score_and_mas():
+    """The per-trace snapshot must expose the composite Popović PT score and
+    its MAS estimate, not just the raw sub-parameters -- a researcher reading
+    the exported JSON needs the same PT score the panel displays."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    fs = 100.0
+    t = np.arange(0, 4.0, 1.0 / fs)
+    decay = np.exp(-0.4 * t)
+    angle = 140.0 + 40.0 * decay * np.cos(2 * np.pi * 1.0 * t)
+    wv.set_traces({"imu": (t, angle)})
+    r.update()
+
+    snapshot = wv.get_metrics_snapshot()
+    pt = snapshot["per_trace"]["imu"]
+    assert isinstance(pt["pt_score"], float)
+    assert pt["pt_score"] >= 0.0
+    assert isinstance(pt["mas"], str)
+
+
+def test_recompute_metrics_shows_pt_score_and_submetric_breakdown():
+    """The readout text must surface the PT score and the full 7-parameter
+    Popović breakdown per trace, not just area_ratio/N/f -- a researcher
+    should never have to open the JSON export to see R2n or omega_max_n."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    fs = 100.0
+    t = np.arange(0, 4.0, 1.0 / fs)
+    decay = np.exp(-0.4 * t)
+    angle = 140.0 + 40.0 * decay * np.cos(2 * np.pi * 1.0 * t)
+    wv.set_traces({"imu": (t, angle)})
+    r.update()
+
+    text = wv._metrics_text.get("1.0", "end")
+    snapshot = wv.get_metrics_snapshot()
+    pt = snapshot["per_trace"]["imu"]
+    assert f"PT={pt['pt_score']:.3f}" in text
+    assert f"MAS {pt['mas']}" in text
+    assert "R2n=" in text
+    assert "phi_max_ratio=" in text
+    assert "omega_max_n=" in text
+    assert "omega_min_n=" in text
+
+
 def test_imu_browse_button_accepts_csv_and_jsonl(monkeypatch):
     from pendulastic_workbench import TrialLoadPanel
     import pendulastic_workbench as _m

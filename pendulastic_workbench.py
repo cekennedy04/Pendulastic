@@ -27,6 +27,7 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import pendulastic_pt_score
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
                     "Maximum Flexion", "Rest/Settled"]
@@ -329,8 +330,10 @@ class WorkbenchView(tk.Frame):
         from both):
 
         - "per_trace": each visible trace's own windowed_pt_params
-          (area_ratio, N, f, etc.) -- a per-modality diagnostic, not a
-          comparison. Includes the reference trace itself.
+          (area_ratio, N, f, etc.) plus the composite Popović PT score and MAS
+          estimate computed from those same windowed params (pt_score, mas) --
+          a per-modality diagnostic, not a comparison. Includes the reference
+          trace itself.
         - "vs_reference": every other visible trace's compare_pair result
           against the reference-selector's chosen reference, plus a
           timing_offset_sec (extrema_jitter-based "timing jitter across
@@ -348,7 +351,10 @@ class WorkbenchView(tk.Frame):
         for label, (t, y) in self._traces.items():
             if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
                 continue
-            out["per_trace"][label] = engine.windowed_pt_params(t, y)
+            params = engine.windowed_pt_params(t, y)
+            params["pt_score"] = pendulastic_pt_score.compute_pt_score(params)
+            params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+            out["per_trace"][label] = params
 
         ref_t, ref_y = self._traces[ref_label]
         ref_jitter = engine.extrema_jitter(ref_t, ref_y)
@@ -383,8 +389,12 @@ class WorkbenchView(tk.Frame):
         for label, pt in snapshot["per_trace"].items():
             self._metrics_text.insert(
                 "end",
-                f"{label}: area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
-                f"f={pt['f']:.2f} Hz\n")
+                f"{label}: PT={pt['pt_score']:.3f} (MAS {pt['mas']})  "
+                f"area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
+                f"f={pt['f']:.2f} Hz\n"
+                f"    R2n={pt['R2n']:.3f}  phi_max_ratio={pt['phi_max_ratio']:.3f}  "
+                f"omega_max_n={pt['omega_max_n']:.2f}  "
+                f"omega_min_n={pt['omega_min_n']:.3f}\n")
 
         self._metrics_text.insert("end", "\n")
 
