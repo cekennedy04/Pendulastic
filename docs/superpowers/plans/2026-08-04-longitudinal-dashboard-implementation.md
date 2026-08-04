@@ -16,14 +16,21 @@ save action on `WorkbenchView`, and a new `DashboardView` panel reached from
 
 ## Global Constraints
 
-- **Prerequisite dependency:** this entire feature depends on
-  `docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md` landing first —
-  `WorkbenchView.get_metrics_snapshot()["per_trace"][label]` does not expose
-  `pt_score`/`mas` until that plan lands. Task 1 below lands or verifies it. No task
-  after Task 1 may be started until Task 1's own tests pass.
+- **Prerequisite dependency:** this entire feature depends on the PT-score panel work
+  landing first — `WorkbenchView.get_metrics_snapshot()["per_trace"][label]` does not
+  expose `pt_score`/`mas` until it lands. Task 1 below lands or verifies it. No task
+  after Task 1 may be started until Task 1's own tests pass. **As of plan-writing time,
+  that work is already complete on the unmerged branch `worktree-workbench-pt-score-panel`
+  (commit `542e659`) — Task 1 merges it in, it does not re-implement it.**
+- **`pt_score`/`mas` are `Optional`** — both are `None` together when
+  `pendulastic_pt_score.compute_pt_params` reports insufficient signal for a trace.
+  Every consumer of `pt_score` in this plan (Tasks 5, 7, 8) must handle `None`
+  explicitly; treating it as always-a-float is a bug, not a simplification.
 - Metric keys are exactly `workbench_engine.windowed_pt_params`'s 7 keys — `R2n`, `N`,
   `phi_max_ratio`, `omega_max_n`, `omega_min_n`, `f`, `area_ratio` — plus `pt_score`/
-  `mas`. Never renamed (design spec §5).
+  `mas`. Never renamed (design spec §5). Note `pt_score`/`mas` are computed from a
+  *separate* function (`pendulastic_pt_score.compute_pt_params`), not derived from
+  these 7 keys — they are independent sibling keys in the same per-trace dict.
 - Reference baselines and PT zone thresholds are imported from
   `pendulastic_pt_score.py` (`HEALTHY_REF`, `PT_HEALTHY_MAX`, `PT_BORDERLINE_MAX`),
   never redefined in the new modules.
@@ -43,43 +50,48 @@ save action on `WorkbenchView`, and a new `DashboardView` panel reached from
 
 ---
 
-### Task 1: Land the prerequisite PT-score panel plan
+### Task 1: Land the prerequisite PT-score panel work
 
 **Files:**
-- Per `docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md`: modifies
-  `pendulastic_workbench.py` (imports; `get_metrics_snapshot`; `_recompute_metrics`),
-  `tests/test_pendulastic_workbench.py`.
+- None created/modified directly by this task's own diff — it merges an existing,
+  already-implemented, already-reviewed branch (`worktree-workbench-pt-score-panel`,
+  tip commit `542e659`) into this feature's branch. That branch's own commits already
+  touch `pendulastic_workbench.py` (imports; `get_metrics_snapshot`;
+  `_recompute_metrics`) and `tests/test_pendulastic_workbench.py`.
+- One conflict is expected and must be resolved by hand: both branches independently
+  added `docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md` with different
+  content (this feature branch has the plan's original text; the other branch has a
+  version corrected after its own review — commit message "docs: correct PT-score
+  panel plan after final review found the semantic mismatch"). **Keep the other
+  branch's version** (`git checkout --theirs` for that one path) — it's the
+  post-review-corrected text, the original is stale.
 
 **Interfaces:**
 - Produces: `WorkbenchView.get_metrics_snapshot()["per_trace"][label]` gains
-  `"pt_score": float` and `"mas": str` keys, alongside the existing 7 raw
-  `windowed_pt_params` keys. Every later task in this plan reads `pt_score`/`mas` from
-  that snapshot.
+  `"pt_score": Optional[float]` and `"mas": Optional[str]` keys (both `None` together
+  when `pendulastic_pt_score.compute_pt_params` reports insufficient signal),
+  alongside the existing 7 raw `windowed_pt_params` keys. Every later task in this plan
+  reads `pt_score`/`mas` from that snapshot and must handle the `None` case.
 
-- [ ] **Step 1: Check whether the prerequisite is already landed**
+- [ ] **Step 1: Merge the branch**
 
-Run: `python -c "import inspect, pendulastic_workbench; print('pt_score' in inspect.getsource(pendulastic_workbench.WorkbenchView.get_metrics_snapshot))"`
+Run: `git merge worktree-workbench-pt-score-panel`
 
-If this prints `True`, the prerequisite is already landed — skip to Step 3. If `False`
-(or the command errors because the method doesn't yet reference `pt_score`), continue
-to Step 2.
+Expected: a conflict on exactly one file,
+`docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md`. If any *other* file
+conflicts, stop and report — that means this feature branch and the PT-score branch
+have diverged in a way this plan didn't anticipate.
 
-- [ ] **Step 2: Execute the prerequisite plan**
+- [ ] **Step 2: Resolve the expected conflict**
 
-Follow `docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md` Task 1, Steps
-1–11, exactly as written, in order — including its own failing-test-first steps, its
-`import pendulastic_pt_score` addition, its `get_metrics_snapshot`/`_recompute_metrics`
-edits, and its own commit step. Do not summarize or skip steps; that plan is already
-fully detailed and self-contained.
+Run: `git checkout --theirs "docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md" && git add "docs/superpowers/plans/2026-08-04-workbench-pt-score-panel.md" && git commit --no-edit`
 
 - [ ] **Step 3: Verify the full prerequisite-relevant test suite passes**
 
 Run: `python -m pytest tests/test_pendulastic_workbench.py tests/test_workbench_engine.py tests/test_pt_score.py -v`
-Expected: PASS (all tests, including
-`test_get_metrics_snapshot_includes_pt_score_and_mas` and
-`test_recompute_metrics_shows_pt_score_and_submetric_breakdown` if Step 2 ran).
+Expected: PASS (all tests).
 
-- [ ] **Step 4: Confirm the exact interface this plan depends on**
+- [ ] **Step 4: Confirm the exact interface this plan depends on, including the `None` case**
 
 Run: `python -c "
 import tkinter as tk, numpy as np
@@ -89,15 +101,19 @@ class _Ctrl:
 r = tk.Tk(); r.withdraw()
 wv = WorkbenchView(r, _Ctrl())
 t = np.linspace(0, 4, 400)
-wv.set_traces({'imu': (t, 140 + 20*np.cos(t))})
+wv.set_traces({'imu': (t, 140 + 20*np.cos(t)), 'flat': (t, np.full_like(t, 140.0))})
 r.update()
 snap = wv.get_metrics_snapshot()
 pt = snap['per_trace']['imu']
 assert isinstance(pt['pt_score'], float) and isinstance(pt['mas'], str)
-print('OK:', sorted(pt.keys()))
+flat = snap['per_trace']['flat']
+assert (flat['pt_score'] is None) == (flat['mas'] is None)
+print('OK:', sorted(pt.keys()), 'flat pt_score:', flat['pt_score'])
 r.destroy()
 "`
-Expected: prints `OK: ['N', 'R2n', 'area_ratio', 'f', 'mas', 'omega_max_n', 'omega_min_n', 'phi_max_ratio', 'pt_score']` without raising. If this fails, do not proceed to Task 2 — the prerequisite is not actually landed.
+Expected: prints `OK: [...9 keys...] flat pt_score: None` (a flat/degenerate signal
+has insufficient signal for `compute_pt_params`) without raising. If this fails, do
+not proceed to Task 2 — the prerequisite is not actually landed correctly.
 
 ---
 
@@ -610,6 +626,16 @@ def test_render_dashboard_waveform_legend_has_pt_scores():
     assert "PT=0.115" in legend.get_texts()[0].get_text()
 
 
+def test_render_dashboard_waveform_legend_shows_na_for_none_pt_score():
+    """pt_score/mas are None together when compute_pt_params reports
+    insufficient signal (design spec Section 2) -- the legend must render
+    "PT=n/a", not crash trying to format None with :.3f."""
+    history = _history([_session("Initial", "2026-07-07", pt_score=None)])
+    fig = dash.render_dashboard(history, "left", "imu")
+    legend = fig.axes[0].get_legend()
+    assert "PT=n/a" in legend.get_texts()[0].get_text()
+
+
 def test_render_dashboard_empty_history_does_not_raise():
     history = _history([])
     fig = dash.render_dashboard(history, "left", "imu")
@@ -695,7 +721,8 @@ def _render_waveform_overlay(ax, sessions: list, trace_label: str) -> None:
         t0 = t[0] if t else 0.0
         t_aligned = [ti - t0 for ti in t]
         pt_score = trace["metrics"]["pt_score"]
-        ax.plot(t_aligned, angle, label=f"{session['label']} (PT={pt_score:.3f})")
+        pt_str = f"{pt_score:.3f}" if pt_score is not None else "n/a"
+        ax.plot(t_aligned, angle, label=f"{session['label']} (PT={pt_str})")
     if sessions:
         ax.legend(fontsize=8)
 
@@ -716,7 +743,7 @@ def _render_pt_trend(ax, sessions: list, trace_label: str) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_longitudinal_dashboard.py -v`
-Expected: PASS (all 4 tests)
+Expected: PASS (all 5 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -824,7 +851,7 @@ def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_longitudinal_dashboard.py -v`
-Expected: PASS (all 7 tests)
+Expected: PASS (all 8 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -876,12 +903,39 @@ def test_render_dashboard_pt_trend_single_session_no_delta_and_no_raise():
     fig = dash.render_dashboard(history, "left", "imu")
     ax_trend = fig.axes[2]
     assert ax_trend.texts == ()  or list(ax_trend.texts) == []
+
+
+def test_render_dashboard_pt_trend_excludes_none_pt_score_session():
+    """A session whose selected trace has pt_score=None (insufficient
+    signal, design spec Section 2) must be excluded from the trend line
+    and from Delta% calculations against its neighbors -- as if it lacked
+    trace_label entirely, for trend purposes only. It may still appear in
+    the waveform overlay (Task 5) and the bar chart (Task 6)."""
+    s1 = _session("Initial", "2026-07-07", pt_score=0.100)
+    s2 = _session("Mid", "2026-07-12", pt_score=None)
+    s3 = _session("Post-Training", "2026-07-17", pt_score=0.150)
+    history = _history([s1, s2, s3])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+
+    line = ax_trend.lines[0]
+    assert list(line.get_ydata()) == [0.100, 0.150]
+    texts = [a.get_text() for a in ax_trend.texts]
+    assert any("+50%" in t for t in texts)   # delta computed across Initial -> Post-Training directly
+
+
+def test_render_dashboard_pt_trend_all_none_does_not_raise():
+    history = _history([_session("Initial", "2026-07-07", pt_score=None)])
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_trend = fig.axes[2]
+    assert len(ax_trend.lines) == 0
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_longitudinal_dashboard.py -k pt_trend -v`
-Expected: FAIL — zero bands found, no `+50%` annotation present.
+Expected: FAIL — zero bands found, no `+50%` annotation present, `None` in `scores`
+crashes `max(scores)`/`ax.plot(xs, scores)` on the two new tests.
 
 - [ ] **Step 3: Implement `_render_pt_trend`**
 
@@ -893,21 +947,29 @@ def _render_pt_trend(ax, sessions: list, trace_label: str) -> None:
     ax.set_ylabel("PT score")
     ax.set_title("Longitudinal PT score trend")
 
-    if not sessions:
+    # A session whose selected trace has pt_score=None (insufficient
+    # signal) is excluded from the trend line and from Delta% against its
+    # neighbors -- as if it lacked trace_label entirely, for trend
+    # purposes only (design spec Section 2/6). It's still eligible for
+    # the waveform overlay and bar chart, which don't filter on this.
+    usable = [s for s in sessions
+             if s["traces"][trace_label]["metrics"]["pt_score"] is not None]
+
+    if not usable:
         ax.axhspan(0, PT_HEALTHY_MAX, color="#22C55E", alpha=0.15)
         ax.axhspan(PT_HEALTHY_MAX, PT_BORDERLINE_MAX, color="#EAB308", alpha=0.15)
         ax.axhspan(PT_BORDERLINE_MAX, PT_BORDERLINE_MAX * 1.5, color="#EF4444", alpha=0.15)
         return
 
-    scores = [s["traces"][trace_label]["metrics"]["pt_score"] for s in sessions]
+    scores = [s["traces"][trace_label]["metrics"]["pt_score"] for s in usable]
     ylim_max = max(PT_BORDERLINE_MAX * 1.5, max(scores) * 1.2)
     ax.axhspan(0, PT_HEALTHY_MAX, color="#22C55E", alpha=0.15)
     ax.axhspan(PT_HEALTHY_MAX, PT_BORDERLINE_MAX, color="#EAB308", alpha=0.15)
     ax.axhspan(PT_BORDERLINE_MAX, ylim_max, color="#EF4444", alpha=0.15)
     ax.set_ylim(0, ylim_max)
 
-    labels = [s["label"] for s in sessions]
-    xs = list(range(len(sessions)))
+    labels = [s["label"] for s in usable]
+    xs = list(range(len(usable)))
     ax.plot(xs, scores, marker="o", color="#1D4ED8")
     ax.set_xticks(xs)
     ax.set_xticklabels(labels, rotation=30, ha="right")
@@ -924,7 +986,7 @@ def _render_pt_trend(ax, sessions: list, trace_label: str) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_longitudinal_dashboard.py -v`
-Expected: PASS (all 10 tests)
+Expected: PASS (all 12 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -942,17 +1004,20 @@ git commit -m "feat: render PT score trend with clinical zone bands and delta an
   after `_on_export_clicked`, new button in `_build_widgets`'s `annot_toolbar`)
 - Test: `tests/test_pendulastic_workbench.py`
 
-**Note on line numbers:** Task 1 (landing the PT-score panel plan) shifts everything
-below its edits by a net +8 lines (import +1, docstring +2, per-trace loop +1, render
-loop +4). The anchors below are given as exact code snippets to search for — treat any
-line number as a hint only, and locate the real position by matching the snippet.
+**Note on line numbers:** Task 1 merges in a branch this plan doesn't control the exact
+diff of, so exact post-merge line numbers in `pendulastic_workbench.py` aren't knowable
+ahead of time. Every insertion point below is given as an exact code snippet to search
+for — locate the real position by matching the snippet, not by counting lines.
 
 **Interfaces:**
 - Consumes: `pendulastic_storage.save_trial` (Task 3), `self.get_metrics_snapshot()`
-  (existing, now includes `pt_score`/`mas` per Task 1), `self._traces`,
-  `self._visible_vars`, `self._reference_var` (existing `WorkbenchView` state).
+  (existing, now includes `pt_score: Optional[float]`/`mas: Optional[str]` per Task 1),
+  `self._traces`, `self._visible_vars`, `self._reference_var` (existing `WorkbenchView`
+  state).
 - Produces: `WorkbenchView._save_current_trial(participant_id, leg, session_label, date) -> None` — the testable core of the save action, factored out from the dialog so
-  tests don't need to simulate `Toplevel` widgets.
+  tests don't need to simulate `Toplevel` widgets. `WorkbenchView._reference_trace_pt_score() -> Optional[float]` — the current reference trace's `pt_score`, or `None`
+  if there's no reference trace or its `pt_score` is `None`; the dialog's Save button
+  refuses to proceed when this returns `None`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -976,12 +1041,39 @@ def test_save_current_trial_persists_only_visible_traces():
     saved_traces = sessions[0]["traces"]
     assert set(saved_traces.keys()) == {"imu"}
     assert "pt_score" in saved_traces["imu"]["metrics"]
+
+
+def test_reference_trace_pt_score_returns_none_for_insufficient_signal():
+    """A session without a usable PT score for its reference trace isn't
+    useful to a longitudinal PT-score dashboard (design spec Section 7) --
+    the save dialog's Save button refuses to proceed when this returns
+    None. Tested directly against the helper rather than by simulating
+    the Toplevel dialog's widgets."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    t = np.linspace(0, 4, 400)
+    wv.set_traces({"flat": (t, np.full_like(t, 140.0))})   # flat signal -> insufficient
+    r.update()
+    assert wv._reference_var.get() == "flat"
+
+    assert wv._reference_trace_pt_score() is None
+
+
+def test_reference_trace_pt_score_returns_float_for_valid_signal():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    assert isinstance(wv._reference_trace_pt_score(), float)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/test_pendulastic_workbench.py::test_save_current_trial_persists_only_visible_traces -v`
-Expected: FAIL with `AttributeError: 'WorkbenchView' object has no attribute '_save_current_trial'`
+Run: `python -m pytest tests/test_pendulastic_workbench.py -k "save_current_trial or reference_trace_pt_score" -v`
+Expected: FAIL with `AttributeError: 'WorkbenchView' object has no attribute '_save_current_trial'` (and, for the two new tests, `has no attribute '_reference_trace_pt_score'`)
 
 - [ ] **Step 3: Add the `pendulastic_storage` import**
 
@@ -1015,6 +1107,17 @@ the following two methods directly after it, before `def load_video`:
         pendulastic_storage.save_trial(
             participant_id, leg, session_label, date,
             visible_traces, metrics_by_label, self._reference_var.get())
+
+    def _reference_trace_pt_score(self):
+        """The current reference trace's pt_score (float), or None if
+        there's no reference trace or its pt_score is None (insufficient
+        signal). The save dialog refuses to save when this is None."""
+        snapshot = self.get_metrics_snapshot()
+        ref_label = self._reference_var.get()
+        per_trace = snapshot["per_trace"].get(ref_label)
+        if per_trace is None:
+            return None
+        return per_trace["pt_score"]
 
     def _on_save_trial_clicked(self) -> None:
         import datetime as _datetime
@@ -1057,6 +1160,11 @@ the following two methods directly after it, before `def load_video`:
             except ValueError:
                 status_var.set("Date must be YYYY-MM-DD.")
                 return
+            if self._reference_trace_pt_score() is None:
+                status_var.set(
+                    "Reference trace has no usable PT score (insufficient signal) -- "
+                    "cannot save.")
+                return
 
             leg = leg_var.get()
             existing = pendulastic_storage.load_history(participant_id)
@@ -1095,10 +1203,10 @@ and insert directly after it:
                  command=self._on_save_trial_clicked).pack(side="right", padx=6)
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 6: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_pendulastic_workbench.py::test_save_current_trial_persists_only_visible_traces -v`
-Expected: PASS
+Run: `python -m pytest tests/test_pendulastic_workbench.py -k "save_current_trial or reference_trace_pt_score" -v`
+Expected: PASS (all 3 tests)
 
 - [ ] **Step 7: Run the full Workbench test suite to confirm no regressions**
 
@@ -1464,7 +1572,14 @@ git commit -m "feat: wire DashboardView into App panel-swap navigation"
   shape matches exactly what `pendulastic_storage.load_history` (Tasks 2–4) returns,
   including the optional `"_skipped"` key that `DashboardView._on_load_clicked` (Task 9)
   reads.
-- **Line-number risk:** Tasks 8 and 10 modify `pendulastic_workbench.py` regions
-  downstream of Task 1's edits; every insertion point in those tasks is specified as an
-  exact code snippet to locate, not a bare line number, so drift in the prerequisite
-  plan's exact diff doesn't invalidate this plan.
+- **Line-number risk:** Tasks 8 and 10 modify `pendulastic_workbench.py` regions whose
+  exact post-merge line numbers Task 1 doesn't fix in advance (it merges an existing
+  branch rather than applying a known diff); every insertion point in those tasks is
+  specified as an exact code snippet to locate, not a bare line number.
+- **`pt_score: Optional[float]` coverage:** every reader of `pt_score` handles `None`
+  explicitly — waveform legend (Task 5: `"PT=n/a"`), PT trend panel (Task 7: session
+  excluded from the line and Δ% calculations), and the save dialog (Task 8:
+  `_reference_trace_pt_score()` blocks the save outright when the *reference* trace's
+  score is `None`; non-reference visible traces may still persist a `None` `pt_score`
+  unblocked, per design spec §2/§7). The bar chart (Task 6) never reads `pt_score` at
+  all, so it needs no such handling.
