@@ -4,8 +4,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
 import numpy as np
+import pytest
+
+import pendulastic_storage
 
 _root_window = None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_participants_dir(tmp_path, monkeypatch):
+    """Every test gets its own empty participants/ directory so tests never
+    read/write real data or interfere with each other."""
+    monkeypatch.setattr(pendulastic_storage, "PARTICIPANTS_DIR", str(tmp_path / "participants"))
+    yield
 
 
 def _get_root():
@@ -228,7 +239,6 @@ def test_recompute_metrics_shows_na_for_insufficient_signal():
 
 
 def test_save_current_trial_persists_only_visible_traces():
-    import pendulastic_storage
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
     wv = WorkbenchView(r, _Ctrl())
