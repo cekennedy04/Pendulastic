@@ -105,6 +105,10 @@ class TrialLoadPanel(tk.Frame):
         tk.Button(self, text="Load Trial", command=self._on_load_clicked
                  ).grid(row=8, column=0, columnspan=3, pady=16)
 
+        tk.Button(self, text="View Participant Dashboard",
+                 command=lambda: self.controller.on_view_dashboard()
+                 ).grid(row=9, column=0, columnspan=3, pady=(0, 16))
+
     def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
         tk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
@@ -739,6 +743,7 @@ class App(tk.Tk):
 
         self._load_panel = TrialLoadPanel(self, controller=self)
         self._workbench_view = WorkbenchView(self, controller=self)
+        self._dashboard_view = DashboardView(self, controller=self)
         self._load_panel.pack(fill="both", expand=True)
         tk.Label(self, textvariable=self._status_var, anchor="w").pack(
             side="bottom", fill="x", padx=8, pady=2)
@@ -754,6 +759,16 @@ class App(tk.Tk):
 
     def on_workbench_load_another(self) -> None:
         self._workbench_view.pack_forget()
+        self._load_panel.pack(fill="both", expand=True)
+
+    def on_view_dashboard(self) -> None:
+        self._load_panel.pack_forget()
+        self._workbench_view.pack_forget()
+        self._dashboard_view.refresh_participants()
+        self._dashboard_view.pack(fill="both", expand=True)
+
+    def on_dashboard_back(self) -> None:
+        self._dashboard_view.pack_forget()
         self._load_panel.pack(fill="both", expand=True)
 
     def on_load_trial(self, selection: dict) -> None:

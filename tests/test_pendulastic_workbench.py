@@ -442,3 +442,31 @@ def test_dashboard_view_shows_skipped_session_status():
     r.update()
 
     assert "Skipped 1" in dv._status_var.get()
+
+
+def test_load_panel_view_dashboard_button_switches_to_dashboard_view():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app.on_view_dashboard()
+        app.update()
+        assert app._dashboard_view.winfo_ismapped()
+        assert not app._load_panel.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_dashboard_back_returns_to_load_panel():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app.on_view_dashboard()
+        app.update()
+        app.on_dashboard_back()
+        app.update()
+        assert app._load_panel.winfo_ismapped()
+        assert not app._dashboard_view.winfo_ismapped()
+    finally:
+        app.destroy()
