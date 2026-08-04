@@ -558,14 +558,45 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     bi = max(3, int(np.searchsorted(t, t[0] + baseline_sec)))
     bi = min(bi, len(t) - 1)
     baseline = float(np.nanmedian(ang[:bi]))
-    # Adaptive threshold: 8% of signal range prevents false-misses for small A0
-    # (e.g. A0=25° → range~40° → thresh~3.2°, better than fixed 5°=20% of signal).
+    # Adaptive threshold: pure 8% of signal range, no hardcoded absolute floor,
+    # so detection stays unit-agnostic across sensor formats (degrees, radians,
+    # normalized tilt magnitude, ...) rather than assuming a degree-scale signal.
     signal_range = float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
-    thresh_deg = max(2.0, 0.08 * signal_range)
+    thresh_deg = 0.08 * signal_range
     for i in range(bi, len(t)):
         if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
             return max(0, i - 2)
     return bi
+
+
+def detect_release_t0(t: np.ndarray, signal: np.ndarray,
+                      baseline_sec: float = 0.6) -> float:
+    """
+    Detect the release instant t0, as an absolute time value (same units as
+    `t`), from a raw trial signal — e.g. IMU tilt magnitude or an OptiTrack-
+    derived angle. Savitzky-Golay filters the signal, then runs the adaptive
+    -threshold detector (_detect_release) on it. Returning a time rather than
+    a sample index lets independently-sampled trials (different frame rates
+    or device clocks) each be synchronized to their own release moment.
+    """
+    mask = np.isfinite(signal)
+    if mask.sum() < 4:
+        raise ValueError("Need at least 4 finite samples to detect release.")
+    t_c = t[mask]
+    sig_s = _sg(signal[mask])
+    rel_i = _detect_release(t_c, sig_s, baseline_sec=baseline_sec)
+    return float(t_c[rel_i])
+
+
+def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
+    """
+    Index a trial's time array relative to its release marker: shift `t` so
+    that t=0 falls exactly at the release instant `t0` (as returned by
+    detect_release_t0). Applying this independently to each trial's own t0
+    puts every trial's release at a shared x=0, so IMU vs OptiTrack (or any
+    other pair of trials) overlay correctly on the time axis.
+    """
+    return t - t0
 
 
 def _merge_close_extrema(idx_arr: np.ndarray, values: np.ndarray, min_sep: int) -> np.ndarray:
