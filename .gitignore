@@ -10,6 +10,9 @@ dist/
 Recordings/
 OptiTrack_Recordings/
 
+# Longitudinal dashboard participant history (real clinical data; never committed)
+participants/
+
 # Downloaded model weights (large; fetched by download_models.py)
 models/
 
