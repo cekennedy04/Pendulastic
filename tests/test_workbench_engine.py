@@ -475,3 +475,23 @@ def test_export_session_round_trips_through_json(tmp_path):
     path.write_text(json.dumps(result), encoding="utf-8")
     reloaded = json.loads(path.read_text(encoding="utf-8"))
     assert reloaded == result
+
+
+def test_peak_raw_gyro_velocity_finds_known_burst(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (10.0, 10, "proximal", "Gyroscope", 3.0, 4.0, 0.0),   # magnitude 5.0
+        (20.0, 20, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_accel.csv", [
+        (0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 1.0),
+        (20.0, 20, "proximal", "Accelerometer", 0.0, 0.0, 1.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (20.0, 20, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    peak = engine._peak_raw_gyro_velocity(str(prefix) + "_gyro.csv")
+    assert peak == 5.0

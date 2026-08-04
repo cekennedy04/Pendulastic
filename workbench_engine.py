@@ -399,6 +399,19 @@ def _read_split_csv_samples(anchor_path: str) -> list:
     return samples
 
 
+def _peak_raw_gyro_velocity(anchor_path: str) -> float:
+    """Maximum raw gyro vector magnitude over the whole trial -- no AHRS
+    fusion, no differentiation of a filtered signal. A simple max() is not
+    distorted by a long resting tail the way an integral/mean would be
+    (see _active_window_end's own rationale), so no active-window masking
+    is needed here."""
+    paths = _derive_split_csv_siblings(anchor_path)
+    samples = _read_one_split_csv(paths["gyro"], "gyro")
+    magnitudes = [math.sqrt(s["v"][0] ** 2 + s["v"][1] ** 2 + s["v"][2] ** 2)
+                 for s in samples]
+    return max(magnitudes)
+
+
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
                    ft_ratio: Optional[float] = None,
                    method: Optional[str] = None):
