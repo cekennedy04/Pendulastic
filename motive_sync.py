@@ -12,7 +12,7 @@
      motive_sync.stop_local_motive()                 # on STOP
 
  start_local_motive(packet_string):
-   1. Parse the START packet (id / position / height / trial / relpath).
+   1. Parse the START packet (id / leg / characterization / trial / relpath).
    2. Mirror the folder tree under OptiTrack_Recordings/ using 'relpath' and
       SANITIZE that path to forward slashes — Motive hard-freezes on backslashes.
    3. Build the take name:  trial_{N}_optitrack
@@ -53,8 +53,11 @@ MOTIVE_COMMAND_PORT = 1510       # NatNet command port (Motive default).
 NAT_REQUEST = 2                  # NatNet message id for a remote command.
 
 # Mirror the laptop's folder tree under here using the packet's 'relpath', so the
-# post-processing pipeline finds the identical Participant/Position/Height tree.
+# OptiTrack tree matches the acquisition tree (Participant/Leg/Characterization).
 # Motive's SetCurrentSession is pointed at the sanitized version of this path.
+# Note: analysis_pipeline.py and other downstream analysis scripts still expect
+# the older Participant/Position/Height layout -- updating them is tracked as a
+# separate follow-up task, not done here.
 LOCAL_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "OptiTrack_Recordings")
 
@@ -84,7 +87,7 @@ _last_take_name = None      # e.g. "trial_1_optitrack"
 def parse_start_packet(packet_string):
     """
     Parse a packet string of the form:
-        START|id=001|position=1|height=Joint-Level|trial=1|relpath=Participant_001\\...
+        START|id=001|leg=Right|characterization=pre|trial=1|relpath=Participant_001\\...
     into a dict of key=value fields. Tokens without '=' (e.g. the leading
     'START') are ignored, so a string with or without the prefix both work.
     """
@@ -112,8 +115,8 @@ def build_take_name(fields):
 
     Matches the CSV filename the evaluation pipeline expects
     (trial_N_optitrack.csv) so no manual renaming is needed after export.
-    Participant / position / height context lives in the session folder path
-    (SetCurrentSession), not in the take name.
+    Participant / leg / characterization context lives in the session folder
+    path (SetCurrentSession), not in the take name.
     """
     trial = _sanitize(fields.get("trial", "1"))
     return f"trial_{trial}_optitrack"
@@ -134,8 +137,8 @@ def sanitize_session_path(path):
 def mirror_relpath(fields):
     """
     Recreate the laptop's folder tree under LOCAL_ROOT using the 'relpath' field
-    (e.g. Participant_001\\Position_1\\Height_Joint-Level). Returns the created
-    absolute path, or None if no relpath was supplied. Errors are logged, not raised.
+    (e.g. Participant_001\\Right\\pre). Returns the created absolute path, or
+    None if no relpath was supplied. Errors are logged, not raised.
     """
     rel_path = fields.get("relpath", "").strip()
     if not rel_path:
@@ -200,10 +203,10 @@ def start_local_motive(packet_string):
 
     Args:
         packet_string: the START packet, e.g.
-            "START|id=001|position=1|height=Joint-Level|trial=1|relpath=Participant_001\\Position_1\\Height_Joint-Level"
+            "START|id=001|leg=Right|characterization=pre|trial=1|relpath=Participant_001\\Right\\pre"
 
     Returns:
-        The take name that was set (e.g. "P_001_Pos_1_H_Joint-Level_T_1").
+        The take name that was set (e.g. "trial_1_optitrack").
     """
     global _last_session_path, _last_take_name
 
@@ -302,8 +305,8 @@ def stop_local_motive():
 if __name__ == "__main__":
     # Not a runnable app - this is a module imported by the master webcam script.
     print(__doc__)
-    demo = "START|id=001|position=1|height=Joint-Level|trial=1|relpath=Participant_001\\Position_1\\Height_Joint-Level"
+    demo = "START|id=001|leg=Right|characterization=pre|trial=1|relpath=Participant_001\\Right\\pre"
     f = parse_start_packet(demo)
     print("example take name   :", build_take_name(f))
     print("example session path:", sanitize_session_path(os.path.join(LOCAL_ROOT,
-          "Participant_001", "Position_1", "Height_Joint-Level")))
+          "Participant_001", "Right", "pre")))
