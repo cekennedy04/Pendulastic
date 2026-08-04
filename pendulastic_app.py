@@ -92,11 +92,11 @@ except Exception:
     _MPL_AVAIL = False
 
 try:
-    from pendulastic_workbench import TrialLoadPanel, WorkbenchView
+    from pendulastic_workbench import TrialLoadPanel, WorkbenchView, DashboardView
     import workbench_engine as _wb_engine
     _WORKBENCH_AVAIL = True
 except Exception:
-    TrialLoadPanel = WorkbenchView = None
+    TrialLoadPanel = WorkbenchView = DashboardView = None
     _wb_engine = None
     _WORKBENCH_AVAIL = False
 
@@ -1173,6 +1173,7 @@ class App(tk.Tk):
         if _WORKBENCH_AVAIL:
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
+            self._dashboard_view = DashboardView(self, controller=self)
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
                 side="bottom", fill="x", padx=8, pady=2)
 
@@ -1431,6 +1432,20 @@ class App(tk.Tk):
         self._workbench_view.pack_forget()
         self._workbench_load.pack(fill="both", expand=True)
 
+    def on_view_dashboard(self) -> None:
+        if not _WORKBENCH_AVAIL:
+            return
+        self._workbench_load.pack_forget()
+        self._workbench_view.pack_forget()
+        self._dashboard_view.refresh_participants()
+        self._dashboard_view.pack(fill="both", expand=True)
+
+    def on_dashboard_back(self) -> None:
+        if not _WORKBENCH_AVAIL:
+            return
+        self._dashboard_view.pack_forget()
+        self._workbench_load.pack(fill="both", expand=True)
+
     def _upload_back_to_select(self) -> None:
         if self._state == "upload_processing":
             return
@@ -1445,6 +1460,7 @@ class App(tk.Tk):
         if _WORKBENCH_AVAIL:
             self._workbench_load.pack_forget()
             self._workbench_view.pack_forget()
+            self._dashboard_view.pack_forget()
         self._mode_select.pack(fill="both", expand=True)
         self._state        = "mode_select"
         self._active_sources  = []

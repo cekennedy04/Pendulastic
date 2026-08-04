@@ -634,6 +634,24 @@ def test_on_back_to_mode_select_hides_workbench_panels():
         app.destroy()
 
 
+def test_on_back_to_mode_select_hides_dashboard_view():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app._workbench_load.pack_forget()
+        app._dashboard_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._mode_select.winfo_ismapped()
+        assert not app._dashboard_view.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
 def test_enter_workbench_mode_shows_message_when_unavailable(monkeypatch):
     import pendulastic_app as _m
     monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", False)
@@ -725,5 +743,41 @@ def test_on_workbench_load_another_returns_to_trial_load_panel(monkeypatch):
         app.update()
         assert app._workbench_load.winfo_ismapped()
         assert not app._workbench_view.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_on_view_dashboard_shows_dashboard_and_hides_workbench_panels(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        app.on_view_dashboard()
+        app.update()
+        assert app._dashboard_view.winfo_ismapped()
+        assert not app._workbench_load.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_on_dashboard_back_returns_to_trial_load_panel(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.on_view_dashboard()
+        app.update()
+        app.on_dashboard_back()
+        app.update()
+        assert app._workbench_load.winfo_ismapped()
+        assert not app._dashboard_view.winfo_ismapped()
     finally:
         app.destroy()
