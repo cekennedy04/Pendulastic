@@ -1172,6 +1172,7 @@ class App(tk.Tk):
 
         self._workbench_trial_meta: dict = {}
         self._workbench_imu_reference: list = []
+        self._workbench_raw_diagnostics: Optional[dict] = None
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
             # Registers the dark "Workbench.*" ttk styles the embedded panels
@@ -1380,6 +1381,7 @@ class App(tk.Tk):
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
+        self._workbench_raw_diagnostics = None
         ft_ratio = None
         method_override = None
         if selection["femur_length_cm"] and selection["tibia_length_cm"]:
@@ -1417,6 +1419,12 @@ class App(tk.Tk):
             except Exception as e:
                 messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
 
+            try:
+                self._workbench_raw_diagnostics = _wb_engine.compute_raw_sensor_diagnostics(
+                    selection["imu_path"])
+            except Exception:
+                pass   # supplementary cross-check only -- never blocks the trial load
+
         if selection["optitrack_path"]:
             try:
                 t, angle, method = _wb_engine.load_optitrack_trial(selection["optitrack_path"])
@@ -1428,6 +1436,7 @@ class App(tk.Tk):
         self._workbench_load.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
         self._workbench_view.set_traces(traces)
+        self._workbench_view.set_raw_diagnostics(self._workbench_raw_diagnostics)
 
         if selection["video_path"]:
             self._workbench_view.load_video(selection["video_path"])

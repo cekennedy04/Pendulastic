@@ -664,3 +664,41 @@ def test_export_traces_csv_excludes_hidden_traces(tmp_path, monkeypatch):
         rows = list(_csv.DictReader(f))
     assert {row["label"] for row in rows} == {"imu"}
     assert len(rows) == 100
+
+
+def test_set_raw_diagnostics_renders_both_values():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv.set_raw_diagnostics({"peak_gyro_velocity_dps": 245.3, "accel_release_time_sec": 1.02})
+    r.update()
+    text = wv._raw_diag_label.cget("text")
+    assert "245.3" in text
+    assert "1.02" in text
+
+
+def test_set_raw_diagnostics_shows_unavailable_when_release_time_is_none():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv.set_raw_diagnostics({"peak_gyro_velocity_dps": 245.3, "accel_release_time_sec": None})
+    r.update()
+    text = wv._raw_diag_label.cget("text")
+    assert "unavailable" in text.lower()
+
+
+def test_set_raw_diagnostics_none_omits_section():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv.set_raw_diagnostics(None)
+    r.update()
+    text = wv._raw_diag_label.cget("text")
+    assert "none loaded" in text

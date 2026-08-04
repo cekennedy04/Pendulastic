@@ -296,6 +296,7 @@ class WorkbenchView(tk.Frame):
         self._reference_var = tk.StringVar(value="")
         self._annotations: dict = {}     # {label: (frame_index, t_sec)}
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
+        self._raw_diagnostics: Optional[dict] = None
         self._build_widgets()
 
     _PER_TRACE_COLS = ("label", "pt_score", "mas", "area_ratio", "N", "f_hz", "R2n",
@@ -397,9 +398,17 @@ class WorkbenchView(tk.Frame):
             per_trace_card, self._PER_TRACE_COLS, self._PER_TRACE_HDRS, self._PER_TRACE_W)
 
         vs_ref_card = ws.card_frame(tables_frame, "VS-REFERENCE METRICS")
-        vs_ref_card.pack(fill="x")
+        vs_ref_card.pack(fill="x", pady=(0, 6))
         self._vs_ref_tree = self._make_metrics_treeview(
             vs_ref_card, self._VS_REF_COLS, self._VS_REF_HDRS, self._VS_REF_W)
+
+        raw_diag_card = ws.card_frame(tables_frame, "RAW SENSOR CROSS-CHECKS")
+        raw_diag_card.pack(fill="x")
+        self._raw_diag_label = tk.Label(
+            raw_diag_card, text="(independent of PT score fusion -- none loaded)",
+            bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+            justify="left", anchor="w")
+        self._raw_diag_label.pack(fill="x", padx=8, pady=4)
 
         self._fig = Figure(figsize=(6, 4), dpi=100)
         self._fig.patch.set_facecolor(ws.PALETTE["BG"])
@@ -656,6 +665,18 @@ class WorkbenchView(tk.Frame):
                 self._vs_ref_tree.insert("", "end", values=(
                     label, ref_label, "", "", "", "", result["error"]))
 
+        if self._raw_diagnostics is not None:
+            peak_vel = self._raw_diagnostics["peak_gyro_velocity_dps"]
+            release_t = self._raw_diagnostics["accel_release_time_sec"]
+            release_str = (f"t={release_t:.2f}s" if release_t is not None
+                           else "unavailable (sample rate too low)")
+            self._raw_diag_label.configure(
+                text=f"Peak angular velocity (raw gyro): {peak_vel:.1f} deg/s   |   "
+                     f"Release detected (raw accel, 5Hz low-pass): {release_str}")
+        else:
+            self._raw_diag_label.configure(
+                text="(independent of PT score fusion -- none loaded)")
+
         self._update_export_csv_state()
 
     def _on_mark_milestone(self) -> None:
@@ -694,6 +715,10 @@ class WorkbenchView(tk.Frame):
 
     def get_annotations(self) -> dict:
         return dict(self._annotations)
+
+    def set_raw_diagnostics(self, diagnostics: Optional[dict]) -> None:
+        self._raw_diagnostics = diagnostics
+        self._recompute_metrics()
 
     def export_session_to(self, out_path: str, trial_meta: dict) -> None:
         session = engine.export_session(

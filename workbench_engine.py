@@ -17,7 +17,7 @@ import os
 from typing import Optional
 
 import numpy as np
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks, savgol_filter, butter, filtfilt
 
 import analysis_pipeline
 import imu_calibration_config
@@ -493,6 +493,135 @@ def load_imu_trial_from_components(validations: dict, config: Optional[dict] = N
     bound = bind_split_csv_components(validations)
     t, angle = _replay_samples(bound["fusion_samples"], config, ft_ratio, method)
     return t, angle, bound["imu_reference"]
+
+
+_RAW_DIAG_SPLIT_CSV_SUFFIXES = {"imu": "_imu.csv", "gyro": "_gyro.csv",
+                                "accel": "_accel.csv", "mag": "_mag.csv"}
+_RAW_DIAG_SPLIT_CSV_HEADER = ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"]
+_RAW_DIAG_SENSOR_NAME_MAP = {"Gyroscope": "gyro", "Accelerometer": "accel", "Magnetometer": "mag"}
+
+
+def _derive_split_csv_siblings(anchor_path: str) -> dict:
+    """Given any one of the four sibling paths (_imu/_gyro/_accel/_mag.csv),
+    identify which suffix the anchor actually ends with and derive the
+    other three from the recovered trial prefix. Never assumes a fixed
+    suffix -- a _gyro.csv/_accel.csv/_mag.csv anchor must derive correctly
+    too, not just an _imu.csv one."""
+    matched_key = None
+    matched_suffix = None
+    for key, suffix in _RAW_DIAG_SPLIT_CSV_SUFFIXES.items():
+        if anchor_path.endswith(suffix):
+            matched_key = key
+            matched_suffix = suffix
+            break
+    if matched_key is None:
+        raise ValueError(
+            f"{anchor_path!r} does not match any known split-CSV suffix "
+            f"({', '.join(_RAW_DIAG_SPLIT_CSV_SUFFIXES.values())}).")
+    prefix = anchor_path[:-len(matched_suffix)]
+    return {key: prefix + suffix for key, suffix in _RAW_DIAG_SPLIT_CSV_SUFFIXES.items()}
+
+
+def _read_one_split_csv(path: str, sensor_kind: str) -> list:
+    """Read one raw split-CSV sibling (gyro/accel/mag) for the raw-sensor
+    cross-check path, validating its header before parsing any rows -- a
+    file that doesn't match the expected shape fails immediately with a
+    clear message instead of an obscure crash."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Missing {sensor_kind} sibling file: expected at {path!r}")
+    samples = []
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            raise ValueError(f"{path!r} is empty (expected header {_RAW_DIAG_SPLIT_CSV_HEADER}).")
+        if header != _RAW_DIAG_SPLIT_CSV_HEADER:
+            raise ValueError(
+                f"{path!r} has an unexpected header {header!r}; "
+                f"expected {_RAW_DIAG_SPLIT_CSV_HEADER}.")
+        for row_num, row in enumerate(reader, start=2):
+            if len(row) != len(_RAW_DIAG_SPLIT_CSV_HEADER):
+                raise ValueError(
+                    f"{path!r} row {row_num} has {len(row)} columns; "
+                    f"expected {len(_RAW_DIAG_SPLIT_CSV_HEADER)}.")
+            timestamp_ms, phone_ts_ms, role, sensor_name, x, y, z = row
+            sensor = _RAW_DIAG_SENSOR_NAME_MAP.get(sensor_name)
+            if sensor is None:
+                raise ValueError(
+                    f"{path!r} row {row_num} has unrecognized sensor_name "
+                    f"{sensor_name!r}; expected one of {list(_RAW_DIAG_SENSOR_NAME_MAP)}.")
+            samples.append({
+                "t": float(timestamp_ms) / 1000.0,
+                "role": role,
+                "sensor": sensor,
+                "v": [float(x), float(y), float(z)],
+                "phone_ts_ms": int(float(phone_ts_ms)),
+            })
+    return samples
+
+
+def _peak_raw_gyro_velocity(anchor_path: str) -> float:
+    """Maximum raw gyro vector magnitude over the whole trial -- no AHRS
+    fusion, no differentiation of a filtered signal. A simple max() is not
+    distorted by a long resting tail the way an integral/mean would be
+    (see _active_window_end's own rationale), so no active-window masking
+    is needed here."""
+    paths = _derive_split_csv_siblings(anchor_path)
+    samples = _read_one_split_csv(paths["gyro"], "gyro")
+    magnitudes = [math.sqrt(s["v"][0] ** 2 + s["v"][1] ** 2 + s["v"][2] ** 2)
+                 for s in samples]
+    return max(magnitudes)
+
+
+_MIN_FS_FOR_5HZ_CUTOFF_HZ = 20.0
+_ACCEL_LOWPASS_CUTOFF_HZ = 5.0
+_ACCEL_RELEASE_BASELINE_SEC = 0.6
+
+
+def _accel_release_time(anchor_path: str) -> Optional[float]:
+    """Independent release-event estimate from raw accelerometer
+    magnitude, low-pass filtered to separate genuine limb-drop change from
+    linear-acceleration noise (muscle twitches, sensor jolts). Returns
+    None if the file's actual sample rate can't support a meaningful 5 Hz
+    cutoff, or if no release is ever detected -- never fabricates a value
+    from data that can't support it."""
+    paths = _derive_split_csv_siblings(anchor_path)
+    samples = _read_one_split_csv(paths["accel"], "accel")
+    t = np.array([s["t"] for s in samples], dtype=float)
+    mag = np.array([math.sqrt(s["v"][0] ** 2 + s["v"][1] ** 2 + s["v"][2] ** 2)
+                    for s in samples])
+
+    if len(t) < 2:
+        return None
+    fs_eff = 1.0 / float(np.median(np.diff(t)))
+    if fs_eff < _MIN_FS_FOR_5HZ_CUTOFF_HZ:
+        return None
+
+    b, a = butter(4, _ACCEL_LOWPASS_CUTOFF_HZ, btype="low", fs=fs_eff)
+    filtered = filtfilt(b, a, mag)
+
+    bi = max(3, int(np.searchsorted(t, t[0] + _ACCEL_RELEASE_BASELINE_SEC)))
+    bi = min(bi, len(t) - 1)
+    baseline = float(np.median(filtered[:bi]))
+    signal_range = float(np.percentile(filtered, 97) - np.percentile(filtered, 3))
+    thresh = 0.08 * signal_range
+    for i in range(bi, len(t)):
+        if abs(filtered[i] - baseline) > thresh:
+            return float(t[max(0, i - 2)])
+    return None
+
+
+def compute_raw_sensor_diagnostics(anchor_path: str) -> dict:
+    """Two supplementary, non-blocking cross-checks computed directly from
+    raw gyro/accel data (bypassing AHRS fusion entirely) -- see design
+    spec Sections 3-4. Never touches load_imu_trial's fused-angle
+    PT-score path."""
+    return {
+        "peak_gyro_velocity_dps": _peak_raw_gyro_velocity(anchor_path),
+        "accel_release_time_sec": _accel_release_time(anchor_path),
+    }
 
 
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,
