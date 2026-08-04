@@ -12,11 +12,7 @@ def _get_root():
     global _root_window
     if _root_window is None:
         _root_window = tk.Tk()
-        # Deliberately not withdrawn: Tk never maps a withdrawn toplevel's
-        # children, so winfo_ismapped() would be False for every widget
-        # regardless of grid()/grid_remove() state, breaking any test that
-        # checks visibility (e.g. the split-CSV format toggle).
-        _root_window.deiconify()
+        _root_window.withdraw()
     return _root_window
 
 
@@ -161,19 +157,24 @@ def test_imu_jsonl_browse_button_only_accepts_jsonl(monkeypatch):
 
 
 def test_split_csv_format_hides_jsonl_row_and_shows_component_rows():
+    # Uses grid_info() truthiness rather than winfo_ismapped() -- the
+    # latter requires the toplevel to actually be mapped on screen, which
+    # doesn't hold for the shared withdrawn test root (see _get_root()).
+    # grid_info() returns {} once a widget is grid_remove()'d and a
+    # populated dict once it's grid()'d back, without needing a real
+    # screen render, so it verifies the same "which frame is currently
+    # gridded" behavior headlessly.
     from pendulastic_workbench import TrialLoadPanel
     r = _get_root()
     p = TrialLoadPanel(r, _Ctrl())
     p.pack()
-    r.update()
-    assert p._imu_jsonl_frame.winfo_ismapped()
-    assert not p._imu_split_frame.winfo_ismapped()
+    assert p._imu_jsonl_frame.grid_info()
+    assert not p._imu_split_frame.grid_info()
 
     p._imu_format.set("split_csv")
     p._on_imu_format_changed()
-    r.update()
-    assert not p._imu_jsonl_frame.winfo_ismapped()
-    assert p._imu_split_frame.winfo_ismapped()
+    assert not p._imu_jsonl_frame.grid_info()
+    assert p._imu_split_frame.grid_info()
 
 
 def test_component_browse_validates_and_updates_status(tmp_path, monkeypatch):
