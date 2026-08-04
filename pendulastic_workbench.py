@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import csv
 import os
 from typing import Optional
 
@@ -259,6 +260,25 @@ class WorkbenchView(tk.Frame):
                             self._on_mark_milestone).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
                             self._on_export_clicked).pack(side="right", padx=6)
+        self._export_csv_button = tk.Menubutton(
+            annot_toolbar, text="Export CSV ▾", bg=ws.PALETTE["BTN"],
+            fg=ws.PALETTE["FG"], activebackground=ws.PALETTE["BTN_ACT"],
+            activeforeground="#FFFFFF", relief="flat", bd=0, padx=10, pady=4,
+            font=ws.FONT_BODY, cursor="hand2")
+        self._export_csv_menu = tk.Menu(
+            self._export_csv_button, tearoff=0, bg=ws.PALETTE["PANEL"],
+            fg=ws.PALETTE["FG"], activebackground=ws.PALETTE["BTN_ACT"],
+            activeforeground="#FFFFFF")
+        self._export_csv_menu.add_command(label="Traces...",
+                                          command=self._on_export_traces_csv)
+        self._export_csv_menu.add_command(label="Per-Trace Metrics...",
+                                          command=self._on_export_per_trace_csv)
+        self._export_csv_menu.add_command(label="Comparison Metrics...",
+                                          command=self._on_export_vs_reference_csv)
+        self._export_csv_menu.add_command(label="Annotations...",
+                                          command=self._on_export_annotations_csv)
+        self._export_csv_button.configure(menu=self._export_csv_menu)
+        self._export_csv_button.pack(side="right", padx=6)
 
         self._visibility_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
@@ -375,6 +395,7 @@ class WorkbenchView(tk.Frame):
 
         self._redraw_annotations()
         self._plot_canvas.draw_idle()
+        self._update_export_csv_state()
 
     def _default_reference(self, traces: dict) -> str:
         """OptiTrack present -> OptiTrack; else IMU present -> IMU; else the
@@ -489,6 +510,8 @@ class WorkbenchView(tk.Frame):
                 self._vs_ref_tree.insert("", "end", values=(
                     label, ref_label, "", "", "", "", result["error"]))
 
+        self._update_export_csv_state()
+
     def _on_mark_milestone(self) -> None:
         """Stale-frame binding (design spec Section 6): reads
         current_frame_index()/current_time_sec(), which read the scrubber's
@@ -500,6 +523,7 @@ class WorkbenchView(tk.Frame):
         self._annotations[label] = (fi, t_sec)
         self._draw_milestone_artist(label, t_sec)
         self._plot_canvas.draw_idle()
+        self._update_export_csv_state()
 
     def _draw_milestone_artist(self, label: str, t_sec: float) -> None:
         if not hasattr(self, "_annotation_artists"):
@@ -538,6 +562,61 @@ class WorkbenchView(tk.Frame):
             return
         self.export_session_to(out_path, self.controller.get_trial_meta())
         messagebox.showinfo("Export complete", f"Session exported to {out_path}")
+
+    def _update_export_csv_state(self) -> None:
+        has_traces = bool(self._traces)
+        has_annotations = bool(self._annotations)
+        for i in (0, 1, 2):
+            self._export_csv_menu.entryconfig(i, state="normal" if has_traces else "disabled")
+        self._export_csv_menu.entryconfig(3, state="normal" if has_annotations else "disabled")
+
+    def _meta_ids(self) -> tuple:
+        meta = self.controller.get_trial_meta()
+        return meta.get("participant_id", ""), meta.get("session_date", "")
+
+    def _default_csv_filename(self, prefix: str) -> str:
+        participant_id, session_date = self._meta_ids()
+        parts = [prefix, participant_id or "session"] + ([session_date] if session_date else [])
+        return "_".join(parts) + ".csv"
+
+    def _prompt_and_write_csv(self, prefix: str, fieldnames: list, rows: list) -> None:
+        out_path = filedialog.asksaveasfilename(
+            title=f"Save {prefix.replace('_', ' ').title()} CSV",
+            initialfile=self._default_csv_filename(prefix),
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not out_path:
+            return
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+        messagebox.showinfo("Exported", f"Saved to:\n{out_path}")
+
+    def _on_export_traces_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.traces_to_csv_rows(self._traces, participant_id, session_date)
+        self._prompt_and_write_csv("traces", fieldnames, rows)
+
+    def _on_export_per_trace_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        snapshot = self.get_metrics_snapshot()
+        fieldnames, rows = engine.per_trace_metrics_to_csv_rows(
+            snapshot["per_trace"], participant_id, session_date)
+        self._prompt_and_write_csv("per_trace_metrics", fieldnames, rows)
+
+    def _on_export_vs_reference_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        snapshot = self.get_metrics_snapshot()
+        fieldnames, rows = engine.vs_reference_metrics_to_csv_rows(
+            snapshot["reference"], snapshot["vs_reference"], participant_id, session_date)
+        self._prompt_and_write_csv("comparison_metrics", fieldnames, rows)
+
+    def _on_export_annotations_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.annotations_to_csv_rows(
+            self.get_annotations(), participant_id, session_date)
+        self._prompt_and_write_csv("annotations", fieldnames, rows)
 
     def load_video(self, path: str) -> None:
         if self._cap is not None:

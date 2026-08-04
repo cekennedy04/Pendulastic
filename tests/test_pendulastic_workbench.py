@@ -264,3 +264,58 @@ def test_workbench_view_per_trace_tree_column_widths_are_fixed():
     r.update()
     for col in wv._PER_TRACE_COLS[1:]:
         assert wv._per_trace_tree.column(col)["stretch"] == 0
+
+
+def test_export_csv_menu_disabled_when_no_traces_or_annotations():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces({})
+    r.update()
+    assert wv._export_csv_menu.entrycget(0, "state") == "disabled"
+    assert wv._export_csv_menu.entrycget(1, "state") == "disabled"
+    assert wv._export_csv_menu.entrycget(2, "state") == "disabled"
+    assert wv._export_csv_menu.entrycget(3, "state") == "disabled"
+
+
+def test_export_csv_menu_enables_traces_items_once_loaded_annotations_after_marking():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    assert wv._export_csv_menu.entrycget(0, "state") == "normal"
+    assert wv._export_csv_menu.entrycget(3, "state") == "disabled"
+
+    wv._scrub_var.set(10)
+    wv._on_mark_milestone()
+    r.update()
+    assert wv._export_csv_menu.entrycget(3, "state") == "normal"
+
+
+def test_export_traces_csv_writes_expected_rows(tmp_path, monkeypatch):
+    from pendulastic_workbench import WorkbenchView
+    import pendulastic_workbench as _m
+    r = _get_root()
+
+    class C(_Ctrl):
+        def get_trial_meta(self):
+            return {"participant_id": "P5", "session_date": "2026-08-04"}
+
+    wv = WorkbenchView(r, C())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    out_path = tmp_path / "traces.csv"
+    monkeypatch.setattr(_m.filedialog, "asksaveasfilename", lambda **kw: str(out_path))
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **kw: None)
+
+    wv._on_export_traces_csv()
+
+    import csv as _csv
+    with open(out_path, newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    assert len(rows) == 100   # _traces() fixture: 100-point linspace
+    assert rows[0]["participant_id"] == "P5"
+    assert rows[0]["session_date"] == "2026-08-04"
+    assert rows[0]["label"] == "imu"
