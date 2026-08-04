@@ -587,3 +587,87 @@ def export_session(trial_meta: dict, annotations: dict, metrics: dict) -> dict:
         },
         "metrics": dict(metrics),
     }
+
+
+def traces_to_csv_rows(traces: dict, participant_id: str, session_date: str) -> tuple:
+    """One row per sample per trace: participant_id, session_date, label,
+    t_sec, angle_deg. Pure formatter -- which traces are "in scope" (e.g.
+    only currently-visible ones) is decided by the caller, which passes
+    only the traces dict it wants exported."""
+    fieldnames = ["participant_id", "session_date", "label", "t_sec", "angle_deg"]
+    rows = []
+    for label, (t, angle) in traces.items():
+        for ti, ai in zip(t, angle):
+            rows.append({
+                "participant_id": participant_id,
+                "session_date": session_date,
+                "label": label,
+                "t_sec": float(ti),
+                "angle_deg": float(ai),
+            })
+    return fieldnames, rows
+
+
+def per_trace_metrics_to_csv_rows(per_trace: dict, participant_id: str,
+                                  session_date: str) -> tuple:
+    """One row per label from a get_metrics_snapshot()["per_trace"] dict
+    (windowed_pt_params output, design spec Section 4a)."""
+    fieldnames = ["participant_id", "session_date", "label", "area_ratio",
+                 "N", "f_hz", "R2n", "omega_max_n", "omega_min_n"]
+    rows = []
+    for label, pt in per_trace.items():
+        rows.append({
+            "participant_id": participant_id,
+            "session_date": session_date,
+            "label": label,
+            "area_ratio": pt["area_ratio"],
+            "N": pt["N"],
+            "f_hz": pt["f"],
+            "R2n": pt["R2n"],
+            "omega_max_n": pt["omega_max_n"],
+            "omega_min_n": pt["omega_min_n"],
+        })
+    return fieldnames, rows
+
+
+def vs_reference_metrics_to_csv_rows(reference: str, vs_reference: dict,
+                                     participant_id: str, session_date: str) -> tuple:
+    """One row per label from a get_metrics_snapshot()["vs_reference"] dict
+    (compare_pair + timing_offset_sec output, design spec Section 4). A
+    status="error" result still produces a row -- metric fields blank,
+    `error` populated -- rather than being silently dropped, so a CSV
+    exported mid-session shows exactly which comparisons failed and why."""
+    fieldnames = ["participant_id", "session_date", "label", "reference",
+                 "status", "rmse_deg", "mae_deg", "lag_sec",
+                 "timing_offset_sec", "error"]
+    rows = []
+    for label, result in vs_reference.items():
+        rows.append({
+            "participant_id": participant_id,
+            "session_date": session_date,
+            "label": label,
+            "reference": reference,
+            "status": result.get("status"),
+            "rmse_deg": result.get("rmse_deg"),
+            "mae_deg": result.get("mae_deg"),
+            "lag_sec": result.get("lag_sec"),
+            "timing_offset_sec": result.get("timing_offset_sec"),
+            "error": result.get("error"),
+        })
+    return fieldnames, rows
+
+
+def annotations_to_csv_rows(annotations: dict, participant_id: str,
+                            session_date: str) -> tuple:
+    """One row per milestone from WorkbenchView.get_annotations()."""
+    fieldnames = ["participant_id", "session_date", "label", "frame_index", "t_sec"]
+    rows = []
+    for label, (frame_index, t_sec) in annotations.items():
+        rows.append({
+            "participant_id": participant_id,
+            "session_date": session_date,
+            "label": label,
+            "frame_index": int(frame_index),
+            "t_sec": float(t_sec),
+        })
+    return fieldnames, rows

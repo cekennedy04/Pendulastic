@@ -727,3 +727,83 @@ def test_export_session_round_trips_through_json(tmp_path):
     path.write_text(json.dumps(result), encoding="utf-8")
     reloaded = json.loads(path.read_text(encoding="utf-8"))
     assert reloaded == result
+
+
+def test_traces_to_csv_rows_empty_traces_returns_no_rows():
+    fieldnames, rows = engine.traces_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+    assert fieldnames == ["participant_id", "session_date", "label", "t_sec", "angle_deg"]
+
+
+def test_traces_to_csv_rows_one_row_per_sample_per_trace():
+    traces = {
+        "imu": (np.array([0.0, 0.1, 0.2]), np.array([180.0, 170.0, 160.0])),
+        "optitrack": (np.array([0.0, 0.1]), np.array([181.0, 171.0])),
+    }
+    fieldnames, rows = engine.traces_to_csv_rows(traces, "P5", "2026-08-04")
+    assert len(rows) == 5
+    imu_rows = [r for r in rows if r["label"] == "imu"]
+    assert len(imu_rows) == 3
+    assert imu_rows[0] == {
+        "participant_id": "P5", "session_date": "2026-08-04",
+        "label": "imu", "t_sec": 0.0, "angle_deg": 180.0,
+    }
+
+
+def test_per_trace_metrics_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.per_trace_metrics_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_per_trace_metrics_to_csv_rows_one_row_per_label():
+    per_trace = {
+        "imu": {"R2n": 1.1, "N": 2.0, "phi_max_ratio": 0.5, "omega_max_n": 3.0,
+                "f": 1.2, "area_ratio": 0.07, "omega_min_n": 0.4},
+    }
+    fieldnames, rows = engine.per_trace_metrics_to_csv_rows(per_trace, "P5", "2026-08-04")
+    assert rows == [{
+        "participant_id": "P5", "session_date": "2026-08-04", "label": "imu",
+        "area_ratio": 0.07, "N": 2.0, "f_hz": 1.2, "R2n": 1.1,
+        "omega_max_n": 3.0, "omega_min_n": 0.4,
+    }]
+
+
+def test_vs_reference_metrics_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.vs_reference_metrics_to_csv_rows("optitrack", {}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_vs_reference_metrics_to_csv_rows_ok_and_error_status():
+    vs_reference = {
+        "imu": {"status": "ok", "rmse_deg": 5.2, "mae_deg": 3.1, "lag_sec": 0.05,
+                "timing_offset_sec": 0.12},
+        "mediapipe": {"status": "error",
+                      "error": "Need at least 4 finite samples in both signals."},
+    }
+    fieldnames, rows = engine.vs_reference_metrics_to_csv_rows(
+        "optitrack", vs_reference, "P5", "2026-08-04")
+    assert len(rows) == 2
+    ok_row = next(r for r in rows if r["label"] == "imu")
+    assert ok_row["reference"] == "optitrack"
+    assert ok_row["rmse_deg"] == 5.2
+    assert ok_row["error"] is None
+    err_row = next(r for r in rows if r["label"] == "mediapipe")
+    assert err_row["status"] == "error"
+    assert err_row["rmse_deg"] is None
+    assert err_row["error"] == "Need at least 4 finite samples in both signals."
+
+
+def test_annotations_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.annotations_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_annotations_to_csv_rows_one_row_per_milestone():
+    annotations = {"Release Start": (42, 0.7), "Maximum Flexion": (88, 1.47)}
+    fieldnames, rows = engine.annotations_to_csv_rows(annotations, "P5", "2026-08-04")
+    assert len(rows) == 2
+    row = next(r for r in rows if r["label"] == "Release Start")
+    assert row == {
+        "participant_id": "P5", "session_date": "2026-08-04",
+        "label": "Release Start", "frame_index": 42, "t_sec": 0.7,
+    }

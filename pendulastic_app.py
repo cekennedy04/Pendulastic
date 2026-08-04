@@ -94,10 +94,12 @@ except Exception:
 try:
     from pendulastic_workbench import TrialLoadPanel, WorkbenchView
     import workbench_engine as _wb_engine
+    import workbench_style as _wb_style
     _WORKBENCH_AVAIL = True
 except Exception:
     TrialLoadPanel = WorkbenchView = None
     _wb_engine = None
+    _wb_style = None
     _WORKBENCH_AVAIL = False
 
 _GREEN = "#1e7d34"
@@ -1172,6 +1174,10 @@ class App(tk.Tk):
         self._workbench_imu_reference: list = []
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
+            # Registers the dark "Workbench.*" ttk styles the embedded panels
+            # opt into. It does not switch this root's base ttk theme, so the
+            # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
+            _wb_style.apply_ttk_theme(self)
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
@@ -1367,6 +1373,8 @@ class App(tk.Tk):
         self._workbench_trial_meta = {
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
+            "participant_id": selection["participant_id"],
+            "session_date": selection["session_date"],
             "models": selection["models"],
             "femur_length_cm": selection["femur_length_cm"],
             "tibia_length_cm": selection["tibia_length_cm"],
