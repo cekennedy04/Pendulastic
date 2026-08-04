@@ -64,3 +64,22 @@ def test_render_dashboard_empty_history_does_not_raise():
     history = _history([])
     fig = dash.render_dashboard(history, "left", "imu")
     assert len(fig.axes) == 3
+
+
+def test_sorted_sessions_with_trace_excludes_unparseable_dates():
+    """Sessions with unparseable or missing dates are excluded, not errored."""
+    s_valid = _session("Initial", "2026-07-07")
+    s_unparseable = _session("Broken", "not-a-date")
+    s_missing_date = {
+        "label": "NoDate", "reference_trace": "imu",
+        "traces": {"imu": {"t": [0.0, 0.1], "angle": [140.0, 138.0],
+                           "metrics": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8,
+                                      "omega_max_n": 7.0, "omega_min_n": 0.01, "f": 1.0,
+                                      "area_ratio": 0.1, "pt_score": 0.1, "mas": "0"}}},
+    }
+    history = _history([s_unparseable, s_valid, s_missing_date])
+
+    result = dash._sorted_sessions_with_trace(history, "left", "imu")
+
+    assert len(result) == 1
+    assert result[0]["label"] == "Initial"
