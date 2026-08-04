@@ -75,7 +75,7 @@ def _render_waveform_overlay(ax, sessions: list, trace_label: str) -> None:
 
 
 def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
-    ax.set_ylabel("Parameter value")
+    ax.set_ylabel("Value ÷ healthy reference")
     ax.set_title("Parameter comparison vs healthy reference")
 
     # Strict single-trace filtering: every bar in a session's group comes
@@ -94,15 +94,19 @@ def _render_parameter_bars(ax, sessions: list, trace_label: str) -> None:
     width = 0.8 / n_sessions
     x = list(range(n_params))
 
+    # HEALTHY_REF values span ~3.5 orders of magnitude (0.002 to 7.0) --
+    # plotting raw values on one shared linear axis renders most bars as
+    # imperceptible slivers. Normalize every bar to its healthy-reference
+    # value instead, so "1.0" always means "at the healthy reference"
+    # regardless of the parameter's native scale.
     for i, session in enumerate(usable):
         metrics = session["traces"][trace_label]["metrics"]
-        values = [metrics[key] for key in PARAM_KEYS]
+        values = [metrics[key] / HEALTHY_REF[key] for key in PARAM_KEYS]
         offsets = [xi + i * width for xi in x]
         ax.bar(offsets, values, width=width, label=session["label"])
 
-    for i, key in enumerate(PARAM_KEYS):
-        ax.hlines(HEALTHY_REF[key], i - width / 2, i + (n_sessions - 0.5) * width, colors="black",
-                  linestyles="dashed", linewidth=1)
+    ax.hlines(1.0, -width / 2, n_params - 1 + (n_sessions - 0.5) * width, colors="black",
+              linestyles="dashed", linewidth=1)
 
     ax.set_xticks([xi + width * (n_sessions - 1) / 2 for xi in x])
     ax.set_xticklabels(PARAM_KEYS, rotation=30, ha="right")

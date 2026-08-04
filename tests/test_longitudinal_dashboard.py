@@ -135,6 +135,25 @@ def test_render_dashboard_bar_chart_xtick_position_with_two_sessions():
     assert xticks[0] == pytest.approx(0.2, abs=1e-6)
 
 
+def test_render_dashboard_bar_chart_normalizes_to_healthy_reference():
+    """Each bar is plotted as metrics[key] / HEALTHY_REF[key], not the raw
+    value -- a session exactly at the healthy reference for every param
+    must render bars of height 1.0, so a viewer isn't left comparing
+    values spanning 3.5 orders of magnitude on one linear axis."""
+    from pendulastic_pt_score import HEALTHY_REF
+    metrics = {key: HEALTHY_REF[key] for key in dash.PARAM_KEYS}
+    metrics["pt_score"] = 0.1
+    metrics["mas"] = "0"
+    history = _history([_session("Initial", "2026-07-07", extra_metrics=metrics)])
+
+    fig = dash.render_dashboard(history, "left", "imu")
+    ax_bar = fig.axes[1]
+    bars = [p for p in ax_bar.patches]
+    assert len(bars) == len(dash.PARAM_KEYS)
+    for bar in bars:
+        assert bar.get_height() == pytest.approx(1.0, abs=1e-9)
+
+
 def test_render_dashboard_pt_trend_has_three_zone_bands():
     history = _history([_session("Initial", "2026-07-07")])
     fig = dash.render_dashboard(history, "left", "imu")
