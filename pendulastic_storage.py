@@ -38,9 +38,30 @@ def _empty_history(participant_id: str) -> dict:
     }
 
 
+def _trace_skip_reason(trace_label, trace) -> str:
+    """Returns "" if a single traces[label] entry is well-formed enough for
+    the dashboard renderer to safely index it, else the reason it's being
+    skipped."""
+    if not isinstance(trace, dict):
+        return f"trace {trace_label!r} is not a dict"
+    for key in ("t", "angle"):
+        if key not in trace:
+            return f"trace {trace_label!r} missing '{key}'"
+    metrics = trace.get("metrics")
+    if not isinstance(metrics, dict):
+        return f"trace {trace_label!r} missing 'metrics' dict"
+    if "pt_score" not in metrics:
+        return f"trace {trace_label!r} metrics missing 'pt_score'"
+    return ""
+
+
 def _session_skip_reason(session) -> str:
     """Returns "" if session is well-formed, else the reason it's being
-    skipped."""
+    skipped. Validates both the four top-level keys AND, for every entry in
+    "traces", that it has "t"/"angle" and a "metrics" dict containing
+    "pt_score" -- render_dashboard() indexes those unconditionally, so a
+    session that passes here but has a malformed trace would otherwise
+    crash the renderer with an uncaught KeyError."""
     if not isinstance(session, dict):
         return "not a dict"
     for key in ("label", "date", "reference_trace", "traces"):
@@ -50,6 +71,13 @@ def _session_skip_reason(session) -> str:
         datetime.fromisoformat(session["date"])
     except (ValueError, TypeError):
         return f"unparseable date {session.get('date')!r}"
+    traces = session["traces"]
+    if not isinstance(traces, dict):
+        return "'traces' is not a dict"
+    for trace_label, trace in traces.items():
+        reason = _trace_skip_reason(trace_label, trace)
+        if reason:
+            return reason
     return ""
 
 

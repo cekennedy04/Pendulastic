@@ -66,6 +66,42 @@ def test_load_history_skips_malformed_session_and_reports_it():
     assert "Broken" not in history["_skipped"][0] or "date" in history["_skipped"][0]
 
 
+def test_load_history_skips_session_with_malformed_trace_and_reports_it():
+    path = os.path.join(storage.PARTICIPANTS_DIR, "P5")
+    os.makedirs(path, exist_ok=True)
+    good_session = {
+        "label": "Initial", "date": "2026-07-07", "reference_trace": "imu",
+        "traces": {"imu": {"t": [0.0], "angle": [140.0],
+                           "metrics": {"pt_score": 0.1, "mas": "0"}}},
+    }
+    # Top level is well-formed, but traces["imu"] is missing "metrics"
+    # entirely -- render_dashboard() would crash indexing
+    # trace["metrics"]["pt_score"] on this.
+    session_missing_metrics = {
+        "label": "MissingMetrics", "date": "2026-07-08", "reference_trace": "imu",
+        "traces": {"imu": {"t": [0.0], "angle": [140.0]}},
+    }
+    # metrics present but missing pt_score inside it.
+    session_missing_pt_score = {
+        "label": "MissingPtScore", "date": "2026-07-09", "reference_trace": "imu",
+        "traces": {"imu": {"t": [0.0], "angle": [140.0], "metrics": {"mas": "0"}}},
+    }
+    raw = {
+        "participant_id": "P5",
+        "legs": {"left": {"sessions": [good_session, session_missing_metrics,
+                                       session_missing_pt_score]},
+                 "right": {"sessions": []}},
+    }
+    with open(os.path.join(path, "history.json"), "w", encoding="utf-8") as f:
+        json.dump(raw, f)
+
+    history = storage.load_history("P5")
+    sessions = history["legs"]["left"]["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["label"] == "Initial"
+    assert len(history["_skipped"]) == 2
+
+
 def _traces_and_metrics():
     traces = {"imu": ([0.0, 0.1, 0.2], [140.0, 138.0, 135.0])}
     metrics = {"imu": {"R2n": 0.95, "N": 6.0, "phi_max_ratio": 0.79,
