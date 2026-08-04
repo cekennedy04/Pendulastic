@@ -239,6 +239,31 @@ def test_validate_component_csv_too_few_rows(tmp_path):
     assert "1 data row" in result["error"]
 
 
+def test_validate_component_csv_non_numeric_value_in_numeric_field(tmp_path):
+    """Test that non-numeric values in numeric fields are caught and reported
+    without raising ValueError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n")
+        f.write("0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n")
+        f.write("bad_value,10,proximal,Accelerometer,0.0,0.0,9.81\n")  # bad timestamp
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 3" in result["error"]
+    assert "non-numeric" in result["error"].lower()
+
+
+def test_validate_component_csv_identical_timestamps_zero_gap(tmp_path):
+    """Test that all identical timestamps (zero median gap) are caught and reported
+    without raising ZeroDivisionError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81) for _ in range(5)]  # all same time
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "zero" in result["error"].lower() or "invalid gaps" in result["error"].lower()
+
+
 def test_derive_split_csv_siblings_from_non_imu_anchor(tmp_path):
     """A _gyro.csv/_accel.csv/_mag.csv anchor must not be treated as if it
     were _imu.csv -- the derivation must identify the anchor's actual

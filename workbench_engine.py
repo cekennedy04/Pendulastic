@@ -368,23 +368,27 @@ def validate_component_csv(path: str, kind: str) -> dict:
                     f"{path!r} row {row_num} has {len(row)} columns; expected {len(header)}.")
             record = dict(zip(header, row))
 
-            if kind in _COMPONENT_SENSOR_NAME:
-                expected_sensor = _COMPONENT_SENSOR_NAME[kind]
-                actual_sensor = record["sensor_name"]
-                if actual_sensor != expected_sensor:
-                    return _empty_component_validation(
-                        f"{path!r} row {row_num} has sensor_name {actual_sensor!r}; "
-                        f"expected {expected_sensor!r} for the {kind} slot.")
-                t = float(record["timestamp_ms"]) / 1000.0
-                sample = {
-                    "t": t, "role": record["role"], "sensor": kind,
-                    "v": [float(record["x"]), float(record["y"]), float(record["z"])],
-                    "phone_ts_ms": int(float(record["phone_ts_ms"])),
-                }
-            else:
-                t = float(record["t_epoch"])
-                sample = dict(record)
-                sample["t_epoch"] = t
+            try:
+                if kind in _COMPONENT_SENSOR_NAME:
+                    expected_sensor = _COMPONENT_SENSOR_NAME[kind]
+                    actual_sensor = record["sensor_name"]
+                    if actual_sensor != expected_sensor:
+                        return _empty_component_validation(
+                            f"{path!r} row {row_num} has sensor_name {actual_sensor!r}; "
+                            f"expected {expected_sensor!r} for the {kind} slot.")
+                    t = float(record["timestamp_ms"]) / 1000.0
+                    sample = {
+                        "t": t, "role": record["role"], "sensor": kind,
+                        "v": [float(record["x"]), float(record["y"]), float(record["z"])],
+                        "phone_ts_ms": int(float(record["phone_ts_ms"])),
+                    }
+                else:
+                    t = float(record["t_epoch"])
+                    sample = dict(record)
+                    sample["t_epoch"] = t
+            except ValueError as e:
+                return _empty_component_validation(
+                    f"{path!r} row {row_num} has a non-numeric value: {str(e)}")
 
             if prev_t is not None and t < prev_t:
                 return _empty_component_validation(
@@ -399,7 +403,13 @@ def validate_component_csv(path: str, kind: str) -> dict:
             f"compute an effective sample rate.")
 
     times = [r["t"] if kind in _COMPONENT_SENSOR_NAME else r["t_epoch"] for r in rows]
-    fs_eff = 1.0 / float(np.median(np.diff(times)))
+    try:
+        fs_eff = 1.0 / float(np.median(np.diff(times)))
+    except (ZeroDivisionError, RuntimeError):
+        return _empty_component_validation(
+            f"{path!r} has timestamps with zero or invalid gaps (possibly all identical); "
+            f"cannot compute an effective sample rate.")
+
     if fs_eff < _MIN_FS_FOR_FUSION_HZ:
         return _empty_component_validation(
             f"{path!r} has an effective sample rate of {fs_eff:.2f} Hz, below the "
