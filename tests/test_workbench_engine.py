@@ -2,6 +2,7 @@ import os, sys, math, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
+import pytest
 import workbench_engine as engine
 
 _SPLIT_CSV_HEADER = "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
@@ -103,6 +104,139 @@ def test_read_split_csv_samples_unrecognized_sensor_name(tmp_path):
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Barometer" in str(e)
+
+
+_IMU_REFERENCE_HEADER = ("t_epoch,t_rel,phone_ts_ms,t_phone_aligned,"
+                         "hip_roll_deg,hip_pitch_deg,hip_yaw_deg,"
+                         "prox_roll,prox_pitch,prox_yaw,"
+                         "dist_roll,dist_pitch,dist_yaw,paired\n")
+
+
+def _write_component_csv(path, kind, rows):
+    """rows: list of tuples matching engine._COMPONENT_HEADERS[kind]'s column order."""
+    header = ",".join(engine._COMPONENT_HEADERS[kind]) + "\n"
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(header)
+        for row in rows:
+            f.write(",".join(str(v) for v in row) + "\n")
+
+
+def _accel_rows_100hz(n=60, sensor_name="Accelerometer", role="proximal"):
+    """100 Hz cadence -- well above the 10 Hz fusion floor."""
+    rows = []
+    for i in range(n):
+        t_ms = i * 10.0
+        rows.append((t_ms, int(t_ms), role, sensor_name, 0.0, 0.0, 9.81))
+    return rows
+
+
+def _imu_reference_rows_100hz(n=60):
+    rows = []
+    for i in range(n):
+        t_epoch = 1_700_000_000.0 + i * 0.01
+        rows.append((t_epoch, i * 0.01, int(i * 10), t_epoch,
+                     0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True))
+    return rows
+
+
+def test_validate_component_csv_happy_path_accel(tmp_path):
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz())
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert result["n_samples"] == 60
+    assert result["fs_eff"] == pytest.approx(100.0, rel=0.05)
+    assert result["rows"][0] == {
+        "t": 0.0, "role": "proximal", "sensor": "accel",
+        "v": [0.0, 0.0, 9.81], "phone_ts_ms": 0,
+    }
+
+
+def test_validate_component_csv_happy_path_imu_reference(tmp_path):
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", _imu_reference_rows_100hz())
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is True
+    assert result["n_samples"] == 60
+    assert result["fs_eff"] == pytest.approx(100.0, rel=0.05)
+    assert result["rows"][0]["hip_pitch_deg"] == "180.0"
+    assert result["rows"][0]["t_epoch"] == pytest.approx(1_700_000_000.0)
+
+
+def test_validate_component_csv_missing_file(tmp_path):
+    result = engine.validate_component_csv(str(tmp_path / "nope.csv"), "accel")
+    assert result["ok"] is False
+    assert "nope.csv" in result["error"]
+    assert result["rows"] == []
+
+
+def test_validate_component_csv_wrong_header(tmp_path):
+    path = tmp_path / "bad_header.csv"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("wrong,header,columns\n1,2,3\n")
+    result = engine.validate_component_csv(str(path), "gyro")
+    assert result["ok"] is False
+    assert "bad_header.csv" in result["error"]
+
+
+def test_validate_component_csv_sensor_name_mismatch(tmp_path):
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz(sensor_name="Gyroscope"))
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "Gyroscope" in result["error"]
+    assert "Accelerometer" in result["error"]
+
+
+def test_validate_component_csv_sensor_name_mismatch_second_pairing(tmp_path):
+    """A second slot/sensor pairing, distinct from the accel/Gyroscope case
+    above -- confirms the mismatch check isn't accidentally hardcoded to
+    one slot."""
+    path = tmp_path / "Trial_1_mag.csv"
+    _write_component_csv(path, "mag", _accel_rows_100hz(sensor_name="Accelerometer"))
+    result = engine.validate_component_csv(str(path), "mag")
+    assert result["ok"] is False
+    assert "Accelerometer" in result["error"]
+    assert "Magnetometer" in result["error"]
+
+
+def test_validate_component_csv_non_monotonic_timestamps(tmp_path):
+    rows = _accel_rows_100hz(n=5)
+    rows[3] = (5.0, 5, "proximal", "Accelerometer", 0.0, 0.0, 9.81)   # earlier than row 2's 20.0
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 5" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_below_floor(tmp_path):
+    rows = [(i * 500.0, int(i * 500), "proximal", "Accelerometer", 0.0, 0.0, 9.81)
+           for i in range(5)]   # 500ms spacing == 2 Hz, below the 10 Hz floor
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "2.00 Hz" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_at_floor_is_not_a_false_positive(tmp_path):
+    rows = [(i * 80.0, int(i * 80), "proximal", "Accelerometer", 0.0, 0.0, 9.81)
+           for i in range(5)]   # 80ms spacing == 12.5 Hz, above the 10 Hz floor
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is True
+
+
+def test_validate_component_csv_too_few_rows(tmp_path):
+    rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81)]
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "1 data row" in result["error"]
 
 
 def test_derive_split_csv_siblings_from_non_imu_anchor(tmp_path):

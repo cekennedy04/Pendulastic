@@ -319,6 +319,95 @@ def _replay_samples(samples: list, config: Optional[dict],
     return t[finite], angle[finite]
 
 
+_COMPONENT_HEADERS = {
+    "accel": ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"],
+    "gyro":  ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"],
+    "mag":   ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"],
+    "imu":   ["t_epoch", "t_rel", "phone_ts_ms", "t_phone_aligned",
+              "hip_roll_deg", "hip_pitch_deg", "hip_yaw_deg",
+              "prox_roll", "prox_pitch", "prox_yaw",
+              "dist_roll", "dist_pitch", "dist_yaw", "paired"],
+}
+_COMPONENT_SENSOR_NAME = {"accel": "Accelerometer", "gyro": "Gyroscope", "mag": "Magnetometer"}
+_MIN_FS_FOR_FUSION_HZ = 10.0
+
+
+def _empty_component_validation(error: str) -> dict:
+    return {"ok": False, "error": error, "n_samples": 0, "fs_eff": None, "rows": []}
+
+
+def validate_component_csv(path: str, kind: str) -> dict:
+    """Validate one phone-IMU component CSV (kind: "accel"/"gyro"/"mag"/"imu")
+    independently of the other three: header shape, per-row sensor_name
+    consistency (accel/gyro/mag only -- imu has no sensor_name column),
+    timestamp monotonicity, and fs_eff against _MIN_FS_FOR_FUSION_HZ.
+
+    Never raises -- always returns {"ok", "error", "n_samples", "fs_eff",
+    "rows"}, since the guided-intake UI needs a result for any slot, valid
+    or not, to drive that slot's status readout (design spec Section 4)."""
+    header = _COMPONENT_HEADERS[kind]
+    if not os.path.exists(path):
+        return _empty_component_validation(f"{path!r} does not exist.")
+
+    rows = []
+    prev_t = None
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        try:
+            actual_header = next(reader)
+        except StopIteration:
+            return _empty_component_validation(
+                f"{path!r} is empty (expected header {header}).")
+        if actual_header != header:
+            return _empty_component_validation(
+                f"{path!r} has an unexpected header {actual_header!r}; expected {header}.")
+
+        for row_num, row in enumerate(reader, start=2):
+            if len(row) != len(header):
+                return _empty_component_validation(
+                    f"{path!r} row {row_num} has {len(row)} columns; expected {len(header)}.")
+            record = dict(zip(header, row))
+
+            if kind in _COMPONENT_SENSOR_NAME:
+                expected_sensor = _COMPONENT_SENSOR_NAME[kind]
+                actual_sensor = record["sensor_name"]
+                if actual_sensor != expected_sensor:
+                    return _empty_component_validation(
+                        f"{path!r} row {row_num} has sensor_name {actual_sensor!r}; "
+                        f"expected {expected_sensor!r} for the {kind} slot.")
+                t = float(record["timestamp_ms"]) / 1000.0
+                sample = {
+                    "t": t, "role": record["role"], "sensor": kind,
+                    "v": [float(record["x"]), float(record["y"]), float(record["z"])],
+                    "phone_ts_ms": int(float(record["phone_ts_ms"])),
+                }
+            else:
+                t = float(record["t_epoch"])
+                sample = dict(record)
+                sample["t_epoch"] = t
+
+            if prev_t is not None and t < prev_t:
+                return _empty_component_validation(
+                    f"{path!r} row {row_num} has timestamp {t} which is earlier than "
+                    f"the previous row's {prev_t} -- timestamps must be non-decreasing.")
+            prev_t = t
+            rows.append(sample)
+
+    if len(rows) < 2:
+        return _empty_component_validation(
+            f"{path!r} has only {len(rows)} data row(s); at least 2 are needed to "
+            f"compute an effective sample rate.")
+
+    times = [r["t"] if kind in _COMPONENT_SENSOR_NAME else r["t_epoch"] for r in rows]
+    fs_eff = 1.0 / float(np.median(np.diff(times)))
+    if fs_eff < _MIN_FS_FOR_FUSION_HZ:
+        return _empty_component_validation(
+            f"{path!r} has an effective sample rate of {fs_eff:.2f} Hz, below the "
+            f"{_MIN_FS_FOR_FUSION_HZ} Hz floor required for fusion.")
+
+    return {"ok": True, "error": None, "n_samples": len(rows), "fs_eff": fs_eff, "rows": rows}
+
+
 _SPLIT_CSV_SUFFIXES = {"imu": "_imu.csv", "gyro": "_gyro.csv",
                        "accel": "_accel.csv", "mag": "_mag.csv"}
 _SPLIT_CSV_HEADER = ["timestamp_ms", "phone_ts_ms", "role", "sensor_name", "x", "y", "z"]
