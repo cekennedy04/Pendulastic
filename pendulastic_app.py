@@ -105,8 +105,6 @@ _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
 
-_CALIB_STABILITY_RANGE_DEG = 2.0   # max peak-to-peak pitch/roll swing to count as "stable"
-_CALIB_BUFFER_SAMPLES = 20         # ~1s of samples at the 50ms _tick() cadence
 _MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
 
 # ---------------------------------------------------------------------------
@@ -1152,7 +1150,6 @@ class App(tk.Tk):
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
-        self._calib_buffer:      list = []     # trailing (pitch, roll) samples during countdown
         self._calib_was_stable:  bool = False   # edge-trigger state for auto-tare
         self._calib_ever_stable: bool = False   # True once calibrated this countdown
 
@@ -1304,7 +1301,6 @@ class App(tk.Tk):
     def on_countdown_start(self) -> None:
         """Called by AcquisitionPanel at the start of each countdown; resets
         the auto-tare stability tracking for this fresh countdown window."""
-        self._calib_buffer = []
         self._calib_was_stable = False
         self._calib_ever_stable = False
 
@@ -1858,39 +1854,23 @@ class App(tk.Tk):
     def _tick_calibration_check(self) -> None:
         """Countdown auto-tare: continuously watch for a stable hold and
         re-tare (edge-triggered) each time a new stable window begins.
-        Active only while AcquisitionPanel's countdown is running."""
+        Active only while AcquisitionPanel's countdown is running.
+
+        Stability is read directly from _imu.is_stationary() -- a raw
+        gyro-variance + accel-magnitude check computed in
+        pendulastic_imu_server.py from each connected device's own trailing
+        raw-sample buffers -- rather than a fused pitch/roll buffer
+        maintained here. See docs/superpowers/specs/2026-08-04-imu-stillness
+        -gyro-bias-design.md Section 3.3."""
         if not (_IMU_AVAIL and "imu" in self._active_sources
                 and self._state == "idle"
                 and self._acq._countdown_id is not None):
             return
         try:
-            st = _imu.get_state()
-            ang = st.get("angles", {})
-            pitch, roll = ang.get("pitch"), ang.get("roll")
-            if pitch is None or roll is None or not (math.isfinite(pitch) and math.isfinite(roll)):
-                return
-            self._calib_buffer.append((pitch, roll))
-            if len(self._calib_buffer) > _CALIB_BUFFER_SAMPLES:
-                self._calib_buffer.pop(0)
-            if len(self._calib_buffer) < _CALIB_BUFFER_SAMPLES:
-                # Don't touch _calib_was_stable here: after a fire clears the
-                # buffer, it's latched True and must stay latched while the
-                # buffer refills with post-tare samples -- otherwise this
-                # branch un-latches it every tick, and the moment the buffer
-                # is full again (still genuinely stable) the edge falsely
-                # re-triggers, re-taring every ~1s for one continuous hold.
-                # on_countdown_start() already resets it to False at the
-                # start of every countdown, so the cold-start case is fine.
-                return
-            pitches = [p for p, _ in self._calib_buffer]
-            rolls   = [r for _, r in self._calib_buffer]
-            stable = (max(pitches) - min(pitches) < _CALIB_STABILITY_RANGE_DEG
-                     and max(rolls) - min(rolls) < _CALIB_STABILITY_RANGE_DEG)
+            stable = _imu.is_stationary()
             if stable and not self._calib_was_stable:
                 _imu.zero()
                 self._calib_ever_stable = True
-                self._calib_buffer = []      # post-tare readings jump toward 0;
-                                              # don't compare across the tare
                 self._calib_was_stable = True
                 return
             self._calib_was_stable = stable
