@@ -385,6 +385,42 @@ def test_dashboard_view_load_renders_three_axes_figure():
     assert len(dv._canvas.figure.axes) == 3
 
 
+def test_dashboard_view_load_unions_trace_labels_across_sessions():
+    """Regression for a dropdown that only ever showed the first session's
+    traces: two sessions in the same leg with disjoint trace labels must
+    both surface as selectable entries in the trace dropdown after Load,
+    not just whichever one _trace_var happens to land on."""
+    import pendulastic_storage
+    from pendulastic_workbench import DashboardView
+
+    traces_1 = {"imu": ([0.0, 0.1], [140.0, 138.0])}
+    metrics_1 = {"imu": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8, "omega_max_n": 7.0,
+                         "omega_min_n": 0.01, "f": 1.0, "area_ratio": 0.1,
+                         "pt_score": 0.1, "mas": "0"}}
+    pendulastic_storage.save_trial("test-dv3", "left", "Initial", "2026-07-07",
+                                   traces_1, metrics_1, "imu")
+
+    traces_2 = {"optitrack": ([0.0, 0.1], [142.0, 139.0])}
+    metrics_2 = {"optitrack": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8, "omega_max_n": 7.0,
+                               "omega_min_n": 0.01, "f": 1.0, "area_ratio": 0.1,
+                               "pt_score": 0.1, "mas": "0"}}
+    pendulastic_storage.save_trial("test-dv3", "left", "Post-Training", "2026-07-21",
+                                   traces_2, metrics_2, "optitrack")
+
+    r = _get_root()
+    dv = DashboardView(r, _Ctrl())
+    dv.refresh_participants()
+    dv._participant_var.set("TEST-DV3")
+    dv._leg_var.set("left")
+    dv._on_load_clicked()
+    r.update()
+
+    menu = dv._trace_menu["menu"]
+    labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
+    assert "imu" in labels
+    assert "optitrack" in labels
+
+
 def test_dashboard_view_shows_skipped_session_status():
     import json
     import pendulastic_storage
