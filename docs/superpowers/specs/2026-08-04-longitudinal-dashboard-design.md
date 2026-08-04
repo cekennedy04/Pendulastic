@@ -27,6 +27,26 @@ landing first. That plan adds `pt_score`/`mas` keys to
 the 7 raw `windowed_pt_params` keys. Everything below assumes `pt_score`/`mas` are
 already present on each per-trace snapshot.
 
+As landed (branch `worktree-workbench-pt-score-panel`, commit `542e659`, revised after
+its own review from the plan doc's original text), `pt_score`/`mas` are computed from
+`pendulastic_pt_score.compute_pt_params(t, y)` — a separate function from the 7 raw
+`windowed_pt_params` keys already in `per_trace[label]` — and **are both `None`
+together** when `compute_pt_params` reports insufficient signal for that trace. This
+design accounts for that explicitly:
+
+- **Save action** (§7): refuses to save if the *reference* trace's `pt_score` is
+  `None` — a session without a usable PT score for its ground-truth trace isn't useful
+  to a longitudinal PT-score dashboard. Other, non-reference visible traces may still
+  be saved with `pt_score: null`/`mas: null` in their metrics; the block applies only
+  to the reference trace.
+- **Rendering** (§6): a `None` `pt_score` for the panel's selected `trace_label` is not
+  a crash. The waveform legend renders `"{label} (PT=n/a)"` instead of a formatted
+  float. The PT trend panel excludes any session whose selected trace has
+  `pt_score: null` from both the plotted line and the $\Delta\%$ calculation against
+  its neighbors (equivalent to that session not existing for trend purposes; it can
+  still appear in the waveform overlay and, independently, in the bar chart, since the
+  bar chart never reads `pt_score`).
+
 ## 3. Scope
 
 - Purely local to the Tkinter Workbench desktop app (`pendulastic_workbench.py`). No
@@ -123,7 +143,8 @@ can't be parsed is excluded from the render (already flagged by `load_history`'s
 also skipped, not errored.
 
 1. **Waveform overlay** — each session's chosen trace, $t - t_0$ aligned, legend
-   `"{label} (PT={pt_score:.3f})"`.
+   `"{label} (PT={pt_score:.3f})"`, or `"{label} (PT=n/a)"` when that trace's
+   `pt_score` is `None` (§2).
 2. **Parameter bar chart** — grouped bars over the 7 params × sessions, horizontal
    reference lines from `HEALTHY_REF`. **Strict single-trace filtering**: every bar in
    a session's group is read from `traces[trace_label]["metrics"]` only — never from
@@ -131,10 +152,14 @@ also skipped, not errored.
    a missing param. If `traces[trace_label]["metrics"]` is missing any of the 7 params,
    that whole session is dropped from the bar chart (not partially filled from another
    trace), so a single grouped bar never silently mixes readings from two different
-   sensors.
+   sensors. `pt_score` is never read here, so a `None` `pt_score` has no effect on this
+   panel.
 3. **PT score trend** — line/scatter over sessions in date order, $\Delta\%$
    annotations between consecutive points, background bands from `PT_HEALTHY_MAX`/
-   `PT_BORDERLINE_MAX` (green/yellow/red).
+   `PT_BORDERLINE_MAX` (green/yellow/red). A session whose selected trace has
+   `pt_score: None` is excluded from this panel entirely (from the plotted line and
+   from $\Delta\%$ against its neighbors), per §2 — as if it lacked `trace_label`
+   altogether, for trend purposes only.
 
 ## 7. UI Additions (`pendulastic_workbench.py`)
 
@@ -144,12 +169,17 @@ also skipped, not errored.
   is not separately normalized in the dialog — it's passed through as typed, since
   `pendulastic_storage.normalize_participant_id` is the single source of truth and
   already runs inside `save_trial`; duplicating the normalization in the UI would just
-  be a second place for the rule to drift out of sync. On confirm, calls
-  `pendulastic_storage.save_trial(...)` with every currently *visible* trace, each one's
-  metrics from `get_metrics_snapshot()`, and the current `_reference_var` value as
-  `reference_trace`. If the (label, date) pair already exists for that participant/leg,
-  the dialog surfaces that the save will overwrite the existing session (upsert, per
-  §5) before committing, so a re-save is a visible choice, not a silent replace.
+  be a second place for the rule to drift out of sync. **Before saving, the dialog
+  checks `get_metrics_snapshot()["per_trace"][reference_trace]["pt_score"]`; if it is
+  `None`, the save is refused with an explicit error** (a session without a usable PT
+  score for its reference trace isn't useful to a longitudinal PT-score dashboard) —
+  other, non-reference visible traces may still carry `pt_score: null` into storage
+  unblocked (§2, §6). On confirm, calls `pendulastic_storage.save_trial(...)` with
+  every currently *visible* trace, each one's metrics from `get_metrics_snapshot()`,
+  and the current `_reference_var` value as `reference_trace`. If the (label, date)
+  pair already exists for that participant/leg, the dialog surfaces that the save will
+  overwrite the existing session (upsert, per §5) before committing, so a re-save is a
+  visible choice, not a silent replace.
 - **`TrialLoadPanel`**: new "View Participant Dashboard" button.
 - **New `DashboardView(tk.Frame)`**: participant picker (dropdown from
   `list_participant_ids()`, already-normalized, + manual entry normalized on lookup by
@@ -180,6 +210,10 @@ also skipped, not errored.
   are present; a session missing the selected trace label is skipped without raising; a
   session whose `traces[trace_label]["metrics"]` is missing one of the 7 params is
   dropped from the bar chart entirely rather than partially rendered or backfilled from
-  `reference_trace`.
+  `reference_trace`; a session whose selected trace has `pt_score: None` renders
+  `"PT=n/a"` in the waveform legend without raising, and is excluded from the PT trend
+  panel's line and $\Delta\%$ annotations (while a *different* session in the same
+  history with a real `pt_score` still renders normally in all three panels).
 - **Workbench UI**: save-dialog wiring (`tests/test_pendulastic_workbench.py`),
-  `DashboardView` navigation and skipped-session status display.
+  `DashboardView` navigation and skipped-session status display, and the save-blocked
+  case where the reference trace's `pt_score` is `None`.
