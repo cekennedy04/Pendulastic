@@ -146,3 +146,15 @@ def save_trial(participant_id: str, leg: str, session_label: str, date: str,
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
     os.replace(tmp_path, path)
+
+
+def list_participant_ids() -> list[str]:
+    """Scans participants/*/history.json. Returned IDs are already
+    normalized (they're the directory names save_trial created)."""
+    if not os.path.isdir(PARTICIPANTS_DIR):
+        return []
+    ids = []
+    for name in sorted(os.listdir(PARTICIPANTS_DIR)):
+        if os.path.isfile(os.path.join(PARTICIPANTS_DIR, name, "history.json")):
+            ids.append(name)
+    return ids

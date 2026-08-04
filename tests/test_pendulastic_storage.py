@@ -126,3 +126,15 @@ def test_save_trial_upserts_matching_label_and_date():
     sessions = history["legs"]["left"]["sessions"]
     assert len(sessions) == 1   # replaced, not duplicated
     assert sessions[0]["traces"]["imu"]["metrics"]["pt_score"] == 0.5
+
+
+def test_list_participant_ids_normalizes_and_sorts():
+    traces, metrics = _traces_and_metrics()
+    storage.save_trial("p9", "left", "Initial", "2026-07-07", traces, metrics, "imu")
+    storage.save_trial(" P2 ", "left", "Initial", "2026-07-07", traces, metrics, "imu")
+
+    assert storage.list_participant_ids() == ["P2", "P9"]
+
+
+def test_list_participant_ids_empty_dir_returns_empty_list():
+    assert storage.list_participant_ids() == []
