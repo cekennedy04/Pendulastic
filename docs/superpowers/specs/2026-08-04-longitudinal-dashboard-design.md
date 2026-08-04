@@ -89,9 +89,10 @@ and PT zone thresholds are imported, not redefined:
 
 **API:**
 
-- `load_history(participant_id) -> dict` — defensive read (see below).
-- `save_trial(participant_id, leg, session_label, date, traces, metrics_by_label, reference_trace) -> None` — validates `date` matches `YYYY-MM-DD` via `datetime.strptime(date, "%Y-%m-%d")`, raising `ValueError` on mismatch (fail fast at write time rather than tolerating bad dates downstream). Appends one session to `legs[leg]["sessions"]`; writes atomically (write to a temp file, then `os.replace`) so a crash mid-write can't corrupt the file; never touches other legs' or other dates' sessions.
-- `list_participant_ids() -> list[str]` — scans `participants/*/history.json`.
+- `normalize_participant_id(participant_id: str) -> str` — `participant_id.strip().upper()`. `" p5 "`, `"p5"`, and `"P5"` must all resolve to the same `participants/P5/history.json`, or a typo'd case/whitespace variant silently creates a duplicate participant folder. Applied consistently by `load_history`, `save_trial`, and `list_participant_ids` — normalization happens once, at the storage boundary, not separately in each caller.
+- `load_history(participant_id) -> dict` — defensive read (see below). Normalizes `participant_id` before resolving the path.
+- `save_trial(participant_id, leg, session_label, date, traces, metrics_by_label, reference_trace) -> None` — normalizes `participant_id`; validates `date` matches `YYYY-MM-DD` via `datetime.strptime(date, "%Y-%m-%d")`, raising `ValueError` on mismatch (fail fast at write time rather than tolerating bad dates downstream). **Upserts** on `(session_label, date)` within `legs[leg]["sessions"]`: if a session with the same `session_label` *and* `date` already exists for that leg, it is replaced in place (same list position, new `traces`/`reference_trace`) rather than appended as a duplicate — guards against a researcher double-clicking "Save Trial to Dashboard" or re-saving after reprocessing the same trial. A different `session_label` on the same `date`, or the same `session_label` on a different `date`, is a distinct session and is appended normally. Writes atomically (write to a temp file, then `os.replace`) so a crash mid-write can't corrupt the file; never touches other legs' or other (label, date) sessions.
+- `list_participant_ids() -> list[str]` — scans `participants/*/history.json`; returned IDs are already normalized (they're the directory names `save_trial` created).
 
 **Defensive loading:** `load_history()` never crashes the caller on a malformed file:
 
@@ -124,7 +125,13 @@ also skipped, not errored.
 1. **Waveform overlay** — each session's chosen trace, $t - t_0$ aligned, legend
    `"{label} (PT={pt_score:.3f})"`.
 2. **Parameter bar chart** — grouped bars over the 7 params × sessions, horizontal
-   reference lines from `HEALTHY_REF`.
+   reference lines from `HEALTHY_REF`. **Strict single-trace filtering**: every bar in
+   a session's group is read from `traces[trace_label]["metrics"]` only — never from
+   `reference_trace` or any other trace present in that session, even as a fallback for
+   a missing param. If `traces[trace_label]["metrics"]` is missing any of the 7 params,
+   that whole session is dropped from the bar chart (not partially filled from another
+   trace), so a single grouped bar never silently mixes readings from two different
+   sensors.
 3. **PT score trend** — line/scatter over sessions in date order, $\Delta\%$
    annotations between consecutive points, background bands from `PT_HEALTHY_MAX`/
    `PT_BORDERLINE_MAX` (green/yellow/red).
@@ -133,13 +140,20 @@ also skipped, not errored.
 
 - **`WorkbenchView`**: new "Save Trial to Dashboard" button opens a `Toplevel` dialog
   collecting `participant_id`, `leg` (left/right), `session_label`, `date` (defaults to
-  today, editable, validated against `YYYY-MM-DD` before calling storage). On confirm,
-  calls `pendulastic_storage.save_trial(...)` with every currently *visible* trace, each
-  one's metrics from `get_metrics_snapshot()`, and the current `_reference_var` value as
-  `reference_trace`.
+  today, editable, validated against `YYYY-MM-DD` before calling storage). `participant_id`
+  is not separately normalized in the dialog — it's passed through as typed, since
+  `pendulastic_storage.normalize_participant_id` is the single source of truth and
+  already runs inside `save_trial`; duplicating the normalization in the UI would just
+  be a second place for the rule to drift out of sync. On confirm, calls
+  `pendulastic_storage.save_trial(...)` with every currently *visible* trace, each one's
+  metrics from `get_metrics_snapshot()`, and the current `_reference_var` value as
+  `reference_trace`. If the (label, date) pair already exists for that participant/leg,
+  the dialog surfaces that the save will overwrite the existing session (upsert, per
+  §5) before committing, so a re-save is a visible choice, not a silent replace.
 - **`TrialLoadPanel`**: new "View Participant Dashboard" button.
 - **New `DashboardView(tk.Frame)`**: participant picker (dropdown from
-  `list_participant_ids()` + manual entry), leg selector, trace-label selector (union of
+  `list_participant_ids()`, already-normalized, + manual entry normalized on lookup by
+  `load_history`), leg selector, trace-label selector (union of
   labels found across that leg's sessions), "Load" renders the 3-panel `Figure` via
   `FigureCanvasTkAgg` (same embedding pattern as `WorkbenchView`'s existing plot canvas).
   If `load_history()` returned any `_skipped` entries for this participant, `DashboardView`
@@ -155,10 +169,17 @@ also skipped, not errored.
   legs/dates; atomic-write safety; `save_trial` rejects a malformed date string;
   `load_history` returns an empty skeleton for a missing file, tolerates a truncated/
   invalid-JSON file, and skips (with a logged/reported reason) a session missing
-  required keys or with an unparseable date, without raising.
+  required keys or with an unparseable date, without raising; `" p5 "`, `"p5"`, and
+  `"P5"` all resolve to the same `participants/P5/history.json` (no duplicate folders);
+  saving a trial with a (label, date) pair that already exists **replaces** that session
+  in place rather than appending a duplicate, while a different label or a different
+  date on the same leg still appends normally.
 - **Dashboard rendering**: headless (Agg backend, no Tk) — a synthetic 2–3 session
   history renders a 3-axes figure; sessions saved out of chronological order render in
   date order; legend contains PT scores; bar chart covers all 7 params; PT zone bands
-  are present; a session missing the selected trace label is skipped without raising.
+  are present; a session missing the selected trace label is skipped without raising; a
+  session whose `traces[trace_label]["metrics"]` is missing one of the 7 params is
+  dropped from the bar chart entirely rather than partially rendered or backfilled from
+  `reference_trace`.
 - **Workbench UI**: save-dialog wiring (`tests/test_pendulastic_workbench.py`),
   `DashboardView` navigation and skipped-session status display.
