@@ -165,3 +165,160 @@ def test_stream_page_has_no_mediapipe_dependency():
     # This page must stay a minimal camera-only page (design decision) —
     # it must not grow the _TRACKING_PAGE's MediaPipe/pose dependency.
     assert "mediapipe" not in pps._STREAM_PAGE.lower()
+
+
+import json
+import ssl as _ssl
+import socket as _socket
+import struct as _struct
+import time as _time
+
+import cv2
+import numpy as np
+
+
+def _connect_tls(port):
+    ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+    raw = _socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    return ctx.wrap_socket(raw, server_hostname="127.0.0.1")
+
+
+def test_start_stream_server_serves_the_page_over_https(tmp_path):
+    ip, port = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        assert b"200" in data.split(b"\r\n", 1)[0]
+        assert b"getUserMedia" in data
+    finally:
+        pps.stop_stream_server()
+
+
+def test_stream_server_websocket_frame_lands_in_queue(tmp_path):
+    ip, port = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        req = (
+            "GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(req.encode())
+        resp = sock.recv(4096)
+        assert b"101" in resp.split(b"\r\n", 1)[0]
+
+        # Build and send one binary frame: 8-byte header + a tiny real JPEG.
+        img = np.zeros((4, 4, 3), dtype="uint8")
+        ok, buf = cv2.imencode(".jpg", img)
+        assert ok
+        header = _struct.pack("<II", 7, 123456)
+        payload = header + buf.tobytes()
+        mask_key = b"\x11\x22\x33\x44"
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        plen = len(masked)
+        if plen <= 125:
+            frame_hdr = bytes([0x82, 0x80 | plen])
+        else:
+            frame_hdr = bytes([0x82, 0x80 | 126]) + _struct.pack(">H", plen)
+        sock.sendall(frame_hdr + mask_key + masked)
+
+        item = pps.stream_frame_queue.get(timeout=5.0)
+        assert item["frame_index"] == 7
+        assert item["phone_ts_ms"] == 123456
+        assert item["frame"].shape == (4, 4, 3)
+    finally:
+        pps.stop_stream_server()
+
+
+def test_start_stream_server_is_idempotent(tmp_path):
+    ip1, port1 = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    ip2, port2 = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        assert (ip1, port1) == (ip2, port2)
+    finally:
+        pps.stop_stream_server()
+
+
+def _ws_handshake(sock):
+    req = (
+        "GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    )
+    sock.sendall(req.encode())
+    resp = sock.recv(4096)
+    assert b"101" in resp.split(b"\r\n", 1)[0]
+
+
+def _send_binary_frame(sock, frame_index, phone_ts_ms, jpeg_bytes):
+    header = _struct.pack("<II", frame_index, phone_ts_ms)
+    payload = header + jpeg_bytes
+    mask_key = b"\x11\x22\x33\x44"
+    masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+    plen = len(masked)
+    if plen <= 125:
+        frame_hdr = bytes([0x82, 0x80 | plen])
+    else:
+        frame_hdr = bytes([0x82, 0x80 | 126]) + _struct.pack(">H", plen)
+    sock.sendall(frame_hdr + mask_key + masked)
+
+
+def _tiny_jpeg_bytes():
+    img = np.zeros((4, 4, 3), dtype="uint8")
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    return buf.tobytes()
+
+
+def test_stream_server_drops_frame_with_implausible_timestamp_jump(tmp_path):
+    ip, port = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        _ws_handshake(sock)
+        jpeg = _tiny_jpeg_bytes()
+        _send_binary_frame(sock, 1, 1_000_000, jpeg)
+        item1 = pps.stream_frame_queue.get(timeout=5.0)
+        assert item1["frame_index"] == 1
+        # Wildly out-of-range jump vs. the previous frame's timestamp —
+        # simulates a phone clock re-sync glitch or reordering; must be
+        # dropped rather than queued.
+        _send_binary_frame(sock, 2, 1_000_000 + 10_000_000, jpeg)
+        _send_binary_frame(sock, 3, 1_000_050, jpeg)   # plausible next frame
+        item2 = pps.stream_frame_queue.get(timeout=5.0)
+        assert item2["frame_index"] == 3   # frame 2 was dropped, not queued
+    finally:
+        pps.stop_stream_server()
+
+
+def test_stream_server_new_connection_replaces_old_active_one(tmp_path):
+    ip, port = pps.start_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock_a = _connect_tls(port)
+        _ws_handshake(sock_a)
+        jpeg = _tiny_jpeg_bytes()
+        _send_binary_frame(sock_a, 1, 1_000_000, jpeg)
+        assert pps.stream_frame_queue.get(timeout=5.0)["frame_index"] == 1
+
+        sock_b = _connect_tls(port)
+        _ws_handshake(sock_b)
+        _send_binary_frame(sock_b, 100, 2_000_000, jpeg)
+        assert pps.stream_frame_queue.get(timeout=5.0)["frame_index"] == 100
+
+        # sock_a is now stale — it must stop contributing frames to the
+        # queue even though its TCP connection may still be technically open.
+        while not pps.stream_frame_queue.empty():
+            pps.stream_frame_queue.get_nowait()
+        _send_binary_frame(sock_a, 2, 1_000_100, jpeg)
+        import time as _t
+        _t.sleep(0.5)
+        assert pps.stream_frame_queue.empty()
+    finally:
+        pps.stop_stream_server()

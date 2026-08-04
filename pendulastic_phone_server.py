@@ -29,10 +29,11 @@ import os
 import queue
 import re
 import socket
+import ssl
 import struct
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, unquote
 
 import cv2
@@ -47,6 +48,26 @@ PORT_WS:   int = 8878
 
 CLOCK_SYNC_WINDOW = 10
 CLOCK_SYNC_MAD_K  = 3.0
+
+PORT_STREAM_HTTPS = 8880
+STREAM_RESOLUTION = (1280, 720)
+STREAM_JPEG_QUALITY = 0.7
+CLOCK_SYNC_INITIAL_ROUNDS = 5
+CLOCK_SYNC_RESYNC_INTERVAL_S = 30.0
+MAX_FRAME_TS_JUMP_MS = 2000   # implausible jump vs. previous frame -> drop
+
+stream_frame_queue: "queue.Queue[dict]" = queue.Queue(maxsize=4)
+
+_stream_server = None
+_stream_thread = None
+_stream_running = False
+_stream_local_ip = "127.0.0.1"
+_stream_port = PORT_STREAM_HTTPS
+_stream_active_generation = 0   # bumped by each new WS connection; lets an
+                                 # older, still-technically-open connection
+                                 # notice it's been superseded and stop
+                                 # contributing frames (spec: only one phone
+                                 # connection is active at a time).
 
 # Uploaded video paths — one entry per completed upload.
 upload_queue: "queue.Queue[str]" = queue.Queue()
@@ -1373,6 +1394,176 @@ init();
 </body>
 </html>
 """
+
+
+# ─── single-port HTTPS + WS stream server ──────────────────────────────────────
+
+class _StreamHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self._handle_ws_upgrade()
+            return
+        page = _STREAM_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.end_headers()
+        self.wfile.write(page)
+
+    def _handle_ws_upgrade(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = compute_ws_accept_key(key)
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self._serve_stream_connection()
+
+    def _serve_stream_connection(self) -> None:
+        global _stream_active_generation
+        _stream_active_generation += 1
+        my_generation = _stream_active_generation
+
+        estimator = ClockSyncEstimator()
+        self.connection.settimeout(1.0)
+        last_sync = 0.0
+        sync_rounds_sent = 0
+        last_phone_ts_ms = None
+
+        def recv_exact(n: int) -> bytes:
+            buf = b""
+            while len(buf) < n:
+                chunk = self.rfile.read(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("peer closed")
+                buf += chunk
+            return buf
+
+        try:
+            while True:
+                if my_generation != _stream_active_generation:
+                    # A newer phone connection has taken over — only one
+                    # active connection at a time (spec section 7).
+                    break
+
+                now = time.time() * 1000.0
+                need_initial = sync_rounds_sent < CLOCK_SYNC_INITIAL_ROUNDS
+                need_resync  = (now - last_sync) > (CLOCK_SYNC_RESYNC_INTERVAL_S * 1000.0)
+                if need_initial or need_resync:
+                    t0 = time.time() * 1000.0
+                    self.wfile.write(build_ws_text_frame(json.dumps({"type": "sync_req", "t0": t0})))
+                    last_sync = now
+                    sync_rounds_sent += 1
+
+                try:
+                    opcode, payload = read_ws_frame(recv_exact)
+                except socket.timeout:
+                    continue
+
+                if my_generation != _stream_active_generation:
+                    # Went stale while blocked waiting for this frame to
+                    # arrive — discard it rather than queueing/acking it.
+                    break
+
+                if opcode == 0x8:
+                    break
+                elif opcode == 0x9:
+                    self.wfile.write(_build_ws_frame(0xA, payload[:125]))
+                elif opcode == 0x1:
+                    try:
+                        msg = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if msg.get("type") == "sync_resp":
+                        estimator.add_sample(t0=msg["t0"], t1=msg["t1"], t2=time.time() * 1000.0)
+                elif opcode == 0x2:
+                    frame_index, phone_ts_ms, jpeg_bytes = parse_stream_frame_payload(payload)
+
+                    # Reject an implausible jump vs. the previous frame's
+                    # timestamp (phone clock re-sync glitch, reordering)
+                    # rather than trusting it (spec section 5).
+                    if last_phone_ts_ms is not None \
+                            and abs(phone_ts_ms - last_phone_ts_ms) > MAX_FRAME_TS_JUMP_MS:
+                        continue
+                    last_phone_ts_ms = phone_ts_ms
+
+                    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    desktop_ts_ms = (
+                        phone_ts_ms + estimator.offset_ms
+                        if estimator.offset_ms is not None else None
+                    )
+                    item = {
+                        "frame": frame, "frame_index": frame_index,
+                        "phone_ts_ms": phone_ts_ms, "desktop_ts_ms": desktop_ts_ms,
+                    }
+                    if stream_frame_queue.full():
+                        try:
+                            stream_frame_queue.get_nowait()
+                        except Exception:
+                            pass
+                    try:
+                        stream_frame_queue.put_nowait(item)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def log_message(self, *_):
+        pass
+
+
+class _ThreadingHTTPSServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def start_stream_server(cert_dir: str | None = None, port: int | None = None) -> tuple[str, int]:
+    """Start the single-port HTTPS+WS phone-camera stream server. Idempotent."""
+    global _stream_server, _stream_thread, _stream_running, _stream_local_ip, _stream_port
+
+    if _stream_running:
+        return _stream_local_ip, _stream_port
+
+    if cert_dir is None:
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".certs")
+    bind_port = port if port is not None else PORT_STREAM_HTTPS
+
+    _stream_local_ip = get_local_ip()
+    cert_path, key_path = get_or_create_self_signed_cert(cert_dir, _stream_local_ip)
+
+    server = _ThreadingHTTPSServer(("0.0.0.0", bind_port), _StreamHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    _stream_server = server
+    _stream_port   = server.server_address[1]
+    _stream_thread = threading.Thread(target=server.serve_forever, daemon=True, name="pps-stream")
+    _stream_thread.start()
+    _stream_running = True
+    return _stream_local_ip, _stream_port
+
+
+def stop_stream_server() -> None:
+    global _stream_server, _stream_running
+    _stream_running = False
+    try:
+        if _stream_server:
+            _stream_server.shutdown()
+            _stream_server.server_close()
+    except Exception:
+        pass
+    _stream_server = None
+    while not stream_frame_queue.empty():
+        try:
+            stream_frame_queue.get_nowait()
+        except Exception:
+            break
 
 
 # ─── HTTP server ──────────────────────────────────────────────────────────────
