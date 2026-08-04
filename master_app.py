@@ -8,7 +8,7 @@
    * Collects participant metadata through a Tkinter GUI.
    * Records a 30 fps webcam video on a dedicated background thread so the
      GUI never freezes.
-   * Saves video to:  [Root]/Participant_[ID]/Position_[X]/Height_[Y]/Trial_[Z].avi
+   * Saves video to:  [Root]/Participant_[ID]/[Right|Left]/[Characterization]/Trial_[Z].avi
    * Writes metadata.json into the participant folder.
    * Broadcasts a START / STOP packet over UDP port 5005 so the OptiTrack
      slave machine starts/stops Motive recording in sync.
