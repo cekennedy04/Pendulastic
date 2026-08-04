@@ -25,7 +25,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Config } from "../../constants/Config";
-import { T } from "../../constants/Theme";
+import { SIZE, T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 import type { LegSide, Participant } from "../../types";
 
@@ -380,7 +380,7 @@ function PatientListView({ onSelect, onBack }: ListProps) {
         <View style={[s.errorBox, { margin: 20 }]}>
           <Text style={s.errorText}>{error}</Text>
           <Pressable onPress={fetchAll}>
-            <Text style={{ color: T.accent, fontSize: 13, marginTop: 4 }}>Retry</Text>
+            <Text style={{ color: T.accent, fontSize: TYPE.body, fontWeight: "600", marginTop: 6 }}>Retry</Text>
           </Pressable>
         </View>
       )}
@@ -391,7 +391,7 @@ function PatientListView({ onSelect, onBack }: ListProps) {
           keyExtractor={(p) => p.id}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 100 }}
           ListEmptyComponent={
-            <Text style={{ color: T.label, textAlign: "center", marginTop: 40, fontSize: 14 }}>
+            <Text style={{ color: T.label, textAlign: "center", marginTop: 40, fontSize: TYPE.body }}>
               {query ? "No matches." : "No patients yet."}
             </Text>
           }
@@ -401,7 +401,7 @@ function PatientListView({ onSelect, onBack }: ListProps) {
                 <Text style={s.listName}>{item.first_name} {item.last_name}</Text>
                 {item.diagnosis && <Text style={s.listSub}>{item.diagnosis}</Text>}
               </View>
-              <Text style={{ color: T.label, fontSize: 18 }}>›</Text>
+              <Text style={{ color: T.label, fontSize: 22 }}>›</Text>
             </Pressable>
           )}
         />
@@ -570,59 +570,59 @@ function MetricRow({ label, value, unit, onChange }: { label: string; value: str
 
 const s = StyleSheet.create({
   bg:             { flex: 1, backgroundColor: T.bg },
-  scroll:         { padding: 16, gap: 14, paddingBottom: 60 },
+  scroll:         { padding: 18, gap: 16, paddingBottom: 72 },
 
-  header:         { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 14 },
-  title:          { fontSize: 22, fontWeight: "700", color: T.text },
-  cancelText:     { fontSize: 15, color: T.accent },
+  header:         { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 18, paddingVertical: 16 },
+  title:          { fontSize: TYPE.title, fontWeight: "800", color: T.text },
+  cancelText:     { fontSize: TYPE.body, color: T.accent, fontWeight: "600" },
 
-  badge:          { backgroundColor: T.accentLight, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 200 },
-  badgeText:      { fontSize: 12, color: T.accentText, fontWeight: "500" },
+  badge:          { backgroundColor: T.accentLight, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, maxWidth: 200, minHeight: 36, justifyContent: "center" },
+  badgeText:      { fontSize: TYPE.caption, color: T.accentText, fontWeight: "700" },
 
-  card:           { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, overflow: "hidden" },
-  sectionLabel:   { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.8, padding: 16, paddingBottom: 8 },
+  card:           { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, overflow: "hidden" },
+  sectionLabel:   { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.9, padding: 18, paddingBottom: 10 },
 
-  field:          { paddingHorizontal: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: T.borderFaint, marginBottom: 0 },
-  fieldLabel:     { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.6, marginBottom: 6, textTransform: "uppercase" },
-  input:          { backgroundColor: T.inputBg, borderRadius: 10, borderWidth: 1, borderColor: T.border, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: T.text },
+  field:          { paddingHorizontal: 18, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: T.borderFaint, marginBottom: 0 },
+  fieldLabel:     { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.6, marginBottom: 8, textTransform: "uppercase" },
+  input:          { backgroundColor: T.inputBg, borderRadius: 10, borderWidth: 1.5, borderColor: T.border, paddingHorizontal: 16, paddingVertical: 14, fontSize: TYPE.body, color: T.text, minHeight: SIZE.touchMin },
 
-  segRow:         { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  seg:            { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: T.border, backgroundColor: T.bg },
+  segRow:         { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  seg:            { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, borderWidth: 1.5, borderColor: T.border, backgroundColor: T.bg, minHeight: SIZE.touchMin, justifyContent: "center" },
   segActive:      { borderColor: T.accent, backgroundColor: T.accentLight },
-  segText:        { fontSize: 13, color: T.textSub },
-  segActiveText:  { color: T.accentText, fontWeight: "500" },
+  segText:        { fontSize: TYPE.body, color: T.textSub },
+  segActiveText:  { color: T.accentText, fontWeight: "700" },
 
-  metricRow:      { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
-  metricLabel:    { fontSize: 15, color: T.text },
-  metricInputRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  metricInput:    { fontSize: 15, fontWeight: "600", color: T.text, minWidth: 50, textAlign: "right" },
-  metricUnit:     { fontSize: 15, color: T.textSub, width: 28 },
+  metricRow:      { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 18, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
+  metricLabel:    { fontSize: TYPE.body, color: T.text },
+  metricInputRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  metricInput:    { fontSize: TYPE.bodyLg, fontWeight: "700", color: T.text, minWidth: 56, textAlign: "right" },
+  metricUnit:     { fontSize: TYPE.body, color: T.textSub, width: 32 },
 
-  sideToggle:     { flexDirection: "row", gap: 8 },
-  sidePill:       { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: T.border, backgroundColor: T.bg },
+  sideToggle:     { flexDirection: "row", gap: 10 },
+  sidePill:       { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10, borderWidth: 1.5, borderColor: T.border, backgroundColor: T.bg, minHeight: 44, justifyContent: "center" },
   sidePillActive: { borderColor: T.accent, backgroundColor: T.accentLight },
-  sidePillText:   { fontSize: 14, color: T.textSub },
-  sidePillActiveText: { color: T.accentText, fontWeight: "500" },
+  sidePillText:   { fontSize: TYPE.body, color: T.textSub },
+  sidePillActiveText: { color: T.accentText, fontWeight: "700" },
 
-  errorBox:       { backgroundColor: "#fef2f2", borderRadius: 10, padding: 12, borderWidth: 1, borderColor: "#fecaca" },
-  errorText:      { color: "#dc2626", fontSize: 13 },
-  successBox:     { backgroundColor: T.successBg, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: T.successBorder },
-  successText:    { color: T.success, fontSize: 13 },
+  errorBox:       { backgroundColor: "#fef2f2", borderRadius: 10, padding: 14, borderWidth: 1.5, borderColor: "#fecaca" },
+  errorText:      { color: "#dc2626", fontSize: TYPE.caption, fontWeight: "600" },
+  successBox:     { backgroundColor: T.successBg, borderRadius: 10, padding: 14, borderWidth: 1.5, borderColor: T.successBorder },
+  successText:    { color: T.success, fontSize: TYPE.caption, fontWeight: "600" },
 
-  saveBtn:        { backgroundColor: T.text, borderRadius: 14, padding: 16, alignItems: "center" },
+  saveBtn:        { backgroundColor: T.text, borderRadius: SIZE.btnRadius, padding: SIZE.btnPaddingV, alignItems: "center", minHeight: 56, justifyContent: "center" },
   saveBtnDim:     { opacity: 0.4 },
-  saveBtnText:    { color: "#fff", fontSize: 16, fontWeight: "600" },
+  saveBtnText:    { color: "#fff", fontSize: TYPE.button, fontWeight: "700" },
 
-  changeLink:     { alignItems: "center", paddingVertical: 12 },
-  changeLinkText: { color: T.accent, fontSize: 14 },
+  changeLink:     { alignItems: "center", paddingVertical: 16, minHeight: SIZE.touchMin, justifyContent: "center" },
+  changeLinkText: { color: T.accent, fontSize: TYPE.body, fontWeight: "600" },
 
-  searchRow:      { paddingHorizontal: 16, paddingBottom: 10 },
-  searchInput:    { backgroundColor: T.card, borderRadius: 12, borderWidth: 1, borderColor: T.border, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: T.text },
+  searchRow:      { paddingHorizontal: 18, paddingBottom: 12 },
+  searchInput:    { backgroundColor: T.card, borderRadius: 12, borderWidth: 1.5, borderColor: T.border, paddingHorizontal: 16, paddingVertical: 14, fontSize: TYPE.body, color: T.text, minHeight: SIZE.touchMin },
 
-  listRow:        { backgroundColor: T.card, borderRadius: 12, padding: 16, flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: T.border },
-  listName:       { fontSize: 15, fontWeight: "600", color: T.text },
-  listSub:        { fontSize: 13, color: T.textSub, marginTop: 2 },
+  listRow:        { backgroundColor: T.card, borderRadius: 12, padding: 18, flexDirection: "row", alignItems: "center", borderWidth: 1.5, borderColor: T.border, minHeight: SIZE.touchMin },
+  listName:       { fontSize: TYPE.bodyLg, fontWeight: "700", color: T.text },
+  listSub:        { fontSize: TYPE.caption, color: T.textSub, marginTop: 3 },
 
-  fab:            { position: "absolute", bottom: 24, right: 16, backgroundColor: T.text, borderRadius: 14, paddingHorizontal: 20, paddingVertical: 13 },
-  fabText:        { color: "#fff", fontSize: 14, fontWeight: "600" },
+  fab:            { position: "absolute", bottom: 28, right: 18, backgroundColor: T.text, borderRadius: SIZE.btnRadius, paddingHorizontal: 24, paddingVertical: 16, minHeight: 56, justifyContent: "center" },
+  fabText:        { color: "#fff", fontSize: TYPE.body, fontWeight: "700" },
 });
