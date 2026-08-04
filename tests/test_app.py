@@ -16,6 +16,8 @@ def test_app_starts_with_mode_select_visible():
         app.destroy()
 
 
+
+
 def test_on_new_trial_increments_trial_and_returns_to_acquisition():
     from pendulastic_app import App
     app = App()
@@ -35,6 +37,8 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
         assert not app._post.winfo_ismapped()
     finally:
         app.destroy()
+
+
 
 
 def test_on_source_changed_does_not_crash(monkeypatch):
@@ -58,6 +62,8 @@ def test_on_source_changed_does_not_crash(monkeypatch):
         app.update()
     finally:
         app.destroy()
+
+
 
 
 def test_get_live_angle_maps_to_180_convention(monkeypatch):
@@ -88,6 +94,8 @@ def test_get_live_angle_maps_to_180_convention(monkeypatch):
     assert engine.get_live_angle() == 90.0, "90° swing must map to 90° clinical angle"
 
 
+
+
 def test_get_live_angle_returns_nan_before_zero(monkeypatch):
     """Before zero() is called, swing_angle_deg is NaN → get_live_angle returns NaN."""
     import pendulastic_app as _m, types, math
@@ -106,6 +114,8 @@ def test_get_live_angle_returns_nan_before_zero(monkeypatch):
     assert math.isnan(result), f"Expected NaN before zero, got {result}"
 
 
+
+
 def test_root_window_is_resizable_and_wide():
     from pendulastic_app import App
     app = App()
@@ -116,6 +126,8 @@ def test_root_window_is_resizable_and_wide():
         assert min_h >= 680, f"minsize height should be ≥680, got {min_h}"
     finally:
         app.destroy()
+
+
 
 
 def test_enter_live_mode_shows_acquisition():
@@ -130,6 +142,8 @@ def test_enter_live_mode_shows_acquisition():
         assert app._state == "idle"
     finally:
         app.destroy()
+
+
 
 
 def test_upload_back_to_select_restores_mode_select(monkeypatch):
@@ -151,6 +165,8 @@ def test_upload_back_to_select_restores_mode_select(monkeypatch):
         app.destroy()
 
 
+
+
 def test_upload_back_to_select_blocked_during_processing():
     from pendulastic_app import App
     app = App()
@@ -161,6 +177,8 @@ def test_upload_back_to_select_blocked_during_processing():
         assert app._state == "upload_processing"
     finally:
         app.destroy()
+
+
 
 
 def test_on_back_to_mode_select_resets_state():
@@ -183,6 +201,8 @@ def test_on_back_to_mode_select_resets_state():
         app.destroy()
 
 
+
+
 def test_upload_csv_curve_style_exists():
     from pendulastic_app import PostProcessingPanel
     assert "upload_csv" in PostProcessingPanel._CURVE_STYLES
@@ -190,6 +210,8 @@ def test_upload_csv_curve_style_exists():
     style = PostProcessingPanel._CURVE_STYLES["upload_csv"]
     assert style["color"] == "#0891B2"
     assert style["label"] == "CSV Upload"
+
+
 
 
 def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
@@ -231,6 +253,8 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
     assert abs(angles[0] - 170.0) < 0.01
 
 
+
+
 def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
     import pendulastic_app as _m
     import imu_calibration_config as _cfgmod
@@ -257,6 +281,8 @@ def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
         app.destroy()
 
 
+
+
 def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
     import pendulastic_app as _m
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
@@ -272,6 +298,8 @@ def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
     finally:
         app._imu_poll_stop.set()
         app.destroy()
+
+
 
 
 def test_tick_shows_low_gyro_rate_warning(monkeypatch):
@@ -296,6 +324,8 @@ def test_tick_shows_low_gyro_rate_warning(monkeypatch):
         app.destroy()
 
 
+
+
 def test_tick_shows_flex_axis_status_when_rate_is_healthy(monkeypatch):
     """Once the rate is above MIN_USABLE_HZ, the existing flex-axis label
     behavior must be unaffected by the new check."""
@@ -314,6 +344,8 @@ def test_tick_shows_flex_axis_status_when_rate_is_healthy(monkeypatch):
         assert "Axis locked" in app._acq.lbl_method_status.cget("text")
     finally:
         app.destroy()
+
+
 
 
 def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
@@ -371,6 +403,8 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
         app.destroy()
 
 
+
+
 def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
     import pendulastic_app as _m
     import imu_calibration_tuner as _tuner
@@ -405,6 +439,8 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
         app.destroy()
 
 
+
+
 def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
     import pendulastic_app as _m
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
@@ -427,6 +463,8 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
         app.destroy()
 
 
+
+
 def test_app_creates_camera_session_when_cv2_available():
     import pendulastic_app as _m
     app = _m.App()
@@ -437,6 +475,8 @@ def test_app_creates_camera_session_when_cv2_available():
             assert app._camera is None
     finally:
         app.destroy()
+
+
 
 
 def test_on_rescan_cameras_populates_dropdown_and_opens_first(monkeypatch):
@@ -456,6 +496,8 @@ def test_on_rescan_cameras_populates_dropdown_and_opens_first(monkeypatch):
         app.destroy()
 
 
+
+
 def test_on_rescan_cameras_with_no_cameras_found(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
@@ -466,6 +508,8 @@ def test_on_rescan_cameras_with_no_cameras_found(monkeypatch):
         assert app._acq._camera_live is False
     finally:
         app.destroy()
+
+
 
 
 def test_on_camera_selected_opens_the_matching_camera(monkeypatch):
@@ -485,6 +529,8 @@ def test_on_camera_selected_opens_the_matching_camera(monkeypatch):
         app.destroy()
 
 
+
+
 def test_on_camera_disabled_closes_session_and_clears_live_flag(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
@@ -497,6 +543,8 @@ def test_on_camera_disabled_closes_session_and_clears_live_flag(monkeypatch):
         assert app._acq._camera_live is False
     finally:
         app.destroy()
+
+
 
 
 def test_camera_status_callback_updates_panel_live_flag():
@@ -513,6 +561,8 @@ def test_camera_status_callback_updates_panel_live_flag():
         app.destroy()
 
 
+
+
 def test_camera_frame_callback_queues_preview_frame():
     import pendulastic_app as _m
     import numpy as np
@@ -525,6 +575,8 @@ def test_camera_frame_callback_queues_preview_frame():
         assert queued is frame
     finally:
         app.destroy()
+
+
 
 
 def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_path, monkeypatch):
@@ -562,6 +614,8 @@ def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_pat
         app.destroy()
 
 
+
+
 def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
     import pendulastic_app as _m
     if not _m._CV2_AVAIL:
@@ -578,6 +632,8 @@ def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
         assert not hasattr(app, "_rgb_writer") or app._rgb_writer is None
     finally:
         app.destroy()
+
+
 
 
 def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clears_video_path(monkeypatch):
@@ -617,6 +673,8 @@ def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clear
         app.destroy()
 
 
+
+
 def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
@@ -631,6 +689,8 @@ def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch)
         assert app._video_path == ""
     finally:
         app.destroy()
+
+
 
 
 def test_on_camera_selected_ignored_while_recording(monkeypatch):
@@ -649,6 +709,8 @@ def test_on_camera_selected_ignored_while_recording(monkeypatch):
         app.destroy()
 
 
+
+
 def test_on_rescan_cameras_ignored_while_recording(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
@@ -660,6 +722,8 @@ def test_on_rescan_cameras_ignored_while_recording(monkeypatch):
         assert rescanned == [], "must not rescan cameras mid-recording"
     finally:
         app.destroy()
+
+
 
 
 def test_stop_rgb_recording_detaches_writer_but_leaves_camera_live(monkeypatch):
@@ -687,6 +751,8 @@ def test_stop_rgb_recording_detaches_writer_but_leaves_camera_live(monkeypatch):
         app.destroy()
 
 
+
+
 def test_rgb_cap_and_rgb_thread_attributes_no_longer_exist():
     """Regression: the old open-fresh-per-trial machinery must be fully removed."""
     import pendulastic_app as _m
@@ -697,6 +763,8 @@ def test_rgb_cap_and_rgb_thread_attributes_no_longer_exist():
         assert not hasattr(app, "_rgb_stop")
     finally:
         app.destroy()
+
+
 
 
 def test_on_close_detaches_and_releases_writer_before_closing_camera(monkeypatch):
@@ -714,3 +782,331 @@ def test_on_close_detaches_and_releases_writer_before_closing_camera(monkeypatch
     app.on_close()
     if app._camera is not None:
         assert order == ["detach", "writer_released", "camera_closed"]
+
+
+def test_on_countdown_start_resets_calibration_state():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._calib_buffer = [(1.0, 2.0)]
+        app._calib_was_stable = True
+        app._calib_ever_stable = True
+        app.on_countdown_start()
+        assert app._calib_buffer == []
+        assert app._calib_was_stable is False
+        assert app._calib_ever_stable is False
+    finally:
+        app.destroy()
+
+
+
+
+def test_tick_fires_zero_once_when_stable_during_countdown(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._acq._countdown_id = "sentinel"   # any non-None value marks countdown active
+        zero_calls = []
+        # Mirror the real zero(): it retares the offset, so subsequent
+        # get_state() calls report angles relative to the new zero (~0)
+        # instead of the pre-tare pose. A buggy edge-trigger that doesn't
+        # discard the stale buffer will see this jump as "not stable" and
+        # re-fire zero() a second time for one continuous physical hold.
+        state = {"pitch": 10.0, "roll": 0.0}
+        monkeypatch.setattr(_m._imu, "zero", lambda: (zero_calls.append(1),
+                                                       state.update(pitch=0.0, roll=0.0)))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
+        # Run well past several buffer-refill cycles (not just one) -- a fire
+        # that only survives to the next refill would still look "fixed" on
+        # a short run but re-trigger every _CALIB_BUFFER_SAMPLES ticks after
+        # that for as long as the hold continues.
+        for _ in range(4 * _m._CALIB_BUFFER_SAMPLES + 10):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1
+        assert app._calib_ever_stable is True
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+
+
+def test_tick_calibration_refires_after_drift_then_restabilizing(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._acq._countdown_id = "sentinel"
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        state = {"pitch": 10.0, "roll": 0.0}
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {"angles": dict(state)})
+
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1
+
+        # Drift: feed a swinging pitch that exceeds the stability range so the
+        # buffer's peak-to-peak range fails, resetting the edge-trigger.
+        for i in range(_m._CALIB_BUFFER_SAMPLES):
+            state["pitch"] = 10.0 + (i % 2) * 10.0   # alternates 10/20 -> 10 deg swing
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1, "must not re-fire while still unstable"
+
+        # Re-stabilize at a new position.
+        state["pitch"] = 45.0
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 2):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 2, "must re-fire on the next new stable window"
+    finally:
+        app._acq._countdown_id = None
+        app.destroy()
+
+
+
+
+def test_tick_calibration_skipped_outside_countdown(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._acq._countdown_id = None   # no countdown running
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "angles": {"pitch": 10.0, "roll": 0.0},
+        })
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+            app._tick_calibration_check()
+        assert zero_calls == []
+        assert app._calib_buffer == []
+    finally:
+        app.destroy()
+
+
+
+
+def test_tick_calibration_stops_after_countdown_completes_naturally(monkeypatch):
+    """Regression test: verify calibration gate closes when countdown reaches n==0.
+    Must call _tick_countdown(0) to exercise the actual countdown completion path,
+    which clears _countdown_id. Even if the subject holds steady during recording
+    (stable buffer), zero() must not fire mid-trial."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        zero_calls = []
+        monkeypatch.setattr(_m._imu, "zero", lambda: zero_calls.append(1))
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "angles": {"pitch": 10.0, "roll": 0.0},
+        })
+
+        # Start countdown manually by setting _countdown_id to a sentinel
+        app._acq._countdown_id = "active"
+
+        # Fill buffer while in countdown — should fire once when stable
+        for _ in range(_m._CALIB_BUFFER_SAMPLES):
+            app._tick_calibration_check()
+        assert len(zero_calls) == 1, "Must fire once during stable countdown"
+
+        # Mock on_start to avoid full recording startup (which would try to
+        # start threads, allocate resources, etc.)
+        def fake_on_start():
+            app._state = "recording"
+        monkeypatch.setattr(app, "on_start", fake_on_start)
+
+        # Actually call _tick_countdown(0) to drive the countdown to completion
+        # This is the real code path that clears _countdown_id
+        app._acq._tick_countdown(0)
+
+        # Verify the countdown completion cleared _countdown_id (this is the fix)
+        assert app._acq._countdown_id is None, \
+            "countdown_id must be None after _tick_countdown(0) completes"
+        assert app._state == "recording", \
+            "state must be recording after on_start() completes"
+
+        # Now call calibration check multiple times with stable readings
+        # It should NOT fire zero() because state is "recording" not "idle",
+        # even though _countdown_id was cleared and buffer is stable
+        for _ in range(_m._CALIB_BUFFER_SAMPLES + 5):
+            app._tick_calibration_check()
+
+        # This should still be 1 — no re-fire during recording
+        assert len(zero_calls) == 1, \
+            "Must NOT re-fire zero() during recording, even if stable"
+    finally:
+        app.destroy()
+
+
+
+
+def test_is_imu_calibrated_true_when_imu_not_active():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._active_sources = []
+        app._calib_ever_stable = False
+        assert app.is_imu_calibrated() is True
+    finally:
+        app.destroy()
+
+
+
+
+def test_is_imu_calibrated_reflects_ever_stable_when_imu_active():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._active_sources = ["imu"]
+        app._calib_ever_stable = False
+        assert app.is_imu_calibrated() is False
+        app._calib_ever_stable = True
+        assert app.is_imu_calibrated() is True
+    finally:
+        app.destroy()
+
+
+
+
+def test_enter_workbench_mode_shows_trial_load_panel():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        assert app._workbench_load.winfo_ismapped()
+        assert not app._mode_select.winfo_ismapped()
+        assert app._state == "workbench_load"
+    finally:
+        app.destroy()
+
+
+
+
+def test_on_back_to_mode_select_hides_workbench_panels():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app._workbench_load.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._mode_select.winfo_ismapped()
+        assert not app._workbench_load.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
+
+
+def test_enter_workbench_mode_shows_message_when_unavailable(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", False)
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        assert len(shown) == 1
+        assert app._mode_select.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
+
+
+def test_on_load_trial_imu_only_switches_to_workbench_view(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0, 0.05]), np.array([180.0, 170.0])))
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.update()
+        app.on_load_trial({
+            "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+        assert app._workbench_view.winfo_ismapped()
+        assert not app._workbench_load.winfo_ismapped()
+        assert "imu" in app._workbench_view._traces
+    finally:
+        app.destroy()
+
+
+
+
+def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0]), np.array([180.0])))
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app.on_load_trial({
+            "imu_path": "some/trial.jsonl", "video_path": None,
+            "optitrack_path": None, "models": [],
+            "femur_length_cm": 45.0, "tibia_length_cm": 38.0,
+        })
+        app.update()
+        meta = app.get_trial_meta()
+        assert meta["imu_path"] == "some/trial.jsonl"
+        assert meta["femur_length_cm"] == 45.0
+    finally:
+        app.destroy()
+
+
+
+
+def test_on_workbench_load_another_returns_to_trial_load_panel(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+        app._workbench_load.pack_forget()
+        app._workbench_view.pack(fill="both", expand=True)
+        app.update()
+        app.on_workbench_load_another()
+        app.update()
+        assert app._workbench_load.winfo_ismapped()
+        assert not app._workbench_view.winfo_ismapped()
+    finally:
+        app.destroy()
+
+

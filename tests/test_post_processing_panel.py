@@ -102,3 +102,29 @@ def test_add_hpe_overlay_empty_updates_status_not_crash():
     p._add_hpe_overlay([])  # empty list — should not crash
     r.update()
     assert "no pose" in p.status_var.get().lower() or "hpe" in p.status_var.get().lower()
+
+
+def test_load_trial_imu_source_does_not_request_detrend(monkeypatch):
+    """IMU trials are now freshly auto-tared and rate-verified, so PT scoring
+    must treat the raw signal as authoritative (matching what
+    imu_calibration_tuner.py already does) rather than linearly detrending
+    it -- detrending before release-detection corrupted A0 and silently
+    discarded valid trials."""
+    import pendulastic_app as _m
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    calls = []
+    def fake_compute_pt_params(t, arr, *a, **kw):
+        calls.append(kw.get("detrend"))
+        return None
+    monkeypatch.setattr(_m, "compute_pt_params", fake_compute_pt_params)
+
+    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+            "trial": 1, "sources": ["imu"]}
+    p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
+                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+    r.update()
+    assert calls == [False]

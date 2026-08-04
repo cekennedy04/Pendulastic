@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "ema_alpha": 0.3,
     "flex_axis_capture": True,
     "gravity_seed": True,
+    "method": "relative",
     "penalty": None,
     "passes": False,
     "tuned_at": None,

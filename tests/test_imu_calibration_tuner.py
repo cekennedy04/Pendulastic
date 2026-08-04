@@ -49,6 +49,62 @@ def test_replay_trial_matches_hand_computed_rotation():
         f"expected ~{expected_final:.2f} deg, got {angle[-1]:.2f} deg")
 
 
+def _solo_hold_with_bias_then_burst_samples(bias):
+    """Like _solo_hold_then_burst_samples, but every gyro sample -- hold,
+    burst, and settle alike -- carries a constant additive bias, as a real
+    stationary MEMS gyro would report (it doesn't only appear while still).
+    The hold phase is what the gyro-bias calibration should measure from;
+    if correctly subtracted, the burst should still integrate to the same
+    true rotation as the zero-bias case."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    bx, by, bz = bias
+    samples.append({"t": t, "role": "distal", "sensor": "accel",
+                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+    n_hold = 100
+    for i in range(n_hold):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+    n_burst = 50
+    for i in range(n_burst):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, 2.0 + by, bz], "phone_ts_ms": ts_ms})
+    for i in range(100):
+        t += dt; ts_ms += 10
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [bx, by, bz], "phone_ts_ms": ts_ms})
+    return samples
+
+
+def test_replay_trial_subtracts_calibrated_gyro_bias():
+    """A constant gyro bias present throughout the log (not just while still)
+    must be measured from a genuinely stable pre-burst hold and subtracted
+    from the burst too, so the biased trial's final angle matches a zero-bias
+    control run -- not the leftover discrepancy an uncorrected bias would
+    accumulate over the ~1.5s trial. Uses a realistic nonzero beta (accel
+    correction must be active for the stability check itself to hold pitch/
+    roll flat during the injected-bias hold) and compares against a
+    zero-bias control rather than a hand-derived constant, so the same
+    stale-accel-during-burst artifact common to both runs cancels out."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    clean_samples = _solo_hold_with_bias_then_burst_samples((0.0, 0.0, 0.0))
+    bias = (0.05, -0.08, 0.03)   # rad/s, comparable to a real MEMS offset
+    biased_samples = _solo_hold_with_bias_then_burst_samples(bias)
+
+    t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
+    t_biased, angle_biased = tuner.replay_trial(biased_samples, params)
+
+    assert abs(angle_biased[-1] - angle_clean[-1]) < 1.0, (
+        f"bias-corrected run ({angle_biased[-1]:.2f} deg) should match the "
+        f"zero-bias control ({angle_clean[-1]:.2f} deg) once the injected "
+        f"bias is properly measured and subtracted")
+
+
 def test_replay_trial_first_tick_is_nan_rest_are_finite():
     """Contract: tick 0 always precedes any processed sample (tick_times[0]
     always equals raw_samples[0]["t"] exactly), so no device state exists yet
@@ -424,3 +480,105 @@ def test_tune_and_persist_force_overwrites_regardless(tmp_path, monkeypatch):
     })
     tuner.tune_and_persist([{"dummy": True}], force=True)
     assert cfgmod.load_config()["beta"] == 0.02
+
+
+def test_ockendon_deg_zero_beta_gives_zero_kappa():
+    assert abs(tuner.ockendon_deg(0.0)) < 1e-9
+
+
+def test_ockendon_deg_matches_formula_for_arbitrary_beta():
+    beta = 45.0
+    expected = 90.0 + beta - math.degrees(
+        math.acos(math.sin(math.radians(beta)) / 1.2))
+    assert abs(tuner.ockendon_deg(beta) - expected) < 1e-9
+
+
+def test_replay_trial_defaults_to_relative_method_when_key_absent():
+    """Backward compatibility: existing callers/tests never set "method"."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, angle = tuner.replay_trial(samples, params)
+    expected_final = 180.0 - math.degrees(2.0 * 0.5)
+    assert abs(angle[-1] - expected_final) < 1.0
+
+
+def test_replay_trial_ockendon_flipped_starts_near_180():
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon_flipped"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert len(pre_release) > 0
+    assert abs(float(np.median(pre_release)) - 180.0) < 1.0
+
+
+def test_replay_trial_ockendon_unflipped_starts_near_zero():
+    """Documents *why* ockendon_flipped is the one likely to pass
+    score_waveform's 180-start gate -- unflipped kappa is ~0 at full
+    extension, the opposite of Pendulastic's clinical convention."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert len(pre_release) > 0
+    assert abs(float(np.median(pre_release))) < 1.0
+
+
+def test_tuning_grid_includes_all_three_methods():
+    methods = {p["method"] for p in tuner.TUNING_GRID}
+    assert methods == {"relative", "ockendon", "ockendon_flipped"}
+
+
+def test_tune_and_persist_persists_method_field(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1, "flex_axis_capture": False,
+                   "gravity_seed": False, "method": "ockendon_flipped"},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "ockendon_flipped"
+
+
+def test_tune_and_persist_defaults_method_when_candidate_lacks_it(tmp_path, monkeypatch):
+    """test_tune_and_persist_saves_when_improving's candidate has no "method"
+    key (pre-Task-12 shape) -- must not KeyError, must default to "relative"."""
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1,
+                   "flex_axis_capture": False, "gravity_seed": False},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "relative"
+
+
+def test_ockendon_deg_custom_ratio_differs_from_default():
+    beta = 45.0
+    default = tuner.ockendon_deg(beta)
+    custom = tuner.ockendon_deg(beta, ft_ratio=1.5)
+    assert abs(custom - default) > 0.5
+
+
+def test_ockendon_deg_default_ratio_matches_explicit_constant():
+    beta = 30.0
+    assert tuner.ockendon_deg(beta) == tuner.ockendon_deg(beta, ft_ratio=tuner.OCKENDON_FT_RATIO)
+
+
+def test_replay_trial_ft_ratio_changes_ockendon_output():
+    """Confirms replay_trial actually threads params["ft_ratio"] through to
+    ockendon_deg, not just that the function itself accepts the parameter."""
+    samples = _solo_hold_then_burst_samples()
+    base_params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+                   "gravity_seed": True, "method": "ockendon"}
+    t1, angle1 = tuner.replay_trial(samples, base_params)
+    t2, angle2 = tuner.replay_trial(samples, {**base_params, "ft_ratio": 1.5})
+    assert abs(angle1[-1] - angle2[-1]) > 0.5

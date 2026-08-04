@@ -18,8 +18,9 @@ from typing import Optional
 import numpy as np
 
 from pendulastic_imu_server import (
-    MadgwickAHRS, _gravity_seed, _qconj, _qmul,
+    MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
+    GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES,
 )
 from pendulastic_pt_score import compute_pt_params
 from imu_calibration_config import load_config, save_config
@@ -29,14 +30,38 @@ from imu_calibration_config import load_config, save_config
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
 
+# Mirrors pendulastic_app.py's _CALIB_STABILITY_RANGE_DEG / _CALIB_BUFFER_SAMPLES
+# (20 samples @ 50ms = ~1s) — the live auto-tare countdown's "is this hold
+# genuinely still" gate. Expressed here as a time window rather than a sample
+# count since raw gyro arrives at a different (and less regular) rate than
+# the live 50ms poll loop; the ~1s duration and 2deg range are what matter,
+# not the literal sample count.
+CALIB_STABILITY_RANGE_DEG = 2.0
+CALIB_STABILITY_WINDOW_S = 1.0
+
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
-     "flex_axis_capture": fac, "gravity_seed": gs}
+     "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
     for beta in (0.02, 0.041, 0.08, 0.15)
     for alpha in (0.1, 0.3, 0.5)
     for fac in (True, False)
     for gs in (True, False)
+    for method in ("relative", "ockendon", "ockendon_flipped")
 ]
+
+OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
+
+
+def ockendon_deg(beta_deg: float, ft_ratio: float = OCKENDON_FT_RATIO) -> float:
+    """Ockendon & Gilbert's tibial-inclination knee-flexion model: maps a
+    single measured tibial inclination (beta, degrees from horizontal) to
+    knee flexion kappa, using the femur:tibia ratio constant. ft_ratio
+    defaults to the population constant OCKENDON_FT_RATIO but may be
+    overridden with a per-participant measured ratio (personalization,
+    workbench design spec Section 3a). |sin(beta)| <= 1 < any realistic
+    ft_ratio, so the arccos argument stays in-domain -- no clamping needed."""
+    beta = math.radians(beta_deg)
+    return 90.0 + beta_deg - math.degrees(math.acos(math.sin(beta) / ft_ratio))
 
 
 class _RoleState:
@@ -48,6 +73,18 @@ class _RoleState:
         self.mag: Optional[np.ndarray] = None
         self.last_ts: Optional[int] = None
         self.seeded = False
+        # Mirrors _IMUDevice.gyro_bias / _gyro_hold_buf: static gyro bias,
+        # subtracted from every raw gyro sample before AHRS integration, and
+        # the trailing GYRO_BIAS_WINDOW_S raw-sample buffer it's estimated
+        # from. See replay_trial()'s gyro branch for where it's calibrated.
+        self.gyro_bias: np.ndarray = np.zeros(3)
+        self.gyro_hold_buf: list = []   # [(t, raw_v), ...]
+        # Mirrors pendulastic_app.py's _calib_buffer / _calib_was_stable:
+        # trailing (t, pitch, roll) samples used to edge-trigger gyro-bias
+        # (re-)calibration only on a genuinely still hold, not merely
+        # "below the flex-axis motion threshold".
+        self.stability_buf: list = []   # [(t, pitch_deg, roll_deg), ...]
+        self.calib_was_stable = False
 
 
 def replay_trial(raw_samples: list, params: dict):
@@ -168,8 +205,69 @@ def replay_trial(raw_samples: list, params: dict):
                             flex_axis = v / omega_mag
                         flex_axis_armed = False
 
+            # Gyro-bias calibration, gated on genuine stillness rather than
+            # "below the (much coarser) flex-axis motion threshold" — the
+            # pre-release window is the examiner actively gripping and
+            # positioning the limb, which routinely hits tens of deg/s, well
+            # under _FLEX_CAPTURE_THRESHOLD's ~57 deg/s but nowhere near
+            # actually still. Averaging that whole window measured handling
+            # motion, not sensor bias (confirmed: one trial's "bias" came out
+            # 12.7 deg/s, an order of magnitude above a real MEMS offset, and
+            # subtracting it distorted the swing instead of correcting it).
+            #
+            # Mirrors pendulastic_app.py's _tick_calibration_check exactly:
+            # a trailing ~1s buffer of fused pitch/roll must have <2 deg
+            # peak-to-peak range in BOTH before a window counts as "stable";
+            # calibration (re-)fires edge-triggered, only on the tick
+            # stability is newly confirmed, off a trailing raw-gyro buffer
+            # covering that same still window. Only runs pre-onset, matching
+            # live's countdown-only gating (_tick_calibration_check no-ops
+            # once _state != "idle", i.e. once recording/swinging starts).
+            if not zero_captured:
+                roll_deg, pitch_deg, _yaw_deg = _quat_to_euler_deg(st.ahrs.q)
+                st.stability_buf.append((samp["t"], pitch_deg, roll_deg))
+                stab_cutoff = samp["t"] - CALIB_STABILITY_WINDOW_S
+                st.stability_buf = [(t, p, r) for t, p, r in st.stability_buf
+                                    if t >= stab_cutoff]
+                # Require the buffer to actually SPAN the full window, not
+                # just contain some samples — a burst of readings a few ms
+                # apart could otherwise satisfy a bare "has entries" check.
+                spans_window = (st.stability_buf and
+                                (samp["t"] - st.stability_buf[0][0])
+                                >= CALIB_STABILITY_WINDOW_S * 0.95)
+                if spans_window:
+                    pitches = [p for _, p, _ in st.stability_buf]
+                    rolls = [r for _, _, r in st.stability_buf]
+                    stable = (max(pitches) - min(pitches) < CALIB_STABILITY_RANGE_DEG
+                             and max(rolls) - min(rolls) < CALIB_STABILITY_RANGE_DEG)
+                    if stable and not st.calib_was_stable:
+                        import os as _os
+                        if _os.environ.get("IMU_DEBUG_BIAS"):
+                            print(f"[DEBUG] calib fire role={role} t={samp['t']:.3f} "
+                                  f"n_hold_buf={len(st.gyro_hold_buf)} "
+                                  f"range=({max(pitches)-min(pitches):.2f},"
+                                  f"{max(rolls)-min(rolls):.2f})")
+                        if len(st.gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
+                            st.gyro_bias = np.mean(
+                                [vv for _, vv in st.gyro_hold_buf], axis=0)
+                            if _os.environ.get("IMU_DEBUG_BIAS"):
+                                print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
+                        st.stability_buf = []   # don't compare across the tare
+                        st.calib_was_stable = True
+                    else:
+                        st.calib_was_stable = stable
+
+            # Trailing raw-gyro buffer the calibration above reads from.
+            # Appended for every tick regardless of stability state (it must
+            # hold RAW samples, or a stale bias would only ever measure its
+            # own residual) so the window is ready whenever stability fires.
+            st.gyro_hold_buf.append((samp["t"], v))
+            bias_cutoff = samp["t"] - GYRO_BIAS_WINDOW_S
+            st.gyro_hold_buf = [(t, vv) for t, vv in st.gyro_hold_buf
+                                if t >= bias_cutoff]
+
             if st.accel is not None:
-                st.ahrs.update(v, st.accel, st.mag, dt)
+                st.ahrs.update(v - st.gyro_bias, st.accel, st.mag, dt)
 
     while next_tick_i < n_ticks:
         tick_quats.append(_snapshot())
@@ -205,8 +303,27 @@ def replay_trial(raw_samples: list, params: dict):
             swing = 2.0 * math.degrees(math.acos(dot))
         return swing
 
+    def _beta_from_quats(quats: dict) -> float:
+        """Zero-referenced tibial (distal-segment) pitch, degrees -- the beta
+        Ockendon & Gilbert's model takes as input. Distal preferred over
+        proximal, matching _swing_from_quats' solo fallback preference; the
+        model only ever needs the single shank-mounted sensor."""
+        solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
+            ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
+        if solo_role is None or solo_role not in q_zero:
+            return float("nan")
+        _, pitch_cur, _ = _quat_to_euler_deg(quats[solo_role])
+        _, pitch_zero, _ = _quat_to_euler_deg(q_zero[solo_role])
+        return wrap180(pitch_cur - pitch_zero)
+
     t_arr = tick_times - t0
-    angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
+    method = params.get("method", "relative")
+    if method == "relative":
+        angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
+    else:
+        ft_ratio = params.get("ft_ratio", OCKENDON_FT_RATIO)
+        kappas = np.array([ockendon_deg(_beta_from_quats(q), ft_ratio) for q in tick_quats])
+        angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
 
     alpha = params["ema_alpha"]
     ema = None
@@ -408,6 +525,7 @@ def tune_and_persist(raw_samples: list, source_trial: str = "",
             "ema_alpha": best["params"]["ema_alpha"],
             "flex_axis_capture": best["params"]["flex_axis_capture"],
             "gravity_seed": best["params"]["gravity_seed"],
+            "method": best["params"].get("method", "relative"),
             "penalty": best["penalty"],
             "passes": best["passes"],
             "tuned_at": _now_iso(),

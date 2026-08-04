@@ -98,6 +98,7 @@ def main(argv=None) -> int:
             "ema_alpha": best["params"]["ema_alpha"],
             "flex_axis_capture": best["params"]["flex_axis_capture"],
             "gravity_seed": best["params"]["gravity_seed"],
+            "method": best["params"].get("method", "relative"),
             "penalty": best["penalty"],
             "passes": best["passes"],
             "tuned_at": _now_iso(),

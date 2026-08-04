@@ -85,6 +85,17 @@ SYNC_MAX_JITTER_S = 0.150   # p10–p90 spread above which the link is too noisy
 # floor the fused angle is not trustworthy and the UI says so.
 MIN_USABLE_HZ = 25.0
 
+# Gyroscope static-bias calibration. A stationary MEMS gyro still reports a
+# small (~1-2 deg/s) nonzero angular velocity; integrated across an ~10s
+# swing that alone accounts for tens of degrees of error, only partially
+# offset by the accelerometer/magnetometer correction step (confirmed against
+# OptiTrack ground truth on real pendulum-test recordings). zero() calls
+# calibrate_gyro_bias() at the exact moment the auto-tare countdown confirms
+# a stable hold, so the trailing window below is genuinely motionless. 1.0s
+# matches App's own stability-buffer duration (design spec 2026-07-31-imu-auto-tare).
+GYRO_BIAS_WINDOW_S = 1.0
+GYRO_BIAS_MIN_SAMPLES = 5   # below this the mean is too noisy to trust; keep bias at 0
+
 ROLE_PROXIMAL = "proximal"   # torso (hip) or thigh (knee)
 ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
 
@@ -197,12 +208,18 @@ class MadgwickAHRS:
     def euler_deg(self) -> tuple[float, float, float]:
         """Return (roll, pitch, yaw) in degrees — ZYX convention.
         roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
-        q1, q2, q3, q4 = self.q
-        roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
-        sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
-        pitch = math.asin(sin_p)
-        yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
-        return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+        return _quat_to_euler_deg(self.q)
+
+
+def _quat_to_euler_deg(q) -> tuple[float, float, float]:
+    """Return (roll, pitch, yaw) in degrees — ZYX convention.
+    roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
+    q1, q2, q3, q4 = q
+    roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
+    sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
+    pitch = math.asin(sin_p)
+    yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
+    return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
 
 
 def wrap180(deg: float) -> float:
@@ -271,6 +288,12 @@ class _IMUDevice:
         # Recent gyro arrival times. The gyro drives AHRS integration, so its
         # rate — not the aggregate packet rate — determines output quality.
         self.gyro_times: list[float] = []
+        # Static gyro bias, subtracted from every raw gyro sample before AHRS
+        # integration. Estimated by calibrate_gyro_bias() from _gyro_hold_buf,
+        # a trailing GYRO_BIAS_WINDOW_S buffer of raw (pre-subtraction) gyro
+        # samples that on_gyro() maintains continuously.
+        self.gyro_bias: np.ndarray = np.zeros(3)
+        self._gyro_hold_buf: list[tuple[float, np.ndarray]] = []
 
     @property
     def connected(self) -> bool:
@@ -337,6 +360,17 @@ class _IMUDevice:
         span = t[-1] - t[0]
         return (len(t) - 1) / span if span > 1e-6 else 0.0
 
+    def calibrate_gyro_bias(self):
+        """Estimate this device's gyroscope static bias from the trailing
+        GYRO_BIAS_WINDOW_S hold-buffer mean, and store it for continuous
+        subtraction in on_gyro(). Leaves gyro_bias at its previous value
+        (zero, if never calibrated) when the buffer has too few samples to
+        trust — called by zero() at the exact instant a stable hold is
+        confirmed, so under normal operation the buffer is populated."""
+        if len(self._gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
+            vals = np.array([v for _, v in self._gyro_hold_buf])
+            self.gyro_bias = vals.mean(axis=0)
+
     def on_gyro(self, v, ts):
         global _flex_axis, _flex_axis_armed
         now = time.time()
@@ -347,6 +381,16 @@ class _IMUDevice:
         cutoff = now - 3.0
         if self.gyro_times[0] < cutoff or len(self.gyro_times) > 600:
             self.gyro_times = [x for x in self.gyro_times if x >= cutoff][-600:]
+
+        # Trailing raw-gyro buffer for calibrate_gyro_bias(). Must hold RAW
+        # (pre-subtraction) samples, or a stale bias would only ever measure
+        # its own residual.
+        self._gyro_hold_buf.append((now, np.asarray(v, float)))
+        bias_cutoff = now - GYRO_BIAS_WINDOW_S
+        self._gyro_hold_buf = [(t, vv) for t, vv in self._gyro_hold_buf
+                               if t >= bias_cutoff]
+        v_corr = np.asarray(v, float) - self.gyro_bias
+
         # dt from the phone's own clock when plausible, else wall clock — the
         # phone clock is steadier than network arrival jitter.
         dt = None
@@ -356,7 +400,7 @@ class _IMUDevice:
             dt = 0.01
         self.last_gyro_t = ts
         if self.accel is not None:
-            self.ahrs.update(v, self.accel, self.mag, dt)
+            self.ahrs.update(v_corr, self.accel, self.mag, dt)
             # Only overwrite the display Euler angles from AHRS when we are not
             # receiving an orientation stream; the orientation stream sets them
             # directly via on_orientation() and may be higher quality.
@@ -364,6 +408,10 @@ class _IMUDevice:
                 self.roll, self.pitch, self.yaw = self.ahrs.euler_deg()
         # Capture anatomical flexion axis from the first deliberate motion after
         # zero().  Only the distal segment (or the solo phone) defines the axis.
+        # Uses raw v, not the bias-corrected value: the capture threshold
+        # (_FLEX_CAPTURE_THRESHOLD, ~57 deg/s) is two orders of magnitude
+        # above a typical gyro bias, so bias correction would not measurably
+        # change the captured axis direction.
         if _flex_axis_armed:
             omega_mag = float(np.linalg.norm(v))
             if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
@@ -551,7 +599,10 @@ def zero():
     Stores both Euler offsets (for relative_angles() backward compat) and
     quaternion snapshots (for swing_angle_deg()).  Arms the flex-axis capture
     so the first significant gyro burst after this call defines the sagittal
-    flexion axis."""
+    flexion axis.  Also (re)calibrates each connected device's gyro static
+    bias from its trailing hold buffer — this is called at the exact instant
+    the auto-tare countdown confirms a stable hold, which is precisely when
+    that buffer is genuinely motionless."""
     global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
     with _lock:
         cur = _raw_relative()
@@ -561,13 +612,16 @@ def zero():
         prox = _by_role(ROLE_PROXIMAL)
         dist = _by_role(ROLE_DISTAL)
         if prox is not None and prox.connected:
+            prox.calibrate_gyro_bias()
             _q_zero_prox = prox.get_quaternion()
         if dist is not None and dist.connected:
+            dist.calibrate_gyro_bias()
             _q_zero_dist = dist.get_quaternion()
         elif _q_zero_dist is None:
             solo = next((d for d in (dist, prox)
                          if d is not None and d.connected), None)
             if solo is not None:
+                solo.calibrate_gyro_bias()
                 _q_zero_dist = solo.get_quaternion()
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.

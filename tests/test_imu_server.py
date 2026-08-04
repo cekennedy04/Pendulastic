@@ -132,6 +132,67 @@ def test_dynamic_beta_skips_correction_during_impact():
         err_msg="Impact accel should not distort orientation (correction skipped)")
 
 
+def test_calibrate_gyro_bias_uses_trailing_hold_buffer_mean():
+    """calibrate_gyro_bias() must set gyro_bias to the mean of the buffered
+    raw samples, once enough have accumulated."""
+    dev = imu._IMUDevice("12.0.0.1")
+    bias = np.array([0.02, -0.03, 0.01])
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES):
+        dev._gyro_hold_buf.append((now - 0.01 * i, bias.copy()))
+    dev.calibrate_gyro_bias()
+    np.testing.assert_allclose(dev.gyro_bias, bias, atol=1e-9)
+
+
+def test_calibrate_gyro_bias_leaves_zero_with_too_few_samples():
+    """Below GYRO_BIAS_MIN_SAMPLES the estimate is untrustworthy; gyro_bias
+    must stay at its previous value (zero, for a fresh device) rather than
+    being set from a handful of noisy samples."""
+    dev = imu._IMUDevice("12.0.0.2")
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES - 1):
+        dev._gyro_hold_buf.append((now - 0.01 * i, np.array([1.0, 1.0, 1.0])))
+    dev.calibrate_gyro_bias()
+    np.testing.assert_array_equal(dev.gyro_bias, np.zeros(3))
+
+
+def test_on_gyro_subtracts_calibrated_bias_before_ahrs_update():
+    """Once a bias is calibrated, feeding gyro readings equal to that bias
+    (i.e. the device is still holding at the same static offset) must leave
+    the AHRS quaternion effectively unchanged — the bias-corrected angular
+    velocity fed to the filter should be ~0, not the raw biased value."""
+    dev = imu._IMUDevice("12.0.0.3")
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    dev.gyro_bias = np.array([0.02, -0.03, 0.01])
+    q_before = dev.ahrs.q.copy()
+    dev.on_gyro(dev.gyro_bias.copy(), ts=1000)
+    np.testing.assert_allclose(dev.ahrs.q, q_before, atol=1e-3,
+        err_msg="A gyro reading equal to the calibrated bias should not "
+                "rotate the AHRS quaternion once bias is subtracted")
+
+
+def test_zero_calibrates_gyro_bias_for_connected_device():
+    """zero() must call calibrate_gyro_bias() on each connected device, so a
+    device that was held still just before zeroing gets its bias measured."""
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["12.0.0.4"] = imu._IMUDevice("12.0.0.4")
+    imu._roles["12.0.0.4"]   = imu.ROLE_DISTAL
+    dev = imu._devices["12.0.0.4"]
+    dev.accel = np.array([0.0, 0.0, 9.81])
+    dev.last_rx = __import__("time").time()
+    bias = np.array([0.015, 0.0, -0.02])
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES + 5):
+        dev._gyro_hold_buf.append((now - 0.01 * i, bias.copy()))
+
+    imu.zero()
+
+    np.testing.assert_allclose(dev.gyro_bias, bias, atol=1e-9)
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_flex_axis_captured_on_first_motion_after_zero():
     """After zero(), the first gyro burst above threshold must populate _flex_axis."""
     imu.reset_devices()
@@ -482,6 +543,63 @@ def test_ahrs_fusion_unaffected_by_raw_logging(tmp_path):
     imu.clear_zero()
 
 
+def _rec_loop(tag, tmp_path, stop_evt, n_iters=50):
+    """Shared helper: repeatedly start/stop a recording. Checks stop_evt
+    each iteration so a merely-slow (not deadlocked, not lock-starved) run
+    can be interrupted promptly between iterations instead of becoming an
+    unbounded zombie thread — extracted from test_concurrent_start_
+    recording_and_gyro_callbacks_do_not_deadlock while investigating an
+    intermittent full-suite crash (Windows fatal exception, code
+    0x80000003). This alone was NOT sufficient to fix that crash: the
+    actual root cause was gyro_loop starving these threads' _lock
+    acquisition *inside* a single start_recording() call (see its
+    docstring) -- this per-iteration check only helps once a thread
+    actually gets to complete a call. Kept anyway as defense in depth: it
+    bounds the zombie-thread window for any other reason a call might run
+    long. See test_rec_loop_stops_promptly_when_signaled_even_if_slow for
+    the regression pin on this specific contract."""
+    for n in range(n_iters):
+        if stop_evt.is_set():
+            break
+        path = str(tmp_path / f"Trial_deadlock_{tag}_{n}_imu.csv")
+        imu.start_recording(path)
+        imu.stop_recording()
+
+
+def test_rec_loop_stops_promptly_when_signaled_even_if_slow(monkeypatch, tmp_path):
+    """Regression pin for the zombie-thread gap that caused an intermittent
+    full-suite crash: _rec_loop must notice stop_evt within its bounded
+    per-iteration check, even when start_recording() is slow, rather than
+    blindly running to completion. Reproduces the mechanism deterministically:
+    start_recording is monkeypatched to sleep 50ms/call (100 iterations would
+    take ~5s), so a correctly-interruptible loop signaled after ~120ms must
+    exit within a short bounded join -- an uninterruptible loop would still
+    be alive well past it."""
+    import threading
+    import time
+
+    real_start = imu.start_recording
+
+    def slow_start_recording(path):
+        time.sleep(0.05)
+        return real_start(path)
+
+    monkeypatch.setattr(imu, "start_recording", slow_start_recording)
+
+    stop_evt = threading.Event()
+    t = threading.Thread(target=_rec_loop, args=("x", tmp_path, stop_evt, 100), daemon=True)
+    t.start()
+    time.sleep(0.12)   # let it get a couple of slow iterations in
+    stop_evt.set()
+    t.join(timeout=1.0)
+
+    assert not t.is_alive(), (
+        "_rec_loop did not notice stop_evt promptly -- a merely-slow run "
+        "must be interruptible, not left running as an unbounded zombie thread")
+    imu.reset_devices()
+    imu.clear_zero()
+
+
 def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path):
     """Regression for the _lock/_rec_lock ordering hazard fixed in Task 2:
     on_gyro() acquires _rec_lock while its caller already holds _lock (as
@@ -494,10 +612,32 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     cannot reach the deadlock state at all — confirmed empirically during
     Task 5. All worker threads are daemons and joined with a timeout, so a
     regression is bounded to roughly 65s and reported as an assertion
-    failure here, rather than hanging silently forever — though a genuine
-    deadlock will also wedge whichever test runs next and touches
-    _rec_lock."""
+    failure here, rather than hanging silently forever. A genuine deadlock
+    will still wedge whichever test runs next and touches _rec_lock (that
+    risk is inherent to actually catching a deadlock at all) -- but a
+    merely-slow-under-load run no longer leaves permanent zombie threads:
+    both rec threads get a bounded follow-up join after stop_evt is set,
+    giving them the same chance to notice it that gyro already had.
+
+    gyro_loop sleeps briefly (1ms, not time.sleep(0)) after releasing
+    _lock each iteration. Without it, this tight acquire/release/
+    immediately-reacquire spin against the same threading.RLock can
+    starve the rec threads' own _lock acquisition (inside sync_status(),
+    the first thing start_recording() calls) for tens of seconds under
+    real CPU contention -- this, not test slowness alone, was the actual
+    root cause of an intermittent full-suite crash (Windows fatal
+    exception, code 0x80000003): the rec threads were captured blocked on
+    `with _lock:` itself, never reaching their next per-iteration
+    stop_evt check at all, while gyro_loop's thread held _lock deep
+    inside a numpy call at the moment a GC cycle triggered. time.sleep(0)
+    was tried first and measurably reduced (but did not eliminate) the
+    crash's reproduction rate across repeated full-suite runs: on
+    Windows, Sleep(0) only yields to already-ready threads, and a thread
+    blocked on a mutex isn't necessarily made ready the instant it's
+    released -- it needs an actual OS wake/schedule, which a real (if
+    tiny) sleep duration forces much more reliably than a zero-length one."""
     import threading
+    import time
 
     imu.reset_devices()
     imu._devices["10.0.0.20"] = imu._IMUDevice("10.0.0.20")
@@ -512,17 +652,12 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
         while not stop_evt.is_set():
             with imu._lock:
                 dev.on_gyro(np.array([0.01, 0.0, 0.0]), i)
+            time.sleep(0.001)   # real sleep so rec threads can win the RLock too
             i += 1
 
-    def rec_loop(tag):
-        for n in range(50):
-            path = str(tmp_path / f"Trial_deadlock_{tag}_{n}_imu.csv")
-            imu.start_recording(path)
-            imu.stop_recording()
-
     t_gyro = threading.Thread(target=gyro_loop, daemon=True)
-    t_rec_a = threading.Thread(target=rec_loop, args=("a",), daemon=True)
-    t_rec_b = threading.Thread(target=rec_loop, args=("b",), daemon=True)
+    t_rec_a = threading.Thread(target=_rec_loop, args=("a", tmp_path, stop_evt), daemon=True)
+    t_rec_b = threading.Thread(target=_rec_loop, args=("b", tmp_path, stop_evt), daemon=True)
     t_gyro.start()
     t_rec_a.start()
     t_rec_b.start()
@@ -530,6 +665,10 @@ def test_concurrent_start_recording_and_gyro_callbacks_do_not_deadlock(tmp_path)
     t_rec_b.join(timeout=30.0)
     stop_evt.set()
     t_gyro.join(timeout=5.0)
+    # Bounded follow-up chance for the rec threads to notice stop_evt too --
+    # closes the zombie-thread gap for a merely-slow (not deadlocked) run.
+    t_rec_a.join(timeout=5.0)
+    t_rec_b.join(timeout=5.0)
 
     assert not t_rec_a.is_alive(), \
         "start_recording()/stop_recording() (thread a) hung — lock-order regression"
@@ -678,3 +817,14 @@ def test_dispatch_end_to_end_writes_all_three_raw_csvs(tmp_path):
 
     imu.reset_devices()
     imu.clear_zero()
+
+
+def test_quat_to_euler_deg_matches_identity_quaternion():
+    roll, pitch, yaw = imu._quat_to_euler_deg(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert abs(roll) < 1e-9 and abs(pitch) < 1e-9 and abs(yaw) < 1e-9
+
+
+def test_euler_deg_delegates_to_quat_to_euler_deg():
+    ahrs = imu.MadgwickAHRS(beta=0.1)
+    ahrs.update(np.array([0.3, 0.1, -0.2]), np.array([0.0, 0.0, 9.81]), None, 0.05)
+    assert ahrs.euler_deg() == imu._quat_to_euler_deg(ahrs.q)

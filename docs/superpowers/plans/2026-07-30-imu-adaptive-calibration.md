@@ -2292,3 +2292,271 @@ None of the existing recorded trials have raw logs (they predate this feature). 
 git add -A
 git commit -m "test: fix regressions found in full-suite run"
 ```
+
+---
+
+### Task 12: Ockendon & Gilbert tibial-inclination candidate in the grid search
+
+**Context:** added after Tasks 1–11 landed on `main`. The single-sensor "relative"
+method (`180.0 - swing_angle_deg()`) computes the knee angle from the
+quaternion rotation distance between the zeroed pose and the current pose.
+Ockendon & Gilbert's tibial-inclination model is a different, purely
+trigonometric mapping from a single measured angle — the zero-referenced
+tibial (distal-segment) pitch, β — to knee flexion:
+
+```
+κ = 90 + β − arccos(sin(β) / 1.2)
+```
+
+`1.2` is the anatomical adult femur:tibia length ratio constant from the
+source paper. Because Pendulastic's clinical convention reports 180° at full
+extension (not 0°) and it's not certain up front whether κ itself or its
+180°-complement matches that convention, **both** are added as separate
+grid-search candidates (`"ockendon"` = κ, `"ockendon_flipped"` = 180 − κ) and
+left for `score_waveform`'s existing physiological truthfulness gate (180°
+start, 1–10 swings, ~1 Hz) to pick empirically — no source-paper diagram is
+trusted blindly for a clinical measurement.
+
+**Scope:** internal tuning candidate only. No new UI, no new methodology
+option in `AcquisitionPanel`/`BiomechanicalEngine` — exactly like
+beta/ema_alpha/flex_axis_capture/gravity_seed, if `"ockendon"` or
+`"ockendon_flipped"` wins a trial's grid search, `_run_imu_tuning`'s existing
+`replay_trial(raw_samples, best["params"])` call already regenerates that
+trial's saved/reviewed angle series using it — no separate live wiring
+required or wanted.
+
+**Files:**
+- Modify: `pendulastic_imu_server.py` (extract `_quat_to_euler_deg`)
+- Modify: `imu_calibration_tuner.py` (`ockendon_deg`, `TUNING_GRID`, `replay_trial`, `tune_and_persist`)
+- Modify: `imu_calibration_config.py` (`DEFAULT_CONFIG["method"]`)
+- Modify: `tune_imu.py` (persist `method`)
+- Test: `tests/test_imu_server.py`, `tests/test_imu_calibration_tuner.py`, `tests/test_imu_calibration_config.py`, `tests/test_tune_imu_cli.py`
+
+**Interfaces:**
+- Produces: `pendulastic_imu_server._quat_to_euler_deg(q) -> tuple[float,float,float]`, `imu_calibration_tuner.ockendon_deg(beta_deg: float) -> float`
+- Consumes: existing `replay_trial`/`score_waveform`/`tune`/`tune_and_persist` machinery (Tasks 6–8), unchanged in shape.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `tests/test_imu_server.py` — pin the refactor as behavior-preserving:
+
+```python
+def test_quat_to_euler_deg_matches_identity_quaternion():
+    roll, pitch, yaw = imu._quat_to_euler_deg(np.array([1.0, 0.0, 0.0, 0.0]))
+    assert abs(roll) < 1e-9 and abs(pitch) < 1e-9 and abs(yaw) < 1e-9
+
+
+def test_euler_deg_delegates_to_quat_to_euler_deg():
+    ahrs = imu.MadgwickAHRS(beta=0.1)
+    ahrs.update(np.array([0.3, 0.1, -0.2]), np.array([0.0, 0.0, 9.81]), None, 0.05)
+    assert ahrs.euler_deg() == imu._quat_to_euler_deg(ahrs.q)
+```
+
+Add to `tests/test_imu_calibration_tuner.py`:
+
+```python
+def test_ockendon_deg_zero_beta_gives_zero_kappa():
+    assert abs(tuner.ockendon_deg(0.0)) < 1e-9
+
+
+def test_ockendon_deg_matches_formula_for_arbitrary_beta():
+    beta = 45.0
+    expected = 90.0 + beta - math.degrees(
+        math.acos(math.sin(math.radians(beta)) / 1.2))
+    assert abs(tuner.ockendon_deg(beta) - expected) < 1e-9
+
+
+def test_replay_trial_defaults_to_relative_method_when_key_absent():
+    """Backward compatibility: existing callers/tests never set "method"."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, angle = tuner.replay_trial(samples, params)
+    expected_final = 180.0 - math.degrees(2.0 * 0.5)
+    assert abs(angle[-1] - expected_final) < 1.0
+
+
+def test_replay_trial_ockendon_flipped_starts_near_180():
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon_flipped"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert abs(float(np.median(pre_release)) - 180.0) < 1.0
+
+
+def test_replay_trial_ockendon_unflipped_starts_near_zero():
+    """Documents *why* ockendon_flipped is the one likely to pass
+    score_waveform's 180°-start gate -- unflipped kappa is ~0 at full
+    extension, the opposite of Pendulastic's clinical convention."""
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "ockendon"}
+    t, angle = tuner.replay_trial(samples, params)
+    pre_release = angle[(t < 0.9) & np.isfinite(angle)]
+    assert abs(float(np.median(pre_release))) < 1.0
+
+
+def test_tuning_grid_includes_all_three_methods():
+    methods = {p["method"] for p in tuner.TUNING_GRID}
+    assert methods == {"relative", "ockendon", "ockendon_flipped"}
+
+
+def test_tune_and_persist_persists_method_field(tmp_path, monkeypatch):
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1, "flex_axis_capture": False,
+                   "gravity_seed": False, "method": "ockendon_flipped"},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "ockendon_flipped"
+
+
+def test_tune_and_persist_defaults_method_when_candidate_lacks_it(tmp_path, monkeypatch):
+    """test_tune_and_persist_saves_when_improving's candidate has no "method"
+    key (pre-Task-12 shape) -- must not KeyError, must default to "relative"."""
+    import imu_calibration_config as cfgmod
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    monkeypatch.setattr(tuner, "load_config", cfgmod.load_config)
+    monkeypatch.setattr(tuner, "save_config", cfgmod.save_config)
+    monkeypatch.setattr(tuner, "tune", lambda raw: {
+        "params": {"beta": 0.08, "ema_alpha": 0.1,
+                   "flex_axis_capture": False, "gravity_seed": False},
+        "penalty": 0.5, "passes": True,
+    })
+    tuner.tune_and_persist([{"dummy": True}], source_trial="trial_1.csv")
+    assert cfgmod.load_config()["method"] == "relative"
+```
+
+Update `tests/test_imu_calibration_config.py`'s existing `test_save_then_load_roundtrips`
+to include `"method": "ockendon"` in `written` (the schema now has one more
+field), and add:
+
+```python
+def test_load_config_fills_default_method_for_legacy_configs_missing_it(tmp_path, monkeypatch):
+    path = tmp_path / "cfg.json"
+    legacy = {k: v for k, v in cfgmod.DEFAULT_CONFIG.items() if k != "method"}
+    legacy.update({"beta": 0.08, "ema_alpha": 0.1,
+                  "flex_axis_capture": False, "gravity_seed": False})
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(cfgmod, "CONFIG_PATH", str(path))
+    assert cfgmod.load_config()["method"] == "relative"
+```
+
+Run: `.venv\Scripts\pytest.exe tests\test_imu_server.py tests\test_imu_calibration_tuner.py tests\test_imu_calibration_config.py -v`
+Expected: the new tests fail (`AttributeError`/`ImportError`/`KeyError`/assertion
+failures) since `_quat_to_euler_deg`, `ockendon_deg`, `"method"` don't exist yet.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+- [ ] **Step 3: Write the implementation**
+
+In `pendulastic_imu_server.py`, extract the body of `MadgwickAHRS.euler_deg`
+into a module-level function and have the method delegate to it:
+
+```python
+def _quat_to_euler_deg(q) -> tuple[float, float, float]:
+    """Return (roll, pitch, yaw) in degrees — ZYX convention.
+    roll  ≈ abduction/adduction, pitch ≈ flexion/extension, yaw ≈ rotation."""
+    q1, q2, q3, q4 = q
+    roll = math.atan2(2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3))
+    sin_p = max(-1.0, min(1.0, 2 * (q1 * q3 - q4 * q2)))
+    pitch = math.asin(sin_p)
+    yaw = math.atan2(2 * (q1 * q4 + q2 * q3), 1 - 2 * (q3 * q3 + q4 * q4))
+    return math.degrees(roll), math.degrees(pitch), math.degrees(yaw)
+```
+
+...and replace `MadgwickAHRS.euler_deg`'s body with `return _quat_to_euler_deg(self.q)`.
+
+In `imu_calibration_tuner.py`:
+- Import `_quat_to_euler_deg` alongside the existing imports from `pendulastic_imu_server`.
+- Add:
+
+```python
+OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
+
+
+def ockendon_deg(beta_deg: float) -> float:
+    """Ockendon & Gilbert's tibial-inclination knee-flexion model: maps a
+    single measured tibial inclination (beta, degrees from horizontal) to
+    knee flexion kappa, using the anatomical femur:tibia ratio constant.
+    |sin(beta)| <= 1 < OCKENDON_FT_RATIO always, so the arccos argument is
+    always in-domain -- no clamping needed."""
+    beta = math.radians(beta_deg)
+    return 90.0 + beta_deg - math.degrees(math.acos(math.sin(beta) / OCKENDON_FT_RATIO))
+```
+
+- Extend `TUNING_GRID` with a `method` dimension:
+
+```python
+TUNING_GRID = [
+    {"beta": beta, "ema_alpha": alpha,
+     "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
+    for beta in (0.02, 0.041, 0.08, 0.15)
+    for alpha in (0.1, 0.3, 0.5)
+    for fac in (True, False)
+    for gs in (True, False)
+    for method in ("relative", "ockendon", "ockendon_flipped")
+]
+```
+
+- In `replay_trial`, add a role-preference beta helper next to `_swing_from_quats`
+  (same DISTAL-then-PROXIMAL preference as the existing solo fallback):
+
+```python
+    def _beta_from_quats(quats: dict) -> float:
+        solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
+            ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
+        if solo_role is None or solo_role not in q_zero:
+            return float("nan")
+        _, pitch_cur, _ = _quat_to_euler_deg(quats[solo_role])
+        _, pitch_zero, _ = _quat_to_euler_deg(q_zero[solo_role])
+        return wrap180(pitch_cur - pitch_zero)
+```
+
+(`wrap180` needs importing from `pendulastic_imu_server` alongside the existing names.)
+Then replace the single-line `angle_raw = ...` with a method dispatch:
+
+```python
+    method = params.get("method", "relative")
+    if method == "relative":
+        angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
+    else:
+        kappas = np.array([ockendon_deg(_beta_from_quats(q)) for q in tick_quats])
+        angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
+```
+
+- In `tune_and_persist`, add `"method": best["params"].get("method", "relative")`
+  to the `save_config({...})` call (`.get`, not `[...]` — `test_tune_and_persist_saves_when_improving`
+  and other existing tests stub `tune()` with pre-Task-12 params dicts that
+  have no `"method"` key at all).
+
+In `imu_calibration_config.py`, add `"method": "relative"` to `DEFAULT_CONFIG`.
+Do **not** add `"method"` to `_REQUIRED_TYPES` — it must stay optional so
+pre-Task-12 persisted config files still load cleanly (backfilled to
+`"relative"` via the existing `merged = dict(DEFAULT_CONFIG); merged.update(cfg)`).
+
+In `tune_imu.py`'s `main()`, add the same
+`"method": best["params"].get("method", "relative")` to its own `save_config({...})`
+call (it duplicates persistence independently of `tune_and_persist`).
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv\Scripts\pytest.exe tests\test_imu_server.py tests\test_imu_calibration_tuner.py tests\test_imu_calibration_config.py tests\test_tune_imu_cli.py -v`
+Expected: all pass, including every pre-existing test in these four files (no regressions from the `TUNING_GRID` shape change or the `DEFAULT_CONFIG` schema growth).
+
+- [ ] **Step 5: Full regression run**
+
+Run: `.venv\Scripts\pytest.exe tests\ -v --ignore=tests\test_metrics.py --ignore=tests\test_pose.py --ignore=tests\test_stats.py --ignore=tests\test_video.py`
+Expected: all pass (pre-existing count plus the new Task 12 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pendulastic_imu_server.py imu_calibration_tuner.py imu_calibration_config.py tune_imu.py tests/test_imu_server.py tests/test_imu_calibration_tuner.py tests/test_imu_calibration_config.py
+git commit -m "feat: add Ockendon & Gilbert tibial-inclination model as a grid-search candidate"
+```
