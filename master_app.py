@@ -379,14 +379,13 @@ class MasterApp:
             return
         path = os.path.join(trial_dir, f"Trial_{trial}_imu.csv")
         meta = {
-            "participant": pid,
-            "session":     self.var_session.get(),
-            "position":    self.var_pos.get(),
-            "height":      self.var_height.get(),
-            "trial":       trial,
-            "t0_epoch":    f"{time.time():.4f}",
-            "video":       f"Trial_{trial}.avi",
-            "video_fps":   f"{TARGET_FPS:.3f}",
+            "participant":     pid,
+            "leg":             self.var_leg.get(),
+            "characterization": self.entry_characterization.get().strip(),
+            "trial":           trial,
+            "t0_epoch":        f"{time.time():.4f}",
+            "video":           f"Trial_{trial}.avi",
+            "video_fps":       f"{TARGET_FPS:.3f}",
         }
         try:
             if imu_server.start_recording(path, meta):
@@ -534,30 +533,22 @@ class MasterApp:
     # ------------------------------------------------------------------
     def _build_paths(self, pid):
         """Build and create the directory tree. Returns (participant_dir, video_path, rel_path)."""
-        position = self.var_pos.get()
-        height = self.var_height.get()
+        leg = self.var_leg.get()
+        characterization = self.entry_characterization.get().strip()
         trial = self.var_trial.get()
 
-        session = self.var_session.get()
-
-        # Pre- and post-intervention takes are kept in separate subtrees so a
-        # repeated Position/Height/Trial combination cannot overwrite the other
-        # session's data.
+        # Leg and characterization are kept in separate subtrees so a repeated
+        # Trial combination under a different leg/characterization cannot
+        # overwrite the other one's data.
         participant_dir = os.path.join(ROOT_DIR, f"Participant_{pid}")
-        trial_dir = os.path.join(participant_dir,
-                                 f"Session_{session}",
-                                 f"Position_{position}",
-                                 f"Height_{height}")
+        trial_dir = os.path.join(participant_dir, leg, characterization)
         # exist_ok=True makes this safe to call repeatedly.
         os.makedirs(trial_dir, exist_ok=True)
 
         video_path = os.path.join(trial_dir, f"Trial_{trial}.avi")
 
         # Relative path is what the slave machine recreates under its own root.
-        rel_path = os.path.join(f"Participant_{pid}",
-                                f"Session_{session}",
-                                f"Position_{position}",
-                                f"Height_{height}")
+        rel_path = os.path.join(f"Participant_{pid}", leg, characterization)
         return participant_dir, video_path, rel_path
 
     def _write_metadata(self, participant_dir, pid):
@@ -569,9 +560,8 @@ class MasterApp:
             "sex": self.var_sex.get(),
             "diagnosis": self.var_diag.get(),
             "last_trial": {
-                "session": self.var_session.get(),
-                "camera_position": self.var_pos.get(),
-                "camera_height": self.var_height.get(),
+                "leg": self.var_leg.get(),
+                "characterization": self.entry_characterization.get().strip(),
                 "trial_number": self.var_trial.get(),
                 "imu_recorded": bool(_IMU_AVAIL and self.var_record_imu.get()),
             },
@@ -657,6 +647,8 @@ class MasterApp:
                 return
 
             participant_dir, video_path, rel_path = self._build_paths(pid)
+            leg = self.var_leg.get()
+            characterization = self.entry_characterization.get().strip()
             self._write_metadata(participant_dir, pid)
 
             # Make sure the camera is live (it normally already is). Opening here
@@ -678,9 +670,8 @@ class MasterApp:
                 self.out = writer
 
             start_msg = (
-                f"START|id={pid}|position={self.var_pos.get()}|"
-                f"height={self.var_height.get()}|trial={self.var_trial.get()}|"
-                f"relpath={rel_path}"
+                f"START|id={pid}|leg={leg}|characterization={characterization}|"
+                f"trial={self.var_trial.get()}|relpath={rel_path}"
             )
 
             # Start the webcam immediately (the stream thread writes frames now)
