@@ -31,26 +31,40 @@ This spec covers three deliverables:
 
 ## 2. Relationship to Existing Work
 
-Two pieces of related, already-uncommitted work exist in the main-branch working tree:
+**Correction from an earlier draft of this spec:** this section originally claimed the IMU
+auto-tare plan (`docs/superpowers/specs/2026-07-31-imu-auto-tare-design.md`) was never
+implemented. That was wrong — verified directly against `pendulastic_app.py`, it is **fully
+implemented and committed to main** (commits `2057914`..`4ad18ef`): `App.on_countdown_start()`,
+`App.is_imu_calibrated()`, `App._tick_calibration_check()`, the countdown extend-then-confirm
+fallback, and removal of the manual Zero Sensor/Clear Zero UI all exist and work today. The
+corrected picture:
 
 - `pendulastic_imu_server.py` already has bias-subtraction infrastructure
-  (`calibrate_gyro_bias()`, `gyro_bias`, `_gyro_hold_buf`) added, but `zero()` — which triggers
-  it — is still called from the manual "Zero Sensor" button, with no stillness gating at all. This
-  spec's Section 3 replaces that trigger path.
-- `imu_calibration_tuner.py`'s `replay_trial()` already has a stillness-gated calibration block,
-  but it gates on *fused* pitch/roll swing (mirroring `pendulastic_app.py`'s not-yet-built
-  auto-tare check), not raw gyro/accel. Section 3 replaces this block's stability check with the
-  shared primitive below; the bias-subtraction mechanics it already has (edge-triggering, the
-  raw-gyro hold buffer, `gyro_bias` subtraction before `ahrs.update()`) are correct and are kept
-  as-is.
+  (`calibrate_gyro_bias()`, `gyro_bias`, `_gyro_hold_buf`) added (currently uncommitted), and
+  `zero()` already calls it. `zero()` is already called correctly — by
+  `App._tick_calibration_check()`'s edge-trigger, not a manual button (that path is gone). The gap
+  is only *what signal* `_tick_calibration_check()` uses to decide "stable": today it maintains its
+  own trailing buffer of **fused pitch/roll** (`App._calib_buffer`, `_CALIB_STABILITY_RANGE_DEG`,
+  `_CALIB_BUFFER_SAMPLES`, `pendulastic_app.py:1858-1898`) read from `_imu.get_state()["angles"]`.
+  Section 3.3 below modifies this existing method in place — replacing its internal buffer/threshold
+  logic with a call to a new module-level `pendulastic_imu_server.is_stationary()` — rather than
+  building any new gating mechanism. `on_countdown_start()`, `is_imu_calibrated()`, and the
+  extend-then-confirm fallback need no changes: they only depend on `_calib_ever_stable`/
+  `_calib_was_stable`, which stay as the edge-trigger/latch state regardless of which signal feeds
+  them.
+- `imu_calibration_tuner.py`'s `replay_trial()` already has a stillness-gated calibration block
+  (currently uncommitted), but it gates on *fused* pitch/roll swing — a deliberate mirror of
+  `_tick_calibration_check()`'s current (soon-to-be-replaced) approach, per its own comments — not
+  raw gyro/accel. Section 3.4 replaces this block's stability check with the same shared primitive
+  Section 3.3 wires into the live path. The bias-subtraction mechanics it already has
+  (edge-triggering, the raw-gyro hold buffer, `gyro_bias` subtraction before `ahrs.update()`) are
+  correct and are kept as-is.
 
-This spec also **supersedes Section 4 ("Stability Detection Algorithm")** of
-`docs/superpowers/specs/2026-07-31-imu-auto-tare-design.md`. That plan's code was never
-implemented (zero commits against it exist anywhere), so there is no working implementation to
-reconcile — only the written algorithm choice, which this spec replaces with Section 3 below. The
-rest of that spec (the countdown extend-then-confirm fallback, `is_imu_calibrated()`, the removed
-manual Zero Sensor UI) is unaffected and still applies; this spec only changes *what signal*
-decides "stable."
+This spec **supersedes Section 4 ("Stability Detection Algorithm")** of
+`docs/superpowers/specs/2026-07-31-imu-auto-tare-design.md` — replacing its fused-pitch/roll signal
+choice with Section 3's raw gyro/accel check, inside the already-built gating mechanism that
+spec's Sections 3, 5, and 6 describe (continuous re-tare, the extend-then-confirm fallback, and the
+removed manual UI) — none of which change here.
 
 ---
 
@@ -96,14 +110,28 @@ Placeholder constants in this spec get replaced with measured ones before Task 2
 
 `_IMUDevice` gains a new raw buffer, `_accel_hold_buf`, appended in `on_accel(self, v, ts)`
 (`pendulastic_imu_server.py:334`) exactly the way `_gyro_hold_buf` is already appended in
-`on_gyro()` — trailing `GYRO_BIAS_WINDOW_S`, pruned the same way. `_IMUDevice.is_stationary() -> bool` calls
-`_is_stationary_window(self._gyro_hold_buf, self._accel_hold_buf, now)`.
+`on_gyro()` — trailing `GYRO_BIAS_WINDOW_S`, pruned the same way. `_IMUDevice.is_stationary() -> bool`
+calls `_is_stationary_window(self._gyro_hold_buf, self._accel_hold_buf, now)`.
 
-`App`'s countdown poll loop (finishing the stalled auto-tare plan's gating — see Section 2) checks
-`is_stationary()` on every connected role's device each tick, requiring **all** connected devices
-(proximal and/or distal, whichever are active) to independently report stationary before
-edge-triggering `zero()` — a half-stationary reading (one device still, one being handled) must not
-fire a tare. `zero()`'s existing `calibrate_gyro_bias()` calls are unchanged.
+`pendulastic_imu_server.py` gains a new module-level `is_stationary() -> bool`, mirroring `zero()`'s
+existing per-connected-device iteration pattern (`_by_role`/`_devices`): `True` only if every
+*connected* device (proximal and/or distal, whichever are active) independently reports stationary
+— a half-stationary reading (one device still, one being handled) must not pass. `App` imports
+`pendulastic_imu_server` as `_imu` already (see `_tick_calibration_check`'s existing
+`_imu.get_state()`/`_imu.zero()` calls), so this is called as `_imu.is_stationary()`.
+
+**This modifies the already-implemented `App._tick_calibration_check()`
+(`pendulastic_app.py:1858-1898`) in place** — it is not new gating logic. Delete the method's
+internal fused-pitch/roll buffer entirely (the `st = _imu.get_state(); ang = ...; pitch, roll = ...`
+block, `self._calib_buffer` append/trim, and the `stable = (max(pitches) - min(pitches) < ...)`
+check) and replace the `stable` computation with `stable = _imu.is_stationary()`. The
+edge-trigger/latch state machine around it — `self._calib_was_stable`, `self._calib_ever_stable`,
+the `if stable and not self._calib_was_stable: _imu.zero(); ...` block, the guard against
+re-firing every ~1s during one continuous hold — is unchanged; it only cares about the boolean
+`stable`, not how it was computed. `App.__init__`'s `self._calib_buffer: list = []` and the
+module-level `_CALIB_STABILITY_RANGE_DEG`/`_CALIB_BUFFER_SAMPLES` constants become dead code and are
+removed. `on_countdown_start()`, `is_imu_calibrated()`, and the countdown extend-then-confirm
+fallback are untouched. `zero()`'s existing `calibrate_gyro_bias()` calls are unchanged.
 
 ### 3.4 Offline wiring
 
