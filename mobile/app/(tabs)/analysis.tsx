@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Config } from "../../constants/Config";
-import { T } from "../../constants/Theme";
+import { SIZE, T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 
 interface PTParameters {
@@ -100,7 +100,7 @@ export default function AnalysisScreen() {
           <View style={s.errorBox}>
             <Text style={s.errorText}>{error}</Text>
             <Pressable onPress={fetchAnalysis}>
-              <Text style={{ color: T.accent, fontSize: 13, marginTop: 6 }}>Retry</Text>
+              <Text style={{ color: T.accent, fontSize: TYPE.body, fontWeight: "600", marginTop: 8 }}>Retry</Text>
             </Pressable>
           </View>
         )}
@@ -194,31 +194,31 @@ function ParamRow({ label, value, last }: { label: string; value: string; last?:
 
 const s = StyleSheet.create({
   bg:             { flex: 1, backgroundColor: T.bg },
-  header:         { paddingHorizontal: 16, paddingVertical: 14 },
-  title:          { fontSize: 22, fontWeight: "700", color: T.text },
-  scroll:         { padding: 16, gap: 14, paddingBottom: 40 },
+  header:         { paddingHorizontal: 18, paddingVertical: 16 },
+  title:          { fontSize: TYPE.title, fontWeight: "800", color: T.text },
+  scroll:         { padding: 18, gap: 16, paddingBottom: 44 },
 
-  centred:        { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 12 },
-  lockIcon:       { fontSize: 36 },
-  gateTitle:      { fontSize: 17, fontWeight: "600", color: T.text, textAlign: "center" },
-  gateSub:        { fontSize: 14, color: T.textSub, textAlign: "center", lineHeight: 20 },
+  centred:        { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 14 },
+  lockIcon:       { fontSize: TYPE.display },
+  gateTitle:      { fontSize: TYPE.title, fontWeight: "700", color: T.text, textAlign: "center" },
+  gateSub:        { fontSize: TYPE.body, color: T.textSub, textAlign: "center", lineHeight: 24 },
 
-  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: T.dangerBorder },
-  errorText:      { color: T.danger, fontSize: 13 },
+  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 12, padding: 16, borderWidth: 1.5, borderColor: T.dangerBorder },
+  errorText:      { color: T.danger, fontSize: TYPE.caption, fontWeight: "600" },
 
-  fidelityBanner: { borderRadius: 12, borderWidth: 1, padding: 12 },
-  fidelityText:   { fontSize: 13, fontWeight: "600" },
+  fidelityBanner: { borderRadius: 12, borderWidth: 1.5, padding: 14 },
+  fidelityText:   { fontSize: TYPE.body, fontWeight: "700" },
 
-  masCard:        { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, padding: 20, alignItems: "center", gap: 4 },
-  sectionLabel:   { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase", alignSelf: "flex-start" },
-  masScore:       { fontSize: 72, fontWeight: "700", color: T.accent, lineHeight: 80 },
-  masDesc:        { fontSize: 14, color: T.textSub, textAlign: "center" },
-  ptRow:          { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8, padding: 10, backgroundColor: T.bg, borderRadius: 8, width: "100%" },
-  ptLabel:        { fontSize: 13, color: T.textSub, flex: 1 },
-  ptValue:        { fontSize: 14, fontWeight: "600", color: T.text },
+  masCard:        { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, padding: 24, alignItems: "center", gap: 6 },
+  sectionLabel:   { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.9, textTransform: "uppercase", alignSelf: "flex-start" },
+  masScore:       { fontSize: TYPE.score, fontWeight: "800", color: T.accent, lineHeight: 96 },
+  masDesc:        { fontSize: TYPE.body, color: T.textSub, textAlign: "center", fontWeight: "600" },
+  ptRow:          { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10, padding: 14, backgroundColor: T.bg, borderRadius: 10, width: "100%" },
+  ptLabel:        { fontSize: TYPE.caption, color: T.textSub, flex: 1 },
+  ptValue:        { fontSize: TYPE.body, fontWeight: "700", color: T.text },
 
-  card:           { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, padding: 16, gap: 0 },
-  paramRow:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
-  paramLabel:     { fontSize: 13, color: T.textSub, flex: 1 },
-  paramValue:     { fontSize: 13, color: T.text, fontWeight: "600" },
+  card:           { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, padding: 18, gap: 0 },
+  paramRow:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
+  paramLabel:     { fontSize: TYPE.caption, color: T.textSub, flex: 1 },
+  paramValue:     { fontSize: TYPE.caption, color: T.text, fontWeight: "700" },
 });

@@ -8,7 +8,7 @@
    * Collects participant metadata through a Tkinter GUI.
    * Records a 30 fps webcam video on a dedicated background thread so the
      GUI never freezes.
-   * Saves video to:  [Root]/Participant_[ID]/Position_[X]/Height_[Y]/Trial_[Z].avi
+   * Saves video to:  [Root]/Participant_[ID]/[Right|Left]/[Characterization]/Trial_[Z].avi
    * Writes metadata.json into the participant folder.
    * Broadcasts a START / STOP packet over UDP port 5005 so the OptiTrack
      slave machine starts/stops Motive recording in sync.
@@ -105,7 +105,6 @@ class MasterApp:
 
         # ---- iPhone IMU goniometer ----
         self.var_record_imu = tk.BooleanVar(value=_IMU_AVAIL)
-        self.var_session    = tk.StringVar(value="pre")
         self._imu_recording = False
         self._imu_csv_path  = ""
         self._sync_after_id = None                # pending after() for status poll
@@ -161,12 +160,10 @@ class MasterApp:
                                               "Other Motor Impairment"])
         self.drop_diag.grid(row=5, column=1, sticky="w", **pad)
 
-        # --- Session tag (pre / post intervention) ---
-        tk.Label(self.root, text="Session:").grid(row=6, column=0, sticky="e", **pad)
-        self.drop_session = ttk.Combobox(self.root, textvariable=self.var_session,
-                                          width=25, state="readonly",
-                                          values=["pre", "post"])
-        self.drop_session.grid(row=6, column=1, sticky="w", **pad)
+        # --- Characterization (free-typed: pre / post / anything else) ---
+        tk.Label(self.root, text="Characterization:").grid(row=6, column=0, sticky="e", **pad)
+        self.entry_characterization = tk.Entry(self.root, width=28)
+        self.entry_characterization.grid(row=6, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
             row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
@@ -194,46 +191,38 @@ class MasterApp:
                                     padx=10, pady=(0, 4))
         self._cam_status_rows = []
 
-        # --- Camera Position 1-3 ---
-        tk.Label(self.root, text="Camera Position:").grid(row=11, column=0, sticky="e", **pad)
-        self.var_pos = tk.StringVar(value="1")
-        self.drop_pos = ttk.Combobox(self.root, textvariable=self.var_pos, width=25,
+        # --- Leg ---
+        tk.Label(self.root, text="Leg:").grid(row=11, column=0, sticky="e", **pad)
+        self.var_leg = tk.StringVar(value="Right")
+        self.drop_leg = ttk.Combobox(self.root, textvariable=self.var_leg, width=25,
                                      state="readonly",
-                                     values=["1", "2", "3"])
-        self.drop_pos.grid(row=11, column=1, sticky="w", **pad)
-
-        # --- Camera Height ---
-        tk.Label(self.root, text="Camera Height:").grid(row=12, column=0, sticky="e", **pad)
-        self.var_height = tk.StringVar(value="Joint-Level")
-        self.drop_height = ttk.Combobox(self.root, textvariable=self.var_height, width=25,
-                                        state="readonly",
-                                        values=["Low", "Joint-Level", "High"])
-        self.drop_height.grid(row=12, column=1, sticky="w", **pad)
+                                     values=["Right", "Left"])
+        self.drop_leg.grid(row=11, column=1, sticky="w", **pad)
 
         # --- Trial Number ---
-        tk.Label(self.root, text="Trial Number:").grid(row=13, column=0, sticky="e", **pad)
+        tk.Label(self.root, text="Trial Number:").grid(row=12, column=0, sticky="e", **pad)
         self.var_trial = tk.StringVar(value="1")
         self.drop_trial = ttk.Combobox(self.root, textvariable=self.var_trial, width=25,
                                        state="readonly",
                                        values=["1", "2", "3", "4", "5"])
-        self.drop_trial.grid(row=13, column=1, sticky="w", **pad)
+        self.drop_trial.grid(row=12, column=1, sticky="w", **pad)
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=14, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=13, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Control buttons ---
         self.btn_start = tk.Button(self.root, text="START RECORDING",
                                    bg="#1e7d34", fg="white",
                                    font=("Segoe UI", 11, "bold"),
                                    width=18, height=2, command=self._on_start_clicked)
-        self.btn_start.grid(row=15, column=0, padx=10, pady=12)
+        self.btn_start.grid(row=14, column=0, padx=10, pady=12)
 
         self.btn_stop = tk.Button(self.root, text="STOP",
                                   bg="#a31515", fg="white",
                                   font=("Segoe UI", 11, "bold"),
                                   width=18, height=2, command=self.stop_recording,
                                   state="disabled")
-        self.btn_stop.grid(row=15, column=1, padx=10, pady=12)
+        self.btn_stop.grid(row=14, column=1, padx=10, pady=12)
 
         # --- Countdown checkbox ---
         self.var_delayed = tk.BooleanVar(value=False)
@@ -241,12 +230,12 @@ class MasterApp:
             self.root, text="5-second countdown before recording",
             variable=self.var_delayed, font=("Segoe UI", 10),
         )
-        self.chk_delayed.grid(row=16, column=0, columnspan=2, pady=(0, 6))
+        self.chk_delayed.grid(row=15, column=0, columnspan=2, pady=(0, 6))
 
         # --- iPhone IMU goniometer (optional third modality) ---
         imu_frame = tk.LabelFrame(self.root, text="iPhone IMU Goniometer",
                                   font=("Segoe UI", 9, "bold"))
-        imu_frame.grid(row=20, column=0, columnspan=2, sticky="ew",
+        imu_frame.grid(row=19, column=0, columnspan=2, sticky="ew",
                        padx=10, pady=(0, 6))
         self.chk_imu = tk.Checkbutton(
             imu_frame, text="Record iPhone IMU (.csv)",
@@ -260,21 +249,21 @@ class MasterApp:
         self.lbl_imu.pack(anchor="w", padx=8, pady=(0, 4))
 
         ttk.Separator(self.root, orient="horizontal").grid(
-            row=17, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+            row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
 
         # --- Batch evaluation (active only when not recording) ---
         self.btn_evaluate = tk.Button(self.root, text="RUN BATCH EVALUATION",
                                       bg="#1f3a93", fg="white",
                                       font=("Segoe UI", 12, "bold"),
                                       height=2, command=self.start_batch_evaluation)
-        self.btn_evaluate.grid(row=18, column=0, columnspan=2, sticky="ew",
+        self.btn_evaluate.grid(row=17, column=0, columnspan=2, sticky="ew",
                                padx=10, pady=(0, 8))
 
         # --- Status bar ---
         self.var_status = tk.StringVar(value="Idle - ready to record.")
         self.lbl_status = tk.Label(self.root, textvariable=self.var_status,
                                    relief="sunken", anchor="w", fg="#333")
-        self.lbl_status.grid(row=19, column=0, columnspan=2, sticky="ew",
+        self.lbl_status.grid(row=18, column=0, columnspan=2, sticky="ew",
                              padx=10, pady=(4, 10))
 
         # Detect the camera now that all widgets exist.
@@ -343,14 +332,13 @@ class MasterApp:
             return
         path = os.path.join(trial_dir, f"Trial_{trial}_imu.csv")
         meta = {
-            "participant": pid,
-            "session":     self.var_session.get(),
-            "position":    self.var_pos.get(),
-            "height":      self.var_height.get(),
-            "trial":       trial,
-            "t0_epoch":    f"{time.time():.4f}",
-            "video":       f"Trial_{trial}.avi",
-            "video_fps":   f"{TARGET_FPS:.3f}",
+            "participant":     pid,
+            "leg":             self.var_leg.get(),
+            "characterization": self.entry_characterization.get().strip(),
+            "trial":           trial,
+            "t0_epoch":        f"{time.time():.4f}",
+            "video":           f"Trial_{trial}.avi",
+            "video_fps":       f"{TARGET_FPS:.3f}",
         }
         try:
             if imu_server.start_recording(path, meta):
@@ -485,6 +473,14 @@ class MasterApp:
                 float(weight)
             except ValueError:
                 raise ValueError("Weight must be a number (e.g. 72.5).")
+
+        characterization = self.entry_characterization.get().strip()
+        if not characterization:
+            raise ValueError("Characterization cannot be empty.")
+        if any(ch in illegal for ch in characterization):
+            raise ValueError('Characterization contains illegal characters: < > : " / \\ | ? *')
+        if characterization in (".", ".."):
+            raise ValueError('Characterization cannot be "." or "..".')
         return pid
 
     # ------------------------------------------------------------------
@@ -492,30 +488,22 @@ class MasterApp:
     # ------------------------------------------------------------------
     def _build_paths(self, pid):
         """Build and create the directory tree. Returns (participant_dir, video_path, rel_path)."""
-        position = self.var_pos.get()
-        height = self.var_height.get()
+        leg = self.var_leg.get()
+        characterization = self.entry_characterization.get().strip()
         trial = self.var_trial.get()
 
-        session = self.var_session.get()
-
-        # Pre- and post-intervention takes are kept in separate subtrees so a
-        # repeated Position/Height/Trial combination cannot overwrite the other
-        # session's data.
+        # Leg and characterization are kept in separate subtrees so a repeated
+        # Trial combination under a different leg/characterization cannot
+        # overwrite the other one's data.
         participant_dir = os.path.join(ROOT_DIR, f"Participant_{pid}")
-        trial_dir = os.path.join(participant_dir,
-                                 f"Session_{session}",
-                                 f"Position_{position}",
-                                 f"Height_{height}")
+        trial_dir = os.path.join(participant_dir, leg, characterization)
         # exist_ok=True makes this safe to call repeatedly.
         os.makedirs(trial_dir, exist_ok=True)
 
         video_path = os.path.join(trial_dir, f"Trial_{trial}.avi")
 
         # Relative path is what the slave machine recreates under its own root.
-        rel_path = os.path.join(f"Participant_{pid}",
-                                f"Session_{session}",
-                                f"Position_{position}",
-                                f"Height_{height}")
+        rel_path = os.path.join(f"Participant_{pid}", leg, characterization)
         return participant_dir, video_path, rel_path
 
     def _write_metadata(self, participant_dir, pid):
@@ -527,9 +515,8 @@ class MasterApp:
             "sex": self.var_sex.get(),
             "diagnosis": self.var_diag.get(),
             "last_trial": {
-                "session": self.var_session.get(),
-                "camera_position": self.var_pos.get(),
-                "camera_height": self.var_height.get(),
+                "leg": self.var_leg.get(),
+                "characterization": self.entry_characterization.get().strip(),
                 "trial_number": self.var_trial.get(),
                 "imu_recorded": bool(_IMU_AVAIL and self.var_record_imu.get()),
             },
@@ -615,6 +602,23 @@ class MasterApp:
                 return
 
             participant_dir, video_path, rel_path = self._build_paths(pid)
+            leg = self.var_leg.get()
+            characterization = self.entry_characterization.get().strip()
+
+            # Collapsing Position/Height out of the folder tree means Leg +
+            # Characterization + Trial Number are now the only discriminators,
+            # so a repeated combination can silently overwrite a prior take's
+            # video (and its IMU CSV / Motive mirror) — confirm before that
+            # happens instead of clobbering already-collected data.
+            if os.path.exists(video_path) and not messagebox.askyesno(
+                    "Trial Already Recorded",
+                    f"{os.path.basename(video_path)} already exists for "
+                    f"{leg} / {characterization}.\n\n"
+                    "Recording again will overwrite that trial's video, IMU CSV, "
+                    "and Motive take.\n\nOverwrite it?"):
+                self.var_status.set("Idle - recording cancelled (trial already exists).")
+                return
+
             self._write_metadata(participant_dir, pid)
 
             # Make sure the camera is live (it normally already is). Opening here
@@ -636,9 +640,8 @@ class MasterApp:
                 self.out = writer
 
             start_msg = (
-                f"START|id={pid}|position={self.var_pos.get()}|"
-                f"height={self.var_height.get()}|trial={self.var_trial.get()}|"
-                f"relpath={rel_path}"
+                f"START|id={pid}|leg={leg}|characterization={characterization}|"
+                f"trial={self.var_trial.get()}|relpath={rel_path}"
             )
 
             # Start the webcam immediately (the stream thread writes frames now)
@@ -1007,11 +1010,11 @@ class MasterApp:
     def _lock_inputs(self, locked):
         state = "disabled" if locked else "normal"
         ro_state = "disabled" if locked else "readonly"
-        for w in (self.entry_id, self.entry_age, self.entry_weight):
+        for w in (self.entry_id, self.entry_age, self.entry_weight,
+                  self.entry_characterization):
             w.config(state=state)
-        for w in (self.drop_sex, self.drop_diag, self.drop_pos,
-                  self.drop_height, self.drop_trial, self.drop_cam,
-                  self.drop_session):
+        for w in (self.drop_sex, self.drop_diag, self.drop_leg,
+                  self.drop_trial, self.drop_cam):
             w.config(state=ro_state)
         # Camera rescan and batch evaluation are only available when not recording.
         self.btn_rescan.config(state=state)

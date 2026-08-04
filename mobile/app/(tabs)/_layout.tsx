@@ -6,10 +6,13 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
-import { T } from "../../constants/Theme";
+import { Platform } from "react-native";
+import { T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
+
+const ICON_SIZE = 26;
 
 export default function TabLayout() {
   const analysisUnlocked = useStore((s) => s.analysisUnlocked);
@@ -22,18 +25,20 @@ export default function TabLayout() {
           backgroundColor:  T.card,
           borderTopColor:   T.border,
           borderTopWidth:   1,
+          height:           Platform.OS === "ios" ? 88 : 68,
+          paddingTop:       8,
         },
         tabBarActiveTintColor:   T.accent,
         tabBarInactiveTintColor: T.label,
-        tabBarLabelStyle: { fontSize: 11, marginBottom: 2 },
+        tabBarLabelStyle: { fontSize: TYPE.micro, fontWeight: "600", marginBottom: 2 },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home-outline" size={size} color={color} />
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="home-outline" size={ICON_SIZE} color={color} />
           ),
         }}
       />
@@ -41,8 +46,8 @@ export default function TabLayout() {
         name="participant"
         options={{
           title: "Patient",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person-outline" size={size} color={color} />
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="person-outline" size={ICON_SIZE} color={color} />
           ),
         }}
       />
@@ -50,8 +55,8 @@ export default function TabLayout() {
         name="record"
         options={{
           title: "Record",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="videocam-outline" size={size} color={color} />
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="videocam-outline" size={ICON_SIZE} color={color} />
           ),
         }}
       />
@@ -59,8 +64,8 @@ export default function TabLayout() {
         name="review"
         options={{
           title: "Review",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="checkmark-circle-outline" size={size} color={color} />
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="checkmark-circle-outline" size={ICON_SIZE} color={color} />
           ),
         }}
       />
@@ -68,10 +73,10 @@ export default function TabLayout() {
         name="analysis"
         options={{
           title: "Analysis",
-          tabBarIcon: ({ color, size }) => (
+          tabBarIcon: ({ color }) => (
             <Ionicons
               name="bar-chart-outline"
-              size={size}
+              size={ICON_SIZE}
               color={analysisUnlocked ? color : T.label}
             />
           ),

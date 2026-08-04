@@ -2,147 +2,389 @@ import os, sys, math, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
+import pytest
 import workbench_engine as engine
 
-_SPLIT_CSV_HEADER = "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
+_IMU_REFERENCE_HEADER = ("t_epoch,t_rel,phone_ts_ms,t_phone_aligned,"
+                         "hip_roll_deg,hip_pitch_deg,hip_yaw_deg,"
+                         "prox_roll,prox_pitch,prox_yaw,"
+                         "dist_roll,dist_pitch,dist_yaw,paired\n")
 
 
-def _write_split_csv(path, rows):
-    """rows: list of (timestamp_ms, phone_ts_ms, role, sensor_name, x, y, z) tuples."""
+def _write_component_csv(path, kind, rows):
+    """rows: list of tuples matching engine._COMPONENT_HEADERS[kind]'s column order."""
+    header = ",".join(engine._COMPONENT_HEADERS[kind]) + "\n"
     with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(_SPLIT_CSV_HEADER)
+        f.write(header)
         for row in rows:
             f.write(",".join(str(v) for v in row) + "\n")
 
 
-def _write_solo_split_csv_trial(tmp_path, prefix="Trial_1"):
-    """Three well-formed sibling CSVs (gyro/accel/mag), solo/proximal-only
-    role: hold still for 1s, a scripted 2.0 rad/s gyro burst around Y for
-    0.5s, then hold again -- the same shape (and ~2.5s total duration) as
-    this file's own _solo_hold_then_burst_samples(). The duration matters:
-    replay_trial ticks at a 50ms cadence, so a too-short fixture (e.g. a
-    handful of samples spanning only a few milliseconds) ticks zero times
-    and every test below would pass vacuously on empty arrays rather than
-    actually exercising anything -- verified empirically against the real
-    engine before writing this plan (254 samples in, 51 ticks out, 50/51
-    finite, matching _solo_hold_then_burst_samples()'s own expected final
-    angle of 180 - degrees(2.0 * 0.5) = 122.7 deg)."""
-    gyro_path  = tmp_path / f"{prefix}_gyro.csv"
-    accel_path = tmp_path / f"{prefix}_accel.csv"
-    mag_path   = tmp_path / f"{prefix}_mag.csv"
-    imu_path   = tmp_path / f"{prefix}_imu.csv"
-
-    gyro_rows = []
-    t_ms = 0.0
-    for _ in range(100):
-        t_ms += 10.0
-        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
-    for _ in range(50):
-        t_ms += 10.0
-        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 2.0, 0.0))
-    for _ in range(100):
-        t_ms += 10.0
-        gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
-    _write_split_csv(gyro_path, gyro_rows)
-
-    _write_split_csv(accel_path, [
-        (0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81),
-        (t_ms, int(t_ms), "proximal", "Accelerometer", 0.0, 0.0, 9.81),
-    ])
-    _write_split_csv(mag_path, [
-        (1.0, 1, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
-        (t_ms, int(t_ms), "proximal", "Magnetometer", -50.0, 20.0, 30.0),
-    ])
-    imu_path.write_text("# participant,test\n", encoding="utf-8")
-    return {"gyro": gyro_path, "accel": accel_path, "mag": mag_path, "imu": imu_path}
+def _accel_rows_100hz(n=60, sensor_name="Accelerometer", role="proximal"):
+    """100 Hz cadence -- well above the 10 Hz fusion floor."""
+    rows = []
+    for i in range(n):
+        t_ms = i * 10.0
+        rows.append((t_ms, int(t_ms), role, sensor_name, 0.0, 0.0, 9.81))
+    return rows
 
 
-def test_read_split_csv_samples_merges_and_sorts_chronologically(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
-    samples = engine._read_split_csv_samples(str(paths["gyro"]))
-    assert len(samples) == 254   # 250 gyro + 2 accel + 2 mag
-    ts = [s["t"] for s in samples]
+def _imu_reference_rows_100hz(n=60):
+    rows = []
+    for i in range(n):
+        t_epoch = 1_700_000_000.0 + i * 0.01
+        rows.append((t_epoch, i * 0.01, int(i * 10), t_epoch,
+                     0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True))
+    return rows
+
+
+def test_validate_component_csv_happy_path_accel(tmp_path):
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz())
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is True
+    assert result["error"] is None
+    assert result["n_samples"] == 60
+    assert result["fs_eff"] == pytest.approx(100.0, rel=0.05)
+    assert result["rows"][0] == {
+        "t": 0.0, "role": "proximal", "sensor": "accel",
+        "v": [0.0, 0.0, 9.81], "phone_ts_ms": 0,
+    }
+
+
+def test_validate_component_csv_happy_path_imu_reference(tmp_path):
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", _imu_reference_rows_100hz())
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is True
+    assert result["n_samples"] == 60
+    assert result["fs_eff"] == pytest.approx(100.0, rel=0.05)
+    assert result["rows"][0]["hip_pitch_deg"] == "180.0"
+    assert result["rows"][0]["t_epoch"] == pytest.approx(1_700_000_000.0)
+
+
+def test_validate_component_csv_missing_file(tmp_path):
+    result = engine.validate_component_csv(str(tmp_path / "nope.csv"), "accel")
+    assert result["ok"] is False
+    assert "nope.csv" in result["error"]
+    assert result["rows"] == []
+
+
+def test_validate_component_csv_wrong_header(tmp_path):
+    path = tmp_path / "bad_header.csv"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("wrong,header,columns\n1,2,3\n")
+    result = engine.validate_component_csv(str(path), "gyro")
+    assert result["ok"] is False
+    assert "bad_header.csv" in result["error"]
+
+
+def test_validate_component_csv_sensor_name_mismatch(tmp_path):
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz(sensor_name="Gyroscope"))
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "Gyroscope" in result["error"]
+    assert "Accelerometer" in result["error"]
+
+
+def test_validate_component_csv_sensor_name_mismatch_second_pairing(tmp_path):
+    """A second slot/sensor pairing, distinct from the accel/Gyroscope case
+    above -- confirms the mismatch check isn't accidentally hardcoded to
+    one slot."""
+    path = tmp_path / "Trial_1_mag.csv"
+    _write_component_csv(path, "mag", _accel_rows_100hz(sensor_name="Accelerometer"))
+    result = engine.validate_component_csv(str(path), "mag")
+    assert result["ok"] is False
+    assert "Accelerometer" in result["error"]
+    assert "Magnetometer" in result["error"]
+
+
+def test_validate_component_csv_non_monotonic_timestamps(tmp_path):
+    rows = _accel_rows_100hz(n=5)
+    rows[3] = (5.0, 5, "proximal", "Accelerometer", 0.0, 0.0, 9.81)   # earlier than row 2's 20.0
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 5" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_below_floor(tmp_path):
+    rows = [(i * 500.0, int(i * 500), "proximal", "Accelerometer", 0.0, 0.0, 9.81)
+           for i in range(5)]   # 500ms spacing == 2 Hz, below the 10 Hz floor
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "2.00 Hz" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_at_floor_is_not_a_false_positive(tmp_path):
+    rows = [(i * 80.0, int(i * 80), "proximal", "Accelerometer", 0.0, 0.0, 9.81)
+           for i in range(5)]   # 80ms spacing == 12.5 Hz, above the 10 Hz floor
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is True
+
+
+def test_validate_component_csv_too_few_rows(tmp_path):
+    rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81)]
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "1 data row" in result["error"]
+
+
+def test_validate_component_csv_non_numeric_value_in_numeric_field(tmp_path):
+    """Test that non-numeric values in numeric fields are caught and reported
+    without raising ValueError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n")
+        f.write("0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n")
+        f.write("bad_value,10,proximal,Accelerometer,0.0,0.0,9.81\n")  # bad timestamp
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 3" in result["error"]
+    assert "non-numeric" in result["error"].lower()
+
+
+def test_validate_component_csv_identical_timestamps_zero_gap(tmp_path):
+    """Test that all identical timestamps (zero median gap) are caught and reported
+    without raising ZeroDivisionError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81) for _ in range(5)]  # all same time
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "zero" in result["error"].lower() or "invalid gaps" in result["error"].lower()
+
+
+def test_validate_component_csv_imu_skips_hash_preamble(tmp_path):
+    """Regression for the real recorder's start_recording() preamble: it
+    writes a few '# key,value' metadata lines plus '# sync_state',
+    '# sync_offset_s', '# sync_jitter_s' rows before the real 14-column
+    header row. validate_component_csv must skip them rather than treating
+    the first preamble line as the header (0 of 9 real _imu.csv files in
+    this repo's Recordings/ folder validated before this fix)."""
+    path = tmp_path / "Trial_1_imu.csv"
+    header = ",".join(engine._COMPONENT_HEADERS["imu"]) + "\n"
+    rows = _imu_reference_rows_100hz(n=10)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("# session_id,abc123\n")
+        f.write("# participant,P1\n")
+        f.write("# sync_state,synced\n")
+        f.write("# sync_offset_s,0.012345\n")
+        f.write("# sync_jitter_s,0.000210\n")
+        f.write(header)
+        for row in rows:
+            f.write(",".join(str(v) for v in row) + "\n")
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is True
+    assert result["n_samples"] == 10
+
+
+def test_validate_component_csv_wrong_header_imu(tmp_path):
+    """Header-mismatch check for the imu kind specifically -- only gyro was
+    previously covered."""
+    path = tmp_path / "bad_header_imu.csv"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("wrong,header,columns\n1,2,3\n")
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "bad_header_imu.csv" in result["error"]
+
+
+def test_validate_component_csv_non_monotonic_timestamps_imu(tmp_path):
+    """Monotonicity-violation check for the imu kind's t_epoch column --
+    previously only accel/gyro/mag were covered."""
+    rows = list(_imu_reference_rows_100hz(n=5))
+    bad = list(rows[3])
+    bad[0] = rows[1][0]   # earlier t_epoch than row index 2's (the previous row)
+    rows[3] = tuple(bad)
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", rows)
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "row 5" in result["error"]
+
+
+def test_validate_component_csv_fs_eff_below_floor_imu(tmp_path):
+    """fs-floor check for the imu kind -- previously only accel was
+    covered."""
+    rows = [(1_700_000_000.0 + i * 0.5, i * 0.5, int(i * 500), 1_700_000_000.0 + i * 0.5,
+            0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True)
+           for i in range(5)]   # 500ms spacing == 2 Hz, below the 10 Hz floor
+    path = tmp_path / "Trial_1_imu.csv"
+    _write_component_csv(path, "imu", rows)
+    result = engine.validate_component_csv(str(path), "imu")
+    assert result["ok"] is False
+    assert "2.00 Hz" in result["error"]
+
+
+def test_validate_component_csv_column_count_mismatch(tmp_path):
+    """No existing test reached the column-count-mismatch branch: the old
+    wrong-header test fails earlier, at the header check, before column
+    count is ever checked."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write("timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n")
+        f.write("0.0,0,proximal,Accelerometer,0.0,0.0,9.81\n")
+        f.write("10.0,10,proximal,Accelerometer,0.0,0.0\n")   # missing z
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert "row 3" in result["error"]
+    assert "columns" in result["error"].lower()
+
+
+def test_validate_component_csv_empty_file(tmp_path):
+    """A file with zero lines (header row completely missing) must return
+    a graceful ok=False rather than raising."""
+    path = tmp_path / "empty.csv"
+    path.write_text("", encoding="utf-8")
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+    assert result["rows"] == []
+
+
+def test_validate_component_csv_unrecognized_kind(tmp_path):
+    """An unrecognized kind must return a graceful ok=False rather than
+    raising KeyError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", _accel_rows_100hz())
+    result = engine.validate_component_csv(str(path), "barometer")
+    assert result["ok"] is False
+    assert "barometer" in result["error"]
+
+
+def test_validate_component_csv_nan_timestamp_rejected(tmp_path):
+    """A NaN timestamp must not silently pass validation: t < prev_t is
+    False for NaN (defeats monotonicity), and fs_eff < floor is False for
+    NaN (defeats the fs floor check) -- must be caught explicitly."""
+    rows = list(_accel_rows_100hz(n=5))
+    bad = list(rows[2])
+    bad[0] = float("nan")
+    rows[2] = tuple(bad)
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
+def test_validate_component_csv_inf_numeric_field_does_not_raise(tmp_path):
+    """`inf` in phone_ts_ms raises OverflowError from int(float('inf'));
+    validate_component_csv must catch it and return ok=False, not raise."""
+    rows = list(_accel_rows_100hz(n=5))
+    bad = list(rows[2])
+    bad[1] = float("inf")   # phone_ts_ms field
+    rows[2] = tuple(bad)
+    path = tmp_path / "Trial_1_accel.csv"
+    _write_component_csv(path, "accel", rows)
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
+def test_validate_component_csv_binary_file_does_not_raise(tmp_path):
+    """A non-UTF-8/binary file (realistic since the UI's file filter
+    includes 'All files *.*') must not raise UnicodeDecodeError."""
+    path = tmp_path / "Trial_1_accel.csv"
+    with open(path, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01\x02\x03garbage binary data\xfa\xfb")
+    result = engine.validate_component_csv(str(path), "accel")
+    assert result["ok"] is False
+
+
+def _write_full_component_set(tmp_path, prefix="Trial_1", fs=100.0, n=150):
+    """All four component files, well-formed, at a consistent fs above the
+    fusion floor. The gyro rows include a real burst of motion (not
+    all-zero) in the middle third of the trial: the AHRS replay engine's
+    motion-detection threshold produces empty output for an all-still gyro
+    signal, so a fixture meant to exercise load_imu_trial_from_components()
+    end-to-end (not just validate_component_csv() in isolation) needs an
+    actual rotation to fuse."""
+    dt_ms = 1000.0 / fs
+    gyro_rows, accel_rows, mag_rows, imu_rows = [], [], [], []
+
+    # Create a motion pattern: hold still for ~0.5s, burst for ~0.5s, hold still for ~0.5s
+    hold_samples = int(n / 3)
+    burst_samples = int(n / 3)
+
+    for i in range(n):
+        t_ms = i * dt_ms
+        # Add gyro burst in the middle third
+        if hold_samples <= i < hold_samples + burst_samples:
+            gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 2.0, 0.0))
+        else:
+            gyro_rows.append((t_ms, int(t_ms), "proximal", "Gyroscope", 0.0, 0.0, 0.0))
+
+        accel_rows.append((t_ms, int(t_ms), "proximal", "Accelerometer", 0.0, 0.0, 9.81))
+        mag_rows.append((t_ms, int(t_ms), "proximal", "Magnetometer", -50.0, 20.0, 30.0))
+        t_epoch = 1_700_000_000.0 + i / fs
+        imu_rows.append((t_epoch, i / fs, int(t_ms), t_epoch,
+                         0.0, 180.0, 0.0, 0.0, 90.0, 0.0, 0.0, 90.0, 0.0, True))
+
+    paths = {
+        "gyro": tmp_path / f"{prefix}_gyro.csv", "accel": tmp_path / f"{prefix}_accel.csv",
+        "mag": tmp_path / f"{prefix}_mag.csv", "imu": tmp_path / f"{prefix}_imu.csv",
+    }
+    _write_component_csv(paths["gyro"], "gyro", gyro_rows)
+    _write_component_csv(paths["accel"], "accel", accel_rows)
+    _write_component_csv(paths["mag"], "mag", mag_rows)
+    _write_component_csv(paths["imu"], "imu", imu_rows)
+    return {kind: engine.validate_component_csv(str(p), kind) for kind, p in paths.items()}
+
+
+def test_bind_split_csv_components_merges_and_sorts_fusion_samples(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    bound = engine.bind_split_csv_components(validations)
+    ts = [s["t"] for s in bound["fusion_samples"]]
     assert ts == sorted(ts)
-    assert {s["sensor"] for s in samples} == {"gyro", "accel", "mag"}
-    assert all(s["role"] == "proximal" for s in samples)
-    first_accel = next(s for s in samples if s["sensor"] == "accel")
-    assert first_accel["v"] == [0.0, 0.0, 9.81]
-    assert first_accel["t"] == 0.0
-    assert first_accel["phone_ts_ms"] == 0
+    assert {s["sensor"] for s in bound["fusion_samples"]} == {"gyro", "accel", "mag"}
+    assert len(bound["fusion_samples"]) == 450   # 150 rows x 3 sensors
 
 
-def test_read_split_csv_samples_missing_sibling_names_the_file(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
-    os.remove(paths["accel"])
+def test_bind_split_csv_components_keeps_imu_reference_separate(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    bound = engine.bind_split_csv_components(validations)
+    assert len(bound["imu_reference"]) == 150
+    assert all(s["sensor"] != "imu" for s in bound["fusion_samples"])
+    assert bound["imu_reference"][0]["hip_pitch_deg"] == "180.0"
+
+
+def test_bind_split_csv_components_raises_on_incomplete_set(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    del validations["mag"]
     try:
-        engine._read_split_csv_samples(str(paths["gyro"]))
-        assert False, "expected FileNotFoundError"
-    except FileNotFoundError as e:
-        assert "accel" in str(e)
-
-
-def test_read_split_csv_samples_malformed_header_names_the_file(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
-    with open(paths["mag"], "w", encoding="utf-8") as f:
-        f.write("wrong,header,columns\n")
-        f.write("1,2,3\n")
-    try:
-        engine._read_split_csv_samples(str(paths["gyro"]))
+        engine.bind_split_csv_components(validations)
         assert False, "expected ValueError"
     except ValueError as e:
-        assert "mag" in str(e).lower() or str(paths["mag"]) in str(e)
+        assert "mag" in str(e)
 
 
-def test_read_split_csv_samples_unrecognized_sensor_name(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
-    _write_split_csv(paths["accel"], [
-        (999.0, 999, "proximal", "Barometer", 0.0, 0.0, 9.81),
-    ])
+def test_bind_split_csv_components_raises_when_one_kind_not_ok(tmp_path):
+    validations = _write_full_component_set(tmp_path)
+    validations["gyro"] = {"ok": False, "error": "bad", "n_samples": 0,
+                           "fs_eff": None, "rows": []}
     try:
-        engine._read_split_csv_samples(str(paths["gyro"]))
+        engine.bind_split_csv_components(validations)
         assert False, "expected ValueError"
     except ValueError as e:
-        assert "Barometer" in str(e)
+        assert "gyro" in str(e)
 
 
-def test_derive_split_csv_siblings_from_non_imu_anchor(tmp_path):
-    """A _gyro.csv/_accel.csv/_mag.csv anchor must not be treated as if it
-    were _imu.csv -- the derivation must identify the anchor's actual
-    suffix, not assume a fixed one."""
-    paths = _write_solo_split_csv_trial(tmp_path)
-    derived = engine._derive_split_csv_siblings(str(paths["accel"]))
-    assert derived["gyro"] == str(paths["gyro"])
-    assert derived["accel"] == str(paths["accel"])
-    assert derived["mag"] == str(paths["mag"])
-    assert derived["imu"] == str(paths["imu"])
-
-
-def test_load_imu_trial_dispatches_to_split_csv_for_non_jsonl_path(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
+def test_load_imu_trial_from_components_produces_finite_angle_series(tmp_path):
+    validations = _write_full_component_set(tmp_path)
     config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
              "gravity_seed": True, "method": "relative"}
-    t, angle = engine.load_imu_trial(str(paths["gyro"]), config=config)
-    # Explicit non-empty checks, not just np.isfinite(t).all() -- that's
-    # vacuously True on an empty array, so it wouldn't fail against the
-    # pre-fix code (a CSV path fed through the JSONL reader silently
-    # yields zero samples via its per-line `except ValueError: continue`,
-    # and replay_trial([]) returns two EMPTY arrays rather than raising).
+    t, angle, imu_reference = engine.load_imu_trial_from_components(validations, config=config)
     assert len(t) > 0
     assert len(angle) > 0
     assert np.isfinite(t).all()
     assert np.isfinite(angle).all()
-
-
-def test_load_imu_trial_same_result_regardless_of_which_sibling_is_the_anchor(tmp_path):
-    paths = _write_solo_split_csv_trial(tmp_path)
-    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
-             "gravity_seed": True, "method": "relative"}
-    results = [engine.load_imu_trial(str(paths[k]), config=config)
-              for k in ("gyro", "accel", "mag", "imu")]
-    assert len(results[0][0]) > 0, "sanity check: the fixture must actually produce samples"
-    for t, angle in results[1:]:
-        assert list(t) == list(results[0][0])
-        assert list(angle) == list(results[0][1])
+    assert len(imu_reference) == 150
 
 
 def _decaying_oscillation_with_tail(n_osc_cycles=4, tail_s=10.0, fs=100.0):
@@ -407,6 +649,16 @@ def test_load_imu_trial_skips_malformed_lines(tmp_path):
     assert len(t) == 0 and len(angle) == 0
 
 
+def test_load_imu_trial_rejects_non_jsonl_path(tmp_path):
+    path = tmp_path / "Trial_1_accel.csv"
+    path.write_text("timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n", encoding="utf-8")
+    try:
+        engine.load_imu_trial(str(path))
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "load_imu_trial_from_components" in str(e)
+
+
 def test_load_optitrack_trial_prefers_rigid_body_when_available(monkeypatch):
     def fake_rigid_body(path):
         return np.array([0.0, 1.0]), np.array([180.0, 150.0])
@@ -475,3 +727,185 @@ def test_export_session_round_trips_through_json(tmp_path):
     path.write_text(json.dumps(result), encoding="utf-8")
     reloaded = json.loads(path.read_text(encoding="utf-8"))
     assert reloaded == result
+
+
+def test_traces_to_csv_rows_empty_traces_returns_no_rows():
+    fieldnames, rows = engine.traces_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+    assert fieldnames == ["participant_id", "session_date", "label", "t_sec", "angle_deg"]
+
+
+def test_traces_to_csv_rows_one_row_per_sample_per_trace():
+    traces = {
+        "imu": (np.array([0.0, 0.1, 0.2]), np.array([180.0, 170.0, 160.0])),
+        "optitrack": (np.array([0.0, 0.1]), np.array([181.0, 171.0])),
+    }
+    fieldnames, rows = engine.traces_to_csv_rows(traces, "P5", "2026-08-04")
+    assert len(rows) == 5
+    imu_rows = [r for r in rows if r["label"] == "imu"]
+    assert len(imu_rows) == 3
+    assert imu_rows[0] == {
+        "participant_id": "P5", "session_date": "2026-08-04",
+        "label": "imu", "t_sec": 0.0, "angle_deg": 180.0,
+    }
+
+
+def test_per_trace_metrics_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.per_trace_metrics_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_per_trace_metrics_to_csv_rows_one_row_per_label():
+    per_trace = {
+        "imu": {"R2n": 1.1, "N": 2.0, "phi_max_ratio": 0.5, "omega_max_n": 3.0,
+                "f": 1.2, "area_ratio": 0.07, "omega_min_n": 0.4},
+    }
+    fieldnames, rows = engine.per_trace_metrics_to_csv_rows(per_trace, "P5", "2026-08-04")
+    assert rows == [{
+        "participant_id": "P5", "session_date": "2026-08-04", "label": "imu",
+        "area_ratio": 0.07, "N": 2.0, "f_hz": 1.2, "R2n": 1.1,
+        "omega_max_n": 3.0, "omega_min_n": 0.4,
+    }]
+
+
+def test_vs_reference_metrics_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.vs_reference_metrics_to_csv_rows("optitrack", {}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_vs_reference_metrics_to_csv_rows_ok_and_error_status():
+    vs_reference = {
+        "imu": {"status": "ok", "rmse_deg": 5.2, "mae_deg": 3.1, "lag_sec": 0.05,
+                "timing_offset_sec": 0.12},
+        "mediapipe": {"status": "error",
+                      "error": "Need at least 4 finite samples in both signals."},
+    }
+    fieldnames, rows = engine.vs_reference_metrics_to_csv_rows(
+        "optitrack", vs_reference, "P5", "2026-08-04")
+    assert len(rows) == 2
+    ok_row = next(r for r in rows if r["label"] == "imu")
+    assert ok_row["reference"] == "optitrack"
+    assert ok_row["rmse_deg"] == 5.2
+    assert ok_row["error"] is None
+    err_row = next(r for r in rows if r["label"] == "mediapipe")
+    assert err_row["status"] == "error"
+    assert err_row["rmse_deg"] is None
+    assert err_row["error"] == "Need at least 4 finite samples in both signals."
+
+
+def test_annotations_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.annotations_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+
+
+def test_annotations_to_csv_rows_one_row_per_milestone():
+    annotations = {"Release Start": (42, 0.7), "Maximum Flexion": (88, 1.47)}
+    fieldnames, rows = engine.annotations_to_csv_rows(annotations, "P5", "2026-08-04")
+    assert len(rows) == 2
+    row = next(r for r in rows if r["label"] == "Release Start")
+    assert row == {
+        "participant_id": "P5", "session_date": "2026-08-04",
+        "label": "Release Start", "frame_index": 42, "t_sec": 0.7,
+    }
+_SPLIT_CSV_HEADER = "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z\n"
+
+
+def _write_split_csv(path, rows):
+    """rows: list of (timestamp_ms, phone_ts_ms, role, sensor_name, x, y, z)
+    tuples. accel/gyro/mag share this schema (engine._COMPONENT_HEADERS)."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(_SPLIT_CSV_HEADER)
+        for row in rows:
+            f.write(",".join(str(v) for v in row) + "\n")
+
+
+def test_peak_raw_gyro_velocity_finds_known_burst(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (10.0, 10, "proximal", "Gyroscope", 3.0, 4.0, 0.0),   # magnitude 5.0
+        (20.0, 20, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_accel.csv", [
+        (0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 1.0),
+        (20.0, 20, "proximal", "Accelerometer", 0.0, 0.0, 1.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (20.0, 20, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    peak = engine._peak_raw_gyro_velocity(str(prefix) + "_gyro.csv")
+    assert peak == 5.0
+
+
+def _write_accel_release_csv(path, fs_hz, baseline=1.0, step=1.5,
+                             release_t_sec=1.0, duration_sec=3.0):
+    """Synthetic single-axis accel signal (y=z=0, so magnitude == |x|):
+    steady baseline until release_t_sec, then steps to a new level and
+    stays there -- a clean, unambiguous magnitude change for the release
+    detector to find. Verified empirically before writing this plan: this
+    exact shape detects within ~0.1s of release_t_sec at 50/100/200 Hz."""
+    dt = 1.0 / fs_hz
+    n = int(duration_sec / dt)
+    rows = []
+    for i in range(n):
+        t_ms = i * dt * 1000.0
+        x = step if (i * dt) >= release_t_sec else baseline
+        rows.append((t_ms, int(t_ms), "proximal", "Accelerometer", x, 0.0, 0.0))
+    _write_split_csv(path, rows)
+
+
+def test_accel_release_time_detects_known_step(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=100.0, release_t_sec=1.0)
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (2900.0, 2900, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (2900.0, 2900, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+    assert release_t is not None
+    assert abs(release_t - 1.0) < 0.15
+
+
+def test_accel_release_time_adapts_to_actual_sample_rate(tmp_path):
+    """Same release shape at two different sample rates -- both must detect
+    near the same known release time, proving the filter design adapts to
+    each file's own fs_eff rather than assuming one fixed rate."""
+    for fs_hz in (50.0, 200.0):
+        prefix = tmp_path / f"Trial_{int(fs_hz)}"
+        _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=fs_hz, release_t_sec=1.0)
+        release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+        assert release_t is not None
+        assert abs(release_t - 1.0) < 0.15, f"fs_hz={fs_hz}: got {release_t}"
+
+
+def test_accel_release_time_returns_none_below_nyquist_guard(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=5.0, release_t_sec=1.0)
+    release_t = engine._accel_release_time(str(prefix) + "_accel.csv")
+    assert release_t is None
+
+
+def test_compute_raw_sensor_diagnostics_returns_both_keys(tmp_path):
+    prefix = tmp_path / "Trial_1"
+    _write_accel_release_csv(str(prefix) + "_accel.csv", fs_hz=100.0, release_t_sec=1.0)
+    _write_split_csv(str(prefix) + "_gyro.csv", [
+        (0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+        (1000.0, 1000, "proximal", "Gyroscope", 3.0, 4.0, 0.0),
+        (2900.0, 2900, "proximal", "Gyroscope", 0.0, 0.0, 0.0),
+    ])
+    _write_split_csv(str(prefix) + "_mag.csv", [
+        (0.0, 0, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+        (2900.0, 2900, "proximal", "Magnetometer", -50.0, 20.0, 30.0),
+    ])
+
+    diagnostics = engine.compute_raw_sensor_diagnostics(str(prefix) + "_imu.csv")
+    assert diagnostics["peak_gyro_velocity_dps"] == 5.0
+    assert diagnostics["accel_release_time_sec"] is not None
+    assert abs(diagnostics["accel_release_time_sec"] - 1.0) < 0.15

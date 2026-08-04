@@ -2,7 +2,7 @@ import { router } from "expo-router";
 import React from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { T } from "../../constants/Theme";
+import { SIZE, T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 
 const STATUS_DOT: Record<string, string> = {
@@ -107,30 +107,30 @@ export default function DashboardScreen() {
 
 const s = StyleSheet.create({
   bg:            { flex: 1, backgroundColor: T.bg },
-  scroll:        { padding: 16, gap: 14, paddingBottom: 40 },
+  scroll:        { padding: 18, gap: 16, paddingBottom: 44 },
 
-  header:        { marginBottom: 4 },
-  appName:       { fontSize: 26, fontWeight: "700", color: T.text },
-  appVersion:    { fontSize: 12, color: T.label, marginTop: 2 },
+  header:        { marginBottom: 6 },
+  appName:       { fontSize: TYPE.heading, fontWeight: "800", color: T.text, letterSpacing: 0.2 },
+  appVersion:    { fontSize: TYPE.caption, color: T.label, marginTop: 4, fontWeight: "600", letterSpacing: 0.4 },
 
-  card:          { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, padding: 16, gap: 8 },
-  sectionLabel:  { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase" },
-  cardPrimary:   { fontSize: 17, fontWeight: "600", color: T.text, textTransform: "capitalize" },
-  cardSub:       { fontSize: 13, color: T.textSub },
-  cta:           { fontSize: 14, color: T.accent },
+  card:          { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, padding: 20, gap: 10 },
+  sectionLabel:  { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.9, textTransform: "uppercase" },
+  cardPrimary:   { fontSize: TYPE.bodyLg, fontWeight: "700", color: T.text, textTransform: "capitalize" },
+  cardSub:       { fontSize: TYPE.caption, color: T.textSub },
+  cta:           { fontSize: TYPE.body, color: T.accent, fontWeight: "600" },
 
-  pill:          { alignSelf: "flex-start", backgroundColor: T.accentLight, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4, marginTop: 2 },
-  pillText:      { fontSize: 12, color: T.accentText, fontWeight: "500" },
+  pill:          { alignSelf: "flex-start", backgroundColor: T.accentLight, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, marginTop: 4 },
+  pillText:      { fontSize: TYPE.micro, color: T.accentText, fontWeight: "700" },
 
-  statusRow:     { flexDirection: "row", alignItems: "center", gap: 8 },
-  dot:           { width: 8, height: 8, borderRadius: 4 },
+  statusRow:     { flexDirection: "row", alignItems: "center", gap: 10 },
+  dot:           { width: 10, height: 10, borderRadius: 5 },
 
-  actionBtn:     { alignSelf: "flex-start", borderWidth: 1, borderColor: T.accent, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8, marginTop: 4 },
-  actionBtnText: { fontSize: 13, color: T.accent, fontWeight: "500" },
+  actionBtn:     { alignSelf: "flex-start", minHeight: SIZE.touchMin, justifyContent: "center", borderWidth: 2, borderColor: T.accent, borderRadius: SIZE.btnRadius, paddingHorizontal: 18, paddingVertical: 10, marginTop: 6 },
+  actionBtnText: { fontSize: TYPE.body, color: T.accent, fontWeight: "700" },
 
-  stepRow:       { flexDirection: "row", gap: 12, alignItems: "flex-start", paddingTop: 8, borderTopWidth: 1, borderTopColor: T.borderFaint },
-  stepNum:       { width: 22, height: 22, borderRadius: 11, backgroundColor: T.borderFaint, alignItems: "center", justifyContent: "center", marginTop: 1 },
-  stepNumText:   { fontSize: 11, color: T.textSub, fontWeight: "700" },
-  stepTitle:     { fontSize: 13, color: T.text, fontWeight: "600" },
-  stepDesc:      { fontSize: 12, color: T.textSub, marginTop: 1 },
+  stepRow:       { flexDirection: "row", gap: 14, alignItems: "flex-start", paddingTop: 10, borderTopWidth: 1, borderTopColor: T.borderFaint },
+  stepNum:       { width: 28, height: 28, borderRadius: 14, backgroundColor: T.borderFaint, alignItems: "center", justifyContent: "center", marginTop: 1 },
+  stepNumText:   { fontSize: TYPE.caption, color: T.textSub, fontWeight: "800" },
+  stepTitle:     { fontSize: TYPE.body, color: T.text, fontWeight: "700" },
+  stepDesc:      { fontSize: TYPE.caption, color: T.textSub, marginTop: 2 },
 });

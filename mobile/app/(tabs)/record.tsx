@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CameraStream } from "../../components/camera/CameraStream";
 import { Config } from "../../constants/Config";
-import { T } from "../../constants/Theme";
+import { SIZE, T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 import type { HpeModel, LegSide } from "../../types";
 
@@ -291,36 +291,36 @@ export default function RecordScreen() {
 
 const s = StyleSheet.create({
   bg:             { flex: 1, backgroundColor: T.bg },
-  header:         { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 14 },
-  title:          { fontSize: 22, fontWeight: "700", color: T.text },
-  badge:          { backgroundColor: T.accentLight, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 },
-  badgeText:      { fontSize: 12, color: T.accentText, fontWeight: "500" },
-  scroll:         { padding: 16, gap: 14, paddingBottom: 40 },
+  header:         { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 18, paddingVertical: 16 },
+  title:          { fontSize: TYPE.title, fontWeight: "800", color: T.text },
+  badge:          { backgroundColor: T.accentLight, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, minHeight: 36, justifyContent: "center" },
+  badgeText:      { fontSize: TYPE.caption, color: T.accentText, fontWeight: "700" },
+  scroll:         { padding: 18, gap: 16, paddingBottom: 44 },
 
-  warnBox:        { backgroundColor: T.warnBg, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: T.warnBorder },
-  warnText:       { color: T.warn, fontSize: 13, lineHeight: 18 },
+  warnBox:        { backgroundColor: T.warnBg, borderRadius: 12, padding: 16, borderWidth: 1.5, borderColor: T.warnBorder },
+  warnText:       { color: T.warn, fontSize: TYPE.caption, lineHeight: 21, fontWeight: "600" },
 
-  card:           { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, padding: 16, gap: 12 },
-  sectionLabel:   { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase" },
+  card:           { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, padding: 20, gap: 14 },
+  sectionLabel:   { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.9, textTransform: "uppercase" },
 
-  segRow:         { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  seg:            { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: T.border, backgroundColor: T.bg },
+  segRow:         { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  seg:            { paddingHorizontal: 18, paddingVertical: 13, borderRadius: 10, borderWidth: 1.5, borderColor: T.border, backgroundColor: T.bg, minHeight: SIZE.touchMin, justifyContent: "center" },
   segActive:      { borderColor: T.accent, backgroundColor: T.accentLight },
-  segText:        { color: T.textSub, fontSize: 13 },
-  segActiveText:  { color: T.accentText, fontWeight: "500" },
+  segText:        { color: T.textSub, fontSize: TYPE.body },
+  segActiveText:  { color: T.accentText, fontWeight: "700" },
 
-  pickBtn:        { backgroundColor: T.bg, borderRadius: 10, borderWidth: 1, borderColor: T.border, padding: 14, alignItems: "center" },
-  pickBtnText:    { color: T.accent, fontSize: 14 },
-  uploadNote:     { fontSize: 12, color: T.textSub, textAlign: "center" },
+  pickBtn:        { backgroundColor: T.bg, borderRadius: 10, borderWidth: 1.5, borderColor: T.border, padding: 16, alignItems: "center", minHeight: SIZE.touchMin, justifyContent: "center" },
+  pickBtnText:    { color: T.accent, fontSize: TYPE.body, fontWeight: "600" },
+  uploadNote:     { fontSize: TYPE.caption, color: T.textSub, textAlign: "center" },
 
-  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: T.dangerBorder },
-  errorText:      { color: T.danger, fontSize: 13 },
+  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 10, padding: 14, borderWidth: 1.5, borderColor: T.dangerBorder },
+  errorText:      { color: T.danger, fontSize: TYPE.caption, fontWeight: "600" },
 
-  cta:            { backgroundColor: T.text, borderRadius: 14, padding: 16, alignItems: "center" },
+  cta:            { backgroundColor: T.text, borderRadius: SIZE.btnRadius, padding: SIZE.btnPaddingV, alignItems: "center", minHeight: 56, justifyContent: "center" },
   ctaDim:         { opacity: 0.35 },
-  ctaText:        { color: "#fff", fontSize: 16, fontWeight: "600" },
+  ctaText:        { color: "#fff", fontSize: TYPE.button, fontWeight: "700" },
   uploadingRow:   { flexDirection: "row", alignItems: "center", gap: 10 },
 
-  backBtn:        { position: "absolute", top: 52, right: 16, backgroundColor: "rgba(0,0,0,0.55)", borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 },
-  backBtnText:    { color: "#e2e8f0", fontSize: 12 },
+  backBtn:        { position: "absolute", top: 52, right: 16, backgroundColor: "rgba(0,0,0,0.55)", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, minHeight: 44, justifyContent: "center" },
+  backBtnText:    { color: "#e2e8f0", fontSize: TYPE.caption, fontWeight: "600" },
 });

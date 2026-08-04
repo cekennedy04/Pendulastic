@@ -9,7 +9,9 @@ See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md.
 """
 from __future__ import annotations
 
+import datetime
 import json
+import csv
 import os
 from typing import Optional
 
@@ -27,6 +29,8 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import pendulastic_pt_score
+import workbench_style as ws
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
                     "Maximum Flexion", "Rest/Settled"]
@@ -51,11 +55,20 @@ class TrialLoadPanel(tk.Frame):
     controller: App instance -- receives on_load_trial(selection: dict)."""
 
     def __init__(self, parent, controller) -> None:
-        super().__init__(parent)
+        super().__init__(parent, bg=ws.PALETTE["BG"])
         self.controller = controller
         self._imu_path = tk.StringVar(value="")
+        self._imu_format = tk.StringVar(value="jsonl")
+        self._component_paths = {k: tk.StringVar(value="")
+                                 for k in ("accel", "gyro", "mag", "imu")}
+        self._component_status = {k: tk.StringVar(value="")
+                                  for k in ("accel", "gyro", "mag", "imu")}
+        self._component_validations: dict = {}
         self._video_path = tk.StringVar(value="")
         self._optitrack_path = tk.StringVar(value="")
+        self._participant_id = tk.StringVar(value="")
+        self._session_date = tk.StringVar(
+            value=datetime.datetime.now().strftime("%Y-%m-%d"))
         self._femur_cm = tk.StringVar(value="")
         self._tibia_cm = tk.StringVar(value="")
         self._model_vars = {name: tk.BooleanVar(value=False)
@@ -64,52 +77,146 @@ class TrialLoadPanel(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
-        pad = {"padx": 12, "pady": 6}
+        header = tk.Frame(self, bg=ws.PALETTE["BG"])
+        header.pack(fill="x", padx=12, pady=(10, 4))
+        self._back_button = ws.secondary_button(
+            header, "← Back to Main Menu",
+            lambda: self.controller.on_back_to_mode_select())
+        self._back_button.pack(side="left")
+        tk.Label(header, text="Pendulastic Workbench", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_TITLE).pack(side="left", padx=(16, 0))
 
-        self._back_button = tk.Button(
-            self, text="← Back to Main Menu",
-            command=lambda: self.controller.on_back_to_mode_select())
-        self._back_button.grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(6, 0))
+        files_card = ws.card_frame(self, "TRIAL FILES")
+        files_card.pack(fill="x", padx=12, pady=6)
 
-        tk.Label(self, text="Pendulastic Workbench", font=("Segoe UI", 14, "bold")
-                ).grid(row=1, column=0, columnspan=3, sticky="w", **pad)
+        format_row = tk.Frame(files_card, bg=ws.PALETTE["PANEL"])
+        format_row.pack(fill="x", pady=3)
+        tk.Label(format_row, text="IMU format:", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY, width=32, anchor="w").pack(side="left")
+        tk.Radiobutton(format_row, text="Single raw log (.jsonl)", variable=self._imu_format,
+                      value="jsonl", command=self._on_imu_format_changed,
+                      bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+                      selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["PANEL"],
+                      activeforeground=ws.PALETTE["FG"]).pack(side="left")
+        tk.Radiobutton(format_row, text="Split CSV (4 files)", variable=self._imu_format,
+                      value="split_csv", command=self._on_imu_format_changed,
+                      bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+                      selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["PANEL"],
+                      activeforeground=ws.PALETTE["FG"]).pack(side="left", padx=(12, 0))
 
-        self._file_row(2, "Phone IMU raw log (.jsonl or split CSV)", self._imu_path,
-                       [("IMU log", "*.jsonl *.csv"), ("All files", "*.*")], name="imu")
-        self._file_row(3, "Video (.mp4/.avi)", self._video_path,
+        self._imu_jsonl_frame = tk.Frame(files_card, bg=ws.PALETTE["PANEL"])
+        self._file_row(self._imu_jsonl_frame, "Phone IMU raw log (.jsonl)", self._imu_path,
+                       [("IMU log", "*.jsonl"), ("All files", "*.*")], name="imu")
+        self._imu_jsonl_frame.pack(fill="x")
+
+        self._imu_split_frame = tk.Frame(files_card, bg=ws.PALETTE["PANEL"])
+        self._build_split_csv_rows(self._imu_split_frame)
+        self._imu_split_frame.pack(fill="x")
+
+        self._on_imu_format_changed()
+
+        self._file_row(files_card, "Video (.mp4/.avi)", self._video_path,
                        [("Video", "*.mp4 *.avi"), ("All files", "*.*")], name="video")
-        self._file_row(4, "OptiTrack CSV", self._optitrack_path,
+        self._file_row(files_card, "OptiTrack CSV", self._optitrack_path,
                        [("CSV", "*.csv"), ("All files", "*.*")], name="optitrack")
 
-        tk.Label(self, text="HPE models to run:").grid(
-            row=5, column=0, sticky="nw", **pad)
-        model_frame = tk.Frame(self)
-        model_frame.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
+        session_card = ws.card_frame(self, "PARTICIPANT & SESSION")
+        session_card.pack(fill="x", padx=12, pady=6)
+        srow = tk.Frame(session_card, bg=ws.PALETTE["PANEL"])
+        srow.pack(fill="x")
+        tk.Label(srow, text="Participant ID:", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(srow, textvariable=self._participant_id, width=18,
+                 font=ws.FONT_BODY).grid(row=0, column=1, sticky="w", padx=(0, 20), pady=4)
+        tk.Label(srow, text="Session Date:", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=2, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(srow, textvariable=self._session_date, width=12,
+                 font=ws.FONT_BODY).grid(row=0, column=3, sticky="w", pady=4)
+
+        models_card = ws.card_frame(self, "HPE MODELS TO RUN")
+        models_card.pack(fill="x", padx=12, pady=6)
+        model_frame = tk.Frame(models_card, bg=ws.PALETTE["PANEL"])
+        model_frame.pack(fill="x")
         for i, name in enumerate(analysis_pipeline.MODEL_FUNCTIONS):
-            tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name]
-                          ).grid(row=i // 3, column=i % 3, sticky="w", padx=4)
+            tk.Checkbutton(model_frame, text=name, variable=self._model_vars[name],
+                          bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+                          selectcolor=ws.PALETTE["SURFACE"],
+                          activebackground=ws.PALETTE["PANEL"],
+                          activeforeground=ws.PALETTE["FG"]
+                         ).grid(row=i // 3, column=i % 3, sticky="w", padx=4, pady=2)
 
-        tk.Label(self, text="Femur length (cm, optional):").grid(
-            row=6, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._femur_cm, width=10).grid(
-            row=6, column=1, sticky="w", **pad)
+        pers_card = ws.card_frame(self, "PERSONALIZATION (OPTIONAL)")
+        pers_card.pack(fill="x", padx=12, pady=6)
+        prow = tk.Frame(pers_card, bg=ws.PALETTE["PANEL"])
+        prow.pack(fill="x")
+        tk.Label(prow, text="Femur length (cm):", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(prow, textvariable=self._femur_cm, width=10,
+                 font=ws.FONT_BODY).grid(row=0, column=1, sticky="w", padx=(0, 20), pady=4)
+        tk.Label(prow, text="Tibia length (cm):", bg=ws.PALETTE["PANEL"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).grid(
+            row=0, column=2, sticky="w", padx=(0, 6), pady=4)
+        tk.Entry(prow, textvariable=self._tibia_cm, width=10,
+                 font=ws.FONT_BODY).grid(row=0, column=3, sticky="w", pady=4)
 
-        tk.Label(self, text="Tibia length (cm, optional):").grid(
-            row=7, column=0, sticky="w", **pad)
-        tk.Entry(self, textvariable=self._tibia_cm, width=10).grid(
-            row=7, column=1, sticky="w", **pad)
+        ws.primary_button(self, "Load Trial", self._on_load_clicked).pack(pady=16)
 
-        tk.Button(self, text="Load Trial", command=self._on_load_clicked
-                 ).grid(row=8, column=0, columnspan=3, pady=16)
+    _COMPONENT_LABELS = {"accel": "Accelerometer", "gyro": "Gyroscope",
+                         "mag": "Magnetometer", "imu": "Raw IMU"}
+    _COMPONENT_FILETYPES = [("CSV", "*.csv"), ("All files", "*.*")]
 
-    def _file_row(self, row: int, label: str, var: tk.StringVar, filetypes,
+    def _build_split_csv_rows(self, parent) -> None:
+        for i, kind in enumerate(("accel", "gyro", "mag", "imu")):
+            tk.Label(parent, text=self._COMPONENT_LABELS[kind]).grid(
+                row=i, column=0, sticky="w", padx=12, pady=4)
+            tk.Entry(parent, textvariable=self._component_paths[kind], width=36,
+                    state="readonly").grid(row=i, column=1, sticky="we", padx=4)
+            tk.Button(parent, text="Browse...",
+                     command=lambda k=kind: self._browse_component(k)
+                     ).grid(row=i, column=2, sticky="w", padx=4)
+            tk.Label(parent, textvariable=self._component_status[kind], anchor="w",
+                    justify="left", wraplength=260
+                    ).grid(row=i, column=3, sticky="w", padx=(8, 12))
+
+    def _on_imu_format_changed(self) -> None:
+        if self._imu_format.get() == "split_csv":
+            self._imu_jsonl_frame.pack_forget()
+            self._imu_split_frame.pack(fill="x")
+        else:
+            self._imu_split_frame.pack_forget()
+            self._imu_jsonl_frame.pack(fill="x")
+
+    def _browse_component(self, kind: str) -> None:
+        path = filedialog.askopenfilename(filetypes=self._COMPONENT_FILETYPES)
+        if not path:
+            return
+        # Validate first, then update the path StringVar and the status
+        # label together from the same result -- never leave a stale
+        # ok=True validation (from a PREVIOUS successful browse) associated
+        # with a path the UI is now displaying that wasn't actually
+        # validated (e.g. if this browse's validation fails).
+        result = engine.validate_component_csv(path, kind)
+        self._component_validations[kind] = dict(result, path=path)
+        self._component_paths[kind].set(path)
+        if result["ok"]:
+            self._component_status[kind].set(
+                f"✓ {result['n_samples']} samples @ {result['fs_eff']:.1f} Hz")
+        else:
+            self._component_status[kind].set(f"✗ {os.path.basename(path)}: {result['error']}")
+
+    def _file_row(self, parent, label: str, var: tk.StringVar, filetypes,
                   name: str) -> None:
-        tk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=12, pady=6)
-        tk.Entry(self, textvariable=var, width=48, state="readonly").grid(
-            row=row, column=1, sticky="we", padx=4)
-        btn = tk.Button(self, text="Browse...",
-                       command=lambda: self._browse(var, filetypes))
-        btn.grid(row=row, column=2, sticky="w", padx=4)
+        row = tk.Frame(parent, bg=ws.PALETTE["PANEL"])
+        row.pack(fill="x", pady=3)
+        tk.Label(row, text=label, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                 font=ws.FONT_BODY, width=32, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=40, state="readonly",
+                 font=ws.FONT_BODY).pack(side="left", padx=4, fill="x", expand=True)
+        btn = ws.secondary_button(row, "Browse...", lambda: self._browse(var, filetypes))
+        btn.pack(side="left", padx=4)
         self._browse_buttons[name] = btn
 
     def _browse(self, var: tk.StringVar, filetypes) -> None:
@@ -130,10 +237,15 @@ class TrialLoadPanel(tk.Frame):
             except ValueError:
                 return None
 
+        imu_format = self._imu_format.get()
         return {
+            "imu_format": imu_format,
             "imu_path": self._imu_path.get() or None,
+            "imu_components": dict(self._component_validations) if imu_format == "split_csv" else {},
             "video_path": self._video_path.get() or None,
             "optitrack_path": self._optitrack_path.get() or None,
+            "participant_id": self._participant_id.get().strip(),
+            "session_date": self._session_date.get().strip(),
             "models": [name for name, var in self._model_vars.items() if var.get()],
             "femur_length_cm": _parse_float(self._femur_cm.get()),
             "tibia_length_cm": _parse_float(self._tibia_cm.get()),
@@ -141,8 +253,22 @@ class TrialLoadPanel(tk.Frame):
 
     def _on_load_clicked(self) -> None:
         selection = self.get_selection()
-        if not any([selection["imu_path"], selection["video_path"],
-                   selection["optitrack_path"]]):
+
+        if selection["imu_format"] == "split_csv":
+            has_any = any(self._component_paths[k].get() for k in ("accel", "gyro", "mag", "imu"))
+            missing_or_invalid = [k for k in ("accel", "gyro", "mag", "imu")
+                                  if not selection["imu_components"].get(k, {}).get("ok")]
+            if has_any and missing_or_invalid:
+                messagebox.showerror(
+                    "Incomplete IMU intake",
+                    "The following component(s) still need a valid file before the IMU "
+                    "trace can be bound: " + ", ".join(missing_or_invalid))
+                return
+            imu_ready = has_any and not missing_or_invalid
+        else:
+            imu_ready = bool(selection["imu_path"])
+
+        if not any([imu_ready, selection["video_path"], selection["optitrack_path"]]):
             messagebox.showerror("No trial data",
                                  "Select at least one of: IMU log, video, OptiTrack CSV.")
             return
@@ -156,7 +282,7 @@ class WorkbenchView(tk.Frame):
     controller: App instance."""
 
     def __init__(self, parent, controller) -> None:
-        super().__init__(parent)
+        super().__init__(parent, bg=ws.PALETTE["BG"])
         self.controller = controller
         self._cap: Optional[cv2.VideoCapture] = None
         self._fps: float = 30.0
@@ -170,60 +296,155 @@ class WorkbenchView(tk.Frame):
         self._reference_var = tk.StringVar(value="")
         self._annotations: dict = {}     # {label: (frame_index, t_sec)}
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
+        self._raw_diagnostics: Optional[dict] = None
         self._build_widgets()
 
+    _PER_TRACE_COLS = ("label", "pt_score", "mas", "area_ratio", "N", "f_hz", "R2n",
+                       "phi_max_ratio", "omega_max_n", "omega_min_n")
+    _PER_TRACE_HDRS = ("Trace", "PT(7p)", "MAS", "Area Ratio", "N", "f (Hz)", "R2n",
+                       "φmax_ratio", "ωmax_n", "ωmin_n")
+    _PER_TRACE_W    = (100, 70, 50, 90, 60, 70, 70, 90, 80, 80)
+
+    _VS_REF_COLS = ("label", "reference", "rmse_deg", "mae_deg", "lag_sec",
+                    "timing_offset_sec", "status")
+    _VS_REF_HDRS = ("Trace", "Reference", "RMSE (deg)", "MAE (deg)",
+                    "Lag (s)", "Timing Offset (s)", "Status")
+    _VS_REF_W    = (100, 100, 90, 90, 70, 130, 110)
+
     def _build_widgets(self) -> None:
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = ttk.PanedWindow(self, orient="horizontal",
+                                style=ws.STYLE_PANEDWINDOW)
         paned.pack(fill="both", expand=True)
 
-        left = tk.Frame(paned)
+        left = tk.Frame(paned, bg=ws.PALETTE["BG"])
         paned.add(left, weight=1)
 
-        self._video_label = tk.Label(left, bg="black")
-        self._video_label.pack(fill="both", expand=True)
+        self._video_label = tk.Label(left, bg="black",
+                                     highlightbackground=ws.PALETTE["BORDER"],
+                                     highlightthickness=1)
+        self._video_label.pack(fill="both", expand=True, padx=8, pady=8)
 
         self._scrubber = ttk.Scale(left, from_=0, to=0, orient="horizontal",
-                                   variable=self._scrub_var,
-                                   command=self._on_scrub)
+                                   style=ws.STYLE_SCALE,
+                                   variable=self._scrub_var, command=self._on_scrub)
         self._scrubber.pack(fill="x", padx=8, pady=4)
 
-        self._right = tk.Frame(paned)
+        self._right = tk.Frame(paned, bg=ws.PALETTE["BG"])
         paned.add(self._right, weight=1)
 
-        top_controls = tk.Frame(self._right)
+        top_controls = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         top_controls.pack(fill="x", padx=8, pady=4)
-        tk.Label(top_controls, text="Reference:").pack(side="left")
-        self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "")
+        tk.Label(top_controls, text="Reference:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
+        self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "",
+                                              style=ws.STYLE_MENUBUTTON)
         self._reference_menu.pack(side="left", padx=6)
         self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
-        self._load_another_button = tk.Button(
-            top_controls, text="← Load Different Trial",
-            command=lambda: self.controller.on_workbench_load_another())
+        self._load_another_button = ws.secondary_button(
+            top_controls, "← Load Different Trial",
+            lambda: self.controller.on_workbench_load_another())
         self._load_another_button.pack(side="right", padx=6)
 
-        annot_toolbar = tk.Frame(self._right)
+        annot_toolbar = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         annot_toolbar.pack(fill="x", padx=8, pady=4)
-        tk.Label(annot_toolbar, text="Milestone:").pack(side="left")
+        tk.Label(annot_toolbar, text="Milestone:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"], font=ws.FONT_BODY).pack(side="left")
         ttk.OptionMenu(annot_toolbar, self._pending_milestone,
-                      MILESTONE_LABELS[0], *MILESTONE_LABELS).pack(side="left", padx=6)
-        tk.Button(annot_toolbar, text="Mark Here",
-                 command=self._on_mark_milestone).pack(side="left", padx=6)
-        tk.Button(annot_toolbar, text="Export Session...",
-                 command=self._on_export_clicked).pack(side="right", padx=6)
+                      MILESTONE_LABELS[0], *MILESTONE_LABELS,
+                      style=ws.STYLE_MENUBUTTON).pack(side="left", padx=6)
+        ws.secondary_button(annot_toolbar, "Mark Here",
+                            self._on_mark_milestone).pack(side="left", padx=6)
+        ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
+                            self._on_export_clicked).pack(side="right", padx=6)
+        self._export_csv_button = tk.Menubutton(
+            annot_toolbar, text="Export CSV ▾", bg=ws.PALETTE["BTN"],
+            fg=ws.PALETTE["FG"], activebackground=ws.PALETTE["BTN_ACT"],
+            activeforeground="#FFFFFF", relief="flat", bd=0, padx=10, pady=4,
+            font=ws.FONT_BODY, cursor="hand2")
+        self._export_csv_menu = tk.Menu(
+            self._export_csv_button, tearoff=0, bg=ws.PALETTE["PANEL"],
+            fg=ws.PALETTE["FG"], activebackground=ws.PALETTE["BTN_ACT"],
+            activeforeground="#FFFFFF")
+        self._export_csv_menu.add_command(label="Traces...",
+                                          command=self._on_export_traces_csv)
+        self._export_csv_menu.add_command(label="Per-Trace Metrics...",
+                                          command=self._on_export_per_trace_csv)
+        self._export_csv_menu.add_command(label="Comparison Metrics...",
+                                          command=self._on_export_vs_reference_csv)
+        self._export_csv_menu.add_command(label="Annotations...",
+                                          command=self._on_export_annotations_csv)
+        self._export_csv_button.configure(menu=self._export_csv_menu)
+        self._export_csv_button.pack(side="right", padx=6)
 
-        self._visibility_frame = tk.Frame(self._right)
+        self._visibility_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
         self._visibility_frame.pack(fill="x", padx=8, pady=4)
 
+        # Pack order matters here (and is the reason the tables are built
+        # before the plot canvas even though they render *below* it): pack
+        # honors each child's requested size in packing order and only hands
+        # leftover space to expand=True children. With the plot canvas packed
+        # first, its 400px requested figure height was claimed before the
+        # tables were considered, and at App's own minsize(900, 600) the
+        # vs-reference table got 0 height and never mapped. Packing the tables
+        # first with side="bottom" reserves their requested height (and keeps
+        # them visually below the plot), leaving the canvas to absorb whatever
+        # remains.
+        tables_frame = tk.Frame(self._right, bg=ws.PALETTE["BG"])
+        tables_frame.pack(side="bottom", fill="x", padx=8, pady=4)
+
+        per_trace_card = ws.card_frame(tables_frame, "PER-TRACE METRICS")
+        per_trace_card.pack(fill="x", pady=(0, 6))
+        self._per_trace_tree = self._make_metrics_treeview(
+            per_trace_card, self._PER_TRACE_COLS, self._PER_TRACE_HDRS, self._PER_TRACE_W)
+
+        vs_ref_card = ws.card_frame(tables_frame, "VS-REFERENCE METRICS")
+        vs_ref_card.pack(fill="x", pady=(0, 6))
+        self._vs_ref_tree = self._make_metrics_treeview(
+            vs_ref_card, self._VS_REF_COLS, self._VS_REF_HDRS, self._VS_REF_W)
+
+        raw_diag_card = ws.card_frame(tables_frame, "RAW SENSOR CROSS-CHECKS")
+        raw_diag_card.pack(fill="x")
+        self._raw_diag_label = tk.Label(
+            raw_diag_card, text="(independent of PT score fusion -- none loaded)",
+            bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"], font=ws.FONT_BODY,
+            justify="left", anchor="w")
+        self._raw_diag_label.pack(fill="x", padx=8, pady=4)
+
         self._fig = Figure(figsize=(6, 4), dpi=100)
+        self._fig.patch.set_facecolor(ws.PALETTE["BG"])
         self._ax = self._fig.add_subplot(111)
-        self._ax.set_xlabel("Time (s)")
-        self._ax.set_ylabel("Knee Angle (deg)")
+        self._style_axes()
         self._plot_canvas = FigureCanvasTkAgg(self._fig, master=self._right)
-        self._plot_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=4)
+        self._plot_canvas.get_tk_widget().pack(side="top", fill="both", expand=True,
+                                               padx=8, pady=4)
         self._fig.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
-        self._metrics_text = tk.Text(self._right, height=8, state="disabled")
-        self._metrics_text.pack(fill="x", padx=8, pady=4)
+        self._recompute_metrics()
+
+    def _style_axes(self) -> None:
+        self._ax.set_facecolor(ws.PALETTE["SURFACE"])
+        self._ax.set_xlabel("Time (s)", color=ws.PALETTE["FG2"])
+        self._ax.set_ylabel("Knee Angle (deg)", color=ws.PALETTE["FG2"])
+        self._ax.tick_params(colors=ws.PALETTE["FG2"])
+        for spine in self._ax.spines.values():
+            spine.set_color(ws.PALETTE["BORDER"])
+        self._ax.grid(True, color=ws.PALETTE["BORDER"], linewidth=0.5, alpha=0.6)
+
+    def _make_metrics_treeview(self, parent, cols, hdrs, widths) -> ttk.Treeview:
+        wrap = tk.Frame(parent, bg=ws.PALETTE["PANEL"])
+        wrap.pack(fill="x")
+        tree = ttk.Treeview(wrap, style=ws.STYLE_TREEVIEW, columns=cols,
+                            show="headings", height=4, selectmode="none")
+        for key, hdr, w in zip(cols, hdrs, widths):
+            tree.heading(key, text=hdr)
+            tree.column(key, width=w, anchor="center", stretch=False)
+        tree.column(cols[0], anchor="w", stretch=True)
+        sb = ttk.Scrollbar(wrap, orient="vertical", style=ws.STYLE_SCROLLBAR,
+                           command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        return tree
 
     def set_traces(self, traces: dict) -> None:
         """traces: {label: (t, angle)}. Rebuilds the plot and the visibility/
@@ -244,25 +465,41 @@ class WorkbenchView(tk.Frame):
         for widget in self._visibility_frame.winfo_children():
             widget.destroy()
         self._ax.clear()
-        self._ax.set_xlabel("Time (s)")
-        self._ax.set_ylabel("Knee Angle (deg)")
+        self._style_axes()
         self._trace_lines = {}
         self._visible_vars = {}
         self._lag_override_vars = {}
 
         for label, (t, angle) in traces.items():
-            row = tk.Frame(self._visibility_frame)
+            # Styled "chip" per trace (design spec Section 4) -- card-colored
+            # with a border and consistent padding, so this row reads as part
+            # of the dark toolbar stack instead of a band of default-gray
+            # system widgets between the toolbar and the plot.
+            row = tk.Frame(self._visibility_frame, bg=ws.PALETTE["PANEL"],
+                           padx=6, pady=3,
+                           highlightbackground=ws.PALETTE["BORDER"],
+                           highlightthickness=1)
             row.pack(side="left", padx=4)
 
             var = prev_visible[label] if label in prev_visible else tk.BooleanVar(value=True)
             self._visible_vars[label] = var
             tk.Checkbutton(row, text=label, variable=var,
-                          command=self._on_visibility_changed).pack(side="left")
+                          command=self._on_visibility_changed,
+                          bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                          font=ws.FONT_BODY, selectcolor=ws.PALETTE["SURFACE"],
+                          activebackground=ws.PALETTE["PANEL"],
+                          activeforeground=ws.PALETTE["FG"]).pack(side="left")
 
             lag_var = prev_lag[label] if label in prev_lag else tk.StringVar(value="")
             self._lag_override_vars[label] = lag_var
-            tk.Label(row, text="lag(s):", font=("Segoe UI", 7)).pack(side="left")
-            lag_entry = tk.Entry(row, textvariable=lag_var, width=6)
+            tk.Label(row, text="lag(s):", bg=ws.PALETTE["PANEL"],
+                     fg=ws.PALETTE["FG2"], font=ws.FONT_SMALL).pack(side="left")
+            lag_entry = tk.Entry(row, textvariable=lag_var, width=6,
+                                 bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"],
+                                 insertbackground=ws.PALETTE["FG"],
+                                 relief="flat", highlightthickness=1,
+                                 highlightbackground=ws.PALETTE["BORDER"],
+                                 font=ws.FONT_BODY)
             lag_entry.pack(side="left")
             lag_entry.bind("<Return>", lambda e: self._recompute_metrics())
             lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
@@ -291,6 +528,7 @@ class WorkbenchView(tk.Frame):
 
         self._redraw_annotations()
         self._plot_canvas.draw_idle()
+        self._update_export_csv_state()
 
     def _default_reference(self, traces: dict) -> str:
         """OptiTrack present -> OptiTrack; else IMU present -> IMU; else the
@@ -329,8 +567,15 @@ class WorkbenchView(tk.Frame):
         from both):
 
         - "per_trace": each visible trace's own windowed_pt_params
-          (area_ratio, N, f, etc.) -- a per-modality diagnostic, not a
-          comparison. Includes the reference trace itself.
+          (area_ratio, N, f, etc.) as the sub-metric breakdown, plus the
+          composite Popović PT score and MAS estimate (pt_score, mas) --
+          computed from pendulastic_pt_score.compute_pt_params (the
+          function HEALTHY_REF was calibrated against), NOT from the
+          windowed params, whose omega_min_n/phi_max_ratio/area_ratio are
+          on different scales. pt_score/mas are both None together when
+          compute_pt_params returns None (insufficient signal) for that
+          trace. A per-modality diagnostic, not a comparison. Includes the
+          reference trace itself.
         - "vs_reference": every other visible trace's compare_pair result
           against the reference-selector's chosen reference, plus a
           timing_offset_sec (extrema_jitter-based "timing jitter across
@@ -348,7 +593,15 @@ class WorkbenchView(tk.Frame):
         for label, (t, y) in self._traces.items():
             if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
                 continue
-            out["per_trace"][label] = engine.windowed_pt_params(t, y)
+            params = engine.windowed_pt_params(t, y)
+            full_params = pendulastic_pt_score.compute_pt_params(t, y)
+            if full_params is not None:
+                params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
+                params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+            else:
+                params["pt_score"] = None
+                params["mas"] = None
+            out["per_trace"][label] = params
 
         ref_t, ref_y = self._traces[ref_label]
         ref_jitter = engine.extrema_jitter(ref_t, ref_y)
@@ -369,36 +622,62 @@ class WorkbenchView(tk.Frame):
         return out
 
     def _recompute_metrics(self) -> None:
-        """Renders get_metrics_snapshot() as text in the metrics readout:
-        one line per visible trace's own PT parameters, then one line per
-        non-reference visible trace's comparison against the reference."""
+        """Populates both metrics Treeview tables from get_metrics_snapshot()
+        -- the same method CSV export (Task 5) reads from, so displayed and
+        exported values are always identical. Shows a single 'No data yet'
+        placeholder row per table when its source dict is empty, rather
+        than rendering a blank (ambiguous empty-vs-broken) table."""
         snapshot = self.get_metrics_snapshot()
-        self._metrics_text.configure(state="normal")
-        self._metrics_text.delete("1.0", "end")
-        ref_label = snapshot["reference"]
-        if not ref_label:
-            self._metrics_text.configure(state="disabled")
-            return
 
+        for tree in (self._per_trace_tree, self._vs_ref_tree):
+            for item in tree.get_children():
+                tree.delete(item)
+
+        if not snapshot["per_trace"]:
+            self._per_trace_tree.insert(
+                "", "end", values=("No data yet", "", "", "", "", "", ""))
         for label, pt in snapshot["per_trace"].items():
-            self._metrics_text.insert(
-                "end",
-                f"{label}: area_ratio={pt['area_ratio']:.3f}  N={pt['N']:.1f}  "
-                f"f={pt['f']:.2f} Hz\n")
+            if pt["pt_score"] is not None:
+                pt_str = f"{pt['pt_score']:.3f}"
+                mas_str = str(pt["mas"])
+            else:
+                pt_str = "n/a"
+                mas_str = "n/a"
+            self._per_trace_tree.insert("", "end", values=(
+                label, pt_str, mas_str,
+                f"{pt['area_ratio']:.3f}", f"{pt['N']:.1f}",
+                f"{pt['f']:.2f}", f"{pt['R2n']:.3f}", f"{pt['phi_max_ratio']:.3f}",
+                f"{pt['omega_max_n']:.3f}", f"{pt['omega_min_n']:.3f}"))
 
-        self._metrics_text.insert("end", "\n")
-
+        if not snapshot["vs_reference"]:
+            self._vs_ref_tree.insert(
+                "", "end", values=("No data yet", "", "", "", "", "", ""))
+        ref_label = snapshot["reference"]
         for label, result in snapshot["vs_reference"].items():
             if result["status"] == "ok":
-                jitter_str = (f"{result['timing_offset_sec']:.3f}s"
+                jitter_str = (f"{result['timing_offset_sec']:.3f}"
                              if result["timing_offset_sec"] is not None else "n/a")
-                line = (f"{label} vs {ref_label}: RMSE={result['rmse_deg']:.1f} deg  "
-                       f"MAE={result['mae_deg']:.1f} deg  lag={result['lag_sec']:.2f}s  "
-                       f"jitter={jitter_str}\n")
+                self._vs_ref_tree.insert("", "end", values=(
+                    label, ref_label, f"{result['rmse_deg']:.2f}",
+                    f"{result['mae_deg']:.2f}", f"{result['lag_sec']:.2f}",
+                    jitter_str, "ok"))
             else:
-                line = f"{label} vs {ref_label}: {result['error']}\n"
-            self._metrics_text.insert("end", line)
-        self._metrics_text.configure(state="disabled")
+                self._vs_ref_tree.insert("", "end", values=(
+                    label, ref_label, "", "", "", "", result["error"]))
+
+        if self._raw_diagnostics is not None:
+            peak_vel = self._raw_diagnostics["peak_gyro_velocity_dps"]
+            release_t = self._raw_diagnostics["accel_release_time_sec"]
+            release_str = (f"t={release_t:.2f}s" if release_t is not None
+                           else "unavailable (sample rate too low)")
+            self._raw_diag_label.configure(
+                text=f"Peak angular velocity (raw gyro): {peak_vel:.1f} deg/s   |   "
+                     f"Release detected (raw accel, 5Hz low-pass): {release_str}")
+        else:
+            self._raw_diag_label.configure(
+                text="(independent of PT score fusion -- none loaded)")
+
+        self._update_export_csv_state()
 
     def _on_mark_milestone(self) -> None:
         """Stale-frame binding (design spec Section 6): reads
@@ -411,6 +690,7 @@ class WorkbenchView(tk.Frame):
         self._annotations[label] = (fi, t_sec)
         self._draw_milestone_artist(label, t_sec)
         self._plot_canvas.draw_idle()
+        self._update_export_csv_state()
 
     def _draw_milestone_artist(self, label: str, t_sec: float) -> None:
         if not hasattr(self, "_annotation_artists"):
@@ -436,6 +716,10 @@ class WorkbenchView(tk.Frame):
     def get_annotations(self) -> dict:
         return dict(self._annotations)
 
+    def set_raw_diagnostics(self, diagnostics: Optional[dict]) -> None:
+        self._raw_diagnostics = diagnostics
+        self._recompute_metrics()
+
     def export_session_to(self, out_path: str, trial_meta: dict) -> None:
         session = engine.export_session(
             trial_meta, self.get_annotations(), self.get_metrics_snapshot())
@@ -449,6 +733,71 @@ class WorkbenchView(tk.Frame):
             return
         self.export_session_to(out_path, self.controller.get_trial_meta())
         messagebox.showinfo("Export complete", f"Session exported to {out_path}")
+
+    def _update_export_csv_state(self) -> None:
+        has_traces = bool(self._traces)
+        has_annotations = bool(self._annotations)
+        for i in (0, 1, 2):
+            self._export_csv_menu.entryconfig(i, state="normal" if has_traces else "disabled")
+        self._export_csv_menu.entryconfig(3, state="normal" if has_annotations else "disabled")
+
+    def _meta_ids(self) -> tuple:
+        meta = self.controller.get_trial_meta()
+        return meta.get("participant_id", ""), meta.get("session_date", "")
+
+    def _default_csv_filename(self, prefix: str) -> str:
+        participant_id, session_date = self._meta_ids()
+        parts = [prefix, participant_id or "session"] + ([session_date] if session_date else [])
+        return "_".join(parts) + ".csv"
+
+    def _prompt_and_write_csv(self, prefix: str, fieldnames: list, rows: list) -> None:
+        out_path = filedialog.asksaveasfilename(
+            title=f"Save {prefix.replace('_', ' ').title()} CSV",
+            initialfile=self._default_csv_filename(prefix),
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not out_path:
+            return
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+        messagebox.showinfo("Exported", f"Saved to:\n{out_path}")
+
+    def _visible_traces(self) -> dict:
+        """Only the currently-checked traces, mirroring the visibility filter
+        get_metrics_snapshot() applies (a trace with no visibility var is
+        treated as visible). Without this the traces CSV would export hidden
+        traces that the per-trace and vs-reference CSVs -- both fed from
+        get_metrics_snapshot() -- have already excluded."""
+        return {label: pair for label, pair in self._traces.items()
+                if self._visible_vars.get(label, tk.BooleanVar(value=True)).get()}
+
+    def _on_export_traces_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.traces_to_csv_rows(
+            self._visible_traces(), participant_id, session_date)
+        self._prompt_and_write_csv("traces", fieldnames, rows)
+
+    def _on_export_per_trace_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        snapshot = self.get_metrics_snapshot()
+        fieldnames, rows = engine.per_trace_metrics_to_csv_rows(
+            snapshot["per_trace"], participant_id, session_date)
+        self._prompt_and_write_csv("per_trace_metrics", fieldnames, rows)
+
+    def _on_export_vs_reference_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        snapshot = self.get_metrics_snapshot()
+        fieldnames, rows = engine.vs_reference_metrics_to_csv_rows(
+            snapshot["reference"], snapshot["vs_reference"], participant_id, session_date)
+        self._prompt_and_write_csv("comparison_metrics", fieldnames, rows)
+
+    def _on_export_annotations_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.annotations_to_csv_rows(
+            self.get_annotations(), participant_id, session_date)
+        self._prompt_and_write_csv("annotations", fieldnames, rows)
 
     def load_video(self, path: str) -> None:
         if self._cap is not None:
@@ -513,15 +862,19 @@ class App(tk.Tk):
         self.geometry("1200x800")
         self.resizable(True, True)
         self.minsize(900, 600)
+        ws.apply_ttk_theme(self)
+        self.configure(bg=ws.PALETTE["BG"])
 
         self._trial_meta: dict = {}
+        self._imu_reference: list = []
         self._status_var = tk.StringVar(value="")
 
         self._load_panel = TrialLoadPanel(self, controller=self)
         self._workbench_view = WorkbenchView(self, controller=self)
         self._load_panel.pack(fill="both", expand=True)
-        tk.Label(self, textvariable=self._status_var, anchor="w").pack(
-            side="bottom", fill="x", padx=8, pady=2)
+        tk.Label(self, textvariable=self._status_var, anchor="w",
+                bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
+                font=ws.FONT_SMALL).pack(side="bottom", fill="x", padx=8, pady=2)
 
     def get_trial_meta(self) -> dict:
         return dict(self._trial_meta)
@@ -541,28 +894,52 @@ class App(tk.Tk):
         spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
         Video HPE model inference runs on a background thread since it's
         the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline."""
+        fast enough to run inline. IMU input is either a single JSONL raw
+        log or four independently-validated split-CSV components (design
+        spec 2026-08-04-sequential-csv-intake) -- TrialLoadPanel.get_selection()
+        distinguishes the two via selection["imu_format"]."""
         traces = {}
+        imu_format = selection.get("imu_format", "jsonl")
         self._trial_meta = {
-            "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
+            "participant_id": selection["participant_id"],
+            "session_date": selection["session_date"],
             "models": selection["models"],
             "femur_length_cm": selection["femur_length_cm"],
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
-        if selection["imu_path"]:
-            ft_ratio = None
-            method_override = None
-            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-                # Supplying limb lengths means the researcher wants to validate
-                # the personalized-ratio Ockendon path (Section 3a) -- ft_ratio
-                # alone does nothing unless the IMU trace actually runs through
-                # ockendon_deg, so force the method rather than silently no-op
-                # if the persisted tuning config's method is "relative".
-                method_override = "ockendon_flipped"
+        ft_ratio = None
+        method_override = None
+        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
+            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+            method_override = "ockendon_flipped"
+
+        if imu_format == "split_csv":
+            components = selection.get("imu_components", {})
+            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
+                try:
+                    t, angle, imu_reference = engine.load_imu_trial_from_components(
+                        components, ft_ratio=ft_ratio, method=method_override)
+                    traces["imu"] = (t, angle)
+                    self._trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._trial_meta so it never flows into
+                    # export_session()'s output -- it can be megabytes for a
+                    # real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._imu_reference = imu_reference
+                except Exception as e:
+                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+        elif selection["imu_path"]:
+            self._trial_meta["imu_path"] = selection["imu_path"]
             try:
                 t, angle = engine.load_imu_trial(
                     selection["imu_path"], ft_ratio=ft_ratio, method=method_override)

@@ -155,9 +155,16 @@ start_msg = (
 
 ### Module docstring and status text
 
-The top-of-file docstring (`master_app.py:11`, "Saves video to: ...") and the status/help string
-around `master_app.py:965` ("...Participant_/Position_/Height_ folders.") are updated to describe
-the new two-level structure.
+The top-of-file docstring (`master_app.py:11`, "Saves video to: ...") is updated to describe the
+new two-level structure.
+
+**Correction (post-implementation):** the status/help string around `master_app.py:965`
+("...Participant_/Position_/Height_ folders.") is **not** touched, and this was the right call —
+it belongs to the "RUN BATCH EVALUATION" button, which calls into the unchanged, out-of-scope
+`analysis_pipeline.py` and still genuinely expects the old `Position_/Height_` layout. Rewording
+that hint to describe the new structure would have made it actively misleading about what the
+still-unmodified analysis pipeline actually scans. This overrides the line above; the plan's Global
+Constraints section already caught this before implementation and excluded it.
 
 ---
 

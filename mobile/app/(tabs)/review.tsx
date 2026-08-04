@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Config } from "../../constants/Config";
-import { T } from "../../constants/Theme";
+import { SIZE, T, TYPE } from "../../constants/Theme";
 import { useStore } from "../../store";
 
 type TrialStatus =
@@ -167,7 +167,7 @@ export default function ReviewScreen() {
 
         {status === "approved" && (
           <View style={[s.card, { borderColor: T.successBorder, backgroundColor: T.successBg }]}>
-            <Text style={{ color: T.success, fontSize: 14, lineHeight: 20 }}>
+            <Text style={{ color: T.success, fontSize: TYPE.body, lineHeight: 24, fontWeight: "600" }}>
               Trial approved — open the Analysis tab to view results.
             </Text>
           </View>
@@ -175,7 +175,7 @@ export default function ReviewScreen() {
 
         {status === "rejected" && (
           <View style={[s.card, { borderColor: T.dangerBorder, backgroundColor: T.dangerBg }]}>
-            <Text style={{ color: T.danger, fontSize: 14, lineHeight: 20 }}>
+            <Text style={{ color: T.danger, fontSize: TYPE.body, lineHeight: 24, fontWeight: "600" }}>
               Trial rejected — record a new trial and return here to review it.
             </Text>
           </View>
@@ -183,7 +183,7 @@ export default function ReviewScreen() {
 
         {status === "error" && (
           <View style={[s.card, { borderColor: T.dangerBorder, backgroundColor: T.dangerBg }]}>
-            <Text style={{ color: T.danger, fontSize: 14, lineHeight: 20 }}>
+            <Text style={{ color: T.danger, fontSize: TYPE.body, lineHeight: 24, fontWeight: "600" }}>
               The pipeline reported an error.{activeTrial.error ? `\n\n${activeTrial.error}` : ""}
             </Text>
           </View>
@@ -205,34 +205,34 @@ function MetaRow({ label, value, last }: { label: string; value: string; last?: 
 
 const s = StyleSheet.create({
   bg:             { flex: 1, backgroundColor: T.bg },
-  header:         { paddingHorizontal: 16, paddingVertical: 14 },
-  title:          { fontSize: 22, fontWeight: "700", color: T.text },
-  scroll:         { padding: 16, gap: 14, paddingBottom: 40 },
+  header:         { paddingHorizontal: 18, paddingVertical: 16 },
+  title:          { fontSize: TYPE.title, fontWeight: "800", color: T.text },
+  scroll:         { padding: 18, gap: 16, paddingBottom: 44 },
 
-  centred:        { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 10 },
-  emptyTitle:     { fontSize: 17, fontWeight: "600", color: T.text },
-  emptySub:       { fontSize: 14, color: T.textSub, textAlign: "center" },
+  centred:        { flex: 1, alignItems: "center", justifyContent: "center", padding: 40, gap: 12 },
+  emptyTitle:     { fontSize: TYPE.title, fontWeight: "700", color: T.text },
+  emptySub:       { fontSize: TYPE.body, color: T.textSub, textAlign: "center" },
 
-  card:           { backgroundColor: T.card, borderRadius: 14, borderWidth: 1, borderColor: T.border, padding: 16, gap: 10 },
-  sectionLabel:   { fontSize: 11, color: T.label, fontWeight: "600", letterSpacing: 0.8, textTransform: "uppercase" },
+  card:           { backgroundColor: T.card, borderRadius: SIZE.cardRadius, borderWidth: 1.5, borderColor: T.border, padding: 20, gap: 12 },
+  sectionLabel:   { fontSize: TYPE.label, color: T.label, fontWeight: "700", letterSpacing: 0.9, textTransform: "uppercase" },
 
-  metaRow:        { flexDirection: "row", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
-  metaLabel:      { fontSize: 14, color: T.textSub },
-  metaValue:      { fontSize: 14, color: T.text, fontWeight: "500", textTransform: "capitalize" },
+  metaRow:        { flexDirection: "row", justifyContent: "space-between", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: T.borderFaint },
+  metaLabel:      { fontSize: TYPE.body, color: T.textSub },
+  metaValue:      { fontSize: TYPE.body, color: T.text, fontWeight: "700", textTransform: "capitalize" },
 
-  processingRow:  { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6 },
-  processingText: { color: T.textSub, fontSize: 14 },
+  processingRow:  { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
+  processingText: { color: T.textSub, fontSize: TYPE.body, fontWeight: "600" },
 
-  chip:           { alignSelf: "flex-start", borderRadius: 8, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6 },
-  chipText:       { fontSize: 13, fontWeight: "600" },
+  chip:           { alignSelf: "flex-start", borderRadius: 8, borderWidth: 1.5, paddingHorizontal: 14, paddingVertical: 8 },
+  chipText:       { fontSize: TYPE.caption, fontWeight: "700" },
 
-  decisionNote:   { fontSize: 13, color: T.textSub, lineHeight: 19 },
-  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: T.dangerBorder },
-  errorText:      { color: T.danger, fontSize: 13 },
-  decisionRow:    { flexDirection: "row", gap: 12, marginTop: 4 },
-  rejectBtn:      { flex: 1, borderWidth: 1, borderColor: T.dangerBorder, borderRadius: 10, padding: 14, alignItems: "center" },
-  rejectBtnText:  { color: T.danger, fontSize: 14, fontWeight: "500" },
-  approveBtn:     { flex: 1, backgroundColor: T.success, borderRadius: 10, padding: 14, alignItems: "center" },
-  approveBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  decisionNote:   { fontSize: TYPE.caption, color: T.textSub, lineHeight: 21 },
+  errorBox:       { backgroundColor: T.dangerBg, borderRadius: 8, padding: 12, borderWidth: 1.5, borderColor: T.dangerBorder },
+  errorText:      { color: T.danger, fontSize: TYPE.caption, fontWeight: "600" },
+  decisionRow:    { flexDirection: "row", gap: 14, marginTop: 6 },
+  rejectBtn:      { flex: 1, borderWidth: 2, borderColor: T.dangerBorder, borderRadius: SIZE.btnRadius, padding: 16, alignItems: "center", minHeight: 56, justifyContent: "center" },
+  rejectBtnText:  { color: T.danger, fontSize: TYPE.body, fontWeight: "700" },
+  approveBtn:     { flex: 1, backgroundColor: T.success, borderRadius: SIZE.btnRadius, padding: 16, alignItems: "center", minHeight: 56, justifyContent: "center" },
+  approveBtnText: { color: "#fff", fontSize: TYPE.body, fontWeight: "700" },
   btnDim:         { opacity: 0.4 },
 });

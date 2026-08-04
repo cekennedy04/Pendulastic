@@ -96,6 +96,19 @@ MIN_USABLE_HZ = 25.0
 GYRO_BIAS_WINDOW_S = 1.0
 GYRO_BIAS_MIN_SAMPLES = 5   # below this the mean is too noisy to trust; keep bias at 0
 
+# Stillness gate for calibrate_gyro_bias(): a window only counts as
+# "genuinely still" (not examiner handling) if raw gyro AND raw accel both
+# stay within these peak-to-peak bounds over GYRO_BIAS_WINDOW_S. Values
+# chosen from find_stationarity_thresholds.py's output against real
+# recordings -- see docs/superpowers/specs/2026-08-04-imu-stillness-gyro-bias-design.md
+# Section 3.2 for the methodology. Gyro is the primary/more reliable signal:
+# it separates the "genuinely still" and "likely handling" clusters cleanly.
+# Accel is a corroborating check only -- the same data showed only ~1.11x
+# separation between those clusters on the accel axis, well under a clean
+# 2x bar, so accel alone is a weak signal here.
+GYRO_STATIONARY_MAX_RAD_S = 0.9
+ACCEL_STATIONARY_MAX_MPS2 = 0.18
+
 ROLE_PROXIMAL = "proximal"   # torso (hip) or thigh (knee)
 ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
 
@@ -268,6 +281,34 @@ def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 # ─── per-phone state ──────────────────────────────────────────────────────────
 
+def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
+                          accel_buf: list[tuple[float, np.ndarray]],
+                          now: float) -> bool:
+    """True iff both buffers span the full GYRO_BIAS_WINDOW_S and stay within
+    GYRO_STATIONARY_MAX_RAD_S / ACCEL_STATIONARY_MAX_MPS2 peak-to-peak range
+    -- checked per-axis (max over x/y/z of that axis's own peak-to-peak),
+    not on the combined vector magnitude. Magnitude alone would miss a
+    signal that oscillates DIRECTION at roughly constant magnitude (e.g.
+    alternating +0.22/-0.22 rad/s on one axis -- exactly what examiner
+    handling looks like): its peak-to-peak magnitude is near zero even
+    though the sensor is clearly moving. This mirrors why the fused-angle
+    check this replaces required pitch AND roll independently under
+    threshold, not one combined angle. Pure function of two trailing raw
+    -sample buffers so it can be reused verbatim by both the live
+    _IMUDevice and the offline replay's per-role state."""
+    for buf in (gyro_buf, accel_buf):
+        if not buf or (now - buf[0][0]) < GYRO_BIAS_WINDOW_S * 0.95:
+            return False
+
+    def _max_axis_peak_to_peak(buf):
+        vals = np.array([v for _, v in buf])   # shape (N, 3)
+        ranges = vals.max(axis=0) - vals.min(axis=0)   # per-axis peak-to-peak
+        return float(np.max(ranges))
+
+    return (_max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S
+            and _max_axis_peak_to_peak(accel_buf) < ACCEL_STATIONARY_MAX_MPS2)
+
+
 class _IMUDevice:
     def __init__(self, ident: str):
         self.ident      = ident          # source IP
@@ -294,6 +335,10 @@ class _IMUDevice:
         # samples that on_gyro() maintains continuously.
         self.gyro_bias: np.ndarray = np.zeros(3)
         self._gyro_hold_buf: list[tuple[float, np.ndarray]] = []
+        # Trailing raw-accel buffer for is_stationary()'s accel-magnitude
+        # check -- mirrors _gyro_hold_buf, maintained the same way in
+        # on_accel().
+        self._accel_hold_buf: list[tuple[float, np.ndarray]] = []
 
     @property
     def connected(self) -> bool:
@@ -341,6 +386,14 @@ class _IMUDevice:
         _raw_log_write(_roles.get(self.ident), "accel", v, ts)
         if _recording:
             _log_raw_csv(_roles.get(self.ident, self.ident), "Accelerometer", v, ts, now)
+
+        # Trailing raw-accel buffer for is_stationary()'s accel-magnitude
+        # check. Mirrors on_gyro()'s _gyro_hold_buf maintenance.
+        self._accel_hold_buf.append((now, self.accel.copy()))
+        bias_cutoff = now - GYRO_BIAS_WINDOW_S
+        self._accel_hold_buf = [(t, vv) for t, vv in self._accel_hold_buf
+                                if t >= bias_cutoff]
+
         self._touch(ts, now)
 
     def on_mag(self, v, ts):
@@ -370,6 +423,11 @@ class _IMUDevice:
         if len(self._gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
             vals = np.array([v for _, v in self._gyro_hold_buf])
             self.gyro_bias = vals.mean(axis=0)
+
+    def is_stationary(self) -> bool:
+        """True iff this device's own trailing raw gyro/accel buffers show a
+        genuinely still hold -- see _is_stationary_window()."""
+        return _is_stationary_window(self._gyro_hold_buf, self._accel_hold_buf, time.time())
 
     def on_gyro(self, v, ts):
         global _flex_axis, _flex_axis_armed
@@ -592,6 +650,18 @@ def _raw_relative() -> dict:
     if solo is not None:
         return {"roll": solo.roll, "pitch": solo.pitch, "yaw": solo.yaw}
     return {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+
+
+def is_stationary() -> bool:
+    """True iff every currently connected device (proximal and/or distal,
+    whichever are active) independently reports a genuinely still hold. A
+    half-stationary reading -- one device still, one being handled -- must
+    not pass. False if no device is connected."""
+    with _lock:
+        devices = [d for d in _devices.values() if d.connected]
+        if not devices:
+            return False
+        return all(d.is_stationary() for d in devices)
 
 
 def zero():

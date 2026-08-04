@@ -828,3 +828,133 @@ def test_euler_deg_delegates_to_quat_to_euler_deg():
     ahrs = imu.MadgwickAHRS(beta=0.1)
     ahrs.update(np.array([0.3, 0.1, -0.2]), np.array([0.0, 0.0, 9.81]), None, 0.05)
     assert ahrs.euler_deg() == imu._quat_to_euler_deg(ahrs.q)
+
+
+def test_is_stationary_window_true_for_flat_gyro_and_accel():
+    """A window with near-zero gyro variance and accel magnitude pinned near
+    gravity, spanning the full GYRO_BIAS_WINDOW_S, is stationary."""
+    now = 10.0
+    gyro_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.01, -0.01, 0.0]))
+                for i in range(21)]
+    accel_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.0, 0.0, 9.81]))
+                 for i in range(21)]
+    assert imu._is_stationary_window(gyro_buf, accel_buf, now) is True
+
+
+def test_is_stationary_window_false_for_handling_gyro():
+    """A window whose raw gyro OSCILLATES DIRECTION on one axis, at a
+    magnitude well past GYRO_STATIONARY_MAX_RAD_S -- e.g. an examiner
+    gripping/repositioning the limb -- must not count as stationary, even
+    with a flat accel signal. Scaled relative to the actual (empirically
+    -determined, per Task 1) threshold rather than a hardcoded literal, so
+    this test stays correct regardless of what Task 1 picked. Oscillating
+    direction (not just varying magnitude) is deliberate: a peak-to-peak-of
+    -magnitude check would see ~0 range here even though the sensor is
+    clearly moving -- this is exactly the case the per-axis check exists
+    to catch."""
+    now = 10.0
+    amp = imu.GYRO_STATIONARY_MAX_RAD_S * 3.0
+    gyro_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05,
+                np.array([amp, 0.0, 0.0]) if i % 2 == 0 else np.array([-amp, 0.0, 0.0]))
+                for i in range(21)]
+    accel_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.0, 0.0, 9.81]))
+                 for i in range(21)]
+    assert imu._is_stationary_window(gyro_buf, accel_buf, now) is False
+
+
+def test_is_stationary_window_false_for_handling_accel():
+    """A window with flat gyro but accel's z-axis swinging well past
+    ACCEL_STATIONARY_MAX_MPS2 -- e.g. the limb being lifted/repositioned
+    without much rotation -- must not count as stationary. Scaled relative
+    to the actual threshold, same reasoning as the gyro case above."""
+    now = 10.0
+    half_amp = imu.ACCEL_STATIONARY_MAX_MPS2 * 1.5
+    gyro_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.01, -0.01, 0.0]))
+                for i in range(21)]
+    accel_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05,
+                 np.array([0.0, 0.0, 9.81 + half_amp]) if i % 2 == 0
+                 else np.array([0.0, 0.0, 9.81 - half_amp]))
+                 for i in range(21)]
+    assert imu._is_stationary_window(gyro_buf, accel_buf, now) is False
+
+
+def test_is_stationary_window_false_when_buffer_does_not_span_full_window():
+    """A buffer that only covers a fraction of GYRO_BIAS_WINDOW_S must not
+    count as stationary regardless of content -- a burst of flat readings a
+    few ms apart is not evidence of a full still window."""
+    now = 10.0
+    gyro_buf = [(now - 0.1 + i * 0.01, np.array([0.0, 0.0, 0.0])) for i in range(10)]
+    accel_buf = [(now - 0.1 + i * 0.01, np.array([0.0, 0.0, 9.81])) for i in range(10)]
+    assert imu._is_stationary_window(gyro_buf, accel_buf, now) is False
+
+
+def test_imudevice_accel_hold_buf_populated_by_on_accel():
+    """on_accel() must append raw accel samples to _accel_hold_buf, mirroring
+    on_gyro()'s existing _gyro_hold_buf maintenance, so is_stationary() has
+    real data to check."""
+    dev = imu._IMUDevice("12.0.1.1")
+    dev.on_accel([0.0, 0.0, 9.81], ts=1000)
+    dev.on_accel([0.0, 0.0, 9.80], ts=1010)
+    assert len(dev._accel_hold_buf) == 2
+    np.testing.assert_allclose(dev._accel_hold_buf[-1][1], [0.0, 0.0, 9.80])
+
+
+def test_imudevice_is_stationary_reflects_its_own_buffers():
+    """_IMUDevice.is_stationary() delegates to _is_stationary_window() using
+    this device's own _gyro_hold_buf/_accel_hold_buf."""
+    dev = imu._IMUDevice("12.0.1.2")
+    now = __import__("time").time()
+    for i in range(21):
+        t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+        dev._gyro_hold_buf.append((t, np.array([0.0, 0.0, 0.0])))
+        dev._accel_hold_buf.append((t, np.array([0.0, 0.0, 9.81])))
+    assert dev.is_stationary() is True
+
+
+def test_module_is_stationary_requires_all_connected_devices_stationary():
+    """Module-level is_stationary() must return True only if every connected
+    device independently reports stationary -- a half-stationary reading
+    (one still, one being handled) must not pass."""
+    imu.reset_devices()
+    imu.clear_zero()
+    now = __import__("time").time()
+
+    def _fill_still(dev):
+        for i in range(21):
+            t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+            dev._gyro_hold_buf.append((t, np.array([0.0, 0.0, 0.0])))
+            dev._accel_hold_buf.append((t, np.array([0.0, 0.0, 9.81])))
+
+    def _fill_handled(dev):
+        amp = imu.GYRO_STATIONARY_MAX_RAD_S * 3.0
+        for i in range(21):
+            t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+            v = np.array([amp, 0.0, 0.0]) if i % 2 == 0 else np.array([-amp, 0.0, 0.0])
+            dev._gyro_hold_buf.append((t, v))
+            dev._accel_hold_buf.append((t, np.array([0.0, 0.0, 9.81])))
+
+    imu._devices["12.0.1.3"] = imu._IMUDevice("12.0.1.3")
+    imu._roles["12.0.1.3"] = imu.ROLE_PROXIMAL
+    imu._devices["12.0.1.3"].last_rx = now
+    _fill_still(imu._devices["12.0.1.3"])
+
+    imu._devices["12.0.1.4"] = imu._IMUDevice("12.0.1.4")
+    imu._roles["12.0.1.4"] = imu.ROLE_DISTAL
+    imu._devices["12.0.1.4"].last_rx = now
+    _fill_handled(imu._devices["12.0.1.4"])
+
+    assert imu.is_stationary() is False, "one handled device must fail the whole check"
+
+    imu._devices["12.0.1.4"]._gyro_hold_buf = []
+    imu._devices["12.0.1.4"]._accel_hold_buf = []
+    _fill_still(imu._devices["12.0.1.4"])
+    assert imu.is_stationary() is True, "once both are still, the check must pass"
+
+    imu.reset_devices()
+    imu.clear_zero()
+
+
+def test_module_is_stationary_false_with_no_connected_devices():
+    imu.reset_devices()
+    imu.clear_zero()
+    assert imu.is_stationary() is False

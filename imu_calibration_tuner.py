@@ -20,7 +20,7 @@ import numpy as np
 from pendulastic_imu_server import (
     MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
-    GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES,
+    GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES, _is_stationary_window,
 )
 from pendulastic_pt_score import compute_pt_params
 from imu_calibration_config import load_config, save_config
@@ -29,15 +29,6 @@ from imu_calibration_config import load_config, save_config
 # EMA's effective smoothing depends on both alpha and the sample interval it's
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
-
-# Mirrors pendulastic_app.py's _CALIB_STABILITY_RANGE_DEG / _CALIB_BUFFER_SAMPLES
-# (20 samples @ 50ms = ~1s) — the live auto-tare countdown's "is this hold
-# genuinely still" gate. Expressed here as a time window rather than a sample
-# count since raw gyro arrives at a different (and less regular) rate than
-# the live 50ms poll loop; the ~1s duration and 2deg range are what matter,
-# not the literal sample count.
-CALIB_STABILITY_RANGE_DEG = 2.0
-CALIB_STABILITY_WINDOW_S = 1.0
 
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
@@ -79,11 +70,9 @@ class _RoleState:
         # from. See replay_trial()'s gyro branch for where it's calibrated.
         self.gyro_bias: np.ndarray = np.zeros(3)
         self.gyro_hold_buf: list = []   # [(t, raw_v), ...]
-        # Mirrors pendulastic_app.py's _calib_buffer / _calib_was_stable:
-        # trailing (t, pitch, roll) samples used to edge-trigger gyro-bias
-        # (re-)calibration only on a genuinely still hold, not merely
-        # "below the flex-axis motion threshold".
-        self.stability_buf: list = []   # [(t, pitch_deg, roll_deg), ...]
+        # Trailing raw-accel buffer for _is_stationary_window()'s accel
+        # -magnitude check. Mirrors gyro_hold_buf.
+        self.accel_hold_buf: list = []   # [(t, raw_v), ...]
         self.calib_was_stable = False
 
 
@@ -166,6 +155,10 @@ def replay_trial(raw_samples: list, params: dict):
 
         if sensor == "accel":
             st.accel = v
+            st.accel_hold_buf.append((samp["t"], v))
+            bias_cutoff = samp["t"] - GYRO_BIAS_WINDOW_S
+            st.accel_hold_buf = [(t, vv) for t, vv in st.accel_hold_buf
+                                 if t >= bias_cutoff]
             if not st.seeded:
                 if params["gravity_seed"]:
                     st.ahrs.q = _gravity_seed(v)
@@ -205,62 +198,40 @@ def replay_trial(raw_samples: list, params: dict):
                             flex_axis = v / omega_mag
                         flex_axis_armed = False
 
-            # Gyro-bias calibration, gated on genuine stillness rather than
-            # "below the (much coarser) flex-axis motion threshold" — the
-            # pre-release window is the examiner actively gripping and
-            # positioning the limb, which routinely hits tens of deg/s, well
-            # under _FLEX_CAPTURE_THRESHOLD's ~57 deg/s but nowhere near
-            # actually still. Averaging that whole window measured handling
-            # motion, not sensor bias (confirmed: one trial's "bias" came out
-            # 12.7 deg/s, an order of magnitude above a real MEMS offset, and
-            # subtracting it distorted the swing instead of correcting it).
-            #
-            # Mirrors pendulastic_app.py's _tick_calibration_check exactly:
-            # a trailing ~1s buffer of fused pitch/roll must have <2 deg
-            # peak-to-peak range in BOTH before a window counts as "stable";
-            # calibration (re-)fires edge-triggered, only on the tick
-            # stability is newly confirmed, off a trailing raw-gyro buffer
-            # covering that same still window. Only runs pre-onset, matching
-            # live's countdown-only gating (_tick_calibration_check no-ops
-            # once _state != "idle", i.e. once recording/swinging starts).
+            # Gyro-bias calibration, gated on genuine raw-signal stillness --
+            # low raw gyro variance AND stable raw accel magnitude over the
+            # trailing window -- rather than a fused-angle proxy or the
+            # (much coarser) flex-axis motion threshold. The pre-release
+            # window is often the examiner actively gripping and positioning
+            # the limb; averaging that whole window measured handling
+            # motion, not sensor bias (confirmed: one trial's "bias" came
+            # out 12.7 deg/s, an order of magnitude above a real MEMS
+            # offset, and subtracting it distorted the swing instead of
+            # correcting it). See _is_stationary_window() in
+            # pendulastic_imu_server.py, shared verbatim with the live path.
+            # Only runs pre-onset, matching live's countdown-only gating
+            # (_tick_calibration_check no-ops once _state != "idle").
             if not zero_captured:
-                roll_deg, pitch_deg, _yaw_deg = _quat_to_euler_deg(st.ahrs.q)
-                st.stability_buf.append((samp["t"], pitch_deg, roll_deg))
-                stab_cutoff = samp["t"] - CALIB_STABILITY_WINDOW_S
-                st.stability_buf = [(t, p, r) for t, p, r in st.stability_buf
-                                    if t >= stab_cutoff]
-                # Require the buffer to actually SPAN the full window, not
-                # just contain some samples — a burst of readings a few ms
-                # apart could otherwise satisfy a bare "has entries" check.
-                spans_window = (st.stability_buf and
-                                (samp["t"] - st.stability_buf[0][0])
-                                >= CALIB_STABILITY_WINDOW_S * 0.95)
-                if spans_window:
-                    pitches = [p for _, p, _ in st.stability_buf]
-                    rolls = [r for _, _, r in st.stability_buf]
-                    stable = (max(pitches) - min(pitches) < CALIB_STABILITY_RANGE_DEG
-                             and max(rolls) - min(rolls) < CALIB_STABILITY_RANGE_DEG)
-                    if stable and not st.calib_was_stable:
-                        import os as _os
+                stable = _is_stationary_window(st.gyro_hold_buf, st.accel_hold_buf, samp["t"])
+                if stable and not st.calib_was_stable:
+                    import os as _os
+                    if _os.environ.get("IMU_DEBUG_BIAS"):
+                        print(f"[DEBUG] calib fire role={role} t={samp['t']:.3f} "
+                              f"n_hold_buf={len(st.gyro_hold_buf)}")
+                    if len(st.gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
+                        st.gyro_bias = np.mean(
+                            [vv for _, vv in st.gyro_hold_buf], axis=0)
                         if _os.environ.get("IMU_DEBUG_BIAS"):
-                            print(f"[DEBUG] calib fire role={role} t={samp['t']:.3f} "
-                                  f"n_hold_buf={len(st.gyro_hold_buf)} "
-                                  f"range=({max(pitches)-min(pitches):.2f},"
-                                  f"{max(rolls)-min(rolls):.2f})")
-                        if len(st.gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
-                            st.gyro_bias = np.mean(
-                                [vv for _, vv in st.gyro_hold_buf], axis=0)
-                            if _os.environ.get("IMU_DEBUG_BIAS"):
-                                print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
-                        st.stability_buf = []   # don't compare across the tare
-                        st.calib_was_stable = True
-                    else:
-                        st.calib_was_stable = stable
+                            print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
+                    st.calib_was_stable = True
+                else:
+                    st.calib_was_stable = stable
 
-            # Trailing raw-gyro buffer the calibration above reads from.
-            # Appended for every tick regardless of stability state (it must
-            # hold RAW samples, or a stale bias would only ever measure its
-            # own residual) so the window is ready whenever stability fires.
+            # Trailing raw-gyro/accel buffers the calibration above reads
+            # from. Appended for every tick regardless of stability state
+            # (they must hold RAW samples, or a stale bias would only ever
+            # measure its own residual) so the window is ready whenever
+            # stability fires.
             st.gyro_hold_buf.append((samp["t"], v))
             bias_cutoff = samp["t"] - GYRO_BIAS_WINDOW_S
             st.gyro_hold_buf = [(t, vv) for t, vv in st.gyro_hold_buf

@@ -102,10 +102,12 @@ except Exception:
 try:
     from pendulastic_workbench import TrialLoadPanel, WorkbenchView
     import workbench_engine as _wb_engine
+    import workbench_style as _wb_style
     _WORKBENCH_AVAIL = True
 except Exception:
     TrialLoadPanel = WorkbenchView = None
     _wb_engine = None
+    _wb_style = None
     _WORKBENCH_AVAIL = False
 
 _GREEN = "#1e7d34"
@@ -113,8 +115,6 @@ _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
 
-_CALIB_STABILITY_RANGE_DEG = 2.0   # max peak-to-peak pitch/roll swing to count as "stable"
-_CALIB_BUFFER_SAMPLES = 20         # ~1s of samples at the 50ms _tick() cadence
 _MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
 
 # ---------------------------------------------------------------------------
@@ -1240,7 +1240,6 @@ class App(tk.Tk):
             if _CV2_AVAIL else None
         )
         self._known_cameras: list = []
-        self._calib_buffer:      list = []     # trailing (pitch, roll) samples during countdown
         self._calib_was_stable:  bool = False   # edge-trigger state for auto-tare
         self._calib_ever_stable: bool = False   # True once calibrated this countdown
 
@@ -1257,8 +1256,14 @@ class App(tk.Tk):
         self._post = PostProcessingPanel(self, controller=self)
 
         self._workbench_trial_meta: dict = {}
+        self._workbench_imu_reference: list = []
+        self._workbench_raw_diagnostics: Optional[dict] = None
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
+            # Registers the dark "Workbench.*" ttk styles the embedded panels
+            # opt into. It does not switch this root's base ttk theme, so the
+            # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
+            _wb_style.apply_ttk_theme(self)
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
@@ -1451,7 +1456,6 @@ class App(tk.Tk):
     def on_countdown_start(self) -> None:
         """Called by AcquisitionPanel at the start of each countdown; resets
         the auto-tare stability tracking for this fresh countdown window."""
-        self._calib_buffer = []
         self._calib_was_stable = False
         self._calib_ever_stable = False
 
@@ -1505,29 +1509,64 @@ class App(tk.Tk):
         spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
         Video HPE model inference runs on a background thread since it's
         the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline."""
+        fast enough to run inline. IMU input is either a single JSONL raw
+        log or four independently-validated split-CSV components (design
+        spec 2026-08-04-sequential-csv-intake)."""
         traces = {}
+        imu_format = selection.get("imu_format", "jsonl")
         self._workbench_trial_meta = {
-            "imu_path": selection["imu_path"],
             "video_path": selection["video_path"],
             "optitrack_path": selection["optitrack_path"],
+            "participant_id": selection["participant_id"],
+            "session_date": selection["session_date"],
             "models": selection["models"],
             "femur_length_cm": selection["femur_length_cm"],
             "tibia_length_cm": selection["tibia_length_cm"],
         }
 
-        if selection["imu_path"]:
-            ft_ratio = None
-            method_override = None
-            if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-                ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-                method_override = "ockendon_flipped"
+        self._workbench_raw_diagnostics = None
+        ft_ratio = None
+        method_override = None
+        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
+            # Both limb lengths supplied means the researcher wants the
+            # personalized-ratio Ockendon path validated -- force the
+            # method rather than silently no-op if the persisted config's
+            # method is "relative".
+            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
+            method_override = "ockendon_flipped"
+
+        if imu_format == "split_csv":
+            components = selection.get("imu_components", {})
+            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
+                try:
+                    t, angle, imu_reference = _wb_engine.load_imu_trial_from_components(
+                        components, ft_ratio=ft_ratio, method=method_override)
+                    traces["imu"] = (t, angle)
+                    self._workbench_trial_meta["imu_paths"] = {
+                        k: components.get(k, {}).get("path")
+                        for k in ("accel", "gyro", "mag", "imu")}
+                    # imu_reference (the full parsed raw-IMU row list) is
+                    # kept off self._workbench_trial_meta so it never flows
+                    # into export_session()'s output -- it can be megabytes
+                    # for a real trial. Stored separately for in-memory
+                    # cross-check use only.
+                    self._workbench_imu_reference = imu_reference
+                except Exception as e:
+                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+        elif selection["imu_path"]:
+            self._workbench_trial_meta["imu_path"] = selection["imu_path"]
             try:
                 t, angle = _wb_engine.load_imu_trial(
                     selection["imu_path"], ft_ratio=ft_ratio, method=method_override)
                 traces["imu"] = (t, angle)
             except Exception as e:
                 messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
+
+            try:
+                self._workbench_raw_diagnostics = _wb_engine.compute_raw_sensor_diagnostics(
+                    selection["imu_path"])
+            except Exception:
+                pass   # supplementary cross-check only -- never blocks the trial load
 
         if selection["optitrack_path"]:
             try:
@@ -1540,6 +1579,7 @@ class App(tk.Tk):
         self._workbench_load.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
         self._workbench_view.set_traces(traces)
+        self._workbench_view.set_raw_diagnostics(self._workbench_raw_diagnostics)
 
         if selection["video_path"]:
             self._workbench_view.load_video(selection["video_path"])
@@ -1970,39 +2010,23 @@ class App(tk.Tk):
     def _tick_calibration_check(self) -> None:
         """Countdown auto-tare: continuously watch for a stable hold and
         re-tare (edge-triggered) each time a new stable window begins.
-        Active only while AcquisitionPanel's countdown is running."""
+        Active only while AcquisitionPanel's countdown is running.
+
+        Stability is read directly from _imu.is_stationary() -- a raw
+        gyro-variance + accel-magnitude check computed in
+        pendulastic_imu_server.py from each connected device's own trailing
+        raw-sample buffers -- rather than a fused pitch/roll buffer
+        maintained here. See docs/superpowers/specs/2026-08-04-imu-stillness
+        -gyro-bias-design.md Section 3.3."""
         if not (_IMU_AVAIL and "imu" in self._active_sources
                 and self._state == "idle"
                 and self._acq._countdown_id is not None):
             return
         try:
-            st = _imu.get_state()
-            ang = st.get("angles", {})
-            pitch, roll = ang.get("pitch"), ang.get("roll")
-            if pitch is None or roll is None or not (math.isfinite(pitch) and math.isfinite(roll)):
-                return
-            self._calib_buffer.append((pitch, roll))
-            if len(self._calib_buffer) > _CALIB_BUFFER_SAMPLES:
-                self._calib_buffer.pop(0)
-            if len(self._calib_buffer) < _CALIB_BUFFER_SAMPLES:
-                # Don't touch _calib_was_stable here: after a fire clears the
-                # buffer, it's latched True and must stay latched while the
-                # buffer refills with post-tare samples -- otherwise this
-                # branch un-latches it every tick, and the moment the buffer
-                # is full again (still genuinely stable) the edge falsely
-                # re-triggers, re-taring every ~1s for one continuous hold.
-                # on_countdown_start() already resets it to False at the
-                # start of every countdown, so the cold-start case is fine.
-                return
-            pitches = [p for p, _ in self._calib_buffer]
-            rolls   = [r for _, r in self._calib_buffer]
-            stable = (max(pitches) - min(pitches) < _CALIB_STABILITY_RANGE_DEG
-                     and max(rolls) - min(rolls) < _CALIB_STABILITY_RANGE_DEG)
+            stable = _imu.is_stationary()
             if stable and not self._calib_was_stable:
                 _imu.zero()
                 self._calib_ever_stable = True
-                self._calib_buffer = []      # post-tare readings jump toward 0;
-                                              # don't compare across the tare
                 self._calib_was_stable = True
                 return
             self._calib_was_stable = stable
