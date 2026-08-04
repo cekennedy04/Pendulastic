@@ -8,3 +8,5 @@ scikit-learn>=1.5.0
 # CPU build of ONNX Runtime for RTMPose / MMPose inference (no CUDA / Nvidia GPU).
 # Do NOT install onnxruntime-gpu on the Surface Laptop 5 (Intel iGPU only).
 onnxruntime>=1.17.0
+cryptography>=42.0.0
+qrcode>=8.0.0

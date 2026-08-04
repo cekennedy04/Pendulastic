@@ -33,6 +33,10 @@ node_modules/
 # Participant / session data — never commit
 sessions.json
 uploads/
+
+# Self-signed TLS cert/key for the phone-camera stream server — generated
+# at runtime, regenerated per-machine/per-IP, never committed.
+.certs/
 OptiTrack_Tracking_Data_Participant_0/
 P001_MSParticipant2_history.csv
 tracking_selections.json
