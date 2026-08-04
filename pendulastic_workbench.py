@@ -28,6 +28,7 @@ from matplotlib.figure import Figure
 import analysis_pipeline
 import workbench_engine as engine
 import pendulastic_storage
+import longitudinal_dashboard
 import pendulastic_pt_score
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
@@ -622,6 +623,103 @@ class WorkbenchView(tk.Frame):
 
     def current_time_sec(self) -> float:
         return self.current_frame_index() / self._fps if self._fps > 0 else 0.0
+
+
+class DashboardView(tk.Frame):
+    """Participant Dashboard: participant/leg/trace-label picker that
+    renders longitudinal_dashboard.render_dashboard()'s 3-panel figure.
+
+    controller: App instance -- receives on_dashboard_back()."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._participant_var = tk.StringVar(value="")
+        self._leg_var = tk.StringVar(value="left")
+        self._trace_var = tk.StringVar(value="")
+        self._status_var = tk.StringVar(value="")
+        self._canvas = None
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=8, pady=6)
+
+        tk.Button(top, text="← Back",
+                 command=lambda: self.controller.on_dashboard_back()).pack(side="left")
+
+        tk.Label(top, text="Participant:").pack(side="left", padx=(12, 2))
+        self._participant_menu = ttk.OptionMenu(top, self._participant_var, "")
+        self._participant_menu.pack(side="left")
+
+        tk.Label(top, text="Leg:").pack(side="left", padx=(12, 2))
+        ttk.OptionMenu(top, self._leg_var, "left", "left", "right").pack(side="left")
+
+        tk.Label(top, text="Trace:").pack(side="left", padx=(12, 2))
+        self._trace_menu = ttk.OptionMenu(top, self._trace_var, "")
+        self._trace_menu.pack(side="left")
+
+        tk.Button(top, text="Load", command=self._on_load_clicked).pack(side="left", padx=12)
+
+        tk.Label(self, textvariable=self._status_var, fg="#B45309").pack(fill="x", padx=8)
+
+        self._canvas_frame = tk.Frame(self)
+        self._canvas_frame.pack(fill="both", expand=True, padx=8, pady=4)
+
+    def refresh_participants(self) -> None:
+        """Repopulates the participant dropdown from disk -- called each
+        time the panel is shown, since trials may have been saved since
+        the dropdown was last built."""
+        ids = pendulastic_storage.list_participant_ids()
+        menu = self._participant_menu["menu"]
+        menu.delete(0, "end")
+        for pid in ids:
+            menu.add_command(label=pid, command=lambda p=pid: self._participant_var.set(p))
+        if ids and self._participant_var.get() not in ids:
+            self._participant_var.set(ids[0])
+
+    def _on_load_clicked(self) -> None:
+        participant_id = self._participant_var.get().strip()
+        leg = self._leg_var.get()
+        if not participant_id:
+            self._status_var.set("Select a participant.")
+            return
+
+        history = pendulastic_storage.load_history(participant_id)
+        skipped = history.get("_skipped", [])
+        if skipped:
+            self._status_var.set(
+                f"Skipped {len(skipped)} corrupted session(s) for participant "
+                f"{history['participant_id']}.")
+        else:
+            self._status_var.set("")
+
+        trace_labels = sorted({
+            label
+            for session in history["legs"][leg]["sessions"]
+            for label in session.get("traces", {})
+        })
+        menu = self._trace_menu["menu"]
+        menu.delete(0, "end")
+        for label in trace_labels:
+            menu.add_command(label=label, command=lambda l=label: self._trace_var.set(l))
+        if trace_labels and self._trace_var.get() not in trace_labels:
+            self._trace_var.set(trace_labels[0])
+        elif not trace_labels:
+            self._trace_var.set("")
+
+        for widget in self._canvas_frame.winfo_children():
+            widget.destroy()
+        self._canvas = None
+
+        trace_label = self._trace_var.get()
+        if not trace_label:
+            return
+
+        fig = longitudinal_dashboard.render_dashboard(history, leg, trace_label)
+        self._canvas = FigureCanvasTkAgg(fig, master=self._canvas_frame)
+        self._canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._canvas.draw_idle()
 
 
 class App(tk.Tk):
