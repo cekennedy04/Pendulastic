@@ -191,17 +191,30 @@ a future separate task; this task only characterizes it.
 
 ## 5. Component C: Combined Validation Harness
 
-`evaluate_all_participants.py`'s generic `(participant, position, trial)` auto-discovery is
-extracted into a form `validate_controls.py` can also call, replacing the latter's hardcoded
-`CTRL_PARTICIPANTS` allowlist. `evaluate_all_participants.py` imports (not duplicates)
-`validate_controls.py`'s already-tested `_icc_one_way`, Bland-Altman, and RMSE helper functions.
+**Correction from an earlier draft:** this section originally proposed extending
+`validate_controls.py` to use `evaluate_all_participants.py`'s crawler. That's not viable —
+`validate_controls.py` cannot currently be imported or run at all: three files it imports from at
+module level (`gen_figures.py`, `gen_fig_best_trials.py`, `gen_fig_A_all_participants.py`) do not
+exist anywhere in the repo or git history (verified across every worktree). Restoring them is a
+separate, unrelated problem, out of scope for this task.
 
-One harness run then reports, for every discovered trial with both an OptiTrack CSV and an
-IMU-derived angle CSV:
-- Per-trial RMSE (existing `swing_rmse.png`/leaderboard behavior, now covering every discovered
-  participant, not just the healthy-controls subset).
-- ICC/Bland-Altman reliability metrics for any participant with ≥2 trials — the existing helper's
-  own natural filter (`groups = [g for g in groups if len(g) >= 2]`) already handles this; no new
+What *is* reusable: `validate_controls.py`'s three statistics functions — `_bland_altman(x, y) ->
+dict` (lines 157–167, returns `bias, sd, loa_lo, loa_hi, means, diffs`), `_icc_one_way(groups:
+list) -> dict` (lines 63–107, returns `icc, ci_lo, ci_hi, sem, mdc95, n_subjects, n_obs`), and
+`_icc_two_way(x, y) -> dict` (lines 110–154) — are pure numpy/scipy functions with **no dependency**
+on the three missing files. This task extracts those three functions verbatim into a new module,
+`reliability_stats.py`, importable on its own. `validate_controls.py` itself is left untouched
+(still broken, unrelated to this task).
+
+`evaluate_all_participants.py`'s existing discovery (`DataIndex.build()`, `pendulastic
+evaluate_all_participants.py:146-175`, already covers every participant generically — no
+healthy-controls restriction to begin with) gains a new step: for each trial variant, call
+`reliability_stats._bland_altman`/`_icc_one_way` across that participant's trials, alongside its
+existing per-trial RMSE (`SignalProcessor.analyze`, lines 363-420). One harness run then reports,
+per the existing `global_model_leaderboard.csv` plus a new `reliability_report.csv`:
+- Per-trial RMSE (existing behavior, unchanged).
+- ICC/Bland-Altman reliability metrics for any participant with ≥2 trials — `_icc_one_way`'s own
+  natural filter (`groups = [g for g in groups if len(g) >= 2]`) already handles this; no new
   allowlist needed.
 
 **Before/after validation:** run the combined harness once now, before Component A lands (baseline,
