@@ -958,3 +958,43 @@ def test_module_is_stationary_false_with_no_connected_devices():
     imu.reset_devices()
     imu.clear_zero()
     assert imu.is_stationary() is False
+
+
+def test_imudevice_accel_bias_defaults_to_zero():
+    """Accel bias should default to zero (no correction) before calibration."""
+    dev = imu._IMUDevice("12.0.1.7")
+    np.testing.assert_allclose(dev.accel_bias, np.zeros(3))
+
+
+def test_imudevice_calibrate_accel_bias_from_stillness():
+    """calibrate_accel_bias() should estimate bias as the mean raw accel
+    minus expected gravity [0, 0, 9.81]."""
+    dev = imu._IMUDevice("12.0.1.8")
+    now = __import__("time").time()
+
+    # Simulate accel readings with a constant bias
+    bias_true = np.array([0.1, -0.05, 0.2])
+    accel_hold_buf = []
+    for i in range(21):
+        t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+        raw_accel = np.array([0.0, 0.0, 9.81]) + bias_true
+        accel_hold_buf.append((t, raw_accel))
+
+    # Calibrate
+    dev.calibrate_accel_bias(accel_hold_buf)
+
+    # Bias should match the simulated offset
+    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+
+
+def test_imudevice_on_accel_subtracts_bias():
+    """on_accel() should subtract accel_bias from raw accel before storing
+    it as self.accel, so AHRS sees bias-corrected data."""
+    dev = imu._IMUDevice("12.0.1.9")
+    dev.accel_bias = np.array([0.1, 0.0, 0.0])
+
+    # Call on_accel with raw [1.0, 0.0, 9.81]
+    dev.on_accel([1.0, 0.0, 9.81], ts=1000)
+
+    # self.accel should be [0.9, 0.0, 9.81] (bias-subtracted)
+    np.testing.assert_allclose(dev.accel, [0.9, 0.0, 9.81], atol=1e-6)
