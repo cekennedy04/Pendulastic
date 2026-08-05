@@ -36,6 +36,7 @@ import glob
 import os
 import re
 import statistics
+import warnings
 from typing import Optional
 
 import workbench_engine as engine
@@ -67,6 +68,30 @@ def derive_component_paths(imu_path: str) -> dict:
     }
 
 
+def _positions_with_trial(scope_dir: str, trial_n: str) -> set:
+    """Recursively find the distinct Position_* directory names under
+    scope_dir that contain a Trial_{trial_n}_imu.csv file anywhere beneath
+    them (case-insensitive on both the Position_ prefix and the filename).
+    Used to detect whether a trial number is genuinely ambiguous across
+    more than one position once a walk-up has left the position-scoped
+    part of the tree -- e.g. Position_1 and Position_2 both have a
+    Trial_3_imu.csv, so a single shared-ancestor OptiTrack match for
+    "trial_3" can't be safely attributed to either one."""
+    if not os.path.isdir(scope_dir):
+        return set()
+    target = f"trial_{trial_n}_imu.csv"
+    positions = set()
+    for dirpath, _dirnames, filenames in os.walk(scope_dir):
+        if not any(fn.lower() == target for fn in filenames):
+            continue
+        pos_parts = [p for p in os.path.normpath(dirpath).split(os.sep)
+                     if p.lower().startswith("position_")]
+        if pos_parts:
+            # Nearest Position_* ancestor of this trial file.
+            positions.add(pos_parts[-1])
+    return positions
+
+
 def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Optional[str]:
     """Find the OptiTrack CSV matching a Trial_{n}_imu.csv anchor under the
     mirrored opti_root tree.
@@ -88,7 +113,24 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
     isn't under rec_root, doesn't match the Trial_{n}_imu.csv pattern, or
     no match exists at any scoped level -- never raises for "just not
     found," since a missing OptiTrack counterpart (e.g. the real
-    right_post Trial_5) is an expected, logged-not-crashed case."""
+    right_post Trial_5) is an expected, logged-not-crashed case.
+
+    Position-collision guard: if the IMU anchor's own path runs through a
+    Position_* directory (e.g. .../Session_post/Position_1/
+    Height_Joint-Level/Trial_3_imu.csv) and the walk-up has to climb to an
+    ancestor at or above that Position_* level to find its match (exactly
+    the real right_post case, where the match sits directly under
+    Session_post, above Position_1), the match is no longer inherently
+    position-scoped -- a same-numbered trial dumped for a second position
+    into that same shallow ancestor would silently look like a match too.
+    Before trusting such a match, this checks whether more than one
+    Position_* subdirectory under that same shallow ancestor (searched on
+    the Recordings/ side, where positions are unambiguous) has an IMU
+    trial with the same number. If so, the match is genuinely ambiguous:
+    this warns and returns None (skip-and-log) rather than silently
+    guessing which position it belongs to. If only one position has that
+    trial number (the common case, including today's single-Position_1
+    dataset), the match is trusted as before."""
     imu_path = os.path.normpath(imu_path)
     rec_root = os.path.normpath(rec_root)
     opti_root = os.path.normpath(opti_root)
@@ -108,13 +150,36 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
         return None
 
     parts = rel.split(os.sep)
+    pos_idx = next((i for i, p in enumerate(parts)
+                    if p.lower().startswith("position_")), None)
+
     for depth in range(len(parts), 0, -1):
         candidate_dir = os.path.join(opti_root, *parts[:depth])
         if not os.path.isdir(candidate_dir):
             continue
         for entry in os.listdir(candidate_dir):
-            if entry.lower() == target_name:
-                return os.path.join(candidate_dir, entry)
+            if entry.lower() != target_name:
+                continue
+            match_path = os.path.join(candidate_dir, entry)
+            if pos_idx is not None and depth <= pos_idx:
+                # Walked up to/above the Position_* level -- the match is
+                # no longer inherently scoped to this trial's position.
+                # Verify no sibling position also has this trial number
+                # before trusting it.
+                scope_dir = os.path.join(rec_root, *parts[:pos_idx])
+                positions = _positions_with_trial(scope_dir, trial_n)
+                if len(positions) > 1:
+                    warnings.warn(
+                        f"Ambiguous OptiTrack match for {imu_path!r}: "
+                        f"candidate {match_path!r} sits above the "
+                        f"Position_* level ({scope_dir!r}) and "
+                        f"{sorted(positions)} all have a trial "
+                        f"{trial_n} IMU file. Skipping rather than "
+                        f"guessing which position it belongs to.",
+                        stacklevel=2,
+                    )
+                    return None
+            return match_path
     return None
 
 

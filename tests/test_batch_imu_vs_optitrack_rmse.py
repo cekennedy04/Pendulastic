@@ -1,4 +1,4 @@
-import os, sys
+import os, sys, warnings
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
@@ -152,6 +152,80 @@ def test_find_optitrack_match_does_not_walk_above_rec_root_scope(tmp_path):
 
     match = batch.find_optitrack_match(str(imu_path), str(rec_root), str(opti_root))
     assert match is None
+
+
+# ── find_optitrack_match: position-collision ambiguity guard ───────────────
+
+def test_find_optitrack_match_flags_ambiguous_multi_position_shared_ancestor(tmp_path):
+    """Regression test for the latent collision risk found in review: if a
+    future participant dumps OptiTrack CSVs for TWO positions into a shared
+    shallow ancestor (mirroring the real right_post Session_post-level
+    dump), and both positions have an IMU trial with the same number, the
+    matcher must not silently pick one -- it must report unmatched/
+    ambiguous and warn, not guess."""
+    rec_root = tmp_path / "Recordings"
+    opti_root = tmp_path / "OptiTrack_Recordings"
+
+    # Two positions, both with a Trial_3_imu.csv.
+    pos1_dir = rec_root / "Participant_99_right_post" / "Session_post" / \
+        "Position_1" / "Height_Joint-Level"
+    pos2_dir = rec_root / "Participant_99_right_post" / "Session_post" / \
+        "Position_2" / "Height_Joint-Level"
+    pos1_dir.mkdir(parents=True)
+    pos2_dir.mkdir(parents=True)
+    pos1_imu = pos1_dir / "Trial_3_imu.csv"
+    pos2_imu = pos2_dir / "Trial_3_imu.csv"
+    pos1_imu.write_text("")
+    pos2_imu.write_text("")
+
+    # A single OptiTrack CSV dumped directly under Session_post -- above
+    # both Position_* directories, exactly like the real right_post case.
+    opti_dir = opti_root / "Participant_99_right_post" / "Session_post"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_3_optitrack.csv").write_text("")
+
+    with pytest.warns(UserWarning, match="Ambiguous OptiTrack match"):
+        match_pos1 = batch.find_optitrack_match(
+            str(pos1_imu), str(rec_root), str(opti_root))
+    assert match_pos1 is None
+
+    with pytest.warns(UserWarning, match="Ambiguous OptiTrack match"):
+        match_pos2 = batch.find_optitrack_match(
+            str(pos2_imu), str(rec_root), str(opti_root))
+    assert match_pos2 is None
+
+
+def test_find_optitrack_match_shared_ancestor_not_ambiguous_when_only_one_position_has_trial(tmp_path):
+    """Sanity check on the guard's precision: a shared-ancestor match above
+    the Position_* level is still trusted (no warning, real match returned)
+    when only ONE position actually has that trial number -- this is the
+    real right_post scenario (single Position_1) and must keep working
+    exactly as before."""
+    rec_root = tmp_path / "Recordings"
+    opti_root = tmp_path / "OptiTrack_Recordings"
+
+    pos1_dir = rec_root / "Participant_99_right_post" / "Session_post" / \
+        "Position_1" / "Height_Joint-Level"
+    pos2_dir = rec_root / "Participant_99_right_post" / "Session_post" / \
+        "Position_2" / "Height_Joint-Level"
+    pos1_dir.mkdir(parents=True)
+    pos2_dir.mkdir(parents=True)
+    pos1_imu = pos1_dir / "Trial_3_imu.csv"
+    # Position_2 only has Trial_4, not Trial_3 -- no collision possible.
+    pos2_imu = pos2_dir / "Trial_4_imu.csv"
+    pos1_imu.write_text("")
+    pos2_imu.write_text("")
+
+    opti_dir = opti_root / "Participant_99_right_post" / "Session_post"
+    opti_dir.mkdir(parents=True)
+    opti_file = opti_dir / "trial_3_optitrack.csv"
+    opti_file.write_text("")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning here should fail the test
+        match = batch.find_optitrack_match(
+            str(pos1_imu), str(rec_root), str(opti_root))
+    assert match == str(opti_file)
 
 
 def test_find_optitrack_match_anchor_not_under_rec_root_returns_none(tmp_path):
