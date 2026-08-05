@@ -679,6 +679,79 @@ def test_enter_idle_clears_viewer_overlay():
         r.destroy()
 
 
+def test_start_countdown_opens_viewer_window_without_camera_live():
+    """A phone-IMU-only trial (no RGB/webcam ever checked, set_camera_live()
+    never called) must still get the big red countdown -- the whole point
+    is visibility for an operator who's stepped back, which applies just
+    as much to an IMU-only trial as an RGB one."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._viewer_window is None
+        p._src_imu.set(True)
+        p._start_countdown()
+        r.update()
+        p.after_cancel(p._countdown_id)
+        assert p._viewer_window is not None
+        assert p._viewer_window.state() != "withdrawn"
+        assert p._viewer_window.lbl_overlay.cget("text") == "5"
+    finally:
+        r.destroy()
+
+
+def test_cancel_countdown_hides_viewer_window_when_camera_never_live():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._start_countdown()
+        r.update()
+        p.after_cancel(p._countdown_id)
+        p._cancel_countdown()
+        r.update()
+        assert p._viewer_window.state() == "withdrawn"
+    finally:
+        r.destroy()
+
+
+def test_viewer_window_stays_visible_through_countdown_despite_camera_loss():
+    """A mixed IMU+RGB trial where the camera transiently drops mid-
+    countdown must not hide the countdown itself -- any one of camera-live/
+    countdown-active/recording-active is enough to keep the window up."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p._start_countdown()
+        r.update()
+        p.set_camera_live(False)   # camera drops mid-countdown
+        r.update()
+        assert p._viewer_window.state() != "withdrawn"
+        p.after_cancel(p._countdown_id)
+    finally:
+        r.destroy()
+
+
+def test_enter_recording_opens_viewer_window_without_prior_countdown_or_camera():
+    """Instant-start recording (countdown checkbox off) with no camera ever
+    live must still open the window and show the REC marker."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._viewer_window is None
+        p.enter_recording()
+        r.update()
+        assert p._viewer_window is not None
+        assert p._viewer_window.state() != "withdrawn"
+        assert p._viewer_window.lbl_overlay.cget("text") == "● REC"
+    finally:
+        r.destroy()
+
+
 def test_start_countdown_calls_on_countdown_start():
     from pendulastic_app import AcquisitionPanel
     r = _root()

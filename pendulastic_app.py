@@ -460,6 +460,7 @@ class AcquisitionPanel(tk.Frame):
                   command=self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._viewer_window: Optional[WebcamViewerWindow] = None
+        self._camera_live = False   # one input to _sync_viewer_window_visibility()
 
         # row 9 — Modality status (calibration is now automatic during the
         # countdown -- see App._tick_calibration_check / AcquisitionPanel's
@@ -530,6 +531,7 @@ class AcquisitionPanel(tk.Frame):
         self.status_var.set("Idle — ready to record.")
         self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
         self.set_viewer_overlay_text("")
+        self._sync_viewer_window_visibility()   # hide if nothing else keeps it open
 
     def enter_recording(self) -> None:
         self._lock_form(True)
@@ -539,6 +541,7 @@ class AcquisitionPanel(tk.Frame):
         self._is_recording = True
         self._refresh_preview_area()
         self.status_var.set("RECORDING…")
+        self._sync_viewer_window_visibility()   # cover the no-countdown instant-start case
         self.set_viewer_overlay_text("● REC")
 
     def _refresh_preview_area(self) -> None:
@@ -713,11 +716,20 @@ class AcquisitionPanel(tk.Frame):
 
     def set_camera_live(self, is_live: bool) -> None:
         """Called by the controller when the pre-open camera session's
-        live/lost state changes. Opens/hides the separate webcam viewer
-        window -- shown as soon as the camera is live (before the
-        countdown even starts) so the operator has a chance to drag it
-        somewhere visible before stepping back from the laptop."""
-        if is_live:
+        live/lost state changes. One of three independent triggers for the
+        separate viewer window -- see _sync_viewer_window_visibility()."""
+        self._camera_live = is_live
+        self._sync_viewer_window_visibility()
+
+    def _sync_viewer_window_visibility(self) -> None:
+        """The viewer window must be visible whenever there's something for
+        it to show: a live camera feed, an active countdown, or an active
+        recording -- even for a phone-IMU-only trial with no webcam at all,
+        since the whole point is visibility for an operator who has stepped
+        back and can't read the small embedded controls."""
+        should_show = (self._camera_live or self._countdown_id is not None
+                       or self._is_recording)
+        if should_show:
             self._ensure_viewer_window().show()
         elif self._viewer_window is not None and self._viewer_window.winfo_exists():
             self._viewer_window.withdraw()
@@ -744,6 +756,11 @@ class AcquisitionPanel(tk.Frame):
         self.btn_start.config(text="CANCEL",
                               command=self._cancel_countdown, bg=_AMBER)
         self.btn_stop.config(state="disabled")
+        # Ensure the window exists before ticking -- _tick_countdown() calls
+        # set_viewer_overlay_text(), which is a no-op until the window
+        # actually exists. Shows it even without a live camera (e.g. a
+        # phone-IMU-only trial).
+        self._ensure_viewer_window().show()
         self._tick_countdown(5)
 
     def _proceed_to_recording(self) -> None:
@@ -796,6 +813,7 @@ class AcquisitionPanel(tk.Frame):
         self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
         self.status_var.set("Countdown cancelled — ready to record.")
         self.set_viewer_overlay_text("")
+        self._sync_viewer_window_visibility()   # hide if nothing else keeps it open
 
     # ------------------------------------------------------------------
     # Form lock
