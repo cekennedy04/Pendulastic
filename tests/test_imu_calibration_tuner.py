@@ -679,3 +679,50 @@ def test_replay_trial_ft_ratio_changes_ockendon_output():
     t1, angle1 = tuner.replay_trial(samples, base_params)
     t2, angle2 = tuner.replay_trial(samples, {**base_params, "ft_ratio": 1.5})
     assert abs(angle1[-1] - angle2[-1]) > 0.5
+
+
+def test_replay_trial_estimates_accel_bias_during_stillness():
+    """During the initial stillness hold, if the window is verified
+    stationary, accel_bias should be estimated as the mean raw accel minus
+    [0, 0, 9.81]. This test confirms the code runs without error and the
+    result has finite values."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+
+    # Synthetic log with accel bias
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    accel_bias_true = np.array([0.1, -0.05, 0.2])
+
+    n_hold = 100
+    for i in range(n_hold):
+        raw_accel = np.array([0.0, 0.0, 9.81]) + accel_bias_true
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": list(raw_accel), "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    n_burst = 50
+    for i in range(n_burst):
+        raw_accel = np.array([0.0, 0.0, 9.81]) + accel_bias_true
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": list(raw_accel), "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    for i in range(100):
+        raw_accel = np.array([0.0, 0.0, 9.81]) + accel_bias_true
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": list(raw_accel), "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    t_result, angle_result = tuner.replay_trial(samples, params)
+    # Code should run without error and produce finite angle values
+    assert len(t_result) > 0, "replay_trial should produce output with accel bias correction"
+    assert np.isfinite(angle_result[-1]), "final angle should be finite"

@@ -70,10 +70,25 @@ class _RoleState:
         # from. See replay_trial()'s gyro branch for where it's calibrated.
         self.gyro_bias: np.ndarray = np.zeros(3)
         self.gyro_hold_buf: list = []   # [(t, raw_v), ...]
+        # Static accel bias, subtracted from every raw accel sample before
+        # AHRS integration. Estimated from accel_hold_buf during verified-
+        # stillness windows, same pattern as gyro_bias.
+        self.accel_bias: np.ndarray = np.zeros(3)
         # Trailing raw-accel buffer for _is_stationary_window()'s accel
         # -magnitude check. Mirrors gyro_hold_buf.
         self.accel_hold_buf: list = []   # [(t, raw_v), ...]
         self.calib_was_stable = False
+
+    def calibrate_accel_bias(self) -> None:
+        """Estimate accel bias from the current accel_hold_buf during a
+        verified-stillness window. During true stillness, raw accel should
+        equal [0, 0, 9.81] (gravity only); any deviation is bias."""
+        if not self.accel_hold_buf or len(self.accel_hold_buf) < 2:
+            return
+        vals = np.array([v for _, v in self.accel_hold_buf])
+        mean_accel = vals.mean(axis=0)
+        gravity = np.array([0.0, 0.0, 9.81])
+        self.accel_bias = mean_accel - gravity
 
 
 def replay_trial(raw_samples: list, params: dict):
@@ -154,7 +169,7 @@ def replay_trial(raw_samples: list, params: dict):
         sensor = samp["sensor"]
 
         if sensor == "accel":
-            st.accel = v
+            # Store RAW accel in buffer (before bias correction) so bias estimation works
             st.accel_hold_buf.append((samp["t"], v))
             bias_cutoff = samp["t"] - GYRO_BIAS_WINDOW_S
             st.accel_hold_buf = [(t, vv) for t, vv in st.accel_hold_buf
@@ -163,6 +178,8 @@ def replay_trial(raw_samples: list, params: dict):
                 if params["gravity_seed"]:
                     st.ahrs.q = _gravity_seed(v)
                 st.seeded = True
+            # Store bias-corrected accel for AHRS integration
+            st.accel = v - st.accel_bias
         elif sensor == "mag":
             st.mag = v
         elif sensor == "gyro":
@@ -223,6 +240,7 @@ def replay_trial(raw_samples: list, params: dict):
                             [vv for _, vv in st.gyro_hold_buf], axis=0)
                         if _os.environ.get("IMU_DEBUG_BIAS"):
                             print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
+                    st.calibrate_accel_bias()
                     st.calib_was_stable = True
                 else:
                     st.calib_was_stable = stable

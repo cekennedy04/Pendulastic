@@ -335,6 +335,10 @@ class _IMUDevice:
         # samples that on_gyro() maintains continuously.
         self.gyro_bias: np.ndarray = np.zeros(3)
         self._gyro_hold_buf: list[tuple[float, np.ndarray]] = []
+        # Static accel bias, subtracted from every raw accel sample before
+        # AHRS integration. Estimated by calibrate_accel_bias() from the
+        # _accel_hold_buf during verified-stillness windows, same pattern as gyro_bias.
+        self.accel_bias: np.ndarray = np.zeros(3)
         # Trailing raw-accel buffer for is_stationary()'s accel-magnitude
         # check -- mirrors _gyro_hold_buf, maintained the same way in
         # on_accel().
@@ -377,10 +381,10 @@ class _IMUDevice:
         self.offset_samples.clear()
 
     def on_accel(self, v, ts):
-        self.accel = np.asarray(v, float)
+        raw_accel = np.asarray(v, float)
         if not self._ahrs_seeded:
             if _CONFIG["gravity_seed"]:
-                self.ahrs.q = _gravity_seed(self.accel)
+                self.ahrs.q = _gravity_seed(raw_accel)
             self._ahrs_seeded = True
         now = time.time()
         _raw_log_write(_roles.get(self.ident), "accel", v, ts)
@@ -389,10 +393,14 @@ class _IMUDevice:
 
         # Trailing raw-accel buffer for is_stationary()'s accel-magnitude
         # check. Mirrors on_gyro()'s _gyro_hold_buf maintenance.
-        self._accel_hold_buf.append((now, self.accel.copy()))
+        # MUST store raw (pre-bias-correction) samples so accel_bias estimation works.
+        self._accel_hold_buf.append((now, raw_accel.copy()))
         bias_cutoff = now - GYRO_BIAS_WINDOW_S
         self._accel_hold_buf = [(t, vv) for t, vv in self._accel_hold_buf
                                 if t >= bias_cutoff]
+
+        # Store bias-corrected accel for AHRS integration in on_gyro()
+        self.accel = raw_accel - self.accel_bias
 
         self._touch(ts, now)
 
@@ -423,6 +431,19 @@ class _IMUDevice:
         if len(self._gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
             vals = np.array([v for _, v in self._gyro_hold_buf])
             self.gyro_bias = vals.mean(axis=0)
+
+    def calibrate_accel_bias(self, accel_hold_buf: list[tuple[float, np.ndarray]]) -> None:
+        """Estimate this device's accelerometer static bias from a
+        verified-stillness window. During true stillness, raw accel should
+        equal [0, 0, 9.81] (gravity only); any deviation is bias. Store the
+        estimate for continuous subtraction in on_accel(). Same pattern as
+        calibrate_gyro_bias()."""
+        if not accel_hold_buf or len(accel_hold_buf) < 2:
+            return
+        vals = np.array([v for _, v in accel_hold_buf])
+        mean_accel = vals.mean(axis=0)
+        gravity = np.array([0.0, 0.0, 9.81])
+        self.accel_bias = mean_accel - gravity
 
     def is_stationary(self) -> bool:
         """True iff this device's own trailing raw gyro/accel buffers show a
@@ -683,15 +704,18 @@ def zero():
         dist = _by_role(ROLE_DISTAL)
         if prox is not None and prox.connected:
             prox.calibrate_gyro_bias()
+            prox.calibrate_accel_bias(prox._accel_hold_buf)
             _q_zero_prox = prox.get_quaternion()
         if dist is not None and dist.connected:
             dist.calibrate_gyro_bias()
+            dist.calibrate_accel_bias(dist._accel_hold_buf)
             _q_zero_dist = dist.get_quaternion()
         elif _q_zero_dist is None:
             solo = next((d for d in (dist, prox)
                          if d is not None and d.connected), None)
             if solo is not None:
                 solo.calibrate_gyro_bias()
+                solo.calibrate_accel_bias(solo._accel_hold_buf)
                 _q_zero_dist = solo.get_quaternion()
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.
