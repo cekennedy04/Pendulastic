@@ -59,7 +59,7 @@ def double_integrate_drift(t: np.ndarray, accel_world: np.ndarray,
 def _world_frame_linear_accel(raw_samples: list, params: dict) -> tuple:
     """Replay raw_samples to get per-tick orientation, then rotate each
     raw accel sample into the world frame and subtract gravity. Returns
-    (t, accel_world, stationary_mask) for the available role (distal or proximal)."""
+    (t, accel_world, stationary_mask, used_role) for the available role (distal or proximal)."""
     # replay_trial() gives the final swing angle series, not per-sample
     # orientation -- for this diagnostic we only need a rough per-sample
     # rotation, so we run the same accel/gyro/mag stream through a fresh
@@ -78,7 +78,7 @@ def _world_frame_linear_accel(raw_samples: list, params: dict) -> tuple:
         target_role = next(iter(available_roles))
 
     if not target_role:
-        return (np.array([]), np.array([]), np.array([]))
+        return (np.array([]), np.array([]), np.array([]), None)
 
     ahrs = MadgwickAHRS(beta=params["beta"])
     seeded = False
@@ -125,7 +125,7 @@ def _world_frame_linear_accel(raw_samples: list, params: dict) -> tuple:
             if last_accel is not None:
                 ahrs.update(v - gyro_bias, last_accel, None, dt)
 
-    return (np.array(ts_list), np.array(accel_world_list), np.array(stationary_list))
+    return (np.array(ts_list), np.array(accel_world_list), np.array(stationary_list), target_role)
 
 
 def analyze_file(path: str) -> None:
@@ -137,14 +137,14 @@ def analyze_file(path: str) -> None:
         return
     params = {"beta": 0.041, "ema_alpha": 1.0,
              "flex_axis_capture": True, "gravity_seed": True}
-    t, accel_world, stationary_mask = _world_frame_linear_accel(samples, params)
+    t, accel_world, stationary_mask, used_role = _world_frame_linear_accel(samples, params)
     if len(t) < 2:
         print(f"{path}: not enough accel samples, skipping")
         return
     vel, disp = double_integrate_drift(t, accel_world, stationary_mask)
     peak_disp = float(np.max(np.linalg.norm(disp, axis=1)))
     peak_vel_drift = float(np.max(np.linalg.norm(vel, axis=1)))
-    print(f"{path}: peak displacement={peak_disp:.4f} m, "
+    print(f"{path}: role={used_role}, peak displacement={peak_disp:.4f} m, "
           f"peak inter-checkpoint velocity drift={peak_vel_drift:.4f} m/s, "
           f"n_stationary_checkpoints={int(stationary_mask.sum())}")
 
