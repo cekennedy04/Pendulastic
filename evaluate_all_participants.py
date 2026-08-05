@@ -71,7 +71,7 @@ OUTPUT_ROOT  = os.path.join(BASE_DIR, "pendulastic model analysis", "all_partici
 #   TARGET_PARTICIPANTS = ["2_left_duo"]   # just one folder
 #   TARGET_PARTICIPANTS = []               # everyone
 # ─────────────────────────────────────────────────────────────────────────────
-TARGET_PARTICIPANTS: List[str] = ["2_"]
+TARGET_PARTICIPANTS: List[str] = []  # evaluate everyone
 
 BASELINE_SEC = 3.0     # seconds of pre-release baseline for OptiTrack
 PLOT_XLIM    = 14.0    # seconds to show on x-axis after release
