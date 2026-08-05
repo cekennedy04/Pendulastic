@@ -24,6 +24,9 @@ import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+PHONE_CAMERA_LABEL = "\U0001f4f1 Phone Camera"
+PHONE_CAMERA_ENTRY = {"kind": "phone", "label": PHONE_CAMERA_LABEL}
+
 # ---------------------------------------------------------------------------
 # Guarded imports — failures must not crash the app at startup
 # ---------------------------------------------------------------------------
@@ -54,12 +57,21 @@ os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 try:
     import cv2 as _cv2
-    from camera_utils import CameraSession
+    from camera_utils import CameraSession, PhoneCameraSession, enumerate_cameras
     _CV2_AVAIL = True
 except ImportError:
     _cv2 = None
     CameraSession = None
+    PhoneCameraSession = None
+    enumerate_cameras = None
     _CV2_AVAIL = False
+
+try:
+    import pendulastic_phone_server as _pps
+    _PPS_AVAIL = True
+except Exception:
+    _pps = None
+    _PPS_AVAIL = False
 
 try:
     from pendulastic_viewer import _MPBatchTracker, _PatientDetector
@@ -389,6 +401,25 @@ class AcquisitionPanel(tk.Frame):
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._camera_live = False       # updated via set_camera_live()
 
+        # Phone pairing panel — shown when the phone dropdown entry is
+        # selected; hidden otherwise. Reuses pendulastic_viewer.py's
+        # qrcode-based QR generation pattern.
+        self._phone_pairing_frame = tk.Frame(meth_f, relief="groove", borderwidth=1)
+        self._phone_pairing_url_var = tk.StringVar(value="")
+        tk.Label(self._phone_pairing_frame, text="Open on your phone:",
+                  font=("Segoe UI", 8, "bold")).pack(side="top", anchor="w", padx=6, pady=(4, 0))
+        self._phone_qr_label = tk.Label(self._phone_pairing_frame)
+        self._phone_qr_label.pack(side="top", padx=6, pady=4)
+        tk.Entry(self._phone_pairing_frame, textvariable=self._phone_pairing_url_var,
+                  font=("Consolas", 8), width=32, state="readonly").pack(
+            side="top", padx=6, pady=(0, 4))
+        tk.Label(self._phone_pairing_frame,
+                  text="Your phone will warn about the connection's security\n"
+                       "certificate — tap Advanced -> Proceed. This is expected.",
+                  font=("Segoe UI", 7), fg="gray", justify="left").pack(
+            side="top", anchor="w", padx=6, pady=(0, 4))
+        self._phone_pairing_frame.pack_forget()
+
         # row 9 — Modality status (calibration is now automatic during the
         # countdown -- see App._tick_calibration_check / AcquisitionPanel's
         # forced-on countdown checkbox below)
@@ -663,6 +694,26 @@ class AcquisitionPanel(tk.Frame):
         live/lost state changes."""
         self._camera_live = is_live
         self._refresh_preview_area()
+
+    def show_phone_pairing_panel(self, url: str) -> None:
+        self._phone_pairing_url_var.set(url)
+        try:
+            import qrcode
+            from PIL import ImageTk
+            qr = qrcode.QRCode(box_size=5, border=2)
+            qr.add_data(url)
+            qr.make(fit=True)
+            raw = qr.make_image(fill_color="black", back_color="white")
+            pil_img = raw.get_image() if hasattr(raw, "get_image") else raw
+            photo = ImageTk.PhotoImage(pil_img.convert("RGB"))
+            self._phone_qr_label.config(image=photo, text="")
+            self._phone_qr_label._photo = photo   # prevent GC
+        except Exception as exc:
+            self._phone_qr_label.config(image="", text=f"(QR unavailable: {exc})")
+        self._phone_pairing_frame.pack(side="top", anchor="w", pady=(4, 0), fill="x")
+
+    def hide_phone_pairing_panel(self) -> None:
+        self._phone_pairing_frame.pack_forget()
 
     # ------------------------------------------------------------------
     # Countdown

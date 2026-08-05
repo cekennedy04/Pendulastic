@@ -764,3 +764,25 @@ def test_cancel_countdown_reapplies_countdown_lock():
         r.destroy()
 
 
+def test_phone_camera_entry_constant_has_expected_shape():
+    from pendulastic_app import PHONE_CAMERA_ENTRY, PHONE_CAMERA_LABEL
+    assert PHONE_CAMERA_ENTRY == {"kind": "phone", "label": PHONE_CAMERA_LABEL}
+
+
+def test_show_phone_pairing_panel_displays_url_text():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pack()
+        p.show_phone_pairing_panel("https://192.168.1.50:8880/")
+        r.update()
+        assert p._phone_pairing_frame.winfo_manager() == "pack"
+        assert "192.168.1.50" in p._phone_pairing_url_var.get()
+        p.hide_phone_pairing_panel()
+        r.update()
+        assert p._phone_pairing_frame.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
