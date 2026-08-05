@@ -381,7 +381,7 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
         result_holder = {}
-        def _capture(source_angles, m):
+        def _capture(source_angles, m, **kw):
             result_holder["source_angles"] = source_angles
         app._transition_to_review = _capture
 
@@ -428,7 +428,7 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
         result_holder = {}
-        app._transition_to_review = lambda source_angles, m: result_holder.update(
+        app._transition_to_review = lambda source_angles, m, **kw: result_holder.update(
             source_angles=source_angles)
 
         app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
@@ -453,7 +453,7 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0], meta, source="imu")
 
         result_holder = {}
-        app._transition_to_review = lambda source_angles, m: result_holder.update(
+        app._transition_to_review = lambda source_angles, m, **kw: result_holder.update(
             source_angles=source_angles)
 
         app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
@@ -463,6 +463,83 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
         app.destroy()
 
 
+
+
+def test_transition_to_review_shows_saved_confirmation_for_imu(monkeypatch):
+    """A live recording that included IMU must get an unmissable
+    confirmation naming the actual saved CSV filename."""
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    app = _m.App()
+    try:
+        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
+        app.update()
+        assert len(shown) == 1
+        title, msg = shown[0]
+        assert title == "Recording Saved"
+        assert "PID_P9_LEG_Right_MS_TRIAL_1_imu.csv" in msg
+        assert _m.DataManager.DATA_DIR in msg
+    finally:
+        app.destroy()
+
+
+def test_transition_to_review_shows_saved_confirmation_for_rgb(monkeypatch):
+    """A live RGB recording must name both the angles CSV and the video
+    file -- these are two separate files a clinician needs to find."""
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    app = _m.App()
+    try:
+        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 2}
+        app._transition_to_review({"rgb": [1.0, 2.0]}, meta, from_recording=True)
+        app.update()
+        assert len(shown) == 1
+        _, msg = shown[0]
+        assert "PID_P9_LEG_Right_MS_TRIAL_2_rgb.csv" in msg
+        assert "PID_P9_LEG_Right_MS_TRIAL_2.avi" in msg
+    finally:
+        app.destroy()
+
+
+def test_transition_to_review_no_confirmation_when_not_from_recording(monkeypatch):
+    """The upload-CSV/upload-video-file review paths process an
+    already-existing file rather than saving a new one, so they must not
+    default into claiming 'Recording Saved'."""
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    app = _m.App()
+    try:
+        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 3}
+        app._transition_to_review({"upload_csv": [1.0, 2.0]}, meta)
+        app.update()
+        assert shown == []
+    finally:
+        app.destroy()
+
+
+def test_transition_to_review_no_confirmation_for_optitrack_only(monkeypatch):
+    """OptiTrack's take is Motive's own file, not something this app
+    writes via DataManager.save_trial -- an OptiTrack-only trial must not
+    claim a save location it doesn't actually control."""
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda title, msg: shown.append((title, msg)))
+    app = _m.App()
+    try:
+        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 4}
+        app._transition_to_review({"optitrack": []}, meta, from_recording=True)
+        app.update()
+        assert shown == []
+    finally:
+        app.destroy()
 
 
 def test_app_creates_camera_session_when_cv2_available():
@@ -505,7 +582,9 @@ def test_on_rescan_cameras_with_no_cameras_found(monkeypatch):
         monkeypatch.setattr(app._camera, "rescan", lambda: [])
         app.on_rescan_cameras()
         assert list(app._acq.drop_cam["values"]) == ["(none detected)"]
-        assert app._acq._camera_live is False
+        # No camera ever went live, so the separate viewer window must
+        # never have been created.
+        assert app._acq._viewer_window is None
     finally:
         app.destroy()
 
@@ -531,7 +610,7 @@ def test_on_camera_selected_opens_the_matching_camera(monkeypatch):
 
 
 
-def test_on_camera_disabled_closes_session_and_clears_live_flag(monkeypatch):
+def test_on_camera_disabled_closes_session_and_hides_viewer_window(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
     try:
@@ -540,23 +619,23 @@ def test_on_camera_disabled_closes_session_and_clears_live_flag(monkeypatch):
         app._acq.set_camera_live(True)
         app.on_camera_disabled()
         assert closed == [True]
-        assert app._acq._camera_live is False
+        assert app._acq._viewer_window.state() == "withdrawn"
     finally:
         app.destroy()
 
 
 
 
-def test_camera_status_callback_updates_panel_live_flag():
+def test_camera_status_callback_shows_and_hides_viewer_window():
     import pendulastic_app as _m
     app = _m.App()
     try:
         app._on_camera_status("live")
         app.update()   # process the self.after(0, ...) callback
-        assert app._acq._camera_live is True
+        assert app._acq._viewer_window.state() != "withdrawn"
         app._on_camera_status("lost")
         app.update()
-        assert app._acq._camera_live is False
+        assert app._acq._viewer_window.state() == "withdrawn"
     finally:
         app.destroy()
 

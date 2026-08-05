@@ -247,20 +247,24 @@ def test_clear_telemetry_removes_all_items():
 
 
 
-def test_preview_label_exists():
+def test_preview_label_removed():
+    """The embedded live preview was removed in favor of the separate
+    WebcamViewerWindow -- pin that it's actually gone, not just unused."""
     from pendulastic_app import AcquisitionPanel
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        assert hasattr(p, "lbl_preview"), "lbl_preview widget must exist"
-        assert p.lbl_preview.winfo_exists()
+        assert not hasattr(p, "lbl_preview")
     finally:
         r.destroy()
 
 
 
 
-def test_rgb_source_swaps_to_preview_during_recording():
+def test_telemetry_canvas_shown_during_rgb_recording():
+    """With the embedded preview gone, row 13 always shows the telemetry
+    canvas while recording -- including for RGB, which previously showed
+    the embedded preview there instead."""
     from pendulastic_app import AcquisitionPanel
     r = _root()
     try:
@@ -269,9 +273,7 @@ def test_rgb_source_swaps_to_preview_during_recording():
         p._on_source_changed()
         p.enter_recording()
         r.update()
-        # preview label must be gridded; sparkline must be hidden
-        assert p.lbl_preview.grid_info() != {}, "lbl_preview should be visible during RGB recording"
-        assert p.canvas_tele.grid_info() == {}, "canvas_tele should be hidden during RGB recording"
+        assert p.canvas_tele.grid_info() != {}
     finally:
         r.destroy()
 
@@ -496,57 +498,20 @@ def test_camera_help_button_exists_and_opens_dialog(monkeypatch):
 
 
 
-def test_set_camera_live_shows_preview_while_idle_with_rgb_checked():
+def test_rgb_recording_shows_telemetry_canvas_without_set_camera_live():
+    """Regression: enter_recording()'s telemetry-canvas-during-RGB-recording
+    behavior must hold even when set_camera_live() was never called (the
+    live pre-recording preview and the embedded _camera_live flag are gone
+    -- only _is_recording drives row 13 now)."""
     from pendulastic_app import AcquisitionPanel
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_rgb.set(True)
-        p._on_rgb_checkbox_toggled()
-        p.set_camera_live(True)
-        r.update()
-        assert p.lbl_preview.grid_info() != {}
-        assert p.canvas_tele.grid_info() == {}
-    finally:
-        r.destroy()
-
-
-
-
-def test_set_camera_live_false_hides_preview_while_idle():
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        p._src_rgb.set(True)
-        p._on_rgb_checkbox_toggled()
-        p.set_camera_live(True)
-        p.set_camera_live(False)
-        r.update()
-        assert p.lbl_preview.grid_info() == {}
-    finally:
-        r.destroy()
-
-
-
-
-def test_rgb_recording_preview_unaffected_by_camera_live_flag():
-    """Regression: enter_recording()'s existing lbl_preview-during-RGB-recording
-    behavior must be unchanged even though set_camera_live() was never called
-    (this is exactly what the existing test_rgb_source_swaps_to_preview_during_recording
-    exercises — this test additionally pins that it holds with _camera_live at
-    its default False)."""
-    from pendulastic_app import AcquisitionPanel
-    r = _root()
-    try:
-        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
-        assert p._camera_live is False
         p._src_rgb.set(True)
         p._on_source_changed()
         p.enter_recording()
         r.update()
-        assert p.lbl_preview.grid_info() != {}
-        assert p.canvas_tele.grid_info() == {}
+        assert p.canvas_tele.grid_info() != {}
     finally:
         r.destroy()
 

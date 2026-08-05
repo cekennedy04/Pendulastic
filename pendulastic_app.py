@@ -459,7 +459,6 @@ class AcquisitionPanel(tk.Frame):
         tk.Button(self._cam_frame, text="🛜 Can't connect?", font=("Segoe UI", 8),
                   command=self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
-        self._camera_live = False       # updated via set_camera_live()
         self._viewer_window: Optional[WebcamViewerWindow] = None
 
         # row 9 — Modality status (calibration is now automatic during the
@@ -498,10 +497,6 @@ class AcquisitionPanel(tk.Frame):
         # row 13 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
         self.canvas_tele = tk.Canvas(
             self, width=440, height=80, bg="#0B1928", highlightthickness=0)
-
-        # row 13 alt — live video preview (shown instead of canvas_tele when RGB is recording)
-        self.lbl_preview = tk.Label(self, bg="black")
-        # not gridded at init; enter_recording() grids the correct one
 
         # row 14 — status bar
         self.status_var = tk.StringVar(value="Idle — ready to record.")
@@ -547,22 +542,14 @@ class AcquisitionPanel(tk.Frame):
         self.set_viewer_overlay_text("● REC")
 
     def _refresh_preview_area(self) -> None:
-        """Row 13 shows lbl_preview whenever RGB is checked and either
-        currently recording or the pre-open camera session is live;
-        canvas_tele only while recording and that doesn't hold; otherwise
-        neither. Recording-time behavior is unchanged from before this
-        feature — _camera_live only extends what's shown while idle."""
-        show_preview = self._src_rgb.get() and (self._is_recording or self._camera_live)
-        if show_preview:
-            self.lbl_preview.grid(row=13, column=0, columnspan=2,
-                                  padx=10, pady=4, sticky="nsew")
-            self.canvas_tele.grid_remove()
-        elif self._is_recording:
+        """Row 13 shows the live telemetry canvas while recording, hidden
+        otherwise. Live RGB preview -- while idle and during recording --
+        now lives entirely in the separate WebcamViewerWindow, so this
+        panel no longer needs its own embedded copy."""
+        if self._is_recording:
             self.canvas_tele.grid(row=13, column=0, columnspan=2,
                                   padx=10, pady=4)
-            self.lbl_preview.grid_remove()
         else:
-            self.lbl_preview.grid_remove()
             self.canvas_tele.grid_remove()
 
     def enter_processing(self) -> None:
@@ -571,23 +558,10 @@ class AcquisitionPanel(tk.Frame):
         self.status_var.set("Running MediaPipe tracking…")
 
     def update_preview(self, frame_bgr) -> None:
-        """Convert a BGR numpy frame and display it in lbl_preview."""
-        if not _CV2_AVAIL:
-            return
-        import base64
-        h, w = frame_bgr.shape[:2]
-        scale = min(440 / max(w, 1), 330 / max(h, 1))
-        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        small = _cv2.resize(frame_bgr, (nw, nh))
-        # cv2.imencode expects BGR input (same convention as cv2.imwrite) and
-        # writes it out correctly on its own -- converting to RGB first swaps
-        # red and blue in the encoded PNG, which is what caused the blue tint.
-        ok, buf = _cv2.imencode(".png", small)
-        if ok:
-            b64 = base64.b64encode(buf).decode("utf-8")
-            photo = tk.PhotoImage(data=b64)
-            self.lbl_preview.config(image=photo)
-            self.lbl_preview._photo = photo   # prevent GC
+        """Forward a live BGR frame to the separate webcam viewer window,
+        if it's open. There's no embedded preview any more -- the viewer
+        window covers both the pre-recording live preview and the feed
+        during recording."""
         if self._viewer_window is not None and self._viewer_window.winfo_exists():
             self._viewer_window.update_frame(frame_bgr)
 
@@ -739,12 +713,10 @@ class AcquisitionPanel(tk.Frame):
 
     def set_camera_live(self, is_live: bool) -> None:
         """Called by the controller when the pre-open camera session's
-        live/lost state changes. Also opens/hides the separate webcam
-        viewer window -- shown as soon as the camera is live (before the
+        live/lost state changes. Opens/hides the separate webcam viewer
+        window -- shown as soon as the camera is live (before the
         countdown even starts) so the operator has a chance to drag it
         somewhere visible before stepping back from the laptop."""
-        self._camera_live = is_live
-        self._refresh_preview_area()
         if is_live:
             self._ensure_viewer_window().show()
         elif self._viewer_window is not None and self._viewer_window.winfo_exists():
@@ -1485,7 +1457,7 @@ class App(tk.Tk):
                 args=(imu_raw_log_path, imu_csv_path, fn_imu, meta), daemon=True,
             ).start()
         else:
-            self._transition_to_review(source_angles, meta)
+            self._transition_to_review(source_angles, meta, from_recording=True)
 
     def on_new_trial(self) -> None:
         self._acq.increment_trial()
@@ -2010,7 +1982,8 @@ class App(tk.Tk):
             # "processing" forever -- a direct violation of "tuning must
             # never block the clinician from seeing trial data."
             pass   # fall back to the originally-recorded series
-        self.after(0, lambda: self._transition_to_review(source_angles, meta))
+        self.after(0, lambda: self._transition_to_review(
+            source_angles, meta, from_recording=True))
 
     def _run_rgb_processing(self, meta: dict) -> None:
         def progress(pct: float) -> None:
@@ -2025,7 +1998,8 @@ class App(tk.Tk):
 
         source_angles = dict(self._pending_review)
         source_angles["rgb"] = angles
-        self.after(0, lambda: self._transition_to_review(source_angles, meta))
+        self.after(0, lambda: self._transition_to_review(
+            source_angles, meta, from_recording=True))
 
     def _start_optitrack_recording(self, meta: dict) -> None:
         if _MOTIVE_AVAIL:
@@ -2042,7 +2016,12 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Panel switching
     # ------------------------------------------------------------------
-    def _transition_to_review(self, source_angles: dict, meta: dict) -> None:
+    def _transition_to_review(self, source_angles: dict, meta: dict,
+                              from_recording: bool = False) -> None:
+        """from_recording distinguishes an actual live-recording stop (which
+        gets a "Recording Saved" confirmation) from the upload-CSV/
+        upload-video-file review paths, which process an already-existing
+        file rather than saving a new one."""
         self._state = "review"
         base_fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
@@ -2054,6 +2033,36 @@ class App(tk.Tk):
             self.state("zoomed")
         except Exception:
             pass
+        if from_recording:
+            self._show_recording_saved_confirmation(source_angles, meta, base_fn)
+
+    def _show_recording_saved_confirmation(self, source_angles: dict, meta: dict,
+                                           base_fn: str) -> None:
+        """Clear, unmissable confirmation of exactly what got written to
+        disk and where, shown once a live recording has fully stopped and
+        finished processing -- so a clinician who stepped back during the
+        countdown isn't left wondering whether the trial actually saved.
+        Only reports files this app itself writes via DataManager.save_trial
+        (imu/rgb angle CSVs + the RGB video); OptiTrack's take is Motive's
+        own file, not something written here, so it's intentionally not
+        listed."""
+        lines = []
+        if "imu" in source_angles:
+            fn_imu = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+            lines.append(f"  • IMU angles (CSV): {fn_imu}")
+        if "rgb" in source_angles:
+            fn_rgb = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="rgb")
+            lines.append(f"  • RGB angles (CSV): {fn_rgb}")
+            lines.append(f"  • RGB video: {base_fn.replace('.csv', '.avi')}")
+        if not lines:
+            return   # nothing this app wrote itself (e.g. an OptiTrack-only trial)
+        messagebox.showinfo(
+            "Recording Saved",
+            "Recording stopped and saved.\n\n"
+            f"Folder:\n{DataManager.DATA_DIR}\n\n"
+            "Files:\n" + "\n".join(lines))
 
     @staticmethod
     def _fps_for(meta: dict) -> float:
