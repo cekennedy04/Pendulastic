@@ -3,6 +3,8 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
+import numpy as np
+
 
 def _root():
     r = tk.Tk(); r.withdraw(); return r
@@ -760,6 +762,25 @@ def test_cancel_countdown_reapplies_countdown_lock():
         r.update()
         assert str(p.countdown_chk.cget("state")) == "disabled"
         assert p.countdown_var.get() is True
+    finally:
+        r.destroy()
+
+
+def test_update_preview_does_not_swap_red_and_blue_channels():
+    """Regression: update_preview() converted BGR -> RGB and then handed
+    that RGB array to cv2.imencode, which itself assumes BGR input and does
+    its own internal channel swap when writing the PNG. The double swap
+    turned every red pixel blue and vice versa in the live preview."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pack()
+        bgr = np.zeros((20, 20, 3), dtype="uint8")
+        bgr[:, :, 2] = 255   # pure red, expressed in BGR order (B=0, G=0, R=255)
+        p.update_preview(bgr)
+        r.update()
+        assert p.lbl_preview._photo.get(0, 0) == (255, 0, 0)
     finally:
         r.destroy()
 

@@ -458,6 +458,39 @@ def test_phone_camera_session_frame_size_from_decoded_frame():
     sess.close()
 
 
+def test_phone_camera_session_frame_size_tracks_a_later_resolution_change():
+    """Regression: frame_size was captured once from the very first frame and
+    never updated. iOS Safari's getUserMedia stream can deliver a
+    different-sized warm-up frame before settling at its real steady-state
+    resolution -- a stale frame_size then made _start_rgb_recording configure
+    cv2.VideoWriter for the wrong size, and every write() silently no-opped,
+    producing a header-only, zero-frame video (confirmed by direct
+    reproduction: cv2.VideoWriter.write() with a mismatched frame size writes
+    nothing and cv2.VideoCapture reads back frame_count=0)."""
+    import numpy as np
+    server = _FakeServerModule()
+    sess = camera_utils.PhoneCameraSession(on_frame=lambda f: None, server_module=server)
+    sess.open({"kind": "phone", "label": "Phone"})
+    _push_frame(server)   # first frame: 4x4 (warm-up-sized)
+    import time
+    for _ in range(50):
+        if sess.frame_size is not None:
+            break
+        time.sleep(0.02)
+    assert sess.frame_size == (4, 4)
+
+    server.stream_frame_queue.put_nowait({   # second frame: a different, real size
+        "frame": np.zeros((480, 640, 3), dtype="uint8"),
+        "frame_index": 1, "phone_ts_ms": 2000, "desktop_ts_ms": 2000,
+    })
+    for _ in range(50):
+        if sess.frame_size == (640, 480):
+            break
+        time.sleep(0.02)
+    assert sess.frame_size == (640, 480)
+    sess.close()
+
+
 def test_phone_camera_session_attach_writer_writes_frames():
     server = _FakeServerModule()
     got = []

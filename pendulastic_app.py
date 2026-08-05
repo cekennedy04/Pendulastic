@@ -535,8 +535,10 @@ class AcquisitionPanel(tk.Frame):
         scale = min(440 / max(w, 1), 330 / max(h, 1))
         nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
         small = _cv2.resize(frame_bgr, (nw, nh))
-        rgb   = _cv2.cvtColor(small, _cv2.COLOR_BGR2RGB)
-        ok, buf = _cv2.imencode(".png", rgb)
+        # cv2.imencode expects BGR input (it does its own internal channel
+        # swap when writing the PNG) -- converting to RGB first double-swaps
+        # the R/B channels, producing a blue-tinted preview.
+        ok, buf = _cv2.imencode(".png", small)
         if ok:
             b64 = base64.b64encode(buf).decode("utf-8")
             photo = tk.PhotoImage(data=b64)
