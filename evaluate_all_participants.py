@@ -775,6 +775,7 @@ class PendulasticEvaluator:
             self._process_trial(ctx)
 
         self._save_leaderboard()
+        self._save_reliability_report()
         print(f"\nDone. All outputs in:\n  {self.output_root}")
 
     # ------------------------------------------------------------------
@@ -933,6 +934,51 @@ class PendulasticEvaluator:
         print(global_rank[["variant", "n_participants", "n_extrema",
                              "rmse_deg", "mae_deg", "max_err_deg"]].to_string())
         print(f"\nSaved: {out_path}")
+
+    # ------------------------------------------------------------------
+    def _save_reliability_report(self) -> None:
+        """For each model family, compute per-trial RMSE
+        (sqrt(mean(abs_err**2)) over that trial's matched peak/pit records,
+        the same formula _save_leaderboard() uses per-variant) grouped by
+        (participant, position, trial), then ICC(1,1) across each
+        participant's trials with >=2 -- repeat-measures reliability of that
+        family's tracking quality -- using reliability_stats, extracted from
+        validate_controls.py since that file cannot currently import.
+        Writes reliability_report.csv alongside global_model_leaderboard.csv.
+        A family with no participant having >=2 trials gets icc_rmse left
+        blank rather than a fabricated value."""
+        import csv
+        from collections import defaultdict
+        import reliability_stats
+
+        # (family, participant, position, trial) -> list of abs_err values
+        by_trial = defaultdict(list)
+        for rec in self.all_records:
+            key = (rec["family"], rec["participant"], rec["position"], rec["trial"])
+            by_trial[key].append(rec["abs_err"])
+
+        # family -> participant -> [per-trial RMSE, ...]
+        by_family_participant = defaultdict(lambda: defaultdict(list))
+        for (family, participant, position, trial), errs in by_trial.items():
+            trial_rmse = float(np.sqrt(np.mean(np.array(errs) ** 2)))
+            by_family_participant[family][participant].append(trial_rmse)
+
+        out_path = os.path.join(self.output_root, "reliability_report.csv")
+        with open(out_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["family", "n_participants_with_repeats", "icc_rmse",
+                            "icc_ci_lo", "icc_ci_hi"])
+            for family, by_participant in sorted(by_family_participant.items()):
+                groups = [v for v in by_participant.values() if len(v) >= 2]
+                if not groups:
+                    writer.writerow([family, 0, "", "", ""])
+                    continue
+                result = reliability_stats.icc_one_way(groups)
+                writer.writerow([family, len(groups),
+                                f"{result['icc']:.4f}" if not np.isnan(result["icc"]) else "",
+                                f"{result['ci_lo']:.4f}" if not np.isnan(result["ci_lo"]) else "",
+                                f"{result['ci_hi']:.4f}" if not np.isnan(result["ci_hi"]) else ""])
+        print(f"Saved: {out_path}")
 
 
 # ===========================================================================
