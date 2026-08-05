@@ -254,6 +254,69 @@ class BiomechanicalEngine:
 
 
 # ---------------------------------------------------------------------------
+# WebcamViewerWindow
+# ---------------------------------------------------------------------------
+
+class WebcamViewerWindow(tk.Toplevel):
+    """Separate, resizable window mirroring the live camera preview at a
+    much larger size than the embedded panel, with a big red status overlay
+    (countdown digits / "HOLD STILL" / "REC"). The operator starts the
+    countdown from the laptop and then typically steps back into frame --
+    this window is meant to be dragged somewhere they can still read it
+    (a second monitor, or just further from the laptop) once they've
+    stepped away, so status changes must be legible from across a room,
+    not just from the small embedded preview next to the controls."""
+
+    _PREVIEW_W, _PREVIEW_H = 900, 650
+
+    def __init__(self, master) -> None:
+        super().__init__(master)
+        self.title("Pendulastic — Camera Preview")
+        self.configure(bg="black")
+        self.geometry(f"{self._PREVIEW_W + 20}x{self._PREVIEW_H + 20}")
+        self.minsize(480, 360)
+        # Closing this window shouldn't tear down its Tk resources -- the
+        # controller keeps reusing the same instance for the life of the
+        # camera session and just re-shows it, so treat the close box as
+        # "hide", matching set_camera_live()'s withdraw()/show() cycle.
+        self.protocol("WM_DELETE_WINDOW", self.withdraw)
+
+        self.lbl_video = tk.Label(self, bg="black")
+        self.lbl_video.pack(fill="both", expand=True)
+
+        self.lbl_overlay = tk.Label(
+            self, text="", font=("Segoe UI", 140, "bold"),
+            fg="#FF1E1E", bg="black", justify="center",
+            wraplength=self._PREVIEW_W - 40)
+        self.lbl_overlay.place(relx=0.5, rely=0.5, anchor="center")
+
+    def update_frame(self, frame_bgr) -> None:
+        """Convert a BGR numpy frame and display it, scaled to fit this
+        window's (larger) target preview size."""
+        import base64
+        h, w = frame_bgr.shape[:2]
+        scale = min(self._PREVIEW_W / max(w, 1), self._PREVIEW_H / max(h, 1))
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        small = _cv2.resize(frame_bgr, (nw, nh))
+        # cv2.imencode expects BGR input and writes it out correctly on its
+        # own -- do not convert to RGB first (that swaps red/blue).
+        ok, buf = _cv2.imencode(".png", small)
+        if ok:
+            b64 = base64.b64encode(buf).decode("utf-8")
+            photo = tk.PhotoImage(data=b64)
+            self.lbl_video.config(image=photo)
+            self.lbl_video._photo = photo   # prevent GC
+
+    def set_overlay_text(self, text: str) -> None:
+        """Big red status text centered over the video. '' clears it."""
+        self.lbl_overlay.config(text=text)
+
+    def show(self) -> None:
+        self.deiconify()
+        self.lift()
+
+
+# ---------------------------------------------------------------------------
 # AcquisitionPanel
 # ---------------------------------------------------------------------------
 
@@ -388,6 +451,7 @@ class AcquisitionPanel(tk.Frame):
                   command=self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._camera_live = False       # updated via set_camera_live()
+        self._viewer_window: Optional[WebcamViewerWindow] = None
 
         # row 9 — Modality status (calibration is now automatic during the
         # countdown -- see App._tick_calibration_check / AcquisitionPanel's
@@ -461,6 +525,7 @@ class AcquisitionPanel(tk.Frame):
         self._refresh_preview_area()
         self.status_var.set("Idle — ready to record.")
         self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
+        self.set_viewer_overlay_text("")
 
     def enter_recording(self) -> None:
         self._lock_form(True)
@@ -470,6 +535,7 @@ class AcquisitionPanel(tk.Frame):
         self._is_recording = True
         self._refresh_preview_area()
         self.status_var.set("RECORDING…")
+        self.set_viewer_overlay_text("● REC")
 
     def _refresh_preview_area(self) -> None:
         """Row 13 shows lbl_preview whenever RGB is checked and either
@@ -513,6 +579,8 @@ class AcquisitionPanel(tk.Frame):
             photo = tk.PhotoImage(data=b64)
             self.lbl_preview.config(image=photo)
             self.lbl_preview._photo = photo   # prevent GC
+        if self._viewer_window is not None and self._viewer_window.winfo_exists():
+            self._viewer_window.update_frame(frame_bgr)
 
     # ------------------------------------------------------------------
     # Validation and metadata
@@ -662,9 +730,28 @@ class AcquisitionPanel(tk.Frame):
 
     def set_camera_live(self, is_live: bool) -> None:
         """Called by the controller when the pre-open camera session's
-        live/lost state changes."""
+        live/lost state changes. Also opens/hides the separate webcam
+        viewer window -- shown as soon as the camera is live (before the
+        countdown even starts) so the operator has a chance to drag it
+        somewhere visible before stepping back from the laptop."""
         self._camera_live = is_live
         self._refresh_preview_area()
+        if is_live:
+            self._ensure_viewer_window().show()
+        elif self._viewer_window is not None and self._viewer_window.winfo_exists():
+            self._viewer_window.withdraw()
+
+    def _ensure_viewer_window(self) -> WebcamViewerWindow:
+        if self._viewer_window is None or not self._viewer_window.winfo_exists():
+            self._viewer_window = WebcamViewerWindow(self)
+        return self._viewer_window
+
+    def set_viewer_overlay_text(self, text: str) -> None:
+        """Big red status text in the separate viewer window (countdown
+        digits / 'HOLD STILL' / '● REC'). No-op if the window was never
+        opened (e.g. RGB isn't an active source)."""
+        if self._viewer_window is not None and self._viewer_window.winfo_exists():
+            self._viewer_window.set_overlay_text(text)
 
     # ------------------------------------------------------------------
     # Countdown
@@ -694,6 +781,7 @@ class AcquisitionPanel(tk.Frame):
             if self._calib_extension_s < _MAX_CALIB_EXTENSION_S:
                 self._calib_extension_s += 1
                 self.status_var.set("Hold steady…")
+                self.set_viewer_overlay_text("HOLD STILL")
                 self._countdown_id = self.after(1000, lambda: self._tick_countdown(0))
                 return
             if messagebox.askyesno(
@@ -712,6 +800,7 @@ class AcquisitionPanel(tk.Frame):
         else:
             calib_suffix = ""
         self.status_var.set(f"Starting in {n}…{calib_suffix}")
+        self.set_viewer_overlay_text(str(n))
         self._countdown_id = self.after(1000, lambda: self._tick_countdown(n - 1))
 
     def _cancel_countdown(self) -> None:
@@ -725,6 +814,7 @@ class AcquisitionPanel(tk.Frame):
         self._lock_form(False)
         self._apply_countdown_lock()   # re-apply the IMU-forced countdown lock
         self.status_var.set("Countdown cancelled — ready to record.")
+        self.set_viewer_overlay_text("")
 
     # ------------------------------------------------------------------
     # Form lock
@@ -1315,6 +1405,10 @@ class App(tk.Tk):
         self._acq.enter_recording()
 
     def on_stop(self) -> None:
+        # Clear the viewer window's "● REC" overlay immediately -- recording
+        # has actually stopped even though the panel may still spend a
+        # while in "processing"/"review" before enter_idle() next runs.
+        self._acq.set_viewer_overlay_text("")
         # Stop IMU poll thread unconditionally
         self._imu_poll_stop.set()
         if self._imu_poll_thread:

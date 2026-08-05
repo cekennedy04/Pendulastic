@@ -551,6 +551,169 @@ def test_rgb_recording_preview_unaffected_by_camera_live_flag():
         r.destroy()
 
 
+def test_set_camera_live_true_opens_viewer_window():
+    """The separate webcam viewer window must appear as soon as the camera
+    goes live -- before the countdown even starts -- so the operator has a
+    chance to position it (e.g. drag to a second monitor) before stepping
+    back from the laptop."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._viewer_window is None
+        p.set_camera_live(True)
+        r.update()
+        assert p._viewer_window is not None
+        assert p._viewer_window.winfo_exists()
+        assert p._viewer_window.state() != "withdrawn"
+    finally:
+        r.destroy()
+
+
+def test_set_camera_live_false_hides_viewer_window():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p.set_camera_live(False)
+        r.update()
+        assert p._viewer_window.state() == "withdrawn"
+    finally:
+        r.destroy()
+
+
+def test_set_camera_live_reuses_existing_viewer_window():
+    """Toggling live on/off/on must not recreate a fresh Toplevel each
+    time -- that would drop the operator's chosen window position/size."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        first = p._viewer_window
+        p.set_camera_live(False)
+        p.set_camera_live(True)
+        r.update()
+        assert p._viewer_window is first
+    finally:
+        r.destroy()
+
+
+def test_update_preview_forwards_frame_to_viewer_window():
+    from pendulastic_app import AcquisitionPanel
+    import numpy as np
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame[:, :, 2] = 255   # BGR red
+        p.update_preview(frame)
+        r.update()
+        assert getattr(p._viewer_window.lbl_video, "_photo", None) is not None
+    finally:
+        r.destroy()
+
+
+def test_set_viewer_overlay_text_is_noop_before_camera_ever_live():
+    """No viewer window has been created yet (RGB never checked) -- setting
+    overlay text must not crash."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_viewer_overlay_text("3")   # must not raise
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_shows_big_red_digit_in_viewer_overlay():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p._tick_countdown(3)
+        r.update()
+        p.after_cancel(p._countdown_id)
+        assert p._viewer_window.lbl_overlay.cget("text") == "3"
+        assert p._viewer_window.lbl_overlay.cget("fg").upper() == "#FF1E1E"
+    finally:
+        r.destroy()
+
+
+def test_cancel_countdown_clears_viewer_overlay():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p._tick_countdown(3)
+        r.update()
+        p.after_cancel(p._countdown_id)
+        p._cancel_countdown()
+        r.update()
+        assert p._viewer_window.lbl_overlay.cget("text") == ""
+    finally:
+        r.destroy()
+
+
+def test_tick_countdown_shows_hold_still_when_not_calibrated():
+    from pendulastic_app import AcquisitionPanel
+
+    class _NotCalibratedCtrl(_Ctrl):
+        def is_imu_calibrated(self): return False
+
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _NotCalibratedCtrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p._calib_extension_s = 0
+        p._tick_countdown(0)
+        r.update()
+        p.after_cancel(p._countdown_id)
+        assert p._viewer_window.lbl_overlay.cget("text") == "HOLD STILL"
+    finally:
+        r.destroy()
+
+
+def test_enter_recording_shows_rec_marker_in_viewer_overlay():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p.enter_recording()
+        r.update()
+        assert p._viewer_window.lbl_overlay.cget("text") == "● REC"
+    finally:
+        r.destroy()
+
+
+def test_enter_idle_clears_viewer_overlay():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_camera_live(True)
+        r.update()
+        p.enter_recording()
+        r.update()
+        p.enter_idle()
+        r.update()
+        assert p._viewer_window.lbl_overlay.cget("text") == ""
+    finally:
+        r.destroy()
+
+
 def test_start_countdown_calls_on_countdown_start():
     from pendulastic_app import AcquisitionPanel
     r = _root()
