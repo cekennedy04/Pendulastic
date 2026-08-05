@@ -24,6 +24,9 @@ import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+PHONE_CAMERA_LABEL = "\U0001f4f1 Phone Camera"
+PHONE_CAMERA_ENTRY = {"kind": "phone", "label": PHONE_CAMERA_LABEL}
+
 # ---------------------------------------------------------------------------
 # Guarded imports — failures must not crash the app at startup
 # ---------------------------------------------------------------------------
@@ -54,12 +57,21 @@ os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 try:
     import cv2 as _cv2
-    from camera_utils import CameraSession
+    from camera_utils import CameraSession, PhoneCameraSession, enumerate_cameras
     _CV2_AVAIL = True
 except ImportError:
     _cv2 = None
     CameraSession = None
+    PhoneCameraSession = None
+    enumerate_cameras = None
     _CV2_AVAIL = False
+
+try:
+    import pendulastic_phone_server as _pps
+    _PPS_AVAIL = True
+except Exception:
+    _pps = None
+    _PPS_AVAIL = False
 
 try:
     from pendulastic_viewer import _MPBatchTracker, _PatientDetector
@@ -389,6 +401,25 @@ class AcquisitionPanel(tk.Frame):
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._camera_live = False       # updated via set_camera_live()
 
+        # Phone pairing panel — shown when the phone dropdown entry is
+        # selected; hidden otherwise. Reuses pendulastic_viewer.py's
+        # qrcode-based QR generation pattern.
+        self._phone_pairing_frame = tk.Frame(meth_f, relief="groove", borderwidth=1)
+        self._phone_pairing_url_var = tk.StringVar(value="")
+        tk.Label(self._phone_pairing_frame, text="Open on your phone:",
+                  font=("Segoe UI", 8, "bold")).pack(side="top", anchor="w", padx=6, pady=(4, 0))
+        self._phone_qr_label = tk.Label(self._phone_pairing_frame)
+        self._phone_qr_label.pack(side="top", padx=6, pady=4)
+        tk.Entry(self._phone_pairing_frame, textvariable=self._phone_pairing_url_var,
+                  font=("Consolas", 8), width=32, state="readonly").pack(
+            side="top", padx=6, pady=(0, 4))
+        tk.Label(self._phone_pairing_frame,
+                  text="Your phone will warn about the connection's security\n"
+                       "certificate — tap Advanced -> Proceed. This is expected.",
+                  font=("Segoe UI", 7), fg="gray", justify="left").pack(
+            side="top", anchor="w", padx=6, pady=(0, 4))
+        self._phone_pairing_frame.pack_forget()
+
         # row 9 — Modality status (calibration is now automatic during the
         # countdown -- see App._tick_calibration_check / AcquisitionPanel's
         # forced-on countdown checkbox below)
@@ -665,6 +696,26 @@ class AcquisitionPanel(tk.Frame):
         live/lost state changes."""
         self._camera_live = is_live
         self._refresh_preview_area()
+
+    def show_phone_pairing_panel(self, url: str) -> None:
+        self._phone_pairing_url_var.set(url)
+        try:
+            import qrcode
+            from PIL import ImageTk
+            qr = qrcode.QRCode(box_size=5, border=2)
+            qr.add_data(url)
+            qr.make(fit=True)
+            raw = qr.make_image(fill_color="black", back_color="white")
+            pil_img = raw.get_image() if hasattr(raw, "get_image") else raw
+            photo = ImageTk.PhotoImage(pil_img.convert("RGB"))
+            self._phone_qr_label.config(image=photo, text="")
+            self._phone_qr_label._photo = photo   # prevent GC
+        except Exception as exc:
+            self._phone_qr_label.config(image="", text=f"(QR unavailable: {exc})")
+        self._phone_pairing_frame.pack(side="top", anchor="w", pady=(4, 0), fill="x")
+
+    def hide_phone_pairing_panel(self) -> None:
+        self._phone_pairing_frame.pack_forget()
 
     # ------------------------------------------------------------------
     # Countdown
@@ -1399,14 +1450,19 @@ class App(tk.Tk):
     def on_rescan_cameras(self) -> None:
         if self._state == "recording":
             return
+        if isinstance(self._camera, PhoneCameraSession):
+            # Rescan on the phone entry doesn't re-probe hardware — it
+            # restarts the stream server for a fresh pairing panel.
+            self._switch_to_phone_camera()
+            return
         if self._camera is None:
             return
-        self._known_cameras = self._camera.rescan()
+        usb_cams = enumerate_cameras() if _CV2_AVAIL else []
+        self._known_cameras = usb_cams + ([PHONE_CAMERA_ENTRY] if _PPS_AVAIL else [])
         self._acq.set_camera_list(self._known_cameras)
-        if self._known_cameras:
+        if usb_cams:
             label = self._acq.cam_var.get()
-            cam = next((c for c in self._known_cameras if c["label"] == label),
-                       self._known_cameras[0])
+            cam = next((c for c in usb_cams if c["label"] == label), usb_cams[0])
             self._camera.open(cam)
         else:
             self._acq.set_camera_live(False)
@@ -1414,19 +1470,44 @@ class App(tk.Tk):
     def on_camera_selected(self, label: str) -> None:
         if self._state == "recording":
             return
-        if self._camera is None:
-            return
         cam = next((c for c in self._known_cameras if c["label"] == label), None)
         if cam is None:
             return
-        if self._camera.active is not None and self._camera.active["label"] == label:
+        if cam.get("kind") == "phone":
+            self._switch_to_phone_camera()
+        else:
+            self._switch_to_usb_camera(cam)
+
+    def _switch_to_usb_camera(self, cam: dict) -> None:
+        if self._camera is not None and self._camera.active is not None \
+                and self._camera.active.get("label") == cam["label"] \
+                and isinstance(self._camera, CameraSession):
             return   # already using this camera
+        if not isinstance(self._camera, CameraSession):
+            if self._camera is not None:
+                self._camera.close()
+            self._acq.hide_phone_pairing_panel()
+            self._camera = CameraSession(
+                on_frame=self._on_camera_frame, on_status=self._on_camera_status)
         self._camera.open(cam)
+
+    def _switch_to_phone_camera(self) -> None:
+        if self._camera is not None:
+            self._camera.close()
+        self._camera = PhoneCameraSession(
+            on_frame=self._on_camera_frame, on_status=self._on_camera_status)
+        self._camera.open(PHONE_CAMERA_ENTRY)
+        ips = _pps.get_all_local_ips() if _PPS_AVAIL else ["127.0.0.1"]
+        primary_ip = ips[0]
+        port = getattr(_pps, "PORT_STREAM_HTTPS", 8880)
+        url = f"https://{primary_ip}:{port}/"
+        self._acq.show_phone_pairing_panel(url)
 
     def on_camera_disabled(self) -> None:
         if self._camera is not None:
             self._camera.close()
         self._acq.set_camera_live(False)
+        self._acq.hide_phone_pairing_panel()
 
     def _on_camera_frame(self, frame_bgr) -> None:
         """Runs on CameraSession's background read thread. Applies the same
@@ -1841,7 +1922,32 @@ class App(tk.Tk):
 
         self._camera.attach_writer(self._rgb_writer)
 
+        self._rgb_ts_path = None
+        if isinstance(self._camera, PhoneCameraSession):
+            self._rgb_ts_path = self._video_path + ".timestamps.csv"
+            self._rgb_ts_file = open(self._rgb_ts_path, "w", newline="", encoding="utf-8")
+            self._rgb_ts_writer = csv.writer(self._rgb_ts_file)
+            self._rgb_ts_writer.writerow(["frame_index", "desktop_ts_ms"])
+            self._camera.attach_timestamp_sink(self._on_phone_frame_timestamp)
+
+    def _on_phone_frame_timestamp(self, frame_index: int, desktop_ts_ms: int) -> None:
+        """Runs on PhoneCameraSession's background thread — plain file I/O
+        only, never touches Tkinter."""
+        try:
+            self._rgb_ts_writer.writerow([frame_index, desktop_ts_ms])
+        except Exception:
+            pass
+
     def _stop_rgb_recording(self) -> None:
+        if isinstance(self._camera, PhoneCameraSession):
+            self._camera.detach_timestamp_sink()
+        ts_file = getattr(self, "_rgb_ts_file", None)
+        if ts_file is not None:
+            try:
+                ts_file.close()
+            except Exception:
+                pass
+            self._rgb_ts_file = None
         writer = self._camera.detach_writer() if self._camera is not None else None
         if writer is not None:
             writer.release()
