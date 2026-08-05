@@ -1448,14 +1448,19 @@ class App(tk.Tk):
     def on_rescan_cameras(self) -> None:
         if self._state == "recording":
             return
+        if isinstance(self._camera, PhoneCameraSession):
+            # Rescan on the phone entry doesn't re-probe hardware — it
+            # restarts the stream server for a fresh pairing panel.
+            self._switch_to_phone_camera()
+            return
         if self._camera is None:
             return
-        self._known_cameras = self._camera.rescan()
+        usb_cams = enumerate_cameras() if _CV2_AVAIL else []
+        self._known_cameras = usb_cams + ([PHONE_CAMERA_ENTRY] if _PPS_AVAIL else [])
         self._acq.set_camera_list(self._known_cameras)
-        if self._known_cameras:
+        if usb_cams:
             label = self._acq.cam_var.get()
-            cam = next((c for c in self._known_cameras if c["label"] == label),
-                       self._known_cameras[0])
+            cam = next((c for c in usb_cams if c["label"] == label), usb_cams[0])
             self._camera.open(cam)
         else:
             self._acq.set_camera_live(False)
@@ -1463,19 +1468,44 @@ class App(tk.Tk):
     def on_camera_selected(self, label: str) -> None:
         if self._state == "recording":
             return
-        if self._camera is None:
-            return
         cam = next((c for c in self._known_cameras if c["label"] == label), None)
         if cam is None:
             return
-        if self._camera.active is not None and self._camera.active["label"] == label:
+        if cam.get("kind") == "phone":
+            self._switch_to_phone_camera()
+        else:
+            self._switch_to_usb_camera(cam)
+
+    def _switch_to_usb_camera(self, cam: dict) -> None:
+        if self._camera is not None and self._camera.active is not None \
+                and self._camera.active.get("label") == cam["label"] \
+                and isinstance(self._camera, CameraSession):
             return   # already using this camera
+        if not isinstance(self._camera, CameraSession):
+            if self._camera is not None:
+                self._camera.close()
+            self._acq.hide_phone_pairing_panel()
+            self._camera = CameraSession(
+                on_frame=self._on_camera_frame, on_status=self._on_camera_status)
         self._camera.open(cam)
+
+    def _switch_to_phone_camera(self) -> None:
+        if self._camera is not None:
+            self._camera.close()
+        self._camera = PhoneCameraSession(
+            on_frame=self._on_camera_frame, on_status=self._on_camera_status)
+        self._camera.open(PHONE_CAMERA_ENTRY)
+        ips = _pps.get_all_local_ips() if _PPS_AVAIL else ["127.0.0.1"]
+        primary_ip = ips[0]
+        port = getattr(_pps, "PORT_STREAM_HTTPS", 8880)
+        url = f"https://{primary_ip}:{port}/"
+        self._acq.show_phone_pairing_panel(url)
 
     def on_camera_disabled(self) -> None:
         if self._camera is not None:
             self._camera.close()
         self._acq.set_camera_live(False)
+        self._acq.hide_phone_pairing_panel()
 
     def _on_camera_frame(self, frame_bgr) -> None:
         """Runs on CameraSession's background read thread. Applies the same
@@ -1890,7 +1920,32 @@ class App(tk.Tk):
 
         self._camera.attach_writer(self._rgb_writer)
 
+        self._rgb_ts_path = None
+        if isinstance(self._camera, PhoneCameraSession):
+            self._rgb_ts_path = self._video_path + ".timestamps.csv"
+            self._rgb_ts_file = open(self._rgb_ts_path, "w", newline="", encoding="utf-8")
+            self._rgb_ts_writer = csv.writer(self._rgb_ts_file)
+            self._rgb_ts_writer.writerow(["frame_index", "desktop_ts_ms"])
+            self._camera.attach_timestamp_sink(self._on_phone_frame_timestamp)
+
+    def _on_phone_frame_timestamp(self, frame_index: int, desktop_ts_ms: int) -> None:
+        """Runs on PhoneCameraSession's background thread — plain file I/O
+        only, never touches Tkinter."""
+        try:
+            self._rgb_ts_writer.writerow([frame_index, desktop_ts_ms])
+        except Exception:
+            pass
+
     def _stop_rgb_recording(self) -> None:
+        if isinstance(self._camera, PhoneCameraSession):
+            self._camera.detach_timestamp_sink()
+        ts_file = getattr(self, "_rgb_ts_file", None)
+        if ts_file is not None:
+            try:
+                ts_file.close()
+            except Exception:
+                pass
+            self._rgb_ts_file = None
         writer = self._camera.detach_writer() if self._camera is not None else None
         if writer is not None:
             writer.release()

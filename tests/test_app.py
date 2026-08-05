@@ -1,5 +1,5 @@
 # tests/test_app.py
-import os, sys
+import csv, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
@@ -487,10 +487,10 @@ def test_on_rescan_cameras_populates_dropdown_and_opens_first(monkeypatch):
             {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"},
         ]
         opened = []
-        monkeypatch.setattr(app._camera, "rescan", lambda: fake_cams)
+        monkeypatch.setattr(_m, "enumerate_cameras", lambda: fake_cams)
         monkeypatch.setattr(app._camera, "open", lambda cam: opened.append(cam) or True)
         app.on_rescan_cameras()
-        assert list(app._acq.drop_cam["values"]) == ["Camera 0 (MSMF)"]
+        assert list(app._acq.drop_cam["values"]) == ["Camera 0 (MSMF)", _m.PHONE_CAMERA_LABEL]
         assert opened == [fake_cams[0]]
     finally:
         app.destroy()
@@ -502,9 +502,9 @@ def test_on_rescan_cameras_with_no_cameras_found(monkeypatch):
     import pendulastic_app as _m
     app = _m.App()
     try:
-        monkeypatch.setattr(app._camera, "rescan", lambda: [])
+        monkeypatch.setattr(_m, "enumerate_cameras", lambda: [])
         app.on_rescan_cameras()
-        assert list(app._acq.drop_cam["values"]) == ["(none detected)"]
+        assert list(app._acq.drop_cam["values"]) == [_m.PHONE_CAMERA_LABEL]
         assert app._acq._camera_live is False
     finally:
         app.destroy()
@@ -782,6 +782,86 @@ def test_on_close_detaches_and_releases_writer_before_closing_camera(monkeypatch
     app.on_close()
     if app._camera is not None:
         assert order == ["detach", "writer_released", "camera_closed"]
+
+
+def test_on_rescan_cameras_always_appends_phone_entry(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        monkeypatch.setattr(_m, "enumerate_cameras", lambda: [])
+        monkeypatch.setattr(app._camera, "close", lambda: None)
+        app.on_rescan_cameras()
+        assert list(app._acq.drop_cam["values"])[-1] == _m.PHONE_CAMERA_LABEL
+    finally:
+        app.destroy()
+
+
+def test_selecting_phone_entry_swaps_camera_to_phone_session(monkeypatch):
+    import pendulastic_app as _m
+    import camera_utils
+    app = _m.App()
+    try:
+        app._known_cameras = [_m.PHONE_CAMERA_ENTRY]
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "open",
+            lambda self, cam: (setattr(self, "active", cam) or True))
+        monkeypatch.setattr(
+            "pendulastic_phone_server.get_all_local_ips", lambda: ["192.168.1.50"], raising=False)
+        app.on_camera_selected(_m.PHONE_CAMERA_LABEL)
+        assert isinstance(app._camera, camera_utils.PhoneCameraSession)
+        assert app._acq._phone_pairing_frame.winfo_manager() == "pack"
+    finally:
+        app.destroy()
+
+
+def test_selecting_usb_entry_after_phone_swaps_back_to_camera_session(monkeypatch):
+    import pendulastic_app as _m
+    import camera_utils
+    app = _m.App()
+    try:
+        fake_usb = {"index": 0, "backend": 700, "backend_name": "MSMF", "label": "Camera 0 (MSMF)"}
+        app._known_cameras = [fake_usb, _m.PHONE_CAMERA_ENTRY]
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "open",
+            lambda self, cam: (setattr(self, "active", cam) or True))
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "close", lambda self: setattr(self, "active", None))
+        monkeypatch.setattr(
+            "pendulastic_phone_server.get_all_local_ips", lambda: ["192.168.1.50"], raising=False)
+        app.on_camera_selected(_m.PHONE_CAMERA_LABEL)
+        assert isinstance(app._camera, camera_utils.PhoneCameraSession)
+
+        opened = []
+        monkeypatch.setattr(
+            camera_utils.CameraSession, "open", lambda self, cam: opened.append(cam) or True)
+        app.on_camera_selected("Camera 0 (MSMF)")
+        assert isinstance(app._camera, camera_utils.CameraSession)
+        assert opened == [fake_usb]
+        assert app._acq._phone_pairing_frame.winfo_manager() == ""
+    finally:
+        app.destroy()
+
+
+def test_on_camera_disabled_closes_whichever_session_type_is_active(monkeypatch):
+    import pendulastic_app as _m
+    import camera_utils
+    app = _m.App()
+    try:
+        app._known_cameras = [_m.PHONE_CAMERA_ENTRY]
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "open",
+            lambda self, cam: (setattr(self, "active", cam) or True))
+        closed = []
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "close", lambda self: closed.append(True))
+        monkeypatch.setattr(
+            "pendulastic_phone_server.get_all_local_ips", lambda: ["192.168.1.50"], raising=False)
+        app.on_camera_selected(_m.PHONE_CAMERA_LABEL)
+        app.on_camera_disabled()
+        assert closed == [True]
+        assert app._acq._phone_pairing_frame.winfo_manager() == ""
+    finally:
+        app.destroy()
 
 
 def test_on_countdown_start_resets_calibration_state():
