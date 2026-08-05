@@ -864,6 +864,71 @@ def test_on_camera_disabled_closes_whichever_session_type_is_active(monkeypatch)
         app.destroy()
 
 
+def test_start_rgb_recording_writes_timestamp_sidecar_for_phone_camera(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import camera_utils
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        app._camera = camera_utils.PhoneCameraSession(
+            on_frame=app._on_camera_frame, on_status=app._on_camera_status,
+            server_module=object())   # never actually opened in this test
+        app._camera.active = _m.PHONE_CAMERA_ENTRY
+        app._camera._frame_size = (640, 480)
+
+        sinks = []
+        monkeypatch.setattr(
+            camera_utils.PhoneCameraSession, "attach_timestamp_sink",
+            lambda self, cb: sinks.append(cb))
+        monkeypatch.setattr(camera_utils.PhoneCameraSession, "attach_writer", lambda self, w: None)
+        monkeypatch.setattr(_m._cv2, "VideoWriter",
+                             lambda *a, **k: type("W", (), {"isOpened": lambda s: True,
+                                                             "write": lambda s, f: None,
+                                                             "release": lambda s: None})())
+
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._active_sources = ["rgb"]
+        app._start_rgb_recording(meta)
+
+        assert len(sinks) == 1
+        sinks[0](3, 456789)
+        sinks[0](4, 456800)
+        assert os.path.exists(app._rgb_ts_path)
+
+        monkeypatch.setattr(camera_utils.PhoneCameraSession, "detach_timestamp_sink",
+                             lambda self: sinks.clear())
+        monkeypatch.setattr(camera_utils.PhoneCameraSession, "detach_writer", lambda self: None)
+        app._stop_rgb_recording()
+
+        with open(app._rgb_ts_path, newline="") as f:
+            rows = list(csv.reader(f))
+        assert rows[0] == ["frame_index", "desktop_ts_ms"]
+        assert rows[1:] == [["3", "456789"], ["4", "456800"]]
+    finally:
+        app.destroy()
+
+
+def test_start_rgb_recording_skips_sidecar_for_usb_camera(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        # app._camera is already a CameraSession (default from __init__)
+        monkeypatch.setattr(app._camera, "active", {"index": 0, "label": "Camera 0"})
+        app._camera._frame_size = (640, 480)
+        monkeypatch.setattr(app._camera, "attach_writer", lambda w: None)
+        monkeypatch.setattr(_m._cv2, "VideoWriter",
+                             lambda *a, **k: type("W", (), {"isOpened": lambda s: True,
+                                                             "write": lambda s, f: None,
+                                                             "release": lambda s: None})())
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._active_sources = ["rgb"]
+        app._start_rgb_recording(meta)
+        assert getattr(app, "_rgb_ts_path", None) is None
+    finally:
+        app.destroy()
+
+
 def test_on_countdown_start_resets_calibration_state():
     from pendulastic_app import App
     app = App()
