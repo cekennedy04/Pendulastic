@@ -1,9 +1,12 @@
+import csv
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
+import pytest
 
 import evaluate_all_participants as eap
+import reliability_stats
 
 
 def test_save_reliability_report_writes_icc_per_family(tmp_path):
@@ -34,6 +37,33 @@ def test_save_reliability_report_writes_icc_per_family(tmp_path):
     assert "family" in header
     assert "icc_rmse" in header
 
+    # Independently recompute the expected per-trial RMSE (sqrt(mean(abs_err**2)))
+    # by hand from the fixture data, grouped by participant+trial, then feed those
+    # RMSE values through the real reliability_stats.icc_one_way() -- the same
+    # function _save_reliability_report() is documented to call. This exercises
+    # the RMSE formula and the (family, participant, position, trial) grouping
+    # actually implemented in _save_reliability_report(), rather than only
+    # checking the CSV header exists.
+    def rmse(vals):
+        return float(np.sqrt(np.mean(np.array(vals) ** 2)))
+
+    p001_trial1_rmse = rmse([4.0, 4.4])
+    p001_trial2_rmse = rmse([4.8, 4.9])
+    p002_trial1_rmse = rmse([5.0, 5.2])
+    p002_trial2_rmse = rmse([4.9, 5.0])
+    expected = reliability_stats.icc_one_way([
+        [p001_trial1_rmse, p001_trial2_rmse],
+        [p002_trial1_rmse, p002_trial2_rmse],
+    ])
+
+    with open(out_path, newline="") as f:
+        rows = {row["family"]: row for row in csv.DictReader(f)}
+    pendulastic_row = rows["pendulastic"]
+    assert pendulastic_row["n_participants_with_repeats"] == "2"
+    written_icc = float(pendulastic_row["icc_rmse"])
+    assert 0.0 <= written_icc <= 1.0
+    assert written_icc == pytest.approx(expected["icc"], abs=1e-4)
+
 
 def test_save_reliability_report_skips_family_with_no_repeat_trials():
     """A family where every participant has exactly 1 trial has no repeat
@@ -47,3 +77,13 @@ def test_save_reliability_report_skips_family_with_no_repeat_trials():
         {"family": "hrnet", "participant": "P002", "position": "1", "trial": "1", "abs_err": 3.5},
     ]
     ev._save_reliability_report()   # must not raise
+
+    out_path = os.path.join(ev.output_root, "reliability_report.csv")
+    with open(out_path, newline="") as f:
+        rows = {row["family"]: row for row in csv.DictReader(f)}
+    hrnet_row = rows["hrnet"]
+    # icc_rmse must be genuinely blank -- not "nan" or any other fabricated
+    # placeholder -- since downstream (Task 9) treats a non-blank value as a
+    # real, usable ICC number.
+    assert hrnet_row["icc_rmse"] == ""
+    assert hrnet_row["n_participants_with_repeats"] == "0"
