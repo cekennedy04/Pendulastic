@@ -100,6 +100,14 @@ except Exception:
     _MPL_AVAIL = False
 
 try:
+    import pt_report_common as _report
+    _REPORT_AVAIL = True
+except Exception:
+    _report = None
+    _REPORT_AVAIL = False
+    _MPL_AVAIL = False
+
+try:
     from pendulastic_workbench import TrialLoadPanel, WorkbenchView
     import workbench_engine as _wb_engine
     import workbench_style as _wb_style
@@ -933,7 +941,16 @@ class ModeSelectView(tk.Frame):
             bg=_AMBER, fg="white",
             width=24, height=4,
             command=self.controller._enter_workbench_mode,
-        ).grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        ).grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+
+        tk.Button(
+            self,
+            text="Analysis & Reports\nCompare Participants",
+            font=("Segoe UI", 12, "bold"),
+            bg="#5a3d8a", fg="white",
+            width=24, height=4,
+            command=self.controller._enter_analysis_mode,
+        ).grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
 
 
 # ---------------------------------------------------------------------------
@@ -1296,6 +1313,298 @@ class PostProcessingPanel(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# AnalysisPanel
+# ---------------------------------------------------------------------------
+
+class AnalysisPanel(tk.Frame):
+    """Cross-participant analysis: pick participants, a figure type, and
+    (for RMSE) which recording methodologies to compare, then generate one
+    of the pt_report_common.py figures and view it inline.
+
+    Runs the actual scoring/plotting on a background thread (it re-reads and
+    re-scores every trial CSV for the selected participants each time, which
+    takes a few seconds per participant) and polls a queue on the Tk main
+    thread to stay responsive -- same pattern as the app's IMU poll thread.
+    """
+
+    FIGURE_TYPES = [
+        ("full_report", "Full Report (1 participant)"),
+        ("comparison", "Comparison (2 participants)"),
+        ("rmse", "RMSE Agreement (1 participant)"),
+    ]
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._result_queue: queue.Queue = queue.Queue()
+        self._current_fig = None
+        self._current_canvas = None
+        self._last_out_path: Optional[str] = None
+        self._participants: dict = {}
+        self._build_widgets()
+
+    # ------------------------------------------------------------------
+    def _build_widgets(self) -> None:
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        hdr = tk.Frame(self)
+        hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 4))
+        tk.Button(hdr, text="<- Mode Select", font=("Segoe UI", 9),
+                 command=self.controller.on_back_to_mode_select).pack(side="left", padx=(0, 12))
+        tk.Label(hdr, text="Analysis & Reports", font=("Segoe UI", 12, "bold"),
+                anchor="w").pack(side="left")
+
+        # ── Left sidebar: selections ────────────────────────────────────
+        side = tk.Frame(self, width=260)
+        side.grid(row=1, column=0, sticky="ns", padx=(12, 6), pady=6)
+        side.grid_propagate(False)
+
+        tk.Label(side, text="Participants", font=("Segoe UI", 10, "bold"), anchor="w").pack(
+            fill="x", pady=(0, 2))
+        list_frame = tk.Frame(side)
+        list_frame.pack(fill="both", expand=False, pady=(0, 4))
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical")
+        self._participant_list = tk.Listbox(
+            list_frame, selectmode="extended", exportselection=False,
+            height=10, yscrollcommand=scrollbar.set, font=("Segoe UI", 9))
+        scrollbar.config(command=self._participant_list.yview)
+        self._participant_list.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        tk.Button(side, text="Refresh List", font=("Segoe UI", 9),
+                 command=self._refresh_participants).pack(fill="x", pady=(0, 12))
+
+        tk.Label(side, text="Figure Type", font=("Segoe UI", 10, "bold"), anchor="w").pack(
+            fill="x", pady=(0, 2))
+        self._figure_type = tk.StringVar(value="full_report")
+        for key, label in self.FIGURE_TYPES:
+            tk.Radiobutton(side, text=label, variable=self._figure_type, value=key,
+                          font=("Segoe UI", 9), anchor="w",
+                          command=self._on_figure_type_changed).pack(fill="x")
+
+        self._method_frame = tk.LabelFrame(side, text="Methodology (RMSE only)",
+                                           font=("Segoe UI", 9, "bold"), padx=6, pady=4)
+        self._method_frame.pack(fill="x", pady=(12, 0))
+        self._use_mediapipe = tk.BooleanVar(value=True)
+        self._use_imu = tk.BooleanVar(value=True)
+        tk.Checkbutton(self._method_frame, text="MediaPipe", variable=self._use_mediapipe,
+                      font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Checkbutton(self._method_frame, text="IMU (Viewer)", variable=self._use_imu,
+                      font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Label(side, text="(needs MediaPipe/IMU data already\ngenerated for those trials)",
+                font=("Segoe UI", 7), fg="#777", justify="left").pack(fill="x", pady=(2, 12))
+        self._on_figure_type_changed()   # methodology checkboxes start disabled (default is Full Report)
+
+        self.btn_generate = tk.Button(
+            side, text="Generate", bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
+            height=2, command=self._on_generate)
+        self.btn_generate.pack(fill="x", pady=(4, 4))
+
+        self.btn_save = tk.Button(side, text="Save As...", font=("Segoe UI", 9),
+                                  command=self._on_save_as, state="disabled")
+        self.btn_save.pack(fill="x")
+
+        self.status_var = tk.StringVar(value="Pick participant(s), then Generate.")
+        tk.Label(side, textvariable=self.status_var, font=("Segoe UI", 8), fg="#555",
+                wraplength=240, justify="left", anchor="w").pack(fill="x", pady=(12, 0))
+
+        # ── Right: scrollable figure viewer ─────────────────────────────
+        viewer_outer = tk.Frame(self, relief="sunken", bd=1)
+        viewer_outer.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=6)
+        viewer_outer.columnconfigure(0, weight=1)
+        viewer_outer.rowconfigure(0, weight=1)
+
+        self._viewer_canvas = tk.Canvas(viewer_outer, bg="white",
+                                        highlightthickness=0)
+        vbar = tk.Scrollbar(viewer_outer, orient="vertical", command=self._viewer_canvas.yview)
+        hbar = tk.Scrollbar(viewer_outer, orient="horizontal", command=self._viewer_canvas.xview)
+        self._viewer_canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        self._viewer_canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+
+        self._viewer_frame = tk.Frame(self._viewer_canvas, bg="white")
+        self._viewer_window = self._viewer_canvas.create_window(
+            (0, 0), window=self._viewer_frame, anchor="nw")
+        self._viewer_frame.bind(
+            "<Configure>",
+            lambda e: self._viewer_canvas.configure(scrollregion=self._viewer_canvas.bbox("all")))
+
+        self._viewer_placeholder = tk.Label(
+            self._viewer_frame, text="No figure generated yet.",
+            font=("Segoe UI", 11), fg="#888", bg="white", padx=40, pady=40)
+        self._viewer_placeholder.pack()
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def on_shown(self) -> None:
+        if not self._participants:
+            self._refresh_participants()
+
+    def _refresh_participants(self) -> None:
+        if not _REPORT_AVAIL:
+            self.status_var.set("pt_report_common unavailable — check console for import error.")
+            return
+        self.status_var.set("Scanning for participants...")
+        self.update_idletasks()
+        try:
+            self._participants = _report.list_participants()
+        except Exception as e:
+            self.status_var.set(f"Scan failed: {e}")
+            return
+        self._participant_list.delete(0, "end")
+        for pid, info in self._participants.items():
+            legs = "/".join(sorted(info["legs"]))
+            self._participant_list.insert(
+                "end", f"P{pid}  ({legs}, {info['n_trials']} trials, "
+                       f"{len(info['conditions'])} condition(s))")
+        self.status_var.set(f"{len(self._participants)} participant(s) found. "
+                            f"Pick participant(s), then Generate.")
+
+    def _on_figure_type_changed(self) -> None:
+        ft = self._figure_type.get()
+        state = "normal" if ft == "rmse" else "disabled"
+        for child in self._method_frame.winfo_children():
+            child.config(state=state)
+
+    def _selected_pids(self) -> list:
+        pids = list(self._participants.keys())
+        return [pids[i] for i in self._participant_list.curselection()]
+
+    # ------------------------------------------------------------------
+    # Generate (background thread + queue poll)
+    # ------------------------------------------------------------------
+    def _on_generate(self) -> None:
+        if not _REPORT_AVAIL:
+            messagebox.showerror("Unavailable", "pt_report_common could not be imported.")
+            return
+        selected = self._selected_pids()
+        ft = self._figure_type.get()
+        needed = 2 if ft == "comparison" else 1
+        if len(selected) != needed:
+            messagebox.showinfo(
+                "Select Participants",
+                f"{'Comparison' if needed == 2 else 'This figure type'} needs exactly "
+                f"{needed} participant(s) selected — {len(selected)} selected.")
+            return
+
+        self.btn_generate.config(state="disabled")
+        self.status_var.set("Working — scoring trials, this can take a bit...")
+        methodologies = tuple(m for m, v in
+                              (("mediapipe", self._use_mediapipe.get()), ("imu", self._use_imu.get()))
+                              if v)
+        threading.Thread(target=self._generate_worker, args=(ft, selected, methodologies),
+                         daemon=True).start()
+        self.after(150, self._poll_result)
+
+    def _generate_worker(self, ft: str, pids: list, methodologies: tuple) -> None:
+        # Only the data collection (re-reading and re-scoring every trial CSV
+        # for the selected participants) happens here. Figure construction is
+        # deliberately left to _poll_result on the Tk main thread: pt_report_common's
+        # make_*_figure functions call plt.subplots(), which under the TkAgg
+        # backend (active because this module imports tkinter) creates real
+        # Tk widgets -- unsafe to do from a background thread.
+        try:
+            if ft == "full_report":
+                data = _report.collect_participant(pids[0])
+            elif ft == "comparison":
+                pid_a, pid_b = pids
+                data = (_report.collect_participant(pid_a), _report.collect_participant(pid_b))
+            elif ft == "rmse":
+                data = _report.collect_participant(pids[0])
+            else:
+                raise ValueError(f"Unknown figure type: {ft}")
+            self._result_queue.put(("ok", (ft, pids, methodologies, data), None))
+        except Exception as e:
+            self._result_queue.put(("error", str(e), None))
+
+    def _poll_result(self) -> None:
+        try:
+            status, payload, _ = self._result_queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll_result)
+            return
+
+        if status == "error":
+            self.btn_generate.config(state="normal")
+            self.status_var.set(f"Failed: {payload}")
+            messagebox.showerror("Generation Failed", payload)
+            return
+
+        ft, pids, methodologies, data = payload
+        try:
+            if ft == "full_report":
+                pid = pids[0]
+                by_leg_tp, tps = data
+                out_path, fig = _report.make_report_figure(
+                    f"Participant {pid}", by_leg_tp, tps,
+                    f"P{pid}_full_report.png",
+                    "Generated from the Pendulastic app's Analysis panel.",
+                    save=True, return_fig=True)
+            elif ft == "comparison":
+                pid_a, pid_b = pids
+                (data_a, tp_a), (data_b, tp_b) = data
+                out_path, fig = _report.make_comparison_figure(
+                    f"P{pid_a}", data_a, tp_a, f"P{pid_b}", data_b, tp_b,
+                    f"P{pid_a}_vs_P{pid_b}_comparison.png",
+                    save=True, return_fig=True)
+            elif ft == "rmse":
+                pid = pids[0]
+                by_leg_tp, tps = data
+                out_path, fig = _report.make_rmse_figure(
+                    f"Participant {pid}", by_leg_tp, tps,
+                    f"P{pid}_rmse.png", methodologies=methodologies,
+                    save=True, return_fig=True)
+        except Exception as e:
+            self.btn_generate.config(state="normal")
+            self.status_var.set(f"Failed: {e}")
+            messagebox.showerror("Generation Failed", str(e))
+            return
+
+        self.btn_generate.config(state="normal")
+        self._last_out_path = out_path
+        self._show_figure(fig)
+        self.status_var.set(f"Done. Saved to:\n{out_path}")
+        self.btn_save.config(state="normal")
+
+    def _show_figure(self, fig) -> None:
+        if not _MPL_AVAIL:
+            return
+        if self._current_canvas is not None:
+            self._current_canvas.get_tk_widget().destroy()
+        if self._current_fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(self._current_fig)
+            except Exception:
+                pass
+        self._viewer_placeholder.pack_forget()
+
+        self._current_fig = fig
+        self._current_canvas = FigureCanvasTkAgg(fig, master=self._viewer_frame)
+        self._current_canvas.draw()
+        self._current_canvas.get_tk_widget().pack()
+
+    def _on_save_as(self) -> None:
+        if not self._last_out_path or not os.path.exists(self._last_out_path):
+            return
+        dest = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            initialfile=os.path.basename(self._last_out_path),
+            filetypes=[("PNG image", "*.png"), ("All files", "*.*")])
+        if not dest:
+            return
+        try:
+            import shutil
+            shutil.copyfile(self._last_out_path, dest)
+            self.status_var.set(f"Saved copy to:\n{dest}")
+        except Exception as e:
+            messagebox.showerror("Save Failed", str(e))
+
+
+# ---------------------------------------------------------------------------
 # App  (thin host)
 # ---------------------------------------------------------------------------
 
@@ -1345,6 +1654,7 @@ class App(tk.Tk):
         self._upload_meta = UploadMetaView(self, controller=self)
         self._acq  = AcquisitionPanel(self, controller=self)
         self._post = PostProcessingPanel(self, controller=self)
+        self._analysis = AnalysisPanel(self, controller=self)
 
         self._workbench_trial_meta: dict = {}
         self._workbench_imu_reference: list = []
@@ -1596,6 +1906,12 @@ class App(tk.Tk):
         self._workbench_load.pack(fill="both", expand=True)
         self._state = "workbench_load"
 
+    def _enter_analysis_mode(self) -> None:
+        self._mode_select.pack_forget()
+        self._analysis.pack(fill="both", expand=True)
+        self._state = "analysis"
+        self._analysis.on_shown()
+
     def get_trial_meta(self) -> dict:
         return dict(self._workbench_trial_meta)
 
@@ -1724,6 +2040,7 @@ class App(tk.Tk):
         self._acq.pack_forget()
         self._post.pack_forget()
         self._upload_meta.pack_forget()
+        self._analysis.pack_forget()
         if _WORKBENCH_AVAIL:
             self._workbench_load.pack_forget()
             self._workbench_view.pack_forget()

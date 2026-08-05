@@ -80,8 +80,33 @@ def test_all_expected_keys_present():
     p = compute_pt_params(t, ang)
     assert p is not None, "Damped sinusoid should yield valid params"
     for key in ("R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n",
-                "f", "area_ratio", "A0_deg", "A1_deg"):
+                "f", "area_ratio", "A0_deg", "A1_deg", "neutral_deg_raw"):
         assert key in p, f"Missing key: {key}"
+
+
+def test_neutral_deg_raw_is_undetrended_tail_median():
+    """neutral_deg_raw must track the settled tail in the ORIGINAL (undetrended)
+    signal space -- used to align external HPE/MediaPipe curves against
+    angle_raw, which detrend()'s linear correction would otherwise offset."""
+    t, ang = _drifting_signal(drift=6.0)
+    p = compute_pt_params(t, ang, detrend=True)
+    assert p is not None
+    assert np.isfinite(p["neutral_deg_raw"])
+    # With real drift and detrend=True, the detrended tail-median
+    # (neutral_deg) and the raw tail-median (neutral_deg_raw) must diverge --
+    # otherwise neutral_deg_raw is just aliasing neutral_deg and isn't doing
+    # its job of representing the undetrended signal.
+    assert abs(p["neutral_deg_raw"] - p["neutral_deg"]) > 0.5
+
+
+def test_neutral_deg_raw_close_to_neutral_deg_when_detrend_disabled():
+    """With detrend=False, neutral_deg_raw (unsmoothed tail-median) and
+    neutral_deg (SG-smoothed tail-median) should be close -- the only
+    remaining difference is smoothing, not detrending."""
+    t, ang = _damped_sinusoid()
+    p = compute_pt_params(t, ang, detrend=False)
+    assert p is not None
+    assert abs(p["neutral_deg_raw"] - p["neutral_deg"]) < 0.5
 
 
 def test_detect_release_has_no_hardcoded_absolute_floor():
@@ -172,3 +197,67 @@ def test_imu_and_optitrack_trials_overlay_after_independent_t0_alignment():
     # samples worth of threshold-crossing time — allow that, not sub-frame exactness.
     assert abs(t_imu_aligned[hold_imu]) < 0.1
     assert abs(t_opti_aligned[hold_opti]) < 0.1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# load_hpe_model_curves: explicit csv_files bypass + nested Session_post/ discovery
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_load_hpe_model_curves_empty_csv_files_skips_discovery(monkeypatch):
+    """Passing csv_files=[] (not None) must short-circuit before any
+    Recordings/OptiTrack_Recordings glob discovery runs -- an explicit (even
+    empty) csv_files list means the caller opted out of auto-discovery."""
+    import pendulastic_pt_score as pt
+    calls = []
+    monkeypatch.setattr(pt.glob, "glob", lambda *a, **kw: calls.append(a) or [])
+
+    t, ang = _damped_sinusoid()
+    result = pt.load_hpe_model_curves("999", "1", "1", t, ang, 180.0, csv_files=[])
+    assert result == []
+    assert calls == [], "discovery glob.glob should never run when csv_files is explicitly provided"
+
+
+def test_load_hpe_model_curves_csv_files_bypass_reads_explicit_paths(tmp_path, monkeypatch):
+    """An explicit, non-empty csv_files list must be read directly, without
+    ever touching HPE_ROOT/OPTI_ROOT discovery."""
+    import pendulastic_pt_score as pt
+    import pandas as pd
+
+    monkeypatch.setattr(pt, "HPE_ROOT", str(tmp_path / "no_such_recordings_dir"))
+    monkeypatch.setattr(pt, "OPTI_ROOT", str(tmp_path / "no_such_optitrack_dir"))
+
+    t, ang = _damped_sinusoid(n=300, fps=30.0)
+    # A perfect copy of the OptiTrack signal as the "model" curve -- guarantees
+    # it tracks the swing (ratio check) and yields rmse == 0.
+    csv_path = tmp_path / "P999_T_1_perfectmodel.csv"
+    pd.DataFrame({"time_sec": t, "knee_angle_deg": ang}).to_csv(csv_path, index=False)
+
+    curves = pt.load_hpe_model_curves("999", "1", "1", t, ang, 180.0, csv_files=[str(csv_path)])
+    assert len(curves) == 1
+    assert curves[0]["name"] == "perfectmodel"
+    # A near-identical curve, modulo the SG-smoothing/outlier-rejection cleanup
+    # both signals pass through -- should track almost exactly, not necessarily bit-exact.
+    assert curves[0]["rmse"] < 0.1
+
+
+def test_load_hpe_model_curves_finds_nested_session_post_dir(tmp_path, monkeypatch):
+    """Post-treatment sessions nest an extra Session_post/ level
+    (Participant_N/Session_post/Position_1/Height_Joint-Level/) that the old
+    fixed-depth path join couldn't see -- the recursive glob fallback must
+    still find CSVs there."""
+    import pendulastic_pt_score as pt
+    import pandas as pd
+
+    hpe_root = tmp_path / "Recordings"
+    rec_dir = hpe_root / "Participant_999" / "Session_post" / "Position_1" / "Height_Joint-Level"
+    rec_dir.mkdir(parents=True)
+    monkeypatch.setattr(pt, "HPE_ROOT", str(hpe_root))
+    monkeypatch.setattr(pt, "OPTI_ROOT", str(tmp_path / "no_such_optitrack_dir"))
+
+    t, ang = _damped_sinusoid(n=300, fps=30.0)
+    csv_path = rec_dir / "P999_T_1_perfectmodel.csv"
+    pd.DataFrame({"time_sec": t, "knee_angle_deg": ang}).to_csv(csv_path, index=False)
+
+    curves = pt.load_hpe_model_curves("999", "1", "1", t, ang, 180.0)
+    assert len(curves) == 1
+    assert curves[0]["name"] == "perfectmodel"

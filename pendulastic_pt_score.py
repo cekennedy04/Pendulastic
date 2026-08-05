@@ -650,6 +650,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
     t_c   = t[mask]
     ang_c = angle_raw[mask]
+    ang_c_raw = ang_c   # pre-detrend, for neutral_deg_raw below
     if detrend:
         ang_c = _detrend(ang_c, type='linear')
     ang_s = _sg(ang_c, w=15, p=3)
@@ -682,6 +683,13 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # ── Neutral from settled tail of signal (used internally for phi/A0/R2n) ──
     tail_start = max(int(0.75 * len(ang_r)), len(ang_r) - 1)
     neutral = float(np.nanmedian(ang_r[tail_start:]))
+
+    # Same tail-median, but in raw (undetrended) signal space — for aligning
+    # external curves (HPE/MediaPipe) against the original angle_raw array,
+    # which detrending would otherwise offset by however much the linear
+    # trend drifted between release and the settled tail.
+    ang_r_raw = ang_c_raw[rel_i:]
+    neutral_deg_raw = float(np.nanmedian(ang_r_raw[tail_start:]))
 
     # phi: positive = extended beyond neutral, negative = flexed beyond neutral
     phi = ang_r - neutral
@@ -800,6 +808,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         # diagnostics
         A0_deg=A0, A1_deg=A1, first_trough_depth=first_trough_depth,
         neutral_deg=neutral,
+        neutral_deg_raw=neutral_deg_raw,
         pre_release_deg=pre_release_deg,
         phi=phi, phi_negated=phi_negated,
         ang_r=ang_r,          # smoothed angle after release, unflipped — for plotting
@@ -907,7 +916,7 @@ def _clean_hpe_angle(ang: np.ndarray, outlier_thresh: float = 25.0,
 
 def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
                           t_opti: np.ndarray, angle_raw: np.ndarray,
-                          neutral_deg: float) -> list:
+                          neutral_deg: float, csv_files: Optional[list] = None) -> list:
     """
     Load, clean, align and filter HPE model angle curves for one trial.
 
@@ -921,28 +930,42 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
       - Filter: model flexion-past-neutral peak >= 30% of OptiTrack peak
       - Compute RMSE vs OptiTrack in flexion (degrees past neutral)
 
+    csv_files: optional explicit list of HPE/IMU CSV paths, bypassing the
+    Recordings/OptiTrack_Recordings path-discovery below entirely. Use this
+    for data laid out in a folder convention discover_optitrack() doesn't
+    recognize (e.g. Participant_N/Leg/characterization/, no Position_N level).
+
     Returns list of dicts sorted by RMSE (tracking models only, best MAX_HPE):
       {"name": str, "t": ndarray, "ang": ndarray, "rmse": float, "raw_pct": float}
     """
     MAX_HPE_OVERLAY = 8
 
-    # Locate HPE directory (Recordings/ first, fallback to OptiTrack_Recordings/)
-    rec_dir = os.path.join(HPE_ROOT, f"Participant_{pid_str}",
-                           f"Position_{pos}", "Height_Joint-Level")
-    if not os.path.isdir(rec_dir):
-        rec_dir = os.path.join(OPTI_ROOT, f"Participant_{pid_str}",
-                               f"Position_{pos}", "Height_Joint-Level")
-    if not os.path.isdir(rec_dir):
-        return []
+    if csv_files is None:
+        # Locate HPE directory (Recordings/ first, fallback to OptiTrack_Recordings/).
+        # Post-treatment sessions nest an extra Session_post/ level that pre-treatment
+        # sessions don't have, so search recursively rather than assuming a fixed depth.
+        def _find_rec_dir(root):
+            direct = os.path.join(root, f"Participant_{pid_str}",
+                                  f"Position_{pos}", "Height_Joint-Level")
+            if os.path.isdir(direct):
+                return direct
+            matches = glob.glob(os.path.join(
+                root, f"Participant_{pid_str}", "**",
+                f"Position_{pos}", "Height_Joint-Level"), recursive=True)
+            return matches[0] if matches else None
 
-    # Find all HPE CSVs for this trial number
-    csv_files = sorted(glob.glob(os.path.join(rec_dir, f"*_T_{trial}_*.csv")))
-    if not csv_files:
-        csv_files = sorted(glob.glob(os.path.join(rec_dir, f"*T_{trial}*.csv")))
-    csv_files = [f for f in csv_files
-                 if "optitrack" not in os.path.basename(f).lower()
-                 and not os.path.basename(f).lower().endswith("_annotated.mp4")
-                 and ".csv" in f.lower()]
+        rec_dir = _find_rec_dir(HPE_ROOT) or _find_rec_dir(OPTI_ROOT)
+        if not rec_dir:
+            return []
+
+        # Find all HPE CSVs for this trial number
+        csv_files = sorted(glob.glob(os.path.join(rec_dir, f"*_T_{trial}_*.csv")))
+        if not csv_files:
+            csv_files = sorted(glob.glob(os.path.join(rec_dir, f"*T_{trial}*.csv")))
+        csv_files = [f for f in csv_files
+                     if "optitrack" not in os.path.basename(f).lower()
+                     and not os.path.basename(f).lower().endswith("_annotated.mp4")
+                     and ".csv" in f.lower()]
 
     if not csv_files:
         return []
@@ -1363,6 +1386,7 @@ def _make_plot(t_full, angle_raw, params, pt, mas,
             "N":              "N  (swing cycles)",
             "phi_max_ratio":  "φ_max ratio  (A₂/A₀)",
             "omega_max_n":    "ω_max / A₀  (s⁻¹)",
+            "omega_min_n":    "ω_min / A₀  (s⁻¹)",
             "omega_peak_dps": "ω_peak  (°/s)",
             "f":              "f  (Hz)",
             "area_ratio":     "|P₊−P₋| / P_total",
@@ -1372,6 +1396,7 @@ def _make_plot(t_full, angle_raw, params, pt, mas,
             "N":              "↓ = more impaired",
             "phi_max_ratio":  "energy retention",
             "omega_max_n":    "normalised velocity",
+            "omega_min_n":    "↑ = spastic catch",
             "omega_peak_dps": "raw peak velocity",
             "f":              "oscillation freq.",
             "area_ratio":     "↑ = asymmetric",
@@ -1385,7 +1410,7 @@ def _make_plot(t_full, angle_raw, params, pt, mas,
             ref = HEALTHY_REF.get(key, float("nan"))
             if key in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
                 bad = val < ref * 0.7
-            elif key == "area_ratio":
+            elif key in ("area_ratio", "omega_min_n"):
                 bad = val > ref * 1.8
             elif key == "omega_peak_dps":
                 bad = False   # informational only, no healthy reference
@@ -1667,7 +1692,7 @@ def main() -> None:
         # HPE angle curves for overlay on MAS graph left panel
         hpe_curves = load_hpe_model_curves(
             entry["pid"], entry["pos"], entry["trial"],
-            t, angle, params["neutral_deg"])
+            t, angle, params["neutral_deg_raw"])
 
         # Compute Popovic PT score from each tracked HPE curve
         for mdl in hpe_curves:
