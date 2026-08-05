@@ -312,8 +312,17 @@ class WebcamViewerWindow(tk.Toplevel):
         self.lbl_overlay.config(text=text)
 
     def show(self) -> None:
+        """deiconify()/lift() alone only affect stacking order among this
+        app's own windows -- Windows' focus-stealing prevention can still
+        leave the window opened-but-buried behind whatever else has focus,
+        which is exactly the failure mode this window exists to avoid (the
+        operator has stepped back and can't see a hidden window). Briefly
+        forcing -topmost, then releasing it, reliably pops it to the front
+        without permanently pinning it above every other window forever."""
         self.deiconify()
         self.lift()
+        self.attributes("-topmost", True)
+        self.after(200, lambda: self.attributes("-topmost", False))
 
 
 # ---------------------------------------------------------------------------
