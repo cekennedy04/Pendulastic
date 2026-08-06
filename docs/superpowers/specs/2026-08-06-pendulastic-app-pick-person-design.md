@@ -98,8 +98,15 @@ def resolve_person_click(poses: list, click_xy, frame_w: int, frame_h: int,
     """Find the candidate pose nearest the click (checking all landmarks of
     all poses), resolve which anatomical leg maps to the requested screen
     side (mirroring-aware, same logic as _on_person_select_click), and
-    return (hip, knee, ankle) as float32 pixel-coordinate tuples, or None
-    if ankle visibility is below 0.35 (see Error Handling)."""
+    return (hip, knee, ankle) as float32 pixel coordinates. Returns None
+    only when no candidate pose is found near the click at all. When a
+    pose is found but its ankle visibility is below 0.35, ankle is None
+    within the returned tuple (hip and knee are still returned) rather
+    than the whole result being None -- this preserves the viewer's
+    existing 'place the knee as a head start, ankle stays for manual
+    placement' behavior for callers that support it. Callers with no
+    manual-placement fallback (PersonPickerDialog) simply treat a None
+    ankle the same as a fully-failed resolution (see Error Handling)."""
 ```
 
 `PendulaticViewer._draw_person_select_overlay` and the corresponding
@@ -275,8 +282,10 @@ before its equivalent blocking call):
   clearly if the problem is really the file itself).
 - **Ankle visibility below 0.35 after a click** (mirrors the viewer's
   existing guard, `pendulastic_viewer.py:6064-6075`): `resolve_person_click`
-  returns `None` rather than a low-confidence position. In the dialog,
-  this means "click didn't resolve" — an inline message asks the user to
+  returns `ankle=None` within its result tuple rather than a low-confidence
+  position (see Section 2's corrected contract — the tuple itself is only
+  ever `None` when no pose was found near the click at all). In the
+  dialog, a `None` ankle means "click didn't resolve" — an inline message asks the user to
   try clicking again (e.g. closer to the ankle, or pick a different
   detected candidate whose ankle is clearer), rather than seeding the
   tracker with an unreliable position. If every visible candidate's ankle
@@ -314,8 +323,11 @@ before its equivalent blocking call):
   lists (plain objects/namedtuples with `.x`/`.y`/`.visibility`) covering:
   nearest-pose selection among 2+ candidates, left/right leg mapping in
   both mirrored and non-mirrored configurations (matching the viewer's
-  own `anat_left_is_img_left` logic), and the ankle-visibility rejection
-  threshold (returns `None` below 0.35, a valid tuple at/above it).
+  own `anat_left_is_img_left` logic), the no-pose-found case (returns
+  `None`), and the ankle-visibility rejection threshold (`ankle` is `None`
+  within the returned `(hip, knee, ankle)` tuple below 0.35, a real array
+  at/above it — `hip`/`knee` are always populated whenever any pose was
+  matched).
 - **`PersonPickerDialog` coordinate mapping**: a unit test that scales a
   known frame dimension down by the dialog's own scale-factor logic, then
   maps a synthetic display-space click back to frame-pixel space, and
