@@ -1014,3 +1014,15 @@ def test_toggling_research_sources_does_not_change_source_values():
         r.destroy()
 
 
+def test_panel_and_header_use_shared_palette():
+    from pendulastic_app import AcquisitionPanel
+    import workbench_style as ws
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert str(p.cget("bg")) == ws.PALETTE["BG"]
+        assert str(p.lbl_status.cget("bg")) == ws.PALETTE["BG"]
+    finally:
+        r.destroy()
+
+
