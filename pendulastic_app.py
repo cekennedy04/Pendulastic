@@ -99,6 +99,8 @@ except Exception:
     FigureCanvasTkAgg = Figure = None
     _MPL_AVAIL = False
 
+import workbench_style as ws   # zero-dependency (tkinter only) -- always available
+
 try:
     import pt_report_common as _report
     _REPORT_AVAIL = True
@@ -110,12 +112,10 @@ except Exception:
 try:
     from pendulastic_workbench import TrialLoadPanel, WorkbenchView
     import workbench_engine as _wb_engine
-    import workbench_style as _wb_style
     _WORKBENCH_AVAIL = True
 except Exception:
     TrialLoadPanel = WorkbenchView = None
     _wb_engine = None
-    _wb_style = None
     _WORKBENCH_AVAIL = False
 
 _GREEN = "#1e7d34"
@@ -1650,6 +1650,14 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        # Applies the shared "clam"-based ttk theme (and dark-styled
+        # Workbench.* variants) app-wide -- this switches every ttk widget's
+        # base theme, not just the Workbench panels'. Kept unconditional so
+        # it doesn't depend on the heavier Workbench feature-availability
+        # guard below (workbench_style itself has zero non-tkinter deps).
+        ws.apply_ttk_theme(self)
+        self.configure(bg=ws.PALETTE["BG"])
+
         self._mode_select = ModeSelectView(self, controller=self)
         self._upload_meta = UploadMetaView(self, controller=self)
         self._acq  = AcquisitionPanel(self, controller=self)
@@ -1661,10 +1669,6 @@ class App(tk.Tk):
         self._workbench_raw_diagnostics: Optional[dict] = None
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
-            # Registers the dark "Workbench.*" ttk styles the embedded panels
-            # opt into. It does not switch this root's base ttk theme, so the
-            # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
-            _wb_style.apply_ttk_theme(self)
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(

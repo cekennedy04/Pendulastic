@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 
 PALETTE = {
-    "BG":      "#FFFFFF",
+    "BG":      "#F4F6F9",
     "SURFACE": "#FFFFFF",
     "PANEL":   "#F5F8FC",
     "BTN":     "#DCEAFE",
