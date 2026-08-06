@@ -54,19 +54,22 @@ os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 try:
     import cv2 as _cv2
-    from camera_utils import CameraSession
+    from camera_utils import CameraSession, open_video_writer
     _CV2_AVAIL = True
 except ImportError:
     _cv2 = None
     CameraSession = None
+    open_video_writer = None
     _CV2_AVAIL = False
 
 try:
-    from pendulastic_viewer import _MPBatchTracker, _PatientDetector
+    from pendulastic_viewer import _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN
     _VIEWER_AVAIL = True
 except Exception:
     _MPBatchTracker = None
     _PatientDetector = None
+    _draw = None
+    TRAIL_LEN = 150
     _VIEWER_AVAIL = False
 
 _mp_pose = _mp_draw = _mp_styles = None
@@ -81,12 +84,12 @@ except Exception:
 try:
     from pendulastic_pt_score import (
         compute_pt_params, compute_pt_score_simple, pt_to_mas,
-        HEALTHY_REF, load_optitrack,
+        HEALTHY_REF, load_optitrack, draw_pt_annotations,
     )
     _PT_AVAIL = True
 except Exception:
     compute_pt_params = compute_pt_score_simple = pt_to_mas = None
-    HEALTHY_REF = load_optitrack = None
+    HEALTHY_REF = load_optitrack = draw_pt_annotations = None
     _PT_AVAIL = False
 
 try:
@@ -194,7 +197,8 @@ class BiomechanicalEngine:
         video_path: str,
         progress_cb: Callable[[float], None],
         leg: str = "right",
-    ) -> list:
+        collect_landmarks: bool = False,
+    ):
         """
         Offline MediaPipe tracking on a recorded video.
         Called on a background thread immediately after STOP (RGB methodology).
@@ -206,13 +210,20 @@ class BiomechanicalEngine:
 
         COCO indices used: 11=L-hip, 12=R-hip, 13=L-knee, 14=R-knee,
                            15=L-ankle, 16=R-ankle
+
+        When collect_landmarks is True, returns (angles, landmarks, fps) where
+        landmarks[i] is (hip, knee, ankle) for frame i, or None if pose
+        tracking wasn't available for that frame -- len(landmarks) ==
+        len(angles) always -- and fps is the video's true source frame rate.
+        When False (default), returns angles only, matching the original
+        signature exactly.
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
-            return []
+            return ([], [], 30.0) if collect_landmarks else []
 
         cap = _cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return []
+            return ([], [], 30.0) if collect_landmarks else []
 
         fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
         total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -227,6 +238,7 @@ class BiomechanicalEngine:
         tracker      = _MPBatchTracker(leg.lower(), fps=fps_v)
         initialised  = False
         angles: list = []
+        landmarks: list = []
 
         try:
             while True:
@@ -245,20 +257,26 @@ class BiomechanicalEngine:
 
                 if initialised:
                     try:
-                        _, _, _, angle = tracker.step(frame)
+                        hip_p, knee_p, ank_p, angle = tracker.step(frame)
                         angles.append(float(angle) if angle is not None
                                       else float("nan"))
+                        if collect_landmarks:
+                            landmarks.append((hip_p, knee_p, ank_p))
                     except Exception:
                         angles.append(float("nan"))
+                        if collect_landmarks:
+                            landmarks.append(None)
                 else:
                     angles.append(float("nan"))
+                    if collect_landmarks:
+                        landmarks.append(None)
 
                 progress_cb(len(angles) / total)
         finally:
             cap.release()
 
         progress_cb(1.0)
-        return angles
+        return (angles, landmarks, fps_v) if collect_landmarks else angles
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1174,11 @@ class PostProcessingPanel(tk.Frame):
         self._source_angles: dict  = {}
         self._fps: float           = 30.0
         self._meta: dict | None    = None
+        self._plot_annots: list    = []
+        self._last_pt_params: dict | None = None
+        self._video_path: str | None = None
+        self._hpe_leg: str           = "right"
+        self._hpe_landmarks: list | None = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -1163,12 +1186,13 @@ class PostProcessingPanel(tk.Frame):
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=1)
+        self.columnconfigure(3, weight=1)
 
         self.configure(bg=ws.PALETTE["BG"])
 
         # row 0 — header: mode-select back button + trial filename
         hdr0 = tk.Frame(self, bg=ws.PALETTE["BG"])
-        hdr0.grid(row=0, column=0, columnspan=3, sticky="ew",
+        hdr0.grid(row=0, column=0, columnspan=4, sticky="ew",
                   padx=12, pady=(12, 4))
         ws.secondary_button(hdr0, "← Mode Select",
                             self.controller.on_back_to_mode_select).pack(
@@ -1184,10 +1208,10 @@ class PostProcessingPanel(tk.Frame):
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvasTkAgg(self._fig, master=self)
             self._canvas.get_tk_widget().grid(
-                row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=4)
+                row=1, column=0, columnspan=4, sticky="nsew", padx=8, pady=4)
         else:
             tk.Label(self, text="matplotlib not available — install it in .venv",
-                     bg=ws.PALETTE["BG"], fg="red").grid(row=1, column=0, columnspan=3)
+                     bg=ws.PALETTE["BG"], fg="red").grid(row=1, column=0, columnspan=4)
             self._canvas = None
 
         # row 2 — PT Metrics card
@@ -1196,7 +1220,7 @@ class PostProcessingPanel(tk.Frame):
             padx=8, pady=4, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
             highlightbackground=ws.PALETTE["BORDER"], highlightthickness=1,
             relief="flat", bd=0)
-        self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
+        self._metrics_frame.grid(row=2, column=0, columnspan=4, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
         self.omega_var = tk.StringVar(value="—")
@@ -1232,13 +1256,18 @@ class PostProcessingPanel(tk.Frame):
         self.btn_upload_video = ws.secondary_button(
             self, "\U0001f3a5 Upload Video for HPE", self._on_upload_video)
         self.btn_upload_video.grid(row=3, column=2, padx=10, pady=12, sticky="w")
+        self.btn_export_video = ws.secondary_button(
+            self, "🎬 Export Annotated Video",
+            lambda: self._cmd_export_annotated_video())
+        self.btn_export_video.config(state="disabled")
+        self.btn_export_video.grid(row=3, column=3, padx=10, pady=12, sticky="w")
 
         # row 4 — status bar
         self.status_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.status_var,
                  relief="sunken", anchor="w",
                  bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
-            row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
+            row=4, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 8))
 
     # ------------------------------------------------------------------
     # Public API
@@ -1278,6 +1307,7 @@ class PostProcessingPanel(tk.Frame):
         if not _MPL_AVAIL or self._canvas is None:
             return
         self._ax.clear()
+        self._plot_annots = []
         n_curves = 0
         fps = self._fps or 30.0
         for src, angles in self._source_angles.items():
@@ -1334,6 +1364,13 @@ class PostProcessingPanel(tk.Frame):
             self.r2n_var.set(f"{p['R2n']:.3f}")
             self.mas_var.set(str(mas))
             self.score_var.set(f"{score:.3f}")
+
+            self._last_pt_params = p
+            if self._canvas is not None and draw_pt_annotations is not None:
+                artists = draw_pt_annotations(self._ax, p)
+                if artists is not None:
+                    self._plot_annots = artists
+                    self._canvas.draw_idle()
             return
         self.status_var.set("PT scoring: no valid source data.")
 
@@ -1351,6 +1388,11 @@ class PostProcessingPanel(tk.Frame):
             return
         self.status_var.set("HPE processing: 0%")
         leg    = self._meta.get("leg", "right") if self._meta else "right"
+        self._video_path = path
+        self._hpe_leg     = leg
+        self._hpe_landmarks = None
+        self._source_angles.pop("hpe_upload", None)
+        self.btn_export_video.config(state="disabled")
         engine = BiomechanicalEngine("rgb")
 
         def _progress(pct: float) -> None:
@@ -1358,17 +1400,20 @@ class PostProcessingPanel(tk.Frame):
                 f"HPE processing: {int(p * 100)}%"))
 
         def _run() -> None:
-            angles = engine.run_offline_track(path, _progress, leg=leg.lower())
-            self.after(0, lambda: self._add_hpe_overlay(angles, fps=30.0))
+            angles, landmarks, video_fps = engine.run_offline_track(
+                path, _progress, leg=leg.lower(), collect_landmarks=True)
+            self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=video_fps))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _add_hpe_overlay(self, angles: list, fps: float = 30.0) -> None:
+    def _add_hpe_overlay(self, angles: list, landmarks: list | None = None,
+                          fps: float = 30.0) -> None:
         if not angles:
             self.status_var.set(
                 "HPE: no pose detected — check video or leg selection.")
             return
         self._source_angles["hpe_upload"] = angles
+        self._hpe_landmarks = landmarks
         if not self._fps:
             self._fps = fps
         if not self.title_var.get():
@@ -1376,6 +1421,140 @@ class PostProcessingPanel(tk.Frame):
         self._plot_all_curves()
         self._show_pt_metrics_from_sources()
         self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
+        if landmarks and self._video_path:
+            self.btn_export_video.config(state="normal")
+
+    def _cmd_export_annotated_video(self) -> None:
+        if not self._video_path or not self._hpe_landmarks:
+            messagebox.showinfo(
+                "Export Video",
+                "Upload a video for HPE and let tracking finish first.")
+            return
+        angles = self._source_angles.get("hpe_upload")
+        if not angles:
+            messagebox.showinfo("Export Video", "No HPE angle data to export.")
+            return
+
+        base, _ = os.path.splitext(self._video_path)
+        default_name = os.path.basename(base) + "_annotated.mp4"
+        out_path = filedialog.asksaveasfilename(
+            title="Save Annotated Video",
+            initialfile=default_name,
+            initialdir=os.path.dirname(self._video_path),
+            defaultextension=".mp4",
+            filetypes=[("MP4 Video", "*.mp4"), ("AVI Video", "*.avi"),
+                       ("All files", "*.*")],
+        )
+        if not out_path:
+            return
+
+        snap = {
+            "path":      self._video_path,
+            "fps":       self._fps or 30.0,
+            "angles":    list(angles),
+            "landmarks": list(self._hpe_landmarks),
+        }
+
+        self.btn_export_video.config(state="disabled")
+        self.status_var.set("Exporting annotated video… 0%")
+        threading.Thread(target=self._export_annotated_worker,
+                         args=(snap, out_path), daemon=True).start()
+
+    def _export_annotated_worker(self, snap: dict, out_path: str) -> None:
+        angles    = snap["angles"]
+        landmarks = snap["landmarks"]
+        fps       = snap["fps"]
+        n_total   = len(angles)
+
+        cap2 = _cv2.VideoCapture(snap["path"])
+        if not cap2.isOpened():
+            self.after(0, lambda: (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set("Export failed: cannot re-open video file."),
+                messagebox.showerror("Export failed",
+                                     f"Could not open video for reading:\n{snap['path']}")
+            ))
+            return
+        w = int(cap2.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap2.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+
+        writer = open_video_writer(out_path, fps, w, h)
+
+        if writer is None:
+            cap2.release()
+            self.after(0, lambda: (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set("Export failed: no usable video codec found."),
+                messagebox.showerror("Export failed",
+                                     "Could not find a working video codec.\n"
+                                     "Try saving as .avi instead of .mp4.")
+            ))
+            return
+
+        rolling_trail = []
+
+        try:
+            for fi in range(n_total):
+                ok, frame = cap2.read()
+                if not ok:
+                    break
+
+                ang = angles[fi] if fi < len(angles) else float("nan")
+                lm  = landmarks[fi] if fi < len(landmarks) else None
+                hip, kne, ank = lm if lm is not None else (None, None, None)
+
+                if ank is not None:
+                    rolling_trail.append(ank)
+                    if len(rolling_trail) > TRAIL_LEN:
+                        rolling_trail.pop(0)
+
+                overlay = _draw(frame, hip, kne, ank, ang,
+                                list(rolling_trail), scale=1.0)
+
+                if math.isfinite(ang):
+                    ang_txt = f"{ang:.1f} deg"
+                    _cv2.putText(overlay, ang_txt, (16, h - 18),
+                                _cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (0, 0, 0), 4, _cv2.LINE_AA)
+                    _cv2.putText(overlay, ang_txt, (16, h - 18),
+                                _cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (80, 230, 140), 2, _cv2.LINE_AA)
+
+                t_txt = f"{fi / fps:.2f} s"
+                _cv2.putText(overlay, t_txt, (16, h - 52),
+                            _cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (0, 0, 0), 3, _cv2.LINE_AA)
+                _cv2.putText(overlay, t_txt, (16, h - 52),
+                            _cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (190, 190, 190), 1, _cv2.LINE_AA)
+
+                writer.write(overlay)
+
+                if fi % 30 == 0:
+                    pct = int(fi / max(n_total, 1) * 100)
+                    self.after(0, lambda p=pct: self.status_var.set(
+                        f"Exporting annotated video… {p}%"))
+
+        except Exception as exc:
+            cap2.release()
+            writer.release()
+            self.after(0, lambda e=str(exc): (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set(f"Export error: {e}"),
+                messagebox.showerror("Export error", f"An error occurred during export:\n{e}")
+            ))
+            return
+
+        cap2.release()
+        writer.release()
+        self.after(0, lambda p=out_path: self._on_export_video_done(p))
+
+    def _on_export_video_done(self, out_path: str) -> None:
+        self.btn_export_video.config(state="normal")
+        name = os.path.basename(out_path)
+        self.status_var.set(f"Annotated video saved: {name}")
+        messagebox.showinfo("Export complete",
+                            f"Annotated video saved:\n{out_path}")
 
     def _on_new_trial(self) -> None:
         self.controller.on_new_trial()
