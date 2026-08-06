@@ -63,9 +63,11 @@ def classify_worktrees(
         now = time.time()
     findings: list[Finding] = []
     for wt in list_worktrees(repo_root):
-        if Path(wt.path).resolve() == repo_root.resolve():
+        if wt.branch == main_branch:
             continue
         if not wt.branch:
+            continue
+        if Path(wt.path).resolve() == repo_root.resolve():
             continue
         if is_merged(repo_root, main_branch, wt.branch):
             findings.append(
