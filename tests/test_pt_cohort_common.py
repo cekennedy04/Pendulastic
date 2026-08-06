@@ -146,3 +146,96 @@ def test_aggregate_participant_summary_covers_all_score_keys():
     assert set(summary.keys()) == set(pcc._SCORE_KEYS)
     assert summary["R2n"] == 0.6
     assert summary["N"] == 8.5
+
+
+# ── cliffs_delta / mann_whitney / effect_label ──────────────────────────
+
+import math
+import pytest
+
+
+def test_cliffs_delta_all_b_greater():
+    assert pcc.cliffs_delta([1, 2, 3], [4, 5, 6]) == 1.0
+
+
+def test_cliffs_delta_all_a_greater():
+    assert pcc.cliffs_delta([4, 5, 6], [1, 2, 3]) == -1.0
+
+
+def test_cliffs_delta_identical_distributions_is_zero():
+    assert pcc.cliffs_delta([1, 2, 3], [1, 2, 3]) == 0.0
+
+
+def test_cliffs_delta_empty_input_is_nan():
+    assert math.isnan(pcc.cliffs_delta([], [1, 2]))
+
+
+def test_mann_whitney_below_min_n_returns_nan():
+    stat, p = pcc.mann_whitney([1.0], [2.0, 3.0])
+    assert math.isnan(stat) and math.isnan(p)
+
+
+def test_mann_whitney_computes_p_value():
+    stat, p = pcc.mann_whitney([1.0, 2.0, 3.0], [10.0, 11.0, 12.0])
+    assert 0.0 <= p <= 1.0
+
+
+@pytest.mark.parametrize("d,label", [(0.05, "negligible"), (0.2, "small"),
+                                     (0.4, "medium"), (0.9, "large")])
+def test_effect_label_thresholds(d, label):
+    assert pcc.effect_label(d) == label
+
+
+def test_effect_label_nan_is_na():
+    assert pcc.effect_label(float("nan")) == "n/a"
+
+
+# ── compute_cohort_stats ─────────────────────────────────────────────────
+
+def _summary(pt7):
+    d = {k: 1.0 for k in pcc._SCORE_KEYS}
+    d["pt7"] = pt7
+    return d
+
+
+def test_compute_cohort_stats_known_values():
+    ms = {"left": [_summary(1.0), _summary(2.0), _summary(3.0)], "right": []}
+    control = {"left": [_summary(10.0), _summary(11.0), _summary(12.0)], "right": []}
+    rows = pcc.compute_cohort_stats(ms, control)
+    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
+    assert row["n_ms"] == 3 and row["n_control"] == 3
+    assert row["ms_median"] == 2.0
+    assert row["control_median"] == 11.0
+    assert row["cliffs_delta"] == 1.0
+    assert row["effect_size"] == "large"
+    assert row["mann_whitney_p"] is not None
+
+
+def test_compute_cohort_stats_small_n_is_na():
+    ms = {"left": [_summary(1.0)], "right": []}
+    control = {"left": [_summary(10.0), _summary(11.0)], "right": []}
+    rows = pcc.compute_cohort_stats(ms, control)
+    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
+    assert row["n_ms"] == 1
+    assert row["mann_whitney_p"] is None
+    assert row["cliffs_delta"] is None
+    assert row["effect_size"] == "n/a"
+    assert row["ms_median"] == 1.0   # still reported -- just no significance test
+
+
+def test_compute_cohort_stats_covers_every_leg_and_score_key():
+    ms = {"left": [_summary(1.0)], "right": [_summary(2.0)]}
+    control = {"left": [_summary(3.0)], "right": [_summary(4.0)]}
+    rows = pcc.compute_cohort_stats(ms, control)
+    seen = {(r["leg"], r["parameter"]) for r in rows}
+    assert seen == {(leg, key) for leg in pcc._LEGS for key in pcc._SCORE_KEYS}
+
+
+def test_compute_cohort_stats_empty_arm_no_crash():
+    ms = {"left": [], "right": []}
+    control = {"left": [_summary(1.0), _summary(2.0)], "right": []}
+    rows = pcc.compute_cohort_stats(ms, control)
+    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
+    assert row["n_ms"] == 0
+    assert row["ms_median"] is None
+    assert row["mann_whitney_p"] is None

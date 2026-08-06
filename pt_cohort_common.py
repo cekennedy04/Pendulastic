@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
+import warnings
 
 import numpy as np
+from scipy.stats import mannwhitneyu
 
 import pt_report_common as common
 
@@ -91,6 +94,87 @@ def aggregate_participant_summary(trials):
     if not trials:
         return None
     return {key: round(float(np.median([t[key] for t in trials])), 4) for key in _SCORE_KEYS}
+
+
+def cliffs_delta(a, b):
+    """Proportion of (b > a) pairs minus (a > b) pairs, -1..+1. Ported from
+    ms_vs_healthy_analysis.py's helper of the same name -- the formula
+    isn't in question, only its input granularity (see
+    aggregate_participant_summary) and which module owns it."""
+    n = len(a) * len(b)
+    if n == 0:
+        return float("nan")
+    pairs = sum((1 if bi > ai else (-1 if ai > bi else 0)) for ai in a for bi in b)
+    return pairs / n
+
+
+def mann_whitney(a, b):
+    """Two-sided Mann-Whitney U. Returns (nan, nan) if either sample has
+    fewer than 2 values -- the design spec treats that as "n/a", not an
+    error (§7.1)."""
+    if len(a) < 2 or len(b) < 2:
+        return float("nan"), float("nan")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        stat, p = mannwhitneyu(a, b, alternative="two-sided")
+    return float(stat), float(p)
+
+
+def effect_label(d):
+    ad = abs(d)
+    if math.isnan(ad):
+        return "n/a"
+    if ad < 0.147:
+        return "negligible"
+    if ad < 0.330:
+        return "small"
+    if ad < 0.474:
+        return "medium"
+    return "large"
+
+
+def compute_cohort_stats(ms_summaries, control_summaries):
+    """ms_summaries/control_summaries: {"left": [...], "right": [...]},
+    each a list of per-participant summary dicts (aggregate_participant_
+    summary() output, already filtered of None -- see run_cohort_comparison).
+    Returns one row per (leg, parameter) covering every _SCORE_KEYS entry:
+    median/IQR per arm, Mann-Whitney p, Cliff's delta, effect label,
+    n_ms, n_control. Whenever either arm has fewer than 2 values for a
+    given leg/parameter, the significance-test fields are None/"n/a" --
+    never raised -- while the medians (even from n=1 or n=0) are still
+    reported."""
+    rows = []
+    for leg in _LEGS:
+        ms_leg = ms_summaries.get(leg, [])
+        ctrl_leg = control_summaries.get(leg, [])
+        for key in _SCORE_KEYS:
+            ms_vals = np.array([s[key] for s in ms_leg], dtype=float)
+            ctrl_vals = np.array([s[key] for s in ctrl_leg], dtype=float)
+            row = {"leg": leg, "parameter": key,
+                  "n_ms": len(ms_vals), "n_control": len(ctrl_vals)}
+            if len(ms_vals):
+                q1, q3 = np.percentile(ms_vals, [25, 75])
+                row["ms_median"] = round(float(np.median(ms_vals)), 4)
+                row["ms_iqr"] = round(float(q3 - q1), 4)
+            else:
+                row["ms_median"] = row["ms_iqr"] = None
+            if len(ctrl_vals):
+                q1, q3 = np.percentile(ctrl_vals, [25, 75])
+                row["control_median"] = round(float(np.median(ctrl_vals)), 4)
+                row["control_iqr"] = round(float(q3 - q1), 4)
+            else:
+                row["control_median"] = row["control_iqr"] = None
+            if len(ms_vals) >= 2 and len(ctrl_vals) >= 2:
+                _, p = mann_whitney(ms_vals, ctrl_vals)
+                d = cliffs_delta(ms_vals, ctrl_vals)
+                row["mann_whitney_p"] = round(p, 4)
+                row["cliffs_delta"] = round(d, 4)
+                row["effect_size"] = effect_label(d)
+            else:
+                row["mann_whitney_p"] = row["cliffs_delta"] = None
+                row["effect_size"] = "n/a"
+            rows.append(row)
+    return rows
 
 
 # ══════════════════════════════════════════════════════════════════════════
