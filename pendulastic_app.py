@@ -419,53 +419,89 @@ class AcquisitionPanel(tk.Frame):
         self._src_imu        = tk.BooleanVar(value=True)
         self._src_video_file = tk.BooleanVar(value=False)
 
-        meth_f = tk.Frame(self)
+        meth_f = tk.Frame(self, bg=ws.PALETTE["PANEL"],
+                         highlightbackground=ws.PALETTE["BORDER"],
+                         highlightthickness=1, padx=10, pady=8)
         meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
 
-        # Inner row 1: the 4 source checkbuttons side-by-side
-        chk_row = tk.Frame(meth_f)
+        tk.Label(meth_f, text="RECORDING SOURCE", font=("Segoe UI", 8, "bold"),
+                bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"]).pack(
+            side="top", anchor="w", pady=(0, 4))
+
+        # Always-visible routine sources
+        chk_row = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
         chk_row.pack(side="top", anchor="w")
-        chk_opti  = tk.Checkbutton(chk_row, text="OptiTrack",
-                                    variable=self._src_optitrack,
-                                    command=self._on_source_changed)
-        chk_rgb   = tk.Checkbutton(chk_row, text="RGB",
-                                    variable=self._src_rgb,
-                                    command=self._on_rgb_checkbox_toggled)
-        chk_imu   = tk.Checkbutton(chk_row, text="iPhone IMU",
-                                    variable=self._src_imu,
-                                    command=self._on_source_changed)
-        chk_video = tk.Checkbutton(chk_row, text="Video File",
-                                    variable=self._src_video_file,
-                                    command=self._on_source_changed)
-        for chk in (chk_opti, chk_rgb, chk_imu, chk_video):
+        chk_imu = tk.Checkbutton(chk_row, text="iPhone IMU",
+                                 variable=self._src_imu,
+                                 bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                 selectcolor=ws.PALETTE["SURFACE"],
+                                 activebackground=ws.PALETTE["PANEL"],
+                                 command=self._on_source_changed)
+        chk_rgb = tk.Checkbutton(chk_row, text="RGB",
+                                 variable=self._src_rgb,
+                                 bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                 selectcolor=ws.PALETTE["SURFACE"],
+                                 activebackground=ws.PALETTE["PANEL"],
+                                 command=self._on_rgb_checkbox_toggled)
+        for chk in (chk_imu, chk_rgb):
             chk.pack(side="left", padx=8)
 
-        # Inner row 2: video file path selector (hidden until _src_video_file checked)
-        self._video_path_frame = tk.Frame(meth_f)
-        self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
+        # Collapsed "Research sources" disclosure -- OptiTrack and Video
+        # File are research-only extras, rarely used in routine clinical
+        # sessions (design spec Section 3), so they start hidden.
+        self._research_toggle_btn = tk.Button(
+            meth_f, text="▸ Research sources (OptiTrack, Video File)",
+            font=("Segoe UI", 8), fg=ws.PALETTE["BTN_ACT"], bg=ws.PALETTE["PANEL"],
+            relief="flat", bd=0, cursor="hand2", anchor="w",
+            activebackground=ws.PALETTE["PANEL"], activeforeground=ws.PALETTE["BTN_ACT"],
+            command=self._on_toggle_research_sources)
+        self._research_toggle_btn.pack(side="top", anchor="w", pady=(4, 0))
+
+        self._research_sources_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
+        self._research_sources_expanded = False
+
+        chk_opti = tk.Checkbutton(self._research_sources_frame, text="OptiTrack",
+                                  variable=self._src_optitrack,
+                                  bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                  selectcolor=ws.PALETTE["SURFACE"],
+                                  activebackground=ws.PALETTE["PANEL"],
+                                  command=self._on_source_changed)
+        chk_video = tk.Checkbutton(self._research_sources_frame, text="Video File",
+                                   variable=self._src_video_file,
+                                   bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                   selectcolor=ws.PALETTE["SURFACE"],
+                                   activebackground=ws.PALETTE["PANEL"],
+                                   command=self._on_source_changed)
+        chk_opti.pack(side="left", padx=8)
+        chk_video.pack(side="left", padx=8)
+
+        # Video file path selector (hidden until _src_video_file checked) --
+        # nested inside the research-sources frame since it's a
+        # research-only source.
+        self._video_path_frame = tk.Frame(self._research_sources_frame, bg=ws.PALETTE["PANEL"])
         self._video_path_var    = tk.StringVar(value="No file selected")
         self._stored_video_path = ""
         tk.Label(self._video_path_frame,
-                 textvariable=self._video_path_var,
-                 font=("Consolas", 8), fg="gray", width=38,
-                 anchor="w").pack(side="left")
-        tk.Button(self._video_path_frame, text="Browse...",
-                  font=("Segoe UI", 8),
-                  command=self._on_browse_video).pack(side="left", padx=4)
+                textvariable=self._video_path_var,
+                font=("Consolas", 8), fg=ws.PALETTE["FG2"], bg=ws.PALETTE["PANEL"],
+                width=38, anchor="w").pack(side="left")
+        ws.secondary_button(self._video_path_frame, "Browse...",
+                            self._on_browse_video).pack(side="left", padx=4)
+        self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
         self._video_path_frame.pack_forget()   # hidden until checkbox checked
 
-        # Inner row 3: camera selector (hidden until RGB is checked)
-        self._cam_frame = tk.Frame(meth_f)
+        # Camera selector (hidden until RGB is checked) -- unaffected by the
+        # research-sources disclosure; RGB is a routine, always-visible source.
+        self._cam_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
         self.cam_var = tk.StringVar(value="")
         self.drop_cam = ttk.Combobox(self._cam_frame, textvariable=self.cam_var,
                                      width=18, state="readonly")
         self.drop_cam.pack(side="left")
         self.drop_cam.bind("<<ComboboxSelected>>", self._on_cam_selected)
-        self.btn_rescan = tk.Button(self._cam_frame, text="Rescan", font=("Segoe UI", 8),
-                  command=self._on_rescan_clicked)
+        self.btn_rescan = ws.secondary_button(self._cam_frame, "Rescan", self._on_rescan_clicked)
         self.btn_rescan.pack(side="left", padx=4)
-        tk.Button(self._cam_frame, text="🛜 Can't connect?", font=("Segoe UI", 8),
-                  command=self._on_camera_help).pack(side="left", padx=4)
+        ws.secondary_button(self._cam_frame, "\U0001f6dc Can't connect?",
+                            self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._viewer_window: Optional[WebcamViewerWindow] = None
         self._camera_live = False   # one input to _sync_viewer_window_visibility()
@@ -518,6 +554,7 @@ class AcquisitionPanel(tk.Frame):
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
             self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self._research_toggle_btn,
             self.btn_back, self.drop_cam, self.btn_rescan,
         ]
 
@@ -690,6 +727,15 @@ class AcquisitionPanel(tk.Frame):
             self._cam_frame.pack_forget()
             self.controller.on_camera_disabled()
         self._on_source_changed()
+
+    def _on_toggle_research_sources(self) -> None:
+        self._research_sources_expanded = not self._research_sources_expanded
+        if self._research_sources_expanded:
+            self._research_sources_frame.pack(side="top", anchor="w", pady=(4, 0))
+            self._research_toggle_btn.config(text="▾ Research sources (OptiTrack, Video File)")
+        else:
+            self._research_sources_frame.pack_forget()
+            self._research_toggle_btn.config(text="▸ Research sources (OptiTrack, Video File)")
 
     def _on_cam_selected(self, event=None) -> None:
         label = self.cam_var.get()

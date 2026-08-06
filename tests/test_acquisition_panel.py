@@ -970,3 +970,47 @@ def test_cancel_countdown_reapplies_countdown_lock():
         r.destroy()
 
 
+def test_research_sources_frame_hidden_by_default():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._research_sources_frame.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
+def test_toggle_research_sources_shows_and_hides_frame():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._on_toggle_research_sources()
+        r.update()
+        assert p._research_sources_frame.winfo_manager() == "pack"
+        p._on_toggle_research_sources()
+        r.update()
+        assert p._research_sources_frame.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
+def test_toggling_research_sources_does_not_change_source_values():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_optitrack.set(True)
+        p._on_source_changed()
+        p._on_toggle_research_sources()   # expand
+        r.update()
+        assert p._src_optitrack.get() is True
+        assert "optitrack" in p.get_active_sources()
+        p._on_toggle_research_sources()   # collapse
+        r.update()
+        assert p._src_optitrack.get() is True
+        assert "optitrack" in p.get_active_sources()
+    finally:
+        r.destroy()
+
+
