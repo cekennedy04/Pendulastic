@@ -111,3 +111,38 @@ def test_load_metadata_diagnosis_checks_multiple_matching_folders(tmp_path, monk
         json.dumps({"participant_id": "13", "diagnosis": "MS"}), encoding="utf-8")
     monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
     assert pcc.load_metadata_diagnosis("13") == "MS"
+
+
+# ── aggregate_participant_summary ───────────────────────────────────────
+
+def _trial(**overrides):
+    base = {k: 1.0 for k in pcc._SCORE_KEYS}
+    base.update(overrides)
+    return base
+
+
+def test_aggregate_participant_summary_empty_returns_none():
+    assert pcc.aggregate_participant_summary([]) is None
+
+
+def test_aggregate_participant_summary_odd_count_median():
+    trials = [_trial(pt7=1.0), _trial(pt7=2.0), _trial(pt7=3.0)]
+    assert pcc.aggregate_participant_summary(trials)["pt7"] == 2.0
+
+
+def test_aggregate_participant_summary_even_count_median_interpolates():
+    trials = [_trial(pt7=1.0), _trial(pt7=2.0), _trial(pt7=3.0), _trial(pt7=4.0)]
+    assert pcc.aggregate_participant_summary(trials)["pt7"] == 2.5
+
+
+def test_aggregate_participant_summary_rounds_to_four_decimals():
+    trials = [_trial(pt7=1.0 / 3)] * 3
+    assert pcc.aggregate_participant_summary(trials)["pt7"] == round(1.0 / 3, 4)
+
+
+def test_aggregate_participant_summary_covers_all_score_keys():
+    trials = [_trial(R2n=0.5, N=8.0), _trial(R2n=0.7, N=9.0)]
+    summary = pcc.aggregate_participant_summary(trials)
+    assert set(summary.keys()) == set(pcc._SCORE_KEYS)
+    assert summary["R2n"] == 0.6
+    assert summary["N"] == 8.5
