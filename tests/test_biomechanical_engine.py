@@ -106,8 +106,9 @@ def test_run_offline_track_returns_angle_per_frame(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_run_offline_track_collect_landmarks_returns_tuple(tmp_path, monkeypatch):
-    """collect_landmarks=True returns (angles, landmarks), same length,
-    each landmark entry a 3-tuple or None."""
+    """collect_landmarks=True returns (angles, landmarks, fps), angles and
+    landmarks the same length, each landmark entry a 3-tuple or None, and
+    fps matching the source video's true frame rate."""
     import numpy as np
 
     video_path = str(tmp_path / "test2.avi")
@@ -140,13 +141,14 @@ def test_run_offline_track_collect_landmarks_returns_tuple(tmp_path, monkeypatch
     monkeypatch.setattr(_app, "_cv2", _cv2_test)
 
     engine = BiomechanicalEngine("rgb")
-    angles, landmarks = engine.run_offline_track(
+    angles, landmarks, fps = engine.run_offline_track(
         video_path, lambda p: None, leg="right", collect_landmarks=True)
 
     assert len(angles) == 5
     assert len(landmarks) == 5
     for lm in landmarks:
         assert lm is None or len(lm) == 3
+    assert abs(fps - 30.0) < 1.0
 
 
 def test_run_offline_track_default_returns_list_not_tuple(monkeypatch):

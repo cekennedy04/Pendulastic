@@ -211,18 +211,19 @@ class BiomechanicalEngine:
         COCO indices used: 11=L-hip, 12=R-hip, 13=L-knee, 14=R-knee,
                            15=L-ankle, 16=R-ankle
 
-        When collect_landmarks is True, returns (angles, landmarks) where
+        When collect_landmarks is True, returns (angles, landmarks, fps) where
         landmarks[i] is (hip, knee, ankle) for frame i, or None if pose
         tracking wasn't available for that frame -- len(landmarks) ==
-        len(angles) always. When False (default), returns angles only,
-        matching the original signature exactly.
+        len(angles) always -- and fps is the video's true source frame rate.
+        When False (default), returns angles only, matching the original
+        signature exactly.
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
-            return ([], []) if collect_landmarks else []
+            return ([], [], 30.0) if collect_landmarks else []
 
         cap = _cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return ([], []) if collect_landmarks else []
+            return ([], [], 30.0) if collect_landmarks else []
 
         fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
         total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -275,7 +276,7 @@ class BiomechanicalEngine:
             cap.release()
 
         progress_cb(1.0)
-        return (angles, landmarks) if collect_landmarks else angles
+        return (angles, landmarks, fps_v) if collect_landmarks else angles
 
 
 # ---------------------------------------------------------------------------
@@ -1115,7 +1116,7 @@ class PostProcessingPanel(tk.Frame):
 
         # row 0 — header: mode-select back button + trial filename
         hdr0 = tk.Frame(self)
-        hdr0.grid(row=0, column=0, columnspan=3, sticky="ew",
+        hdr0.grid(row=0, column=0, columnspan=4, sticky="ew",
                   padx=12, pady=(12, 4))
         tk.Button(hdr0, text="<- Mode Select",
                   font=("Segoe UI", 9),
@@ -1131,7 +1132,7 @@ class PostProcessingPanel(tk.Frame):
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvasTkAgg(self._fig, master=self)
             self._canvas.get_tk_widget().grid(
-                row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=4)
+                row=1, column=0, columnspan=4, sticky="nsew", padx=8, pady=4)
         else:
             tk.Label(self, text="matplotlib not available — install it in .venv",
                      fg="red").grid(row=1, column=0, columnspan=3)
@@ -1140,7 +1141,7 @@ class PostProcessingPanel(tk.Frame):
         # row 2 — PT Metrics LabelFrame
         self._metrics_frame = tk.LabelFrame(self, text="Popović PT Metrics",
                                             font=("Segoe UI", 9, "bold"), padx=8, pady=4)
-        self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
+        self._metrics_frame.grid(row=2, column=0, columnspan=4, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
         self.omega_var = tk.StringVar(value="—")
@@ -1190,7 +1191,7 @@ class PostProcessingPanel(tk.Frame):
         self.status_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.status_var,
                  relief="sunken", anchor="w", fg="#333").grid(
-            row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
+            row=4, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 8))
 
     # ------------------------------------------------------------------
     # Public API
@@ -1313,6 +1314,9 @@ class PostProcessingPanel(tk.Frame):
         leg    = self._meta.get("leg", "right") if self._meta else "right"
         self._video_path = path
         self._hpe_leg     = leg
+        self._hpe_landmarks = None
+        self._source_angles.pop("hpe_upload", None)
+        self.btn_export_video.config(state="disabled")
         engine = BiomechanicalEngine("rgb")
 
         def _progress(pct: float) -> None:
@@ -1320,9 +1324,9 @@ class PostProcessingPanel(tk.Frame):
                 f"HPE processing: {int(p * 100)}%"))
 
         def _run() -> None:
-            angles, landmarks = engine.run_offline_track(
+            angles, landmarks, video_fps = engine.run_offline_track(
                 path, _progress, leg=leg.lower(), collect_landmarks=True)
-            self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=30.0))
+            self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=video_fps))
 
         threading.Thread(target=_run, daemon=True).start()
 
