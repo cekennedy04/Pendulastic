@@ -1098,6 +1098,9 @@ class PostProcessingPanel(tk.Frame):
         self._meta: dict | None    = None
         self._plot_annots: list    = []
         self._last_pt_params: dict | None = None
+        self._video_path: str | None = None
+        self._hpe_leg: str           = "right"
+        self._hpe_landmarks: list | None = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -1105,6 +1108,7 @@ class PostProcessingPanel(tk.Frame):
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=1)
+        self.columnconfigure(3, weight=1)
 
         # row 0 — header: mode-select back button + trial filename
         hdr0 = tk.Frame(self)
@@ -1173,6 +1177,11 @@ class PostProcessingPanel(tk.Frame):
             font=("Segoe UI", 10), width=22, height=2,
             command=self._on_upload_video)
         self.btn_upload_video.grid(row=3, column=2, padx=10, pady=12, sticky="w")
+        self.btn_export_video = tk.Button(
+            self, text="🎬 Export Annotated Video",
+            font=("Segoe UI", 10), width=22, height=2, state="disabled",
+            command=lambda: self._cmd_export_annotated_video())
+        self.btn_export_video.grid(row=3, column=3, padx=10, pady=12, sticky="w")
 
         # row 4 — status bar
         self.status_var = tk.StringVar(value="")
@@ -1299,6 +1308,8 @@ class PostProcessingPanel(tk.Frame):
             return
         self.status_var.set("HPE processing: 0%")
         leg    = self._meta.get("leg", "right") if self._meta else "right"
+        self._video_path = path
+        self._hpe_leg     = leg
         engine = BiomechanicalEngine("rgb")
 
         def _progress(pct: float) -> None:
@@ -1306,17 +1317,20 @@ class PostProcessingPanel(tk.Frame):
                 f"HPE processing: {int(p * 100)}%"))
 
         def _run() -> None:
-            angles = engine.run_offline_track(path, _progress, leg=leg.lower())
-            self.after(0, lambda: self._add_hpe_overlay(angles, fps=30.0))
+            angles, landmarks = engine.run_offline_track(
+                path, _progress, leg=leg.lower(), collect_landmarks=True)
+            self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=30.0))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _add_hpe_overlay(self, angles: list, fps: float = 30.0) -> None:
+    def _add_hpe_overlay(self, angles: list, landmarks: list | None = None,
+                          fps: float = 30.0) -> None:
         if not angles:
             self.status_var.set(
                 "HPE: no pose detected — check video or leg selection.")
             return
         self._source_angles["hpe_upload"] = angles
+        self._hpe_landmarks = landmarks
         if not self._fps:
             self._fps = fps
         if not self.title_var.get():
@@ -1324,6 +1338,8 @@ class PostProcessingPanel(tk.Frame):
         self._plot_all_curves()
         self._show_pt_metrics_from_sources()
         self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
+        if landmarks and self._video_path:
+            self.btn_export_video.config(state="normal")
 
     def _on_new_trial(self) -> None:
         self.controller.on_new_trial()
