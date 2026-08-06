@@ -63,13 +63,16 @@ except ImportError:
     _CV2_AVAIL = False
 
 try:
-    from pendulastic_viewer import _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN
+    from pendulastic_viewer import (
+        _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN, _MP_MODEL,
+    )
     _VIEWER_AVAIL = True
 except Exception:
     _MPBatchTracker = None
     _PatientDetector = None
     _draw = None
     TRAIL_LEN = 150
+    _MP_MODEL = None
     _VIEWER_AVAIL = False
 
 _mp_pose = _mp_draw = _mp_styles = None
@@ -277,6 +280,62 @@ class BiomechanicalEngine:
 
         progress_cb(1.0)
         return (angles, landmarks, fps_v) if collect_landmarks else angles
+
+    def detect_people_at_frame(
+        self, video_path: str, frame_index: int = 0,
+    ) -> tuple:
+        """
+        Run MediaPipe PoseLandmarker (IMAGE mode, up to 4 candidates) on a
+        single frame of video_path, for multi-person disambiguation before
+        a full offline track.
+
+        Returns (frame, poses):
+          - frame: the raw BGR frame (np.ndarray) at frame_index, or None
+            if the video couldn't be opened or that frame couldn't be
+            read (including a frame_index past the end of the clip).
+          - poses: a list of pose landmark sets (mediapipe's
+            pose_landmarks result), or [] if detection found nobody, or
+            detection itself raised an exception.
+
+        Never raises -- any exception from running detection is caught
+        internally and treated as "0 people found" so callers have one
+        fallback path regardless of failure cause.
+        """
+        if not (_VIEWER_AVAIL and _CV2_AVAIL):
+            return (None, [])
+
+        cap = _cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            cap.release()
+            return (None, [])
+
+        try:
+            cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ret, frame = cap.read()
+        finally:
+            cap.release()
+
+        if not ret or frame is None:
+            return (None, [])
+
+        try:
+            V = _mp.tasks.vision
+            opts = V.PoseLandmarkerOptions(
+                base_options=_mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
+                running_mode=V.RunningMode.IMAGE,
+                num_poses=4,
+                min_pose_detection_confidence=0.25,
+                min_pose_presence_confidence=0.25,
+            )
+            with V.PoseLandmarker.create_from_options(opts) as detector:
+                rgb    = _cv2.cvtColor(frame, _cv2.COLOR_BGR2RGB)
+                result = detector.detect(
+                    _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb))
+            poses = result.pose_landmarks or []
+        except Exception:
+            poses = []
+
+        return (frame, poses)
 
 
 # ---------------------------------------------------------------------------
