@@ -1,5 +1,6 @@
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -57,7 +58,10 @@ def run_vulture(
 ) -> DeadCodeResult:
     if runner is None:
         def runner(cmd: list[str]) -> str:
-            result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
+            result = subprocess.run(
+                [sys.executable, "-m", "vulture", *cmd[1:]],
+                cwd=repo_root, capture_output=True, text=True,
+            )
             return result.stdout
 
     missing = not whitelist_path(repo_root).exists()
