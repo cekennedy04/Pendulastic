@@ -966,48 +966,44 @@ class ModeSelectView(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         tk.Label(self, text="Pendulastic",
-                 font=("Segoe UI", 20, "bold")).grid(
+                 font=("Segoe UI", 20, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=0, column=0, columnspan=2, pady=(60, 4))
         tk.Label(self, text="Clinical Pendulum Test Platform",
-                 font=("Segoe UI", 11), fg="#555").grid(
+                 font=("Segoe UI", 11),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=1, column=0, columnspan=2, pady=(0, 40))
 
-        tk.Button(
-            self,
-            text="Live Recording Session\nIMU · RGB · OptiTrack",
-            font=("Segoe UI", 12, "bold"),
-            bg=_GREEN, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_live_mode,
-        ).grid(row=2, column=0, padx=40, pady=16, sticky="n")
+        # Live Recording is the routine clinical path -- the one primary
+        # (filled-accent) action on this screen.
+        live_btn = ws.primary_button(
+            self, "Live Recording Session\nIMU · RGB · OptiTrack",
+            self.controller._enter_live_mode)
+        live_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        live_btn.grid(row=2, column=0, padx=40, pady=16, sticky="n")
 
-        tk.Button(
-            self,
-            text="Upload & Analyze\nVideo or CSV file",
-            font=("Segoe UI", 12, "bold"),
-            bg=_BLUE, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_upload_mode,
-        ).grid(row=2, column=1, padx=40, pady=16, sticky="n")
+        upload_btn = ws.secondary_button(
+            self, "Upload & Analyze\nVideo or CSV file",
+            self.controller._enter_upload_mode)
+        upload_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        upload_btn.grid(row=2, column=1, padx=40, pady=16, sticky="n")
 
-        tk.Button(
-            self,
-            text="Multi-Modal Comparison\nIMU · OptiTrack · Video",
-            font=("Segoe UI", 12, "bold"),
-            bg=_AMBER, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_workbench_mode,
-        ).grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+        workbench_btn = ws.secondary_button(
+            self, "Multi-Modal Comparison\nIMU · OptiTrack · Video",
+            self.controller._enter_workbench_mode)
+        workbench_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        workbench_btn.grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
 
-        tk.Button(
-            self,
-            text="Analysis & Reports\nCompare Participants",
-            font=("Segoe UI", 12, "bold"),
-            bg="#5a3d8a", fg="white",
-            width=24, height=4,
-            command=self.controller._enter_analysis_mode,
-        ).grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        # 4th button (added after this plan was written -- see task-5 brief
+        # discrepancy note): styled as another secondary action, consistent
+        # with Upload & Analyze / Multi-Modal Comparison above.
+        analysis_btn = ws.secondary_button(
+            self, "Analysis & Reports\nCompare Participants",
+            self.controller._enter_analysis_mode)
+        analysis_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
 
 
 # ---------------------------------------------------------------------------
@@ -1027,66 +1023,72 @@ class UploadMetaView(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         pad = {"padx": 12, "pady": 6}
 
         # Header: back button + title
-        hdr = tk.Frame(self)
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr.grid(row=0, column=0, columnspan=2, sticky="ew",
                  padx=12, pady=(16, 4))
-        self.btn_back = tk.Button(hdr, text="<- Back",
-                                  font=("Segoe UI", 10),
-                                  command=self.controller._upload_back_to_select)
+        self.btn_back = ws.secondary_button(
+            hdr, "← Back", self.controller._upload_back_to_select)
         self.btn_back.pack(side="left", padx=(0, 12))
         tk.Label(hdr, text="Upload & Analyze",
-                 font=("Segoe UI", 13, "bold")).pack(side="left")
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # Selected file name
         self._file_label_var = tk.StringVar(value="No file selected")
         tk.Label(self, textvariable=self._file_label_var,
-                 font=("Consolas", 9), fg="gray", anchor="w").grid(
+                 font=("Consolas", 9), fg=ws.PALETTE["FG2"], bg=ws.PALETTE["BG"],
+                 anchor="w").grid(
             row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
 
         # Participant ID
-        tk.Label(self, text="Participant ID:").grid(
+        tk.Label(self, text="Participant ID:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=2, column=0, sticky="e", **pad)
         self.pid_var = tk.StringVar()
         tk.Entry(self, textvariable=self.pid_var, width=22).grid(
             row=2, column=1, sticky="w", **pad)
 
         # Leg
-        tk.Label(self, text="Leg:").grid(row=3, column=0, sticky="e", **pad)
+        tk.Label(self, text="Leg:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=3, column=0, sticky="e", **pad)
         self.leg_var = tk.StringVar(value="Right")
-        leg_f = tk.Frame(self)
+        leg_f = tk.Frame(self, bg=ws.PALETTE["BG"])
         leg_f.grid(row=3, column=1, sticky="w", **pad)
-        tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var,
-                       value="Left").pack(side="left", padx=4)
-        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var,
-                       value="Right").pack(side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var, value="Left",
+                       bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]).pack(
+            side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right",
+                       bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]).pack(
+            side="left", padx=4)
 
         # MS Status
-        tk.Label(self, text="MS Status:").grid(row=4, column=0, sticky="e", **pad)
+        tk.Label(self, text="MS Status:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=4, column=0, sticky="e", **pad)
         self.ms_var = tk.StringVar(value="MS")
         ttk.Combobox(self, textvariable=self.ms_var, width=22, state="readonly",
                      values=["MS", "Stroke", "Control", "Other"]).grid(
             row=4, column=1, sticky="w", **pad)
 
         # Trial number
-        tk.Label(self, text="Trial Number:").grid(row=5, column=0, sticky="e", **pad)
+        tk.Label(self, text="Trial Number:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=5, column=0, sticky="e", **pad)
         self.trial_var = tk.StringVar(value="1")
         tk.Spinbox(self, from_=1, to=99, textvariable=self.trial_var, width=6).grid(
             row=5, column=1, sticky="w", **pad)
 
-        # Analyze button
-        self.btn_analyze = tk.Button(
-            self, text="Analyze ->",
-            bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-            width=16, height=2,
-            command=self.controller._start_upload_analysis)
+        # Analyze button -- the single primary action on this screen
+        self.btn_analyze = ws.primary_button(
+            self, "Analyze →", self.controller._start_upload_analysis)
+        self.btn_analyze.config(font=("Segoe UI", 11, "bold"), width=16, height=2)
         self.btn_analyze.grid(row=6, column=0, columnspan=2, pady=20)
 
         # Status bar
         tk.Label(self, textvariable=self.status_var,
-                 relief="sunken", anchor="w", fg="#333").grid(
+                 relief="sunken", anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(4, 10))
 
     # ------------------------------------------------------------------
@@ -1147,33 +1149,37 @@ class PostProcessingPanel(tk.Frame):
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=1)
 
+        self.configure(bg=ws.PALETTE["BG"])
+
         # row 0 — header: mode-select back button + trial filename
-        hdr0 = tk.Frame(self)
+        hdr0 = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr0.grid(row=0, column=0, columnspan=3, sticky="ew",
                   padx=12, pady=(12, 4))
-        tk.Button(hdr0, text="<- Mode Select",
-                  font=("Segoe UI", 9),
-                  command=self.controller.on_back_to_mode_select).pack(
+        ws.secondary_button(hdr0, "← Mode Select",
+                            self.controller.on_back_to_mode_select).pack(
             side="left", padx=(0, 12))
         self.title_var = tk.StringVar(value="")
         tk.Label(hdr0, textvariable=self.title_var,
-                 font=("Segoe UI", 12, "bold"), anchor="w").pack(side="left")
+                 font=("Segoe UI", 12, "bold"), anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # row 1 — matplotlib figure
         if _MPL_AVAIL:
-            self._fig    = Figure(figsize=(10, 4), dpi=96, facecolor="#EEF2F7")
+            self._fig    = Figure(figsize=(10, 4), dpi=96, facecolor=ws.PALETTE["BG"])
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvasTkAgg(self._fig, master=self)
             self._canvas.get_tk_widget().grid(
                 row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=4)
         else:
             tk.Label(self, text="matplotlib not available — install it in .venv",
-                     fg="red").grid(row=1, column=0, columnspan=3)
+                     bg=ws.PALETTE["BG"], fg="red").grid(row=1, column=0, columnspan=3)
             self._canvas = None
 
-        # row 2 — PT Metrics LabelFrame
-        self._metrics_frame = tk.LabelFrame(self, text="Popović PT Metrics",
-                                            font=("Segoe UI", 9, "bold"), padx=8, pady=4)
+        # row 2 — PT Metrics card
+        self._metrics_frame = tk.LabelFrame(
+            self, text="Popović PT Metrics", font=("Segoe UI", 9, "bold"),
+            padx=8, pady=4, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
+            highlightbackground=ws.PALETTE["BORDER"], highlightthickness=1)
         self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
@@ -1193,32 +1199,29 @@ class PostProcessingPanel(tk.Frame):
             ("MAS",       self.mas_var),
             ("Score",     self.score_var),
         ]):
-            tk.Label(self._metrics_frame, text=lbl, font=("Segoe UI", 8), fg="#555").grid(
+            tk.Label(self._metrics_frame, text=lbl, font=("Segoe UI", 8),
+                     bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG2"]).grid(
                 row=0, column=col, padx=10, pady=1)
             tk.Label(self._metrics_frame, textvariable=var,
-                     font=("Segoe UI", 11, "bold")).grid(
+                     font=("Segoe UI", 11, "bold"),
+                     bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"]).grid(
                 row=1, column=col, padx=10)
 
-        # row 3 — action buttons
-        tk.Button(self, text="<- New Trial",
-                  bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-                  width=14, height=2,
-                  command=self._on_new_trial).grid(
+        # row 3 — action buttons (utility actions, no single primary action
+        # on a review-only screen -- all secondary-styled)
+        ws.secondary_button(self, "← New Trial", self._on_new_trial).grid(
             row=3, column=0, padx=10, pady=12, sticky="e")
-        tk.Button(self, text="Load OptiTrack CSV",
-                  font=("Segoe UI", 10), width=20, height=2,
-                  command=self._on_load_optitrack).grid(
+        ws.secondary_button(self, "Load OptiTrack CSV", self._on_load_optitrack).grid(
             row=3, column=1, padx=10, pady=12, sticky="w")
-        self.btn_upload_video = tk.Button(
-            self, text="🎥 Upload Video for HPE",
-            font=("Segoe UI", 10), width=22, height=2,
-            command=self._on_upload_video)
+        self.btn_upload_video = ws.secondary_button(
+            self, "\U0001f3a5 Upload Video for HPE", self._on_upload_video)
         self.btn_upload_video.grid(row=3, column=2, padx=10, pady=12, sticky="w")
 
         # row 4 — status bar
         self.status_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.status_var,
-                 relief="sunken", anchor="w", fg="#333").grid(
+                 relief="sunken", anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
 
     # ------------------------------------------------------------------
