@@ -49,6 +49,9 @@ Model_Analysis_Outputs/
 pendulastic model analysis/
 pendulastic_model_analysis_outputs.zip
 STCFormer-main.zip
+data/
+figures/
+training_data/
 
 # Log files
 *.log
@@ -62,3 +65,6 @@ pip_install_log.txt
 
 # Isolated worktrees for plan execution
 .worktrees/
+
+# Local secrets
+.env
