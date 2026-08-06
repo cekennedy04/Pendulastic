@@ -52,6 +52,20 @@ problem exactly, and #2 is a substantially larger UI lift, this spec
 covers #1 only. #2 remains available as a follow-up if bad frames persist
 after Pick Person ships, for a *different* reason than person-confusion.
 
+This single-seed approach relies on the clinical protocol itself, not
+just the tracker's guard logic: a Popovic pendulum test keeps the
+patient's hip/torso stationary throughout (seated or reclining; only the
+lower leg swings after release), which is why `hip0`/`knee0` are fixed
+anchors set once and never re-detected (confirmed in the
+annotated-video-export code read for the prior plan). This is not general
+gait or multi-person crossing-paths tracking, where a single seed
+genuinely would not hold — it is the specific scenario the x-gate was
+built for. The one real edge this doesn't cover on its own is
+disambiguating from a *bad* frame (the assessor closest to the patient
+during pre-release positioning, or an assistive device occluding the
+ankle) — addressed in Section 3.3 via a "Try Next Frame" step in the
+picker dialog, not by discarding the single-seed approach.
+
 **Scope decision (confirmed with user):** port "Pick Person" only, into
 `PostProcessingPanel`'s upload-for-HPE flow. Two further scope calls,
 also confirmed:
@@ -98,18 +112,28 @@ own file location — correct regardless of which module imports it), by
 extending the existing guarded import block that already pulls in `_draw`
 and `TRAIL_LEN`.
 
-**New detection entry point** — `BiomechanicalEngine.detect_people_on_first_frame`,
+**New detection entry point** — `BiomechanicalEngine.detect_people_at_frame`,
 alongside `run_offline_track` in `pendulastic_app.py`: opens the video,
-reads frame 0, runs the same `mp.tasks.vision.PoseLandmarker` IMAGE-mode
-call `_cmd_pick_person` makes (`num_poses=4`), and returns both the raw
-frame (needed to render the picker) and the pose list.
+seeks to the requested frame index (default 0), runs the same
+`mp.tasks.vision.PoseLandmarker` IMAGE-mode call `_cmd_pick_person` makes
+(`num_poses=4`), and returns both the raw frame (needed to render the
+picker) and the pose list. Takes a `frame_index` parameter rather than
+hardcoding frame 0 so the picker dialog's "Try Next Frame" control
+(Section 3.3) can call it again at a later index without a second method.
 
 **New flow in `PostProcessingPanel._on_upload_video`** (runs synchronously
 on the UI thread — a single-frame inference is fast, unlike the
-whole-video batch track that follows):
+whole-video batch track that follows. This entire flow, including any
+opened `PersonPickerDialog`, completes strictly *before* the background
+`run_offline_track` thread is ever started — there is no background
+thread running concurrently with the dialog, so there is nothing for it
+to race with. Before the blocking detection call, set a status message
+("Detecting people…") and call `update_idletasks()` so the UI paints it
+first — same courtesy the viewer's own `_cmd_pick_person` already applies
+before its equivalent blocking call):
 
 1. User picks a video file (unchanged).
-2. Call `detect_people_on_first_frame(path)`.
+2. Call `detect_people_at_frame(path)`.
    - **Exception during detection** → treat as 0 people found (see Error
      Handling) and fall back to automatic behavior for this upload only.
    - **0 people found** → `manual_seed = None`; proceed exactly as today
@@ -146,15 +170,17 @@ whole-video batch track that follows):
   `_on_person_select_click` refactored to call them; behavior unchanged.
 
 ### 3.2 `pendulastic_app.py` — `BiomechanicalEngine`
-- **New:** `detect_people_on_first_frame(self, video_path: str) -> tuple[np.ndarray | None, list]`
-  — opens `video_path`, reads one frame, runs the IMAGE-mode
-  `PoseLandmarker` detection (`num_poses=4`, same confidence thresholds as
-  the viewer's `_cmd_pick_person`), returns `(frame, poses)`. Returns
-  `(None, [])` on any failure to open the video or read a frame; returns
-  `(frame, [])` if detection succeeds but finds nobody. Never raises —
-  any exception from the MediaPipe call itself is caught internally and
-  treated as "0 people found" (so the caller's fallback path is the same
-  whether detection legitimately found nobody or errored).
+- **New:** `detect_people_at_frame(self, video_path: str, frame_index: int = 0) -> tuple[np.ndarray | None, list]`
+  — opens `video_path`, seeks to `frame_index` and reads that one frame,
+  runs the IMAGE-mode `PoseLandmarker` detection (`num_poses=4`, same
+  confidence thresholds as the viewer's `_cmd_pick_person`), returns
+  `(frame, poses)`. Returns `(None, [])` on any failure to open the video
+  or read the requested frame (including a `frame_index` past the end of
+  the clip); returns `(frame, [])` if detection succeeds but finds
+  nobody. Never raises — any exception from the MediaPipe call itself is
+  caught internally and treated as "0 people found" (so the caller's
+  fallback path is the same whether detection legitimately found nobody
+  or errored).
 - **`run_offline_track`**: new optional parameter `manual_seed: tuple | None = None`
   (a `(hip, knee, ankle)` triple of pixel-coordinate arrays/tuples,
   matching what `tracker.init()` already accepts). When provided, the
@@ -170,22 +196,44 @@ whole-video batch track that follows):
   all.
 
 ### 3.3 `pendulastic_app.py` — new `PersonPickerDialog` class
-- A `tk.Toplevel` modal dialog. Constructor takes the parent panel,
-  the frame (`np.ndarray`), the poses list, and the leg string.
+- A `tk.Toplevel` modal dialog, constructed **not resizable**
+  (`resizable(False, False)`) and sized exactly to the displayed image
+  with no `fill`/`expand` on the `Label` — a click can only ever land
+  within the actual rendered image, so there is no widget-vs-image size
+  mismatch to account for. Constructor takes the parent panel, the video
+  path (needed for the "Try Next Frame" control below), the initial frame
+  index, the frame (`np.ndarray`), the poses list, and the leg string.
 - Renders `draw_person_select_overlay(frame, poses)` as a `PhotoImage` in
-  a `tk.Label` (same cv2→PIL→ImageTk conversion pattern already used by
+  the `Label` (same cv2→PIL→ImageTk conversion pattern already used by
   `pendulastic_workbench.py`'s `WorkbenchView._video_label` — reusing an
   established in-repo pattern, not inventing a new one). If the frame is
   wider than 900px (matching the app's existing minimum-width convention
-  elsewhere), it is scaled down to fit within 900px for display, with a
-  stored scale factor so click coordinates can be mapped back to original
-  frame-pixel space before being passed to `resolve_person_click`.
+  elsewhere), it is scaled down by a single uniform factor (`900 /
+  frame_w`, applied to both dimensions — never independent width/height
+  scaling, so aspect ratio is always preserved) to fit within 900px for
+  display, with that factor stored so click coordinates
+  (`event.x`/`event.y`, Tkinter's own logical widget-coordinate space —
+  not a raw screen-pixel API, so OS-level DPI scaling does not desync the
+  mapping) can be divided back to original frame-pixel space before being
+  passed to `resolve_person_click`.
 - Binds a click handler that calls `resolve_person_click(poses, click_xy,
   frame_w, frame_h, leg)`. On a successful resolution (ankle visibility
   ok), stores the result on `self.result` and calls `self.destroy()`. On
   ankle-visibility rejection (see Error Handling), shows an inline status
   message in the dialog rather than closing, so the user can click again
   (possibly picking a different, better-visible detection).
+- **"Try Next Frame" button**: re-runs `detect_people_at_frame`'s
+  underlying detection on `frame_index + 15` of the same video (roughly
+  half a second later at typical frame rates) instead of the originally
+  captured frame, redraws the overlay in place, and updates the dialog's
+  stored `frame`/`poses`/`frame_index`. Exists specifically for the case
+  where the disambiguation frame itself is a bad one to pick from — an
+  assistive device (walker, cane, parallel bars) or the assessor's own
+  hands occlude the ankle during pre-release positioning, which is common
+  right at the start of a clip and is exactly when both people are
+  closest together and hardest to tell apart. Does not require or build
+  any general frame-scrubbing UI — it is a single fixed step forward,
+  repeatable by clicking again.
 - `WM_DELETE_WINDOW` and any explicit Cancel affordance both just call
   `self.destroy()` without setting `self.result` — the caller checks
   `self.result is None` after `wait_window()` returns to detect
@@ -200,7 +248,7 @@ whole-video batch track that follows):
 ## 4. Error Handling
 
 - **MediaPipe detection exception on frame 0** (corrupt frame, model load
-  failure, etc.): caught inside `detect_people_on_first_frame`, treated as
+  failure, etc.): caught inside `detect_people_at_frame`, treated as
   0 people found. The upload proceeds using the existing automatic
   `_PatientDetector` fallback inside `run_offline_track` — i.e. a
   detection-step failure degrades to today's existing behavior rather
@@ -215,12 +263,16 @@ whole-video batch track that follows):
   this means "click didn't resolve" — an inline message asks the user to
   try clicking again (e.g. closer to the ankle, or pick a different
   detected candidate whose ankle is clearer), rather than seeding the
-  tracker with an unreliable position. Unlike the viewer (which falls
-  back to manual knee/ankle marker placement — a feature that doesn't
-  exist in `PostProcessingPanel`), there is no further manual-placement
-  escape hatch in this phase; if every candidate's ankle is too occluded
-  to resolve, the user's only recourse is to cancel and try a clearer
-  video, or a future pin-correction phase.
+  tracker with an unreliable position. If every visible candidate's ankle
+  is occluded (assistive device, assessor's hands during pre-release
+  positioning), the "Try Next Frame" control lets the user step forward
+  to a less-occluded moment without cancelling the upload. Unlike the
+  viewer (which falls back to manual knee/ankle marker placement — a
+  feature that doesn't exist in `PostProcessingPanel`), there is no
+  manual-coordinate-entry escape hatch in this phase; if stepping forward
+  through the clip never finds a resolvable frame, the user's only
+  recourse is to cancel and try a clearer video, or a future
+  pin-correction phase.
 - **User cancels the picker dialog**: upload aborted, per the confirmed
   scope decision — status bar says something like "Upload cancelled — no
   patient selected," no background thread starts, `_video_path`/
@@ -234,7 +286,7 @@ whole-video batch track that follows):
 
 ## 5. Testing
 
-- **`detect_people_on_first_frame`**: unit tests with a mocked
+- **`detect_people_at_frame`**: unit tests with a mocked
   `PoseLandmarker`-equivalent (following the existing
   `tests/test_biomechanical_engine.py` convention of monkeypatching
   `_PatientDetector`/`_MPBatchTracker` — here, whatever module-level
@@ -248,6 +300,16 @@ whole-video batch track that follows):
   both mirrored and non-mirrored configurations (matching the viewer's
   own `anat_left_is_img_left` logic), and the ankle-visibility rejection
   threshold (returns `None` below 0.35, a valid tuple at/above it).
+- **`PersonPickerDialog` coordinate mapping**: a unit test that scales a
+  known frame dimension down by the dialog's own scale-factor logic, then
+  maps a synthetic display-space click back to frame-pixel space, and
+  asserts the round trip lands within 1px of the original — covers the
+  scale-factor bookkeeping directly rather than relying only on visual
+  inspection during manual verification.
+- **"Try Next Frame"**: unit test that calling it advances the dialog's
+  stored frame index by 15 and invokes detection again with that new
+  index (mock the detection call and assert it was called with
+  `frame_index + 15` on the second invocation).
 - **`run_offline_track` with `manual_seed`**: extend
   `tests/test_biomechanical_engine.py` with a case that passes a synthetic
   `manual_seed` and a mocked tracker, asserting `tracker.init` is called
@@ -257,7 +319,7 @@ whole-video batch track that follows):
   `manual_seed` is `None`.
 - **`PostProcessingPanel._on_upload_video`'s branching**: extend
   `tests/test_post_processing_panel.py` with cases (mocking
-  `detect_people_on_first_frame`'s return value) for the 0-person,
+  `detect_people_at_frame`'s return value) for the 0-person,
   1-person, and 2+-person-with-dialog-cancelled paths, asserting the
   correct `manual_seed` is computed (or that the upload aborts cleanly on
   cancel, per Section 4) — without needing to drive real dialog clicks in
