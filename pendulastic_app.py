@@ -700,7 +700,8 @@ class AcquisitionPanel(tk.Frame):
         # checked and _build_widgets calls _on_source_changed(), not
         # _on_rgb_checkbox_toggled(), to establish the starting UI state.
         if self._src_rgb.get():
-            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0))
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0),
+                                  before=self._research_toggle_btn)
         else:
             self._cam_frame.pack_forget()
         # Build status line
@@ -745,7 +746,8 @@ class AcquisitionPanel(tk.Frame):
 
     def _on_rgb_checkbox_toggled(self) -> None:
         if self._src_rgb.get():
-            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0))
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0),
+                                  before=self._research_toggle_btn)
             self.controller.on_rescan_cameras()
         else:
             self._cam_frame.pack_forget()
@@ -1978,7 +1980,16 @@ class App(tk.Tk):
         # the Live Recording screen is shown with RGB active -- not just
         # on a manual Rescan click or an explicit checkbox toggle.
         if "rgb" in self._acq.get_active_sources():
+            # rescan()/enumerate_cameras() blocks for the full multi-second
+            # probe (see camera_utils.py) -- paint the newly-packed panel
+            # and a "scanning" status first so the clinician sees the
+            # screen (not a freeze) while the probe runs. Matches the
+            # status_var.set() + update_idletasks() pattern master_app.py's
+            # rescan_cameras() uses around the same blocking call.
+            self._acq.status_var.set("Scanning for camera…")
+            self.update_idletasks()
             self.on_rescan_cameras()
+            self._acq.status_var.set("Idle — ready to record.")
 
     def _enter_upload_mode(self) -> None:
         path = filedialog.askopenfilename(
