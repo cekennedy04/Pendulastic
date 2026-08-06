@@ -29,21 +29,11 @@ import sys
 
 import pt_report_common as common
 
-TRIAL_THRESHOLD = 4
+TRIAL_THRESHOLD = common.TRIAL_THRESHOLD          # alias -- pt_report_common.py is now the source of truth
 REFERENCE_PARTICIPANTS = ("5", "13")
 MAS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mas_scores.csv")
 
-
-def leg_trial_counts(participant_id):
-    """Total recorded trials per leg for this participant, summed across
-    every condition/session found (pre, post, side, control, etc.) -- not
-    per-condition. A participant with 2 pre + 3 post right-leg trials counts
-    as 5 right, matching TRIAL_THRESHOLD against the cumulative total."""
-    counts = {"left": 0, "right": 0}
-    for r in common.discover_all_trials():
-        if r["participant"] == participant_id and r["leg"] in counts:
-            counts[r["leg"]] += 1
-    return counts
+leg_trial_counts = common.leg_trial_counts        # alias, see TRIAL_THRESHOLD above
 
 
 def run_for_participant(pid):
