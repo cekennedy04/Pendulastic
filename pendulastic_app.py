@@ -63,8 +63,17 @@ except ImportError:
     _CV2_AVAIL = False
 
 try:
+    from PIL import Image, ImageTk
+    _PIL_AVAIL = True
+except Exception:
+    Image = None
+    ImageTk = None
+    _PIL_AVAIL = False
+
+try:
     from pendulastic_viewer import (
         _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN, _MP_MODEL,
+        draw_person_select_overlay, resolve_person_click,
     )
     _VIEWER_AVAIL = True
 except Exception:
@@ -73,6 +82,8 @@ except Exception:
     _draw = None
     TRAIL_LEN = 150
     _MP_MODEL = None
+    draw_person_select_overlay = None
+    resolve_person_click = None
     _VIEWER_AVAIL = False
 
 _mp_pose = _mp_draw = _mp_styles = None
@@ -1217,6 +1228,115 @@ class UploadMetaView(tk.Frame):
         state = "disabled" if active else "normal"
         self.btn_back.config(state=state)
         self.btn_analyze.config(state=state)
+
+
+# ---------------------------------------------------------------------------
+# PersonPickerDialog
+# ---------------------------------------------------------------------------
+
+class PersonPickerDialog(tk.Toplevel):
+    """Modal dialog: shows every MediaPipe-detected person in a frame with a
+    numbered colored skeleton overlay and lets the user click the patient.
+
+    On a resolved click, self.result is set to (hip, knee, ankle) pixel
+    coordinates before the dialog closes. self.result stays None if the
+    user cancels/closes the dialog without a successful resolution.
+    """
+
+    MAX_DISPLAY_WIDTH   = 900
+    TRY_NEXT_FRAME_STEP = 15
+
+    def __init__(self, parent, video_path: str, frame_index: int,
+                 frame: np.ndarray, poses: list, leg: str) -> None:
+        super().__init__(parent)
+        self.title("Select the Patient")
+        self.resizable(False, False)
+        self.transient(parent)
+
+        self._video_path  = video_path
+        self._frame_index = frame_index
+        self._frame        = frame
+        self._poses         = poses
+        self._leg           = leg
+        self._engine         = BiomechanicalEngine("rgb")
+        self._scale          = 1.0
+        self.result: tuple | None = None
+
+        self._status_var = tk.StringVar(
+            value=f"MediaPipe detected {len(poses)} person(s) — click the PATIENT.")
+
+        self._image_label = tk.Label(self, cursor="crosshair")
+        self._image_label.pack()
+        self._image_label.bind("<Button-1>", self._on_click)
+
+        status_row = tk.Frame(self)
+        status_row.pack(fill="x", padx=8, pady=(4, 0))
+        tk.Label(status_row, textvariable=self._status_var,
+                 anchor="w", wraplength=self.MAX_DISPLAY_WIDTH).pack(
+            side="left", fill="x", expand=True)
+
+        button_row = tk.Frame(self)
+        button_row.pack(fill="x", padx=8, pady=8)
+        self.btn_next_frame = tk.Button(
+            button_row, text="Try Next Frame", command=self._on_try_next_frame)
+        self.btn_next_frame.pack(side="left")
+        tk.Button(button_row, text="Cancel", command=self.destroy).pack(
+            side="right")
+
+        self._render_frame()
+        self.grab_set()
+
+    def _render_frame(self) -> None:
+        overlay = draw_person_select_overlay(self._frame, self._poses)
+        h, w = overlay.shape[:2]
+        if w > self.MAX_DISPLAY_WIDTH:
+            self._scale = self.MAX_DISPLAY_WIDTH / w
+            disp = _cv2.resize(overlay, (int(w * self._scale), int(h * self._scale)))
+        else:
+            self._scale = 1.0
+            disp = overlay
+        rgb = _cv2.cvtColor(disp, _cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        self._photo = ImageTk.PhotoImage(img)
+        self._image_label.configure(image=self._photo)
+
+    def _on_click(self, event) -> None:
+        frame_h, frame_w = self._frame.shape[:2]
+        click_xy = (event.x / self._scale, event.y / self._scale)
+        result = resolve_person_click(
+            self._poses, click_xy, frame_w, frame_h, self._leg)
+
+        if result is None:
+            self._status_var.set(
+                "No detected person near that click — try clicking directly "
+                "on a numbered skeleton.")
+            return
+
+        hip, knee, ankle = result
+        if ankle is None:
+            self._status_var.set(
+                "Ankle visibility too low for that candidate — try clicking "
+                "a different candidate, or Try Next Frame.")
+            return
+
+        self.result = (hip, knee, ankle)
+        self.destroy()
+
+    def _on_try_next_frame(self) -> None:
+        next_index = self._frame_index + self.TRY_NEXT_FRAME_STEP
+        frame, poses = self._engine.detect_people_at_frame(
+            self._video_path, frame_index=next_index)
+        if frame is None:
+            self.btn_next_frame.config(state="disabled")
+            self._status_var.set(
+                "End of clip reached — try a different video.")
+            return
+        self._frame_index = next_index
+        self._frame        = frame
+        self._poses         = poses
+        self._status_var.set(
+            f"MediaPipe detected {len(poses)} person(s) — click the PATIENT.")
+        self._render_frame()
 
 
 # ---------------------------------------------------------------------------
