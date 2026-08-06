@@ -13,6 +13,21 @@ def test_main_calls_run_cohort_comparison_once(monkeypatch):
     assert calls == [True]
 
 
+def test_main_survives_cohort_comparison_exception(monkeypatch, capsys):
+    # A malformed participant_groups.json (or any other cohort-comparison
+    # failure) must not take down the whole script -- the per-participant
+    # reports already generated above are fine on their own.
+    monkeypatch.setattr(sys, "argv", ["run_pt_analysis.py"])
+    monkeypatch.setattr(rpa.common, "list_participants", lambda: {})
+
+    def _boom():
+        raise ValueError("boom")
+
+    monkeypatch.setattr(rpa.pt_cohort_common, "run_cohort_comparison", _boom)
+    rpa.main()   # must not raise
+    assert "Cohort comparison failed: boom" in capsys.readouterr().out
+
+
 def test_main_calls_cohort_comparison_even_with_single_pid_arg(monkeypatch):
     # Regression guard for the exact bug this design fixed during review:
     # cohort comparison must still run when main() was invoked for one

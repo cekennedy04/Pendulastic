@@ -53,6 +53,14 @@ def test_classify_case_insensitive_matching():
     assert pcc.classify_participant("6", None, {"6": "control"}, True) == ("Control", "registry")
 
 
+def test_classify_non_string_registry_entry_falls_through_without_raising():
+    # A malformed hand-edit to participant_groups.json (e.g. {"6": 1})
+    # must fall through to Unclassified/no_entry, not raise AttributeError
+    # from calling .strip() on a non-string.
+    registry = {"6": 1}
+    assert pcc.classify_participant("6", None, registry, True) == ("Unclassified", "no_entry")
+
+
 # ── load_registry ────────────────────────────────────────────────────────
 
 def test_load_registry_missing_file(tmp_path, monkeypatch):
@@ -73,6 +81,24 @@ def test_load_registry_malformed_json_treated_as_missing(tmp_path, monkeypatch, 
     monkeypatch.setattr(pcc, "REGISTRY_JSON", str(path))
     assert pcc.load_registry() == ({}, False)
     assert "failed to parse" in capsys.readouterr().out
+
+
+def test_load_registry_json_array_treated_as_missing(tmp_path, monkeypatch, capsys):
+    # Valid JSON, wrong shape: a hand-edit that turns the registry into a
+    # bare list instead of a {pid: diagnosis} object.
+    path = tmp_path / "participant_groups.json"
+    path.write_text(json.dumps(["6", "7"]), encoding="utf-8")
+    monkeypatch.setattr(pcc, "REGISTRY_JSON", str(path))
+    assert pcc.load_registry() == ({}, False)
+    assert "not a JSON object" in capsys.readouterr().out
+
+
+def test_load_registry_json_string_treated_as_missing(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "participant_groups.json"
+    path.write_text(json.dumps("just a string"), encoding="utf-8")
+    monkeypatch.setattr(pcc, "REGISTRY_JSON", str(path))
+    assert pcc.load_registry() == ({}, False)
+    assert "not a JSON object" in capsys.readouterr().out
 
 
 # ── load_metadata_diagnosis ─────────────────────────────────────────────
@@ -274,6 +300,19 @@ def test_build_composition_rows_classifies_and_counts_trials(monkeypatch):
     assert by_pid["6"]["group"] == "Control" and by_pid["6"]["source"] == "registry"
 
 
+def test_build_composition_rows_preserves_unrecognized_metadata_diagnosis(monkeypatch):
+    # Finding 1: an unrecognized (typo'd) metadata diagnosis must not be
+    # discarded just because classify_participant() didn't resolve it to
+    # a known arm -- `diagnosis` should still carry the raw string through
+    # to the composition row so the banner can surface it by name.
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: "Not A Real Diagnosis")
+    monkeypatch.setattr(pcc.common, "leg_trial_counts", lambda pid: {"left": 4, "right": 4})
+    rows = pcc.build_composition_rows({"7"})
+    assert rows[0]["group"] == "Unclassified" and rows[0]["source"] == "no_entry"
+    assert rows[0]["diagnosis"] == "Not A Real Diagnosis"
+
+
 def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
@@ -299,6 +338,19 @@ def test_write_composition_csv_writes_all_rows(tmp_path):
     assert "6,Unclassified,no_entry,4,4" in content
 
 
+# ── write_stats_csv ─────────────────────────────────────────────────────
+
+def test_write_stats_csv_header_documents_cliffs_delta_sign_convention(tmp_path):
+    rows = pcc.compute_cohort_stats(
+        {"left": [_summary(1.0), _summary(2.0)], "right": []},
+        {"left": [_summary(10.0), _summary(11.0)], "right": []})
+    out_path = tmp_path / "ms_vs_control_stats.csv"
+    pcc.write_stats_csv(rows, str(out_path))
+    header = out_path.read_text(encoding="utf-8").splitlines()[0]
+    assert "cliffs_delta_control_minus_ms" in header
+    assert header.split(",")[-2] == "cliffs_delta_control_minus_ms"
+
+
 # ── print_composition_banner ───────────────────────────────────────────
 
 def test_print_composition_banner_lists_every_group(capsys, monkeypatch):
@@ -317,6 +369,76 @@ def test_print_composition_banner_lists_every_group(capsys, monkeypatch):
     assert "Excluded:" in out and "9 (Stroke)" in out
     assert "7" in out and "no_entry" in out
     assert "registry_missing" in out and "8" in out
+
+
+def test_print_composition_banner_shows_unrecognized_diagnosis_text(capsys, monkeypatch):
+    # Finding 1: a bare pid under Unclassified gives no clue that
+    # metadata.json had a typo -- the raw diagnosis string must be visible.
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [
+        {"pid": "7", "group": "Unclassified", "source": "no_entry",
+         "diagnosis": "Not A Real Diagnosis", "n_trials_left": 4, "n_trials_right": 4},
+    ]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "Not A Real Diagnosis" in out
+    assert "7 (unrecognized diagnosis:" in out
+
+
+def test_print_composition_banner_no_entry_falls_back_to_folder_hint_when_no_diagnosis(capsys, monkeypatch):
+    # The folder-hint suffix logic must still apply when there's no raw
+    # diagnosis string at all (the pre-existing no_entry case).
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: True)
+    rows = [
+        {"pid": "7", "group": "Unclassified", "source": "no_entry",
+         "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
+    ]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "7 (folder suggests 'control')" in out
+    assert "unrecognized diagnosis" not in out
+
+
+def test_print_composition_banner_notes_missing_recordings_root(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pcc, "REC_ROOT", str(tmp_path / "Recordings"))  # doesn't exist
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+            "n_trials_left": 5, "n_trials_right": 5}]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "Recordings/ is empty or absent" in out
+
+
+def test_print_composition_banner_notes_empty_recordings_root(tmp_path, monkeypatch, capsys):
+    rec_root = tmp_path / "Recordings"
+    rec_root.mkdir()   # exists but has no Participant_* subdirs
+    monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+            "n_trials_left": 5, "n_trials_right": 5}]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "Recordings/ is empty or absent" in out
+
+
+def test_print_composition_banner_no_note_when_recordings_root_has_participants(tmp_path, monkeypatch, capsys):
+    rec_root = tmp_path / "Recordings"
+    (rec_root / "Participant_13").mkdir(parents=True)
+    monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+            "n_trials_left": 5, "n_trials_right": 5}]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "Recordings/ is empty or absent" not in out
+
+
+def test_print_composition_banner_no_note_when_no_rows(tmp_path, monkeypatch, capsys):
+    # No qualifying pids at all -- nothing to warn about.
+    monkeypatch.setattr(pcc, "REC_ROOT", str(tmp_path / "Recordings"))
+    pcc.print_composition_banner([])
+    out = capsys.readouterr().out
+    assert "Recordings/ is empty or absent" not in out
 
 
 # ── run_cohort_comparison orchestration ─────────────────────────────────
@@ -403,13 +525,47 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
 # ── make_cohort_comparison_figure (smoke test only -- pixel content isn't
 # asserted anywhere else in this repo's plotting functions either) ────────
 
+def test_run_cohort_comparison_real_figure_end_to_end(monkeypatch, tmp_path):
+    # Finding 7: every other run_cohort_comparison() test stubs out
+    # make_cohort_comparison_figure with a no-op spy, and the only direct
+    # test of the real figure function uses hand-built summaries -- so the
+    # 11-argument call site was guarded only by careful reading, not a
+    # test. This one lets the REAL figure function run, fed by the REAL
+    # orchestration (real collect_participant -> real
+    # aggregate_participant_summary -> real compute_cohort_stats), with a
+    # two-arm scenario built from per-trial values, not hand-built
+    # summaries. Participant "2" only has right-leg trials, so it also
+    # exercises the zero-summaries-for-a-leg path (left has only 1 MS
+    # contributor) reaching the real figure.
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
+    monkeypatch.setattr(pcc, "FIGURE_PNG", str(tmp_path / "ms_vs_control_boxplots.png"))
+
+    trials = {
+        "1": {"left": [_trial(pt7=0.3)] * 4, "right": [_trial(pt7=0.35)] * 4},
+        "2": {"left": [], "right": [_trial(pt7=0.5)] * 4},
+        "3": {"left": [_trial(pt7=1.2)] * 4, "right": [_trial(pt7=1.1)] * 4},
+        "4": {"left": [_trial(pt7=1.3)] * 4, "right": [_trial(pt7=1.4)] * 4},
+    }
+    groups = {"1": ("MS", "metadata"), "2": ("MS", "metadata"),
+             "3": ("Control", "registry"), "4": ("Control", "registry")}
+    _stub_common(monkeypatch, {"1", "2", "3", "4"}, groups, trials)
+
+    pcc.run_cohort_comparison()
+
+    fig_path = tmp_path / "ms_vs_control_boxplots.png"
+    assert fig_path.is_file()
+    assert fig_path.stat().st_size > 0
+
+
 def test_make_cohort_comparison_figure_writes_png_without_raising(tmp_path):
     ms_summaries = {"left": [_summary(1.0)], "right": [_summary(1.2)]}
     control_summaries = {"left": [_summary(2.0)], "right": [_summary(2.2)]}
     ms_raw = {"left": [_trial(pt7=1.0)], "right": [_trial(pt7=1.2)]}
     control_raw = {"left": [_trial(pt7=2.0)], "right": [_trial(pt7=2.2)]}
+    stats_rows = pcc.compute_cohort_stats(ms_summaries, control_summaries)
     out_path = tmp_path / "ms_vs_control_boxplots.png"
     pcc.make_cohort_comparison_figure(
-        ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2, str(out_path))
+        ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2, str(out_path), stats_rows)
     assert out_path.is_file()
     assert out_path.stat().st_size > 0
