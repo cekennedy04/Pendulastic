@@ -233,11 +233,27 @@ before its equivalent blocking call):
   right at the start of a clip and is exactly when both people are
   closest together and hardest to tell apart. Does not require or build
   any general frame-scrubbing UI — it is a single fixed step forward,
-  repeatable by clicking again.
+  repeatable by clicking again. `detect_people_at_frame` already returns
+  `(None, [])` when `frame_index` lands past the end of the clip (Section
+  3.2); the button's handler checks for that `frame is None` result
+  specifically and, on hitting it, disables the button and shows an
+  inline "End of clip reached — try a different video" message instead of
+  redrawing with no frame. This is the button's only exit besides finding
+  a resolvable candidate — there is no separate frame-count precheck to
+  keep in sync, just the one existing failure contract handled at the one
+  place it's consumed.
 - `WM_DELETE_WINDOW` and any explicit Cancel affordance both just call
   `self.destroy()` without setting `self.result` — the caller checks
   `self.result is None` after `wait_window()` returns to detect
   cancellation.
+- **Platform note:** `transient()` + `grab_set()` + `wait_window()` is the
+  standard Tkinter modal pattern and has no widespread redraw-blocking
+  issue on Windows (unlike a known class of quirks on macOS's Tk grab
+  handling). This app is Windows-only throughout — `master_app.py` and
+  `pendulastic_app.py` both special-case Windows Media Foundation camera
+  behavior, every path in the codebase and its dependencies assumes
+  `.venv\Scripts\`, and no macOS-specific code exists anywhere in the
+  repo — so no macOS-targeted mitigation is included here.
 
 ### 3.4 `pendulastic_app.py` — `PostProcessingPanel._on_upload_video`
 - Restructured per the flow in Section 2. The background-thread portion
@@ -309,7 +325,10 @@ before its equivalent blocking call):
 - **"Try Next Frame"**: unit test that calling it advances the dialog's
   stored frame index by 15 and invokes detection again with that new
   index (mock the detection call and assert it was called with
-  `frame_index + 15` on the second invocation).
+  `frame_index + 15` on the second invocation). A second case mocks
+  `detect_people_at_frame` returning `(None, [])` (end-of-clip) and
+  asserts the button ends up disabled and the dialog's status shows the
+  end-of-clip message, rather than attempting to redraw with no frame.
 - **`run_offline_track` with `manual_seed`**: extend
   `tests/test_biomechanical_engine.py` with a case that passes a synthetic
   `manual_seed` and a mocked tracker, asserting `tracker.init` is called
