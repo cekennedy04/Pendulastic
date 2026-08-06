@@ -1707,6 +1707,132 @@ def _draw(frame: np.ndarray, hip, knee, ankle, angle: float,
     return out
 
 
+# ─── person-select (multi-patient disambiguation) ────────────────────────────
+
+_PS_COLORS = [
+    (0, 230, 150),   # person 1 — cyan-green
+    (0, 130, 255),   # person 2 — orange
+    (220,  50, 220), # person 3 — magenta
+    (50,  220, 255), # person 4 — yellow
+]
+_PS_CONNECTIONS = [
+    (11, 12), (11, 23), (12, 24), (23, 24),
+    (23, 25), (24, 26), (25, 27), (26, 28),
+]
+
+
+def draw_person_select_overlay(frame: np.ndarray, poses: list) -> np.ndarray:
+    """Draw every candidate's skeleton in a distinct numbered color plus an
+    instruction banner.
+
+    Landmark positions are 0-1 fractions, so multiplying by the frame
+    dimensions works regardless of display scale.
+    """
+    out = frame.copy()
+    h, w = out.shape[:2]
+
+    for i, lm_set in enumerate(poses):
+        color = _PS_COLORS[i % len(_PS_COLORS)]
+        pts   = [(int(lm.x * w), int(lm.y * h)) for lm in lm_set]
+
+        for a, b in _PS_CONNECTIONS:
+            if a < len(pts) and b < len(pts):
+                cv2.line(out, pts[a], pts[b], color, 2, cv2.LINE_AA)
+
+        for pt in pts:
+            cv2.circle(out, pt, 5, color, -1, cv2.LINE_AA)
+            cv2.circle(out, pt, 6, (0, 0, 0), 1, cv2.LINE_AA)
+
+        # Numbered badge above mid-hip
+        if len(pts) > 24:
+            mx = (pts[23][0] + pts[24][0]) // 2
+            my = (pts[23][1] + pts[24][1]) // 2 - 28
+        elif pts:
+            mx, my = pts[0][0], pts[0][1] - 28
+        else:
+            continue
+        cv2.circle(out, (mx, my), 18, (10, 10, 10), -1, cv2.LINE_AA)
+        cv2.circle(out, (mx, my), 18, color, 2,  cv2.LINE_AA)
+        cv2.putText(out, str(i + 1), (mx - 7, my + 7),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
+
+    # Instruction banner
+    cv2.rectangle(out, (0, 0), (w, 44), (10, 10, 30), -1)
+    n = len(poses)
+    cv2.putText(
+        out,
+        f"MediaPipe detected {n} person(s)  —  CLICK the PATIENT",
+        (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 230, 130), 2, cv2.LINE_AA)
+    return out
+
+
+def resolve_person_click(poses: list, click_xy, frame_w: int, frame_h: int,
+                          leg: str):
+    """Find the candidate pose nearest a click point (checking all landmarks
+    of all poses), resolve which anatomical leg maps to the requested screen
+    side, and return (hip, knee, ankle) pixel coordinates.
+
+    Returns None only when no candidate pose is found near the click at
+    all. When a pose is found but its ankle visibility is below 0.35,
+    ankle is None within the returned tuple (hip and knee are still
+    returned) rather than the whole result being None -- this preserves
+    the "place the knee as a head start, ankle stays for manual
+    placement" behavior callers may support.
+    """
+    if not poses:
+        return None
+
+    click = np.array(click_xy, dtype=np.float32)
+    fw, fh = frame_w, frame_h
+
+    # Find the person whose ANY landmark is nearest the click
+    best_set  = None
+    best_dist = float("inf")
+    for lm_set in poses:
+        for lm in lm_set:
+            pt = np.array([lm.x * fw, lm.y * fh], dtype=np.float32)
+            d  = float(np.linalg.norm(pt - click))
+            if d < best_dist:
+                best_dist = d
+                best_set  = lm_set
+
+    if best_set is None:
+        return None
+
+    # Pick the leg that matches the requested screen side.
+    # BlazePose indices: anatomical LEFT hip=23,knee=25,ankle=27
+    #                    anatomical RIGHT hip=24,knee=26,ankle=28
+    # IMPORTANT: anatomical left/right is NOT the same as image left/right.
+    # If the patient faces the camera their anatomical left appears on the
+    # RIGHT side of the image (mirrored). Map by screen-space x-position so
+    # "left"/"right" here means "the leg on that side of the screen."
+    lh, lk, la = best_set[23], best_set[25], best_set[27]  # anatomical left
+    rh, rk, ra = best_set[24], best_set[26], best_set[28]  # anatomical right
+
+    want_image_left = (leg.lower() == "left")
+    anat_left_is_img_left = (lk.x <= rk.x)
+
+    if anat_left_is_img_left:
+        img_left  = (lh, lk, la)
+        img_right = (rh, rk, ra)
+    else:
+        img_left  = (rh, rk, ra)
+        img_right = (lh, lk, la)
+
+    h_lm, k_lm, a_lm = img_left if want_image_left else img_right
+
+    hip  = np.array([h_lm.x * fw, h_lm.y * fh], dtype=np.float32)
+    knee = np.array([k_lm.x * fw, k_lm.y * fh], dtype=np.float32)
+
+    # Reject ankle if visibility is too low — a hallucinated ankle seeds the
+    # tracker at a wrong position and the tracker carries that error forward.
+    ankle = None
+    if a_lm.visibility >= 0.35:
+        ankle = np.array([a_lm.x * fw, a_lm.y * fh], dtype=np.float32)
+
+    return (hip, knee, ankle)
+
+
 # ─── main application ─────────────────────────────────────────────────────────
 
 class PendulaticViewer(tk.Tk):
@@ -3827,59 +3953,8 @@ class PendulaticViewer(tk.Tk):
 
     # ── person-select overlay ─────────────────────────────────────────────────
 
-    _PS_COLORS = [
-        (0, 230, 150),   # person 1 — cyan-green
-        (0, 130, 255),   # person 2 — orange
-        (220,  50, 220), # person 3 — magenta
-        (50,  220, 255), # person 4 — yellow
-    ]
-    _PS_CONNECTIONS = [
-        (11, 12), (11, 23), (12, 24), (23, 24),
-        (23, 25), (24, 26), (25, 27), (26, 28),
-    ]
-
     def _draw_person_select_overlay(self, frame: np.ndarray) -> np.ndarray:
-        """Draw all MP-detected persons with numbered colored skeletons.
-
-        Landmark positions are 0-1 fractions, so multiplying by the frame
-        dimensions works regardless of display scale.
-        """
-        out = frame.copy()
-        h, w = out.shape[:2]
-
-        for i, lm_set in enumerate(self._person_select_poses):
-            color = self._PS_COLORS[i % len(self._PS_COLORS)]
-            pts   = [(int(lm.x * w), int(lm.y * h)) for lm in lm_set]
-
-            for a, b in self._PS_CONNECTIONS:
-                if a < len(pts) and b < len(pts):
-                    cv2.line(out, pts[a], pts[b], color, 2, cv2.LINE_AA)
-
-            for pt in pts:
-                cv2.circle(out, pt, 5, color, -1, cv2.LINE_AA)
-                cv2.circle(out, pt, 6, (0, 0, 0), 1, cv2.LINE_AA)
-
-            # Numbered badge above mid-hip
-            if len(pts) > 24:
-                mx = (pts[23][0] + pts[24][0]) // 2
-                my = (pts[23][1] + pts[24][1]) // 2 - 28
-            elif pts:
-                mx, my = pts[0][0], pts[0][1] - 28
-            else:
-                continue
-            cv2.circle(out, (mx, my), 18, (10, 10, 10), -1, cv2.LINE_AA)
-            cv2.circle(out, (mx, my), 18, color, 2,  cv2.LINE_AA)
-            cv2.putText(out, str(i + 1), (mx - 7, my + 7),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
-
-        # Instruction banner
-        cv2.rectangle(out, (0, 0), (w, 44), (10, 10, 30), -1)
-        n = len(self._person_select_poses)
-        cv2.putText(
-            out,
-            f"MediaPipe detected {n} person(s)  —  CLICK the PATIENT",
-            (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 230, 130), 2, cv2.LINE_AA)
-        return out
+        return draw_person_select_overlay(frame, self._person_select_poses)
 
     # ── path draw ─────────────────────────────────────────────────────────────
 
@@ -6009,74 +6084,23 @@ class PendulaticViewer(tk.Tk):
         if frame is None:
             return
         fh, fw = frame.shape[:2]
-        click  = np.array([nx, ny], dtype=np.float32)
 
-        # Find the person whose ANY landmark is nearest the click
-        best_set  = None
-        best_dist = float("inf")
-        for lm_set in poses:
-            for lm in lm_set:
-                pt = np.array([lm.x * fw, lm.y * fh], dtype=np.float32)
-                d  = float(np.linalg.norm(pt - click))
-                if d < best_dist:
-                    best_dist = d
-                    best_set  = lm_set
-
-        if best_set is None:
+        result = resolve_person_click(poses, (nx, ny), fw, fh, self._leg_var.get())
+        if result is None:
             return
 
-        # Pick the leg that matches the Leg selector (Left/Right radio button).
-        # BlazePose indices: anatomical LEFT hip=23,knee=25,ankle=27
-        #                    anatomical RIGHT hip=24,knee=26,ankle=28
-        # IMPORTANT: anatomical left/right is NOT the same as image left/right.
-        # If the patient faces the camera their anatomical left appears on the
-        # RIGHT side of the image (mirrored). Map by screen-space x-position so
-        # "Left" in the UI means "the leg on the left side of the screen."
-        lh, lk, la = best_set[23], best_set[25], best_set[27]  # anatomical left
-        rh, rk, ra = best_set[24], best_set[26], best_set[28]  # anatomical right
+        hip, kne, ank = result
 
-        want_image_left = (self._leg_var.get() == "left")
-
-        # Which anatomical side appears on the left of the image?
-        anat_left_is_img_left = (lk.x <= rk.x)
-
-        # image-left set / image-right set
-        if anat_left_is_img_left:
-            img_left  = (lh, lk, la)
-            img_right = (rh, rk, ra)
-        else:
-            img_left  = (rh, rk, ra)
-            img_right = (lh, lk, la)
-
-        h_lm, k_lm, a_lm = img_left if want_image_left else img_right
-
-        # Debug: confirm exactly which side is forced
-        side_str = "image-LEFT" if want_image_left else "image-RIGHT"
-        print(f"DEBUG leg-select: _leg_var='{self._leg_var.get()}' → {side_str}")
-        print(f"DEBUG anat LEFT  knee x={lk.x:.3f}  vis={lk.visibility:.2f}")
-        print(f"DEBUG anat RIGHT knee x={rk.x:.3f}  vis={rk.visibility:.2f}")
-        print(f"DEBUG chosen knee x={k_lm.x:.3f}  ankle x={a_lm.x:.3f}")
-
-        # Reject ankle if visibility is too low — a hallucinated ankle seeds the
-        # tracker at a wrong position and the ArcTracker carries that error forward.
-        # In that case keep the knee as anchor and leave ankle=None so the user
-        # can place it manually with the Ankle button.
-        ankle_ok = a_lm.visibility >= 0.35
-        if not ankle_ok:
+        if ank is None:
             self._status.config(
-                text=f"Ankle visibility too low ({a_lm.visibility:.2f}) — "
-                     f"place Knee marker then click Ankle manually.")
+                text="Ankle visibility too low — "
+                     "place Knee marker then click Ankle manually.")
             # Still place the knee so the user has a head start
-            kne = np.array([k_lm.x * fw, k_lm.y * fh], dtype=np.float32)
             self._knee_click = tuple(float(v) for v in kne)
             self._person_select_active = False
             self._person_select_poses  = []
             self._show_frame_idx(self._frame_idx)
             return
-
-        hip = np.array([h_lm.x * fw, h_lm.y * fh], dtype=np.float32)
-        kne = np.array([k_lm.x * fw, k_lm.y * fh], dtype=np.float32)
-        ank = np.array([a_lm.x * fw, a_lm.y * fh], dtype=np.float32)
 
         self._hip_click   = tuple(float(v) for v in hip)
         self._knee_click  = tuple(float(v) for v in kne)
@@ -6094,8 +6118,7 @@ class PendulaticViewer(tk.Tk):
         self._show_frame_idx(self._frame_idx)
         self._status.config(
             text=f"{side} leg selected — shank={self.tracker.shank_len:.0f}px  "
-                 f"ankle vis={a_lm.visibility:.2f}  angle={ang0:.1f} deg  "
-                 f"→  Press Track All.")
+                 f"angle={ang0:.1f} deg  →  Press Track All.")
 
     def _cmd_knee(self):
         self._mode = "knee"
