@@ -263,6 +263,30 @@ def test_load_hpe_model_curves_finds_nested_session_post_dir(tmp_path, monkeypat
     assert curves[0]["name"] == "perfectmodel"
 
 
+def test_load_hpe_model_curves_finds_simplified_folder_structure(tmp_path, monkeypatch):
+    """Newer recordings (merged 2026-08, "simplified recording folder
+    structure") lay out as Recordings/Participant_{N}/{Leg}/{characterization}/
+    directly -- no Position_N/Height_Joint-Level nesting at all, and the
+    on-disk Leg folder is capitalized ("Left") while pid_str's leg component
+    is lowercase ("left"), so the match has to be case-insensitive."""
+    import pendulastic_pt_score as pt
+    import pandas as pd
+
+    hpe_root = tmp_path / "Recordings"
+    rec_dir = hpe_root / "Participant_14" / "Left" / "pre"
+    rec_dir.mkdir(parents=True)
+    monkeypatch.setattr(pt, "HPE_ROOT", str(hpe_root))
+    monkeypatch.setattr(pt, "OPTI_ROOT", str(tmp_path / "no_such_optitrack_dir"))
+
+    t, ang = _damped_sinusoid(n=300, fps=30.0)
+    csv_path = rec_dir / "Participant_14_T_1_mediapipe_full_0.5.csv"
+    pd.DataFrame({"time_sec": t, "knee_angle_deg": ang}).to_csv(csv_path, index=False)
+
+    curves = pt.load_hpe_model_curves("14_left_pre", "1", "1", t, ang, 180.0)
+    assert len(curves) == 1
+    assert curves[0]["name"] == "mediapipe_full_0.5"
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # draw_pt_annotations: Clinical plot annotation rendering
 # ══════════════════════════════════════════════════════════════════════════

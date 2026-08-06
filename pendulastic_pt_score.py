@@ -1104,7 +1104,34 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
             matches = glob.glob(os.path.join(
                 root, f"Participant_{pid_str}", "**",
                 f"Position_{pos}", "Height_Joint-Level"), recursive=True)
-            return matches[0] if matches else None
+            if matches:
+                return matches[0]
+
+            # Newer "simplified recording folder structure" (merged into main
+            # 2026-08): Recordings/Participant_{N}/{Leg}/{characterization}/,
+            # no Position_N/Height_Joint-Level nesting at all. pid_str here is
+            # "{N}_{leg}_{cond}" (pt_report_common.score_trial's rec["pid"]);
+            # split it back apart and match the Leg/characterization
+            # subfolders case-insensitively, since the recorder saves
+            # "Left"/"Right" while pid_str carries lowercase "left"/"right".
+            parts = pid_str.split("_", 2)
+            if len(parts) == 3:
+                num, leg, cond = parts
+                participant_dir = os.path.join(root, f"Participant_{num}")
+                if os.path.isdir(participant_dir):
+                    for leg_name in os.listdir(participant_dir):
+                        if leg_name.lower() != leg.lower():
+                            continue
+                        leg_dir = os.path.join(participant_dir, leg_name)
+                        if not os.path.isdir(leg_dir):
+                            continue
+                        for cond_name in os.listdir(leg_dir):
+                            if cond_name.lower() != cond.lower():
+                                continue
+                            cond_dir = os.path.join(leg_dir, cond_name)
+                            if os.path.isdir(cond_dir):
+                                return cond_dir
+            return None
 
         rec_dir = _find_rec_dir(HPE_ROOT) or _find_rec_dir(OPTI_ROOT)
         if not rec_dir:
