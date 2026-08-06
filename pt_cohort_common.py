@@ -272,11 +272,21 @@ def build_composition_rows(pids):
     for pid in sorted(pids, key=int):
         metadata_diagnosis = load_metadata_diagnosis(pid)
         group, source = classify_participant(pid, metadata_diagnosis, registry, registry_exists)
-        # `or`, not an if/else keyed on `source`: preserves the raw metadata
-        # string even when it didn't resolve to a known arm (typo, or a
-        # dropdown value not yet in _DIAGNOSIS_TO_ARM) so it can still be
-        # surfaced by name in the banner instead of silently discarded.
-        raw_diagnosis = metadata_diagnosis or registry.get(pid)
+        # Keyed on `source`, not a blanket `or`: when classification actually
+        # resolved from metadata or the registry, raw_diagnosis must show
+        # exactly that source's value -- never the other one -- so the
+        # Excluded/Unclassified banner line reflects what was actually used
+        # to classify this pid. Only in the fallthrough cases (no_entry --
+        # metadata unrecognized and no registry entry resolved it either --
+        # or registry_missing) do we fall back to "whichever diagnosis text
+        # exists, for visibility", since neither source resolved there and
+        # the unrecognized metadata string is the only thing worth surfacing.
+        if source == "metadata":
+            raw_diagnosis = metadata_diagnosis
+        elif source == "registry":
+            raw_diagnosis = registry.get(pid)
+        else:  # no_entry or registry_missing
+            raw_diagnosis = metadata_diagnosis or registry.get(pid)
         counts = common.leg_trial_counts(pid)
         rows.append({"pid": pid, "group": group, "source": source, "diagnosis": raw_diagnosis,
                     "n_trials_left": counts["left"], "n_trials_right": counts["right"]})

@@ -313,6 +313,21 @@ def test_build_composition_rows_preserves_unrecognized_metadata_diagnosis(monkey
     assert rows[0]["diagnosis"] == "Not A Real Diagnosis"
 
 
+def test_build_composition_rows_unrecognized_metadata_with_resolving_registry_shows_registry_diagnosis(monkeypatch):
+    # Regression for the Finding-1 fix regressing this adjacent case: when
+    # metadata is present but unrecognized (a typo) AND the registry entry
+    # is what actually resolves classification, `diagnosis` must carry the
+    # registry's string ("Stroke"), not the unrecognized metadata typo --
+    # otherwise the Excluded banner shows a diagnosis that was never used
+    # for classification while hiding the real reason.
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({"5": "Stroke"}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: "Multipl Sclerosis")
+    monkeypatch.setattr(pcc.common, "leg_trial_counts", lambda pid: {"left": 4, "right": 4})
+    rows = pcc.build_composition_rows({"5"})
+    assert rows[0]["group"] == "Excluded" and rows[0]["source"] == "registry"
+    assert rows[0]["diagnosis"] == "Stroke"
+
+
 def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
