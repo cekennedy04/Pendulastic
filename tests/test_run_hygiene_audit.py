@@ -165,3 +165,44 @@ def test_build_mechanical_report_marks_phase1_incomplete_on_cruft_failure(repo: 
 
     assert "Phase 1 INCOMPLETE" in report
     assert "=== NEXT_ITEM_NUMBER:" in report
+
+
+def test_build_mechanical_report_marks_phase1_incomplete_on_worktree_value_error(repo: Path):
+    """
+    Regression test: worktrees.last_commit_age_days does int(output.strip())
+    on git's `log --format=%ct` output, which raises ValueError on
+    unexpected/empty output - this was actually hit once during
+    development. Phase 1's try/except previously caught only
+    subprocess.CalledProcessError, so a ValueError here would have crashed
+    the whole report instead of degrading gracefully.
+    """
+    def boom(*args, **kwargs):
+        raise ValueError("invalid literal for int() with base 10: ''")
+
+    def fake_vulture_runner(cmd):
+        return ""
+
+    with patch("run_hygiene_audit.classify_worktrees", side_effect=boom):
+        report = build_mechanical_report(repo, vulture_runner=fake_vulture_runner)
+
+    assert "Phase 1 INCOMPLETE" in report
+    assert "=== NEXT_ITEM_NUMBER:" in report
+
+
+def test_build_mechanical_report_marks_phase1_incomplete_on_cruft_os_error(repo: Path):
+    """
+    Regression test: if git is missing from PATH, subprocess.run raises
+    FileNotFoundError (an OSError subclass), not CalledProcessError.
+    Phase 1's try/except previously didn't catch this either.
+    """
+    def boom(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+
+    def fake_vulture_runner(cmd):
+        return ""
+
+    with patch("run_hygiene_audit.classify_untracked", side_effect=boom):
+        report = build_mechanical_report(repo, vulture_runner=fake_vulture_runner)
+
+    assert "Phase 1 INCOMPLETE" in report
+    assert "=== NEXT_ITEM_NUMBER:" in report

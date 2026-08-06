@@ -66,15 +66,20 @@ def build_mechanical_report(
     findings = []
     incomplete_notes: list[str] = []
 
+    # Catches CalledProcessError (git exits nonzero), ValueError (e.g.
+    # int(output.strip()) in worktrees.last_commit_age_days on unexpected/
+    # empty git output - hit for real during development), and OSError
+    # (git missing from PATH). Any of these must degrade this phase to an
+    # INCOMPLETE note, never crash the whole report.
     try:
         main_branch = detect_default_branch(repo_root)
         findings.extend(classify_worktrees(repo_root, main_branch=main_branch))
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
         incomplete_notes.append(f"Phase 1 INCOMPLETE: worktree detection failed - {exc}")
 
     try:
         findings.extend(classify_untracked(repo_root))
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, ValueError, OSError) as exc:
         incomplete_notes.append(f"Phase 1 INCOMPLETE: untracked-file scan failed - {exc}")
 
     deadcode = run_vulture(repo_root, runner=vulture_runner)
