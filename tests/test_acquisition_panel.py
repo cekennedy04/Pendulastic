@@ -321,6 +321,7 @@ def test_validate_rejects_video_file_without_path():
         p = AcquisitionPanel(r, _Ctrl())
         p.pid_var.set("P1")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_video_file.set(True)
         p._stored_video_path = ""
         ok, msg = p.validate_metadata()
@@ -339,6 +340,7 @@ def test_get_metadata_includes_video_file_path():
         p = AcquisitionPanel(r, _Ctrl())
         p.pid_var.set("P2")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_video_file.set(True)
         p._stored_video_path = "/data/trial.mp4"
         meta = p.get_metadata()
