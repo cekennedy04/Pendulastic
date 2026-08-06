@@ -80,3 +80,17 @@ def test_unknown_pattern_defaults_to_needs_review(repo: Path):
 
     assert len(findings) == 1
     assert findings[0].category == Category.NEEDS_REVIEW
+
+
+def test_nested_protected_directory_never_deletable(repo: Path):
+    experiments = repo / "experiments"
+    experiments.mkdir()
+    training_data = experiments / "training_data"
+    training_data.mkdir()
+    (training_data / "run_out.txt").write_text("log\n")
+
+    findings = classify_untracked(repo)
+
+    assert len(findings) == 1
+    assert findings[0].category == Category.GITIGNORE_CANDIDATE
+    assert Category.SAFE_TO_DELETE not in [f.category for f in findings]

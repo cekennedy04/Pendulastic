@@ -31,7 +31,11 @@ def _classify_path(path: str) -> Finding:
     parts = path.split("/")
     top = parts[0]
 
-    if any(top == prefix or top.startswith(prefix) for prefix in NEVER_DELETE_TOP_PREFIXES):
+    if any(
+        part == prefix or part.startswith(prefix)
+        for part in parts
+        for prefix in NEVER_DELETE_TOP_PREFIXES
+    ):
         return Finding(
             category=Category.GITIGNORE_CANDIDATE,
             description=(
