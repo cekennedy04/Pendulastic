@@ -398,3 +398,18 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     assert "left,pt7,0," in stats_content   # n_ms=0 for the leg 13 failed to contribute to
     comp_content = (tmp_path / "cohort_composition.csv").read_text(encoding="utf-8")
     assert "13,MS,metadata,4,4" in comp_content   # raw counts still shown despite 0 scored
+
+
+# ── make_cohort_comparison_figure (smoke test only -- pixel content isn't
+# asserted anywhere else in this repo's plotting functions either) ────────
+
+def test_make_cohort_comparison_figure_writes_png_without_raising(tmp_path):
+    ms_summaries = {"left": [_summary(1.0)], "right": [_summary(1.2)]}
+    control_summaries = {"left": [_summary(2.0)], "right": [_summary(2.2)]}
+    ms_raw = {"left": [_trial(pt7=1.0)], "right": [_trial(pt7=1.2)]}
+    control_raw = {"left": [_trial(pt7=2.0)], "right": [_trial(pt7=2.2)]}
+    out_path = tmp_path / "ms_vs_control_boxplots.png"
+    pcc.make_cohort_comparison_figure(
+        ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2, str(out_path))
+    assert out_path.is_file()
+    assert out_path.stat().st_size > 0

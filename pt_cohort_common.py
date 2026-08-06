@@ -25,6 +25,7 @@ import numpy as np
 from scipy.stats import mannwhitneyu
 
 import pt_report_common as common
+import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REGISTRY_JSON = os.path.join(BASE_DIR, "participant_groups.json")
@@ -374,3 +375,79 @@ def run_cohort_comparison():
         ms_summaries, ms_raw, len(ms_contrib), sum(len(v) for v in ms_raw.values()),
         control_summaries, control_raw, len(control_contrib), sum(len(v) for v in control_raw.values()),
         n_excluded_unclassified, FIGURE_PNG)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Plotting
+# ══════════════════════════════════════════════════════════════════════════
+
+def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_trials,
+                                  control_summaries, control_raw, control_n_participants,
+                                  control_n_trials, n_excluded_unclassified, out_path):
+    """Light/clinical style matching pt_report_common.py (white background,
+    same color conventions) -- NOT the dark dashboard style of the older
+    ms_vs_healthy_analysis.py, so every figure run_pt_analysis.py produces
+    reads as one visual system (design spec §7.3).
+
+    Two point layers per box, deliberately: the box/whiskers are built
+    from ms_summaries/control_summaries (one median per participant --
+    the statistical layer compute_cohort_stats also reads from, avoiding
+    pseudoreplication). ms_raw/control_raw (every individual scored
+    trial) are drawn underneath as lighter background jitter for
+    descriptive transparency only -- never used for a statistic."""
+    ms_color = common.COLORS["red"]
+    control_color = common.COLORS["green"]
+    n_cols = len(_SCORE_KEYS)
+    fig, axes = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 8), facecolor="white")
+    rng = np.random.RandomState(13)
+
+    for row_idx, leg in enumerate(_LEGS):
+        for col_idx, key in enumerate(_SCORE_KEYS):
+            ax = axes[row_idx, col_idx]
+            ax.set_facecolor("#f8f9fa")
+            ax.grid(True, color=common.BG_GRID, linestyle="-", linewidth=0.8, axis="y")
+
+            ms_med = [s[key] for s in ms_summaries[leg]]
+            ctrl_med = [s[key] for s in control_summaries[leg]]
+            bp = ax.boxplot([ms_med, ctrl_med], positions=[0, 1], widths=0.4,
+                            patch_artist=True, showfliers=False)
+            bp["boxes"][0].set_facecolor(ms_color)
+            bp["boxes"][0].set_alpha(0.5)
+            bp["boxes"][1].set_facecolor(control_color)
+            bp["boxes"][1].set_alpha(0.5)
+
+            ms_raw_vals = [t[key] for t in ms_raw[leg]]
+            ctrl_raw_vals = [t[key] for t in control_raw[leg]]
+            if ms_raw_vals:
+                ax.scatter(rng.uniform(-0.08, 0.08, len(ms_raw_vals)), ms_raw_vals,
+                          color=ms_color, s=10, alpha=0.25, zorder=2)
+            if ctrl_raw_vals:
+                ax.scatter(1 + rng.uniform(-0.08, 0.08, len(ctrl_raw_vals)), ctrl_raw_vals,
+                          color=control_color, s=10, alpha=0.25, zorder=2)
+            if ms_med:
+                ax.scatter(rng.uniform(-0.05, 0.05, len(ms_med)), ms_med, color=ms_color,
+                          s=40, alpha=0.9, zorder=4, edgecolors="#333333", linewidths=0.5)
+            if ctrl_med:
+                ax.scatter(1 + rng.uniform(-0.05, 0.05, len(ctrl_med)), ctrl_med, color=control_color,
+                          s=40, alpha=0.9, zorder=4, edgecolors="#333333", linewidths=0.5)
+
+            ax.set_xticks([0, 1])
+            ax.set_xticklabels(["MS", "Control"], fontsize=8)
+            ax.set_title(key, fontsize=9, fontweight="bold")
+            ax.tick_params(labelsize=7)
+
+    for row_idx, leg_label in enumerate(("Left leg", "Right leg")):
+        axes[row_idx, 0].set_ylabel(leg_label, fontsize=10, fontweight="bold")
+
+    excl_txt = f" · {n_excluded_unclassified} excluded/unclassified" if n_excluded_unclassified else ""
+    fig.suptitle(
+        "MS vs Control — Pendulum Test Parameters (7-parameter Popovic PT score)\n"
+        f"MS n={ms_n_participants} participants ({ms_n_trials} trials) · "
+        f"Control n={control_n_participants} participants ({control_n_trials} trials)"
+        f"{excl_txt} · see cohort_composition.csv",
+        fontsize=11, y=1.02, color="#333333")
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path, dpi=150, facecolor="white", bbox_inches="tight")
+    plt.close(fig)
+    print(f"-> {out_path}")
