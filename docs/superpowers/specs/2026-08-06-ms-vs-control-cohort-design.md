@@ -121,9 +121,17 @@ Both sources map through the same four-value vocabulary. Mapping to arms:
   `source` is `metadata / registry / registry_missing / no_entry`.
 - `aggregate_participant_summary(trials) -> dict | None` — given one participant/leg's list of
   scored trial records (as returned by `pt_report_common.collect_participant`), returns the
-  **median** across trials for each of the 7 params + `pt7`. Returns `None` for an empty list.
-  This is the fix for pseudoreplication (§7.3): cohort stats run on one row per participant per
-  leg, not one row per trial.
+  **median** (`np.median`, `float(...)`-cast) across trials for each of the 7 params + `pt7`.
+  Returns `None` for an empty list — this covers both "participant has zero trials for this
+  leg" and "collect_participant() found trial files but none of them produced a clean
+  release/oscillation" (`score_trial` already returns `None` for those upstream — see
+  `pt_report_common.score_trial`), so a participant can clear the raw-file `TRIAL_THRESHOLD`
+  gate (§6.1) yet still summarize to `None` here if every discovered trial failed to score.
+  With an even trial count, `np.median` interpolates between the two middle values (standard,
+  expected) — all returned values are rounded to 4 decimal places before being handed to
+  `compute_cohort_stats` / CSV serialization, matching the rounding convention already used by
+  `ms_vs_healthy_analysis.py` / `mas_validation.py`'s stats CSVs, so float noise doesn't leak
+  into `ms_vs_control_stats.csv`.
 - `cliffs_delta(a, b)`, `mann_whitney(a, b)`, `effect_label(d)` — same formulas as
   `ms_vs_healthy_analysis.py`'s existing helpers (that logic isn't in question, only its
   input granularity and where it lives); duplicated here rather than imported since the
@@ -132,7 +140,8 @@ Both sources map through the same four-value vocabulary. Mapping to arms:
 - `compute_cohort_stats(ms_summaries, control_summaries) -> list[dict]` — one row per
   parameter (7 params + pt7) × leg: median/IQR per arm, Mann-Whitney p, Cliff's delta,
   effect label, `n_ms`, `n_control`. `n < 2` in either arm for a given parameter → stats
-  fields `None`/`"n/a"`, not raised.
+  fields `None`/`"n/a"`, not raised. All numeric fields rounded to 4 decimal places on the way
+  into the CSV (same convention noted above).
 
 ### 7.2 I/O + orchestration
 
@@ -153,6 +162,14 @@ Both sources map through the same four-value vocabulary. Mapping to arms:
      and return.
   4. Otherwise, for every pid in both arms: `pt_report_common.collect_participant(pid)` →
      `aggregate_participant_summary()` per leg → build `ms_summaries` / `control_summaries`.
+     A `None` summary for a given pid/leg (participant qualified on raw trial count but none
+     of their trials actually scored — see §7.1) is filtered out silently at this step, not
+     passed into `compute_cohort_stats` — that pid simply doesn't contribute a point to that
+     leg's stats/box, even though they're correctly still listed in `cohort_composition.csv`
+     with their (non-zero) raw trial count under their arm. This means the figure caption's
+     participant count (§7.3, counted post-filter) can legitimately be lower than
+     `cohort_composition.csv`'s per-arm participant count (counted pre-filter, §8) — expected,
+     not a bug, and worth knowing before treating a mismatch between the two as an error.
   5. `compute_cohort_stats()` → write `ms_vs_control_stats.csv`.
   6. `make_cohort_comparison_figure()` → `ms_vs_control_boxplots.png`.
 
@@ -189,6 +206,15 @@ pid,group,source,n_trials_left,n_trials_right
 6,Unclassified,registry_missing,4,4
 9,Excluded,metadata,4,4
 ```
+
+`n_trials_left`/`n_trials_right` are the **raw discovered trial counts** from
+`pt_report_common.leg_trial_counts()` — the same counts the `TRIAL_THRESHOLD` gate itself uses
+to decide qualification (§6.1) — not the count of trials that went on to score successfully.
+Every row gets an integer here, always ≥ `TRIAL_THRESHOLD` (that's what "qualifying" means),
+never blank/`None`: a participant only appears in this CSV at all because
+`current_qualifying_participants()` already confirmed both legs met the threshold, regardless
+of which group they classified into or whether any of those trials later scored. (Whether they
+scored is a separate, downstream concern — see §7.2 step 4's note on `None` summaries.)
 
 And prints a banner to console on every run (not just when something changes), e.g.:
 
@@ -255,6 +281,12 @@ invocation was asked to generate individual reports for. `run_pt_analysis.py`'s 
 - `test_aggregate_participant_summary_median` — known synthetic trial list → hand-computed
   median per param.
 - `test_aggregate_participant_summary_empty_returns_none` — empty trial list → `None`.
+- `test_aggregate_participant_summary_even_count_median` — an even-length trial list produces
+  the interpolated `np.median` value, rounded to 4 decimal places, not truncated/floored.
+- `test_run_cohort_comparison_filters_none_summaries` — a qualifying pid whose trials all fail
+  to score (`aggregate_participant_summary` → `None` for a leg) is excluded from that leg's
+  `compute_cohort_stats` input without raising, while still appearing in
+  `cohort_composition.csv` with its raw (non-zero) trial count.
 - `test_compute_cohort_stats_known_values` — small synthetic fixture, hand-computed
   Mann-Whitney p and Cliff's delta.
 - `test_compute_cohort_stats_small_n_is_na` — arm with 1 participant → that parameter's stats
