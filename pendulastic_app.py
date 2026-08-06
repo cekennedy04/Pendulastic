@@ -201,6 +201,7 @@ class BiomechanicalEngine:
         progress_cb: Callable[[float], None],
         leg: str = "right",
         collect_landmarks: bool = False,
+        manual_seed: tuple | None = None,
     ):
         """
         Offline MediaPipe tracking on a recorded video.
@@ -220,6 +221,12 @@ class BiomechanicalEngine:
         len(angles) always -- and fps is the video's true source frame rate.
         When False (default), returns angles only, matching the original
         signature exactly.
+
+        manual_seed, when given as a (hip, knee, ankle) triple, skips the
+        per-frame _PatientDetector search entirely -- the tracker is
+        initialised from that seed on the first frame read instead. When
+        None (default), behavior is unchanged from before this parameter
+        existed.
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
             return ([], [], 30.0) if collect_landmarks else []
@@ -250,13 +257,18 @@ class BiomechanicalEngine:
                     break
 
                 if not initialised:
-                    patient_kps, _ = detector.detect(frame)
-                    if patient_kps is not None and patient_kps.shape[0] >= 17:
-                        hip   = patient_kps[hip_i].astype(float)
-                        knee  = patient_kps[knee_i].astype(float)
-                        ankle = patient_kps[ank_i].astype(float)
+                    if manual_seed is not None:
+                        hip, knee, ankle = manual_seed
                         tracker.init(frame, hip, knee, ankle)
                         initialised = True
+                    else:
+                        patient_kps, _ = detector.detect(frame)
+                        if patient_kps is not None and patient_kps.shape[0] >= 17:
+                            hip   = patient_kps[hip_i].astype(float)
+                            knee  = patient_kps[knee_i].astype(float)
+                            ankle = patient_kps[ank_i].astype(float)
+                            tracker.init(frame, hip, knee, ankle)
+                            initialised = True
 
                 if initialised:
                     try:

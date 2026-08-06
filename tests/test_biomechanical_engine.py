@@ -272,3 +272,61 @@ def test_detect_people_at_frame_catches_detection_exception(tmp_path, monkeypatc
 
     assert frame is not None    # frame WAS read successfully
     assert poses == []          # detection failure -> empty poses, no raise
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_manual_seed_skips_patient_detector(tmp_path, monkeypatch):
+    """When manual_seed is given, tracker.init is called with exactly that
+    seed on the first frame -- _PatientDetector.detect must never be
+    called at all."""
+    import numpy as np
+    video_path = str(tmp_path / "seed_test.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"), 30.0, (320, 240))
+    for _ in range(4):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    detector_called = {"count": 0}
+
+    class FakeDetector:
+        def detect(self, frame):
+            detector_called["count"] += 1
+            return None, None   # would normally block initialisation
+
+    init_calls = []
+
+    class FakeTracker:
+        def __init__(self, side, fps): pass
+        def init(self, frame, hip, knee, ankle):
+            init_calls.append((hip, knee, ankle))
+        def step(self, frame):
+            return (10, 20), (30, 40), (50, 60), 155.0
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    seed = ((100.0, 60.0), (100.0, 120.0), (100.0, 200.0))
+    engine = BiomechanicalEngine("rgb")
+    angles = engine.run_offline_track(
+        video_path, lambda p: None, leg="right", manual_seed=seed)
+
+    assert detector_called["count"] == 0
+    assert len(init_calls) == 1
+    assert init_calls[0] == seed
+    assert len(angles) == 4
+    assert all(a == 155.0 for a in angles)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_none_seed_unaffected(monkeypatch):
+    """manual_seed defaulting to None must not change the existing
+    auto-detect behavior or return type for any pre-existing caller."""
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", False)
+    result = BiomechanicalEngine("rgb").run_offline_track(
+        "nonexistent.mp4", lambda p: None, leg="right")
+    assert result == []
+    assert isinstance(result, list)
