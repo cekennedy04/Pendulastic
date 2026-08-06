@@ -298,3 +298,79 @@ def print_composition_banner(rows):
         print(f"              registry_missing ({pids_txt}): participant_groups.json not found --")
         print("              if you're in a worktree/isolated checkout, copy it over.")
     print("=" * 63)
+
+
+def _collect_arm_data(pids):
+    """pids -> (summaries, raw_trials, contributing_pids). summaries /
+    raw_trials: {"left": [...], "right": [...]}. summaries holds one
+    aggregate_participant_summary() dict per participant that had at
+    least one scored trial for that leg (the statistical layer --
+    compute_cohort_stats and the figure's box/whiskers read only from
+    this). raw_trials holds every individual scored trial record (the
+    figure's descriptive-layer background jitter only -- never used for
+    a statistic). contributing_pids is the post-filter participant set,
+    which can be smaller than `pids` itself (see aggregate_participant_
+    summary's None case, design spec §7.2 step 4)."""
+    summaries = {"left": [], "right": []}
+    raw_trials = {"left": [], "right": []}
+    contributing_pids = set()
+    for pid in pids:
+        by_leg_tp, _ = common.collect_participant(pid)
+        for leg in _LEGS:
+            trials = [r for (leg_key, _cond), recs in by_leg_tp.items()
+                     if leg_key == leg for r in recs]
+            raw_trials[leg].extend(trials)
+            summary = aggregate_participant_summary(trials)
+            if summary is not None:
+                summaries[leg].append(summary)
+                contributing_pids.add(pid)
+    return summaries, raw_trials, contributing_pids
+
+
+def write_stats_csv(stats_rows, out_path):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["leg", "parameter", "ms_n", "ms_median", "ms_iqr",
+                   "control_n", "control_median", "control_iqr",
+                   "mann_whitney_p", "cliffs_delta", "effect_size"])
+        for row in stats_rows:
+            w.writerow([row["leg"], row["parameter"], row["n_ms"], row["ms_median"], row["ms_iqr"],
+                       row["n_control"], row["control_median"], row["control_iqr"],
+                       row["mann_whitney_p"], row["cliffs_delta"], row["effect_size"]])
+    print(f"-> {out_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Entry point
+# ══════════════════════════════════════════════════════════════════════════
+
+def run_cohort_comparison():
+    """Called once, with no arguments, at the end of run_pt_analysis.py's
+    main() -- recomputes the full MS-vs-Control cohort comparison from
+    scratch every run (design spec §6.1, §7.2). Always writes
+    cohort_composition.csv, even when the comparison itself ends up
+    skipped for lacking one arm."""
+    pids = current_qualifying_participants()
+    rows = build_composition_rows(pids)
+    write_composition_csv(rows)
+    print_composition_banner(rows)
+
+    ms_pids = [r["pid"] for r in rows if r["group"] == "MS"]
+    control_pids = [r["pid"] for r in rows if r["group"] == "Control"]
+    if not ms_pids or not control_pids:
+        print(f"Cohort comparison skipped: {len(ms_pids)} MS / {len(control_pids)} Control "
+             f"qualifying participants (need >=1 in each arm).")
+        return
+
+    ms_summaries, ms_raw, ms_contrib = _collect_arm_data(ms_pids)
+    control_summaries, control_raw, control_contrib = _collect_arm_data(control_pids)
+
+    stats_rows = compute_cohort_stats(ms_summaries, control_summaries)
+    write_stats_csv(stats_rows, STATS_CSV)
+
+    n_excluded_unclassified = sum(1 for r in rows if r["group"] in ("Excluded", "Unclassified"))
+    make_cohort_comparison_figure(
+        ms_summaries, ms_raw, len(ms_contrib), sum(len(v) for v in ms_raw.values()),
+        control_summaries, control_raw, len(control_contrib), sum(len(v) for v in control_raw.values()),
+        n_excluded_unclassified, FIGURE_PNG)
