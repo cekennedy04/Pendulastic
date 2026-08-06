@@ -239,3 +239,81 @@ def test_compute_cohort_stats_empty_arm_no_crash():
     assert row["n_ms"] == 0
     assert row["ms_median"] is None
     assert row["mann_whitney_p"] is None
+
+
+# ── current_qualifying_participants ────────────────────────────────────
+
+def test_current_qualifying_participants_filters_by_threshold(monkeypatch):
+    monkeypatch.setattr(pcc.common, "list_participants", lambda: {"6": {}, "7": {}, "8": {}})
+    counts = {"6": {"left": 4, "right": 4}, "7": {"left": 3, "right": 4}, "8": {"left": 4, "right": 4}}
+    monkeypatch.setattr(pcc.common, "leg_trial_counts", lambda pid: counts[pid])
+    assert pcc.current_qualifying_participants() == {"6", "8"}
+
+
+# ── _folder_hints_control ──────────────────────────────────────────────
+
+def test_folder_hints_control_matches_case_insensitive(monkeypatch):
+    fake = [{"participant": "6", "leg": "left", "condition": "left_Control"},
+           {"participant": "7", "leg": "left", "condition": "pre"}]
+    monkeypatch.setattr(pcc.common, "discover_all_trials", lambda: fake)
+    assert pcc._folder_hints_control("6") is True
+    assert pcc._folder_hints_control("7") is False
+
+
+# ── build_composition_rows ─────────────────────────────────────────────
+
+def test_build_composition_rows_classifies_and_counts_trials(monkeypatch):
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({"6": "Control"}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: {"13": "MS"}.get(pid))
+    monkeypatch.setattr(pcc.common, "leg_trial_counts",
+                        lambda pid: {"13": {"left": 5, "right": 5}, "6": {"left": 4, "right": 4}}[pid])
+    rows = pcc.build_composition_rows({"13", "6"})
+    by_pid = {r["pid"]: r for r in rows}
+    assert by_pid["13"]["group"] == "MS" and by_pid["13"]["source"] == "metadata"
+    assert by_pid["13"]["n_trials_left"] == 5 and by_pid["13"]["n_trials_right"] == 5
+    assert by_pid["6"]["group"] == "Control" and by_pid["6"]["source"] == "registry"
+
+
+def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
+    monkeypatch.setattr(pcc.common, "leg_trial_counts", lambda pid: {"left": 4, "right": 4})
+    rows = pcc.build_composition_rows({"9", "13", "6"})
+    assert [r["pid"] for r in rows] == ["6", "9", "13"]   # numeric, not lexicographic
+
+
+# ── write_composition_csv ──────────────────────────────────────────────
+
+def test_write_composition_csv_writes_all_rows(tmp_path):
+    rows = [
+        {"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+         "n_trials_left": 5, "n_trials_right": 5},
+        {"pid": "6", "group": "Unclassified", "source": "no_entry", "diagnosis": None,
+         "n_trials_left": 4, "n_trials_right": 4},
+    ]
+    out_path = tmp_path / "cohort_composition.csv"
+    pcc.write_composition_csv(rows, str(out_path))
+    content = out_path.read_text(encoding="utf-8")
+    assert "pid,group,source,n_trials_left,n_trials_right" in content
+    assert "13,MS,metadata,5,5" in content
+    assert "6,Unclassified,no_entry,4,4" in content
+
+
+# ── print_composition_banner ───────────────────────────────────────────
+
+def test_print_composition_banner_lists_every_group(capsys, monkeypatch):
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [
+        {"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS", "n_trials_left": 5, "n_trials_right": 5},
+        {"pid": "6", "group": "Control", "source": "registry", "diagnosis": "Control", "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "9", "group": "Excluded", "source": "metadata", "diagnosis": "Stroke", "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "7", "group": "Unclassified", "source": "no_entry", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "8", "group": "Unclassified", "source": "registry_missing", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
+    ]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out
+    assert "MS:" in out and "13" in out
+    assert "Control:" in out and "6" in out
+    assert "Excluded:" in out and "9 (Stroke)" in out
+    assert "7" in out and "no_entry" in out
+    assert "registry_missing" in out and "8" in out

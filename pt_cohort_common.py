@@ -14,6 +14,7 @@ standalone.
 """
 from __future__ import annotations
 
+import csv
 import glob
 import json
 import math
@@ -216,3 +217,84 @@ def load_metadata_diagnosis(pid):
         if diagnosis:
             return diagnosis
     return None
+
+
+def current_qualifying_participants():
+    """Every participant id currently meeting common.TRIAL_THRESHOLD on
+    BOTH legs -- independent of whichever pid(s) run_pt_analysis.py was
+    invoked with this run (design spec §6.1). Always recomputed from the
+    full discoverable participant set."""
+    qualifying = set()
+    for pid in common.list_participants().keys():
+        counts = common.leg_trial_counts(pid)
+        if counts["left"] >= common.TRIAL_THRESHOLD and counts["right"] >= common.TRIAL_THRESHOLD:
+            qualifying.add(pid)
+    return qualifying
+
+
+def _folder_hints_control(pid):
+    """Best-effort cosmetic hint only -- NEVER used for classification.
+    True if any trial path discovered for this participant has a
+    condition string containing 'control' (case-insensitive), matching
+    the legacy OptiTrack_Recordings/Participant_N_leg_control naming
+    convention. Used only to decorate a no_entry warning line."""
+    return any(r["participant"] == pid and "control" in r["condition"].lower()
+              for r in common.discover_all_trials())
+
+
+def build_composition_rows(pids):
+    """One row per pid in `pids` (already the qualifying set): classify,
+    look up raw trial counts, package for the composition CSV/banner.
+    `diagnosis` carries the raw source string (for the Excluded banner
+    line) and is not written to the CSV."""
+    registry, registry_exists = load_registry()
+    rows = []
+    for pid in sorted(pids, key=int):
+        metadata_diagnosis = load_metadata_diagnosis(pid)
+        group, source = classify_participant(pid, metadata_diagnosis, registry, registry_exists)
+        raw_diagnosis = metadata_diagnosis if source == "metadata" else registry.get(pid)
+        counts = common.leg_trial_counts(pid)
+        rows.append({"pid": pid, "group": group, "source": source, "diagnosis": raw_diagnosis,
+                    "n_trials_left": counts["left"], "n_trials_right": counts["right"]})
+    return rows
+
+
+def write_composition_csv(rows, out_path=None):
+    out_path = out_path or COMPOSITION_CSV
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["pid", "group", "source", "n_trials_left", "n_trials_right"])
+        for row in rows:
+            w.writerow([row["pid"], row["group"], row["source"],
+                       row["n_trials_left"], row["n_trials_right"]])
+    print(f"-> {out_path}")
+
+
+def print_composition_banner(rows):
+    by_group = {"MS": [], "Control": [], "Excluded": [], "Unclassified": []}
+    for row in rows:
+        by_group[row["group"]].append(row)
+
+    print("=" * 20 + " MS vs Control cohort " + "=" * 20)
+    ms_txt = ", ".join(r["pid"] for r in by_group["MS"]) or "(none yet)"
+    print(f"MS:           {ms_txt}  (n={len(by_group['MS'])})")
+    ctrl_txt = ", ".join(r["pid"] for r in by_group["Control"]) or "(none yet)"
+    print(f"Control:      {ctrl_txt}  (n={len(by_group['Control'])})")
+
+    excl_txt = ", ".join(f"{r['pid']} ({r['diagnosis']})" for r in by_group["Excluded"]) or "(none)"
+    print(f"Excluded:     {excl_txt}  (n={len(by_group['Excluded'])})")
+
+    no_entry = [r for r in by_group["Unclassified"] if r["source"] == "no_entry"]
+    missing = [r for r in by_group["Unclassified"] if r["source"] == "registry_missing"]
+    if no_entry:
+        parts = []
+        for r in no_entry:
+            hint = " (folder suggests 'control')" if _folder_hints_control(r["pid"]) else ""
+            parts.append(f"{r['pid']}{hint}")
+        print(f"Unclassified: {', '.join(parts)}  (n={len(no_entry)}, no_entry -- add to participant_groups.json)")
+    if missing:
+        pids_txt = ", ".join(r["pid"] for r in missing)
+        print(f"              registry_missing ({pids_txt}): participant_groups.json not found --")
+        print("              if you're in a worktree/isolated checkout, copy it over.")
+    print("=" * 63)
