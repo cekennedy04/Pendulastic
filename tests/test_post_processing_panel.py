@@ -25,6 +25,20 @@ def test_panel_instantiates():
     p.pack(fill="both", expand=True); r.update()
 
 
+def test_metrics_frame_has_single_border():
+    """Regression: _metrics_frame had both the default tk.LabelFrame relief
+    AND a highlightthickness ring, producing a visible double outline. Only
+    the highlightthickness ring (relief='flat', bd=0) should remain, matching
+    other cards in the app."""
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True); r.update()
+    assert str(p._metrics_frame.cget("relief")) == "flat"
+    assert int(p._metrics_frame.cget("bd")) == 0
+    assert int(p._metrics_frame.cget("highlightthickness")) == 1
+
+
 def test_load_trial_sets_title():
     from pendulastic_app import PostProcessingPanel
     r = _get_root()

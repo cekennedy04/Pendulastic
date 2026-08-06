@@ -70,6 +70,21 @@ def test_panel_instantiates():
         r.destroy()
 
 
+def test_panel_uses_shared_palette():
+    """AnalysisPanel post-dates the style-unification plan and was left on
+    the old default-gray look; it should match every other restyled screen."""
+    from pendulastic_app import AnalysisPanel
+    import workbench_style as ws
+    r = _root()
+    try:
+        p = AnalysisPanel(r, _Ctrl())
+        p.pack()
+        r.update()
+        assert str(p.cget("bg")) == ws.PALETTE["BG"]
+    finally:
+        r.destroy()
+
+
 def test_refresh_participants_populates_listbox(monkeypatch):
     import pendulastic_app as _m
     fake = _FakeReport()

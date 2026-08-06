@@ -426,14 +426,8 @@ class AcquisitionPanel(tk.Frame):
         self._src_imu        = tk.BooleanVar(value=True)
         self._src_video_file = tk.BooleanVar(value=False)
 
-        meth_f = tk.Frame(self, bg=ws.PALETTE["PANEL"],
-                         highlightbackground=ws.PALETTE["BORDER"],
-                         highlightthickness=1, padx=10, pady=8)
+        meth_f = ws.card_frame(self, title="RECORDING SOURCE")
         meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
-
-        tk.Label(meth_f, text="RECORDING SOURCE", font=("Segoe UI", 8, "bold"),
-                bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"]).pack(
-            side="top", anchor="w", pady=(0, 4))
 
         # Always-visible routine sources
         chk_row = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
@@ -467,13 +461,22 @@ class AcquisitionPanel(tk.Frame):
         self._research_sources_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
         self._research_sources_expanded = False
 
-        chk_opti = tk.Checkbutton(self._research_sources_frame, text="OptiTrack",
+        # Own row for the research checkboxes -- packed "top" as a single
+        # unit (mirroring the always-visible chk_row above) so the
+        # side="top" _video_path_frame packed below it in this same parent
+        # lands on its own row instead of sharing this one (Tk's
+        # side="left"/"top" mixing in one packer parent does not force a
+        # new row on its own).
+        self._research_chk_row = tk.Frame(self._research_sources_frame, bg=ws.PALETTE["PANEL"])
+        self._research_chk_row.pack(side="top", anchor="w")
+
+        chk_opti = tk.Checkbutton(self._research_chk_row, text="OptiTrack",
                                   variable=self._src_optitrack,
                                   bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
                                   selectcolor=ws.PALETTE["SURFACE"],
                                   activebackground=ws.PALETTE["PANEL"],
                                   command=self._on_source_changed)
-        chk_video = tk.Checkbutton(self._research_sources_frame, text="Video File",
+        chk_video = tk.Checkbutton(self._research_chk_row, text="Video File",
                                    variable=self._src_video_file,
                                    bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
                                    selectcolor=ws.PALETTE["SURFACE"],
@@ -690,6 +693,16 @@ class AcquisitionPanel(tk.Frame):
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
         else:
             self._video_path_frame.pack_forget()
+        # Show/hide camera selector frame -- pure UI sync (no controller
+        # call here; _on_rgb_checkbox_toggled is what notifies the
+        # controller). This keeps the frame's visibility correct both on
+        # user toggle AND on initial build, since RGB now defaults to
+        # checked and _build_widgets calls _on_source_changed(), not
+        # _on_rgb_checkbox_toggled(), to establish the starting UI state.
+        if self._src_rgb.get():
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0))
+        else:
+            self._cam_frame.pack_forget()
         # Build status line
         source_labels = {
             "imu":        "iPhone IMU — waiting for phone" if _IMU_AVAIL else "iPhone IMU — unavailable",
@@ -1179,7 +1192,8 @@ class PostProcessingPanel(tk.Frame):
         self._metrics_frame = tk.LabelFrame(
             self, text="Popović PT Metrics", font=("Segoe UI", 9, "bold"),
             padx=8, pady=4, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
-            highlightbackground=ws.PALETTE["BORDER"], highlightthickness=1)
+            highlightbackground=ws.PALETTE["BORDER"], highlightthickness=1,
+            relief="flat", bd=0)
         self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
@@ -1405,24 +1419,26 @@ class AnalysisPanel(tk.Frame):
 
     # ------------------------------------------------------------------
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         self.columnconfigure(1, weight=1)
         self.rowconfigure(1, weight=1)
 
-        hdr = tk.Frame(self)
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 4))
-        tk.Button(hdr, text="<- Mode Select", font=("Segoe UI", 9),
-                 command=self.controller.on_back_to_mode_select).pack(side="left", padx=(0, 12))
+        ws.secondary_button(hdr, "← Mode Select",
+                            self.controller.on_back_to_mode_select).pack(
+            side="left", padx=(0, 12))
         tk.Label(hdr, text="Analysis & Reports", font=("Segoe UI", 12, "bold"),
-                anchor="w").pack(side="left")
+                anchor="w", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # ── Left sidebar: selections ────────────────────────────────────
-        side = tk.Frame(self, width=260)
+        side = tk.Frame(self, width=260, bg=ws.PALETTE["BG"])
         side.grid(row=1, column=0, sticky="ns", padx=(12, 6), pady=6)
         side.grid_propagate(False)
 
-        tk.Label(side, text="Participants", font=("Segoe UI", 10, "bold"), anchor="w").pack(
-            fill="x", pady=(0, 2))
-        list_frame = tk.Frame(side)
+        tk.Label(side, text="Participants", font=("Segoe UI", 10, "bold"), anchor="w",
+                bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(fill="x", pady=(0, 2))
+        list_frame = tk.Frame(side, bg=ws.PALETTE["BG"])
         list_frame.pack(fill="both", expand=False, pady=(0, 4))
         scrollbar = tk.Scrollbar(list_frame, orient="vertical")
         self._participant_list = tk.Listbox(
@@ -1432,50 +1448,59 @@ class AnalysisPanel(tk.Frame):
         self._participant_list.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        tk.Button(side, text="Refresh List", font=("Segoe UI", 9),
-                 command=self._refresh_participants).pack(fill="x", pady=(0, 12))
+        ws.secondary_button(side, "Refresh List", self._refresh_participants).pack(
+            fill="x", pady=(0, 12))
 
-        tk.Label(side, text="Figure Type", font=("Segoe UI", 10, "bold"), anchor="w").pack(
-            fill="x", pady=(0, 2))
+        tk.Label(side, text="Figure Type", font=("Segoe UI", 10, "bold"), anchor="w",
+                bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(fill="x", pady=(0, 2))
         self._figure_type = tk.StringVar(value="full_report")
         for key, label in self.FIGURE_TYPES:
             tk.Radiobutton(side, text=label, variable=self._figure_type, value=key,
                           font=("Segoe UI", 9), anchor="w",
+                          bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"],
                           command=self._on_figure_type_changed).pack(fill="x")
 
         self._method_frame = tk.LabelFrame(side, text="Methodology (RMSE only)",
-                                           font=("Segoe UI", 9, "bold"), padx=6, pady=4)
+                                           font=("Segoe UI", 9, "bold"), padx=6, pady=4,
+                                           bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"])
         self._method_frame.pack(fill="x", pady=(12, 0))
         self._use_mediapipe = tk.BooleanVar(value=True)
         self._use_imu = tk.BooleanVar(value=True)
         tk.Checkbutton(self._method_frame, text="MediaPipe", variable=self._use_mediapipe,
-                      font=("Segoe UI", 9)).pack(anchor="w")
+                      font=("Segoe UI", 9), bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                      selectcolor=ws.PALETTE["SURFACE"],
+                      activebackground=ws.PALETTE["PANEL"]).pack(anchor="w")
         tk.Checkbutton(self._method_frame, text="IMU (Viewer)", variable=self._use_imu,
-                      font=("Segoe UI", 9)).pack(anchor="w")
+                      font=("Segoe UI", 9), bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                      selectcolor=ws.PALETTE["SURFACE"],
+                      activebackground=ws.PALETTE["PANEL"]).pack(anchor="w")
         tk.Label(side, text="(needs MediaPipe/IMU data already\ngenerated for those trials)",
-                font=("Segoe UI", 7), fg="#777", justify="left").pack(fill="x", pady=(2, 12))
+                font=("Segoe UI", 7), fg=ws.PALETTE["FG3"], bg=ws.PALETTE["BG"],
+                justify="left").pack(fill="x", pady=(2, 12))
         self._on_figure_type_changed()   # methodology checkboxes start disabled (default is Full Report)
 
-        self.btn_generate = tk.Button(
-            side, text="Generate", bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-            height=2, command=self._on_generate)
+        # Single primary action on this screen (matches the one-primary-
+        # button convention used elsewhere, e.g. ModeSelectView/UploadMetaView).
+        self.btn_generate = ws.primary_button(side, "Generate", self._on_generate)
+        self.btn_generate.config(font=("Segoe UI", 11, "bold"), height=2)
         self.btn_generate.pack(fill="x", pady=(4, 4))
 
-        self.btn_save = tk.Button(side, text="Save As...", font=("Segoe UI", 9),
-                                  command=self._on_save_as, state="disabled")
+        self.btn_save = ws.secondary_button(side, "Save As...", self._on_save_as)
+        self.btn_save.config(state="disabled")
         self.btn_save.pack(fill="x")
 
         self.status_var = tk.StringVar(value="Pick participant(s), then Generate.")
-        tk.Label(side, textvariable=self.status_var, font=("Segoe UI", 8), fg="#555",
+        tk.Label(side, textvariable=self.status_var, font=("Segoe UI", 8),
+                fg=ws.PALETTE["FG2"], bg=ws.PALETTE["BG"],
                 wraplength=240, justify="left", anchor="w").pack(fill="x", pady=(12, 0))
 
         # ── Right: scrollable figure viewer ─────────────────────────────
-        viewer_outer = tk.Frame(self, relief="sunken", bd=1)
+        viewer_outer = tk.Frame(self, relief="sunken", bd=1, bg=ws.PALETTE["BG"])
         viewer_outer.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=6)
         viewer_outer.columnconfigure(0, weight=1)
         viewer_outer.rowconfigure(0, weight=1)
 
-        self._viewer_canvas = tk.Canvas(viewer_outer, bg="white",
+        self._viewer_canvas = tk.Canvas(viewer_outer, bg=ws.PALETTE["SURFACE"],
                                         highlightthickness=0)
         vbar = tk.Scrollbar(viewer_outer, orient="vertical", command=self._viewer_canvas.yview)
         hbar = tk.Scrollbar(viewer_outer, orient="horizontal", command=self._viewer_canvas.xview)
@@ -1484,7 +1509,7 @@ class AnalysisPanel(tk.Frame):
         vbar.grid(row=0, column=1, sticky="ns")
         hbar.grid(row=1, column=0, sticky="ew")
 
-        self._viewer_frame = tk.Frame(self._viewer_canvas, bg="white")
+        self._viewer_frame = tk.Frame(self._viewer_canvas, bg=ws.PALETTE["SURFACE"])
         self._viewer_window = self._viewer_canvas.create_window(
             (0, 0), window=self._viewer_frame, anchor="nw")
         self._viewer_frame.bind(
@@ -1493,7 +1518,8 @@ class AnalysisPanel(tk.Frame):
 
         self._viewer_placeholder = tk.Label(
             self._viewer_frame, text="No figure generated yet.",
-            font=("Segoe UI", 11), fg="#888", bg="white", padx=40, pady=40)
+            font=("Segoe UI", 11), fg=ws.PALETTE["FG3"], bg=ws.PALETTE["SURFACE"],
+            padx=40, pady=40)
         self._viewer_placeholder.pack()
 
     # ------------------------------------------------------------------
@@ -1731,7 +1757,8 @@ class App(tk.Tk):
         if _WORKBENCH_AVAIL:
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
-            tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
+            tk.Label(self, textvariable=self._workbench_status_var, anchor="w",
+                     bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).pack(
                 side="bottom", fill="x", padx=8, pady=2)
 
         self._mode_select.pack(fill="both", expand=True)
@@ -1942,6 +1969,16 @@ class App(tk.Tk):
         self._mode_select.pack_forget()
         self._acq.pack(fill="both", expand=True)
         self._state = "idle"
+        # RGB defaults to checked (a routine clinical source), and
+        # AcquisitionPanel's own build step only syncs the camera frame's
+        # visibility -- it never calls the controller, since self._acq
+        # doesn't exist yet the moment _build_widgets runs. Do the
+        # equivalent of a user's "Rescan" click here, once self._acq is
+        # guaranteed to exist, so the camera list actually populates when
+        # the Live Recording screen is shown with RGB active -- not just
+        # on a manual Rescan click or an explicit checkbox toggle.
+        if "rgb" in self._acq.get_active_sources():
+            self.on_rescan_cameras()
 
     def _enter_upload_mode(self) -> None:
         path = filedialog.askopenfilename(
