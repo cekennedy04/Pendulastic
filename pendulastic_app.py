@@ -194,7 +194,8 @@ class BiomechanicalEngine:
         video_path: str,
         progress_cb: Callable[[float], None],
         leg: str = "right",
-    ) -> list:
+        collect_landmarks: bool = False,
+    ):
         """
         Offline MediaPipe tracking on a recorded video.
         Called on a background thread immediately after STOP (RGB methodology).
@@ -206,13 +207,19 @@ class BiomechanicalEngine:
 
         COCO indices used: 11=L-hip, 12=R-hip, 13=L-knee, 14=R-knee,
                            15=L-ankle, 16=R-ankle
+
+        When collect_landmarks is True, returns (angles, landmarks) where
+        landmarks[i] is (hip, knee, ankle) for frame i, or None if pose
+        tracking wasn't available for that frame -- len(landmarks) ==
+        len(angles) always. When False (default), returns angles only,
+        matching the original signature exactly.
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
-            return []
+            return ([], []) if collect_landmarks else []
 
         cap = _cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return []
+            return ([], []) if collect_landmarks else []
 
         fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
         total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -227,6 +234,7 @@ class BiomechanicalEngine:
         tracker      = _MPBatchTracker(leg.lower(), fps=fps_v)
         initialised  = False
         angles: list = []
+        landmarks: list = []
 
         try:
             while True:
@@ -245,20 +253,26 @@ class BiomechanicalEngine:
 
                 if initialised:
                     try:
-                        _, _, _, angle = tracker.step(frame)
+                        hip_p, knee_p, ank_p, angle = tracker.step(frame)
                         angles.append(float(angle) if angle is not None
                                       else float("nan"))
+                        if collect_landmarks:
+                            landmarks.append((hip_p, knee_p, ank_p))
                     except Exception:
                         angles.append(float("nan"))
+                        if collect_landmarks:
+                            landmarks.append(None)
                 else:
                     angles.append(float("nan"))
+                    if collect_landmarks:
+                        landmarks.append(None)
 
                 progress_cb(len(angles) / total)
         finally:
             cap.release()
 
         progress_cb(1.0)
-        return angles
+        return (angles, landmarks) if collect_landmarks else angles
 
 
 # ---------------------------------------------------------------------------
