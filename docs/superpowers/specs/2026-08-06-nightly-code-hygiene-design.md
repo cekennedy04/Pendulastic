@@ -99,6 +99,33 @@ code is inherently riskier than deleting a log file, even at high detector
 confidence. `vulture`'s own confidence score (0–100%) is included per finding
 so the user can prioritize.
 
+**Whitelist & false-positive handling.** The root-level scripts are mostly
+exploratory research/one-off analysis code — exactly the shape that trips
+vulture's known false-positive patterns (argparse `Namespace` attributes,
+functions only reachable from an `if __name__ == "__main__":` block,
+notebook-style top-level assignments read only by eyeballing output). Left
+unchecked this would flood the morning report with noise on the first run,
+which trains the user to stop reading it. Mitigation, in order:
+
+1. Before running `vulture`, check for `.vulture_whitelist.py` at repo root
+   (vulture's standard whitelist mechanism — a file of dummy references like
+   `_.some_name` that suppresses specific known-fine findings). If present,
+   pass it: `vulture . .vulture_whitelist.py`.
+2. If absent, run with `--min-confidence 80` as the default threshold rather
+   than vulture's default of 60 — this alone removes most of the argparse/
+   dynamic-dispatch noise. Findings between 60–79% confidence are still
+   collected but placed in a separate "low-confidence, likely noise"
+   subsection at the bottom of the report rather than mixed into the main
+   numbered checklist, so they never accidentally get swept up in an
+   "approve items 1–10" reply.
+3. On the **first run only** (no `.vulture_whitelist.py` exists yet), the
+   report's Phase 2 section opens with a single `[Needs Review]` item
+   proposing the user generate one: `vulture . --make-whitelist >
+   .vulture_whitelist.py`, reviewed and committed by hand. The nightly agent
+   never creates this file itself — it lives outside `docs/reports/**`, so
+   creating it is a normal approved action like everything else, not an
+   exception to the read-only rule.
+
 ### Phase 3 — Spec-to-Code Drift Audit
 
 Cross-references `README.md`, `DEPLOYMENT_PLAN.md`,
@@ -178,3 +205,8 @@ without having to open the repo first.
   commit succeeds, notification fires.
 - Manually verify the approval flow once by approving a small, low-stakes
   `[Safe to Delete]` item (e.g. a stale `*_out.txt` file) end-to-end.
+- On that first run, confirm Phase 2 correctly detects the missing
+  `.vulture_whitelist.py` and proposes generating it rather than silently
+  dumping unfiltered findings; after the whitelist is created and committed,
+  run a second manual pass to confirm the noise drops and low-confidence
+  findings land in the separate subsection, not the main checklist.
