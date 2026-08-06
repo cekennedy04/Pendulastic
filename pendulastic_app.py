@@ -81,12 +81,12 @@ except Exception:
 try:
     from pendulastic_pt_score import (
         compute_pt_params, compute_pt_score_simple, pt_to_mas,
-        HEALTHY_REF, load_optitrack,
+        HEALTHY_REF, load_optitrack, draw_pt_annotations,
     )
     _PT_AVAIL = True
 except Exception:
     compute_pt_params = compute_pt_score_simple = pt_to_mas = None
-    HEALTHY_REF = load_optitrack = None
+    HEALTHY_REF = load_optitrack = draw_pt_annotations = None
     _PT_AVAIL = False
 
 try:
@@ -1096,6 +1096,8 @@ class PostProcessingPanel(tk.Frame):
         self._source_angles: dict  = {}
         self._fps: float           = 30.0
         self._meta: dict | None    = None
+        self._plot_annots: list    = []
+        self._last_pt_params: dict | None = None
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -1216,6 +1218,7 @@ class PostProcessingPanel(tk.Frame):
         if not _MPL_AVAIL or self._canvas is None:
             return
         self._ax.clear()
+        self._plot_annots = []
         n_curves = 0
         fps = self._fps or 30.0
         for src, angles in self._source_angles.items():
@@ -1272,6 +1275,13 @@ class PostProcessingPanel(tk.Frame):
             self.r2n_var.set(f"{p['R2n']:.3f}")
             self.mas_var.set(str(mas))
             self.score_var.set(f"{score:.3f}")
+
+            self._last_pt_params = p
+            if self._canvas is not None and draw_pt_annotations is not None:
+                artists = draw_pt_annotations(self._ax, p)
+                if artists is not None:
+                    self._plot_annots = artists
+                    self._canvas.draw_idle()
             return
         self.status_var.set("PT scoring: no valid source data.")
 
