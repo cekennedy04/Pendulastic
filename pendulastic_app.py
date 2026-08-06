@@ -54,11 +54,12 @@ os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 try:
     import cv2 as _cv2
-    from camera_utils import CameraSession
+    from camera_utils import CameraSession, open_video_writer
     _CV2_AVAIL = True
 except ImportError:
     _cv2 = None
     CameraSession = None
+    open_video_writer = None
     _CV2_AVAIL = False
 
 try:
@@ -1397,26 +1398,7 @@ class PostProcessingPanel(tk.Frame):
         w = int(cap2.get(_cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap2.get(_cv2.CAP_PROP_FRAME_HEIGHT))
 
-        ext = os.path.splitext(out_path)[1].lower()
-        if ext == ".avi":
-            fourcc_candidates = [
-                _cv2.VideoWriter_fourcc(*"XVID"),
-                _cv2.VideoWriter_fourcc(*"MJPG"),
-            ]
-        else:
-            fourcc_candidates = [
-                _cv2.VideoWriter_fourcc(*"avc1"),   # H.264 — best quality on Windows
-                _cv2.VideoWriter_fourcc(*"mp4v"),   # MPEG-4 fallback
-                _cv2.VideoWriter_fourcc(*"XVID"),   # last resort
-            ]
-
-        writer = None
-        for fc in fourcc_candidates:
-            w_ = _cv2.VideoWriter(out_path, fc, fps, (w, h))
-            if w_.isOpened():
-                writer = w_
-                break
-            w_.release()
+        writer = open_video_writer(out_path, fps, w, h)
 
         if writer is None:
             cap2.release()

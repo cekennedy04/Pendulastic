@@ -72,6 +72,39 @@ def enumerate_cameras():
     return found
 
 
+def open_video_writer(out_path, fps, w, h):
+    """
+    Open a cv2.VideoWriter for out_path, trying codec fallbacks in order.
+
+    .avi containers try XVID then MJPG. All other containers (e.g. .mp4) try
+    avc1 (H.264 — best quality on Windows) then mp4v (MPEG-4 fallback) then
+    XVID (last resort; may produce .avi-flavored content in a .mp4 container).
+
+    Returns the opened VideoWriter, or None if no candidate codec could be
+    opened (the caller is expected to treat None as a failure and clean up).
+    """
+    ext = os.path.splitext(out_path)[1].lower()
+    if ext == ".avi":
+        fourcc_candidates = [
+            cv2.VideoWriter_fourcc(*"XVID"),
+            cv2.VideoWriter_fourcc(*"MJPG"),
+        ]
+    else:
+        fourcc_candidates = [
+            cv2.VideoWriter_fourcc(*"avc1"),   # H.264 — best quality on Windows
+            cv2.VideoWriter_fourcc(*"mp4v"),   # MPEG-4 fallback
+            cv2.VideoWriter_fourcc(*"XVID"),   # last resort
+        ]
+
+    for fc in fourcc_candidates:
+        writer = cv2.VideoWriter(out_path, fc, fps, (w, h))
+        if writer.isOpened():
+            return writer
+        writer.release()
+
+    return None
+
+
 class CameraSession:
     """Owns the lifecycle of one live camera: enumerate, open + hold for
     continuous background reading, and let a caller attach a VideoWriter so
