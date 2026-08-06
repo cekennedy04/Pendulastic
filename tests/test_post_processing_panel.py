@@ -2,6 +2,13 @@
 import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
+import pytest
+
+try:
+    import cv2 as _cv2_test
+    _CV2_OK = True
+except ImportError:
+    _CV2_OK = False
 
 _root_window = None
 
@@ -200,3 +207,43 @@ def test_add_hpe_overlay_without_landmarks_leaves_export_button_disabled():
     p._add_hpe_overlay(fake_angles, fps=30.0)   # landmarks defaults to None
     r.update()
     assert str(p.btn_export_video["state"]) == "disabled"
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_export_annotated_worker_writes_video_file(tmp_path, monkeypatch):
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    import numpy as np
+
+    video_path = str(tmp_path / "src.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"),
+        30.0, (320, 240))
+    for _ in range(5):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+    monkeypatch.setattr(_app.messagebox, "showinfo", lambda *a, **kw: None)
+    monkeypatch.setattr(_app.messagebox, "showerror", lambda *a, **kw: None)
+
+    hip, kne, ank = (160.0, 60.0), (160.0, 120.0), (160.0, 200.0)
+    snap = {
+        "path": video_path,
+        "fps": 30.0,
+        "angles": [150.0, 152.0, 148.0, 151.0, 149.0],
+        "landmarks": [(hip, kne, ank)] * 5,
+    }
+    out_path = str(tmp_path / "src_annotated.avi")
+
+    p._export_annotated_worker(snap, out_path)
+    r.update()
+
+    assert os.path.exists(out_path)
+    check = _cv2_test.VideoCapture(out_path)
+    frame_count = int(check.get(_cv2_test.CAP_PROP_FRAME_COUNT))
+    check.release()
+    assert frame_count == 5
+    assert "saved" in p.status_var.get().lower()

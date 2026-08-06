@@ -62,11 +62,13 @@ except ImportError:
     _CV2_AVAIL = False
 
 try:
-    from pendulastic_viewer import _MPBatchTracker, _PatientDetector
+    from pendulastic_viewer import _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN
     _VIEWER_AVAIL = True
 except Exception:
     _MPBatchTracker = None
     _PatientDetector = None
+    _draw = None
+    TRAIL_LEN = 150
     _VIEWER_AVAIL = False
 
 _mp_pose = _mp_draw = _mp_styles = None
@@ -1340,6 +1342,157 @@ class PostProcessingPanel(tk.Frame):
         self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
         if landmarks and self._video_path:
             self.btn_export_video.config(state="normal")
+
+    def _cmd_export_annotated_video(self) -> None:
+        if not self._video_path or not self._hpe_landmarks:
+            messagebox.showinfo(
+                "Export Video",
+                "Upload a video for HPE and let tracking finish first.")
+            return
+        angles = self._source_angles.get("hpe_upload")
+        if not angles:
+            messagebox.showinfo("Export Video", "No HPE angle data to export.")
+            return
+
+        base, _ = os.path.splitext(self._video_path)
+        default_name = os.path.basename(base) + "_annotated.mp4"
+        out_path = filedialog.asksaveasfilename(
+            title="Save Annotated Video",
+            initialfile=default_name,
+            initialdir=os.path.dirname(self._video_path),
+            defaultextension=".mp4",
+            filetypes=[("MP4 Video", "*.mp4"), ("AVI Video", "*.avi"),
+                       ("All files", "*.*")],
+        )
+        if not out_path:
+            return
+
+        snap = {
+            "path":      self._video_path,
+            "fps":       self._fps or 30.0,
+            "angles":    list(angles),
+            "landmarks": list(self._hpe_landmarks),
+        }
+
+        self.btn_export_video.config(state="disabled")
+        self.status_var.set("Exporting annotated video… 0%")
+        threading.Thread(target=self._export_annotated_worker,
+                         args=(snap, out_path), daemon=True).start()
+
+    def _export_annotated_worker(self, snap: dict, out_path: str) -> None:
+        angles    = snap["angles"]
+        landmarks = snap["landmarks"]
+        fps       = snap["fps"]
+        n_total   = len(angles)
+
+        cap2 = _cv2.VideoCapture(snap["path"])
+        if not cap2.isOpened():
+            self.after(0, lambda: (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set("Export failed: cannot re-open video file."),
+                messagebox.showerror("Export failed",
+                                     f"Could not open video for reading:\n{snap['path']}")
+            ))
+            return
+        w = int(cap2.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap2.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+
+        ext = os.path.splitext(out_path)[1].lower()
+        if ext == ".avi":
+            fourcc_candidates = [
+                _cv2.VideoWriter_fourcc(*"XVID"),
+                _cv2.VideoWriter_fourcc(*"MJPG"),
+            ]
+        else:
+            fourcc_candidates = [
+                _cv2.VideoWriter_fourcc(*"avc1"),   # H.264 — best quality on Windows
+                _cv2.VideoWriter_fourcc(*"mp4v"),   # MPEG-4 fallback
+                _cv2.VideoWriter_fourcc(*"XVID"),   # last resort
+            ]
+
+        writer = None
+        for fc in fourcc_candidates:
+            w_ = _cv2.VideoWriter(out_path, fc, fps, (w, h))
+            if w_.isOpened():
+                writer = w_
+                break
+            w_.release()
+
+        if writer is None:
+            cap2.release()
+            self.after(0, lambda: (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set("Export failed: no usable video codec found."),
+                messagebox.showerror("Export failed",
+                                     "Could not find a working video codec.\n"
+                                     "Try saving as .avi instead of .mp4.")
+            ))
+            return
+
+        rolling_trail = []
+
+        try:
+            for fi in range(n_total):
+                ok, frame = cap2.read()
+                if not ok:
+                    break
+
+                ang = angles[fi] if fi < len(angles) else float("nan")
+                lm  = landmarks[fi] if fi < len(landmarks) else None
+                hip, kne, ank = lm if lm is not None else (None, None, None)
+
+                if ank is not None:
+                    rolling_trail.append(ank)
+                    if len(rolling_trail) > TRAIL_LEN:
+                        rolling_trail.pop(0)
+
+                overlay = _draw(frame, hip, kne, ank, ang,
+                                list(rolling_trail), scale=1.0)
+
+                if math.isfinite(ang):
+                    ang_txt = f"{ang:.1f} deg"
+                    _cv2.putText(overlay, ang_txt, (16, h - 18),
+                                _cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (0, 0, 0), 4, _cv2.LINE_AA)
+                    _cv2.putText(overlay, ang_txt, (16, h - 18),
+                                _cv2.FONT_HERSHEY_DUPLEX, 1.1,
+                                (80, 230, 140), 2, _cv2.LINE_AA)
+
+                t_txt = f"{fi / fps:.2f} s"
+                _cv2.putText(overlay, t_txt, (16, h - 52),
+                            _cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (0, 0, 0), 3, _cv2.LINE_AA)
+                _cv2.putText(overlay, t_txt, (16, h - 52),
+                            _cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                            (190, 190, 190), 1, _cv2.LINE_AA)
+
+                writer.write(overlay)
+
+                if fi % 30 == 0:
+                    pct = int(fi / max(n_total, 1) * 100)
+                    self.after(0, lambda p=pct: self.status_var.set(
+                        f"Exporting annotated video… {p}%"))
+
+        except Exception as exc:
+            cap2.release()
+            writer.release()
+            self.after(0, lambda e=str(exc): (
+                self.btn_export_video.config(state="normal"),
+                self.status_var.set(f"Export error: {e}"),
+                messagebox.showerror("Export error", f"An error occurred during export:\n{e}")
+            ))
+            return
+
+        cap2.release()
+        writer.release()
+        self.after(0, lambda p=out_path: self._on_export_video_done(p))
+
+    def _on_export_video_done(self, out_path: str) -> None:
+        self.btn_export_video.config(state="normal")
+        name = os.path.basename(out_path)
+        self.status_var.set(f"Annotated video saved: {name}")
+        messagebox.showinfo("Export complete",
+                            f"Annotated video saved:\n{out_path}")
 
     def _on_new_trial(self) -> None:
         self.controller.on_new_trial()
