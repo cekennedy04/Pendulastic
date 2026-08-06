@@ -72,6 +72,151 @@ PT_BORDERLINE_MAX = 0.20   # midpoint of gap between populations
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
 
+# ── Clinical annotation rendering ─────────────────────────────────────────────
+def draw_pt_annotations(ax, params: dict, manual_release: bool = False) -> list | None:
+    """Overlay clinical PT key-point markers on an angle-vs-time Axes.
+
+    Draws a "Rest" line, release-point line, A0 amplitude bracket, a labeled
+    dot on the first trough/peak (with phi_max ratio when available), faded
+    dots on later peaks/troughs, and an "N cycles" badge -- driven entirely
+    by the dict returned from compute_pt_params(). Returns None (drawing
+    nothing) if params lacks enough data to annotate; otherwise returns the
+    list of created artists for the caller to track/clear.
+    """
+    neutral        = params.get("neutral_deg")
+    pre_release    = params.get("pre_release_deg")
+    t_r            = params.get("t_r")
+    ang_r          = params.get("ang_r")
+    pk_i           = params.get("pk_i")
+    tr_i           = params.get("tr_i")
+    A0             = params.get("A0_deg")
+    phi_ratio      = params.get("phi_max_ratio")
+    N              = params.get("N")
+
+    if neutral is None or t_r is None or len(t_r) < 2:
+        return None
+
+    artists: list = []
+
+    # "Rest" annotation uses the pre-release held angle (not the settled tail)
+    rest_angle = pre_release if pre_release is not None else neutral
+
+    t0   = float(t_r[0])
+    xlim = ax.get_xlim()
+    ylim = ax.get_ylim()
+
+    # ── pre-release rest line ────────────────────────────────────────────
+    a = ax.axhline(rest_angle, color="#94A3B8", lw=1.0,
+                    ls="--", alpha=0.8, zorder=2)
+    artists.append(a)
+    a = ax.text(
+        xlim[0] + (xlim[1] - xlim[0]) * 0.01, rest_angle + 1.5,
+        f"Rest  {rest_angle:.0f}°",
+        color="#64748B", fontsize=7, va="bottom", ha="left",
+        style="italic", zorder=3)
+    artists.append(a)
+
+    # ── release vertical line ────────────────────────────────────────────
+    _rel_color = "#7C3AED" if manual_release else "#94A3B8"
+    _rel_ls    = "-"       if manual_release else ":"
+    _rel_lw    = 1.5       if manual_release else 1.0
+    _rel_lbl   = "📍 release (manual)" if manual_release else "release"
+    a = ax.axvline(t0, color=_rel_color, lw=_rel_lw,
+                    ls=_rel_ls, alpha=0.85, zorder=2)
+    artists.append(a)
+    a = ax.text(t0 + 0.12, ylim[1] - 2,
+                _rel_lbl, color=_rel_color,
+                fontsize=7, va="top", ha="left", zorder=3)
+    artists.append(a)
+
+    # ── A₀: initial amplitude bracket (text left of release line) ────────
+    if A0 is not None and A0 > 1:
+        start_ang = neutral + A0
+        bx = max(t0 - 0.25, xlim[0] + 0.1)
+        a = ax.annotate(
+            "", xy=(bx, neutral), xytext=(bx, start_ang),
+            arrowprops=dict(arrowstyle="<->", color="#2563EB",
+                            lw=1.0, mutation_scale=8))
+        artists.append(a)
+        a = ax.text(
+            bx - 0.08, (neutral + start_ang) / 2,
+            f"A₀\n{A0:.0f}°",
+            color="#2563EB", fontsize=7, ha="right", va="center",
+            fontweight="bold", zorder=3)
+        artists.append(a)
+
+    # ── first trough ─────────────────────────────────────────────────────
+    if tr_i is not None and len(tr_i) > 0:
+        ti = int(tr_i[0])
+        if ti < len(t_r) and ti < len(ang_r):
+            tx, ty = float(t_r[ti]), float(ang_r[ti])
+            a = ax.plot(tx, ty, 'o',
+                        color="#EA580C", ms=7, zorder=5,
+                        markeredgecolor="#FFFFFF",
+                        markeredgewidth=1)[0]
+            artists.append(a)
+            offset_y = -9 if ty - 9 > ylim[0] else 9
+            va = "top" if offset_y < 0 else "bottom"
+            a = ax.annotate(
+                f"min  {ty:.0f}°",
+                xy=(tx, ty), xytext=(tx + 0.25, ty + offset_y),
+                color="#EA580C", fontsize=7, va=va, fontweight="bold",
+                arrowprops=dict(arrowstyle="-", color="#EA580C",
+                                lw=0.8), zorder=4)
+            artists.append(a)
+
+    # ── first return peak ─────────────────────────────────────────────────
+    if pk_i is not None and len(pk_i) > 0:
+        pi = int(pk_i[0])
+        if pi < len(t_r) and pi < len(ang_r):
+            px, py = float(t_r[pi]), float(ang_r[pi])
+            a = ax.plot(px, py, 'o',
+                        color="#16A34A", ms=7, zorder=5,
+                        markeredgecolor="#FFFFFF",
+                        markeredgewidth=1)[0]
+            artists.append(a)
+            lbl = f"ret  {py:.0f}°"
+            if phi_ratio is not None:
+                lbl = f"φmax={phi_ratio:.2f}  {py:.0f}°"
+            a = ax.annotate(
+                lbl,
+                xy=(px, py), xytext=(px + 0.25, py + 7),
+                color="#16A34A", fontsize=7, va="bottom",
+                fontweight="bold",
+                arrowprops=dict(arrowstyle="-", color="#16A34A",
+                                lw=0.8), zorder=4)
+            artists.append(a)
+
+    # ── subsequent peaks (smaller, no labels) ────────────────────────────
+    if pk_i is not None and len(pk_i) > 1:
+        for _pi in list(pk_i[1:]):
+            _pi = int(_pi)
+            if _pi < len(t_r) and _pi < len(ang_r):
+                a = ax.plot(float(t_r[_pi]), float(ang_r[_pi]),
+                            'o', color="#16A34A", ms=4,
+                            alpha=0.5, zorder=4)[0]
+                artists.append(a)
+    if tr_i is not None and len(tr_i) > 1:
+        for _ti in list(tr_i[1:]):
+            _ti = int(_ti)
+            if _ti < len(t_r) and _ti < len(ang_r):
+                a = ax.plot(float(t_r[_ti]), float(ang_r[_ti]),
+                            'o', color="#EA580C", ms=4,
+                            alpha=0.5, zorder=4)[0]
+                artists.append(a)
+
+    # ── N cycle count (top-right corner) ─────────────────────────────────
+    if N is not None:
+        a = ax.text(
+            0.99, 0.97, f"N = {N:.0f} cycles",
+            transform=ax.transAxes,
+            color="#475569", fontsize=7.5, ha="right", va="top",
+            fontweight="bold", zorder=3)
+        artists.append(a)
+
+    return artists
+
+
 def pt_to_mas(pt: float) -> str:
     for thresh, label in _MAS:
         if pt <= thresh: return label

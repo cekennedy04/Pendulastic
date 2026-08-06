@@ -261,3 +261,67 @@ def test_load_hpe_model_curves_finds_nested_session_post_dir(tmp_path, monkeypat
     curves = pt.load_hpe_model_curves("999", "1", "1", t, ang, 180.0)
     assert len(curves) == 1
     assert curves[0]["name"] == "perfectmodel"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# draw_pt_annotations: Clinical plot annotation rendering
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_draw_pt_annotations_returns_none_for_insufficient_data():
+    from matplotlib.figure import Figure
+    from pendulastic_pt_score import draw_pt_annotations
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    assert draw_pt_annotations(ax, {}) is None
+    assert draw_pt_annotations(ax, {"neutral_deg": 170.0, "t_r": [0.0]}) is None
+
+
+def test_draw_pt_annotations_returns_artists_for_valid_params():
+    from matplotlib.figure import Figure
+    from pendulastic_pt_score import draw_pt_annotations
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    ax.plot([0, 1, 2], [170, 150, 160])  # give the Axes real xlim/ylim
+
+    t_r   = np.array([0.0, 0.1, 0.2, 0.3, 0.4])
+    ang_r = np.array([170.0, 130.0, 145.0, 138.0, 142.0])
+    params = {
+        "neutral_deg": 175.0,
+        "pre_release_deg": 178.0,
+        "t_r": t_r,
+        "ang_r": ang_r,
+        "pk_i": np.array([2, 4]),
+        "tr_i": np.array([1, 3]),
+        "A0_deg": 8.0,
+        "phi_max_ratio": 0.62,
+        "N": 3.0,
+    }
+
+    artists = draw_pt_annotations(ax, params)
+    assert artists is not None
+    assert len(artists) > 0
+
+    # Must not error when called again after ax.clear() -- matches the
+    # PostProcessingPanel._plot_all_curves() clear-then-redraw pattern.
+    ax.clear()
+    artists2 = draw_pt_annotations(ax, params)
+    assert artists2 is not None
+    assert len(artists2) > 0
+
+
+def test_draw_pt_annotations_manual_release_label():
+    from matplotlib.figure import Figure
+    from pendulastic_pt_score import draw_pt_annotations
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    ax.plot([0, 1], [170, 150])
+    params = {"neutral_deg": 170.0, "t_r": np.array([0.0, 0.1]),
+              "ang_r": np.array([170.0, 150.0])}
+
+    artists = draw_pt_annotations(ax, params, manual_release=True)
+    texts = [a.get_text() for a in artists if hasattr(a, "get_text")]
+    assert any("manual" in t for t in texts)
