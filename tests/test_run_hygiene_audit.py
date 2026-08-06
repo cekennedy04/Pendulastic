@@ -3,13 +3,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 import pytest
 
-from run_hygiene_audit import build_mechanical_report
+from pendulastic.hygiene.deadcode import DeadCodeResult
+from run_hygiene_audit import build_mechanical_report, detect_default_branch
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -61,3 +63,105 @@ def test_build_mechanical_report_empty_repo_has_only_whitelist_prompt(repo: Path
 
     assert "No `.vulture_whitelist.py` found" in report
     assert "=== NEXT_ITEM_NUMBER: 2 ===" in report
+
+
+def test_detect_default_branch_falls_back_to_local_master(tmp_path: Path):
+    """
+    Regression test: repos whose default branch is "master" (no remote
+    configured) must be detected correctly rather than assuming "main".
+    """
+    repo_root = tmp_path / "master-repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "master")
+    _git(repo_root, "config", "user.email", "test@example.com")
+    _git(repo_root, "config", "user.name", "Test")
+    (repo_root / "README.md").write_text("hello\n")
+    _git(repo_root, "add", "README.md")
+    _git(repo_root, "commit", "-m", "initial commit")
+
+    assert detect_default_branch(repo_root) == "master"
+
+
+def test_build_mechanical_report_works_on_master_default_branch_repo(tmp_path: Path):
+    """
+    Regression test: prior to the fix, main_branch defaulted to the literal
+    string "main" with no detection, so `git log main..branch` raised
+    CalledProcessError (uncaught) on any repo using "master" - crashing the
+    whole script with no report produced at all. This exercises the full
+    build_mechanical_report path against a master-only repo end to end.
+    """
+    repo_root = tmp_path / "master-repo"
+    repo_root.mkdir()
+    _git(repo_root, "init", "-b", "master")
+    _git(repo_root, "config", "user.email", "test@example.com")
+    _git(repo_root, "config", "user.name", "Test")
+    (repo_root / "README.md").write_text("hello\n")
+    _git(repo_root, "add", "README.md")
+    _git(repo_root, "commit", "-m", "initial commit")
+
+    worktree_path = tmp_path / "wt-merged"
+    _git(repo_root, "worktree", "add", "-b", "merged-branch", str(worktree_path), "master")
+
+    def fake_vulture_runner(cmd):
+        return ""
+
+    report = build_mechanical_report(repo_root, vulture_runner=fake_vulture_runner)
+
+    assert "Phase 1 INCOMPLETE" not in report
+    assert "merged-branch" in report
+
+
+def test_build_mechanical_report_marks_phase2_incomplete_on_deadcode_failure(repo: Path):
+    """
+    Regression test: a vulture failure (timeout, crash, not installed) must
+    not be silently swallowed as "zero findings" - the report must clearly
+    mark Phase 2 incomplete with the error, per the design spec.
+    """
+    failed_result = DeadCodeResult(
+        high_confidence=[],
+        low_confidence=[],
+        whitelist_missing=True,
+        failed=True,
+        error="vulture timed out after 300s",
+    )
+
+    with patch("run_hygiene_audit.run_vulture", return_value=failed_result):
+        report = build_mechanical_report(repo)
+
+    assert "Phase 2 INCOMPLETE: vulture timed out after 300s" in report
+
+
+def test_build_mechanical_report_marks_phase1_incomplete_on_worktree_failure(repo: Path):
+    """
+    Regression test: an unexpected git failure during worktree/cruft
+    classification must not crash the whole script and produce NO report -
+    it must degrade gracefully to a report with a "Phase 1 INCOMPLETE" line.
+    """
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "worktree", "list"])
+
+    def fake_vulture_runner(cmd):
+        return ""
+
+    with patch("run_hygiene_audit.classify_worktrees", side_effect=boom):
+        report = build_mechanical_report(repo, vulture_runner=fake_vulture_runner)
+
+    assert "Phase 1 INCOMPLETE" in report
+    # The report must still be produced (not raise), and still include the
+    # standard sections.
+    assert "=== MECHANICAL FINDINGS (Phases 1-2) ===" in report
+    assert "=== NEXT_ITEM_NUMBER:" in report
+
+
+def test_build_mechanical_report_marks_phase1_incomplete_on_cruft_failure(repo: Path):
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "status"])
+
+    def fake_vulture_runner(cmd):
+        return ""
+
+    with patch("run_hygiene_audit.classify_untracked", side_effect=boom):
+        report = build_mechanical_report(repo, vulture_runner=fake_vulture_runner)
+
+    assert "Phase 1 INCOMPLETE" in report
+    assert "=== NEXT_ITEM_NUMBER:" in report
