@@ -1577,14 +1577,39 @@ class PostProcessingPanel(tk.Frame):
                        ("All files", "*.*")])
         if not path:
             return
-        self.status_var.set("HPE processing: 0%")
+
         leg    = self._meta.get("leg", "right") if self._meta else "right"
+        engine = BiomechanicalEngine("rgb")
+
+        self.status_var.set("Detecting people…")
+        self.update_idletasks()
+        frame, poses = engine.detect_people_at_frame(path)
+
+        manual_seed = None
+        if len(poses) == 1:
+            # Only one candidate -- resolve_person_click's nearest-pose
+            # search trivially picks it regardless of click position, so
+            # any point in frame bounds works here; this reuses the same
+            # leg-resolution/ankle-visibility logic as the 2+-person
+            # disambiguation path below.
+            fh, fw = frame.shape[:2]
+            result = resolve_person_click(poses, (fw / 2, fh / 2), fw, fh, leg)
+            if result is not None and result[2] is not None:
+                manual_seed = result
+        elif len(poses) >= 2:
+            dialog = PersonPickerDialog(self, path, 0, frame, poses, leg)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                self.status_var.set("Upload cancelled — no patient selected.")
+                return
+            manual_seed = dialog.result
+
+        self.status_var.set("HPE processing: 0%")
         self._video_path = path
         self._hpe_leg     = leg
         self._hpe_landmarks = None
         self._source_angles.pop("hpe_upload", None)
         self.btn_export_video.config(state="disabled")
-        engine = BiomechanicalEngine("rgb")
 
         def _progress(pct: float) -> None:
             self.after(0, lambda p=pct: self.status_var.set(
@@ -1592,7 +1617,8 @@ class PostProcessingPanel(tk.Frame):
 
         def _run() -> None:
             angles, landmarks, video_fps = engine.run_offline_track(
-                path, _progress, leg=leg.lower(), collect_landmarks=True)
+                path, _progress, leg=leg.lower(), collect_landmarks=True,
+                manual_seed=manual_seed)
             self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=video_fps))
 
         threading.Thread(target=_run, daemon=True).start()

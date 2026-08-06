@@ -261,3 +261,131 @@ def test_export_annotated_worker_writes_video_file(tmp_path, monkeypatch):
     check.release()
     assert frame_count == 5
     assert "saved" in p.status_var.get().lower()
+
+
+class _SyncThread:
+    """Runs target() synchronously in start() -- makes _on_upload_video's
+    background thread deterministic for testing without a real thread."""
+    def __init__(self, target=None, daemon=None, **kw):
+        self._target = target
+    def start(self):
+        self._target()
+
+
+def test_on_upload_video_zero_people_uses_automatic_fallback(monkeypatch, tmp_path):
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    video_path = str(tmp_path / "fake.mp4")
+    monkeypatch.setattr(_app.filedialog, "askopenfilename", lambda **kw: video_path)
+    monkeypatch.setattr(_app.threading, "Thread", _SyncThread)
+    monkeypatch.setattr(
+        _app.BiomechanicalEngine, "detect_people_at_frame",
+        lambda self, path, frame_index=0: (None, []))
+
+    captured = {}
+    def _fake_run_offline_track(self, path, progress_cb, leg="right",
+                                 collect_landmarks=False, manual_seed=None):
+        captured["manual_seed"] = manual_seed
+        progress_cb(1.0)
+        return ([170.0] * 5, [None] * 5, 30.0)
+    monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
+                         _fake_run_offline_track)
+
+    p._on_upload_video()
+    r.update()
+
+    assert captured["manual_seed"] is None
+    assert "hpe_upload" in p._source_angles
+
+
+def test_on_upload_video_one_person_computes_manual_seed(monkeypatch, tmp_path):
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    import numpy as np
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    video_path = str(tmp_path / "fake.mp4")
+    monkeypatch.setattr(_app.filedialog, "askopenfilename", lambda **kw: video_path)
+    monkeypatch.setattr(_app.threading, "Thread", _SyncThread)
+
+    class _LM:
+        def __init__(self, x, y, visibility=1.0):
+            self.x, self.y, self.visibility = x, y, visibility
+
+    def _make_pose(knee_x=0.5, ankle_vis=0.9):
+        lm = [_LM(0.5, 0.5) for _ in range(33)]
+        lm[23] = _LM(knee_x - 0.02, 0.30)
+        lm[25] = _LM(knee_x, 0.55)
+        lm[27] = _LM(knee_x, 0.85, ankle_vis)
+        lm[24] = _LM(knee_x - 0.02, 0.30)
+        lm[26] = _LM(knee_x, 0.55)
+        lm[28] = _LM(knee_x, 0.85, ankle_vis)
+        return lm
+
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+    monkeypatch.setattr(
+        _app.BiomechanicalEngine, "detect_people_at_frame",
+        lambda self, path, frame_index=0: (fake_frame, fake_poses))
+
+    captured = {}
+    def _fake_run_offline_track(self, path, progress_cb, leg="right",
+                                 collect_landmarks=False, manual_seed=None):
+        captured["manual_seed"] = manual_seed
+        progress_cb(1.0)
+        return ([170.0] * 5, [None] * 5, 30.0)
+    monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
+                         _fake_run_offline_track)
+
+    p._on_upload_video()
+    r.update()
+
+    assert captured["manual_seed"] is not None
+    hip, knee, ankle = captured["manual_seed"]
+    assert ankle is not None
+
+
+def test_on_upload_video_two_people_cancelled_dialog_aborts_upload(monkeypatch, tmp_path):
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    import numpy as np
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    video_path = str(tmp_path / "fake.mp4")
+    monkeypatch.setattr(_app.filedialog, "askopenfilename", lambda **kw: video_path)
+    monkeypatch.setattr(_app.threading, "Thread", _SyncThread)
+
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    fake_poses = [["pose1"], ["pose2"]]
+    monkeypatch.setattr(
+        _app.BiomechanicalEngine, "detect_people_at_frame",
+        lambda self, path, frame_index=0: (fake_frame, fake_poses))
+
+    class _CancelledDialog:
+        def __init__(self, *a, **kw):
+            self.result = None
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "PersonPickerDialog", _CancelledDialog)
+    monkeypatch.setattr(p, "wait_window", lambda dlg: None)
+
+    called = {"run_offline_track": False}
+    def _fake_run_offline_track(self, *a, **kw):
+        called["run_offline_track"] = True
+        return ([], [], 30.0)
+    monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
+                         _fake_run_offline_track)
+
+    p._on_upload_video()
+    r.update()
+
+    assert called["run_offline_track"] is False
+    assert "cancel" in p.status_var.get().lower()
