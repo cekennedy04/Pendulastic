@@ -71,3 +71,33 @@ def test_active_unmerged_worktree_is_skipped(repo: Path, tmp_path: Path):
     findings = classify_worktrees(repo, now=commit_ts + 1 * 86400)
 
     assert findings == []
+
+
+def test_merged_worktree_with_slashed_branch_name(repo: Path, tmp_path: Path):
+    """Regression test: branch names with slashes (e.g. feature/foo) should not be truncated."""
+    worktree_path = tmp_path / "wt-feature-foo"
+    _git(repo, "worktree", "add", "-b", "feature/foo", str(worktree_path), "main")
+
+    findings = classify_worktrees(repo)
+
+    assert len(findings) == 1
+    assert findings[0].category == Category.SAFE_TO_DELETE
+    assert "feature/foo" in findings[0].description
+    assert "feature/foo" in findings[0].command
+
+
+def test_stale_unmerged_worktree_with_slashed_branch_name(repo: Path, tmp_path: Path):
+    """Regression test: stale branches with slashes should be correctly identified."""
+    worktree_path = tmp_path / "wt-bugfix-bar"
+    _git(repo, "worktree", "add", "-b", "bugfix/bar", str(worktree_path), "main")
+    (worktree_path / "new_file.txt").write_text("wip\n")
+    _git(worktree_path, "add", "new_file.txt")
+    _git(worktree_path, "commit", "-m", "wip commit")
+    commit_ts = int(_git(repo, "log", "-1", "--format=%ct", "bugfix/bar").strip())
+
+    findings = classify_worktrees(repo, now=commit_ts + 20 * 86400)
+
+    assert len(findings) == 1
+    assert findings[0].category == Category.NEEDS_REVIEW
+    assert "bugfix/bar" in findings[0].description
+    assert "bugfix/bar" in findings[0].command
