@@ -317,3 +317,84 @@ def test_print_composition_banner_lists_every_group(capsys, monkeypatch):
     assert "Excluded:" in out and "9 (Stroke)" in out
     assert "7" in out and "no_entry" in out
     assert "registry_missing" in out and "8" in out
+
+
+# ── run_cohort_comparison orchestration ─────────────────────────────────
+
+def _stub_common(monkeypatch, qualifying, groups, trials):
+    """qualifying: set of pids. groups: {pid: (group, source)}. trials:
+    {pid: {"left": [...], "right": [...]}} of scored trial dicts (each
+    with all _SCORE_KEYS)."""
+    monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: qualifying)
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
+    monkeypatch.setattr(pcc.common, "leg_trial_counts",
+                        lambda pid: {leg: len(trials.get(pid, {}).get(leg, [])) for leg in pcc._LEGS})
+    monkeypatch.setattr(pcc, "classify_participant",
+                        lambda pid, md, reg, exists: groups.get(pid, ("Unclassified", "no_entry")))
+    monkeypatch.setattr(pcc.common, "collect_participant",
+                        lambda pid: ({(leg, "cond"): trials.get(pid, {}).get(leg, []) for leg in pcc._LEGS}, []))
+
+
+def test_run_cohort_comparison_skips_when_control_arm_empty(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
+                {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
+    pcc.run_cohort_comparison()
+    out = capsys.readouterr().out
+    assert "Cohort comparison skipped" in out
+    assert (tmp_path / "cohort_composition.csv").is_file()   # written even when skipped
+
+
+def test_run_cohort_comparison_writes_composition_csv_with_correct_groups(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
+                {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
+    pcc.run_cohort_comparison()
+    content = (tmp_path / "cohort_composition.csv").read_text(encoding="utf-8")
+    assert "13,MS,metadata,4,4" in content
+
+
+def test_run_cohort_comparison_runs_stats_and_figure_when_both_arms_present(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
+    figure_calls = []
+    monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
+                        lambda *a, **k: figure_calls.append(True), raising=False)
+    _stub_common(monkeypatch, {"13", "6"},
+                {"13": ("MS", "metadata"), "6": ("Control", "registry")},
+                {"13": {"left": [_trial(pt7=1.0)] * 4, "right": [_trial(pt7=1.0)] * 4},
+                 "6": {"left": [_trial(pt7=2.0)] * 4, "right": [_trial(pt7=2.0)] * 4}})
+    pcc.run_cohort_comparison()
+    assert figure_calls == [True]
+    assert (tmp_path / "ms_vs_control_stats.csv").is_file()
+
+
+def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
+    # "13" clears the raw TRIAL_THRESHOLD gate (4 trials on file) but NONE
+    # of them scored -- collect_participant's by_leg_tp reflects that as
+    # empty lists for both legs. run_cohort_comparison must not crash, and
+    # the resulting stats/figure must show 0 MS contributors while
+    # cohort_composition.csv still shows 13's raw (non-zero) trial count.
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
+    figure_calls = []
+    monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
+                        lambda *a, **k: figure_calls.append(a), raising=False)
+    monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: {"13", "6"})
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
+    monkeypatch.setattr(pcc, "classify_participant",
+                        lambda pid, md, reg, exists: {"13": ("MS", "metadata"), "6": ("Control", "metadata")}[pid])
+    monkeypatch.setattr(pcc.common, "leg_trial_counts",
+                        lambda pid: {"13": {"left": 4, "right": 4}, "6": {"left": 4, "right": 4}}[pid])
+    monkeypatch.setattr(pcc.common, "collect_participant", lambda pid: (
+        {("left", "cond"): [], ("right", "cond"): []} if pid == "13"
+        else {("left", "cond"): [_trial(pt7=2.0)] * 4, ("right", "cond"): [_trial(pt7=2.0)] * 4},
+        []))
+    pcc.run_cohort_comparison()   # must not raise despite 13 contributing zero summaries
+    assert len(figure_calls) == 1
+    stats_content = (tmp_path / "ms_vs_control_stats.csv").read_text(encoding="utf-8")
+    assert "left,pt7,0," in stats_content   # n_ms=0 for the leg 13 failed to contribute to
+    comp_content = (tmp_path / "cohort_composition.csv").read_text(encoding="utf-8")
+    assert "13,MS,metadata,4,4" in comp_content   # raw counts still shown despite 0 scored
