@@ -42,11 +42,13 @@ def test_default_vars():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        # Multi-source: optitrack checked by default, others unchecked
-        assert p._src_optitrack.get() is True
-        assert p._src_rgb.get() is False
-        assert p._src_imu.get() is False
-        assert p.countdown_var.get() is False
+        # Routine clinical sources (IMU + RGB) checked by default;
+        # research-only sources (OptiTrack, Video File) start unchecked.
+        assert p._src_imu.get() is True
+        assert p._src_rgb.get() is True
+        assert p._src_optitrack.get() is False
+        assert p._src_video_file.get() is False
+        assert p.countdown_var.get() is True
         assert int(p.trial_var.get()) == 1
     finally:
         r.destroy()
@@ -168,6 +170,7 @@ def test_get_metadata_returns_sources_list():
         p.pid_var.set("P7"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_imu.set(True)
         result = p.get_metadata()
         assert result["pid"] == "P7"

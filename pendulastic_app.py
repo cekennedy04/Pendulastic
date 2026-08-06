@@ -414,9 +414,9 @@ class AcquisitionPanel(tk.Frame):
             row=7, column=0, columnspan=2, sticky="w", padx=12)
 
         # row 8 — Source checkboxes
-        self._src_optitrack  = tk.BooleanVar(value=True)
-        self._src_rgb        = tk.BooleanVar(value=False)
-        self._src_imu        = tk.BooleanVar(value=False)
+        self._src_optitrack  = tk.BooleanVar(value=False)
+        self._src_rgb        = tk.BooleanVar(value=True)
+        self._src_imu        = tk.BooleanVar(value=True)
         self._src_video_file = tk.BooleanVar(value=False)
 
         meth_f = tk.Frame(self)
