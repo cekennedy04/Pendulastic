@@ -104,7 +104,13 @@ def main():
         print(f"{len(ready_for_mas)} participant(s) now have both trial data and MAS scores on file "
              f"-- run mas_validation.py to refresh the validation report.")
 
-    pt_cohort_common.run_cohort_comparison()
+    try:
+        pt_cohort_common.run_cohort_comparison()
+    except Exception as e:
+        # A malformed hand-edit to participant_groups.json (or any other
+        # cohort-comparison failure) shouldn't take down the whole run --
+        # the per-participant reports above already succeeded.
+        print(f"Cohort comparison failed: {e}")
 
 
 if __name__ == "__main__":

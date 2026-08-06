@@ -73,7 +73,7 @@ def classify_participant(pid, metadata_diagnosis, registry, registry_exists):
     if not registry_exists:
         return "Unclassified", "registry_missing"
     entry = registry.get(pid)
-    if entry:
+    if isinstance(entry, str) and entry:
         arm = _DIAGNOSIS_TO_ARM.get(entry.strip().lower())
         if arm:
             return arm, "registry"
@@ -186,15 +186,21 @@ def compute_cohort_stats(ms_summaries, control_summaries):
 def load_registry():
     """Returns (dict, exists). Missing file -> ({}, False). Malformed JSON
     -> ({}, False) too (printed note), treated the same as missing rather
-    than raising -- a corrupt registry shouldn't take down run_pt_analysis.py."""
+    than raising -- a corrupt registry shouldn't take down run_pt_analysis.py.
+    Syntactically-valid JSON that isn't a dict (e.g. a hand-edit that turns
+    the file into a bare list) is treated the same way, for the same reason."""
     if not os.path.isfile(REGISTRY_JSON):
         return {}, False
     try:
         with open(REGISTRY_JSON, encoding="utf-8") as f:
-            return json.load(f), True
+            data = json.load(f)
     except (json.JSONDecodeError, OSError):
         print(f"{REGISTRY_JSON} failed to parse -- treating as empty.")
         return {}, False
+    if not isinstance(data, dict):
+        print(f"{REGISTRY_JSON} is not a JSON object (dict) -- treating as empty.")
+        return {}, False
+    return data, True
 
 
 def load_metadata_diagnosis(pid):
@@ -243,6 +249,19 @@ def _folder_hints_control(pid):
               for r in common.discover_all_trials())
 
 
+def _recordings_root_missing_or_empty():
+    """True when REC_ROOT doesn't exist, or exists but has no
+    Participant_* subdirectories -- i.e. metadata.json (the PRIMARY
+    classification source, see classify_participant's priority order) is
+    unavailable in this checkout. Recordings/ is gitignored, so this is a
+    real, expected state for a fresh clone or an isolated worktree, not a
+    hypothetical -- unlike participant_groups.json (which IS committed and
+    already has its own registry_missing hint)."""
+    if not os.path.isdir(REC_ROOT):
+        return True
+    return not any(os.path.isdir(p) for p in glob.glob(os.path.join(REC_ROOT, "Participant_*")))
+
+
 def build_composition_rows(pids):
     """One row per pid in `pids` (already the qualifying set): classify,
     look up raw trial counts, package for the composition CSV/banner.
@@ -253,7 +272,11 @@ def build_composition_rows(pids):
     for pid in sorted(pids, key=int):
         metadata_diagnosis = load_metadata_diagnosis(pid)
         group, source = classify_participant(pid, metadata_diagnosis, registry, registry_exists)
-        raw_diagnosis = metadata_diagnosis if source == "metadata" else registry.get(pid)
+        # `or`, not an if/else keyed on `source`: preserves the raw metadata
+        # string even when it didn't resolve to a known arm (typo, or a
+        # dropdown value not yet in _DIAGNOSIS_TO_ARM) so it can still be
+        # surfaced by name in the banner instead of silently discarded.
+        raw_diagnosis = metadata_diagnosis or registry.get(pid)
         counts = common.leg_trial_counts(pid)
         rows.append({"pid": pid, "group": group, "source": source, "diagnosis": raw_diagnosis,
                     "n_trials_left": counts["left"], "n_trials_right": counts["right"]})
@@ -278,6 +301,9 @@ def print_composition_banner(rows):
         by_group[row["group"]].append(row)
 
     print("=" * 20 + " MS vs Control cohort " + "=" * 20)
+    if rows and _recordings_root_missing_or_empty():
+        print("Note: Recordings/ is empty or absent in this checkout -- metadata.json diagnoses "
+             "are unavailable, classification is registry-only until real data is present.")
     ms_txt = ", ".join(r["pid"] for r in by_group["MS"]) or "(none yet)"
     print(f"MS:           {ms_txt}  (n={len(by_group['MS'])})")
     ctrl_txt = ", ".join(r["pid"] for r in by_group["Control"]) or "(none yet)"
@@ -291,8 +317,14 @@ def print_composition_banner(rows):
     if no_entry:
         parts = []
         for r in no_entry:
-            hint = " (folder suggests 'control')" if _folder_hints_control(r["pid"]) else ""
-            parts.append(f"{r['pid']}{hint}")
+            if r["diagnosis"]:
+                # A diagnosis string exists but didn't resolve to a known
+                # arm -- surface it by name (typo / unrecognized value),
+                # rather than printing a bare pid that gives no clue why.
+                parts.append(f"{r['pid']} (unrecognized diagnosis: {r['diagnosis']!r})")
+            else:
+                hint = " (folder suggests 'control')" if _folder_hints_control(r["pid"]) else ""
+                parts.append(f"{r['pid']}{hint}")
         print(f"Unclassified: {', '.join(parts)}  (n={len(no_entry)}, no_entry -- add to participant_groups.json)")
     if missing:
         pids_txt = ", ".join(r["pid"] for r in missing)
@@ -332,9 +364,14 @@ def write_stats_csv(stats_rows, out_path):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
+        # Display-only rename: the dict key stays "cliffs_delta" internally
+        # (see cliffs_delta()'s docstring / compute_cohort_stats). This
+        # header records the sign convention -- positive means Control
+        # exceeds MS -- so a reader doesn't have to go read source to
+        # interpret a value like 0.83.
         w.writerow(["leg", "parameter", "ms_n", "ms_median", "ms_iqr",
                    "control_n", "control_median", "control_iqr",
-                   "mann_whitney_p", "cliffs_delta", "effect_size"])
+                   "mann_whitney_p", "cliffs_delta_control_minus_ms", "effect_size"])
         for row in stats_rows:
             w.writerow([row["leg"], row["parameter"], row["n_ms"], row["ms_median"], row["ms_iqr"],
                        row["n_control"], row["control_median"], row["control_iqr"],
@@ -374,7 +411,7 @@ def run_cohort_comparison():
     make_cohort_comparison_figure(
         ms_summaries, ms_raw, len(ms_contrib), sum(len(v) for v in ms_raw.values()),
         control_summaries, control_raw, len(control_contrib), sum(len(v) for v in control_raw.values()),
-        n_excluded_unclassified, FIGURE_PNG)
+        n_excluded_unclassified, FIGURE_PNG, stats_rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -383,7 +420,7 @@ def run_cohort_comparison():
 
 def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_trials,
                                   control_summaries, control_raw, control_n_participants,
-                                  control_n_trials, n_excluded_unclassified, out_path):
+                                  control_n_trials, n_excluded_unclassified, out_path, stats_rows):
     """Light/clinical style matching pt_report_common.py (white background,
     same color conventions) -- NOT the dark dashboard style of the older
     ms_vs_healthy_analysis.py, so every figure run_pt_analysis.py produces
@@ -394,10 +431,18 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
     the statistical layer compute_cohort_stats also reads from, avoiding
     pseudoreplication). ms_raw/control_raw (every individual scored
     trial) are drawn underneath as lighter background jitter for
-    descriptive transparency only -- never used for a statistic."""
+    descriptive transparency only -- never used for a statistic.
+
+    stats_rows: compute_cohort_stats() output, used to annotate each
+    subplot with its Mann-Whitney p / Cliff's delta (spec §7.3); also used
+    to zone-shade the pt7 column the same way pt_report_common.py's
+    make_report_figure does, since pt7 (unlike the raw params) has a
+    clinically meaningful healthy/borderline/impaired scale."""
     ms_color = common.COLORS["red"]
     control_color = common.COLORS["green"]
     n_cols = len(_SCORE_KEYS)
+    pt7_col_idx = len(_SCORE_KEYS) - 1
+    stats_by_leg_key = {(r["leg"], r["parameter"]): r for r in stats_rows}
     fig, axes = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 8), facecolor="white")
     rng = np.random.RandomState(13)
 
@@ -409,6 +454,20 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
 
             ms_med = [s[key] for s in ms_summaries[leg]]
             ctrl_med = [s[key] for s in control_summaries[leg]]
+
+            if col_idx == pt7_col_idx:
+                # Zone shading, same convention as pt_report_common.py's
+                # make_report_figure -- healthy/borderline/impaired bands
+                # only make sense for the 7-parameter composite score, not
+                # the raw individual params in the other columns.
+                zone_vals = (ms_med + ctrl_med + [t[key] for t in ms_raw[leg]]
+                            + [t[key] for t in control_raw[leg]])
+                y_max = (max(zone_vals) if zone_vals else 1.6) * 1.15
+                for (lo, hi), zcolor in zip(zip(common.ZONE_EDGES[:-1], common.ZONE_EDGES[1:]),
+                                           common.ZONE_COLORS):
+                    ax.axhspan(lo, min(hi, y_max), facecolor=zcolor, alpha=0.4, zorder=0)
+                ax.set_ylim(0, y_max)
+
             bp = ax.boxplot([ms_med, ctrl_med], positions=[0, 1], widths=0.4,
                             patch_artist=True, showfliers=False)
             bp["boxes"][0].set_facecolor(ms_color)
@@ -435,6 +494,15 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
             ax.set_xticklabels(["MS", "Control"], fontsize=8)
             ax.set_title(key, fontsize=9, fontweight="bold")
             ax.tick_params(labelsize=7)
+
+            stat_row = stats_by_leg_key.get((leg, key))
+            if stat_row and stat_row.get("mann_whitney_p") is not None \
+                    and stat_row.get("cliffs_delta") is not None:
+                annotation = f"p={stat_row['mann_whitney_p']:.3f}, δ={stat_row['cliffs_delta']:+.2f}"
+            else:
+                annotation = "n/a (n<2)"
+            ax.text(0.5, 0.98, annotation, transform=ax.transAxes, fontsize=7,
+                    ha="center", va="top", color="#555555", zorder=5)
 
     for row_idx, leg_label in enumerate(("Left leg", "Right leg")):
         axes[row_idx, 0].set_ylabel(leg_label, fontsize=10, fontweight="bold")
