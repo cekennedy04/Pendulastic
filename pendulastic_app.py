@@ -1650,11 +1650,11 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        # Applies the shared "clam"-based ttk theme (and dark-styled
-        # Workbench.* variants) app-wide -- this switches every ttk widget's
-        # base theme, not just the Workbench panels'. Kept unconditional so
-        # it doesn't depend on the heavier Workbench feature-availability
-        # guard below (workbench_style itself has zero non-tkinter deps).
+        # Registers the dark "Workbench.*" ttk styles the embedded panels
+        # opt into. It does not switch this root's base ttk theme, so the
+        # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
+        # Kept unconditional (not gated on Workbench availability) since
+        # workbench_style itself has zero non-tkinter deps.
         ws.apply_ttk_theme(self)
         self.configure(bg=ws.PALETTE["BG"])
 
