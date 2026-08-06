@@ -99,6 +99,8 @@ except Exception:
     FigureCanvasTkAgg = Figure = None
     _MPL_AVAIL = False
 
+import workbench_style as ws   # zero-dependency (tkinter only) -- always available
+
 try:
     import pt_report_common as _report
     _REPORT_AVAIL = True
@@ -110,12 +112,10 @@ except Exception:
 try:
     from pendulastic_workbench import TrialLoadPanel, WorkbenchView
     import workbench_engine as _wb_engine
-    import workbench_style as _wb_style
     _WORKBENCH_AVAIL = True
 except Exception:
     TrialLoadPanel = WorkbenchView = None
     _wb_engine = None
-    _wb_style = None
     _WORKBENCH_AVAIL = False
 
 _GREEN = "#1e7d34"
@@ -355,43 +355,48 @@ class AcquisitionPanel(tk.Frame):
 
     def _build_widgets(self) -> None:
         pad = {"padx": 12, "pady": 5}
+        self.configure(bg=ws.PALETTE["BG"])
         self.columnconfigure(0, weight=0)
         self.columnconfigure(1, weight=1)
 
         # row 0 — header: mode-select back button + title
-        hdr0 = tk.Frame(self)
+        hdr0 = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr0.grid(row=0, column=0, columnspan=2, sticky="ew",
                   padx=12, pady=(16, 4))
-        self.btn_back = tk.Button(hdr0, text="<- Mode Select",
-                                  font=("Segoe UI", 9),
-                                  command=self.controller.on_back_to_mode_select)
+        self.btn_back = ws.secondary_button(
+            hdr0, "← Mode Select", self.controller.on_back_to_mode_select)
         self.btn_back.pack(side="left", padx=(0, 8))
         tk.Label(hdr0, text="Pendulastic — Trial Setup",
-                 font=("Segoe UI", 13, "bold")).pack(side="left")
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # row 1 — separator
         ttk.Separator(self, orient="horizontal").grid(
             row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
         # row 2 — Participant ID
-        tk.Label(self, text="Participant ID:").grid(
+        tk.Label(self, text="Participant ID:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=2, column=0, sticky="e", **pad)
         self.pid_var = tk.StringVar()
         pid_entry = tk.Entry(self, textvariable=self.pid_var, width=22)
         pid_entry.grid(row=2, column=1, sticky="w", **pad)
 
         # row 3 — Leg
-        tk.Label(self, text="Leg:").grid(row=3, column=0, sticky="e", **pad)
+        tk.Label(self, text="Leg:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=3, column=0, sticky="e", **pad)
         self.leg_var = tk.StringVar(value="Right")
-        leg_f = tk.Frame(self)
+        leg_f = tk.Frame(self, bg=ws.PALETTE["BG"])
         leg_f.grid(row=3, column=1, sticky="w", **pad)
-        rb_left  = tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var, value="Left")
-        rb_right = tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right")
+        rb_left  = tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var, value="Left",
+                                  bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"])
+        rb_right = tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right",
+                                  bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"])
         rb_left.pack(side="left", padx=4)
         rb_right.pack(side="left", padx=4)
 
         # row 4 — MS Status
-        tk.Label(self, text="MS Status:").grid(row=4, column=0, sticky="e", **pad)
+        tk.Label(self, text="MS Status:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=4, column=0, sticky="e", **pad)
         self.ms_var = tk.StringVar(value="MS")
         ms_combo = ttk.Combobox(self, textvariable=self.ms_var, width=22,
                                 state="readonly",
@@ -399,7 +404,8 @@ class AcquisitionPanel(tk.Frame):
         ms_combo.grid(row=4, column=1, sticky="w", **pad)
 
         # row 5 — Trial Number
-        tk.Label(self, text="Trial Number:").grid(row=5, column=0, sticky="e", **pad)
+        tk.Label(self, text="Trial Number:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=5, column=0, sticky="e", **pad)
         self.trial_var = tk.StringVar(value="1")
         trial_spin = tk.Spinbox(self, from_=1, to=99, textvariable=self.trial_var, width=6)
         trial_spin.grid(row=5, column=1, sticky="w", **pad)
@@ -410,62 +416,102 @@ class AcquisitionPanel(tk.Frame):
 
         # row 7 — Methodology header
         tk.Label(self, text="Methodology",
-                 font=("Segoe UI", 10, "bold")).grid(
+                 font=("Segoe UI", 10, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=7, column=0, columnspan=2, sticky="w", padx=12)
 
         # row 8 — Source checkboxes
-        self._src_optitrack  = tk.BooleanVar(value=True)
-        self._src_rgb        = tk.BooleanVar(value=False)
-        self._src_imu        = tk.BooleanVar(value=False)
+        self._src_optitrack  = tk.BooleanVar(value=False)
+        self._src_rgb        = tk.BooleanVar(value=True)
+        self._src_imu        = tk.BooleanVar(value=True)
         self._src_video_file = tk.BooleanVar(value=False)
 
-        meth_f = tk.Frame(self)
+        meth_f = ws.card_frame(self, title="RECORDING SOURCE")
         meth_f.grid(row=8, column=0, columnspan=2, sticky="w", padx=12, pady=2)
 
-        # Inner row 1: the 4 source checkbuttons side-by-side
-        chk_row = tk.Frame(meth_f)
+        # Always-visible routine sources
+        chk_row = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
         chk_row.pack(side="top", anchor="w")
-        chk_opti  = tk.Checkbutton(chk_row, text="OptiTrack",
-                                    variable=self._src_optitrack,
-                                    command=self._on_source_changed)
-        chk_rgb   = tk.Checkbutton(chk_row, text="RGB",
-                                    variable=self._src_rgb,
-                                    command=self._on_rgb_checkbox_toggled)
-        chk_imu   = tk.Checkbutton(chk_row, text="iPhone IMU",
-                                    variable=self._src_imu,
-                                    command=self._on_source_changed)
-        chk_video = tk.Checkbutton(chk_row, text="Video File",
-                                    variable=self._src_video_file,
-                                    command=self._on_source_changed)
-        for chk in (chk_opti, chk_rgb, chk_imu, chk_video):
+        chk_imu = tk.Checkbutton(chk_row, text="iPhone IMU",
+                                 variable=self._src_imu,
+                                 bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                 selectcolor=ws.PALETTE["SURFACE"],
+                                 activebackground=ws.PALETTE["PANEL"],
+                                 command=self._on_source_changed)
+        chk_rgb = tk.Checkbutton(chk_row, text="RGB",
+                                 variable=self._src_rgb,
+                                 bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                 selectcolor=ws.PALETTE["SURFACE"],
+                                 activebackground=ws.PALETTE["PANEL"],
+                                 command=self._on_rgb_checkbox_toggled)
+        for chk in (chk_imu, chk_rgb):
             chk.pack(side="left", padx=8)
 
-        # Inner row 2: video file path selector (hidden until _src_video_file checked)
-        self._video_path_frame = tk.Frame(meth_f)
-        self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
+        # Collapsed "Research sources" disclosure -- OptiTrack and Video
+        # File are research-only extras, rarely used in routine clinical
+        # sessions (design spec Section 3), so they start hidden.
+        self._research_toggle_btn = tk.Button(
+            meth_f, text="▸ Research sources (OptiTrack, Video File)",
+            font=("Segoe UI", 8), fg=ws.PALETTE["BTN_ACT"], bg=ws.PALETTE["PANEL"],
+            relief="flat", bd=0, cursor="hand2", anchor="w",
+            activebackground=ws.PALETTE["PANEL"], activeforeground=ws.PALETTE["BTN_ACT"],
+            command=self._on_toggle_research_sources)
+        self._research_toggle_btn.pack(side="top", anchor="w", pady=(4, 0))
+
+        self._research_sources_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
+        self._research_sources_expanded = False
+
+        # Own row for the research checkboxes -- packed "top" as a single
+        # unit (mirroring the always-visible chk_row above) so the
+        # side="top" _video_path_frame packed below it in this same parent
+        # lands on its own row instead of sharing this one (Tk's
+        # side="left"/"top" mixing in one packer parent does not force a
+        # new row on its own).
+        self._research_chk_row = tk.Frame(self._research_sources_frame, bg=ws.PALETTE["PANEL"])
+        self._research_chk_row.pack(side="top", anchor="w")
+
+        chk_opti = tk.Checkbutton(self._research_chk_row, text="OptiTrack",
+                                  variable=self._src_optitrack,
+                                  bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                  selectcolor=ws.PALETTE["SURFACE"],
+                                  activebackground=ws.PALETTE["PANEL"],
+                                  command=self._on_source_changed)
+        chk_video = tk.Checkbutton(self._research_chk_row, text="Video File",
+                                   variable=self._src_video_file,
+                                   bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                                   selectcolor=ws.PALETTE["SURFACE"],
+                                   activebackground=ws.PALETTE["PANEL"],
+                                   command=self._on_source_changed)
+        chk_opti.pack(side="left", padx=8)
+        chk_video.pack(side="left", padx=8)
+
+        # Video file path selector (hidden until _src_video_file checked) --
+        # nested inside the research-sources frame since it's a
+        # research-only source.
+        self._video_path_frame = tk.Frame(self._research_sources_frame, bg=ws.PALETTE["PANEL"])
         self._video_path_var    = tk.StringVar(value="No file selected")
         self._stored_video_path = ""
         tk.Label(self._video_path_frame,
-                 textvariable=self._video_path_var,
-                 font=("Consolas", 8), fg="gray", width=38,
-                 anchor="w").pack(side="left")
-        tk.Button(self._video_path_frame, text="Browse...",
-                  font=("Segoe UI", 8),
-                  command=self._on_browse_video).pack(side="left", padx=4)
+                textvariable=self._video_path_var,
+                font=("Consolas", 8), fg=ws.PALETTE["FG2"], bg=ws.PALETTE["PANEL"],
+                width=38, anchor="w").pack(side="left")
+        ws.secondary_button(self._video_path_frame, "Browse...",
+                            self._on_browse_video).pack(side="left", padx=4)
+        self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
         self._video_path_frame.pack_forget()   # hidden until checkbox checked
 
-        # Inner row 3: camera selector (hidden until RGB is checked)
-        self._cam_frame = tk.Frame(meth_f)
+        # Camera selector (hidden until RGB is checked) -- unaffected by the
+        # research-sources disclosure; RGB is a routine, always-visible source.
+        self._cam_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
         self.cam_var = tk.StringVar(value="")
         self.drop_cam = ttk.Combobox(self._cam_frame, textvariable=self.cam_var,
                                      width=18, state="readonly")
         self.drop_cam.pack(side="left")
         self.drop_cam.bind("<<ComboboxSelected>>", self._on_cam_selected)
-        self.btn_rescan = tk.Button(self._cam_frame, text="Rescan", font=("Segoe UI", 8),
-                  command=self._on_rescan_clicked)
+        self.btn_rescan = ws.secondary_button(self._cam_frame, "Rescan", self._on_rescan_clicked)
         self.btn_rescan.pack(side="left", padx=4)
-        tk.Button(self._cam_frame, text="🛜 Can't connect?", font=("Segoe UI", 8),
-                  command=self._on_camera_help).pack(side="left", padx=4)
+        ws.secondary_button(self._cam_frame, "\U0001f6dc Can't connect?",
+                            self._on_camera_help).pack(side="left", padx=4)
         self._cam_frame.pack_forget()   # hidden until RGB is checked
         self._viewer_window: Optional[WebcamViewerWindow] = None
         self._camera_live = False   # one input to _sync_viewer_window_visibility()
@@ -474,7 +520,8 @@ class AcquisitionPanel(tk.Frame):
         # countdown -- see App._tick_calibration_check / AcquisitionPanel's
         # forced-on countdown checkbox below)
         self.lbl_method_status = tk.Label(
-            self, text="● OptiTrack (Motive)", font=("Consolas", 9), fg="green", anchor="w")
+            self, text="● OptiTrack (Motive)", font=("Consolas", 9), fg="green",
+            bg=ws.PALETTE["BG"], anchor="w")
         self.lbl_method_status.grid(row=9, column=0, sticky="w", padx=16)
 
         # row 10 — separator
@@ -486,7 +533,9 @@ class AcquisitionPanel(tk.Frame):
         self.countdown_var = tk.BooleanVar(value=False)
         self.countdown_chk = tk.Checkbutton(
             self, text="5-second countdown before recording",
-            variable=self.countdown_var)
+            variable=self.countdown_var,
+            bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
+            selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"])
         self.countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
 
         # row 12 — START / STOP (START never moves from col 0)
@@ -510,7 +559,8 @@ class AcquisitionPanel(tk.Frame):
         # row 14 — status bar
         self.status_var = tk.StringVar(value="Idle — ready to record.")
         self.lbl_status = tk.Label(
-            self, textvariable=self.status_var, relief="sunken", anchor="w", fg="#333")
+            self, textvariable=self.status_var, relief="sunken", anchor="w",
+            bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"])
         self.lbl_status.grid(row=14, column=0, columnspan=2,
                              sticky="ew", padx=10, pady=(4, 10))
 
@@ -518,6 +568,7 @@ class AcquisitionPanel(tk.Frame):
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
             self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self._research_toggle_btn,
             self.btn_back, self.drop_cam, self.btn_rescan,
         ]
 
@@ -642,6 +693,17 @@ class AcquisitionPanel(tk.Frame):
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
         else:
             self._video_path_frame.pack_forget()
+        # Show/hide camera selector frame -- pure UI sync (no controller
+        # call here; _on_rgb_checkbox_toggled is what notifies the
+        # controller). This keeps the frame's visibility correct both on
+        # user toggle AND on initial build, since RGB now defaults to
+        # checked and _build_widgets calls _on_source_changed(), not
+        # _on_rgb_checkbox_toggled(), to establish the starting UI state.
+        if self._src_rgb.get():
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0),
+                                  before=self._research_toggle_btn)
+        else:
+            self._cam_frame.pack_forget()
         # Build status line
         source_labels = {
             "imu":        "iPhone IMU — waiting for phone" if _IMU_AVAIL else "iPhone IMU — unavailable",
@@ -684,12 +746,22 @@ class AcquisitionPanel(tk.Frame):
 
     def _on_rgb_checkbox_toggled(self) -> None:
         if self._src_rgb.get():
-            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0))
+            self._cam_frame.pack(side="top", anchor="w", pady=(2, 0),
+                                  before=self._research_toggle_btn)
             self.controller.on_rescan_cameras()
         else:
             self._cam_frame.pack_forget()
             self.controller.on_camera_disabled()
         self._on_source_changed()
+
+    def _on_toggle_research_sources(self) -> None:
+        self._research_sources_expanded = not self._research_sources_expanded
+        if self._research_sources_expanded:
+            self._research_sources_frame.pack(side="top", anchor="w", pady=(4, 0))
+            self._research_toggle_btn.config(text="▾ Research sources (OptiTrack, Video File)")
+        else:
+            self._research_sources_frame.pack_forget()
+            self._research_toggle_btn.config(text="▸ Research sources (OptiTrack, Video File)")
 
     def _on_cam_selected(self, event=None) -> None:
         label = self.cam_var.get()
@@ -909,48 +981,44 @@ class ModeSelectView(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         tk.Label(self, text="Pendulastic",
-                 font=("Segoe UI", 20, "bold")).grid(
+                 font=("Segoe UI", 20, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=0, column=0, columnspan=2, pady=(60, 4))
         tk.Label(self, text="Clinical Pendulum Test Platform",
-                 font=("Segoe UI", 11), fg="#555").grid(
+                 font=("Segoe UI", 11),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=1, column=0, columnspan=2, pady=(0, 40))
 
-        tk.Button(
-            self,
-            text="Live Recording Session\nIMU · RGB · OptiTrack",
-            font=("Segoe UI", 12, "bold"),
-            bg=_GREEN, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_live_mode,
-        ).grid(row=2, column=0, padx=40, pady=16, sticky="n")
+        # Live Recording is the routine clinical path -- the one primary
+        # (filled-accent) action on this screen.
+        live_btn = ws.primary_button(
+            self, "Live Recording Session\nIMU · RGB · OptiTrack",
+            self.controller._enter_live_mode)
+        live_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        live_btn.grid(row=2, column=0, padx=40, pady=16, sticky="n")
 
-        tk.Button(
-            self,
-            text="Upload & Analyze\nVideo or CSV file",
-            font=("Segoe UI", 12, "bold"),
-            bg=_BLUE, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_upload_mode,
-        ).grid(row=2, column=1, padx=40, pady=16, sticky="n")
+        upload_btn = ws.secondary_button(
+            self, "Upload & Analyze\nVideo or CSV file",
+            self.controller._enter_upload_mode)
+        upload_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        upload_btn.grid(row=2, column=1, padx=40, pady=16, sticky="n")
 
-        tk.Button(
-            self,
-            text="Multi-Modal Comparison\nIMU · OptiTrack · Video",
-            font=("Segoe UI", 12, "bold"),
-            bg=_AMBER, fg="white",
-            width=24, height=4,
-            command=self.controller._enter_workbench_mode,
-        ).grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+        workbench_btn = ws.secondary_button(
+            self, "Multi-Modal Comparison\nIMU · OptiTrack · Video",
+            self.controller._enter_workbench_mode)
+        workbench_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        workbench_btn.grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
 
-        tk.Button(
-            self,
-            text="Analysis & Reports\nCompare Participants",
-            font=("Segoe UI", 12, "bold"),
-            bg="#5a3d8a", fg="white",
-            width=24, height=4,
-            command=self.controller._enter_analysis_mode,
-        ).grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        # 4th button (added after this plan was written -- see task-5 brief
+        # discrepancy note): styled as another secondary action, consistent
+        # with Upload & Analyze / Multi-Modal Comparison above.
+        analysis_btn = ws.secondary_button(
+            self, "Analysis & Reports\nCompare Participants",
+            self.controller._enter_analysis_mode)
+        analysis_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
 
 
 # ---------------------------------------------------------------------------
@@ -970,66 +1038,72 @@ class UploadMetaView(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         pad = {"padx": 12, "pady": 6}
 
         # Header: back button + title
-        hdr = tk.Frame(self)
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr.grid(row=0, column=0, columnspan=2, sticky="ew",
                  padx=12, pady=(16, 4))
-        self.btn_back = tk.Button(hdr, text="<- Back",
-                                  font=("Segoe UI", 10),
-                                  command=self.controller._upload_back_to_select)
+        self.btn_back = ws.secondary_button(
+            hdr, "← Back", self.controller._upload_back_to_select)
         self.btn_back.pack(side="left", padx=(0, 12))
         tk.Label(hdr, text="Upload & Analyze",
-                 font=("Segoe UI", 13, "bold")).pack(side="left")
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # Selected file name
         self._file_label_var = tk.StringVar(value="No file selected")
         tk.Label(self, textvariable=self._file_label_var,
-                 font=("Consolas", 9), fg="gray", anchor="w").grid(
+                 font=("Consolas", 9), fg=ws.PALETTE["FG2"], bg=ws.PALETTE["BG"],
+                 anchor="w").grid(
             row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 8))
 
         # Participant ID
-        tk.Label(self, text="Participant ID:").grid(
+        tk.Label(self, text="Participant ID:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
             row=2, column=0, sticky="e", **pad)
         self.pid_var = tk.StringVar()
         tk.Entry(self, textvariable=self.pid_var, width=22).grid(
             row=2, column=1, sticky="w", **pad)
 
         # Leg
-        tk.Label(self, text="Leg:").grid(row=3, column=0, sticky="e", **pad)
+        tk.Label(self, text="Leg:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=3, column=0, sticky="e", **pad)
         self.leg_var = tk.StringVar(value="Right")
-        leg_f = tk.Frame(self)
+        leg_f = tk.Frame(self, bg=ws.PALETTE["BG"])
         leg_f.grid(row=3, column=1, sticky="w", **pad)
-        tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var,
-                       value="Left").pack(side="left", padx=4)
-        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var,
-                       value="Right").pack(side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Left",  variable=self.leg_var, value="Left",
+                       bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]).pack(
+            side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right",
+                       bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]).pack(
+            side="left", padx=4)
 
         # MS Status
-        tk.Label(self, text="MS Status:").grid(row=4, column=0, sticky="e", **pad)
+        tk.Label(self, text="MS Status:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=4, column=0, sticky="e", **pad)
         self.ms_var = tk.StringVar(value="MS")
         ttk.Combobox(self, textvariable=self.ms_var, width=22, state="readonly",
                      values=["MS", "Stroke", "Control", "Other"]).grid(
             row=4, column=1, sticky="w", **pad)
 
         # Trial number
-        tk.Label(self, text="Trial Number:").grid(row=5, column=0, sticky="e", **pad)
+        tk.Label(self, text="Trial Number:", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
+            row=5, column=0, sticky="e", **pad)
         self.trial_var = tk.StringVar(value="1")
         tk.Spinbox(self, from_=1, to=99, textvariable=self.trial_var, width=6).grid(
             row=5, column=1, sticky="w", **pad)
 
-        # Analyze button
-        self.btn_analyze = tk.Button(
-            self, text="Analyze ->",
-            bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-            width=16, height=2,
-            command=self.controller._start_upload_analysis)
+        # Analyze button -- the single primary action on this screen
+        self.btn_analyze = ws.primary_button(
+            self, "Analyze →", self.controller._start_upload_analysis)
+        self.btn_analyze.config(font=("Segoe UI", 11, "bold"), width=16, height=2)
         self.btn_analyze.grid(row=6, column=0, columnspan=2, pady=20)
 
         # Status bar
         tk.Label(self, textvariable=self.status_var,
-                 relief="sunken", anchor="w", fg="#333").grid(
+                 relief="sunken", anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(4, 10))
 
     # ------------------------------------------------------------------
@@ -1090,33 +1164,38 @@ class PostProcessingPanel(tk.Frame):
         self.columnconfigure(1, weight=1)
         self.columnconfigure(2, weight=1)
 
+        self.configure(bg=ws.PALETTE["BG"])
+
         # row 0 — header: mode-select back button + trial filename
-        hdr0 = tk.Frame(self)
+        hdr0 = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr0.grid(row=0, column=0, columnspan=3, sticky="ew",
                   padx=12, pady=(12, 4))
-        tk.Button(hdr0, text="<- Mode Select",
-                  font=("Segoe UI", 9),
-                  command=self.controller.on_back_to_mode_select).pack(
+        ws.secondary_button(hdr0, "← Mode Select",
+                            self.controller.on_back_to_mode_select).pack(
             side="left", padx=(0, 12))
         self.title_var = tk.StringVar(value="")
         tk.Label(hdr0, textvariable=self.title_var,
-                 font=("Segoe UI", 12, "bold"), anchor="w").pack(side="left")
+                 font=("Segoe UI", 12, "bold"), anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # row 1 — matplotlib figure
         if _MPL_AVAIL:
-            self._fig    = Figure(figsize=(10, 4), dpi=96, facecolor="#EEF2F7")
+            self._fig    = Figure(figsize=(10, 4), dpi=96, facecolor=ws.PALETTE["BG"])
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvasTkAgg(self._fig, master=self)
             self._canvas.get_tk_widget().grid(
                 row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=4)
         else:
             tk.Label(self, text="matplotlib not available — install it in .venv",
-                     fg="red").grid(row=1, column=0, columnspan=3)
+                     bg=ws.PALETTE["BG"], fg="red").grid(row=1, column=0, columnspan=3)
             self._canvas = None
 
-        # row 2 — PT Metrics LabelFrame
-        self._metrics_frame = tk.LabelFrame(self, text="Popović PT Metrics",
-                                            font=("Segoe UI", 9, "bold"), padx=8, pady=4)
+        # row 2 — PT Metrics card
+        self._metrics_frame = tk.LabelFrame(
+            self, text="Popović PT Metrics", font=("Segoe UI", 9, "bold"),
+            padx=8, pady=4, bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
+            highlightbackground=ws.PALETTE["BORDER"], highlightthickness=1,
+            relief="flat", bd=0)
         self._metrics_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=4)
 
         self.a1_var    = tk.StringVar(value="—")
@@ -1136,32 +1215,29 @@ class PostProcessingPanel(tk.Frame):
             ("MAS",       self.mas_var),
             ("Score",     self.score_var),
         ]):
-            tk.Label(self._metrics_frame, text=lbl, font=("Segoe UI", 8), fg="#555").grid(
+            tk.Label(self._metrics_frame, text=lbl, font=("Segoe UI", 8),
+                     bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG2"]).grid(
                 row=0, column=col, padx=10, pady=1)
             tk.Label(self._metrics_frame, textvariable=var,
-                     font=("Segoe UI", 11, "bold")).grid(
+                     font=("Segoe UI", 11, "bold"),
+                     bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"]).grid(
                 row=1, column=col, padx=10)
 
-        # row 3 — action buttons
-        tk.Button(self, text="<- New Trial",
-                  bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-                  width=14, height=2,
-                  command=self._on_new_trial).grid(
+        # row 3 — action buttons (utility actions, no single primary action
+        # on a review-only screen -- all secondary-styled)
+        ws.secondary_button(self, "← New Trial", self._on_new_trial).grid(
             row=3, column=0, padx=10, pady=12, sticky="e")
-        tk.Button(self, text="Load OptiTrack CSV",
-                  font=("Segoe UI", 10), width=20, height=2,
-                  command=self._on_load_optitrack).grid(
+        ws.secondary_button(self, "Load OptiTrack CSV", self._on_load_optitrack).grid(
             row=3, column=1, padx=10, pady=12, sticky="w")
-        self.btn_upload_video = tk.Button(
-            self, text="🎥 Upload Video for HPE",
-            font=("Segoe UI", 10), width=22, height=2,
-            command=self._on_upload_video)
+        self.btn_upload_video = ws.secondary_button(
+            self, "\U0001f3a5 Upload Video for HPE", self._on_upload_video)
         self.btn_upload_video.grid(row=3, column=2, padx=10, pady=12, sticky="w")
 
         # row 4 — status bar
         self.status_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.status_var,
-                 relief="sunken", anchor="w", fg="#333").grid(
+                 relief="sunken", anchor="w",
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
             row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
 
     # ------------------------------------------------------------------
@@ -1345,24 +1421,26 @@ class AnalysisPanel(tk.Frame):
 
     # ------------------------------------------------------------------
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
         self.columnconfigure(1, weight=1)
         self.rowconfigure(1, weight=1)
 
-        hdr = tk.Frame(self)
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
         hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 4))
-        tk.Button(hdr, text="<- Mode Select", font=("Segoe UI", 9),
-                 command=self.controller.on_back_to_mode_select).pack(side="left", padx=(0, 12))
+        ws.secondary_button(hdr, "← Mode Select",
+                            self.controller.on_back_to_mode_select).pack(
+            side="left", padx=(0, 12))
         tk.Label(hdr, text="Analysis & Reports", font=("Segoe UI", 12, "bold"),
-                anchor="w").pack(side="left")
+                anchor="w", bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         # ── Left sidebar: selections ────────────────────────────────────
-        side = tk.Frame(self, width=260)
+        side = tk.Frame(self, width=260, bg=ws.PALETTE["BG"])
         side.grid(row=1, column=0, sticky="ns", padx=(12, 6), pady=6)
         side.grid_propagate(False)
 
-        tk.Label(side, text="Participants", font=("Segoe UI", 10, "bold"), anchor="w").pack(
-            fill="x", pady=(0, 2))
-        list_frame = tk.Frame(side)
+        tk.Label(side, text="Participants", font=("Segoe UI", 10, "bold"), anchor="w",
+                bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(fill="x", pady=(0, 2))
+        list_frame = tk.Frame(side, bg=ws.PALETTE["BG"])
         list_frame.pack(fill="both", expand=False, pady=(0, 4))
         scrollbar = tk.Scrollbar(list_frame, orient="vertical")
         self._participant_list = tk.Listbox(
@@ -1372,50 +1450,59 @@ class AnalysisPanel(tk.Frame):
         self._participant_list.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        tk.Button(side, text="Refresh List", font=("Segoe UI", 9),
-                 command=self._refresh_participants).pack(fill="x", pady=(0, 12))
+        ws.secondary_button(side, "Refresh List", self._refresh_participants).pack(
+            fill="x", pady=(0, 12))
 
-        tk.Label(side, text="Figure Type", font=("Segoe UI", 10, "bold"), anchor="w").pack(
-            fill="x", pady=(0, 2))
+        tk.Label(side, text="Figure Type", font=("Segoe UI", 10, "bold"), anchor="w",
+                bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(fill="x", pady=(0, 2))
         self._figure_type = tk.StringVar(value="full_report")
         for key, label in self.FIGURE_TYPES:
             tk.Radiobutton(side, text=label, variable=self._figure_type, value=key,
                           font=("Segoe UI", 9), anchor="w",
+                          bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"],
                           command=self._on_figure_type_changed).pack(fill="x")
 
         self._method_frame = tk.LabelFrame(side, text="Methodology (RMSE only)",
-                                           font=("Segoe UI", 9, "bold"), padx=6, pady=4)
+                                           font=("Segoe UI", 9, "bold"), padx=6, pady=4,
+                                           bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"])
         self._method_frame.pack(fill="x", pady=(12, 0))
         self._use_mediapipe = tk.BooleanVar(value=True)
         self._use_imu = tk.BooleanVar(value=True)
         tk.Checkbutton(self._method_frame, text="MediaPipe", variable=self._use_mediapipe,
-                      font=("Segoe UI", 9)).pack(anchor="w")
+                      font=("Segoe UI", 9), bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                      selectcolor=ws.PALETTE["SURFACE"],
+                      activebackground=ws.PALETTE["PANEL"]).pack(anchor="w")
         tk.Checkbutton(self._method_frame, text="IMU (Viewer)", variable=self._use_imu,
-                      font=("Segoe UI", 9)).pack(anchor="w")
+                      font=("Segoe UI", 9), bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+                      selectcolor=ws.PALETTE["SURFACE"],
+                      activebackground=ws.PALETTE["PANEL"]).pack(anchor="w")
         tk.Label(side, text="(needs MediaPipe/IMU data already\ngenerated for those trials)",
-                font=("Segoe UI", 7), fg="#777", justify="left").pack(fill="x", pady=(2, 12))
+                font=("Segoe UI", 7), fg=ws.PALETTE["FG3"], bg=ws.PALETTE["BG"],
+                justify="left").pack(fill="x", pady=(2, 12))
         self._on_figure_type_changed()   # methodology checkboxes start disabled (default is Full Report)
 
-        self.btn_generate = tk.Button(
-            side, text="Generate", bg=_BLUE, fg="white", font=("Segoe UI", 11, "bold"),
-            height=2, command=self._on_generate)
+        # Single primary action on this screen (matches the one-primary-
+        # button convention used elsewhere, e.g. ModeSelectView/UploadMetaView).
+        self.btn_generate = ws.primary_button(side, "Generate", self._on_generate)
+        self.btn_generate.config(font=("Segoe UI", 11, "bold"), height=2)
         self.btn_generate.pack(fill="x", pady=(4, 4))
 
-        self.btn_save = tk.Button(side, text="Save As...", font=("Segoe UI", 9),
-                                  command=self._on_save_as, state="disabled")
+        self.btn_save = ws.secondary_button(side, "Save As...", self._on_save_as)
+        self.btn_save.config(state="disabled")
         self.btn_save.pack(fill="x")
 
         self.status_var = tk.StringVar(value="Pick participant(s), then Generate.")
-        tk.Label(side, textvariable=self.status_var, font=("Segoe UI", 8), fg="#555",
+        tk.Label(side, textvariable=self.status_var, font=("Segoe UI", 8),
+                fg=ws.PALETTE["FG2"], bg=ws.PALETTE["BG"],
                 wraplength=240, justify="left", anchor="w").pack(fill="x", pady=(12, 0))
 
         # ── Right: scrollable figure viewer ─────────────────────────────
-        viewer_outer = tk.Frame(self, relief="sunken", bd=1)
+        viewer_outer = tk.Frame(self, relief="sunken", bd=1, bg=ws.PALETTE["BG"])
         viewer_outer.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=6)
         viewer_outer.columnconfigure(0, weight=1)
         viewer_outer.rowconfigure(0, weight=1)
 
-        self._viewer_canvas = tk.Canvas(viewer_outer, bg="white",
+        self._viewer_canvas = tk.Canvas(viewer_outer, bg=ws.PALETTE["SURFACE"],
                                         highlightthickness=0)
         vbar = tk.Scrollbar(viewer_outer, orient="vertical", command=self._viewer_canvas.yview)
         hbar = tk.Scrollbar(viewer_outer, orient="horizontal", command=self._viewer_canvas.xview)
@@ -1424,7 +1511,7 @@ class AnalysisPanel(tk.Frame):
         vbar.grid(row=0, column=1, sticky="ns")
         hbar.grid(row=1, column=0, sticky="ew")
 
-        self._viewer_frame = tk.Frame(self._viewer_canvas, bg="white")
+        self._viewer_frame = tk.Frame(self._viewer_canvas, bg=ws.PALETTE["SURFACE"])
         self._viewer_window = self._viewer_canvas.create_window(
             (0, 0), window=self._viewer_frame, anchor="nw")
         self._viewer_frame.bind(
@@ -1433,7 +1520,8 @@ class AnalysisPanel(tk.Frame):
 
         self._viewer_placeholder = tk.Label(
             self._viewer_frame, text="No figure generated yet.",
-            font=("Segoe UI", 11), fg="#888", bg="white", padx=40, pady=40)
+            font=("Segoe UI", 11), fg=ws.PALETTE["FG3"], bg=ws.PALETTE["SURFACE"],
+            padx=40, pady=40)
         self._viewer_placeholder.pack()
 
     # ------------------------------------------------------------------
@@ -1650,6 +1738,14 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        # Registers the dark "Workbench.*" ttk styles the embedded panels
+        # opt into. It does not switch this root's base ttk theme, so the
+        # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
+        # Kept unconditional (not gated on Workbench availability) since
+        # workbench_style itself has zero non-tkinter deps.
+        ws.apply_ttk_theme(self)
+        self.configure(bg=ws.PALETTE["BG"])
+
         self._mode_select = ModeSelectView(self, controller=self)
         self._upload_meta = UploadMetaView(self, controller=self)
         self._acq  = AcquisitionPanel(self, controller=self)
@@ -1661,13 +1757,10 @@ class App(tk.Tk):
         self._workbench_raw_diagnostics: Optional[dict] = None
         self._workbench_status_var = tk.StringVar(value="")
         if _WORKBENCH_AVAIL:
-            # Registers the dark "Workbench.*" ttk styles the embedded panels
-            # opt into. It does not switch this root's base ttk theme, so the
-            # other panels' ttk.Combobox/ttk.Separator widgets are untouched.
-            _wb_style.apply_ttk_theme(self)
             self._workbench_load = TrialLoadPanel(self, controller=self)
             self._workbench_view = WorkbenchView(self, controller=self)
-            tk.Label(self, textvariable=self._workbench_status_var, anchor="w").pack(
+            tk.Label(self, textvariable=self._workbench_status_var, anchor="w",
+                     bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).pack(
                 side="bottom", fill="x", padx=8, pady=2)
 
         self._mode_select.pack(fill="both", expand=True)
@@ -1878,6 +1971,25 @@ class App(tk.Tk):
         self._mode_select.pack_forget()
         self._acq.pack(fill="both", expand=True)
         self._state = "idle"
+        # RGB defaults to checked (a routine clinical source), and
+        # AcquisitionPanel's own build step only syncs the camera frame's
+        # visibility -- it never calls the controller, since self._acq
+        # doesn't exist yet the moment _build_widgets runs. Do the
+        # equivalent of a user's "Rescan" click here, once self._acq is
+        # guaranteed to exist, so the camera list actually populates when
+        # the Live Recording screen is shown with RGB active -- not just
+        # on a manual Rescan click or an explicit checkbox toggle.
+        if "rgb" in self._acq.get_active_sources():
+            # rescan()/enumerate_cameras() blocks for the full multi-second
+            # probe (see camera_utils.py) -- paint the newly-packed panel
+            # and a "scanning" status first so the clinician sees the
+            # screen (not a freeze) while the probe runs. Matches the
+            # status_var.set() + update_idletasks() pattern master_app.py's
+            # rescan_cameras() uses around the same blocking call.
+            self._acq.status_var.set("Scanning for camera…")
+            self.update_idletasks()
+            self.on_rescan_cameras()
+            self._acq.status_var.set("Idle — ready to record.")
 
     def _enter_upload_mode(self) -> None:
         path = filedialog.askopenfilename(

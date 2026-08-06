@@ -1450,3 +1450,23 @@ def test_tick_calibration_check_refires_after_drift_then_restabilizing(monkeypat
     finally:
         app._acq._countdown_id = None
         app.destroy()
+
+
+
+
+def test_ws_palette_bg_is_light_gray():
+    import workbench_style as ws
+    assert ws.PALETTE["BG"] == "#F4F6F9"
+
+
+def test_app_applies_ttk_theme_even_when_workbench_unavailable(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", False)
+    calls = []
+    monkeypatch.setattr(_m.ws, "apply_ttk_theme", lambda root: calls.append(root))
+    app = _m.App()
+    try:
+        assert len(calls) == 1
+        assert str(app.cget("bg")) == _m.ws.PALETTE["BG"]
+    finally:
+        app.destroy()

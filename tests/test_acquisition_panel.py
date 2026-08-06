@@ -42,11 +42,13 @@ def test_default_vars():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        # Multi-source: optitrack checked by default, others unchecked
-        assert p._src_optitrack.get() is True
-        assert p._src_rgb.get() is False
-        assert p._src_imu.get() is False
-        assert p.countdown_var.get() is False
+        # Routine clinical sources (IMU + RGB) checked by default;
+        # research-only sources (OptiTrack, Video File) start unchecked.
+        assert p._src_imu.get() is True
+        assert p._src_rgb.get() is True
+        assert p._src_optitrack.get() is False
+        assert p._src_video_file.get() is False
+        assert p.countdown_var.get() is True
         assert int(p.trial_var.get()) == 1
     finally:
         r.destroy()
@@ -168,6 +170,7 @@ def test_get_metadata_returns_sources_list():
         p.pid_var.set("P7"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_imu.set(True)
         result = p.get_metadata()
         assert result["pid"] == "P7"
@@ -318,6 +321,7 @@ def test_validate_rejects_video_file_without_path():
         p = AcquisitionPanel(r, _Ctrl())
         p.pid_var.set("P1")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_video_file.set(True)
         p._stored_video_path = ""
         ok, msg = p.validate_metadata()
@@ -336,6 +340,7 @@ def test_get_metadata_includes_video_file_path():
         p = AcquisitionPanel(r, _Ctrl())
         p.pid_var.set("P2")
         p._src_optitrack.set(False)
+        p._src_rgb.set(False)
         p._src_video_file.set(True)
         p._stored_video_path = "/data/trial.mp4"
         meta = p.get_metadata()
@@ -365,12 +370,40 @@ def test_enter_recording_locks_camera_dropdown_and_rescan_button():
 
 
 
-def test_camera_frame_hidden_by_default():
+def test_camera_frame_visible_by_default():
+    """RGB is checked by default (a routine clinical source), so the camera
+    selector must be visible from the moment the panel is built -- not just
+    after a user click on the RGB checkbox. Regression test for a bug where
+    _cam_frame was pack_forget()-ed at build time and only ever packed by
+    _on_rgb_checkbox_toggled, which never fires on the default-checked state."""
     from pendulastic_app import AcquisitionPanel
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._src_rgb.get() is True
+        assert p._cam_frame.winfo_manager() == "pack"
+    finally:
+        r.destroy()
+
+
+def test_on_source_changed_syncs_camera_frame_visibility():
+    """_on_source_changed (not just _on_rgb_checkbox_toggled) must keep
+    _cam_frame's visibility in sync with _src_rgb -- it's the handler that
+    actually runs at build time, and also on every other source checkbox
+    toggle."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._cam_frame.winfo_manager() == "pack"
+        p._src_rgb.set(False)
+        p._on_source_changed()
+        r.update()
         assert p._cam_frame.winfo_manager() == ""
+        p._src_rgb.set(True)
+        p._on_source_changed()
+        r.update()
+        assert p._cam_frame.winfo_manager() == "pack"
     finally:
         r.destroy()
 
@@ -961,6 +994,90 @@ def test_cancel_countdown_reapplies_countdown_lock():
         r.update()
         assert str(p.countdown_chk.cget("state")) == "disabled"
         assert p.countdown_var.get() is True
+    finally:
+        r.destroy()
+
+
+def test_research_sources_frame_hidden_by_default():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._research_sources_frame.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
+def test_toggle_research_sources_shows_and_hides_frame():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._on_toggle_research_sources()
+        r.update()
+        assert p._research_sources_frame.winfo_manager() == "pack"
+        p._on_toggle_research_sources()
+        r.update()
+        assert p._research_sources_frame.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
+def test_toggling_research_sources_does_not_change_source_values():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._src_optitrack.set(True)
+        p._on_source_changed()
+        p._on_toggle_research_sources()   # expand
+        r.update()
+        assert p._src_optitrack.get() is True
+        assert "optitrack" in p.get_active_sources()
+        p._on_toggle_research_sources()   # collapse
+        r.update()
+        assert p._src_optitrack.get() is True
+        assert "optitrack" in p.get_active_sources()
+    finally:
+        r.destroy()
+
+
+def test_video_path_frame_renders_below_research_checkboxes():
+    """Regression: _video_path_frame packs side='top' in the same parent
+    (_research_sources_frame) as the side='left' OptiTrack/Video File
+    checkbox row. Tk's packer does not automatically start a new row just
+    because a sibling switches side='left' -> side='top' -- without its own
+    wrapper frame for the checkboxes, _video_path_frame would render inline
+    next to them instead of on its own row below.
+
+    Asserts packing order via pack_slaves() (the stacking/row order the
+    packer will lay out top-to-bottom for side='top' siblings) rather than
+    winfo_y()/winfo_height(), since those report 0 for a withdrawn root's
+    descendants until the window is actually mapped on screen -- pack_slaves()
+    order is correct regardless of mapping state."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._on_toggle_research_sources()   # expand research sources
+        p._src_video_file.set(True)
+        p._on_source_changed()            # shows _video_path_frame
+        r.update()
+        assert p._video_path_frame.winfo_manager() == "pack"
+        slaves = p._research_sources_frame.pack_slaves()
+        assert slaves.index(p._research_chk_row) < slaves.index(p._video_path_frame)
+    finally:
+        r.destroy()
+
+
+def test_panel_and_header_use_shared_palette():
+    from pendulastic_app import AcquisitionPanel
+    import workbench_style as ws
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert str(p.cget("bg")) == ws.PALETTE["BG"]
+        assert str(p.lbl_status.cget("bg")) == ws.PALETTE["BG"]
     finally:
         r.destroy()
 
