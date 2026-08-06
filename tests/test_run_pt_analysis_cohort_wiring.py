@@ -20,7 +20,7 @@ def test_main_calls_cohort_comparison_even_with_single_pid_arg(monkeypatch):
     # recomputes the full qualifying set itself rather than reusing
     # main()'s pid-scoped `qualified` set.
     monkeypatch.setattr(sys, "argv", ["run_pt_analysis.py", "999"])
-    monkeypatch.setattr(rpa.common, "leg_trial_counts", lambda pid: {"left": 0, "right": 0})
+    monkeypatch.setattr(rpa, "leg_trial_counts", lambda pid: {"left": 0, "right": 0})
     monkeypatch.setattr(rpa, "run_for_participant", lambda pid: [])
     calls = []
     monkeypatch.setattr(rpa.pt_cohort_common, "run_cohort_comparison", lambda: calls.append(True))
