@@ -222,13 +222,6 @@ def pt_to_mas(pt: float) -> str:
         if pt <= thresh: return label
     return "4"
 
-# Ordinal MAS scale, single source of truth for anything that needs a numeric
-# rank (Spearman correlation, weighted Cohen's kappa) rather than the raw
-# label -- e.g. mas_validation.py. pt_to_mas() above only ever returns one of
-# these six strings.
-MAS_ORDER = ["0", "1", "1+", "2", "3", "4"]
-MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
-
 _PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","omega_min_n","f","area_ratio"]
 _N_PARAMS    = len(_PARAM_KEYS)   # 7 parameters (full Popovic 2018 formula)
 
