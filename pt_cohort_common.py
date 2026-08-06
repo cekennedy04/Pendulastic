@@ -18,6 +18,8 @@ import glob
 import json
 import os
 
+import numpy as np
+
 import pt_report_common as common
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +73,24 @@ def classify_participant(pid, metadata_diagnosis, registry, registry_exists):
         if arm:
             return arm, "registry"
     return "Unclassified", "no_entry"
+
+
+def aggregate_participant_summary(trials):
+    """trials: one participant/leg's list of scored trial records (each a
+    dict with at least the _SCORE_KEYS), as returned by
+    pt_report_common.collect_participant(). Returns the median across
+    trials for each of the 7 PT params + pt7, rounded to 4 decimal places
+    (matching this repo's existing stats-CSV rounding convention). Returns
+    None for an empty list -- callers must handle that: a participant can
+    pass the raw TRIAL_THRESHOLD gate (pt_report_common.leg_trial_counts)
+    yet still summarize to None here if every discovered trial failed to
+    score (pt_report_common.score_trial already returns None upstream for
+    trials with no clean release/oscillation). An even trial count makes
+    np.median interpolate between the two middle values -- expected, not
+    a bug."""
+    if not trials:
+        return None
+    return {key: round(float(np.median([t[key] for t in trials])), 4) for key in _SCORE_KEYS}
 
 
 # ══════════════════════════════════════════════════════════════════════════
