@@ -27,6 +27,7 @@ import csv
 import os
 import sys
 
+import pt_cohort_common
 import pt_report_common as common
 
 TRIAL_THRESHOLD = common.TRIAL_THRESHOLD          # alias -- pt_report_common.py is now the source of truth
@@ -102,6 +103,8 @@ def main():
     if ready_for_mas:
         print(f"{len(ready_for_mas)} participant(s) now have both trial data and MAS scores on file "
              f"-- run mas_validation.py to refresh the validation report.")
+
+    pt_cohort_common.run_cohort_comparison()
 
 
 if __name__ == "__main__":
