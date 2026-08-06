@@ -99,9 +99,15 @@ def run_vulture(
             return result.stdout
 
     missing = not whitelist_path(repo_root).exists()
-    cmd = ["vulture", ".", "--exclude", DEFAULT_EXCLUDE_PATTERNS]
+    # vulture's argparse requires all positional PATH arguments (the scan
+    # target and, when present, the whitelist file) to appear together,
+    # before any options - `vulture . --exclude X whitelist.py` fails with
+    # "unrecognized arguments: whitelist.py" even though the same paths in
+    # `vulture . whitelist.py --exclude X` parse fine.
+    cmd = ["vulture", "."]
     if not missing:
         cmd.append(".vulture_whitelist.py")
+    cmd.extend(["--exclude", DEFAULT_EXCLUDE_PATTERNS])
 
     output = runner(cmd)
 

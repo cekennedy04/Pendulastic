@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
 
 from pendulastic.hygiene.deadcode import (
@@ -12,6 +14,12 @@ from pendulastic.hygiene.deadcode import (
     parse_vulture_output,
     run_vulture,
 )
+
+try:
+    import vulture as _vulture_module  # noqa: F401
+    _VULTURE_AVAILABLE = True
+except ImportError:
+    _VULTURE_AVAILABLE = False
 
 SAMPLE_OUTPUT = (
     "align_and_calibrate.py:42: unused function 'old_helper' (90% confidence)\n"
@@ -52,9 +60,9 @@ def test_run_vulture_passes_whitelist_when_present(tmp_path: Path):
     assert captured_cmd["cmd"] == [
         "vulture",
         ".",
+        ".vulture_whitelist.py",
         "--exclude",
         DEFAULT_EXCLUDE_PATTERNS,
-        ".vulture_whitelist.py",
     ]
 
 
@@ -101,6 +109,28 @@ def test_default_runner_invokes_sys_executable_module_vulture(tmp_path: Path):
     assert "--exclude" in captured["argv"]
     assert DEFAULT_EXCLUDE_PATTERNS in captured["argv"]
     assert captured["kwargs"].get("timeout") == VULTURE_TIMEOUT_SECONDS
+
+
+@pytest.mark.skipif(not _VULTURE_AVAILABLE, reason="vulture not installed")
+def test_default_runner_real_vulture_accepts_whitelist_and_exclude_together(tmp_path: Path):
+    """
+    Regression test for a real bug: vulture's argparse requires all
+    positional PATH arguments (the scan target and, when present, the
+    whitelist file) to appear together, before any options.
+    `vulture . --exclude X whitelist.py` fails with "unrecognized
+    arguments: whitelist.py" even though `vulture . whitelist.py --exclude
+    X` parses fine. The fake-runner tests above never invoke the real
+    vulture CLI, so they can't catch an argparse ordering bug like this -
+    this test does, against a real tiny file, exercising the actual
+    default runner and the real vulture binary end to end.
+    """
+    (tmp_path / ".vulture_whitelist.py").write_text("_.dummy\n")
+    (tmp_path / "sample.py").write_text("def unused_function():\n    pass\n")
+
+    result = run_vulture(tmp_path)
+
+    assert result.failed is False, result.error
+    assert result.error is None
 
 
 def test_default_runner_marks_failed_on_timeout(tmp_path: Path):
