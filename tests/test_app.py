@@ -1563,6 +1563,50 @@ def test_mas_entry_panel_save_shows_error_on_invalid_grade(monkeypatch):
         app.destroy()
 
 
+def test_mas_entry_panel_export_disabled_when_no_data(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.refresh()
+        app.update()
+        assert str(app._mas_entry.export_btn.cget("state")) == "disabled"
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_export_writes_stats_and_figure(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    stats_calls = []
+    figure_calls = []
+    monkeypatch.setattr(_m._mas_validation, "write_stats_csv",
+                        lambda stats, out_path: stats_calls.append((stats, out_path)))
+    monkeypatch.setattr(_m._mas_validation, "save_validation_figure",
+                        lambda valid, stats, out_path: figure_calls.append(
+                            (valid, stats, out_path)))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.refresh()
+        app.update()
+        assert str(app._mas_entry.export_btn.cget("state")) == "normal"
+        app._mas_entry._on_export_clicked()
+        assert len(stats_calls) == 1
+        assert stats_calls[0][0] == app._mas_entry._last_stats
+        assert len(figure_calls) == 1
+        assert figure_calls[0][0] == app._mas_entry._last_valid
+        assert figure_calls[0][1] == app._mas_entry._last_stats
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""

@@ -1995,6 +1995,10 @@ class MasEntryPanel(tk.Frame):
             bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG2"])
         self.canvas_placeholder.pack(pady=40)
 
+        self.export_btn = ws.secondary_button(self, "Export", self._on_export_clicked)
+        self.export_btn.config(state="disabled")
+        self.export_btn.pack(pady=(0, 12))
+
     def refresh(self) -> None:
         try:
             rows = _mas_validation.load_mas_scores(_mas_validation.MAS_CSV)
@@ -2018,6 +2022,7 @@ class MasEntryPanel(tk.Frame):
             self._last_valid = []
             self._last_stats = None
             self._show_placeholder()
+            self.export_btn.config(state="disabled")
             return
 
         stats = _mas_validation.compute_validation_stats(valid)
@@ -2025,6 +2030,7 @@ class MasEntryPanel(tk.Frame):
         self._last_valid = valid
         self._last_stats = stats
         self._show_figure(fig)
+        self.export_btn.config(state="normal")
 
     def _on_save_clicked(self) -> None:
         participant = self.pid_var.get().strip()
@@ -2048,6 +2054,14 @@ class MasEntryPanel(tk.Frame):
             return
         self.error_var.set("")
         self.refresh()
+
+    def _on_export_clicked(self) -> None:
+        if not self._last_valid or self._last_stats is None:
+            return
+        _mas_validation.write_stats_csv(self._last_stats, _mas_validation.STATS_CSV)
+        _mas_validation.save_validation_figure(
+            self._last_valid, self._last_stats, _mas_validation.FIGURE_PNG)
+        messagebox.showinfo("Exported", f"Saved to:\n{_mas_validation.OUT_DIR}")
 
     def _show_placeholder(self) -> None:
         if self._current_canvas is not None:
