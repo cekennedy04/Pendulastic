@@ -364,3 +364,49 @@ def test_compute_implementation_fingerprint_changes_with_grid(monkeypatch):
     monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.99}])
     fp2 = rpc.compute_implementation_fingerprint()
     assert fp1 != fp2
+
+
+# ── score_imu_candidate ──────────────────────────────────────────────────
+
+def test_score_imu_candidate_returns_rmse(monkeypatch):
+    trial = {"imu_component_paths": {"imu": "i", "accel": "a", "gyro": "g", "mag": "m"},
+            "optitrack_path": "o"}
+    monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
+    monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
+                        lambda samples, params: (
+                            __import__("numpy").array([0.0] * 10),
+                            __import__("numpy").array([1.0] * 10)))
+    monkeypatch.setattr(rpc.pt_score, "load_optitrack",
+                        lambda path: (__import__("numpy").array([0.0] * 10),
+                                      __import__("numpy").array([1.0] * 10)))
+    monkeypatch.setattr(rpc.engine, "compare_pair",
+                        lambda *a, **k: {"status": "ok", "rmse_deg": 3.5, "n_samples": 20})
+    result = rpc.score_imu_candidate(trial, {"beta": 0.041})
+    assert result == 3.5
+
+
+def test_score_imu_candidate_returns_none_when_too_few_finite_samples(monkeypatch):
+    import numpy as np
+    trial = {"imu_component_paths": {"imu": "i", "accel": "a", "gyro": "g", "mag": "m"},
+            "optitrack_path": "o"}
+    monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
+    monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
+                        lambda samples, params: (np.array([0.0]), np.array([float("nan")])))
+    result = rpc.score_imu_candidate(trial, {"beta": 0.041})
+    assert result is None
+
+
+def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
+    import numpy as np
+    trial = {"imu_component_paths": {"imu": "i", "accel": "a", "gyro": "g", "mag": "m"},
+            "optitrack_path": "o"}
+    monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
+    monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
+                        lambda samples, params: (
+                            np.array([0.0] * 20), np.array([1.0] * 20)))
+    monkeypatch.setattr(rpc.pt_score, "load_optitrack",
+                        lambda path: (np.array([0.0] * 20), np.array([1.0] * 20)))
+    monkeypatch.setattr(rpc.engine, "compare_pair",
+                        lambda *a, **k: {"status": "error", "error": "no overlap"})
+    result = rpc.score_imu_candidate(trial, {"beta": 0.041})
+    assert result is None
