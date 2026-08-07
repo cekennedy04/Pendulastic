@@ -645,13 +645,39 @@ def test_record_sweep_result_incumbent_unrankable_promotes_best_valid(tmp_path, 
 
 
 def test_record_sweep_result_no_valid_candidate_sets_unavailable(tmp_path, monkeypatch):
+    # No incumbent was ever recorded, and this sweep has no valid candidate
+    # either -- stays unavailable (None). Nothing to protect here since
+    # there was never a good value to lose.
     monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
     ranked = [{"candidate_key": '{"beta": 0.041}', "median_rmse": None,
               "n_trials": 1, "n_participants": 1, "low_coverage": True}]
     result = rpc.record_sweep_result("imu", ranked, "ds1", "impl1")
     assert result["promoted"] is False
+    assert result["reason"] == "no_valid_candidate"
     cfg = rpc.load_best_config()
     assert cfg["imu"] is None
+
+
+def test_record_sweep_result_no_valid_candidate_does_not_wipe_existing_incumbent(tmp_path, monkeypatch):
+    # Design fix (confirmed after task review): full cohort coverage means
+    # a single trial going unscoreable can knock every candidate --
+    # including the incumbent -- out of contention for one sweep. That is
+    # inconclusive, not a demotion: a previously-recorded incumbent must
+    # survive untouched, never wiped to None over a transient failure.
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+             "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", first, "ds1", "impl1")
+
+    second = [{"candidate_key": '{"beta": 0.041}', "median_rmse": None,
+              "n_trials": 4, "n_participants": 3, "low_coverage": True}]
+    result = rpc.record_sweep_result("imu", second, "ds2", "impl1")
+    assert result["promoted"] is False
+    assert result["reason"] == "no_valid_candidate"
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.041}'
+    assert cfg["imu"]["rmse"] == 5.0
+    assert len(cfg["history"]) == 1  # no new history entry for an inconclusive sweep
 
 
 # ── run_full_sweep orchestration ─────────────────────────────────────────
@@ -660,6 +686,7 @@ def _stub_pipeline(monkeypatch, tmp_path, trials, imu_rmse_by_config, mp_rmse_by
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
     monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
     monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(rpc, "discover_scorable_trials", lambda: trials)
     monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl1")
     monkeypatch.setattr(rpc, "compute_input_fingerprints",
@@ -670,6 +697,15 @@ def _stub_pipeline(monkeypatch, tmp_path, trials, imu_rmse_by_config, mp_rmse_by
     monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.041}, {"beta": 0.08}])
     monkeypatch.setattr(sweep_mediapipe_config, "MODEL_VARIANTS", ["full"])
     monkeypatch.setattr(sweep_mediapipe_config, "VIS_THRESH_CANDIDATES", [0.4])
+
+    # run_full_sweep derives a real per-variant model file path under
+    # BASE_DIR/models/mediapipe and skips a variant whose file is missing
+    # (task-11-review fix) -- create the default "full" variant's
+    # placeholder so these stub-driven tests keep exercising the scored
+    # path rather than the skip path.
+    model_dir = tmp_path / "models" / "mediapipe"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "pose_landmarker_full.task").write_bytes(b"")
 
     def fake_score_imu(trial, params):
         return imu_rmse_by_config.get((trial["trial_key"], json.dumps(params, sort_keys=True)))
@@ -713,8 +749,14 @@ def test_run_full_sweep_ranks_and_promotes(tmp_path, monkeypatch):
 def test_run_full_sweep_handles_no_trials(tmp_path, monkeypatch):
     _stub_pipeline(monkeypatch, tmp_path, [], {}, {})
     result = rpc.run_full_sweep()
+    # With zero trials, rank_candidates returns [] for both cohorts (below
+    # min_participants), so record_sweep_result has no valid candidate to
+    # promote -- must distinguish "nothing to rank" from "challenger lost"
+    # (within_epsilon), not just report promoted=False by coincidence.
     assert result["imu"]["promoted"] is False
+    assert result["imu"]["reason"] == "no_valid_candidate"
     assert result["mediapipe"]["promoted"] is False
+    assert result["mediapipe"]["reason"] == "no_valid_candidate"
 
 
 def test_run_full_sweep_isolates_per_trial_scoring_failure(tmp_path, monkeypatch, capsys):
@@ -734,3 +776,76 @@ def test_run_full_sweep_isolates_per_trial_scoring_failure(tmp_path, monkeypatch
 
     result = rpc.run_full_sweep()   # must not raise
     assert result["imu"]["promoted"] is True
+
+
+def test_run_full_sweep_mediapipe_scores_each_variant_against_its_own_model_file(tmp_path, monkeypatch):
+    # Task-11-review bug: model_path used to be computed once outside the
+    # per-variant loop, so every variant ("lite"/"full"/"heavy") was
+    # secretly scored using the "full" model's weights. Verify each variant
+    # is scored with a model_path that actually points at that variant's
+    # own file, and that a variant with no model file on disk is skipped
+    # rather than crashing the sweep.
+    trials = [_trial(f"k{i}", f"p{i % 3}") for i in range(5)]
+    imu_scores = {}
+    mp_scores = {}
+    for t in trials:
+        imu_scores[(t["trial_key"], '{"beta": 0.08}')] = 3.0
+        mp_scores[(t["trial_key"], '{"model_variant": "lite", "vis_thresh": 0.4}')] = 6.0
+        # "heavy" would score better if it ran, but its model file is
+        # deliberately absent below -- it must never be scored at all.
+        mp_scores[(t["trial_key"], '{"model_variant": "heavy", "vis_thresh": 0.4}')] = 1.0
+    _stub_pipeline(monkeypatch, tmp_path, trials, imu_scores, mp_scores)
+
+    import sweep_mediapipe_config
+    monkeypatch.setattr(sweep_mediapipe_config, "MODEL_VARIANTS", ["lite", "heavy"])
+
+    model_paths_seen = []
+
+    def fake_score_mp(trial, model_variant, model_path, vis_thresh):
+        model_paths_seen.append((model_variant, model_path))
+        key = json.dumps({"model_variant": model_variant, "vis_thresh": vis_thresh}, sort_keys=True)
+        return mp_scores.get((trial["trial_key"], key))
+    monkeypatch.setattr(rpc, "score_mediapipe_candidate", fake_score_mp)
+
+    # _stub_pipeline already created pose_landmarker_full.task; only add
+    # "lite"'s file, leaving "heavy" missing on purpose.
+    model_dir = tmp_path / "models" / "mediapipe"
+    (model_dir / "pose_landmarker_lite.task").write_bytes(b"")
+
+    result = rpc.run_full_sweep()
+
+    assert result["mediapipe"]["promoted"] is True
+    cfg = rpc.load_best_config()
+    assert cfg["mediapipe"]["config"] == '{"model_variant": "lite", "vis_thresh": 0.4}'
+
+    variants_scored = {v for v, _ in model_paths_seen}
+    assert variants_scored == {"lite"}  # "heavy" skipped, never scored
+    lite_model_paths = {p for v, p in model_paths_seen if v == "lite"}
+    assert lite_model_paths == {str(model_dir / "pose_landmarker_lite.task")}
+
+
+def test_make_figures_writes_three_png_files_without_stubbing(tmp_path, monkeypatch):
+    # Task-11-review bug: _savefig_atomic passed a ".tmp"-suffixed path
+    # straight to fig.savefig() with no format= kwarg, so matplotlib could
+    # not infer the output format and every real call raised
+    # ValueError: Format 'tmp' is not supported. Every run_full_sweep test
+    # stubs _make_figures out entirely, so this never executed in the
+    # existing suite -- this test calls it for real.
+    monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    os.makedirs(str(tmp_path / "RMSE_Tracking"), exist_ok=True)
+
+    trials = [_trial("k0", "p0"), _trial("k1", "p1")]
+    imu_ranked = [{"candidate_key": '{"beta": 0.08}', "median_rmse": 3.0,
+                  "n_trials": 2, "n_participants": 2, "low_coverage": False}]
+    mp_ranked = [{"candidate_key": '{"model_variant": "full", "vis_thresh": 0.4}',
+                 "median_rmse": 6.0, "n_trials": 2, "n_participants": 2, "low_coverage": False}]
+
+    rpc._make_figures(imu_ranked, mp_ranked, trials, ["k0", "k1"], ["k0", "k1"])
+
+    out_dir = str(tmp_path / "RMSE_Tracking")
+    for name in ("rmse_trend.png", "sweep_heatmap.png", "imu_vs_mediapipe_rmse.png"):
+        path = os.path.join(out_dir, name)
+        assert os.path.isfile(path)
+        assert os.path.getsize(path) > 0
+        assert not os.path.isfile(path + ".tmp")  # no leftover temp file
