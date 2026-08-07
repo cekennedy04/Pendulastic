@@ -14,6 +14,7 @@ its revision note first).
 from __future__ import annotations
 
 import batch_imu_vs_optitrack_rmse as imu_discovery
+import glob
 import hashlib
 import json
 import os
@@ -140,5 +141,63 @@ def discover_imu_trials():
             "imu_component_paths": {"imu": t["imu"], "accel": t["accel"],
                                     "gyro": t["gyro"], "mag": t["mag"]},
             "optitrack_path": t["optitrack_path"],
+        })
+    return out
+
+
+def discover_video_trials():
+    """Every trial with an OptiTrack CSV and a matching video, walking
+    OPTI_ROOT the same way batch_mediapipe.discover_new_trials() does
+    (credited convention, not a call into that generator -- its
+    CSV/annotated-video existence flags and print() side effects are
+    specific to its own batch-processing pipeline, not relevant here).
+    Video may sit beside the OptiTrack CSV itself, or under the mirrored
+    Recordings/ tree -- both are checked, matching the real observed
+    layout variance across participants."""
+    out = []
+    pattern = os.path.join(OPTI_ROOT, "**", "*_optitrack.csv")
+    for opti_path in sorted(glob.glob(pattern, recursive=True)):
+        m = re.match(r"trial_(\d+)_optitrack\.csv", os.path.basename(opti_path), re.I)
+        if not m:
+            continue
+        trial_n = m.group(1)
+        opti_dir = os.path.dirname(opti_path)
+        rel = os.path.relpath(opti_dir, OPTI_ROOT)
+        rec_dir = os.path.join(REC_ROOT, rel)
+
+        # Build candidate basenames to look for (order: opti_dir first, then rec_dir)
+        candidate_basenames = [
+            f"trial_{trial_n}.mp4",
+            f"Trial_{trial_n}.mp4",
+            f"trial_{trial_n}.avi",
+            f"Trial_{trial_n}.avi",
+        ]
+
+        video_path = None
+        # Check opti_dir first, then rec_dir
+        for dirname in [opti_dir, rec_dir]:
+            if video_path:
+                break
+            if os.path.isdir(dirname):
+                # List directory and find case-insensitive match with real file case
+                for actual_file in os.listdir(dirname):
+                    for candidate_basename in candidate_basenames:
+                        if actual_file.lower() == candidate_basename.lower():
+                            video_path = os.path.join(dirname, actual_file)
+                            break
+                    if video_path:
+                        break
+
+        if video_path is None:
+            continue
+
+        fields = parse_structural_fields(opti_path, OPTI_ROOT)
+        if fields is None:
+            continue
+        out.append({
+            **fields,
+            "trial_key": compute_trial_key(fields),
+            "video_path": video_path,
+            "optitrack_path": opti_path,
         })
     return out

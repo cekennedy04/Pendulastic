@@ -132,3 +132,58 @@ def test_discover_imu_trials_unparseable_path_excluded(monkeypatch):
     monkeypatch.setattr(rpc.imu_discovery, "discover_trials", lambda: fake_trials)
     result = rpc.discover_imu_trials()
     assert result == []
+
+
+# ── discover_video_trials ────────────────────────────────────────────────
+
+def test_discover_video_trials_finds_matching_video(tmp_path, monkeypatch):
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    opti_dir = opti_root / "Participant_14" / "Left" / "pre"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_3_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    video_dir = rec_root / "Participant_14" / "Left" / "pre"
+    video_dir.mkdir(parents=True)
+    (video_dir / "Trial_3.avi").write_bytes(b"fake video")
+
+    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    result = rpc.discover_video_trials()
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["participant"] == "14" and rec["leg"] == "left"
+    assert rec["trial_number"] == "3"
+    assert rec["video_path"] == str(video_dir / "Trial_3.avi")
+    assert rec["optitrack_path"] == str(opti_dir / "trial_3_optitrack.csv")
+
+
+def test_discover_video_trials_no_video_excluded(tmp_path, monkeypatch):
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    opti_dir = opti_root / "Participant_9" / "right" / "pre"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_1_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    rec_root.mkdir(parents=True)
+
+    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    assert rpc.discover_video_trials() == []
+
+
+def test_discover_video_trials_checks_opti_side_video_too(tmp_path, monkeypatch):
+    # batch_mediapipe.discover_new_trials's convention: the video may sit
+    # alongside the OptiTrack CSV itself, not only under the mirrored
+    # Recordings/ tree.
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    opti_dir = opti_root / "Participant_6" / "left" / "post"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_2_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    (opti_dir / "Trial_2.mp4").write_bytes(b"fake video")
+    rec_root.mkdir(parents=True)
+
+    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    result = rpc.discover_video_trials()
+    assert len(result) == 1
+    assert result[0]["video_path"] == str(opti_dir / "Trial_2.mp4")
