@@ -21,11 +21,17 @@ import inspect
 import json
 import mediapipe
 import numpy
+import numpy as np
 import os
 import pt_report_common
 import re
 import scipy
 import sys
+
+import imu_calibration_tuner
+import pendulastic_pt_score as pt_score
+import workbench_engine as engine
+from reconstruct_imu_raw_logs import reconstruct_trial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
@@ -332,3 +338,26 @@ def compute_implementation_fingerprint():
 
     blob = "\x00".join(parts).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def score_imu_candidate(trial, params):
+    """RMSE-vs-OptiTrack for one IMU candidate config on one trial. Reuses
+    reconstruct_imu_raw_logs.reconstruct_trial() to build the raw sample
+    stream, imu_calibration_tuner.replay_trial() to run the AHRS/fusion
+    candidate, and workbench_engine.compare_pair() to score -- the same
+    pipeline sweep_imu_config.py's score_config() already uses per-trial
+    (design spec §5). Returns None if fewer than 10 finite angle samples
+    result (unscoreable, matching sweep_imu_config.py's own threshold) or
+    if compare_pair reports a non-ok status."""
+    comp = trial["imu_component_paths"]
+    samples = reconstruct_trial(comp["accel"], comp["gyro"], comp["mag"])
+    if not samples:
+        return None
+    t_m, ang_m = imu_calibration_tuner.replay_trial(samples, params)
+    if np.count_nonzero(np.isfinite(ang_m)) < 10:
+        return None
+    opti_t, opti_ang = pt_score.load_optitrack(trial["optitrack_path"])
+    result = engine.compare_pair(opti_t, opti_ang, t_m, ang_m)
+    if result.get("status") != "ok":
+        return None
+    return result["rmse_deg"]
