@@ -1990,7 +1990,10 @@ class MasEntryPanel(tk.Frame):
         self.canvas_placeholder.pack(pady=40)
 
     def refresh(self) -> None:
-        rows = _mas_validation.load_mas_scores(_mas_validation.MAS_CSV)
+        try:
+            rows = _mas_validation.load_mas_scores(_mas_validation.MAS_CSV)
+        except (FileNotFoundError, OSError):
+            rows = []
         paired = _mas_validation.pair_pt_and_mas(
             rows, _mas_validation._pt_lookup_factory())
         valid = [p for p in paired if "_skip_reason" not in p]
@@ -2392,6 +2395,7 @@ class App(tk.Tk):
         self._mode_select.pack_forget()
         self._mas_entry.pack(fill="both", expand=True)
         self._state = "mas_entry"
+        self._mas_entry.refresh()
 
     def get_trial_meta(self) -> dict:
         return dict(self._workbench_trial_meta)
