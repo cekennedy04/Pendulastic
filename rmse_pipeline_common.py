@@ -23,6 +23,7 @@ import mediapipe
 import numpy
 import numpy as np
 import os
+import pickle
 import pt_report_common
 import re
 import scipy
@@ -30,6 +31,7 @@ import sys
 
 import imu_calibration_tuner
 import pendulastic_pt_score as pt_score
+import sweep_mediapipe_config as mediapipe_sweep
 import workbench_engine as engine
 from reconstruct_imu_raw_logs import reconstruct_trial
 
@@ -361,3 +363,41 @@ def score_imu_candidate(trial, params):
     if result.get("status") != "ok":
         return None
     return result["rmse_deg"]
+
+
+_LANDMARK_CACHE_DIR = lambda: os.path.join(SWEEP_CACHE_DIR, "landmarks")
+
+
+def extract_landmarks_cached(trial, model_variant, model_path):
+    """Raw per-frame landmark extraction, cached separately from the
+    per-config RMSE cache (design spec §7.1, added in the second Codex
+    review round) -- a per-(trial, full-config) RMSE cache alone would
+    re-run MediaPipe inference every time vis_thresh changes even though
+    only the cheap re-thresholding step actually depends on it. Cache key:
+    (trial_key, model_variant, video content hash)."""
+    stat_cache = {}
+    video_fp = sha256_file(trial["video_path"], stat_cache)
+    cache_dir = _LANDMARK_CACHE_DIR()
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir, f"{trial['trial_key']}_{model_variant}_{video_fp}.pkl")
+    if os.path.isfile(cache_file):
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    frames = mediapipe_sweep.extract_raw_landmarks(trial["video_path"], trial["leg"], model_path)
+    tmp_path = cache_file + ".tmp"
+    with open(tmp_path, "wb") as f:
+        pickle.dump(frames, f)
+    os.replace(tmp_path, cache_file)
+    return frames
+
+
+def score_mediapipe_candidate(trial, model_variant, model_path, vis_thresh):
+    """RMSE-vs-OptiTrack for one MediaPipe candidate (model_variant,
+    vis_thresh) on one trial. Landmark extraction is cached and reused
+    across every vis_thresh candidate for the same (trial, model_variant)
+    -- only workbench_engine.compare_pair's cheap re-thresholding runs per
+    candidate (design spec §5, §7.1)."""
+    frames = extract_landmarks_cached(trial, model_variant, model_path)
+    opti_t, opti_ang = pt_score.load_optitrack(trial["optitrack_path"])
+    return mediapipe_sweep.score_frames(frames, opti_t, opti_ang, vis_thresh)
