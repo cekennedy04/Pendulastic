@@ -506,3 +506,56 @@ def test_load_sweep_cache_malformed_json_treated_as_empty(tmp_path, monkeypatch,
     (cache_dir / "manifest.json").write_text("{not valid json", encoding="utf-8")
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(cache_dir))
     assert rpc.load_sweep_cache() == {}
+
+
+# ── rank_candidates ───────────────────────────────────────────────────────
+
+def _cohort_and_participants(n_trials=5, n_participants=3):
+    cohort = [f"t{i}" for i in range(n_trials)]
+    # distribute trials across participants round-robin
+    participant_of = {t: f"p{i % n_participants}" for i, t in enumerate(cohort)}
+    return cohort, participant_of
+
+
+def test_rank_candidates_full_coverage_wins_lower_median():
+    cohort, participant_of = _cohort_and_participants()
+    scores = {
+        '{"beta": 0.041}': {t: 5.0 for t in cohort},
+        '{"beta": 0.08}': {t: 2.0 for t in cohort},
+    }
+    ranked = rpc.rank_candidates(scores, cohort, participant_of)
+    assert ranked[0]["candidate_key"] == '{"beta": 0.08}'
+    assert ranked[0]["median_rmse"] == 2.0
+    assert ranked[0]["low_coverage"] is False
+
+
+def test_rank_candidates_excludes_candidate_missing_required_cohort_trial():
+    cohort, participant_of = _cohort_and_participants(n_trials=5, n_participants=3)
+    scores = {
+        # scores only 3 of 5 cohort trials (60% < 80% floor) but with a
+        # very low RMSE on those -- must not win by having an easier
+        # denominator (design spec §7.2).
+        '{"beta": 0.01}': {cohort[0]: 0.1, cohort[1]: 0.1, cohort[2]: 0.1},
+        '{"beta": 0.08}': {t: 3.0 for t in cohort},
+    }
+    ranked = rpc.rank_candidates(scores, cohort, participant_of)
+    winner = [r for r in ranked if not r["low_coverage"]]
+    assert len(winner) == 1
+    assert winner[0]["candidate_key"] == '{"beta": 0.08}'
+    low_cov = [r for r in ranked if r["low_coverage"]]
+    assert low_cov[0]["candidate_key"] == '{"beta": 0.01}'
+
+
+def test_rank_candidates_reports_n_trials_and_n_participants():
+    cohort, participant_of = _cohort_and_participants(n_trials=5, n_participants=3)
+    scores = {'{"beta": 0.08}': {t: 3.0 for t in cohort}}
+    ranked = rpc.rank_candidates(scores, cohort, participant_of)
+    assert ranked[0]["n_trials"] == 5
+    assert ranked[0]["n_participants"] == 3
+
+
+def test_rank_candidates_cohort_below_minimum_participants_returns_empty():
+    cohort, participant_of = _cohort_and_participants(n_trials=2, n_participants=2)
+    scores = {'{"beta": 0.08}': {t: 3.0 for t in cohort}}
+    ranked = rpc.rank_candidates(scores, cohort, participant_of)
+    assert ranked == []
