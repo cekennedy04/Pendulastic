@@ -1498,6 +1498,71 @@ def test_enter_mas_entry_mode_refreshes_dashboard_on_open(monkeypatch):
         app.destroy()
 
 
+def test_mas_entry_panel_blocks_save_on_missing_required_fields(monkeypatch):
+    import pendulastic_app as _m
+    calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: calls.append(row))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("")
+        app._mas_entry.mas_grade_var.set("")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert calls == []
+        assert "required" in app._mas_entry.error_var.get().lower()
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_appends_and_refreshes(monkeypatch):
+    import pendulastic_app as _m
+    append_calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: append_calls.append(row))
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        assert append_calls[0]["participant"] == "20"
+        assert append_calls[0]["leg"] == "left"
+        assert append_calls[0]["mas_grade"] == "1"
+        assert app._mas_entry.error_var.get() == ""
+        assert app._mas_entry._current_canvas is not None
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_shows_error_on_invalid_grade(monkeypatch):
+    import pendulastic_app as _m
+
+    def raise_invalid(row, **kw):
+        raise ValueError(f"invalid mas_grade {row['mas_grade']!r} (must be one of [])")
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score", raise_invalid)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert "invalid mas_grade" in app._mas_entry.error_var.get()
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""

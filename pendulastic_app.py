@@ -1964,6 +1964,12 @@ class MasEntryPanel(tk.Frame):
         tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
             row=6, column=1, sticky="w", **pad)
 
+        self.error_var = tk.StringVar(value="")
+        tk.Label(self, textvariable=self.error_var, fg="#B45309",
+                 bg=ws.PALETTE["BG"]).pack(fill="x", padx=12, pady=(0, 4))
+
+        ws.primary_button(self, "Save", self._on_save_clicked).pack(pady=(0, 8))
+
         status_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
         status_frame.pack(fill="x", padx=12, pady=(4, 8))
         self.status_text = tk.Text(status_frame, height=4, wrap="word",
@@ -2019,6 +2025,29 @@ class MasEntryPanel(tk.Frame):
         self._last_valid = valid
         self._last_stats = stats
         self._show_figure(fig)
+
+    def _on_save_clicked(self) -> None:
+        participant = self.pid_var.get().strip()
+        mas_grade = self.mas_grade_var.get().strip()
+        if not participant or not mas_grade:
+            self.error_var.set("Participant ID and MAS grade are required.")
+            return
+        row = {
+            "participant": participant,
+            "leg": self.leg_var.get().lower(),
+            "condition": self.condition_var.get().strip(),
+            "diagnosis": self.diagnosis_var.get().strip(),
+            "mas_grade": mas_grade,
+            "assessed_by": self.assessed_by_var.get().strip(),
+            "assessed_date": self.assessed_date_var.get().strip(),
+        }
+        try:
+            _mas_validation.append_mas_score(row)
+        except ValueError as e:
+            self.error_var.set(str(e))
+            return
+        self.error_var.set("")
+        self.refresh()
 
     def _show_placeholder(self) -> None:
         if self._current_canvas is not None:
