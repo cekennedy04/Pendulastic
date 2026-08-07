@@ -39,8 +39,10 @@ import os
 import re
 
 import matplotlib
-matplotlib.use("Agg")
+if __name__ == "__main__":
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 from scipy.stats import spearmanr
 from sklearn.metrics import cohen_kappa_score, roc_auc_score, roc_curve
@@ -57,6 +59,15 @@ FIGURE_PNG = os.path.join(OUT_DIR, "mas_validation_figure.png")
 # Single source of truth for ordinal MAS coding -- see pendulastic_pt_score.py.
 MAS_ORDER = pt.MAS_ORDER
 MAS_RANK = pt.MAS_RANK
+
+# Header written when append_mas_score() has to create mas_scores.csv from
+# scratch (the file is gitignored, so it's simply absent on a fresh checkout).
+# This is the LIVE schema -- `diagnosis`, no `notes` -- which is what the app's
+# MAS entry form targets. main()'s "file not found" message still describes the
+# original 2026-08-06 column set; that's the CLI's own separate UX and is left
+# alone deliberately.
+DEFAULT_MAS_FIELDS = ["participant", "leg", "condition", "diagnosis",
+                      "mas_grade", "assessed_by", "assessed_date"]
 
 _MIN_N_FOR_CONFIDENCE = 5
 _MIN_CLASS_N_FOR_ROC = 3
@@ -151,6 +162,29 @@ def load_mas_scores(csv_path):
     return rows
 
 
+def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
+    """Appends one clinician MAS assessment to csv_path. Raises ValueError
+    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER. Reads
+    the file's own current header rather than assuming a fixed column set,
+    so this stays correct even if mas_scores.csv's schema drifts again the
+    way it already has once (see module docstring).
+
+    If csv_path doesn't exist yet it's created with the DEFAULT_MAS_FIELDS
+    header -- mas_scores.csv is gitignored, so on a fresh checkout the very
+    first save would otherwise die with FileNotFoundError."""
+    grade = row.get("mas_grade", "")
+    if not _valid_grade(grade):
+        raise ValueError(f"invalid mas_grade {grade!r} (must be one of {MAS_ORDER})")
+    if not os.path.exists(csv_path):
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=DEFAULT_MAS_FIELDS).writeheader()
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        fieldnames = csv.DictReader(f).fieldnames
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writerow(row)
+
+
 def _tokenize_condition(text):
     """Bag-of-tokens normalization so mas_scores.csv's free-text condition
     values (e.g. "1 week post") match pt_report_common's folder-derived
@@ -199,9 +233,14 @@ def available_conditions(participant, leg):
 # Plotting / output
 # ══════════════════════════════════════════════════════════════════════════
 
-def make_validation_figure(pairs, stats, out_path):
+def build_validation_figure(pairs, stats):
+    # Object-oriented Figure API, deliberately NOT plt.subplots: under the
+    # app's TkAgg backend pyplot would spin up a FigureManagerTk with its own
+    # tk.Tk() root -- a second Tcl interpreter inside the running app on every
+    # refresh(). Matches pendulastic_workbench.py's embedding pattern.
     n_panels = 3 if stats["roc_auc"] is not None else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5.5), facecolor="white")
+    fig = Figure(figsize=(6 * n_panels, 5.5), facecolor="white")
+    axes = fig.subplots(1, n_panels)
 
     # ── Panel 1: PT score distribution by MAS grade ─────────────────────────
     ax = axes[0]
@@ -260,7 +299,12 @@ def make_validation_figure(pairs, stats, out_path):
         ax.set_title(f"Spastic (MAS>=1) vs not\nAUC={stats['roc_auc']:.2f}", fontsize=10, fontweight="bold")
 
     fig.suptitle("PT Score vs Clinician MAS -- Concurrent Validity", fontsize=12, y=1.03, color="#333333")
-    plt.tight_layout()
+    fig.tight_layout()
+    return fig
+
+
+def save_validation_figure(pairs, stats, out_path):
+    fig = build_validation_figure(pairs, stats)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.savefig(out_path, dpi=150, facecolor="white", bbox_inches="tight")
     plt.close(fig)
@@ -322,7 +366,7 @@ def main():
 
     stats = compute_validation_stats(valid)
     write_stats_csv(stats, STATS_CSV)
-    make_validation_figure(valid, stats, FIGURE_PNG)
+    save_validation_figure(valid, stats, FIGURE_PNG)
     print(f"n={stats['n']}" + (" (preliminary -- small n)" if stats["preliminary"] else ""))
 
 
