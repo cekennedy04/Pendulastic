@@ -1590,6 +1590,7 @@ def test_mas_entry_panel_export_writes_stats_and_figure(monkeypatch):
     monkeypatch.setattr(_m._mas_validation, "save_validation_figure",
                         lambda valid, stats, out_path: figure_calls.append(
                             (valid, stats, out_path)))
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **kw: None)
     from pendulastic_app import App
     app = App()
     try:
