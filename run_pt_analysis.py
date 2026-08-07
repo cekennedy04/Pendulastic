@@ -27,23 +27,14 @@ import csv
 import os
 import sys
 
+import pt_cohort_common
 import pt_report_common as common
 
-TRIAL_THRESHOLD = 4
+TRIAL_THRESHOLD = common.TRIAL_THRESHOLD          # alias -- pt_report_common.py is now the source of truth
 REFERENCE_PARTICIPANTS = ("5", "13")
 MAS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mas_scores.csv")
 
-
-def leg_trial_counts(participant_id):
-    """Total recorded trials per leg for this participant, summed across
-    every condition/session found (pre, post, side, control, etc.) -- not
-    per-condition. A participant with 2 pre + 3 post right-leg trials counts
-    as 5 right, matching TRIAL_THRESHOLD against the cumulative total."""
-    counts = {"left": 0, "right": 0}
-    for r in common.discover_all_trials():
-        if r["participant"] == participant_id and r["leg"] in counts:
-            counts[r["leg"]] += 1
-    return counts
+leg_trial_counts = common.leg_trial_counts        # alias, see TRIAL_THRESHOLD above
 
 
 def run_for_participant(pid):
@@ -112,6 +103,14 @@ def main():
     if ready_for_mas:
         print(f"{len(ready_for_mas)} participant(s) now have both trial data and MAS scores on file "
              f"-- run mas_validation.py to refresh the validation report.")
+
+    try:
+        pt_cohort_common.run_cohort_comparison()
+    except Exception as e:
+        # A malformed hand-edit to participant_groups.json (or any other
+        # cohort-comparison failure) shouldn't take down the whole run --
+        # the per-participant reports above already succeeded.
+        print(f"Cohort comparison failed: {e}")
 
 
 if __name__ == "__main__":
