@@ -457,6 +457,21 @@ def test_append_mas_score_raises_on_malformed_existing_row(tmp_path):
     assert csv_path.read_text() == original
 
 
+def test_append_mas_score_raises_on_duplicate_header_column(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = (
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date,leg\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01,right\n")
+    csv_path.write_text(original)
+    with pytest.raises(ValueError, match="duplicate column"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
 def test_append_mas_score_widens_empty_file(tmp_path):
     csv_path = tmp_path / "mas_scores.csv"
     csv_path.write_text("")
@@ -472,3 +487,19 @@ def test_append_mas_score_widens_empty_file(tmp_path):
     rows = mv.load_mas_scores(str(csv_path))
     assert len(rows) == 1
     assert rows[0]["stronger_leg"] == "right"
+
+
+def test_append_mas_score_widens_empty_file_ignores_unrecognized_keys(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text("")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes",
+         "stronger_le": "right"},  # typo'd key -- not in WIDENABLE_MAS_FIELDS
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
+    assert "stronger_le" not in lines[0].split(",")
+    assert len(lines[0].split(",")) == 9

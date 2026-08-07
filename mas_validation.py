@@ -209,8 +209,8 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
         # an earlier run crashed between creating the file and writing the
         # header. Nothing to preserve; start from the canonical schema.
         widened = list(DEFAULT_MAS_FIELDS)
-        for k in row:
-            if k not in widened:
+        for k in WIDENABLE_MAS_FIELDS:
+            if k in row and k not in widened:
                 widened.append(k)
         _atomic_write_mas_csv(csv_path, widened, [], row)
         return
@@ -222,6 +222,11 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writerow(row)
         return
+
+    if len(set(fieldnames)) != len(fieldnames):
+        raise ValueError(
+            f"{csv_path}: header has a duplicate column name -- fix this "
+            f"file by hand before stronger_leg/notes can be added automatically")
 
     for i, existing in enumerate(existing_rows, start=2):  # row 1 is the header
         if None in existing:
