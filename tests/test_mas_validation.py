@@ -169,6 +169,34 @@ def test_roc_auc_computed_when_class_balance_sufficient():
     assert 0.0 <= stats["roc_auc"] <= 1.0
 
 
+# ── build_validation_figure / save_validation_figure ────────────────────────
+
+def test_build_validation_figure_returns_figure_with_two_panels_when_roc_omitted():
+    pairs = _perfect_agreement_pairs()
+    stats = mv.compute_validation_stats(pairs)
+    assert stats["roc_auc"] is None
+    fig = mv.build_validation_figure(pairs, stats)
+    assert len(fig.axes) == 2
+
+
+def test_build_validation_figure_returns_figure_with_three_panels_when_roc_present():
+    pairs = [{"mas_grade": "0", "pt_score": 0.02 + i * 0.01, "predicted_mas": "0"} for i in range(3)] + [
+        {"mas_grade": "2", "pt_score": 0.5 + i * 0.01, "predicted_mas": "2"} for i in range(3)
+    ]
+    stats = mv.compute_validation_stats(pairs)
+    assert stats["roc_auc"] is not None
+    fig = mv.build_validation_figure(pairs, stats)
+    assert len(fig.axes) == 3
+
+
+def test_save_validation_figure_writes_png(tmp_path):
+    pairs = _perfect_agreement_pairs()
+    stats = mv.compute_validation_stats(pairs)
+    out_path = tmp_path / "fig.png"
+    mv.save_validation_figure(pairs, stats, str(out_path))
+    assert out_path.exists()
+
+
 # ── main(): missing/empty mas_scores.csv ────────────────────────────────────
 
 def test_main_missing_csv_no_crash(tmp_path, monkeypatch, capsys):

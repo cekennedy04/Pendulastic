@@ -39,7 +39,8 @@ import os
 import re
 
 import matplotlib
-matplotlib.use("Agg")
+if __name__ == "__main__":
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import spearmanr
@@ -215,7 +216,7 @@ def available_conditions(participant, leg):
 # Plotting / output
 # ══════════════════════════════════════════════════════════════════════════
 
-def make_validation_figure(pairs, stats, out_path):
+def build_validation_figure(pairs, stats):
     n_panels = 3 if stats["roc_auc"] is not None else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5.5), facecolor="white")
 
@@ -277,6 +278,11 @@ def make_validation_figure(pairs, stats, out_path):
 
     fig.suptitle("PT Score vs Clinician MAS -- Concurrent Validity", fontsize=12, y=1.03, color="#333333")
     plt.tight_layout()
+    return fig
+
+
+def save_validation_figure(pairs, stats, out_path):
+    fig = build_validation_figure(pairs, stats)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig.savefig(out_path, dpi=150, facecolor="white", bbox_inches="tight")
     plt.close(fig)
@@ -338,7 +344,7 @@ def main():
 
     stats = compute_validation_stats(valid)
     write_stats_csv(stats, STATS_CSV)
-    make_validation_figure(valid, stats, FIGURE_PNG)
+    save_validation_figure(valid, stats, FIGURE_PNG)
     print(f"n={stats['n']}" + (" (preliminary -- small n)" if stats["preliminary"] else ""))
 
 
