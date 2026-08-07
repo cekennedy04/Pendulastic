@@ -2,6 +2,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
+import matplotlib.pyplot as plt
 from sklearn.metrics import cohen_kappa_score
 
 import mas_validation as mv
@@ -176,7 +177,10 @@ def test_build_validation_figure_returns_figure_with_two_panels_when_roc_omitted
     stats = mv.compute_validation_stats(pairs)
     assert stats["roc_auc"] is None
     fig = mv.build_validation_figure(pairs, stats)
-    assert len(fig.axes) == 2
+    try:
+        assert len(fig.axes) == 2
+    finally:
+        plt.close(fig)
 
 
 def test_build_validation_figure_returns_figure_with_three_panels_when_roc_present():
@@ -186,7 +190,25 @@ def test_build_validation_figure_returns_figure_with_three_panels_when_roc_prese
     stats = mv.compute_validation_stats(pairs)
     assert stats["roc_auc"] is not None
     fig = mv.build_validation_figure(pairs, stats)
-    assert len(fig.axes) == 3
+    try:
+        assert len(fig.axes) == 3
+    finally:
+        plt.close(fig)
+
+
+def test_build_validation_figure_does_not_create_a_pyplot_managed_figure():
+    # Regression guard: plt.subplots() under TkAgg builds a FigureManagerTk
+    # with its own tk.Tk() root -- a second Tcl interpreter inside the running
+    # app on every refresh(). The Figure API must not register with pyplot.
+    before = set(plt.get_fignums())
+    pairs = _perfect_agreement_pairs()
+    stats = mv.compute_validation_stats(pairs)
+    fig = mv.build_validation_figure(pairs, stats)
+    try:
+        assert set(plt.get_fignums()) == before
+        assert fig.canvas.manager is None
+    finally:
+        plt.close(fig)
 
 
 def test_save_validation_figure_writes_png(tmp_path):
@@ -257,3 +279,37 @@ def test_append_mas_score_round_trips_through_load_mas_scores(tmp_path):
     assert len(rows) == 1
     assert rows[0]["participant"] == "20"
     assert rows[0]["mas_grade"] == "1+"
+
+
+def test_append_mas_score_creates_file_with_header_if_missing(tmp_path):
+    # mas_scores.csv is gitignored -- on a fresh checkout the very first Save
+    # from the app hits a path that doesn't exist yet.
+    csv_path = tmp_path / "new.csv"
+    assert not csv_path.exists()
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "2026-08-07"},
+        csv_path=str(csv_path))
+    assert csv_path.exists()
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"
+    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07"
+
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 1
+    assert rows[0]["participant"] == "20"
+    assert rows[0]["leg"] == "left"
+    assert rows[0]["condition"] == "pre"
+    assert rows[0]["diagnosis"] == "multiple sclerosis"
+    assert rows[0]["mas_grade"] == "1+"
+    assert rows[0]["assessed_by"] == "VL"
+    assert rows[0]["assessed_date"] == "2026-08-07"
+
+
+def test_append_mas_score_does_not_create_file_on_invalid_grade(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    with pytest.raises(ValueError, match="invalid mas_grade"):
+        mv.append_mas_score({"participant": "20", "mas_grade": "5"},
+                            csv_path=str(csv_path))
+    assert not csv_path.exists()
