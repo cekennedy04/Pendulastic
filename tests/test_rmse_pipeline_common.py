@@ -532,9 +532,10 @@ def test_rank_candidates_full_coverage_wins_lower_median():
 def test_rank_candidates_excludes_candidate_missing_required_cohort_trial():
     cohort, participant_of = _cohort_and_participants(n_trials=5, n_participants=3)
     scores = {
-        # scores only 3 of 5 cohort trials (60% < 80% floor) but with a
-        # very low RMSE on those -- must not win by having an easier
-        # denominator (design spec §7.2).
+        # scores only 3 of 5 cohort trials -- coverage must be full (100%
+        # of the cohort), so this candidate cannot win by having an
+        # easier denominator even with a very low RMSE on those it did
+        # score (design spec §7.2).
         '{"beta": 0.01}': {cohort[0]: 0.1, cohort[1]: 0.1, cohort[2]: 0.1},
         '{"beta": 0.08}': {t: 3.0 for t in cohort},
     }
@@ -544,6 +545,28 @@ def test_rank_candidates_excludes_candidate_missing_required_cohort_trial():
     assert winner[0]["candidate_key"] == '{"beta": 0.08}'
     low_cov = [r for r in ranked if r["low_coverage"]]
     assert low_cov[0]["candidate_key"] == '{"beta": 0.01}'
+
+
+def test_rank_candidates_requires_full_coverage_not_fractional_floor():
+    # Regression test for a task-review finding: a candidate that skips
+    # only the hardest cohort trial (4 of 5 -- 80%) must NOT be allowed
+    # to win just because it clears some fractional coverage floor. Full
+    # cohort coverage is required for ranking eligibility. Here the
+    # 4/5-scoring candidate has a much lower RMSE on the trials it did
+    # score, but it must still lose to the fully-covering candidate.
+    cohort, participant_of = _cohort_and_participants(n_trials=5, n_participants=3)
+    scores = {
+        '{"beta": 0.01}': {t: 0.1 for t in cohort[:4]},  # skips cohort[4]
+        '{"beta": 0.08}': {t: 3.0 for t in cohort},       # full coverage
+    }
+    ranked = rpc.rank_candidates(scores, cohort, participant_of)
+    winner = [r for r in ranked if not r["low_coverage"]]
+    assert len(winner) == 1
+    assert winner[0]["candidate_key"] == '{"beta": 0.08}'
+    low_cov = [r for r in ranked if r["low_coverage"]]
+    assert len(low_cov) == 1
+    assert low_cov[0]["candidate_key"] == '{"beta": 0.01}'
+    assert low_cov[0]["n_trials"] == 4
 
 
 def test_rank_candidates_reports_n_trials_and_n_participants():

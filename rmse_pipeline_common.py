@@ -445,23 +445,26 @@ def save_sweep_cache(cache):
     os.replace(tmp_path, _sweep_cache_manifest_path())
 
 
-def rank_candidates(candidate_scores, cohort, participant_of,
-                    min_coverage_fraction=0.8, min_participants=3):
+def rank_candidates(candidate_scores, cohort, participant_of, min_participants=3):
     """Design spec §7.2: one frozen ranking cohort (every eligible trial
     for this methodology), every candidate scored against the same cohort.
-    A candidate that didn't score a required cohort trial is marked
-    low_coverage and reported but excluded from the winner (never
+    A candidate that fails to score on a required cohort trial is marked
+    low_coverage and reported but excluded from the winner entirely (never
     aggregated over an easier subset -- this is what makes "same scored
-    subset" literally true rather than aspirational, fixed after the
-    second Codex review round caught the earlier version's
-    self-contradiction). If the cohort itself has fewer than
-    min_participants distinct participants, ranking is skipped for this
-    sweep entirely (returns [])."""
+    subset" literally true rather than aspirational). Coverage is full
+    coverage: a candidate is only ranking-eligible if it scored every
+    trial in the cohort -- a fractional floor would let a candidate win
+    by cherry-picking away the hardest trial, which is exactly the bug
+    this function exists to prevent (caught in task review after the
+    original 80%-floor draft let a 4/5-scoring candidate beat a
+    5/5-scoring one). If the cohort itself has fewer than min_participants
+    distinct participants, ranking is skipped for this sweep entirely
+    (returns [])."""
     cohort_participants = {participant_of[t] for t in cohort}
     if len(cohort_participants) < min_participants:
         return []
 
-    required_n = max(1, int(len(cohort) * min_coverage_fraction))
+    required_n = len(cohort)
     rows = []
     for candidate_key, per_trial in candidate_scores.items():
         scored_in_cohort = [t for t in cohort if t in per_trial]
