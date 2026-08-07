@@ -481,3 +481,91 @@ def rank_candidates(candidate_scores, cohort, participant_of, min_participants=3
     winners.sort(key=lambda r: r["median_rmse"])
     losers = [r for r in rows if r["low_coverage"]]
     return winners + losers
+
+
+def load_best_config():
+    """Missing/malformed file -> the empty structure, not an error --
+    matches pt_cohort_common.load_registry()'s defensive pattern."""
+    if not os.path.isfile(BEST_CONFIG_JSON):
+        return {"mediapipe": None, "imu": None, "history": []}
+    try:
+        with open(BEST_CONFIG_JSON, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print(f"{BEST_CONFIG_JSON} failed to parse -- treating as empty.")
+        return {"mediapipe": None, "imu": None, "history": []}
+    cfg.setdefault("mediapipe", None)
+    cfg.setdefault("imu", None)
+    cfg.setdefault("history", [])
+    return cfg
+
+
+def _save_best_config(cfg):
+    tmp_path = BEST_CONFIG_JSON + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, BEST_CONFIG_JSON)
+
+
+def record_sweep_result(methodology, ranked, dataset_fingerprint,
+                        implementation_fingerprint, epsilon=0.1):
+    """Design spec §5/§7.3: every sweep re-scores/re-ranks the incumbent on
+    the SAME current cohort as every challenger (ranked already reflects
+    this -- rank_candidates scores every candidate, including whatever
+    config load_best_config() currently holds, against this sweep's
+    cohort), so promotion is always apples-to-apples. epsilon is in
+    absolute RMSE degrees (design spec §5).
+
+    Edge case (design spec §5, third Codex review round): if the
+    incumbent's exact config isn't present in `ranked` at all (e.g.
+    dropped from a hand-edited grid), it's no longer rankable -- promote
+    the best valid candidate from this sweep instead of keeping a stale,
+    no-longer-comparable RMSE. If no candidate in `ranked` is valid
+    (not low_coverage), current best becomes unavailable (None) rather
+    than silently retaining an old number."""
+    cfg = load_best_config()
+    incumbent = cfg.get(methodology)
+    valid = [r for r in ranked if not r["low_coverage"]]
+    best_this_sweep = valid[0] if valid else None
+
+    incumbent_still_ranked = None
+    if incumbent is not None:
+        incumbent_still_ranked = next(
+            (r for r in ranked if r["candidate_key"] == incumbent["config"]
+             and not r["low_coverage"]), None)
+
+    promote = False
+    if best_this_sweep is None:
+        new_entry = None
+    elif incumbent is None or incumbent_still_ranked is None:
+        promote = True
+        new_entry = best_this_sweep
+    elif incumbent_still_ranked["median_rmse"] < best_this_sweep["median_rmse"] + epsilon:
+        new_entry = None  # incumbent (re-scored) still wins or challenger's edge is within epsilon
+    else:
+        promote = True
+        new_entry = best_this_sweep
+
+    if best_this_sweep is None and incumbent is not None and incumbent_still_ranked is None:
+        # No valid candidate this sweep AND the incumbent itself couldn't be
+        # re-ranked -- current best becomes unavailable, not stale.
+        cfg[methodology] = None
+        _save_best_config(cfg)
+        return {"promoted": False, "reason": "no_valid_candidate"}
+
+    if promote:
+        cfg[methodology] = {
+            "config": new_entry["candidate_key"], "rmse": new_entry["median_rmse"],
+            "n_trials": new_entry["n_trials"], "n_participants": new_entry["n_participants"],
+        }
+        cfg["history"].append({
+            "methodology": methodology, "config": new_entry["candidate_key"],
+            "rmse": new_entry["median_rmse"], "dataset_fingerprint": dataset_fingerprint,
+            "implementation_fingerprint": implementation_fingerprint,
+            "n_trials": new_entry["n_trials"], "n_participants": new_entry["n_participants"],
+        })
+        _save_best_config(cfg)
+        return {"promoted": True}
+
+    _save_best_config(cfg)
+    return {"promoted": False, "reason": "within_epsilon"}
