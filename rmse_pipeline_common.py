@@ -14,6 +14,7 @@ its revision note first).
 from __future__ import annotations
 
 import batch_imu_vs_optitrack_rmse as imu_discovery
+import csv
 import cv2
 import glob
 import hashlib
@@ -569,3 +570,158 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
 
     _save_best_config(cfg)
     return {"promoted": False, "reason": "within_epsilon"}
+
+
+def _score_grid(trials, has_flag, grid, score_fn, cache, methodology, model_path=None):
+    """Score every (trial, candidate) pair in `grid` for trials with
+    `has_flag` True, using sweep_cache when available. Returns
+    {candidate_key: {trial_key: rmse}}. One failing trial/candidate is
+    logged and skipped, never aborts the whole sweep (design spec §6/§10,
+    matching run_pt_analysis.py's per-participant failure isolation)."""
+    impl_fp = compute_implementation_fingerprint()
+    stat_cache = {}
+    results = {}
+    for trial in trials:
+        if not trial.get(has_flag):
+            continue
+        try:
+            input_fps = compute_input_fingerprints(trial, methodology, stat_cache)
+        except Exception as e:
+            print(f"[rmse_pipeline_common] fingerprint failure for {trial['trial_key']}: {e}")
+            continue
+        for candidate in grid:
+            candidate_key = json.dumps(candidate, sort_keys=True)
+            cache_key = compute_cache_key(methodology, trial, candidate, input_fps, impl_fp)
+            if cache_key in cache:
+                rmse = cache[cache_key]
+            else:
+                try:
+                    if methodology == "imu":
+                        rmse = score_imu_candidate(trial, candidate)
+                    else:
+                        rmse = score_mediapipe_candidate(
+                            trial, candidate["model_variant"], model_path, candidate["vis_thresh"])
+                except Exception as e:
+                    print(f"[rmse_pipeline_common] scoring failure for "
+                         f"{trial['trial_key']} / {candidate_key}: {e}")
+                    rmse = None
+                if rmse is not None:
+                    cache[cache_key] = rmse
+            if rmse is not None:
+                results.setdefault(candidate_key, {})[trial["trial_key"]] = rmse
+    return results
+
+
+def run_full_sweep(priority_trial_keys=None):
+    """Design spec §5/§7: discover -> score both grids over the whole
+    dataset (priority_trial_keys is an ordering/caching hint only, never a
+    filter -- with or without it this returns the same ranking for the
+    same underlying data) -> rank each methodology on its own frozen
+    cohort -> promote -> write outputs. Never raises on a single trial or
+    candidate's scoring failure (see _score_grid)."""
+    del priority_trial_keys  # ordering hint only in this module; the watcher plan uses it
+    os.makedirs(RMSE_TRACKING_DIR, exist_ok=True)
+    trials = discover_scorable_trials()
+    cache = load_sweep_cache()
+    participant_of = {t["trial_key"]: t["participant"] for t in trials}
+
+    import sweep_imu_config
+    import sweep_mediapipe_config
+    imu_scores = _score_grid(trials, "has_imu_rmse", sweep_imu_config.WIDE_GRID,
+                             score_imu_candidate, cache, "imu")
+    mp_grid = [{"model_variant": v, "vis_thresh": t}
+              for v in sweep_mediapipe_config.MODEL_VARIANTS
+              for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES]
+    model_path = os.path.join(BASE_DIR, "models", "mediapipe", "pose_landmarker_full.task")
+    mp_scores = _score_grid(trials, "has_mediapipe_rmse", mp_grid,
+                            score_mediapipe_candidate, cache, "mediapipe", model_path=model_path)
+    save_sweep_cache(cache)
+
+    imu_cohort = [t["trial_key"] for t in trials if t["has_imu_rmse"]]
+    mp_cohort = [t["trial_key"] for t in trials if t["has_mediapipe_rmse"]]
+    imu_ranked = rank_candidates(imu_scores, imu_cohort, participant_of)
+    mp_ranked = rank_candidates(mp_scores, mp_cohort, participant_of)
+
+    impl_fp = compute_implementation_fingerprint()
+    dataset_fp = hashlib.sha256(
+        json.dumps(sorted(t["trial_key"] for t in trials)).encode("utf-8")).hexdigest()
+    imu_result = record_sweep_result("imu", imu_ranked, dataset_fp, impl_fp)
+    mp_result = record_sweep_result("mediapipe", mp_ranked, dataset_fp, impl_fp)
+
+    _write_sweep_results_csv(imu_ranked, mp_ranked)
+    _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort)
+
+    return {"imu": imu_result, "mediapipe": mp_result,
+           "imu_ranked": imu_ranked, "mediapipe_ranked": mp_ranked}
+
+
+def _write_sweep_results_csv(imu_ranked, mp_ranked):
+    path = os.path.join(RMSE_TRACKING_DIR, "rmse_sweep_results.csv")
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["methodology", "candidate", "median_rmse_deg", "n_trials",
+                   "n_participants", "low_coverage"])
+        for methodology, ranked in (("imu", imu_ranked), ("mediapipe", mp_ranked)):
+            for row in ranked:
+                w.writerow([methodology, row["candidate_key"], row["median_rmse"],
+                          row["n_trials"], row["n_participants"], row["low_coverage"]])
+    os.replace(tmp_path, path)
+
+
+def _savefig_atomic(fig, out_path):
+    """Write-to-temp-then-rename for figure outputs (design spec §7.3 --
+    applies to every output file, not just the CSV, so a crash mid-write
+    never leaves a partially-written PNG in place)."""
+    tmp_path = out_path + ".tmp"
+    fig.savefig(tmp_path, dpi=150, facecolor="white", bbox_inches="tight")
+    os.replace(tmp_path, out_path)
+
+
+def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort):
+    """rmse_trend.png, sweep_heatmap.png, imu_vs_mediapipe_rmse.png (design
+    spec §7.3). Smoke-tested only via the live-data run in Task 11 Step 6 --
+    this repo's other plotting functions have no pixel tests either."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    cfg = load_best_config()
+    history = cfg.get("history", [])
+
+    fig, ax = plt.subplots(figsize=(8, 4), facecolor="white")
+    for methodology, color in (("imu", "#d62728"), ("mediapipe", "#2ca02c")):
+        points = [(i, h["rmse"]) for i, h in enumerate(history) if h["methodology"] == methodology]
+        if points:
+            xs, ys = zip(*points)
+            ax.plot(xs, ys, marker="o", color=color, label=methodology)
+    ax.set_xlabel("promotion #")
+    ax.set_ylabel("RMSE (deg)")
+    ax.legend()
+    _savefig_atomic(fig, os.path.join(RMSE_TRACKING_DIR, "rmse_trend.png"))
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6, 4), facecolor="white")
+    labels = [r["candidate_key"] for r in mp_ranked]
+    values = [r["median_rmse"] or 0.0 for r in mp_ranked]
+    ax.bar(range(len(labels)), values, color="#2ca02c", alpha=0.6)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=6)
+    ax.set_ylabel("median RMSE (deg)")
+    _savefig_atomic(fig, os.path.join(RMSE_TRACKING_DIR, "sweep_heatmap.png"))
+    plt.close(fig)
+
+    intersection = set(imu_cohort) & set(mp_cohort)
+    fig, ax = plt.subplots(figsize=(4, 4), facecolor="white")
+    imu_best = imu_ranked[0]["median_rmse"] if imu_ranked and not imu_ranked[0]["low_coverage"] else None
+    mp_best = mp_ranked[0]["median_rmse"] if mp_ranked and not mp_ranked[0]["low_coverage"] else None
+    ax.bar(["IMU", "MediaPipe"], [imu_best or 0.0, mp_best or 0.0],
+          color=["#d62728", "#2ca02c"], alpha=0.6)
+    ax.set_ylabel("median RMSE (deg)")
+    n_participants = len({p for t, p in
+                         [(t, next(tr["participant"] for tr in trials if tr["trial_key"] == t))
+                          for t in intersection]}) if intersection else 0
+    ax.set_title(f"n={len(intersection)} trials, {n_participants} participants (intersection)",
+                fontsize=8)
+    _savefig_atomic(fig, os.path.join(RMSE_TRACKING_DIR, "imu_vs_mediapipe_rmse.png"))
+    plt.close(fig)

@@ -1,3 +1,4 @@
+import json
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -651,3 +652,85 @@ def test_record_sweep_result_no_valid_candidate_sets_unavailable(tmp_path, monke
     assert result["promoted"] is False
     cfg = rpc.load_best_config()
     assert cfg["imu"] is None
+
+
+# ── run_full_sweep orchestration ─────────────────────────────────────────
+
+def _stub_pipeline(monkeypatch, tmp_path, trials, imu_rmse_by_config, mp_rmse_by_config):
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "discover_scorable_trials", lambda: trials)
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl1")
+    monkeypatch.setattr(rpc, "compute_input_fingerprints",
+                        lambda trial, methodology, cache, force=False: {"optitrack": "h"})
+
+    import sweep_imu_config
+    import sweep_mediapipe_config
+    monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.041}, {"beta": 0.08}])
+    monkeypatch.setattr(sweep_mediapipe_config, "MODEL_VARIANTS", ["full"])
+    monkeypatch.setattr(sweep_mediapipe_config, "VIS_THRESH_CANDIDATES", [0.4])
+
+    def fake_score_imu(trial, params):
+        return imu_rmse_by_config.get((trial["trial_key"], json.dumps(params, sort_keys=True)))
+    monkeypatch.setattr(rpc, "score_imu_candidate", fake_score_imu)
+
+    def fake_score_mp(trial, model_variant, model_path, vis_thresh):
+        key = json.dumps({"model_variant": model_variant, "vis_thresh": vis_thresh}, sort_keys=True)
+        return mp_rmse_by_config.get((trial["trial_key"], key))
+    monkeypatch.setattr(rpc, "score_mediapipe_candidate", fake_score_mp)
+    monkeypatch.setattr(rpc, "_make_figures", lambda *a, **k: None)
+
+
+def _trial(key, participant, has_imu=True, has_mp=True):
+    return {"trial_key": key, "participant": participant, "leg": "left",
+           "condition": "post", "session": "post", "position": "1", "height": "none",
+           "trial_number": "1", "imu_anchor_path": "a", "imu_component_paths": {"imu": "i"},
+           "video_path": "v.mp4" if has_mp else None,
+           "optitrack_path": "o.csv", "has_imu_rmse": has_imu, "has_mediapipe_rmse": has_mp,
+           "exclusion_reasons": []}
+
+
+def test_run_full_sweep_ranks_and_promotes(tmp_path, monkeypatch):
+    trials = [_trial(f"k{i}", f"p{i % 3}") for i in range(5)]
+    imu_scores = {}
+    mp_scores = {}
+    for t in trials:
+        imu_scores[(t["trial_key"], '{"beta": 0.041}')] = 5.0
+        imu_scores[(t["trial_key"], '{"beta": 0.08}')] = 3.0
+        mp_scores[(t["trial_key"], '{"model_variant": "full", "vis_thresh": 0.4}')] = 6.0
+    _stub_pipeline(monkeypatch, tmp_path, trials, imu_scores, mp_scores)
+
+    result = rpc.run_full_sweep()
+
+    assert result["imu"]["promoted"] is True
+    assert result["mediapipe"]["promoted"] is True
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.08}'
+    assert os.path.isfile(os.path.join(str(tmp_path / "RMSE_Tracking"), "rmse_sweep_results.csv"))
+
+
+def test_run_full_sweep_handles_no_trials(tmp_path, monkeypatch):
+    _stub_pipeline(monkeypatch, tmp_path, [], {}, {})
+    result = rpc.run_full_sweep()
+    assert result["imu"]["promoted"] is False
+    assert result["mediapipe"]["promoted"] is False
+
+
+def test_run_full_sweep_isolates_per_trial_scoring_failure(tmp_path, monkeypatch, capsys):
+    trials = [_trial(f"k{i}", f"p{i % 3}") for i in range(5)]
+    imu_scores = {}
+    mp_scores = {}
+    for t in trials:
+        imu_scores[(t["trial_key"], '{"beta": 0.08}')] = 3.0
+        mp_scores[(t["trial_key"], '{"model_variant": "full", "vis_thresh": 0.4}')] = 6.0
+    _stub_pipeline(monkeypatch, tmp_path, trials, imu_scores, mp_scores)
+
+    def raising_score_imu(trial, params):
+        if params == {"beta": 0.041}:
+            raise ValueError("corrupt CSV")
+        return imu_scores.get((trial["trial_key"], json.dumps(params, sort_keys=True)))
+    monkeypatch.setattr(rpc, "score_imu_candidate", raising_score_imu)
+
+    result = rpc.run_full_sweep()   # must not raise
+    assert result["imu"]["promoted"] is True
