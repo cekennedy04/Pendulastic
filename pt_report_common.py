@@ -10,6 +10,7 @@ representative-trial selection, same styling.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 import sys
@@ -164,10 +165,41 @@ def _parse_trial_path(csv_path, root):
             "trial": trial, "path": csv_path, "mtime": os.path.getmtime(csv_path)}
 
 
+EXCLUDED_TRIALS_PATH = os.path.join(BASE_DIR, "excluded_trials.json")
+
+
+def trial_key(participant, leg, condition, trial):
+    """Canonical exclusion/cache key shared with rmse_pipeline_common.py's
+    trial keys, so one registry covers both PT-score reporting and the RMSE
+    validation pipeline."""
+    return f"{participant}_{leg}_{condition}_T{trial}"
+
+
+def load_excluded_trials():
+    """{trial_key: reason} for trials that must be dropped from every
+    discovery/report/sweep -- e.g. a trial where the participant actively
+    used their own muscles to stop the pendulum swing instead of a passive
+    release, which invalidates the Popovic PT-score physics (and, if left
+    in, would corrupt the RMSE pipeline's parameter search too, since a
+    config could spuriously score well against non-passive motion).
+    Missing or malformed file -> {} , never raises, matching this
+    codebase's other JSON-registry loaders (imu_calibration_config.py,
+    pt_cohort_common.load_registry())."""
+    try:
+        with open(EXCLUDED_TRIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def discover_all_trials(include_archive=True):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
-    records. Quarantined/invalid data (INVALID_ in the path) is excluded."""
+    records. Quarantined/invalid data (INVALID_ in the path) is excluded,
+    as is any trial listed in excluded_trials.json (non-viable recordings,
+    e.g. active muscle intervention during the swing)."""
+    excluded = load_excluded_trials()
     records = []
     seen = set()
     roots = [OPTI_ROOT] + ([ARCHIVE_ROOT] if include_archive and os.path.isdir(ARCHIVE_ROOT) else [])
@@ -180,8 +212,12 @@ def discover_all_trials(include_archive=True):
                 continue
             seen.add(real)
             rec = _parse_trial_path(csv_path, root)
-            if rec is not None:
-                records.append(rec)
+            if rec is None:
+                continue
+            key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
+            if key in excluded:
+                continue
+            records.append(rec)
     return records
 
 
