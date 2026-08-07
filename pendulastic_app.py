@@ -2073,6 +2073,8 @@ class MasEntryPanel(tk.Frame):
             "mas_grade": mas_grade,
             "assessed_by": self.assessed_by_var.get().strip(),
             "assessed_date": self.assessed_date_var.get().strip(),
+            "stronger_leg": self.stronger_leg_var.get().strip().lower(),
+            "notes": self.notes_text.get("1.0", "end").strip(),
         }
         try:
             _mas_validation.append_mas_score(row)
@@ -2086,10 +2088,13 @@ class MasEntryPanel(tk.Frame):
         # participant/condition/date), but with no confirmation a clinician
         # unsure the click registered would click Save again and append an
         # identical duplicate row, biasing the Spearman/kappa stats. Confirm,
-        # and clear the one field that must change between consecutive rows so
-        # a resubmit takes a deliberate re-selection.
+        # and clear the fields that must change between consecutive rows so a
+        # resubmit takes a deliberate re-selection: mas_grade (existing) and
+        # notes (specific to this one observation) -- unlike stronger_leg,
+        # which typically holds across both legs' rows for the same session.
         self._set_feedback(f"Saved {participant} {row['leg']} / {mas_grade}.", ok=True)
         self.mas_grade_var.set("")
+        self.notes_text.delete("1.0", "end")
         self.refresh()
 
     def _on_export_clicked(self) -> None:
