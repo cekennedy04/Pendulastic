@@ -443,3 +443,38 @@ def save_sweep_cache(cache):
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2, sort_keys=True)
     os.replace(tmp_path, _sweep_cache_manifest_path())
+
+
+def rank_candidates(candidate_scores, cohort, participant_of,
+                    min_coverage_fraction=0.8, min_participants=3):
+    """Design spec §7.2: one frozen ranking cohort (every eligible trial
+    for this methodology), every candidate scored against the same cohort.
+    A candidate that didn't score a required cohort trial is marked
+    low_coverage and reported but excluded from the winner (never
+    aggregated over an easier subset -- this is what makes "same scored
+    subset" literally true rather than aspirational, fixed after the
+    second Codex review round caught the earlier version's
+    self-contradiction). If the cohort itself has fewer than
+    min_participants distinct participants, ranking is skipped for this
+    sweep entirely (returns [])."""
+    cohort_participants = {participant_of[t] for t in cohort}
+    if len(cohort_participants) < min_participants:
+        return []
+
+    required_n = max(1, int(len(cohort) * min_coverage_fraction))
+    rows = []
+    for candidate_key, per_trial in candidate_scores.items():
+        scored_in_cohort = [t for t in cohort if t in per_trial]
+        n_trials = len(scored_in_cohort)
+        n_participants = len({participant_of[t] for t in scored_in_cohort})
+        low_coverage = n_trials < required_n or n_participants < min_participants
+        median_rmse = (float(np.median([per_trial[t] for t in scored_in_cohort]))
+                       if scored_in_cohort else None)
+        rows.append({"candidate_key": candidate_key, "median_rmse": median_rmse,
+                    "n_trials": n_trials, "n_participants": n_participants,
+                    "low_coverage": low_coverage})
+
+    winners = [r for r in rows if not r["low_coverage"]]
+    winners.sort(key=lambda r: r["median_rmse"])
+    losers = [r for r in rows if r["low_coverage"]]
+    return winners + losers
