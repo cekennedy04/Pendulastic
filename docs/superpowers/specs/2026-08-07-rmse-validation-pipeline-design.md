@@ -1,15 +1,21 @@
 # Auto-Triggered RMSE Validation Pipeline — Design Spec
 
-**Revision note (2026-08-07):** this spec went through two rounds of Codex review
+**Revision note (2026-08-07):** this spec went through three rounds of Codex review
 (`/codex consult`, session `019fdd23-8d0c-7230-adae-b40c2652e2b6`). Round 1 found two
 factual errors and several correctness gaps in the initial draft. Round 2, run after
 applying round 1's fixes, caught that two of those fixes were themselves incomplete or
 introduced new problems (the `trial_key` design and §7.2's coverage rule) and flagged
 gaps round 1's fixes hadn't closed (reconciliation's fingerprint blind spot, the
 promotion incumbent-rescoring gap, MediaPipe cache granularity, the stability-check
-mechanism, and the condition-variable race). All incorporated below. Superseded points
-from earlier revisions (e.g. the size/mtime cache key from the Grok-round revision, and
-the source-path-hash `trial_key` from round 1) are called out explicitly where replaced.
+mechanism, and the condition-variable race). Round 3 found the round-2 `trial_key` fix
+still dropped one field (`position`), tightened reconciliation to fully rehash rather
+than reuse the stat pre-filter (reconciliation is the correctness backstop and shouldn't
+share the speed shortcut's blind spot), added an edge case for an incumbent that becomes
+unrankable, and confirmed no further design round is needed — the remaining points are
+implementation-time judgment calls, not open correctness gaps. All incorporated below.
+Superseded points from earlier revisions (the size/mtime cache key from the Grok-round
+revision, and the source-path-hash and position-omitting `trial_key` from rounds 1-2)
+are called out explicitly where replaced.
 
 ## 1. Goal
 
@@ -102,13 +108,18 @@ TrialRecord = {
 }
 ```
 
-**`trial_key` fix (second Codex round):** the first revision hashed the resolved *source paths*
-(optitrack + imu_anchor + video), which broke identity stability — adding a video later for a
-capture that previously had only IMU data, or relocating a file, changes the key for the same
-physical capture, silently fragmenting its cache/history into what looks like two different
-trials. `trial_key` is instead a hash of the canonical **structural** capture tuple (participant,
-leg, condition/session, height, trial_number) resolved by the discovery layer — this is stable
-across capability changes. The actual file identities (which files currently exist, their content)
+**`trial_key` fix (second Codex round, corrected again in the third):** the first revision hashed
+the resolved *source paths* (optitrack + imu_anchor + video), which broke identity stability —
+adding a video later for a capture that previously had only IMU data, or relocating a file,
+changes the key for the same physical capture, silently fragmenting its cache/history into what
+looks like two different trials. The second-round fix moved to hashing a structural tuple but
+still omitted `position`, which a third round caught: two captures at different positions could
+collide onto the same key. `trial_key` is a hash of the full canonical structural tuple —
+`(participant, leg, condition, session, position, height, trial_number)`, all seven fields
+explicitly, each independently normalized (lowercased/trimmed) — resolved by the discovery layer.
+`condition` and `session` are kept as two distinct fields (not merged into one "condition/session"
+label) since the real folder structure uses both independently. This is stable across capability
+changes. The actual file identities (which files currently exist, their content)
 live in `input_fingerprints` (§7.1) and are free to change without changing `trial_key`. If the
 structural resolution itself is ambiguous — multiple candidate file sets could satisfy the same
 tuple, or `find_optitrack_match()`'s shallow-match fallback can't disambiguate — the record is
@@ -152,7 +163,13 @@ than a skipped trial, especially for a project whose whole point is measurement 
   "current best" when it beats the freshly-rescored incumbent by more than a defined epsilon
   (units: RMSE degrees, absolute — not relative — since cross-run relative comparisons are already
   unstable as dataset size changes; exact value TBD at implementation time, default proposal 0.1°)
-  **and** meets the minimum-coverage floor in §7.2.
+  **and** meets the minimum-coverage floor in §7.2. **Edge case (third Codex round):** if the
+  incumbent's exact config fails to score on a required current-cohort trial, it is no longer
+  rankable on that cohort — its stale RMSE must not be kept as "current best" by default. In that
+  case, "current best" becomes the best-scoring *valid* candidate from this sweep's ranking (still
+  subject to the coverage floor), or explicitly `unavailable` if no candidate in the grid meets the
+  coverage floor this sweep — never a silently-retained number that's no longer comparable to
+  anything just scored.
 
 This module has no side effects beyond reading trial data and writing its own output files — it
 never touches `imu_calibration_config.json`, `participant_groups.json`, or any file outside
@@ -192,14 +209,18 @@ never touches `imu_calibration_config.json`, `participant_groups.json`, or any f
   `trial_key`, so diffing trial-key existence alone never notices an edit):
   1. Re-derive `discover_scorable_trials()` for the whole tree and diff against `sweep_cache/`'s
      known trial keys — catches genuinely new/removed trials, same as the first revision.
-  2. For every already-known trial, re-check its `input_fingerprints` (§7.1) via the same
-     stat-pre-filter/hash-on-change path the cache uses, **and** recompute the current
-     `implementation_fingerprint` and compare it against the one recorded on the last completed
-     sweep. A changed input fingerprint marks that trial dirty; a changed implementation
-     fingerprint (source/grid/model files, which live outside the watched
-     `Recordings/`/`OptiTrack_Recordings/` roots and so generate no `watchdog` events at all) marks
-     **every** known trial dirty, since a code or grid change invalidates every existing cache
-     entry at once.
+  2. For every already-known trial, re-check its `input_fingerprints` (§7.1) and recompute the
+     current `implementation_fingerprint`, comparing both against what's recorded from the last
+     completed sweep. **Unlike the per-sweep cache path, this step always fully rehashes — it does
+     not use the stat pre-filter** (third-round correction: the stat pre-filter is a legitimate
+     speed optimization for the frequently-re-triggered event-driven path, but reconciliation is
+     explicitly the correctness safety net, and a stat-preserving content edit — a restored backup,
+     a tool that rewrites a file in place without touching mtime — would otherwise be invisible to
+     the one mechanism that's supposed to catch exactly that class of miss). A changed input
+     fingerprint marks that trial dirty; a changed implementation fingerprint (source/grid/model
+     files, which live outside the watched `Recordings/`/`OptiTrack_Recordings/` roots and so
+     generate no `watchdog` events at all) marks **every** known trial dirty, since a code or grid
+     change invalidates every existing cache entry at once.
 
   This is the safety net for any `watchdog` OS-level events dropped under Windows file-system event
   coalescing, for same-path content edits that don't change `trial_key`, and for the entire class
