@@ -13,6 +13,7 @@ its revision note first).
 """
 from __future__ import annotations
 
+import batch_imu_vs_optitrack_rmse as imu_discovery
 import hashlib
 import json
 import os
@@ -118,3 +119,26 @@ def compute_trial_key(fields):
     canonical = {"v": 1, **{k: fields[k] for k in _TRIAL_KEY_FIELDS}}
     blob = json.dumps(canonical, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+def discover_imu_trials():
+    """Every IMU trial with matched split-CSV components, via
+    batch_imu_vs_optitrack_rmse.discover_trials() (reused as-is -- its
+    component-path derivation and OptiTrack matching are already correct
+    and tested). Re-parsed through parse_structural_fields() for the
+    canonical trial_key rather than trusting the source script's own
+    participant/position labels, which don't capture session/height."""
+    out = []
+    for t in imu_discovery.discover_trials():
+        fields = parse_structural_fields(t["imu"], REC_ROOT)
+        if fields is None:
+            continue
+        out.append({
+            **fields,
+            "trial_key": compute_trial_key(fields),
+            "imu_anchor_path": t["imu"],
+            "imu_component_paths": {"imu": t["imu"], "accel": t["accel"],
+                                    "gyro": t["gyro"], "mag": t["mag"]},
+            "optitrack_path": t["optitrack_path"],
+        })
+    return out
