@@ -121,10 +121,21 @@ except Exception:
     _wb_engine = None
     _WORKBENCH_AVAIL = False
 
+try:
+    import mas_validation as _mas_validation
+    _MAS_VALIDATION_AVAIL = True
+except Exception:
+    _mas_validation = None
+    _MAS_VALIDATION_AVAIL = False
+
 _GREEN = "#1e7d34"
 _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
+
+# MasEntryPanel form-feedback colors (shared amber/green label).
+_ERROR_FG   = "#B45309"
+_SUCCESS_FG = _GREEN
 
 _MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
 
@@ -1036,7 +1047,13 @@ class ModeSelectView(tk.Frame):
             self, "Analysis & Reports\nCompare Participants",
             self.controller._enter_analysis_mode)
         analysis_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+
+        mas_btn = ws.secondary_button(
+            self, "MAS Score Entry\nEnter & Validate",
+            self.controller._enter_mas_entry_mode)
+        mas_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        mas_btn.grid(row=5, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
 
 
 # ---------------------------------------------------------------------------
@@ -1871,6 +1888,241 @@ class AnalysisPanel(tk.Frame):
             messagebox.showerror("Save Failed", str(e))
 
 
+class MasEntryPanel(tk.Frame):
+    """MAS score entry form + live PT-score-vs-MAS validation dashboard.
+    controller: App instance -- receives on_back_to_mode_select()."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        import datetime as _datetime
+        pad = {"padx": 12, "pady": 5}
+        self.configure(bg=ws.PALETTE["BG"])
+
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
+        hdr.pack(fill="x", padx=12, pady=(16, 4))
+        ws.secondary_button(
+            hdr, "← Mode Select", self.controller.on_back_to_mode_select
+        ).pack(side="left", padx=(0, 8))
+        tk.Label(hdr, text="Pendulastic — MAS Score Entry",
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+        form = tk.Frame(self, bg=ws.PALETTE["BG"])
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+
+        tk.Label(form, text="Participant ID:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=0, column=0, sticky="e", **pad)
+        self.pid_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.pid_var, width=22).grid(
+            row=0, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Leg:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=1, column=0, sticky="e", **pad)
+        self.leg_var = tk.StringVar(value="Left")
+        leg_f = tk.Frame(form, bg=ws.PALETTE["BG"])
+        leg_f.grid(row=1, column=1, sticky="w", **pad)
+        tk.Radiobutton(leg_f, text="Left", variable=self.leg_var, value="Left",
+                      bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]
+                      ).pack(side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right",
+                      bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]
+                      ).pack(side="left", padx=4)
+
+        tk.Label(form, text="Condition:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=2, column=0, sticky="e", **pad)
+        self.condition_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.condition_var, width=22).grid(
+            row=2, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Diagnosis:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=3, column=0, sticky="e", **pad)
+        self.diagnosis_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.diagnosis_var, width=22).grid(
+            row=3, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="MAS Grade:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=4, column=0, sticky="e", **pad)
+        self.mas_grade_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self.mas_grade_var, width=19,
+                    state="readonly",
+                    values=list(_mas_validation.MAS_ORDER)).grid(
+            row=4, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=5, column=0, sticky="e", **pad)
+        self.assessed_by_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
+            row=5, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=6, column=0, sticky="e", **pad)
+        self.assessed_date_var = tk.StringVar(
+            value=_datetime.date.today().isoformat())
+        tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
+            row=6, column=1, sticky="w", **pad)
+
+        # Single feedback channel for the form: errors in amber, save
+        # confirmations in green (see _set_feedback).
+        self.error_var = tk.StringVar(value="")
+        self.error_label = tk.Label(self, textvariable=self.error_var,
+                                    fg=_ERROR_FG, bg=ws.PALETTE["BG"])
+        self.error_label.pack(fill="x", padx=12, pady=(0, 4))
+
+        ws.primary_button(self, "Save", self._on_save_clicked).pack(pady=(0, 8))
+
+        status_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
+        status_frame.pack(fill="x", padx=12, pady=(4, 8))
+        self.status_text = tk.Text(status_frame, height=4, wrap="word",
+                                   state="disabled", bg=ws.PALETTE["SURFACE"],
+                                   fg=ws.PALETTE["FG"])
+        status_scroll = tk.Scrollbar(status_frame, command=self.status_text.yview)
+        self.status_text.configure(yscrollcommand=status_scroll.set)
+        self.status_text.pack(side="left", fill="x", expand=True)
+        status_scroll.pack(side="right", fill="y")
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+        self._current_canvas = None
+        self._current_fig = None
+        self._last_valid: list = []
+        self._last_stats = None
+
+        self.canvas_frame = tk.Frame(self, bg=ws.PALETTE["SURFACE"])
+        self.canvas_frame.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        self.canvas_placeholder = tk.Label(
+            self.canvas_frame,
+            text="No MAS-scored trials with matching trial data yet",
+            bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG2"])
+        self.canvas_placeholder.pack(pady=40)
+
+        self.export_btn = ws.secondary_button(self, "Export", self._on_export_clicked)
+        self.export_btn.config(state="disabled")
+        self.export_btn.pack(pady=(0, 12))
+
+    def refresh(self) -> None:
+        try:
+            rows = _mas_validation.load_mas_scores(_mas_validation.MAS_CSV)
+        except (FileNotFoundError, OSError):
+            rows = []
+        paired = _mas_validation.pair_pt_and_mas(
+            rows, _mas_validation._pt_lookup_factory())
+        valid = [p for p in paired if "_skip_reason" not in p]
+        skipped = [p for p in paired if "_skip_reason" in p]
+
+        self.status_text.config(state="normal")
+        self.status_text.delete("1.0", "end")
+        for row in skipped:
+            self.status_text.insert(
+                "end",
+                f"P{row.get('participant')} {row.get('leg')}/{row.get('condition')}: "
+                f"{row['_skip_reason']}\n")
+        self.status_text.config(state="disabled")
+
+        if not valid:
+            self._last_valid = []
+            self._last_stats = None
+            self._show_placeholder()
+            self.export_btn.config(state="disabled")
+            return
+
+        stats = _mas_validation.compute_validation_stats(valid)
+        fig = _mas_validation.build_validation_figure(valid, stats)
+        self._last_valid = valid
+        self._last_stats = stats
+        self._show_figure(fig)
+        self.export_btn.config(state="normal")
+
+    def _set_feedback(self, text: str, ok: bool = False) -> None:
+        """Both save errors and save confirmations land in error_var -- it's
+        the form's one feedback line. Only the color distinguishes them."""
+        self.error_label.config(fg=_SUCCESS_FG if ok else _ERROR_FG)
+        self.error_var.set(text)
+
+    def _on_save_clicked(self) -> None:
+        participant = self.pid_var.get().strip()
+        mas_grade = self.mas_grade_var.get().strip()
+        if not participant or not mas_grade:
+            self._set_feedback("Participant ID and MAS grade are required.")
+            return
+        row = {
+            "participant": participant,
+            "leg": self.leg_var.get().lower(),
+            "condition": self.condition_var.get().strip(),
+            "diagnosis": self.diagnosis_var.get().strip(),
+            "mas_grade": mas_grade,
+            "assessed_by": self.assessed_by_var.get().strip(),
+            "assessed_date": self.assessed_date_var.get().strip(),
+        }
+        try:
+            _mas_validation.append_mas_score(row)
+        except ValueError as e:
+            self._set_feedback(str(e))
+            return
+        except Exception as e:
+            self._set_feedback(f"Could not save: {e}")
+            return
+        # The form is deliberately not cleared (batch entry of both legs keeps
+        # participant/condition/date), but with no confirmation a clinician
+        # unsure the click registered would click Save again and append an
+        # identical duplicate row, biasing the Spearman/kappa stats. Confirm,
+        # and clear the one field that must change between consecutive rows so
+        # a resubmit takes a deliberate re-selection.
+        self._set_feedback(f"Saved {participant} {row['leg']} / {mas_grade}.", ok=True)
+        self.mas_grade_var.set("")
+        self.refresh()
+
+    def _on_export_clicked(self) -> None:
+        if not self._last_valid or self._last_stats is None:
+            return
+        # Real file I/O (os.makedirs + writes) -- a read-only dir, a full disk,
+        # or the PNG being open in another program on Windows all raise here.
+        try:
+            _mas_validation.write_stats_csv(self._last_stats, _mas_validation.STATS_CSV)
+            _mas_validation.save_validation_figure(
+                self._last_valid, self._last_stats, _mas_validation.FIGURE_PNG)
+        except Exception as e:
+            messagebox.showerror("Export Failed", str(e))
+            return
+        messagebox.showinfo("Exported", f"Saved to:\n{_mas_validation.OUT_DIR}")
+
+    def _show_placeholder(self) -> None:
+        if self._current_canvas is not None:
+            self._current_canvas.get_tk_widget().destroy()
+            self._current_canvas = None
+        if self._current_fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(self._current_fig)
+            except Exception:
+                pass
+            self._current_fig = None
+        self.canvas_placeholder.pack(pady=40)
+
+    def _show_figure(self, fig) -> None:
+        if not _MPL_AVAIL:
+            return
+        self.canvas_placeholder.pack_forget()
+        if self._current_canvas is not None:
+            self._current_canvas.get_tk_widget().destroy()
+        if self._current_fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(self._current_fig)
+            except Exception:
+                pass
+        self._current_fig = fig
+        self._current_canvas = FigureCanvasTkAgg(fig, master=self.canvas_frame)
+        self._current_canvas.draw()
+        self._current_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+
 # ---------------------------------------------------------------------------
 # App  (thin host)
 # ---------------------------------------------------------------------------
@@ -1942,6 +2194,11 @@ class App(tk.Tk):
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w",
                      bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).pack(
                 side="bottom", fill="x", padx=8, pady=2)
+
+        # Both flags: mas_validation's own deps (scipy/sklearn) can be present
+        # while TkAgg/FigureCanvasTkAgg is not, and the panel embeds a canvas.
+        if _MAS_VALIDATION_AVAIL and _MPL_AVAIL:
+            self._mas_entry = MasEntryPanel(self, controller=self)
 
         self._mode_select.pack(fill="both", expand=True)
 
@@ -2204,6 +2461,18 @@ class App(tk.Tk):
         self._state = "analysis"
         self._analysis.on_shown()
 
+    def _enter_mas_entry_mode(self) -> None:
+        if not (_MAS_VALIDATION_AVAIL and _MPL_AVAIL):
+            messagebox.showinfo(
+                "MAS Entry Unavailable",
+                "MAS score entry could not be loaded in this environment "
+                "(a required dependency is missing).")
+            return
+        self._mode_select.pack_forget()
+        self._mas_entry.pack(fill="both", expand=True)
+        self._state = "mas_entry"
+        self._mas_entry.refresh()
+
     def get_trial_meta(self) -> dict:
         return dict(self._workbench_trial_meta)
 
@@ -2351,6 +2620,8 @@ class App(tk.Tk):
             self._workbench_load.pack_forget()
             self._workbench_view.pack_forget()
             self._dashboard_view.pack_forget()
+        if _MAS_VALIDATION_AVAIL and _MPL_AVAIL:
+            self._mas_entry.pack_forget()
         self._mode_select.pack(fill="both", expand=True)
         self._state        = "mode_select"
         self._active_sources  = []

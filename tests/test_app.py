@@ -1393,6 +1393,343 @@ def test_on_dashboard_back_returns_to_trial_load_panel(monkeypatch):
         app.destroy()
 
 
+def test_enter_mas_entry_mode_shows_panel_and_hides_mode_select():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry.winfo_ismapped()
+        assert not app._mode_select.winfo_ismapped()
+        assert app._state == "mas_entry"
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_mode_select_hides_mas_entry_panel():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._mode_select.winfo_ismapped()
+        assert not app._mas_entry.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_empty_state_placeholder(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        assert app._mas_entry.canvas_placeholder.winfo_ismapped()
+        assert app._mas_entry._current_canvas is None
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_shows_skipped_row_status(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "14", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: None))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        text = app._mas_entry.status_text.get("1.0", "end")
+        assert "14" in text
+        assert "no matching trial data" in text
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_refresh_renders_figure_when_data_present(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        assert not app._mas_entry.canvas_placeholder.winfo_ismapped()
+        assert app._mas_entry._current_canvas is not None
+        assert len(app._mas_entry._last_valid) == 1
+        assert app._mas_entry._last_stats is not None
+    finally:
+        app.destroy()
+
+
+def test_enter_mas_entry_mode_refreshes_dashboard_on_open(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry._current_canvas is not None
+        assert len(app._mas_entry._last_valid) == 1
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_blocks_save_on_missing_required_fields(monkeypatch):
+    import pendulastic_app as _m
+    calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: calls.append(row))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("")
+        app._mas_entry.mas_grade_var.set("")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert calls == []
+        assert "required" in app._mas_entry.error_var.get().lower()
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_appends_and_refreshes(monkeypatch):
+    import pendulastic_app as _m
+    append_calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: append_calls.append(row))
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.leg_var.set("Left")
+        app._mas_entry.condition_var.set("pre")
+        app._mas_entry.diagnosis_var.set("multiple sclerosis")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry.assessed_by_var.set("VL")
+        app._mas_entry.assessed_date_var.set("2026-08-07")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        # Assert every field explicitly: condition/diagnosis/assessed_by/
+        # assessed_date are four same-typed string fields, so an accidental
+        # key-swap between them would otherwise go completely undetected.
+        assert append_calls[0] == {
+            "participant": "20",
+            "leg": "left",
+            "condition": "pre",
+            "diagnosis": "multiple sclerosis",
+            "mas_grade": "1",
+            "assessed_by": "VL",
+            "assessed_date": "2026-08-07",
+        }
+        assert app._mas_entry._current_canvas is not None
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_clears_mas_grade_and_shows_confirmation(monkeypatch):
+    """Double-clicking Save would otherwise append an identical duplicate row
+    (the form is deliberately not cleared, for batch entry), biasing the
+    downstream Spearman/kappa stats. A confirmation plus a cleared grade makes
+    a resubmit deliberate rather than accidental."""
+    import pendulastic_app as _m
+    append_calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: append_calls.append(row))
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        assert app._mas_entry.mas_grade_var.get() == ""
+        assert "20" in app._mas_entry.error_var.get()
+
+        # The now-blank grade blocks a reflexive second click.
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        assert "required" in app._mas_entry.error_var.get().lower()
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_shows_error_on_invalid_grade(monkeypatch):
+    import pendulastic_app as _m
+
+    def raise_invalid(row, **kw):
+        raise ValueError(f"invalid mas_grade {row['mas_grade']!r} (must be one of [])")
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score", raise_invalid)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert "invalid mas_grade" in app._mas_entry.error_var.get()
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_export_disabled_when_no_data(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.refresh()
+        app.update()
+        assert str(app._mas_entry.export_btn.cget("state")) == "disabled"
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_export_writes_stats_and_figure(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    stats_calls = []
+    figure_calls = []
+    monkeypatch.setattr(_m._mas_validation, "write_stats_csv",
+                        lambda stats, out_path: stats_calls.append((stats, out_path)))
+    monkeypatch.setattr(_m._mas_validation, "save_validation_figure",
+                        lambda valid, stats, out_path: figure_calls.append(
+                            (valid, stats, out_path)))
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **kw: None)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.refresh()
+        app.update()
+        assert str(app._mas_entry.export_btn.cget("state")) == "normal"
+        app._mas_entry._on_export_clicked()
+        assert len(stats_calls) == 1
+        assert stats_calls[0][0] == app._mas_entry._last_stats
+        assert stats_calls[0][1] == _m._mas_validation.STATS_CSV
+        assert len(figure_calls) == 1
+        assert figure_calls[0][0] == app._mas_entry._last_valid
+        assert figure_calls[0][1] == app._mas_entry._last_stats
+        assert figure_calls[0][2] == _m._mas_validation.FIGURE_PNG
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_export_shows_error_dialog_on_failure(monkeypatch):
+    """write_stats_csv/save_validation_figure do real file I/O (os.makedirs,
+    file writes) -- a read-only dir, a full disk, or the PNG being open in
+    another program on Windows all raise. Unhandled, the click would look dead."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+
+    def boom(stats, out_path):
+        raise OSError("disk is full")
+    monkeypatch.setattr(_m._mas_validation, "write_stats_csv", boom)
+
+    figure_calls = []
+    monkeypatch.setattr(_m._mas_validation, "save_validation_figure",
+                        lambda *a, **kw: figure_calls.append(a))
+    errors = []
+    infos = []
+    monkeypatch.setattr(_m.messagebox, "showerror",
+                        lambda title, msg, *a, **kw: errors.append((title, msg)))
+    monkeypatch.setattr(_m.messagebox, "showinfo",
+                        lambda *a, **kw: infos.append(a))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.refresh()
+        app.update()
+        app._mas_entry._on_export_clicked()
+        app.update()
+        assert len(errors) == 1
+        assert errors[0][0] == "Export Failed"
+        assert "disk is full" in errors[0][1]
+        # ...and the success dialog is NOT also shown.
+        assert infos == []
+        assert figure_calls == []
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_refresh_handles_repeated_placeholder_and_figure_transitions(monkeypatch):
+    """Guards the figure lifecycle (canvas destroy + plt.close of a Figure that
+    pyplot never registered) across repeated empty -> data -> empty flips."""
+    import pendulastic_app as _m
+    rows = []
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: list(rows))
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    one_row = {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()   # pack the panel, so winfo_ismapped is meaningful
+        app.update()
+        for expect_data in (False, True, False, True, False):
+            rows[:] = [one_row] if expect_data else []
+            app._mas_entry.refresh()
+            app.update()
+            panel = app._mas_entry
+            if expect_data:
+                assert panel._current_canvas is not None
+                assert not panel.canvas_placeholder.winfo_ismapped()
+                assert str(panel.export_btn.cget("state")) == "normal"
+            else:
+                assert panel._current_canvas is None
+                assert panel.canvas_placeholder.winfo_ismapped()
+                assert str(panel.export_btn.cget("state")) == "disabled"
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""
