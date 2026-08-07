@@ -521,13 +521,28 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
     incumbent's exact config isn't present in `ranked` at all (e.g.
     dropped from a hand-edited grid), it's no longer rankable -- promote
     the best valid candidate from this sweep instead of keeping a stale,
-    no-longer-comparable RMSE. If no candidate in `ranked` is valid
-    (not low_coverage), current best becomes unavailable (None) rather
-    than silently retaining an old number."""
+    no-longer-comparable RMSE.
+
+    Edge case (design decision, confirmed after task review): if NO
+    candidate in `ranked` is valid this sweep (not low_coverage) --
+    including the incumbent itself, since full cohort coverage means one
+    trial going unscoreable can knock every candidate out at once -- that
+    sweep is inconclusive, not a demotion. A previously-recorded incumbent
+    is left completely untouched rather than wiped to None; only a sweep
+    with an incumbent that has genuinely never been recorded stays at
+    None."""
     cfg = load_best_config()
     incumbent = cfg.get(methodology)
     valid = [r for r in ranked if not r["low_coverage"]]
     best_this_sweep = valid[0] if valid else None
+
+    if best_this_sweep is None:
+        # Inconclusive sweep -- nothing scored well enough to rank,
+        # including the incumbent (if any). Do not touch cfg[methodology]
+        # at all: an existing incumbent survives untouched, and a
+        # never-recorded one simply stays unrecorded. No file write needed
+        # since nothing changed.
+        return {"promoted": False, "reason": "no_valid_candidate"}
 
     incumbent_still_ranked = None
     if incumbent is not None:
@@ -536,9 +551,7 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
              and not r["low_coverage"]), None)
 
     promote = False
-    if best_this_sweep is None:
-        new_entry = None
-    elif incumbent is None or incumbent_still_ranked is None:
+    if incumbent is None or incumbent_still_ranked is None:
         promote = True
         new_entry = best_this_sweep
     elif incumbent_still_ranked["median_rmse"] < best_this_sweep["median_rmse"] + epsilon:
@@ -546,13 +559,6 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
     else:
         promote = True
         new_entry = best_this_sweep
-
-    if best_this_sweep is None and incumbent is not None and incumbent_still_ranked is None:
-        # No valid candidate this sweep AND the incumbent itself couldn't be
-        # re-ranked -- current best becomes unavailable, not stale.
-        cfg[methodology] = None
-        _save_best_config(cfg)
-        return {"promoted": False, "reason": "no_valid_candidate"}
 
     if promote:
         cfg[methodology] = {
@@ -629,12 +635,25 @@ def run_full_sweep(priority_trial_keys=None):
     import sweep_mediapipe_config
     imu_scores = _score_grid(trials, "has_imu_rmse", sweep_imu_config.WIDE_GRID,
                              score_imu_candidate, cache, "imu")
-    mp_grid = [{"model_variant": v, "vis_thresh": t}
-              for v in sweep_mediapipe_config.MODEL_VARIANTS
-              for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES]
-    model_path = os.path.join(BASE_DIR, "models", "mediapipe", "pose_landmarker_full.task")
-    mp_scores = _score_grid(trials, "has_mediapipe_rmse", mp_grid,
-                            score_mediapipe_candidate, cache, "mediapipe", model_path=model_path)
+
+    # Each model variant has its own weight file and must be scored against
+    # it -- deriving a single model_path outside this loop (the original
+    # bug) would silently score every "lite"/"heavy" candidate using the
+    # "full" model's weights. Matches sweep_mediapipe_config.py's own
+    # per-variant path derivation and isfile skip-guard.
+    model_dir = os.path.join(BASE_DIR, "models", "mediapipe")
+    mp_scores = {}
+    for variant in sweep_mediapipe_config.MODEL_VARIANTS:
+        variant_model_path = os.path.join(model_dir, f"pose_landmarker_{variant}.task")
+        if not os.path.isfile(variant_model_path):
+            print(f"[rmse_pipeline_common] skipping mediapipe model variant {variant!r}: "
+                 f"model file not found at {variant_model_path}")
+            continue
+        variant_grid = [{"model_variant": variant, "vis_thresh": t}
+                        for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES]
+        mp_scores.update(_score_grid(trials, "has_mediapipe_rmse", variant_grid,
+                                     score_mediapipe_candidate, cache, "mediapipe",
+                                     model_path=variant_model_path))
     save_sweep_cache(cache)
 
     imu_cohort = [t["trial_key"] for t in trials if t["has_imu_rmse"]]
@@ -674,7 +693,7 @@ def _savefig_atomic(fig, out_path):
     applies to every output file, not just the CSV, so a crash mid-write
     never leaves a partially-written PNG in place)."""
     tmp_path = out_path + ".tmp"
-    fig.savefig(tmp_path, dpi=150, facecolor="white", bbox_inches="tight")
+    fig.savefig(tmp_path, format="png", dpi=150, facecolor="white", bbox_inches="tight")
     os.replace(tmp_path, out_path)
 
 
