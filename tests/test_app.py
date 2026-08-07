@@ -1423,6 +1423,63 @@ def test_on_back_to_mode_select_hides_mas_entry_panel():
         app.destroy()
 
 
+def test_mas_entry_panel_empty_state_placeholder(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        assert app._mas_entry.canvas_placeholder.winfo_ismapped()
+        assert app._mas_entry._current_canvas is None
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_shows_skipped_row_status(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "14", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: None))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        text = app._mas_entry.status_text.get("1.0", "end")
+        assert "14" in text
+        assert "no matching trial data" in text
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_refresh_renders_figure_when_data_present(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry.refresh()
+        app.update()
+        assert not app._mas_entry.canvas_placeholder.winfo_ismapped()
+        assert app._mas_entry._current_canvas is not None
+        assert len(app._mas_entry._last_valid) == 1
+        assert app._mas_entry._last_stats is not None
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""

@@ -1894,6 +1894,8 @@ class MasEntryPanel(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        import datetime as _datetime
+        pad = {"padx": 12, "pady": 5}
         self.configure(bg=ws.PALETTE["BG"])
 
         hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
@@ -1906,6 +1908,142 @@ class MasEntryPanel(tk.Frame):
                  bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
         ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+        form = tk.Frame(self, bg=ws.PALETTE["BG"])
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+
+        tk.Label(form, text="Participant ID:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=0, column=0, sticky="e", **pad)
+        self.pid_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.pid_var, width=22).grid(
+            row=0, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Leg:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=1, column=0, sticky="e", **pad)
+        self.leg_var = tk.StringVar(value="Left")
+        leg_f = tk.Frame(form, bg=ws.PALETTE["BG"])
+        leg_f.grid(row=1, column=1, sticky="w", **pad)
+        tk.Radiobutton(leg_f, text="Left", variable=self.leg_var, value="Left",
+                      bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]
+                      ).pack(side="left", padx=4)
+        tk.Radiobutton(leg_f, text="Right", variable=self.leg_var, value="Right",
+                      bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]
+                      ).pack(side="left", padx=4)
+
+        tk.Label(form, text="Condition:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=2, column=0, sticky="e", **pad)
+        self.condition_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.condition_var, width=22).grid(
+            row=2, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Diagnosis:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=3, column=0, sticky="e", **pad)
+        self.diagnosis_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.diagnosis_var, width=22).grid(
+            row=3, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="MAS Grade:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=4, column=0, sticky="e", **pad)
+        self.mas_grade_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self.mas_grade_var, width=19,
+                    state="readonly",
+                    values=list(_mas_validation.MAS_ORDER)).grid(
+            row=4, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=5, column=0, sticky="e", **pad)
+        self.assessed_by_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
+            row=5, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=6, column=0, sticky="e", **pad)
+        self.assessed_date_var = tk.StringVar(
+            value=_datetime.date.today().isoformat())
+        tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
+            row=6, column=1, sticky="w", **pad)
+
+        status_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
+        status_frame.pack(fill="x", padx=12, pady=(4, 8))
+        self.status_text = tk.Text(status_frame, height=4, wrap="word",
+                                   state="disabled", bg=ws.PALETTE["SURFACE"],
+                                   fg=ws.PALETTE["FG"])
+        status_scroll = tk.Scrollbar(status_frame, command=self.status_text.yview)
+        self.status_text.configure(yscrollcommand=status_scroll.set)
+        self.status_text.pack(side="left", fill="x", expand=True)
+        status_scroll.pack(side="right", fill="y")
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+        self._current_canvas = None
+        self._current_fig = None
+        self._last_valid: list = []
+        self._last_stats = None
+
+        self.canvas_frame = tk.Frame(self, bg=ws.PALETTE["SURFACE"])
+        self.canvas_frame.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        self.canvas_placeholder = tk.Label(
+            self.canvas_frame,
+            text="No MAS-scored trials with matching trial data yet",
+            bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG2"])
+        self.canvas_placeholder.pack(pady=40)
+
+    def refresh(self) -> None:
+        rows = _mas_validation.load_mas_scores(_mas_validation.MAS_CSV)
+        paired = _mas_validation.pair_pt_and_mas(
+            rows, _mas_validation._pt_lookup_factory())
+        valid = [p for p in paired if "_skip_reason" not in p]
+        skipped = [p for p in paired if "_skip_reason" in p]
+
+        self.status_text.config(state="normal")
+        self.status_text.delete("1.0", "end")
+        for row in skipped:
+            self.status_text.insert(
+                "end",
+                f"P{row.get('participant')} {row.get('leg')}/{row.get('condition')}: "
+                f"{row['_skip_reason']}\n")
+        self.status_text.config(state="disabled")
+
+        if not valid:
+            self._last_valid = []
+            self._last_stats = None
+            self._show_placeholder()
+            return
+
+        stats = _mas_validation.compute_validation_stats(valid)
+        fig = _mas_validation.build_validation_figure(valid, stats)
+        self._last_valid = valid
+        self._last_stats = stats
+        self._show_figure(fig)
+
+    def _show_placeholder(self) -> None:
+        if self._current_canvas is not None:
+            self._current_canvas.get_tk_widget().destroy()
+            self._current_canvas = None
+        if self._current_fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(self._current_fig)
+            except Exception:
+                pass
+            self._current_fig = None
+        self.canvas_placeholder.pack(pady=40)
+
+    def _show_figure(self, fig) -> None:
+        self.canvas_placeholder.pack_forget()
+        if self._current_canvas is not None:
+            self._current_canvas.get_tk_widget().destroy()
+        if self._current_fig is not None:
+            try:
+                import matplotlib.pyplot as _plt
+                _plt.close(self._current_fig)
+            except Exception:
+                pass
+        self._current_fig = fig
+        self._current_canvas = FigureCanvasTkAgg(fig, master=self.canvas_frame)
+        self._current_canvas.draw()
+        self._current_canvas.get_tk_widget().pack(fill="both", expand=True)
 
 
 # ---------------------------------------------------------------------------
