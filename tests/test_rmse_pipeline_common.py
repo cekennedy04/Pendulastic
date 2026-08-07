@@ -582,3 +582,72 @@ def test_rank_candidates_cohort_below_minimum_participants_returns_empty():
     scores = {'{"beta": 0.08}': {t: 3.0 for t in cohort}}
     ranked = rpc.rank_candidates(scores, cohort, participant_of)
     assert ranked == []
+
+
+# ── load_best_config / record_sweep_result ───────────────────────────────
+
+def test_load_best_config_missing_file_returns_empty_structure(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "missing.json"))
+    cfg = rpc.load_best_config()
+    assert cfg == {"mediapipe": None, "imu": None, "history": []}
+
+
+def test_record_sweep_result_promotes_first_valid_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    ranked = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+              "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    result = rpc.record_sweep_result("imu", ranked, "ds1", "impl1")
+    assert result["promoted"] is True
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.041}'
+    assert cfg["imu"]["rmse"] == 5.0
+    assert len(cfg["history"]) == 1
+    assert cfg["history"][0]["dataset_fingerprint"] == "ds1"
+    assert cfg["history"][0]["implementation_fingerprint"] == "impl1"
+
+
+def test_record_sweep_result_does_not_promote_within_epsilon(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+             "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", first, "ds1", "impl1")
+    # Incumbent re-scored at 5.0 again, challenger only 0.05 better -- below
+    # the default 0.1 epsilon, must not promote.
+    second = [
+        {"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+         "n_trials": 5, "n_participants": 3, "low_coverage": False},
+        {"candidate_key": '{"beta": 0.08}', "median_rmse": 4.95,
+         "n_trials": 5, "n_participants": 3, "low_coverage": False},
+    ]
+    result = rpc.record_sweep_result("imu", second, "ds2", "impl1")
+    assert result["promoted"] is False
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.041}'
+    assert len(cfg["history"]) == 1  # no new entry on a non-promotion
+
+
+def test_record_sweep_result_incumbent_unrankable_promotes_best_valid(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+             "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", first, "ds1", "impl1")
+    # Design spec §5's edge case: the incumbent's exact config is no longer
+    # in this sweep's ranked results at all (e.g. dropped from a hand-edited
+    # grid) -- must not keep the stale RMSE, must promote the best valid
+    # candidate from this sweep instead.
+    second = [{"candidate_key": '{"beta": 0.08}', "median_rmse": 6.0,
+              "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    result = rpc.record_sweep_result("imu", second, "ds2", "impl1")
+    assert result["promoted"] is True
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.08}'
+
+
+def test_record_sweep_result_no_valid_candidate_sets_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    ranked = [{"candidate_key": '{"beta": 0.041}', "median_rmse": None,
+              "n_trials": 1, "n_participants": 1, "low_coverage": True}]
+    result = rpc.record_sweep_result("imu", ranked, "ds1", "impl1")
+    assert result["promoted"] is False
+    cfg = rpc.load_best_config()
+    assert cfg["imu"] is None
