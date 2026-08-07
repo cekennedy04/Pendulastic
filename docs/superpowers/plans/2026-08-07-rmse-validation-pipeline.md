@@ -2,6 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-08-07 SUPERSEDED (Part 1 only):** a parallel Claude Code session independently planned
+> the same `rmse_pipeline_common.py` module with 3 rounds of Codex review. Codex arbitrated
+> directly between the two plans and the live code: that plan's discovery/caching/ranking
+> architecture is sounder (frozen-cohort coverage, content-hash caching vs. this plan's
+> stale-prone stat-key caching) and wins as the base. This plan's folder-restructure awareness and
+> `excluded_trials.json` wiring (Task 1 below) have been merged into that plan's Task 4 instead.
+> **Do not implement Part 1 (Tasks 1-8) from this file** — use
+> `docs/superpowers/plans/2026-08-07-rmse-pipeline-common.md`.
+>
+> **Part 2 (Tasks 9-15, `rmse_watcher.py`) is NOT superseded** — the winning plan explicitly scopes
+> itself to the manually-triggered module only and defers the watcher to "a separate follow-up
+> plan," which is what Part 2 here already is. It still needs revision before implementation,
+> though: it currently calls into this file's own Part 1 functions/shapes (`discover_scorable_trials()`
+> returning this plan's `TrialRecord` shape, `run_full_sweep()`, `record_sweep_result()`,
+> `write_report_outputs()`), which no longer exist. Re-target Part 2's calls at
+> `rmse_pipeline_common.py`'s actual interface from the winning plan before building the watcher.
+
 **Goal:** Give Pendulastic a shared sweep/scoring module that always reports current IMU-vs-OptiTrack and MediaPipe-vs-OptiTrack RMSE across the existing hand-tuned parameter grids, plus a long-running watcher that re-runs it automatically as new trial data lands — never a stale, hand-run, informally-compared number again.
 
 **Architecture:** Two independent layers, built in that order. **Part 1** (Tasks 1-8) is `rmse_pipeline_common.py`, a pure library module — discovery, IMU/MediaPipe scoring wrappers, a sweep cache, best-config tracking, and report generation — plus `run_rmse_sweep.py`, a thin manual-trigger CLI, matching this repo's existing `pt_report_common.py` → `run_pt_analysis.py` split. Part 1 is a complete, independently useful deliverable: run it by hand after any recording session and get current numbers. **Part 2** (Tasks 9-15) is `rmse_watcher.py`, a long-running service that debounces filesystem events, waits for file stability, and calls into Part 1's `run_full_sweep()` automatically, plus its Windows Scheduled Task deployment. Part 2 depends entirely on Part 1 and adds no new scoring logic of its own.
