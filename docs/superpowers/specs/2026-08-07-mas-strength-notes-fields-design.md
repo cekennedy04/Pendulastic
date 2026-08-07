@@ -142,10 +142,11 @@ handle three cases:
   missing-file check having already run, but has no header line yet, e.g.
   a previous run created it via `open(csv_path, "w")` and crashed before
   writing the header). Treat as "no existing data to preserve": the
-  widened header is `DEFAULT_MAS_FIELDS` (or `DEFAULT_MAS_FIELDS` plus any
-  `row` keys not already in it, if `row` ever has keys beyond the documented
-  9 — future-proofing), there are zero existing rows to carry forward, skip
-  straight to writing header + the new row.
+  widened header is `DEFAULT_MAS_FIELDS` — this branch is allowlist-gated
+  exactly like the normal-widen path (only `WIDENABLE_MAS_FIELDS` keys
+  present in `row` can extend it), never on arbitrary `row` keys. There are
+  zero existing rows to carry forward, so skip straight to writing header +
+  the new row.
 - **Header exists but a data row has more fields than the header
   describes** (a genuinely malformed/hand-edited CSV — `csv.DictReader`
   puts the overflow values under a `None` key). Do **not** attempt to widen
@@ -353,3 +354,13 @@ Considered and **not** adopted, with reasoning:
 - **No acceptance criterion for small-screen layout** — the app's window is
   already a fixed size elsewhere in this codebase; out of scope for this
   spec, not blocking.
+
+2026-08-07 (post-implementation): a stale §6.3 parenthetical about
+"DEFAULT_MAS_FIELDS plus any row keys not already in it ... future-proofing"
+in the empty-file bullet was found to still sanction the exact bug finding
+2 above (item 2 in this list) exists to prevent, and was in fact the literal
+wording that caused Task 2's implementer to originally write `for k in row:`
+instead of `for k in WIDENABLE_MAS_FIELDS:` — a real bug caught and fixed in
+Task 2's review round. Struck. The empty-file branch is allowlist-gated
+identically to the normal-widen path; see `mas_validation.py`'s
+`append_mas_score()`.
