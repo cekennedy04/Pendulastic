@@ -179,13 +179,11 @@ def discover_video_trials():
             if video_path:
                 break
             if os.path.isdir(dirname):
-                # List directory and find case-insensitive match with real file case
-                for actual_file in os.listdir(dirname):
-                    for candidate_basename in candidate_basenames:
-                        if actual_file.lower() == candidate_basename.lower():
-                            video_path = os.path.join(dirname, actual_file)
-                            break
-                    if video_path:
+                # List directory files once, then check candidates in priority order
+                dir_files = os.listdir(dirname)
+                for candidate_basename in candidate_basenames:
+                    if candidate_basename in dir_files:
+                        video_path = os.path.join(dirname, candidate_basename)
                         break
 
         if video_path is None:
