@@ -60,14 +60,26 @@ FIGURE_PNG = os.path.join(OUT_DIR, "mas_validation_figure.png")
 MAS_ORDER = pt.MAS_ORDER
 MAS_RANK = pt.MAS_RANK
 
+# Unlike condition/diagnosis/assessed_by (free text, never validated),
+# stronger_leg is a closed enum like mas_grade -- "" means not assessed.
+STRONGER_LEG_OPTIONS = ["", "left", "right", "equal"]
+
 # Header written when append_mas_score() has to create mas_scores.csv from
 # scratch (the file is gitignored, so it's simply absent on a fresh checkout).
-# This is the LIVE schema -- `diagnosis`, no `notes` -- which is what the app's
-# MAS entry form targets. main()'s "file not found" message still describes the
-# original 2026-08-06 column set; that's the CLI's own separate UX and is left
-# alone deliberately.
+# This is the LIVE schema, including stronger_leg/notes -- what the app's
+# MAS entry form targets. main()'s "file not found" message still describes
+# the original 2026-08-06 column set; that's the CLI's own separate UX and
+# is left alone deliberately.
 DEFAULT_MAS_FIELDS = ["participant", "leg", "condition", "diagnosis",
-                      "mas_grade", "assessed_by", "assessed_date"]
+                      "mas_grade", "assessed_by", "assessed_date",
+                      "stronger_leg", "notes"]
+
+# append_mas_score() only ever widens mas_scores.csv's header for these two
+# fields -- an explicit allowlist, not "any key in row the header lacks".
+# Widening on any unrecognized key would let a future typo'd dict key
+# permanently become a CSV column; an unrelated stray key still falls
+# through to the existing extrasaction="ignore" append behavior instead.
+WIDENABLE_MAS_FIELDS = ["stronger_leg", "notes"]
 
 _MIN_N_FOR_CONFIDENCE = 5
 _MIN_CLASS_N_FOR_ROC = 3
@@ -79,6 +91,10 @@ _MIN_CLASS_N_FOR_ROC = 3
 
 def _valid_grade(grade: str) -> bool:
     return grade in MAS_RANK
+
+
+def _valid_stronger_leg(value: str) -> bool:
+    return value in STRONGER_LEG_OPTIONS
 
 
 def pair_pt_and_mas(mas_rows, pt_lookup):
@@ -164,10 +180,11 @@ def load_mas_scores(csv_path):
 
 def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     """Appends one clinician MAS assessment to csv_path. Raises ValueError
-    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER. Reads
-    the file's own current header rather than assuming a fixed column set,
-    so this stays correct even if mas_scores.csv's schema drifts again the
-    way it already has once (see module docstring).
+    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER, or if
+    row["stronger_leg"] is present and isn't one of STRONGER_LEG_OPTIONS.
+    Reads the file's own current header rather than assuming a fixed column
+    set, so this stays correct even if mas_scores.csv's schema drifts again
+    the way it already has once (see module docstring).
 
     If csv_path doesn't exist yet it's created with the DEFAULT_MAS_FIELDS
     header -- mas_scores.csv is gitignored, so on a fresh checkout the very
@@ -175,6 +192,10 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     grade = row.get("mas_grade", "")
     if not _valid_grade(grade):
         raise ValueError(f"invalid mas_grade {grade!r} (must be one of {MAS_ORDER})")
+    stronger_leg = row.get("stronger_leg", "")
+    if not _valid_stronger_leg(stronger_leg):
+        raise ValueError(
+            f"invalid stronger_leg {stronger_leg!r} (must be one of {STRONGER_LEG_OPTIONS})")
     if not os.path.exists(csv_path):
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=DEFAULT_MAS_FIELDS).writeheader()

@@ -30,6 +30,20 @@ def test_valid_grade_rejects_anything_else(grade):
     assert not mv._valid_grade(grade)
 
 
+def test_default_mas_fields_includes_new_columns():
+    assert mv.DEFAULT_MAS_FIELDS[-2:] == ["stronger_leg", "notes"]
+
+
+@pytest.mark.parametrize("value", ["", "left", "right", "equal"])
+def test_valid_stronger_leg_accepts_all_options(value):
+    assert mv._valid_stronger_leg(value)
+
+
+@pytest.mark.parametrize("value", ["Left", "both", None, "LEFT"])
+def test_valid_stronger_leg_rejects_anything_else(value):
+    assert not mv._valid_stronger_leg(value)
+
+
 # ── pair_pt_and_mas ──────────────────────────────────────────────────────────
 
 def test_pair_pt_and_mas_skips_invalid_grade():
@@ -293,8 +307,8 @@ def test_append_mas_score_creates_file_with_header_if_missing(tmp_path):
         csv_path=str(csv_path))
     assert csv_path.exists()
     lines = csv_path.read_text().splitlines()
-    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"
-    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07"
+    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date,stronger_leg,notes"
+    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07,,"
 
     rows = mv.load_mas_scores(str(csv_path))
     assert len(rows) == 1
@@ -313,3 +327,17 @@ def test_append_mas_score_does_not_create_file_on_invalid_grade(tmp_path):
         mv.append_mas_score({"participant": "20", "mas_grade": "5"},
                             csv_path=str(csv_path))
     assert not csv_path.exists()
+
+
+def test_append_mas_score_rejects_invalid_stronger_leg(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    header = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+              "assessed_date,stronger_leg,notes\n")
+    csv_path.write_text(header)
+    with pytest.raises(ValueError, match="invalid stronger_leg"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "both", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == header
