@@ -401,3 +401,45 @@ def score_mediapipe_candidate(trial, model_variant, model_path, vis_thresh):
     frames = extract_landmarks_cached(trial, model_variant, model_path)
     opti_t, opti_ang = pt_score.load_optitrack(trial["optitrack_path"])
     return mediapipe_sweep.score_frames(frames, opti_t, opti_ang, vis_thresh)
+
+
+def compute_cache_key(methodology, trial, candidate, input_fingerprints, implementation_fingerprint):
+    """Design spec §7.1: content-addressed, not size/mtime -- depends on
+    the trial's identity, the exact candidate config, every input file's
+    current content, and the current implementation fingerprint, so a code
+    fix or grid change naturally misses cache rather than silently serving
+    a stale result."""
+    canonical = {
+        "schema": 2, "methodology": methodology, "trial_key": trial["trial_key"],
+        "candidate": candidate, "input_fingerprints": input_fingerprints,
+        "implementation_fingerprint": implementation_fingerprint,
+    }
+    blob = json.dumps(canonical, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _sweep_cache_manifest_path():
+    return os.path.join(SWEEP_CACHE_DIR, "manifest.json")
+
+
+def load_sweep_cache():
+    """{cache_key: rmse_deg} manifest. Missing or malformed file -> empty
+    dict (defensive pattern matching pt_cohort_common.load_registry() --
+    this is a file a human could plausibly delete or hand-edit)."""
+    path = _sweep_cache_manifest_path()
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        print(f"{path} failed to parse -- treating as empty.")
+        return {}
+
+
+def save_sweep_cache(cache):
+    os.makedirs(SWEEP_CACHE_DIR, exist_ok=True)
+    tmp_path = _sweep_cache_manifest_path() + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, _sweep_cache_manifest_path())

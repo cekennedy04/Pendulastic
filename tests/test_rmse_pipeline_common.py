@@ -462,3 +462,47 @@ def test_score_mediapipe_candidate_returns_none_when_unscoreable(monkeypatch):
                         lambda frames, opti_t, opti_ang, vis_thresh: None)
     result = rpc.score_mediapipe_candidate(trial, "full", "model.task", 0.4)
     assert result is None
+
+
+# ── cache key + manifest persistence ─────────────────────────────────────
+
+def test_compute_cache_key_deterministic():
+    trial = {"trial_key": "k1"}
+    candidate = {"beta": 0.041}
+    key1 = rpc.compute_cache_key("imu", trial, candidate, {"optitrack": "h1"}, "impl1")
+    key2 = rpc.compute_cache_key("imu", trial, candidate, {"optitrack": "h1"}, "impl1")
+    assert key1 == key2
+
+
+def test_compute_cache_key_differs_on_implementation_fingerprint():
+    trial = {"trial_key": "k1"}
+    candidate = {"beta": 0.041}
+    key1 = rpc.compute_cache_key("imu", trial, candidate, {"optitrack": "h1"}, "impl1")
+    key2 = rpc.compute_cache_key("imu", trial, candidate, {"optitrack": "h1"}, "impl2")
+    assert key1 != key2
+
+
+def test_compute_cache_key_differs_on_candidate():
+    trial = {"trial_key": "k1"}
+    key1 = rpc.compute_cache_key("imu", trial, {"beta": 0.041}, {"optitrack": "h1"}, "impl1")
+    key2 = rpc.compute_cache_key("imu", trial, {"beta": 0.08}, {"optitrack": "h1"}, "impl1")
+    assert key1 != key2
+
+
+def test_save_and_load_sweep_cache_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    rpc.save_sweep_cache({"key1": 3.5, "key2": 4.1})
+    assert rpc.load_sweep_cache() == {"key1": 3.5, "key2": 4.1}
+
+
+def test_load_sweep_cache_missing_file_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "does_not_exist"))
+    assert rpc.load_sweep_cache() == {}
+
+
+def test_load_sweep_cache_malformed_json_treated_as_empty(tmp_path, monkeypatch, capsys):
+    cache_dir = tmp_path / "sweep_cache"
+    cache_dir.mkdir()
+    (cache_dir / "manifest.json").write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(cache_dir))
+    assert rpc.load_sweep_cache() == {}
