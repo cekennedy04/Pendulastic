@@ -39,6 +39,10 @@ targets the live schema, not the original spec's.
 - Fix: `mas_validation.py`'s module-level `matplotlib.use("Agg")` moves behind
   `if __name__ == "__main__":` so importing it from the interactive Tkinter
   app doesn't force the whole process onto the non-interactive backend.
+- New: an explicit **Export** button on `MasEntryPanel` that writes the
+  stats CSV + figure PNG to `Model_Analysis_Outputs/MAS_Validation/` on
+  demand, reusing `write_stats_csv()`/`save_validation_figure()` unchanged —
+  no new export-specific I/O code.
 - Out of scope: any change to how PT scores or MAS predictions are computed;
   any change to `pendulastic_pt_score.py`; any change to the stats formulas in
   `compute_validation_stats`; authentication/access control on the entry form;
@@ -50,9 +54,9 @@ targets the live schema, not the original spec's.
 | File | Nature of change |
 |---|---|
 | `mas_validation.py` | Add `append_mas_score()`. Split `make_validation_figure()` into `build_validation_figure()` (pure) + `save_validation_figure()` (I/O wrapper). Guard `matplotlib.use("Agg")` behind `__name__ == "__main__"`. |
-| `pendulastic_app.py` | New `MasEntryPanel(tk.Frame)` class. `App.__init__` registers it. `ModeSelectView` gains a 5th nav button routing to it. |
+| `pendulastic_app.py` | New `MasEntryPanel(tk.Frame)` class, including an Export button. `App.__init__` registers it. `ModeSelectView` gains a 5th nav button routing to it. |
 | `tests/test_mas_validation.py` | New tests for `append_mas_score()`; existing figure tests updated to call `build_validation_figure()`; new test for `save_validation_figure()`. |
-| `tests/test_app.py` | New headless tests for `MasEntryPanel` (validation, save-triggers-refresh, skipped-row surfacing, empty state). |
+| `tests/test_app.py` | New headless tests for `MasEntryPanel` (validation, save-triggers-refresh, skipped-row surfacing, empty state, Export button enabled/disabled and writes the two files). |
 
 ## 5. `mas_validation.py` changes
 
@@ -134,20 +138,32 @@ fight that.
 
 A `FigureCanvasTkAgg` embedding the `Figure` from
 `mas_validation.build_validation_figure()`, matching the embedding pattern
-already used in `pendulastic_workbench.py`.
+already used in `pendulastic_workbench.py`. Below the canvas, an **Export**
+button writes the current `valid`/`stats` (as of the last refresh — see
+§6.3) to the standard on-disk location via the existing
+`mas_validation.write_stats_csv(stats, STATS_CSV)` and
+`mas_validation.save_validation_figure(valid, stats, FIGURE_PNG)`, on demand
+rather than automatically on every save. Both are called unchanged — no new
+export-specific I/O functions are needed, since the CLI's `main()` already
+does exactly this pair of writes. Disabled (grayed out) whenever `valid` is
+empty, matching the empty-state case in §6.3 step 4 — nothing to export yet.
 
 ### 6.3 Refresh pipeline
 
-Runs both on panel open (`tkraise`/`show()`) and after every successful save:
+Runs both on panel open (`tkraise`/`show()`) and after every successful save.
+Caches the resulting `valid`/`stats` on the panel instance (`self._last_valid`,
+`self._last_stats`) so the Export button (§6.2) can reuse them without
+recomputing:
 
 1. `mas_validation.load_mas_scores(MAS_CSV)`
 2. `mas_validation.pair_pt_and_mas(rows, mas_validation._pt_lookup_factory())`
 3. Split into `valid` (no `_skip_reason`) and `skipped` (has `_skip_reason`)
 4. If `valid` is empty: canvas area shows a centered placeholder ("No
-   MAS-scored trials with matching trial data yet") instead of a figure.
+   MAS-scored trials with matching trial data yet") instead of a figure, and
+   the Export button is disabled.
 5. Otherwise: `compute_validation_stats(valid)` →
    `build_validation_figure(valid, stats)` → replace the embedded canvas's
-   figure.
+   figure; Export button enabled.
 6. `skipped` rows render as lines in a small scrollable status text area
    below the save button, e.g. `"P14 left/pre: no matching trial data for
    this participant/leg/condition"` — reusing the same skip-reason strings
@@ -193,7 +209,12 @@ conventions):
 - `test_mas_entry_panel_shows_skipped_row_status` — a row with no matching
   trial data appears in the status area text, not silently dropped.
 - `test_mas_entry_panel_empty_state_placeholder` — zero valid pairs renders
-  the placeholder text instead of a figure.
+  the placeholder text instead of a figure, and the Export button is
+  disabled.
+- `test_mas_entry_panel_export_writes_stats_and_figure` — with `valid`
+  non-empty, clicking Export calls `write_stats_csv()` and
+  `save_validation_figure()` with the cached `self._last_valid`/
+  `self._last_stats` (mock/spy; asserts on call args, not real file I/O).
 
 ## 9. Out of Scope / Future
 
