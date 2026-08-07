@@ -1543,6 +1543,7 @@ def test_mas_entry_panel_save_appends_and_refreshes(monkeypatch):
         # Assert every field explicitly: condition/diagnosis/assessed_by/
         # assessed_date are four same-typed string fields, so an accidental
         # key-swap between them would otherwise go completely undetected.
+        # stronger_leg and notes are new in Task 4 -- empty since not set in test.
         assert append_calls[0] == {
             "participant": "20",
             "leg": "left",
@@ -1551,6 +1552,8 @@ def test_mas_entry_panel_save_appends_and_refreshes(monkeypatch):
             "mas_grade": "1",
             "assessed_by": "VL",
             "assessed_date": "2026-08-07",
+            "stronger_leg": "",
+            "notes": "",
         }
         assert app._mas_entry._current_canvas is not None
     finally:
@@ -1694,6 +1697,48 @@ def test_mas_entry_panel_export_shows_error_dialog_on_failure(monkeypatch):
         # ...and the success dialog is NOT also shown.
         assert infos == []
         assert figure_calls == []
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_includes_stronger_leg_and_notes(monkeypatch):
+    import pendulastic_app as _m
+    append_calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: append_calls.append(row))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry.stronger_leg_var.set("right")
+        app._mas_entry.notes_text.insert("1.0", "gait looked steadier today")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        assert append_calls[0]["stronger_leg"] == "right"
+        assert append_calls[0]["notes"] == "gait looked steadier today"
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_clears_notes_but_not_stronger_leg(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score", lambda row, **kw: None)
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry.stronger_leg_var.set("right")
+        app._mas_entry.notes_text.insert("1.0", "some notes")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert app._mas_entry.notes_text.get("1.0", "end").strip() == ""
+        assert app._mas_entry.stronger_leg_var.get() == "right"
     finally:
         app.destroy()
 

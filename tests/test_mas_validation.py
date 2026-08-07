@@ -30,6 +30,20 @@ def test_valid_grade_rejects_anything_else(grade):
     assert not mv._valid_grade(grade)
 
 
+def test_default_mas_fields_includes_new_columns():
+    assert mv.DEFAULT_MAS_FIELDS[-2:] == ["stronger_leg", "notes"]
+
+
+@pytest.mark.parametrize("value", ["", "left", "right", "equal"])
+def test_valid_stronger_leg_accepts_all_options(value):
+    assert mv._valid_stronger_leg(value)
+
+
+@pytest.mark.parametrize("value", ["Left", "both", None, "LEFT"])
+def test_valid_stronger_leg_rejects_anything_else(value):
+    assert not mv._valid_stronger_leg(value)
+
+
 # ── pair_pt_and_mas ──────────────────────────────────────────────────────────
 
 def test_pair_pt_and_mas_skips_invalid_grade():
@@ -293,8 +307,8 @@ def test_append_mas_score_creates_file_with_header_if_missing(tmp_path):
         csv_path=str(csv_path))
     assert csv_path.exists()
     lines = csv_path.read_text().splitlines()
-    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"
-    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07"
+    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date,stronger_leg,notes"
+    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07,,"
 
     rows = mv.load_mas_scores(str(csv_path))
     assert len(rows) == 1
@@ -313,3 +327,219 @@ def test_append_mas_score_does_not_create_file_on_invalid_grade(tmp_path):
         mv.append_mas_score({"participant": "20", "mas_grade": "5"},
                             csv_path=str(csv_path))
     assert not csv_path.exists()
+
+
+def test_append_mas_score_rejects_invalid_stronger_leg(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    header = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+              "assessed_date,stronger_leg,notes\n")
+    csv_path.write_text(header)
+    with pytest.raises(ValueError, match="invalid stronger_leg"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "both", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == header
+
+
+def test_append_mas_score_widens_header_when_row_has_new_fields(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+                        "assessed_date,stronger_leg,notes")
+    assert lines[1] == "13,right,pre,multiple sclerosis,1,VL,2026-08-01,,"
+    assert lines[2] == "20,left,pre,multiple sclerosis,1,VL,2026-08-07,right,some notes"
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 2
+    assert rows[1]["stronger_leg"] == "right"
+    assert rows[1]["notes"] == "some notes"
+
+
+def test_append_mas_score_widening_is_atomic_on_replace_failure(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+               "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    csv_path.write_text(original)
+
+    def raise_replace(src, dst):
+        raise OSError("simulated failure")
+    monkeypatch.setattr(mv.os, "replace", raise_replace)
+
+    with pytest.raises(OSError):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
+def test_append_mas_score_widening_is_atomic_on_write_failure(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+               "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    csv_path.write_text(original)
+
+    real_open = open
+    def failing_open(path, *a, **kw):
+        if str(path).endswith(".tmp"):
+            raise OSError("simulated disk full")
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr(mv, "open", failing_open, raising=False)
+
+    replace_calls = []
+    monkeypatch.setattr(mv.os, "replace", lambda *a: replace_calls.append(a))
+
+    with pytest.raises(OSError):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+    assert replace_calls == []
+
+
+def test_append_mas_score_no_widen_when_row_keys_are_subset_of_header(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+        "assessed_date,stronger_leg,notes\n")
+    replace_calls = []
+    monkeypatch.setattr(mv.os, "replace", lambda *a: replace_calls.append(a))
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+         "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+         "stronger_leg": "", "notes": ""},
+        csv_path=str(csv_path))
+    assert replace_calls == []
+    assert not os.path.exists(str(csv_path) + ".tmp")
+
+
+def test_append_mas_score_ignores_unrecognized_keys_without_widening(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+         "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+         "stronger_le": "right"},  # typo'd key -- not in WIDENABLE_MAS_FIELDS
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"
+    assert len(lines) == 2
+    assert "stronger_le" not in lines[0]
+    assert "right" not in lines[1]
+
+
+def test_append_mas_score_fast_path_survives_late_decode_error(tmp_path):
+    # Regression test: the fast (no-widen) append path must only read the
+    # header, never eagerly parse the whole body -- a non-UTF-8 byte later
+    # in the file (e.g. an Excel "CSV (Comma delimited)" re-save with a
+    # stray accented character) must not block an append that doesn't need
+    # to widen and never touches that row's data.
+    #
+    # CPython's buffered text I/O decodes a full ~8KB raw chunk at a time
+    # even to serve a single readline() call, so "only reads the header"
+    # only actually avoids the bad byte if that byte falls past the first
+    # ~8KB of the file. Pad with well-formed rows well beyond that (~64KB)
+    # so this test is a real proof the fast path stopped short, not an
+    # accident of the file being small enough to fit in one read anyway.
+    csv_path = tmp_path / "mas_scores.csv"
+    header = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+              "assessed_date,stronger_leg,notes\n")
+    good_row = "13,right,pre,multiple sclerosis,1,VL,2026-08-01,,\n"
+    padding = good_row * 2000   # ~110KB, far beyond io.DEFAULT_BUFFER_SIZE (8192)
+    csv_path.write_text(header + padding, encoding="utf-8")
+    # Append a row containing a raw non-UTF-8 byte (0xe9 as a lone byte,
+    # invalid UTF-8) directly to the file, well past the header's buffered
+    # chunk. append_mas_score() never needs this row's data on the fast
+    # path -- but the old code eagerly decoded the whole file anyway.
+    with open(csv_path, "ab") as f:
+        f.write(b"14,left,pre,mult\xe9ple sclerosis,1,VL,2026-08-02,,\n")
+
+    # This row's keys are already a subset of the existing (already-widened)
+    # header, so no widening is needed -- the fast no-widen append path
+    # should be taken, which must not require decoding the malformed row.
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "", "notes": ""},
+        csv_path=str(csv_path))
+
+    lines_bytes = csv_path.read_bytes().splitlines()
+    assert lines_bytes[-1] == b"20,left,pre,multiple sclerosis,1,VL,2026-08-07,,"
+
+
+def test_append_mas_score_raises_on_malformed_existing_row(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = (
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01,extra,cells,here\n")
+    csv_path.write_text(original)
+    with pytest.raises(ValueError, match="row 2"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
+def test_append_mas_score_raises_on_duplicate_header_column(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = (
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date,leg\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01,right\n")
+    csv_path.write_text(original)
+    with pytest.raises(ValueError, match="duplicate column"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
+def test_append_mas_score_widens_empty_file(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text("")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
+    assert len(lines) == 2
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 1
+    assert rows[0]["stronger_leg"] == "right"
+
+
+def test_append_mas_score_widens_empty_file_ignores_unrecognized_keys(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text("")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes",
+         "stronger_le": "right"},  # typo'd key -- not in WIDENABLE_MAS_FIELDS
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
+    assert "stronger_le" not in lines[0].split(",")
+    assert len(lines[0].split(",")) == 9
