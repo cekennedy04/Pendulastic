@@ -96,3 +96,39 @@ def test_compute_trial_key_stable_under_key_order():
              "trial_number": "1"}
     reordered = dict(reversed(list(fields.items())))
     assert rpc.compute_trial_key(fields) == rpc.compute_trial_key(reordered)
+
+
+# ── discover_imu_trials ───────────────────────────────────────────────────
+
+def test_discover_imu_trials_wraps_batch_script(monkeypatch):
+    fake_trials = [{
+        "participant": "Participant_13_left_post", "position": "Position_1",
+        "trial": "Trial_1",
+        "imu": os.path.normpath(
+            "Recordings/Participant_13_left_post/Session_post/Position_1/"
+            "Height_Joint-Level/Trial_1_imu.csv"),
+        "accel": "x_accel.csv", "gyro": "x_gyro.csv", "mag": "x_mag.csv",
+        "optitrack_path": os.path.normpath(
+            "OptiTrack_Recordings/Participant_13_left_post/Session_post/"
+            "Position_1/Height_Joint-Level/trial_1_optitrack.csv"),
+    }]
+    monkeypatch.setattr(rpc.imu_discovery, "discover_trials", lambda: fake_trials)
+    result = rpc.discover_imu_trials()
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["participant"] == "13" and rec["leg"] == "left"
+    assert rec["position"] == "1" and rec["height"] == "joint-level"
+    assert rec["imu_component_paths"]["accel"] == "x_accel.csv"
+    assert rec["optitrack_path"] is not None
+    assert "trial_key" in rec
+
+
+def test_discover_imu_trials_unparseable_path_excluded(monkeypatch):
+    fake_trials = [{
+        "participant": "Participant_9", "position": "unknown", "trial": "Trial_1",
+        "imu": os.path.normpath("Recordings/Participant_9/Trial_1_imu.csv"),  # no leg token
+        "accel": "a", "gyro": "g", "mag": "m", "optitrack_path": None,
+    }]
+    monkeypatch.setattr(rpc.imu_discovery, "discover_trials", lambda: fake_trials)
+    result = rpc.discover_imu_trials()
+    assert result == []
