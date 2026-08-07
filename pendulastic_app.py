@@ -133,6 +133,10 @@ _RED   = "#a31515"
 _BLUE  = "#1f3a93"
 _AMBER = "#c07000"
 
+# MasEntryPanel form-feedback colors (shared amber/green label).
+_ERROR_FG   = "#B45309"
+_SUCCESS_FG = _GREEN
+
 _MAX_CALIB_EXTENSION_S = 5         # extra seconds beyond the base 5s countdown before asking
 
 # ---------------------------------------------------------------------------
@@ -1964,9 +1968,12 @@ class MasEntryPanel(tk.Frame):
         tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
             row=6, column=1, sticky="w", **pad)
 
+        # Single feedback channel for the form: errors in amber, save
+        # confirmations in green (see _set_feedback).
         self.error_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self.error_var, fg="#B45309",
-                 bg=ws.PALETTE["BG"]).pack(fill="x", padx=12, pady=(0, 4))
+        self.error_label = tk.Label(self, textvariable=self.error_var,
+                                    fg=_ERROR_FG, bg=ws.PALETTE["BG"])
+        self.error_label.pack(fill="x", padx=12, pady=(0, 4))
 
         ws.primary_button(self, "Save", self._on_save_clicked).pack(pady=(0, 8))
 
@@ -2032,11 +2039,17 @@ class MasEntryPanel(tk.Frame):
         self._show_figure(fig)
         self.export_btn.config(state="normal")
 
+    def _set_feedback(self, text: str, ok: bool = False) -> None:
+        """Both save errors and save confirmations land in error_var -- it's
+        the form's one feedback line. Only the color distinguishes them."""
+        self.error_label.config(fg=_SUCCESS_FG if ok else _ERROR_FG)
+        self.error_var.set(text)
+
     def _on_save_clicked(self) -> None:
         participant = self.pid_var.get().strip()
         mas_grade = self.mas_grade_var.get().strip()
         if not participant or not mas_grade:
-            self.error_var.set("Participant ID and MAS grade are required.")
+            self._set_feedback("Participant ID and MAS grade are required.")
             return
         row = {
             "participant": participant,
@@ -2050,17 +2063,33 @@ class MasEntryPanel(tk.Frame):
         try:
             _mas_validation.append_mas_score(row)
         except ValueError as e:
-            self.error_var.set(str(e))
+            self._set_feedback(str(e))
             return
-        self.error_var.set("")
+        except Exception as e:
+            self._set_feedback(f"Could not save: {e}")
+            return
+        # The form is deliberately not cleared (batch entry of both legs keeps
+        # participant/condition/date), but with no confirmation a clinician
+        # unsure the click registered would click Save again and append an
+        # identical duplicate row, biasing the Spearman/kappa stats. Confirm,
+        # and clear the one field that must change between consecutive rows so
+        # a resubmit takes a deliberate re-selection.
+        self._set_feedback(f"Saved {participant} {row['leg']} / {mas_grade}.", ok=True)
+        self.mas_grade_var.set("")
         self.refresh()
 
     def _on_export_clicked(self) -> None:
         if not self._last_valid or self._last_stats is None:
             return
-        _mas_validation.write_stats_csv(self._last_stats, _mas_validation.STATS_CSV)
-        _mas_validation.save_validation_figure(
-            self._last_valid, self._last_stats, _mas_validation.FIGURE_PNG)
+        # Real file I/O (os.makedirs + writes) -- a read-only dir, a full disk,
+        # or the PNG being open in another program on Windows all raise here.
+        try:
+            _mas_validation.write_stats_csv(self._last_stats, _mas_validation.STATS_CSV)
+            _mas_validation.save_validation_figure(
+                self._last_valid, self._last_stats, _mas_validation.FIGURE_PNG)
+        except Exception as e:
+            messagebox.showerror("Export Failed", str(e))
+            return
         messagebox.showinfo("Exported", f"Saved to:\n{_mas_validation.OUT_DIR}")
 
     def _show_placeholder(self) -> None:
@@ -2077,6 +2106,8 @@ class MasEntryPanel(tk.Frame):
         self.canvas_placeholder.pack(pady=40)
 
     def _show_figure(self, fig) -> None:
+        if not _MPL_AVAIL:
+            return
         self.canvas_placeholder.pack_forget()
         if self._current_canvas is not None:
             self._current_canvas.get_tk_widget().destroy()
@@ -2164,7 +2195,9 @@ class App(tk.Tk):
                      bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).pack(
                 side="bottom", fill="x", padx=8, pady=2)
 
-        if _MAS_VALIDATION_AVAIL:
+        # Both flags: mas_validation's own deps (scipy/sklearn) can be present
+        # while TkAgg/FigureCanvasTkAgg is not, and the panel embeds a canvas.
+        if _MAS_VALIDATION_AVAIL and _MPL_AVAIL:
             self._mas_entry = MasEntryPanel(self, controller=self)
 
         self._mode_select.pack(fill="both", expand=True)
@@ -2429,7 +2462,7 @@ class App(tk.Tk):
         self._analysis.on_shown()
 
     def _enter_mas_entry_mode(self) -> None:
-        if not _MAS_VALIDATION_AVAIL:
+        if not (_MAS_VALIDATION_AVAIL and _MPL_AVAIL):
             messagebox.showinfo(
                 "MAS Entry Unavailable",
                 "MAS score entry could not be loaded in this environment "
@@ -2587,7 +2620,7 @@ class App(tk.Tk):
             self._workbench_load.pack_forget()
             self._workbench_view.pack_forget()
             self._dashboard_view.pack_forget()
-        if _MAS_VALIDATION_AVAIL:
+        if _MAS_VALIDATION_AVAIL and _MPL_AVAIL:
             self._mas_entry.pack_forget()
         self._mode_select.pack(fill="both", expand=True)
         self._state        = "mode_select"
