@@ -4,8 +4,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
 import numpy as np
+import pytest
+
+import pendulastic_storage
 
 _root_window = None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_participants_dir(tmp_path, monkeypatch):
+    """Every test gets its own empty participants/ directory so tests never
+    read/write real data or interfere with each other."""
+    monkeypatch.setattr(pendulastic_storage, "PARTICIPANTS_DIR", str(tmp_path / "participants"))
+    yield
 
 
 def _get_root():
@@ -241,6 +252,51 @@ def test_recompute_metrics_shows_na_for_insufficient_signal():
     row = _per_trace_row(wv, "imu")
     assert row["pt_score"] == "n/a"
     assert row["mas"] == "n/a"
+
+
+def test_save_current_trial_persists_only_visible_traces():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    wv._visible_vars["optitrack"].set(False)   # hide optitrack
+    r.update()
+
+    wv._save_current_trial("test-p1", "left", "Initial", "2026-07-07")
+
+    history = pendulastic_storage.load_history("test-p1")
+    sessions = history["legs"]["left"]["sessions"]
+    assert len(sessions) == 1
+    saved_traces = sessions[0]["traces"]
+    assert set(saved_traces.keys()) == {"imu"}
+    assert "pt_score" in saved_traces["imu"]["metrics"]
+
+
+def test_reference_trace_pt_score_returns_none_for_insufficient_signal():
+    """A session without a usable PT score for its reference trace isn't
+    useful to a longitudinal PT-score dashboard (design spec Section 7) --
+    the save dialog's Save button refuses to proceed when this returns
+    None. Tested directly against the helper rather than by simulating
+    the Toplevel dialog's widgets."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    t = np.linspace(0, 4, 400)
+    wv.set_traces({"flat": (t, np.full_like(t, 140.0))})   # flat signal -> insufficient
+    r.update()
+    assert wv._reference_var.get() == "flat"
+
+    assert wv._reference_trace_pt_score() is None
+
+
+def test_reference_trace_pt_score_returns_float_for_valid_signal():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    assert isinstance(wv._reference_trace_pt_score(), float)
 
 
 def test_imu_jsonl_browse_button_only_accepts_jsonl(monkeypatch):
@@ -533,6 +589,65 @@ def test_workbench_view_per_trace_tree_populates_from_traces():
     assert "optitrack" in labels
 
 
+def test_dashboard_view_load_renders_three_axes_figure():
+    import pendulastic_storage
+    from pendulastic_workbench import DashboardView
+    traces = {"imu": ([0.0, 0.1], [140.0, 138.0])}
+    metrics = {"imu": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8, "omega_max_n": 7.0,
+                       "omega_min_n": 0.01, "f": 1.0, "area_ratio": 0.1,
+                       "pt_score": 0.1, "mas": "0"}}
+    pendulastic_storage.save_trial("test-dv1", "left", "Initial", "2026-07-07",
+                                   traces, metrics, "imu")
+
+    r = _get_root()
+    dv = DashboardView(r, _Ctrl())
+    dv.refresh_participants()
+    dv._participant_var.set("TEST-DV1")
+    dv._leg_var.set("left")
+    dv._on_load_clicked()
+    r.update()
+
+    assert dv._trace_var.get() == "imu"
+    assert dv._canvas is not None
+    assert len(dv._canvas.figure.axes) == 3
+
+
+def test_dashboard_view_load_unions_trace_labels_across_sessions():
+    """Regression for a dropdown that only ever showed the first session's
+    traces: two sessions in the same leg with disjoint trace labels must
+    both surface as selectable entries in the trace dropdown after Load,
+    not just whichever one _trace_var happens to land on."""
+    import pendulastic_storage
+    from pendulastic_workbench import DashboardView
+
+    traces_1 = {"imu": ([0.0, 0.1], [140.0, 138.0])}
+    metrics_1 = {"imu": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8, "omega_max_n": 7.0,
+                         "omega_min_n": 0.01, "f": 1.0, "area_ratio": 0.1,
+                         "pt_score": 0.1, "mas": "0"}}
+    pendulastic_storage.save_trial("test-dv3", "left", "Initial", "2026-07-07",
+                                   traces_1, metrics_1, "imu")
+
+    traces_2 = {"optitrack": ([0.0, 0.1], [142.0, 139.0])}
+    metrics_2 = {"optitrack": {"R2n": 0.9, "N": 6.0, "phi_max_ratio": 0.8, "omega_max_n": 7.0,
+                               "omega_min_n": 0.01, "f": 1.0, "area_ratio": 0.1,
+                               "pt_score": 0.1, "mas": "0"}}
+    pendulastic_storage.save_trial("test-dv3", "left", "Post-Training", "2026-07-21",
+                                   traces_2, metrics_2, "optitrack")
+
+    r = _get_root()
+    dv = DashboardView(r, _Ctrl())
+    dv.refresh_participants()
+    dv._participant_var.set("TEST-DV3")
+    dv._leg_var.set("left")
+    dv._on_load_clicked()
+    r.update()
+
+    menu = dv._trace_menu["menu"]
+    labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)]
+    assert "imu" in labels
+    assert "optitrack" in labels
+
+
 def test_workbench_view_vs_ref_tree_shows_placeholder_when_no_traces():
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
@@ -702,3 +817,54 @@ def test_set_raw_diagnostics_none_omits_section():
     r.update()
     text = wv._raw_diag_label.cget("text")
     assert "none loaded" in text
+
+
+def test_dashboard_view_shows_skipped_session_status():
+    import json
+    import pendulastic_storage
+    from pendulastic_workbench import DashboardView
+
+    path = os.path.join(pendulastic_storage.PARTICIPANTS_DIR, "TEST-DV2")
+    os.makedirs(path, exist_ok=True)
+    raw = {"participant_id": "TEST-DV2",
+          "legs": {"left": {"sessions": [{"label": "Broken", "date": "bad-date"}]},
+                   "right": {"sessions": []}}}
+    with open(os.path.join(path, "history.json"), "w", encoding="utf-8") as f:
+        json.dump(raw, f)
+
+    r = _get_root()
+    dv = DashboardView(r, _Ctrl())
+    dv._participant_var.set("TEST-DV2")
+    dv._leg_var.set("left")
+    dv._on_load_clicked()
+    r.update()
+
+    assert "Skipped 1" in dv._status_var.get()
+
+
+def test_load_panel_view_dashboard_button_switches_to_dashboard_view():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app.on_view_dashboard()
+        app.update()
+        assert app._dashboard_view.winfo_ismapped()
+        assert not app._load_panel.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_dashboard_back_returns_to_load_panel():
+    from pendulastic_workbench import App
+    app = App()
+    try:
+        app.update()
+        app.on_view_dashboard()
+        app.update()
+        app.on_dashboard_back()
+        app.update()
+        assert app._load_panel.winfo_ismapped()
+        assert not app._dashboard_view.winfo_ismapped()
+    finally:
+        app.destroy()

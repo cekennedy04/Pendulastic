@@ -29,6 +29,8 @@ from matplotlib.figure import Figure
 
 import analysis_pipeline
 import workbench_engine as engine
+import pendulastic_storage
+import longitudinal_dashboard
 import pendulastic_pt_score
 import workbench_style as ws
 
@@ -163,6 +165,8 @@ class TrialLoadPanel(tk.Frame):
                  font=ws.FONT_BODY).grid(row=0, column=3, sticky="w", pady=4)
 
         ws.primary_button(self, "Load Trial", self._on_load_clicked).pack(pady=16)
+        ws.secondary_button(self, "View Participant Dashboard",
+                            lambda: self.controller.on_view_dashboard()).pack(pady=(0, 16))
 
     _COMPONENT_LABELS = {"accel": "Accelerometer", "gyro": "Gyroscope",
                          "mag": "Magnetometer", "imu": "Raw IMU"}
@@ -354,6 +358,8 @@ class WorkbenchView(tk.Frame):
                       style=ws.STYLE_MENUBUTTON).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Mark Here",
                             self._on_mark_milestone).pack(side="left", padx=6)
+        ws.secondary_button(annot_toolbar, "Save Trial to Dashboard",
+                            self._on_save_trial_clicked).pack(side="right", padx=6)
         ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
                             self._on_export_clicked).pack(side="right", padx=6)
         self._export_csv_button = tk.Menubutton(
@@ -799,6 +805,101 @@ class WorkbenchView(tk.Frame):
             self.get_annotations(), participant_id, session_date)
         self._prompt_and_write_csv("annotations", fieldnames, rows)
 
+    def _save_current_trial(self, participant_id: str, leg: str,
+                            session_label: str, date: str) -> None:
+        """Core save logic, factored out of the dialog's Save button so
+        tests can call it directly without simulating Toplevel widgets."""
+        snapshot = self.get_metrics_snapshot()
+        visible_traces = {
+            label: (t, y) for label, (t, y) in self._traces.items()
+            if self._visible_vars.get(label, tk.BooleanVar(value=True)).get()
+        }
+        metrics_by_label = {
+            label: snapshot["per_trace"][label] for label in visible_traces
+            if label in snapshot["per_trace"]
+        }
+        pendulastic_storage.save_trial(
+            participant_id, leg, session_label, date,
+            visible_traces, metrics_by_label, self._reference_var.get())
+
+    def _reference_trace_pt_score(self):
+        """The current reference trace's pt_score (float), or None if
+        there's no reference trace or its pt_score is None (insufficient
+        signal). The save dialog refuses to save when this is None."""
+        snapshot = self.get_metrics_snapshot()
+        ref_label = self._reference_var.get()
+        per_trace = snapshot["per_trace"].get(ref_label)
+        if per_trace is None:
+            return None
+        return per_trace["pt_score"]
+
+    def _on_save_trial_clicked(self) -> None:
+        import datetime as _datetime
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Save Trial to Dashboard")
+        dialog.transient(self)
+
+        participant_var = tk.StringVar(value="")
+        leg_var = tk.StringVar(value="left")
+        label_var = tk.StringVar(value="")
+        date_var = tk.StringVar(value=_datetime.date.today().isoformat())
+        status_var = tk.StringVar(value="")
+
+        tk.Label(dialog, text="Participant ID:").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=participant_var).grid(row=0, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, text="Leg:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.OptionMenu(dialog, leg_var, "left", "left", "right").grid(
+            row=1, column=1, sticky="w", padx=8, pady=4)
+
+        tk.Label(dialog, text="Session label:").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=label_var).grid(row=2, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, text="Date (YYYY-MM-DD):").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        tk.Entry(dialog, textvariable=date_var).grid(row=3, column=1, padx=8, pady=4)
+
+        tk.Label(dialog, textvariable=status_var, fg="#B45309").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+
+        def on_confirm() -> None:
+            participant_id = participant_var.get().strip()
+            session_label = label_var.get().strip()
+            date = date_var.get().strip()
+            if not participant_id or not session_label:
+                status_var.set("Participant ID and session label are required.")
+                return
+            try:
+                _datetime.datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                status_var.set("Date must be YYYY-MM-DD.")
+                return
+            if self._reference_trace_pt_score() is None:
+                status_var.set(
+                    "Reference trace has no usable PT score (insufficient signal) -- "
+                    "cannot save.")
+                return
+
+            leg = leg_var.get()
+            existing = pendulastic_storage.load_history(participant_id)
+            already_present = any(
+                s["label"] == session_label and s["date"] == date
+                for s in existing["legs"][leg]["sessions"])
+            if already_present and not messagebox.askyesno(
+                    "Overwrite session?",
+                    f"A session '{session_label}' on {date} already exists for "
+                    f"{participant_id}/{leg}. Overwrite it?"):
+                return
+
+            self._save_current_trial(participant_id, leg, session_label, date)
+            dialog.destroy()
+            messagebox.showinfo("Saved", f"Trial saved to {participant_id}/{leg}.")
+
+        button_row = tk.Frame(dialog)
+        button_row.grid(row=5, column=0, columnspan=2, pady=8)
+        tk.Button(button_row, text="Save", command=on_confirm).pack(side="left", padx=6)
+        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+
     def load_video(self, path: str) -> None:
         if self._cap is not None:
             self._cap.release()
@@ -851,6 +952,103 @@ class WorkbenchView(tk.Frame):
         return self.current_frame_index() / self._fps if self._fps > 0 else 0.0
 
 
+class DashboardView(tk.Frame):
+    """Participant Dashboard: participant/leg/trace-label picker that
+    renders longitudinal_dashboard.render_dashboard()'s 3-panel figure.
+
+    controller: App instance -- receives on_dashboard_back()."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._participant_var = tk.StringVar(value="")
+        self._leg_var = tk.StringVar(value="left")
+        self._trace_var = tk.StringVar(value="")
+        self._status_var = tk.StringVar(value="")
+        self._canvas = None
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=8, pady=6)
+
+        tk.Button(top, text="← Back",
+                 command=lambda: self.controller.on_dashboard_back()).pack(side="left")
+
+        tk.Label(top, text="Participant:").pack(side="left", padx=(12, 2))
+        self._participant_menu = ttk.OptionMenu(top, self._participant_var, "")
+        self._participant_menu.pack(side="left")
+
+        tk.Label(top, text="Leg:").pack(side="left", padx=(12, 2))
+        ttk.OptionMenu(top, self._leg_var, "left", "left", "right").pack(side="left")
+
+        tk.Label(top, text="Trace:").pack(side="left", padx=(12, 2))
+        self._trace_menu = ttk.OptionMenu(top, self._trace_var, "")
+        self._trace_menu.pack(side="left")
+
+        tk.Button(top, text="Load", command=self._on_load_clicked).pack(side="left", padx=12)
+
+        tk.Label(self, textvariable=self._status_var, fg="#B45309").pack(fill="x", padx=8)
+
+        self._canvas_frame = tk.Frame(self)
+        self._canvas_frame.pack(fill="both", expand=True, padx=8, pady=4)
+
+    def refresh_participants(self) -> None:
+        """Repopulates the participant dropdown from disk -- called each
+        time the panel is shown, since trials may have been saved since
+        the dropdown was last built."""
+        ids = pendulastic_storage.list_participant_ids()
+        menu = self._participant_menu["menu"]
+        menu.delete(0, "end")
+        for pid in ids:
+            menu.add_command(label=pid, command=lambda p=pid: self._participant_var.set(p))
+        if ids and self._participant_var.get() not in ids:
+            self._participant_var.set(ids[0])
+
+    def _on_load_clicked(self) -> None:
+        participant_id = self._participant_var.get().strip()
+        leg = self._leg_var.get()
+        if not participant_id:
+            self._status_var.set("Select a participant.")
+            return
+
+        history = pendulastic_storage.load_history(participant_id)
+        skipped = history.get("_skipped", [])
+        if skipped:
+            self._status_var.set(
+                f"Skipped {len(skipped)} corrupted session(s) for participant "
+                f"{history['participant_id']}.")
+        else:
+            self._status_var.set("")
+
+        trace_labels = sorted({
+            label
+            for session in history["legs"][leg]["sessions"]
+            for label in session.get("traces", {})
+        })
+        menu = self._trace_menu["menu"]
+        menu.delete(0, "end")
+        for label in trace_labels:
+            menu.add_command(label=label, command=lambda l=label: self._trace_var.set(l))
+        if trace_labels and self._trace_var.get() not in trace_labels:
+            self._trace_var.set(trace_labels[0])
+        elif not trace_labels:
+            self._trace_var.set("")
+
+        for widget in self._canvas_frame.winfo_children():
+            widget.destroy()
+        self._canvas = None
+
+        trace_label = self._trace_var.get()
+        if not trace_label:
+            return
+
+        fig = longitudinal_dashboard.render_dashboard(history, leg, trace_label)
+        self._canvas = FigureCanvasTkAgg(fig, master=self._canvas_frame)
+        self._canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._canvas.draw_idle()
+
+
 class App(tk.Tk):
     """Owns panel switching between TrialLoadPanel and WorkbenchView,
     matching pendulastic_app.py's App class pattern (pack/pack_forget
@@ -871,6 +1069,7 @@ class App(tk.Tk):
 
         self._load_panel = TrialLoadPanel(self, controller=self)
         self._workbench_view = WorkbenchView(self, controller=self)
+        self._dashboard_view = DashboardView(self, controller=self)
         self._load_panel.pack(fill="both", expand=True)
         tk.Label(self, textvariable=self._status_var, anchor="w",
                 bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
@@ -887,6 +1086,16 @@ class App(tk.Tk):
 
     def on_workbench_load_another(self) -> None:
         self._workbench_view.pack_forget()
+        self._load_panel.pack(fill="both", expand=True)
+
+    def on_view_dashboard(self) -> None:
+        self._load_panel.pack_forget()
+        self._workbench_view.pack_forget()
+        self._dashboard_view.refresh_participants()
+        self._dashboard_view.pack(fill="both", expand=True)
+
+    def on_dashboard_back(self) -> None:
+        self._dashboard_view.pack_forget()
         self._load_panel.pack(fill="both", expand=True)
 
     def on_load_trial(self, selection: dict) -> None:
