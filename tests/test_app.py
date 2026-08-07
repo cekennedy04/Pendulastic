@@ -1480,6 +1480,24 @@ def test_mas_entry_panel_refresh_renders_figure_when_data_present(monkeypatch):
         app.destroy()
 
 
+def test_enter_mas_entry_mode_refreshes_dashboard_on_open(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [
+        {"participant": "20", "leg": "left", "condition": "pre", "mas_grade": "1"}])
+    monkeypatch.setattr(_m._mas_validation, "_pt_lookup_factory",
+                        lambda: (lambda p, l, c: 0.2))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry._current_canvas is not None
+        assert len(app._mas_entry._last_valid) == 1
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""
