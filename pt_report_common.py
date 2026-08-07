@@ -198,6 +198,26 @@ def list_participants(include_archive=True):
     return dict(sorted(by_pid.items(), key=lambda kv: int(kv[0])))
 
 
+TRIAL_THRESHOLD = 4
+
+
+def leg_trial_counts(participant_id):
+    """Total recorded trials per leg for this participant, summed across
+    every condition/session found (pre, post, side, control, etc.) -- not
+    per-condition. A participant with 2 pre + 3 post right-leg trials counts
+    as 5 right, matching TRIAL_THRESHOLD against the cumulative total.
+
+    Moved here from run_pt_analysis.py (2026-08-06) so pt_cohort_common.py
+    can independently recompute the full qualifying-participant set without
+    importing back from run_pt_analysis.py -- see
+    docs/superpowers/specs/2026-08-06-ms-vs-control-cohort-design.md, §6.1."""
+    counts = {"left": 0, "right": 0}
+    for r in discover_all_trials():
+        if r["participant"] == participant_id and r["leg"] in counts:
+            counts[r["leg"]] += 1
+    return counts
+
+
 def collect_participant(participant_id, include_archive=True):
     """Score every trial found for one participant. Returns
     by_leg_tp: {(leg, condition): [trial_records]}, and
