@@ -341,3 +341,134 @@ def test_append_mas_score_rejects_invalid_stronger_leg(tmp_path):
              "stronger_leg": "both", "notes": ""},
             csv_path=str(csv_path))
     assert csv_path.read_text() == header
+
+
+def test_append_mas_score_widens_header_when_row_has_new_fields(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+                        "assessed_date,stronger_leg,notes")
+    assert lines[1] == "13,right,pre,multiple sclerosis,1,VL,2026-08-01,,"
+    assert lines[2] == "20,left,pre,multiple sclerosis,1,VL,2026-08-07,right,some notes"
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 2
+    assert rows[1]["stronger_leg"] == "right"
+    assert rows[1]["notes"] == "some notes"
+
+
+def test_append_mas_score_widening_is_atomic_on_replace_failure(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+               "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    csv_path.write_text(original)
+
+    def raise_replace(src, dst):
+        raise OSError("simulated failure")
+    monkeypatch.setattr(mv.os, "replace", raise_replace)
+
+    with pytest.raises(OSError):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
+def test_append_mas_score_widening_is_atomic_on_write_failure(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = ("participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+               "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    csv_path.write_text(original)
+
+    real_open = open
+    def failing_open(path, *a, **kw):
+        if str(path).endswith(".tmp"):
+            raise OSError("simulated disk full")
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr(mv, "open", failing_open, raising=False)
+
+    replace_calls = []
+    monkeypatch.setattr(mv.os, "replace", lambda *a: replace_calls.append(a))
+
+    with pytest.raises(OSError):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+    assert replace_calls == []
+
+
+def test_append_mas_score_no_widen_when_row_keys_are_subset_of_header(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+        "assessed_date,stronger_leg,notes\n")
+    replace_calls = []
+    monkeypatch.setattr(mv.os, "replace", lambda *a: replace_calls.append(a))
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+         "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+         "stronger_leg": "", "notes": ""},
+        csv_path=str(csv_path))
+    assert replace_calls == []
+    assert not os.path.exists(str(csv_path) + ".tmp")
+
+
+def test_append_mas_score_ignores_unrecognized_keys_without_widening(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+         "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+         "stronger_le": "right"},  # typo'd key -- not in WIDENABLE_MAS_FIELDS
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"
+    assert len(lines) == 2
+    assert "stronger_le" not in lines[0]
+    assert "right" not in lines[1]
+
+
+def test_append_mas_score_raises_on_malformed_existing_row(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    original = (
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01,extra,cells,here\n")
+    csv_path.write_text(original)
+    with pytest.raises(ValueError, match="row 2"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
+
+
+def test_append_mas_score_widens_empty_file(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text("")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "stronger_leg": "right", "notes": "some notes"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
+    assert len(lines) == 2
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 1
+    assert rows[0]["stronger_leg"] == "right"

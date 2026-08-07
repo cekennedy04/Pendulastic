@@ -200,10 +200,54 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=DEFAULT_MAS_FIELDS).writeheader()
     with open(csv_path, newline="", encoding="utf-8") as f:
-        fieldnames = csv.DictReader(f).fieldnames
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        existing_rows = list(reader) if fieldnames else []
+
+    if not fieldnames:
+        # Zero-byte file that exists but never got a header written -- e.g.
+        # an earlier run crashed between creating the file and writing the
+        # header. Nothing to preserve; start from the canonical schema.
+        widened = list(DEFAULT_MAS_FIELDS)
+        for k in row:
+            if k not in widened:
+                widened.append(k)
+        _atomic_write_mas_csv(csv_path, widened, [], row)
+        return
+
+    new_fields = [k for k in WIDENABLE_MAS_FIELDS
+                 if k in row and k not in fieldnames]
+    if not new_fields:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writerow(row)
+        return
+
+    for i, existing in enumerate(existing_rows, start=2):  # row 1 is the header
+        if None in existing:
+            raise ValueError(
+                f"{csv_path}: row {i} has more fields than the header "
+                f"({len(fieldnames)} columns) -- fix this row by hand before "
+                f"stronger_leg/notes can be added automatically")
+
+    widened = list(fieldnames) + new_fields
+    _atomic_write_mas_csv(csv_path, widened, existing_rows, row)
+
+
+def _atomic_write_mas_csv(csv_path, fieldnames, existing_rows, new_row):
+    """Writes header + existing_rows + new_row to csv_path via a temp file
+    + os.replace -- matches pendulastic_storage.save_trial's pattern, so a
+    crash mid-write can't corrupt csv_path (either the pre-write file or
+    the fully-written new one is on disk, never a partial one). The temp
+    file is always opened in "w" mode, so a stale .tmp left over from an
+    earlier crashed run is overwritten from scratch, not appended to."""
+    tmp_path = csv_path + ".tmp"
+    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writerow(row)
+        writer.writeheader()
+        writer.writerows(existing_rows)
+        writer.writerow(new_row)
+    os.replace(tmp_path, csv_path)
 
 
 def _tokenize_condition(text):
