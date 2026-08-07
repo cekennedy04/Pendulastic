@@ -1,6 +1,7 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import numpy as np
 import rmse_pipeline_common as rpc
 
 
@@ -409,4 +410,55 @@ def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
     monkeypatch.setattr(rpc.engine, "compare_pair",
                         lambda *a, **k: {"status": "error", "error": "no overlap"})
     result = rpc.score_imu_candidate(trial, {"beta": 0.041})
+    assert result is None
+
+
+# ── extract_landmarks_cached / score_mediapipe_candidate ────────────────
+
+def test_extract_landmarks_cached_calls_extraction_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"fake")
+    calls = []
+    monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
+                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
+    trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    assert len(calls) == 1
+
+
+def test_extract_landmarks_cached_re_extracts_on_video_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"fake")
+    calls = []
+    monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
+                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
+    trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    video.write_bytes(b"different content, changes the hash")
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    assert len(calls) == 2
+
+
+def test_score_mediapipe_candidate_returns_rmse(monkeypatch):
+    trial = {"trial_key": "k1", "leg": "left", "video_path": "v.mp4", "optitrack_path": "o.csv"}
+    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, mp_: [{"t": 0.0}])
+    monkeypatch.setattr(rpc.pt_score, "load_optitrack",
+                        lambda path: (np.array([0.0]), np.array([1.0])))
+    monkeypatch.setattr(rpc.mediapipe_sweep, "score_frames",
+                        lambda frames, opti_t, opti_ang, vis_thresh: 4.2)
+    result = rpc.score_mediapipe_candidate(trial, "full", "model.task", 0.4)
+    assert result == 4.2
+
+
+def test_score_mediapipe_candidate_returns_none_when_unscoreable(monkeypatch):
+    trial = {"trial_key": "k1", "leg": "left", "video_path": "v.mp4", "optitrack_path": "o.csv"}
+    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, mp_: [{"t": 0.0}])
+    monkeypatch.setattr(rpc.pt_score, "load_optitrack",
+                        lambda path: (np.array([0.0]), np.array([1.0])))
+    monkeypatch.setattr(rpc.mediapipe_sweep, "score_frames",
+                        lambda frames, opti_t, opti_ang, vis_thresh: None)
+    result = rpc.score_mediapipe_candidate(trial, "full", "model.task", 0.4)
     assert result is None
