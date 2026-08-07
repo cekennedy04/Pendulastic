@@ -200,9 +200,7 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=DEFAULT_MAS_FIELDS).writeheader()
     with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames
-        existing_rows = list(reader) if fieldnames else []
+        fieldnames = csv.DictReader(f).fieldnames
 
     if not fieldnames:
         # Zero-byte file that exists but never got a header written -- e.g.
@@ -227,6 +225,9 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
         raise ValueError(
             f"{csv_path}: header has a duplicate column name -- fix this "
             f"file by hand before stronger_leg/notes can be added automatically")
+
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        existing_rows = list(csv.DictReader(f))
 
     for i, existing in enumerate(existing_rows, start=2):  # row 1 is the header
         if None in existing:
