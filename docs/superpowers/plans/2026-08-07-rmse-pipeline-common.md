@@ -38,6 +38,22 @@ existing landmark-extraction code), hashlib (sha256 content fingerprints), pytes
 - Reference: `docs/superpowers/specs/2026-08-07-rmse-validation-pipeline-design.md` (all section
   numbers below, e.g. "§4", refer to this file — read its Revision note first, it records three
   rounds of Codex review fixes already folded into the spec text).
+- **Do not build any discovery logic on `evaluate_all_participants.DataIndex`.** Confirmed against
+  current code (post-plan Codex consult, 2026-08-07): `_pid_pos_from_path()` requires both a
+  `Participant_<id>` and a `Position_<pos>` path segment to resolve a trial; newer participants
+  (P14, P15) don't reliably have a `Position_*` segment, so `DataIndex`-based discovery silently
+  drops them. This plan's Tasks 1-4 already avoid this (fresh structural parser, not
+  `DataIndex`) — this constraint exists to keep it that way through every later task too.
+- **`excluded_trials.json`** (repo root, `pt_report_common.EXCLUDED_TRIALS_PATH`) is a
+  hand-maintained registry of trials to drop from every discovery/report/sweep — e.g. a trial
+  where the participant used their own muscles to stop the pendulum swing instead of a passive
+  release, which would let a candidate config spuriously score well against non-passive motion.
+  `discover_scorable_trials()` (Task 4) must filter against it via
+  `pt_report_common.load_excluded_trials()` and `pt_report_common.trial_key(participant, leg,
+  condition, trial_number)` — the same legacy string-key format `pt_report_common.py` and
+  `pt_cohort_common.py` already use for this registry. This is a *different* key from this
+  module's own SHA-256 structural `trial_key` (§4) — never conflate the two; the legacy string key
+  is only ever used as a lookup into the exclusion registry, never as cache or ranking identity.
 - `trial_key` is a hash of the **structural** tuple `(participant, leg, condition, session,
   position, height, trial_number)` — never of which source files exist (§4's fix, corrected
   twice during review — see the spec's revision note for why).
@@ -563,14 +579,17 @@ git commit -m "feat: add generalized video/MediaPipe trial discovery"
 
 ---
 
-### Task 4: Merge into `TrialRecord`s with capability flags and ambiguity exclusion
+### Task 4: Merge into `TrialRecord`s with capability flags, ambiguity exclusion, and the
+shared exclusion registry
 
 **Files:**
 - Modify: `rmse_pipeline_common.py`
 - Test: `tests/test_rmse_pipeline_common.py` (append)
 
 **Interfaces:**
-- Consumes: `discover_imu_trials`, `discover_video_trials` (Tasks 2-3)
+- Consumes: `discover_imu_trials`, `discover_video_trials` (Tasks 2-3);
+  `pt_report_common.load_excluded_trials()`, `pt_report_common.trial_key()` (existing, Global
+  Constraints)
 - Produces: `rmse_pipeline_common.discover_scorable_trials() -> list[dict]` — the `TrialRecord`
   list from design spec §4
 
@@ -635,6 +654,38 @@ def test_discover_scorable_trials_conflicting_optitrack_path_excluded_as_ambiguo
                         lambda: [_video_trial(optitrack_path="opti_B.csv")])
     result = rpc.discover_scorable_trials()
     assert result == []
+
+
+# ── excluded_trials.json filtering (Global Constraints -- added after the
+# post-plan Codex consult found this repo's shared exclusion registry) ────
+
+def test_discover_scorable_trials_filters_excluded_trial(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    # _imu_trial()'s defaults are participant=13, leg=left, condition=post,
+    # trial_number=1 -- the legacy key pt_report_common.trial_key builds
+    # from those same fields.
+    legacy_key = "13_left_post_T1"
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {legacy_key: "operator-confirmed: active swing"})
+    assert rpc.discover_scorable_trials() == []
+
+
+def test_discover_scorable_trials_keeps_non_excluded_trial(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {"99_right_pre_T9": "unrelated trial"})
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
+
+
+def test_discover_scorable_trials_empty_registry_excludes_nothing(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials", lambda: {})
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -686,19 +737,35 @@ def discover_scorable_trials():
         rec["video_path"] = vid["video_path"]
         rec["has_mediapipe_rmse"] = True
 
-    return [rec for rec in by_key.values() if not rec["exclusion_reasons"]]
+    excluded = pt_report_common.load_excluded_trials()
+    kept = []
+    for rec in by_key.values():
+        if rec["exclusion_reasons"]:
+            continue
+        legacy_key = pt_report_common.trial_key(
+            rec["participant"], rec["leg"], rec["condition"], rec["trial_number"])
+        if legacy_key in excluded:
+            continue
+        kept.append(rec)
+    return kept
 ```
+
+Add `import pt_report_common` to the module's imports (alongside the other repo-local imports).
+`pt_report_common.load_excluded_trials()`/`trial_key()` are the shared exclusion-registry
+functions (Global Constraints) -- always called live, never cached across `discover_scorable_
+trials()` calls, so a hand-edit to `excluded_trials.json` takes effect on the next call without
+restarting anything.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k discover_scorable_trials -v`
-Expected: PASS (4 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add rmse_pipeline_common.py tests/test_rmse_pipeline_common.py
-git commit -m "feat: merge IMU/video discovery into TrialRecords with capability flags"
+git commit -m "feat: merge IMU/video discovery into TrialRecords, filter excluded_trials.json"
 ```
 
 ---
