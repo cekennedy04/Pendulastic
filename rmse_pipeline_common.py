@@ -14,12 +14,18 @@ its revision note first).
 from __future__ import annotations
 
 import batch_imu_vs_optitrack_rmse as imu_discovery
+import cv2
 import glob
 import hashlib
+import inspect
 import json
+import mediapipe
+import numpy
 import os
 import pt_report_common
 import re
+import scipy
+import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
@@ -252,3 +258,77 @@ def discover_scorable_trials():
             continue
         kept.append(rec)
     return kept
+
+
+def sha256_file(path, stat_cache, force=False):
+    """Content hash of one file, gated by a size/mtime pre-filter --
+    unchanged stat reuses the cached digest from a prior call within the
+    same stat_cache dict, no re-read. force=True always re-hashes,
+    bypassing the pre-filter entirely (needed by the watcher plan's
+    reconciliation pass, which is the correctness safety net and must not
+    share this speed optimization's blind spot -- design spec §7.1's
+    third-round correction)."""
+    st = os.stat(path)
+    stat_key = (path, st.st_size, st.st_mtime_ns)
+    if not force and stat_key in stat_cache:
+        return stat_cache[stat_key][1]
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()
+    stat_cache[stat_key] = (stat_key, digest)
+    return digest
+
+
+def compute_input_fingerprints(trial, methodology, stat_cache, force=False):
+    """Per design spec §7.1: every input file a candidate's score actually
+    depends on, for the given methodology. optitrack is always included;
+    imu's four split CSVs are included for methodology="imu", the video
+    for methodology="mediapipe"."""
+    fps = {"optitrack": sha256_file(trial["optitrack_path"], stat_cache, force=force)}
+    if methodology == "imu":
+        fps["imu"] = {name: sha256_file(p, stat_cache, force=force)
+                      for name, p in trial["imu_component_paths"].items()}
+    elif methodology == "mediapipe":
+        fps["video"] = sha256_file(trial["video_path"], stat_cache, force=force)
+    else:
+        raise ValueError(f"unknown methodology: {methodology!r}")
+    return fps
+
+
+_FINGERPRINTED_MODULES = ("rmse_pipeline_common", "workbench_engine",
+                          "imu_calibration_tuner", "reconstruct_imu_raw_logs",
+                          "sweep_imu_config", "sweep_mediapipe_config", "batch_mediapipe")
+
+
+def compute_implementation_fingerprint():
+    """Hash of everything that can silently change a candidate's score
+    without touching any trial's input files: both grids (imported live,
+    per Global Constraints), the source of every module this pipeline's
+    scoring path depends on, and the installed numpy/scipy/opencv/
+    mediapipe package versions (design spec §7.1)."""
+    import sweep_imu_config
+    import sweep_mediapipe_config
+
+    parts = [
+        json.dumps(sweep_imu_config.WIDE_GRID, sort_keys=True),
+        json.dumps({"model_variants": sweep_mediapipe_config.MODEL_VARIANTS,
+                    "vis_thresh": sweep_mediapipe_config.VIS_THRESH_CANDIDATES},
+                   sort_keys=True),
+    ]
+    for mod_name in _FINGERPRINTED_MODULES:
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            continue
+        try:
+            parts.append(inspect.getsource(mod))
+        except (OSError, TypeError):
+            pass
+    parts.append(f"numpy={numpy.__version__}")
+    parts.append(f"scipy={scipy.__version__}")
+    parts.append(f"opencv={cv2.__version__}")
+    parts.append(f"mediapipe={mediapipe.__version__}")
+
+    blob = "\x00".join(parts).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
