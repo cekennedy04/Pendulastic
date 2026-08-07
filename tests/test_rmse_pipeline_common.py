@@ -187,3 +187,95 @@ def test_discover_video_trials_checks_opti_side_video_too(tmp_path, monkeypatch)
     result = rpc.discover_video_trials()
     assert len(result) == 1
     assert result[0]["video_path"] == str(opti_dir / "Trial_2.mp4")
+
+
+# ── discover_scorable_trials ─────────────────────────────────────────────
+
+def _imu_trial(trial_key="k1", optitrack_path="opti.csv", **overrides):
+    base = {"trial_key": trial_key, "participant": "13", "leg": "left",
+           "condition": "post", "session": "post", "position": "1",
+           "height": "joint-level", "trial_number": "1",
+           "imu_anchor_path": "anchor.csv",
+           "imu_component_paths": {"imu": "a", "accel": "b", "gyro": "c", "mag": "d"},
+           "optitrack_path": optitrack_path}
+    base.update(overrides)
+    return base
+
+
+def _video_trial(trial_key="k1", optitrack_path="opti.csv", **overrides):
+    base = {"trial_key": trial_key, "participant": "13", "leg": "left",
+           "condition": "post", "session": "post", "position": "1",
+           "height": "joint-level", "trial_number": "1",
+           "video_path": "vid.avi", "optitrack_path": optitrack_path}
+    base.update(overrides)
+    return base
+
+
+def test_discover_scorable_trials_merges_by_trial_key(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [_video_trial()])
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["has_imu_rmse"] is True
+    assert rec["has_mediapipe_rmse"] is True
+    assert rec["exclusion_reasons"] == []
+
+
+def test_discover_scorable_trials_imu_only_capability(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    result = rpc.discover_scorable_trials()
+    assert result[0]["has_imu_rmse"] is True
+    assert result[0]["has_mediapipe_rmse"] is False
+    assert result[0]["video_path"] is None
+
+
+def test_discover_scorable_trials_no_optitrack_excluded(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial(optitrack_path=None)])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    assert rpc.discover_scorable_trials() == []
+
+
+def test_discover_scorable_trials_conflicting_optitrack_path_excluded_as_ambiguous(monkeypatch):
+    # Same trial_key from both sides, but disagreeing on which OptiTrack
+    # file it maps to -- design spec §4: never heuristically resolved,
+    # excluded instead.
+    monkeypatch.setattr(rpc, "discover_imu_trials",
+                        lambda: [_imu_trial(optitrack_path="opti_A.csv")])
+    monkeypatch.setattr(rpc, "discover_video_trials",
+                        lambda: [_video_trial(optitrack_path="opti_B.csv")])
+    result = rpc.discover_scorable_trials()
+    assert result == []
+
+
+# ── excluded_trials.json filtering (Global Constraints -- added after the
+# post-plan Codex consult found this repo's shared exclusion registry) ────
+
+def test_discover_scorable_trials_filters_excluded_trial(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    # _imu_trial()'s defaults are participant=13, leg=left, condition=post,
+    # trial_number=1 -- the legacy key pt_report_common.trial_key builds
+    # from those same fields.
+    legacy_key = "13_left_post_T1"
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {legacy_key: "operator-confirmed: active swing"})
+    assert rpc.discover_scorable_trials() == []
+
+
+def test_discover_scorable_trials_keeps_non_excluded_trial(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {"99_right_pre_T9": "unrelated trial"})
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
+
+
+def test_discover_scorable_trials_empty_registry_excludes_nothing(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials", lambda: {})
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1

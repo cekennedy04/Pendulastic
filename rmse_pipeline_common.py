@@ -18,6 +18,7 @@ import glob
 import hashlib
 import json
 import os
+import pt_report_common
 import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -199,3 +200,55 @@ def discover_video_trials():
             "optitrack_path": opti_path,
         })
     return out
+
+
+def discover_scorable_trials():
+    """Merge discover_imu_trials()/discover_video_trials() by trial_key
+    into TrialRecords with per-methodology capability flags (design spec
+    §4). A trial_key with no optitrack_path on the side(s) that produced
+    it, or with disagreeing optitrack_path values across sides, is
+    excluded rather than heuristically resolved -- a silent wrong pairing
+    is worse than a skipped trial."""
+    by_key = {}
+    for imu in discover_imu_trials():
+        if not imu["optitrack_path"]:
+            continue
+        rec = by_key.setdefault(imu["trial_key"], {
+            **{k: imu[k] for k in _TRIAL_KEY_FIELDS},
+            "trial_key": imu["trial_key"], "optitrack_path": imu["optitrack_path"],
+            "imu_anchor_path": None, "imu_component_paths": None, "video_path": None,
+            "has_imu_rmse": False, "has_mediapipe_rmse": False, "exclusion_reasons": [],
+        })
+        if rec["optitrack_path"] != imu["optitrack_path"]:
+            rec["exclusion_reasons"].append("conflicting_optitrack_path")
+            continue
+        rec["imu_anchor_path"] = imu["imu_anchor_path"]
+        rec["imu_component_paths"] = imu["imu_component_paths"]
+        rec["has_imu_rmse"] = True
+
+    for vid in discover_video_trials():
+        if not vid["optitrack_path"]:
+            continue
+        rec = by_key.setdefault(vid["trial_key"], {
+            **{k: vid[k] for k in _TRIAL_KEY_FIELDS},
+            "trial_key": vid["trial_key"], "optitrack_path": vid["optitrack_path"],
+            "imu_anchor_path": None, "imu_component_paths": None, "video_path": None,
+            "has_imu_rmse": False, "has_mediapipe_rmse": False, "exclusion_reasons": [],
+        })
+        if rec["optitrack_path"] != vid["optitrack_path"]:
+            rec["exclusion_reasons"].append("conflicting_optitrack_path")
+            continue
+        rec["video_path"] = vid["video_path"]
+        rec["has_mediapipe_rmse"] = True
+
+    excluded = pt_report_common.load_excluded_trials()
+    kept = []
+    for rec in by_key.values():
+        if rec["exclusion_reasons"]:
+            continue
+        legacy_key = pt_report_common.trial_key(
+            rec["participant"], rec["leg"], rec["condition"], rec["trial_number"])
+        if legacy_key in excluded:
+            continue
+        kept.append(rec)
+    return kept
