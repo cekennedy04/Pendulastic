@@ -1,10 +1,15 @@
 # Auto-Triggered RMSE Validation Pipeline — Design Spec
 
-**Revision note (2026-08-07):** this spec was reviewed by Codex (`/codex consult`,
-session `019fdd23-8d0c-7230-adae-b40c2652e2b6`) after the initial draft. That review
-found two factual errors and several real correctness gaps, all incorporated below.
-Superseded points from the original draft (e.g. the size/mtime cache key from the
-earlier Grok-round revision) are called out explicitly where they're replaced.
+**Revision note (2026-08-07):** this spec went through two rounds of Codex review
+(`/codex consult`, session `019fdd23-8d0c-7230-adae-b40c2652e2b6`). Round 1 found two
+factual errors and several correctness gaps in the initial draft. Round 2, run after
+applying round 1's fixes, caught that two of those fixes were themselves incomplete or
+introduced new problems (the `trial_key` design and §7.2's coverage rule) and flagged
+gaps round 1's fixes hadn't closed (reconciliation's fingerprint blind spot, the
+promotion incumbent-rescoring gap, MediaPipe cache granularity, the stability-check
+mechanism, and the condition-variable race). All incorporated below. Superseded points
+from earlier revisions (e.g. the size/mtime cache key from the Grok-round revision, and
+the source-path-hash `trial_key` from round 1) are called out explicitly where replaced.
 
 ## 1. Goal
 
@@ -81,11 +86,14 @@ capture:
 
 ```python
 TrialRecord = {
-    "trial_key": "<sha256 of resolved concrete source paths>",
-    # display/filter metadata only — never used for identity or cache keys:
+    "trial_key": "<sha256 of the canonical structural capture tuple>",
+    # the fields the key is actually built from — canonicalized (lowercased,
+    # normalized) participant/leg/condition/height/trial_number, resolved
+    # unambiguously by the discovery layer, NOT by which files happen to exist:
     "participant": "14", "leg": "left", "condition": "pre",
     "session": "pre", "position": "1", "height": "Joint-Level", "trial_number": "3",
-    # resolved, repo-root-relative, normalized, case-folded paths (nullable):
+    # resolved, repo-root-relative, normalized, case-folded paths (nullable) —
+    # mutable inputs, NOT part of trial_key (see below):
     "optitrack_path": "...", "imu_anchor_path": "...", "imu_component_paths": {...},
     "video_path": "...",
     # capability flags — "eligible" is methodology-specific, not a single bool:
@@ -94,12 +102,18 @@ TrialRecord = {
 }
 ```
 
-`trial_key` is a deterministic hash of the resolved source paths (`optitrack` + `imu_anchor` +
-`video`, each `None` if absent) — the matched files define identity, not parsed folder labels. If
-the resolver finds multiple plausible OptiTrack counterparts for one capture (the ambiguity
-`find_optitrack_match()` already tolerates via its shallow-match fallback), the record is marked
-ambiguous and **excluded**, never heuristically resolved — a silent wrong pairing is worse than a
-skipped trial, especially for a project whose whole point is measurement accuracy.
+**`trial_key` fix (second Codex round):** the first revision hashed the resolved *source paths*
+(optitrack + imu_anchor + video), which broke identity stability — adding a video later for a
+capture that previously had only IMU data, or relocating a file, changes the key for the same
+physical capture, silently fragmenting its cache/history into what looks like two different
+trials. `trial_key` is instead a hash of the canonical **structural** capture tuple (participant,
+leg, condition/session, height, trial_number) resolved by the discovery layer — this is stable
+across capability changes. The actual file identities (which files currently exist, their content)
+live in `input_fingerprints` (§7.1) and are free to change without changing `trial_key`. If the
+structural resolution itself is ambiguous — multiple candidate file sets could satisfy the same
+tuple, or `find_optitrack_match()`'s shallow-match fallback can't disambiguate — the record is
+marked ambiguous and **excluded**, never heuristically resolved. A silent wrong pairing is worse
+than a skipped trial, especially for a project whose whole point is measurement accuracy.
 
 ## 5. `rmse_pipeline_common.py` (new shared module)
 
@@ -119,17 +133,26 @@ skipped trial, especially for a project whose whole point is measurement accurac
   `MP_LEG_IDX`/`_leg_from_name`, `workbench_engine.compare_pair`) to run over every discovered
   trial with `has_mediapipe_rmse` rather than only P14's — this is real discovery-logic work, not
   a parameter change (see §2's correction).
-- **`run_full_sweep()`** — discover trials → for each trial, score every candidate its capability
-  flags support, in both grids (reading/writing `sweep_cache/` — see §7 for the cache-key design)
-  → aggregate per-candidate RMSE **only from the frozen trial intersection both methodologies
-  scored** (see §7's coverage rule) → return ranked `{mediapipe: [...], imu: [...]}` plus coverage
-  metadata (trial/participant counts actually contributing, not just discovered).
+- **`run_full_sweep(priority_trial_keys=None)`** — discover trials → for each trial, score every
+  candidate its capability flags support, in both grids (reading/writing `sweep_cache/` — see §7
+  for the cache-key design) → rank candidates within each methodology's **frozen ranking cohort**
+  (see §7.2 — fixed in the second Codex round) → return ranked `{mediapipe: [...], imu: [...]}`
+  plus coverage metadata (trial/participant counts actually contributing, not just discovered).
+  `priority_trial_keys` is an optional ordering/caching hint only (score these first so a
+  triggering trial's own result is available sooner) — it never filters which trials are scored or
+  ranked; the no-argument call and the hinted call always produce the same ranking for the same
+  underlying data.
 - **`load_best_config()` / `record_sweep_result()`** — atomic read/write of `rmse_best_config.json`
-  (same atomic-write pattern as `imu_calibration_config.py`). A candidate is only promoted to
-  "current best" when it beats the recorded best by more than a defined epsilon (units: RMSE
-  degrees, absolute — not relative — since cross-run relative comparisons are already unstable as
-  dataset size changes; exact value TBD at implementation time, default proposal 0.1°) **and**
-  meets the minimum-coverage floor in §7.
+  (same atomic-write pattern as `imu_calibration_config.py`). Every sweep **re-scores the currently
+  recorded best candidate's exact config against the current frozen cohort**, independent of
+  whether that exact config is still present in the live grid (grids are hand-tuned and can change
+  — see §5's IMU-grid note) — this is what makes the promotion comparison apples-to-apples; without
+  it, a challenger scored on today's cohort could be compared against an incumbent RMSE computed on
+  a stale, smaller cohort from whenever it was first promoted. A candidate is only promoted to
+  "current best" when it beats the freshly-rescored incumbent by more than a defined epsilon
+  (units: RMSE degrees, absolute — not relative — since cross-run relative comparisons are already
+  unstable as dataset size changes; exact value TBD at implementation time, default proposal 0.1°)
+  **and** meets the minimum-coverage floor in §7.2.
 
 This module has no side effects beyond reading trial data and writing its own output files — it
 never touches `imu_calibration_config.json`, `participant_groups.json`, or any file outside
@@ -152,19 +175,40 @@ never touches `imu_calibration_config.json`, `participant_groups.json`, or any f
   collapses a trial's several sibling files (IMU split-CSVs, video, OptiTrack export) landing
   within seconds of each other into one trigger.
 - **`tick()`** — called on a short interval; for every key whose due-time has passed: run the
-  file-stability check (size stable across two ~1.5s-apart polls, opens in shared-read mode
-  without a lock error). If unstable, re-arm and retry (bounded ~60s). **If a trial exceeds the
-  60s bound repeatedly across multiple reconciliation cycles** (the original draft left this as a
-  silent forever-retry with no terminal state), log a persistent warning distinct from the routine
-  per-attempt log line, so a genuinely stuck/corrupt file is visible rather than silently retried
-  forever. If stable, mark the key dirty (see the scheduling model below).
-- **`reconciliation_pass()`** — every 600s, re-derive `discover_scorable_trials()` for the whole
-  tree and diff against `sweep_cache/`'s known trial keys (§7). Anything unprocessed marks the key
-  dirty via the same path as `tick()`. This is the safety net for any `watchdog` OS-level events
-  dropped under Windows file-system event coalescing — the event-driven path already handles a
-  same-key edit (re-export, patch) via a fresh `modified` event and the content-hash cache key in
-  §7 (not size/mtime — see that section for why this changed from the prior revision), so
-  reconciliation only needs to catch what the OS-level watch genuinely missed.
+  file-stability check. **Concrete mechanism (fixed in the second Codex round — "opens in
+  shared-read mode" was not concretely implementable as stated):** after two size-stable polls
+  ~1.5s apart (via the injected clock, not a real sleep), attempt an actual parse with the file's
+  real reader — `csv.reader` for CSV inputs, an OpenCV `VideoCapture` open-plus-one-frame-read for
+  video. A successful parse is the stability signal; a parse exception is treated identically to a
+  failed size-stability poll (re-arm and retry), since it directly proves the file wasn't safely
+  readable yet rather than inferring that from open-mode semantics. If unstable, re-arm and retry
+  (bounded ~60s). **If a trial exceeds the 60s bound repeatedly across multiple reconciliation
+  cycles**, log a persistent warning distinct from the routine per-attempt log line, so a genuinely
+  stuck/corrupt file is visible rather than silently retried forever — accepted as logging, not
+  alerting: this is a single-user local research tool, not a monitored service, so a paging/alert
+  channel is out of scope. If stable, mark the key dirty (see the scheduling model below).
+- **`reconciliation_pass()`** — every 600s, two checks, not one (the first revision only did the
+  first, which a second Codex round caught as insufficient — a changed file keeps the same
+  `trial_key`, so diffing trial-key existence alone never notices an edit):
+  1. Re-derive `discover_scorable_trials()` for the whole tree and diff against `sweep_cache/`'s
+     known trial keys — catches genuinely new/removed trials, same as the first revision.
+  2. For every already-known trial, re-check its `input_fingerprints` (§7.1) via the same
+     stat-pre-filter/hash-on-change path the cache uses, **and** recompute the current
+     `implementation_fingerprint` and compare it against the one recorded on the last completed
+     sweep. A changed input fingerprint marks that trial dirty; a changed implementation
+     fingerprint (source/grid/model files, which live outside the watched
+     `Recordings/`/`OptiTrack_Recordings/` roots and so generate no `watchdog` events at all) marks
+     **every** known trial dirty, since a code or grid change invalidates every existing cache
+     entry at once.
+
+  This is the safety net for any `watchdog` OS-level events dropped under Windows file-system event
+  coalescing, for same-path content edits that don't change `trial_key`, and for the entire class
+  of dependency changes the file watcher structurally cannot see (anything outside its watched
+  roots). In-memory dirty-set state lost to a crash is recovered here too — a crash between marking
+  a trial dirty and committing its cache/output write means it's simply not yet reflected in
+  `sweep_cache/`'s fingerprints, so the next reconciliation pass (worst case, 600s later) notices
+  the mismatch and re-marks it dirty. No separate persistent dirty-journal is needed as long as
+  reconciliation is fingerprint-based rather than existence-based.
 - **Coalesced scheduling (revised — replaces the plain `queue.Queue` design).** The original draft's
   FIFO queue did not actually guarantee "one sweep per burst of triggers" — Codex's review caught
   that a plain single-consumer queue runs one sweep *per queued token*, contradicting the test
@@ -204,7 +248,10 @@ never touches `imu_calibration_config.json`, `participant_groups.json`, or any f
 
   This gives the property the original test claim wanted: any number of triggers before the
   consumer starts collapses to one sweep, and any number of triggers during a sweep collapses to
-  exactly one follow-up sweep — no backlog of redundant full sweeps.
+  exactly one follow-up sweep — no backlog of redundant full sweeps. `wait_until_requested()` is a
+  condition-variable predicate loop (`cv.wait_for(lambda: sweep_requested)`), not a bare sleep/poll
+  — a bare wait can miss a wakeup that arrives between checking the flag and re-entering the wait,
+  stranding `sweep_requested=True` unconsumed (flagged in the second Codex round).
 - **Failure isolation:** a single trial's scoring failure (corrupt CSV, unreadable frame) is caught
   and logged per-trial; the sweep continues over the remaining trials/candidates, matching
   `run_pt_analysis.py`'s existing pattern of wrapping cohort comparison in try/except so one bad
@@ -263,25 +310,42 @@ computed file hash from a small stat→hash side-table, no re-read. A file whose
 that's never been hashed) gets actually re-hashed. This keeps the common case cheap while making
 the cache key genuinely correctness-bearing rather than a heuristic.
 
-### 7.2 Coverage rule (new — closes the invalid-comparison gap)
+**MediaPipe cache granularity (added — second Codex round):** a per-`(trial, full-config)` RMSE
+cache entry alone does not prevent repeating pose inference when only `vis_threshold` changes —
+inference is by far the expensive part; thresholding already-extracted landmarks is cheap. Split
+the MediaPipe cache into two layers: a **landmark-extraction cache** keyed on
+`(trial_key, model_variant, video fingerprint, model-file fingerprint, extraction-code
+fingerprint)` storing raw per-frame landmarks, and the existing per-candidate RMSE cache keyed as
+above, which for MediaPipe candidates reads from the landmark cache rather than re-running
+inference when only `vis_threshold` differs.
 
-Two issues the original draft didn't address:
+### 7.2 Ranking cohort and coverage rule (revised — second Codex round fixed a self-contradiction here)
 
-- **Candidates must be ranked on the same scored subset.** A candidate that silently fails to
-  score on hard trials must not win by having a smaller, easier denominator. `run_full_sweep()`
-  aggregates each candidate's RMSE only over the trial set where scoring actually succeeded for
-  that candidate, and reports `n_trials`/`n_participants` alongside every ranked result —
-  candidates below a minimum-coverage floor (proposal: must score ≥80% of eligible trials and
-  ≥3 distinct participants) are marked `low_coverage` and excluded from promotion eligibility,
-  never silently ranked on an easier subset.
-- **The IMU-vs-MediaPipe comparison figure must use a frozen intersection, not "same day."**
-  "Both computed on the same day" (the original draft's fix for the stale-comparison problem found
-  in §2) is not the same as "both computed on the same trials" — IMU and MediaPipe eligibility
-  (`has_imu_rmse`/`has_mediapipe_rmse` from §4) differ per trial by construction (sensor vs. video
-  availability). `imu_vs_mediapipe_rmse.png` is computed only over the explicit intersection of
-  trials where both methodologies have a valid current-best-candidate score, with the trial/
-  participant count of that intersection labeled directly on the figure — not the full dataset
-  size for either side.
+The first revision said "candidates must be ranked on the same scored subset" but then described
+each candidate independently aggregating over whatever it happened to score, gated only by an 80%
+floor — that still lets two candidates be compared on different subsets. Fixed:
+
+- **One frozen ranking cohort per methodology per sweep.** Before scoring, `run_full_sweep()` fixes
+  the cohort as every trial with the relevant capability flag (`has_imu_rmse` or
+  `has_mediapipe_rmse`) that isn't excluded (§4). Every candidate in that methodology's grid is
+  scored against every trial in that same cohort — not "whatever it happened to succeed on."
+- **A candidate that fails to score on a required cohort trial does not get a smaller, easier
+  denominator.** It is marked `low_coverage` for that sweep and excluded from ranking and
+  promotion eligibility entirely, rather than aggregated over a partial subset. This makes "ranked
+  on the same scored subset" literally true, not just aspirational.
+- **Minimum-coverage floor still applies to the cohort itself**, not per-candidate: if the frozen
+  cohort has fewer than 3 distinct participants, ranking/promotion for that methodology is skipped
+  for this sweep entirely (reported, not silently dropped) rather than running a low-confidence
+  ranking over a too-small cohort.
+- **The IMU-vs-MediaPipe comparison figure uses its own frozen intersection, computed from the
+  selected current-best candidates' actual results** — not a vague "same day" or independently-
+  computed overlap. Concretely: after each methodology's ranking (above) selects its current-best
+  candidate, `imu_vs_mediapipe_rmse.png` is computed over the intersection of the two methodologies'
+  frozen cohorts (trials where both `has_imu_rmse` and `has_mediapipe_rmse` are true and neither
+  was excluded), scored with each side's selected best candidate and cache/dependency fingerprints
+  recorded alongside the figure — not recomputed candidate-by-candidate. The trial/participant
+  count of that intersection is labeled directly on the figure, not the full dataset size for
+  either side.
 
 ### 7.3 Outputs
 
@@ -349,19 +413,27 @@ Two issues the original draft didn't address:
 
 ## 11. Testing
 
-- `rmse_pipeline_common.py`: plain-function unit tests for `TrialRecord` discovery/identity
-  (including the ambiguous-match-excluded case from §4), scoring wrappers (mocked
-  `compare_pair`/`replay_trial`/`reconstruct_trial`), sweep aggregation and the coverage/low-
-  coverage rule (§7.2), cache key computation (including the stat-pre-filter/hash-on-change
-  behavior), and best-config promotion (epsilon + coverage floor), `tmp_path`/`monkeypatch`, no
-  test classes — matching `tests/test_pt_cohort_common.py`'s existing convention.
+- `rmse_pipeline_common.py`: plain-function unit tests for `TrialRecord` discovery/identity —
+  including that `trial_key` is stable across a capability change (adding a video to a
+  previously-IMU-only structural tuple must NOT change `trial_key`, the specific bug round 2
+  caught) and the ambiguous-match-excluded case from §4; scoring wrappers (mocked
+  `compare_pair`/`replay_trial`/`reconstruct_trial`); the frozen-ranking-cohort rule (§7.2) —
+  including that a candidate failing one required cohort trial is excluded from ranking rather
+  than aggregated over a smaller subset; cache key computation (stat-pre-filter/hash-on-change
+  behavior, and the separate landmark-extraction cache for MediaPipe); best-config promotion
+  (incumbent re-scored against the current cohort before comparison, epsilon, coverage floor).
+  `tmp_path`/`monkeypatch`, no test classes — matching `tests/test_pt_cohort_common.py`'s existing
+  convention.
 - `rmse_watcher.py`: clock-injected methods tested directly — `on_file_event`/`tick` collapsing
   rapid-fire same-key events into one dirty-mark after the fake clock advances past the debounce
-  window (stability-check polling also driven by the injected clock, not real sleeps); the
-  coalesced-scheduling invariant from §6 tested directly: N dirty-marks before the consumer starts
-  produce exactly one `run_full_sweep()` call, and N more dirty-marks arriving *during* a
-  (monkeypatched, artificially slow) sweep produce exactly one follow-up call, not N. No real
-  filesystem watching or real sleeps in any test.
+  window (stability-check polling, including the parse-based stability signal, also driven by the
+  injected clock, not real sleeps); `reconciliation_pass` tested for both its existence-diff path
+  and its fingerprint-revalidation path (an unchanged trial-key set with a changed input file, and
+  a changed `implementation_fingerprint` marking every known trial dirty); the coalesced-scheduling
+  invariant from §6 tested directly via the condition-variable primitive: N dirty-marks before the
+  consumer starts produce exactly one `run_full_sweep()` call, and N more dirty-marks arriving
+  *during* a (monkeypatched, artificially slow) sweep produce exactly one follow-up call, not N. No
+  real filesystem watching or real sleeps in any test.
 - Full regression pass: run `tests/test_pt_cohort_common.py` and the rest of the existing suite
   after this work lands, to confirm no cross-module regressions (matching the verification step
   used for the MS-vs-Control cohort work).
