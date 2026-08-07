@@ -1935,38 +1935,52 @@ class MasEntryPanel(tk.Frame):
                       bg=ws.PALETTE["BG"], activebackground=ws.PALETTE["BG"]
                       ).pack(side="left", padx=4)
 
-        tk.Label(form, text="Condition:", bg=ws.PALETTE["BG"],
+        tk.Label(form, text="Stronger Leg:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=2, column=0, sticky="e", **pad)
-        self.condition_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.condition_var, width=22).grid(
+        self.stronger_leg_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self.stronger_leg_var, width=19,
+                    state="readonly",
+                    values=list(_mas_validation.STRONGER_LEG_OPTIONS)).grid(
             row=2, column=1, sticky="w", **pad)
 
-        tk.Label(form, text="Diagnosis:", bg=ws.PALETTE["BG"],
+        tk.Label(form, text="Condition:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=3, column=0, sticky="e", **pad)
-        self.diagnosis_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.diagnosis_var, width=22).grid(
+        self.condition_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.condition_var, width=22).grid(
             row=3, column=1, sticky="w", **pad)
 
-        tk.Label(form, text="MAS Grade:", bg=ws.PALETTE["BG"],
+        tk.Label(form, text="Diagnosis:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=4, column=0, sticky="e", **pad)
+        self.diagnosis_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.diagnosis_var, width=22).grid(
+            row=4, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="MAS Grade:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=5, column=0, sticky="e", **pad)
         self.mas_grade_var = tk.StringVar()
         ttk.Combobox(form, textvariable=self.mas_grade_var, width=19,
                     state="readonly",
                     values=list(_mas_validation.MAS_ORDER)).grid(
-            row=4, column=1, sticky="w", **pad)
-
-        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
-                 fg=ws.PALETTE["FG"]).grid(row=5, column=0, sticky="e", **pad)
-        self.assessed_by_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
             row=5, column=1, sticky="w", **pad)
 
-        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=6, column=0, sticky="e", **pad)
+        self.assessed_by_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
+            row=6, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=7, column=0, sticky="e", **pad)
         self.assessed_date_var = tk.StringVar(
             value=_datetime.date.today().isoformat())
         tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
-            row=6, column=1, sticky="w", **pad)
+            row=7, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Notes:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=8, column=0, sticky="ne", **pad)
+        self.notes_text = tk.Text(form, height=3, width=22, wrap="word",
+                                  bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"])
+        self.notes_text.grid(row=8, column=1, sticky="w", **pad)
 
         # Single feedback channel for the form: errors in amber, save
         # confirmations in green (see _set_feedback).
@@ -2059,6 +2073,8 @@ class MasEntryPanel(tk.Frame):
             "mas_grade": mas_grade,
             "assessed_by": self.assessed_by_var.get().strip(),
             "assessed_date": self.assessed_date_var.get().strip(),
+            "stronger_leg": self.stronger_leg_var.get().strip().lower(),
+            "notes": self.notes_text.get("1.0", "end").strip(),
         }
         try:
             _mas_validation.append_mas_score(row)
@@ -2072,10 +2088,13 @@ class MasEntryPanel(tk.Frame):
         # participant/condition/date), but with no confirmation a clinician
         # unsure the click registered would click Save again and append an
         # identical duplicate row, biasing the Spearman/kappa stats. Confirm,
-        # and clear the one field that must change between consecutive rows so
-        # a resubmit takes a deliberate re-selection.
+        # and clear the fields that must change between consecutive rows so a
+        # resubmit takes a deliberate re-selection: mas_grade (existing) and
+        # notes (specific to this one observation) -- unlike stronger_leg,
+        # which typically holds across both legs' rows for the same session.
         self._set_feedback(f"Saved {participant} {row['leg']} / {mas_grade}.", ok=True)
         self.mas_grade_var.set("")
+        self.notes_text.delete("1.0", "end")
         self.refresh()
 
     def _on_export_clicked(self) -> None:
