@@ -1,11 +1,15 @@
 """
 run_pt_analysis.py
 ===================
-Manual trigger: once a participant has at least TRIAL_THRESHOLD right-leg
-trials AND TRIAL_THRESHOLD left-leg trials recorded (counted across all
-recorded conditions/sessions for that leg), generates their full PT-score
-report, an RMSE-vs-OptiTrack figure (MediaPipe + IMU), and PT-score
-comparison figures against the two reference participants (P5, P13).
+Manual trigger: 30 minutes after a participant's first discoverable
+recording lands, generates their full PT-score report, an
+RMSE-vs-OptiTrack figure (MediaPipe + IMU), and PT-score comparison
+figures against the two reference participants (P5, P13) -- using
+whatever trials are available at that point, however many that is. Not
+every timepoint reaches TRIAL_THRESHOLD trials per leg (some sessions run
+short), so trial count alone can no longer gate report generation; elapsed
+time since the first recording can (2026-08-07 policy change -- see
+git history for the trial-count-threshold version this replaced).
 
 Built entirely on pt_report_common.py's generic collect_participant() /
 make_report_figure() / make_rmse_figure() / make_comparison_figure() --
@@ -14,10 +18,12 @@ comparison (p13_full_report.py, p5_full_report.py, p13_vs_p5_comparison.py)
 are built from -- so every output here stays numerically and visually
 consistent with what's already in Model_Analysis_Outputs/PT_Scores.
 
-Below-threshold participants are reported (trials still needed per leg)
-and skipped -- nothing in Model_Analysis_Outputs is touched for them.
+Participants with no discoverable trials yet, or whose first recording
+landed less than READY_AFTER_SECONDS ago, are reported and skipped --
+nothing in Model_Analysis_Outputs is touched for them.
 
-Run after a recording session:
+Run after a recording session (or any time after -- re-running is safe and
+just regenerates the same figures from current data):
     .venv\\Scripts\\python.exe run_pt_analysis.py <participant_id>
     .venv\\Scripts\\python.exe run_pt_analysis.py            # every participant that currently qualifies
 """
@@ -26,34 +32,43 @@ from __future__ import annotations
 import csv
 import os
 import sys
+import time
 
 import pt_cohort_common
 import pt_report_common as common
 
-TRIAL_THRESHOLD = common.TRIAL_THRESHOLD          # alias -- pt_report_common.py is now the source of truth
+READY_AFTER_SECONDS = 30 * 60   # 30 minutes since the first recording landed
 REFERENCE_PARTICIPANTS = ("5", "13")
 MAS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mas_scores.csv")
 
-leg_trial_counts = common.leg_trial_counts        # alias, see TRIAL_THRESHOLD above
+leg_trial_counts = common.leg_trial_counts
 
 
 def run_for_participant(pid):
     counts = leg_trial_counts(pid)
-    missing = {leg: max(0, TRIAL_THRESHOLD - n) for leg, n in counts.items()}
-    if any(missing.values()):
-        print(f"P{pid}: right={counts['right']} left={counts['left']} trials "
-              f"-- needs {missing['right']} more right / {missing['left']} more left "
-              f"to reach the {TRIAL_THRESHOLD}+{TRIAL_THRESHOLD} threshold. Skipping.")
+    first_ts = common.first_recording_time(pid)
+    if first_ts is None:
+        print(f"P{pid}: no discoverable trials yet. Skipping.")
         return []
 
-    print(f"P{pid}: right={counts['right']} left={counts['left']} trials -- threshold met, generating figures...")
+    elapsed = time.time() - first_ts
+    if elapsed < READY_AFTER_SECONDS:
+        print(f"P{pid}: right={counts['right']} left={counts['left']} trials -- "
+              f"first recording landed {elapsed / 60:.1f} min ago, waiting "
+              f"{(READY_AFTER_SECONDS - elapsed) / 60:.1f} more min before analyzing. Skipping.")
+        return []
+
+    print(f"P{pid}: right={counts['right']} left={counts['left']} trials -- "
+          f"{elapsed / 60:.0f} min since first recording, generating figures...")
     by_leg_tp, timepoints = common.collect_participant(pid)
     label = f"P{pid}"
     outputs = []
 
     outputs.append(common.make_report_figure(
         label, by_leg_tp, timepoints, f"P{pid}_full_report.png",
-        caveat_text=f"Auto-generated once the {TRIAL_THRESHOLD}+{TRIAL_THRESHOLD} right/left trial threshold was met."))
+        caveat_text=f"Auto-generated {READY_AFTER_SECONDS // 60} min after the first recording "
+                   f"landed, from whatever trials were available at that point "
+                   f"(right={counts['right']}, left={counts['left']})."))
 
     rmse_path, has_rmse_data = common.make_rmse_figure(
         label, by_leg_tp, timepoints, f"P{pid}_rmse.png")
@@ -94,10 +109,8 @@ def main():
 
     qualified = set()
     for pid in pids:
-        counts = leg_trial_counts(pid)
-        if counts["left"] >= TRIAL_THRESHOLD and counts["right"] >= TRIAL_THRESHOLD:
+        if run_for_participant(pid):
             qualified.add(pid)
-        run_for_participant(pid)
 
     ready_for_mas = qualified & _mas_scored_participants()
     if ready_for_mas:

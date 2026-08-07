@@ -254,6 +254,17 @@ def leg_trial_counts(participant_id):
     return counts
 
 
+def first_recording_time(participant_id):
+    """Earliest mtime among this participant's discoverable (non-excluded)
+    trials, across both legs and every condition/session -- lets
+    run_pt_analysis.py gate report generation on elapsed time since the
+    first recording landed rather than on TRIAL_THRESHOLD trial counts,
+    since not every timepoint reaches TRIAL_THRESHOLD trials per leg.
+    Returns None if this participant has no discoverable trials yet."""
+    mtimes = [r["mtime"] for r in discover_all_trials() if r["participant"] == participant_id]
+    return min(mtimes) if mtimes else None
+
+
 def collect_participant(participant_id, include_archive=True):
     """Score every trial found for one participant. Returns
     by_leg_tp: {(leg, condition): [trial_records]}, and
