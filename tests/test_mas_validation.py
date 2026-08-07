@@ -186,3 +186,46 @@ def test_main_empty_csv_no_crash(tmp_path, monkeypatch, capsys):
     mv.main()   # must not raise
     out = capsys.readouterr().out
     assert "0 MAS-scored trials found" in out
+
+
+# ── append_mas_score ─────────────────────────────────────────────────────────
+
+def test_append_mas_score_writes_using_existing_header_order(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "2026-08-07"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07"
+
+
+def test_append_mas_score_rejects_invalid_grade(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    with pytest.raises(ValueError, match="invalid mas_grade"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "pre",
+             "diagnosis": "", "mas_grade": "5", "assessed_by": "", "assessed_date": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text().splitlines() == [
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"]
+
+
+def test_append_mas_score_round_trips_through_load_mas_scores(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "2026-08-07"},
+        csv_path=str(csv_path))
+    rows = mv.load_mas_scores(str(csv_path))
+    assert len(rows) == 1
+    assert rows[0]["participant"] == "20"
+    assert rows[0]["mas_grade"] == "1+"

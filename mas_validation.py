@@ -151,6 +151,22 @@ def load_mas_scores(csv_path):
     return rows
 
 
+def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
+    """Appends one clinician MAS assessment to csv_path. Raises ValueError
+    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER. Reads
+    the file's own current header rather than assuming a fixed column set,
+    so this stays correct even if mas_scores.csv's schema drifts again the
+    way it already has once (see module docstring)."""
+    grade = row.get("mas_grade", "")
+    if not _valid_grade(grade):
+        raise ValueError(f"invalid mas_grade {grade!r} (must be one of {MAS_ORDER})")
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        fieldnames = csv.DictReader(f).fieldnames
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writerow(row)
+
+
 def _tokenize_condition(text):
     """Bag-of-tokens normalization so mas_scores.csv's free-text condition
     values (e.g. "1 week post") match pt_report_common's folder-derived
