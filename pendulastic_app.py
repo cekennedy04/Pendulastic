@@ -121,6 +121,13 @@ except Exception:
     _wb_engine = None
     _WORKBENCH_AVAIL = False
 
+try:
+    import mas_validation as _mas_validation
+    _MAS_VALIDATION_AVAIL = True
+except Exception:
+    _mas_validation = None
+    _MAS_VALIDATION_AVAIL = False
+
 _GREEN = "#1e7d34"
 _RED   = "#a31515"
 _BLUE  = "#1f3a93"
@@ -1036,7 +1043,13 @@ class ModeSelectView(tk.Frame):
             self, "Analysis & Reports\nCompare Participants",
             self.controller._enter_analysis_mode)
         analysis_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+
+        mas_btn = ws.secondary_button(
+            self, "MAS Score Entry\nEnter & Validate",
+            self.controller._enter_mas_entry_mode)
+        mas_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
+        mas_btn.grid(row=5, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
 
 
 # ---------------------------------------------------------------------------
@@ -1871,6 +1884,30 @@ class AnalysisPanel(tk.Frame):
             messagebox.showerror("Save Failed", str(e))
 
 
+class MasEntryPanel(tk.Frame):
+    """MAS score entry form + live PT-score-vs-MAS validation dashboard.
+    controller: App instance -- receives on_back_to_mode_select()."""
+
+    def __init__(self, parent, controller) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self._build_widgets()
+
+    def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
+
+        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
+        hdr.pack(fill="x", padx=12, pady=(16, 4))
+        ws.secondary_button(
+            hdr, "← Mode Select", self.controller.on_back_to_mode_select
+        ).pack(side="left", padx=(0, 8))
+        tk.Label(hdr, text="Pendulastic — MAS Score Entry",
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
+
+        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+
 # ---------------------------------------------------------------------------
 # App  (thin host)
 # ---------------------------------------------------------------------------
@@ -1942,6 +1979,9 @@ class App(tk.Tk):
             tk.Label(self, textvariable=self._workbench_status_var, anchor="w",
                      bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).pack(
                 side="bottom", fill="x", padx=8, pady=2)
+
+        if _MAS_VALIDATION_AVAIL:
+            self._mas_entry = MasEntryPanel(self, controller=self)
 
         self._mode_select.pack(fill="both", expand=True)
 
@@ -2204,6 +2244,17 @@ class App(tk.Tk):
         self._state = "analysis"
         self._analysis.on_shown()
 
+    def _enter_mas_entry_mode(self) -> None:
+        if not _MAS_VALIDATION_AVAIL:
+            messagebox.showinfo(
+                "MAS Entry Unavailable",
+                "MAS score entry could not be loaded in this environment "
+                "(a required dependency is missing).")
+            return
+        self._mode_select.pack_forget()
+        self._mas_entry.pack(fill="both", expand=True)
+        self._state = "mas_entry"
+
     def get_trial_meta(self) -> dict:
         return dict(self._workbench_trial_meta)
 
@@ -2351,6 +2402,8 @@ class App(tk.Tk):
             self._workbench_load.pack_forget()
             self._workbench_view.pack_forget()
             self._dashboard_view.pack_forget()
+        if _MAS_VALIDATION_AVAIL:
+            self._mas_entry.pack_forget()
         self._mode_select.pack(fill="both", expand=True)
         self._state        = "mode_select"
         self._active_sources  = []

@@ -1393,6 +1393,36 @@ def test_on_dashboard_back_returns_to_trial_load_panel(monkeypatch):
         app.destroy()
 
 
+def test_enter_mas_entry_mode_shows_panel_and_hides_mode_select():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry.winfo_ismapped()
+        assert not app._mode_select.winfo_ismapped()
+        assert app._state == "mas_entry"
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_mode_select_hides_mas_entry_panel():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._mode_select.winfo_ismapped()
+        assert not app._mas_entry.winfo_ismapped()
+        assert app._state == "mode_select"
+    finally:
+        app.destroy()
+
+
 def test_tick_calibration_check_fires_zero_when_imu_reports_stationary(monkeypatch):
     """_tick_calibration_check() must now gate on _imu.is_stationary() directly,
     not on a fused pitch/roll buffer it maintains itself."""
