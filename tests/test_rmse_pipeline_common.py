@@ -279,3 +279,88 @@ def test_discover_scorable_trials_empty_registry_excludes_nothing(monkeypatch):
     monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials", lambda: {})
     result = rpc.discover_scorable_trials()
     assert len(result) == 1
+
+
+# ── sha256_file / fingerprints ───────────────────────────────────────────
+
+def test_sha256_file_deterministic(tmp_path):
+    f = tmp_path / "a.csv"
+    f.write_text("hello", encoding="utf-8")
+    cache = {}
+    h1 = rpc.sha256_file(str(f), cache)
+    h2 = rpc.sha256_file(str(f), cache)
+    assert h1 == h2 and len(h1) == 64
+
+
+def test_sha256_file_reuses_cache_when_stat_unchanged(tmp_path):
+    f = tmp_path / "a.csv"
+    f.write_text("hello", encoding="utf-8")
+    cache = {}
+    h1 = rpc.sha256_file(str(f), cache)
+    # Overwrite with different content but don't touch the cache -- since
+    # sha256_file only re-hashes when stat (size/mtime) changes, and we're
+    # not asserting content correctness here, just that the cache path is
+    # taken (returns the same digest without re-reading).
+    stat_key = list(cache.keys())[0]
+    cache[stat_key] = (cache[stat_key][0], "STALE_DIGEST_MARKER")
+    h2 = rpc.sha256_file(str(f), cache)
+    assert h2 == "STALE_DIGEST_MARKER"
+
+
+def test_sha256_file_force_bypasses_cache(tmp_path):
+    f = tmp_path / "a.csv"
+    f.write_text("hello", encoding="utf-8")
+    cache = {}
+    rpc.sha256_file(str(f), cache)
+    stat_key = list(cache.keys())[0]
+    cache[stat_key] = (cache[stat_key][0], "STALE_DIGEST_MARKER")
+    h = rpc.sha256_file(str(f), cache, force=True)
+    assert h != "STALE_DIGEST_MARKER"
+
+
+def test_sha256_file_rehashes_when_stat_changes(tmp_path):
+    f = tmp_path / "a.csv"
+    f.write_text("hello", encoding="utf-8")
+    cache = {}
+    h1 = rpc.sha256_file(str(f), cache)
+    f.write_text("hello world, much longer content now", encoding="utf-8")
+    h2 = rpc.sha256_file(str(f), cache)
+    assert h1 != h2
+
+
+def test_compute_input_fingerprints_imu(tmp_path):
+    paths = {}
+    for name in ("imu", "accel", "gyro", "mag"):
+        p = tmp_path / f"{name}.csv"
+        p.write_text(name, encoding="utf-8")
+        paths[name] = str(p)
+    opti = tmp_path / "opti.csv"
+    opti.write_text("opti", encoding="utf-8")
+    trial = {"imu_component_paths": paths, "optitrack_path": str(opti), "video_path": None}
+    fps = rpc.compute_input_fingerprints(trial, "imu", {})
+    assert set(fps["imu"].keys()) == {"imu", "accel", "gyro", "mag"}
+    assert "optitrack" in fps
+    assert "video" not in fps
+
+
+def test_compute_input_fingerprints_mediapipe(tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"fake")
+    opti = tmp_path / "opti.csv"
+    opti.write_text("opti", encoding="utf-8")
+    trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
+    fps = rpc.compute_input_fingerprints(trial, "mediapipe", {})
+    assert "video" in fps and "optitrack" in fps
+    assert "imu" not in fps
+
+
+def test_compute_implementation_fingerprint_stable():
+    assert rpc.compute_implementation_fingerprint() == rpc.compute_implementation_fingerprint()
+
+
+def test_compute_implementation_fingerprint_changes_with_grid(monkeypatch):
+    fp1 = rpc.compute_implementation_fingerprint()
+    import sweep_imu_config
+    monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.99}])
+    fp2 = rpc.compute_implementation_fingerprint()
+    assert fp1 != fp2
