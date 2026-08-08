@@ -136,6 +136,51 @@ def test_discover_imu_trials_unparseable_path_excluded(monkeypatch):
     assert result == []
 
 
+def test_discover_imu_trials_parses_against_imu_discovery_rec_root_not_own(tmp_path, monkeypatch):
+    # Regression test: imu_discovery.discover_trials() (batch_imu_vs_
+    # optitrack_rmse.py, reused as-is) returns paths rooted under ITS OWN
+    # REC_ROOT, which is a hardcoded literal and not guaranteed to equal
+    # this module's own __file__-derived REC_ROOT -- e.g. a differently
+    # located checkout, another OS, or this module's copy running somewhere
+    # other than where the wrapped script's data actually lives. Model that
+    # by pointing the two REC_ROOTs at two different tmp_path locations that
+    # do NOT share a common ancestor other than tmp_path itself.
+    #
+    # Before the fix, discover_imu_trials() parsed t["imu"] against this
+    # module's own (wrong) REC_ROOT, so os.path.relpath() between two
+    # unrelated roots produced a string salted with ".." / root-directory
+    # segments that survived, uncaught, into the "condition" field -- which
+    # then flows into pt_report_common.trial_key(...), the lookup key into
+    # excluded_trials.json. A corrupted key silently never matches a real
+    # registry entry, so a trial meant to be excluded (e.g. a non-passive
+    # release) would leak into scoring instead of being dropped.
+    real_rec_root = tmp_path / "actual_checkout" / "Recordings"
+    wrong_rec_root = tmp_path / "unrelated_dir" / "Recordings"
+    imu_path = real_rec_root / "Participant_13" / "Left" / "week_1_post" / "Trial_1_imu.csv"
+
+    monkeypatch.setattr(rpc.imu_discovery, "REC_ROOT", str(real_rec_root))
+    monkeypatch.setattr(rpc, "REC_ROOT", str(wrong_rec_root))
+
+    fake_trials = [{
+        "participant": "Participant_13", "position": "unknown", "trial": "Trial_1",
+        "imu": str(imu_path),
+        "accel": "a", "gyro": "g", "mag": "m", "optitrack_path": "opti.csv",
+    }]
+    monkeypatch.setattr(rpc.imu_discovery, "discover_trials", lambda: fake_trials)
+
+    result = rpc.discover_imu_trials()
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["participant"] == "13"
+    assert rec["leg"] == "left"
+    assert rec["trial_number"] == "1"
+    # The whole point of the fix: condition must be the clean folder name,
+    # not polluted with ".." or "recordings"/"unrelated_dir" segments from
+    # relpath-ing against the wrong root.
+    assert rec["condition"] == "week_1_post"
+    assert ".." not in rec["condition"]
+
+
 # ── discover_video_trials ────────────────────────────────────────────────
 
 def test_discover_video_trials_finds_matching_video(tmp_path, monkeypatch):
