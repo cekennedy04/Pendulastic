@@ -833,6 +833,39 @@ def test_record_sweep_result_does_not_promote_within_epsilon(tmp_path, monkeypat
     assert len(cfg["history"]) == 1  # no new entry on a non-promotion
 
 
+def test_record_sweep_result_within_epsilon_refreshes_incumbent_rescore(tmp_path, monkeypatch):
+    # Final-review finding: on the within_epsilon path the file was rewritten
+    # with the incumbent's ORIGINAL promotion-time rmse/n_trials/
+    # n_participants, even though incumbent_still_ranked -- computed earlier
+    # in the same call, and what decided the comparison -- holds its fresh
+    # re-score against today's (larger) cohort. A human reading
+    # rmse_best_config.json to decide whether to hand-apply a config change
+    # would see an RMSE measured on a stale, much smaller cohort.
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+             "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", first, "ds1", "impl1")
+
+    # Today: cohort grew to 12 trials / 5 participants and the incumbent
+    # re-scores at 5.4 there. Challenger is only 0.05 better -> no promotion.
+    second = [
+        {"candidate_key": '{"beta": 0.041}', "median_rmse": 5.4,
+         "n_trials": 12, "n_participants": 5, "low_coverage": False},
+        {"candidate_key": '{"beta": 0.08}', "median_rmse": 5.35,
+         "n_trials": 12, "n_participants": 5, "low_coverage": False},
+    ]
+    result = rpc.record_sweep_result("imu", second, "ds2", "impl1")
+    assert result["promoted"] is False
+    assert result["reason"] == "within_epsilon"
+
+    cfg = rpc.load_best_config()
+    assert cfg["imu"]["config"] == '{"beta": 0.041}'   # unchanged config
+    assert cfg["imu"]["rmse"] == 5.4                   # fresh re-score, not 5.0
+    assert cfg["imu"]["n_trials"] == 12                # fresh cohort, not 5
+    assert cfg["imu"]["n_participants"] == 5
+    assert len(cfg["history"]) == 1                    # history only grows on promotion
+
+
 def test_record_sweep_result_incumbent_unrankable_promotes_best_valid(tmp_path, monkeypatch):
     monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
     first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
