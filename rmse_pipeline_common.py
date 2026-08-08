@@ -37,8 +37,14 @@ import workbench_engine as engine
 from reconstruct_imu_raw_logs import reconstruct_trial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-REC_ROOT = os.path.join(BASE_DIR, "Recordings")
-OPTI_ROOT = os.path.join(BASE_DIR, "OptiTrack_Recordings")
+# NOTE: this module deliberately does NOT define its own REC_ROOT/OPTI_ROOT.
+# Both discovery halves (discover_imu_trials, discover_video_trials) source
+# their data roots from imu_discovery (batch_imu_vs_optitrack_rmse.py), which
+# is the single source of truth for where trial data actually lives -- see
+# discover_video_trials()'s docstring for why a second, __file__-derived pair
+# of roots here was an active bug rather than a harmless duplicate. BASE_DIR
+# still scopes this module's OWN outputs (sweep_cache/, tracking dir, best
+# config, bundled model files), which correctly live beside this file.
 SWEEP_CACHE_DIR = os.path.join(BASE_DIR, "sweep_cache")
 RMSE_TRACKING_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "RMSE_Tracking")
 BEST_CONFIG_JSON = os.path.join(BASE_DIR, "rmse_best_config.json")
@@ -180,23 +186,44 @@ def discover_imu_trials():
 
 def discover_video_trials():
     """Every trial with an OptiTrack CSV and a matching video, walking
-    OPTI_ROOT the same way batch_mediapipe.discover_new_trials() does
-    (credited convention, not a call into that generator -- its
+    imu_discovery.OPTI_ROOT the same way batch_mediapipe.discover_new_trials()
+    does (credited convention, not a call into that generator -- its
     CSV/annotated-video existence flags and print() side effects are
     specific to its own batch-processing pipeline, not relevant here).
     Video may sit beside the OptiTrack CSV itself, or under the mirrored
     Recordings/ tree -- both are checked, matching the real observed
-    layout variance across participants."""
+    layout variance across participants.
+
+    Roots come from imu_discovery (batch_imu_vs_optitrack_rmse.py), NOT from
+    a __file__-derived pair of constants in this module. This function
+    originally walked its own OPTI_ROOT/REC_ROOT while discover_imu_trials()
+    (fixed in an earlier round) parsed against imu_discovery.REC_ROOT, so the
+    two halves of discovery could walk two different filesystem trees. That
+    was live, not theoretical: run from a git worktree, this module's
+    __file__-derived OPTI_ROOT pointed at a nonexistent worktree-local path
+    while imu_discovery's pointed at the real data, and discover_video_trials()
+    returned ZERO trials against a dataset that plainly has video -- with the
+    MediaPipe half of the pipeline then reporting "no_valid_candidate",
+    indistinguishable from a genuinely inconclusive sweep. Worse, if both
+    trees legitimately hold data, the same trial_key arrives with two
+    different optitrack_path strings from the IMU and video sides and gets
+    silently dropped by discover_scorable_trials()'s conflicting_optitrack_path
+    ambiguity guard. Deferring to one source of truth makes both halves agree
+    by construction, regardless of which literal path that tree happens to be
+    (imu_discovery's own hardcoded BASE_DIR is a separate, pre-existing issue
+    and deliberately out of scope here)."""
     out = []
-    pattern = os.path.join(OPTI_ROOT, "**", "*_optitrack.csv")
+    opti_root = imu_discovery.OPTI_ROOT
+    rec_root = imu_discovery.REC_ROOT
+    pattern = os.path.join(opti_root, "**", "*_optitrack.csv")
     for opti_path in sorted(glob.glob(pattern, recursive=True)):
         m = re.match(r"trial_(\d+)_optitrack\.csv", os.path.basename(opti_path), re.I)
         if not m:
             continue
         trial_n = m.group(1)
         opti_dir = os.path.dirname(opti_path)
-        rel = os.path.relpath(opti_dir, OPTI_ROOT)
-        rec_dir = os.path.join(REC_ROOT, rel)
+        rel = os.path.relpath(opti_dir, opti_root)
+        rec_dir = os.path.join(rec_root, rel)
 
         # Build candidate basenames to look for (order: opti_dir first, then rec_dir)
         candidate_basenames = [
@@ -222,7 +249,7 @@ def discover_video_trials():
         if video_path is None:
             continue
 
-        fields = parse_structural_fields(opti_path, OPTI_ROOT)
+        fields = parse_structural_fields(opti_path, opti_root)
         if fields is None:
             continue
         out.append({
@@ -234,13 +261,37 @@ def discover_video_trials():
     return out
 
 
+def _same_path(a, b):
+    """True if two path strings name the same file. Compared through
+    os.path.realpath + os.path.normcase so a cosmetic difference -- drive
+    letter case, forward vs. back slashes, relative vs. absolute, a
+    symlink/junction -- is never mistaken for a genuine conflict by
+    discover_scorable_trials()'s ambiguity guard (which silently drops the
+    trial). realpath() on a path that doesn't exist is a pure string
+    normalization on every platform Python supports, so this stays correct
+    for the not-yet-materialized/test-fixture case too."""
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    return (os.path.normcase(os.path.realpath(a))
+            == os.path.normcase(os.path.realpath(b)))
+
+
 def discover_scorable_trials():
     """Merge discover_imu_trials()/discover_video_trials() by trial_key
     into TrialRecords with per-methodology capability flags (design spec
     §4). A trial_key with no optitrack_path on the side(s) that produced
     it, or with disagreeing optitrack_path values across sides, is
     excluded rather than heuristically resolved -- a silent wrong pairing
-    is worse than a skipped trial."""
+    is worse than a skipped trial.
+
+    "Disagreeing" means disagreeing about the actual file, not about how
+    the path was spelled: both sides are normalized through
+    os.path.realpath + os.path.normcase before comparison, so a trial is
+    never flagged ambiguous (and silently dropped) over a case difference,
+    a relative-vs-absolute difference, or a symlink/junction -- only over a
+    genuine conflict."""
     by_key = {}
     for imu in discover_imu_trials():
         if not imu["optitrack_path"]:
@@ -251,7 +302,7 @@ def discover_scorable_trials():
             "imu_anchor_path": None, "imu_component_paths": None, "video_path": None,
             "has_imu_rmse": False, "has_mediapipe_rmse": False, "exclusion_reasons": [],
         })
-        if rec["optitrack_path"] != imu["optitrack_path"]:
+        if not _same_path(rec["optitrack_path"], imu["optitrack_path"]):
             rec["exclusion_reasons"].append("conflicting_optitrack_path")
             continue
         rec["imu_anchor_path"] = imu["imu_anchor_path"]
@@ -267,7 +318,7 @@ def discover_scorable_trials():
             "imu_anchor_path": None, "imu_component_paths": None, "video_path": None,
             "has_imu_rmse": False, "has_mediapipe_rmse": False, "exclusion_reasons": [],
         })
-        if rec["optitrack_path"] != vid["optitrack_path"]:
+        if not _same_path(rec["optitrack_path"], vid["optitrack_path"]):
             rec["exclusion_reasons"].append("conflicting_optitrack_path")
             continue
         rec["video_path"] = vid["video_path"]
