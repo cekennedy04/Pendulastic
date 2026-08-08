@@ -29,6 +29,7 @@ import pt_report_common
 import re
 import scipy
 import sys
+from datetime import datetime, timezone
 
 import imu_calibration_tuner
 import pendulastic_pt_score as pt_score
@@ -664,16 +665,23 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
         promote = True
         new_entry = best_this_sweep
 
+    # design spec §7.3: entries carry updated_at, so a reader can tell when
+    # the recorded numbers were last actually measured rather than assuming
+    # the file is current.
+    now = datetime.now(timezone.utc).isoformat()
+
     if promote:
         cfg[methodology] = {
             "config": new_entry["candidate_key"], "rmse": new_entry["median_rmse"],
             "n_trials": new_entry["n_trials"], "n_participants": new_entry["n_participants"],
+            "updated_at": now,
         }
         cfg["history"].append({
             "methodology": methodology, "config": new_entry["candidate_key"],
             "rmse": new_entry["median_rmse"], "dataset_fingerprint": dataset_fingerprint,
             "implementation_fingerprint": implementation_fingerprint,
             "n_trials": new_entry["n_trials"], "n_participants": new_entry["n_participants"],
+            "updated_at": now,
         })
         _save_best_config(cfg)
         return {"promoted": True}
@@ -689,6 +697,9 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
     cfg[methodology]["rmse"] = incumbent_still_ranked["median_rmse"]
     cfg[methodology]["n_trials"] = incumbent_still_ranked["n_trials"]
     cfg[methodology]["n_participants"] = incumbent_still_ranked["n_participants"]
+    # updated_at tracks when these numbers were last measured, not when the
+    # config was last changed -- they just were, so it moves with them.
+    cfg[methodology]["updated_at"] = now
     _save_best_config(cfg)
     return {"promoted": False, "reason": "within_epsilon"}
 
@@ -817,6 +828,18 @@ def _winner_per_trial_scores(candidate_scores, ranked):
     return candidate_scores.get(ranked[0]["candidate_key"], {})
 
 
+def _trend_points(history, methodology):
+    """(x, rmse, n_trials) per promotion of one methodology, for
+    rmse_trend.png. x is the index into the SHARED history list so both
+    series sit on one "promotion #" axis. n_trials rides along because
+    design spec §7.3 requires each point to be annotated with the dataset
+    size it was measured on. History is a hand-inspectable JSON file, so
+    entries missing rmse are skipped rather than crashing the figure."""
+    return [(i, h.get("rmse"), h.get("n_trials"))
+            for i, h in enumerate(history)
+            if h.get("methodology") == methodology and h.get("rmse") is not None]
+
+
 def _intersection_median(winner_scores, intersection):
     """Median RMSE of one methodology's selected best candidate, restricted
     to the trials both methodologies could score (design spec §7.2).
@@ -876,13 +899,25 @@ def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort,
 
     fig, ax = plt.subplots(figsize=(8, 4), facecolor="white")
     for methodology, color in (("imu", "#d62728"), ("mediapipe", "#2ca02c")):
-        points = [(i, h["rmse"]) for i, h in enumerate(history) if h["methodology"] == methodology]
-        if points:
-            xs, ys = zip(*points)
-            ax.plot(xs, ys, marker="o", color=color, label=methodology)
+        points = _trend_points(history, methodology)
+        if not points:
+            continue
+        xs = [x for x, _rmse, _n in points]
+        ys = [rmse for _x, rmse, _n in points]
+        ax.plot(xs, ys, marker="o", color=color, label=methodology)
+        # Design spec §7.3: annotate each point with the dataset size it was
+        # measured on, so cohort growth isn't mistaken for a regression --
+        # a later promotion scoring worse on 40 trials than an earlier one
+        # did on 6 is usually the cohort getting harder, not the config.
+        for x, rmse, n_trials in points:
+            if n_trials is None:
+                continue
+            ax.annotate(f"n={n_trials}", (x, rmse), textcoords="offset points",
+                        xytext=(0, 7), ha="center", fontsize=6, color=color)
     ax.set_xlabel("promotion #")
     ax.set_ylabel("RMSE (deg)")
-    ax.legend()
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend()
     _savefig_atomic(fig, os.path.join(RMSE_TRACKING_DIR, "rmse_trend.png"))
     plt.close(fig)
 
