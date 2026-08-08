@@ -2,18 +2,6 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **2026-08-07 merge note:** two Claude Code sessions independently planned this same module —
-> this plan (3 rounds of Codex review, more sophisticated discovery/caching/ranking
-> architecture) and a parallel `docs/superpowers/plans/2026-08-07-rmse-validation-pipeline.md`
-> (aware of the `excluded_trials.json` registry and the 2026-08-04 folder-restructure bug in
-> `evaluate_all_participants.py`/`pendulastic_pt_score.py`, but not Codex-reviewed). Codex
-> arbitrated directly against both plan files and the live code: **this plan wins as the base**;
-> its ranking logic is sounder (frozen-cohort coverage, content-hash caching vs. the other plan's
-> stale-prone stat-key caching). The other plan's folder-structure/exclusion awareness has been
-> merged in below (see Global Constraints and Task 4), and five additional defects Codex found
-> directly in this plan's own text have been corrected in place (Tasks 4, 5, 7, 9, 11). The other
-> plan file is now superseded — do not implement it.
-
 **Goal:** Build `rmse_pipeline_common.py` — the discovery, scoring, caching, ranking, and
 promotion engine for continuous IMU-vs-OptiTrack and MediaPipe-vs-OptiTrack RMSE validation —
 as a standalone, manually-triggerable module, independent of the watcher process that will
@@ -50,25 +38,28 @@ existing landmark-extraction code), hashlib (sha256 content fingerprints), pytes
 - Reference: `docs/superpowers/specs/2026-08-07-rmse-validation-pipeline-design.md` (all section
   numbers below, e.g. "§4", refer to this file — read its Revision note first, it records three
   rounds of Codex review fixes already folded into the spec text).
+- **Do not build any discovery logic on `evaluate_all_participants.DataIndex`.** Confirmed against
+  current code (post-plan Codex consult, 2026-08-07): `_pid_pos_from_path()` requires both a
+  `Participant_<id>` and a `Position_<pos>` path segment to resolve a trial; newer participants
+  (P14, P15) don't reliably have a `Position_*` segment, so `DataIndex`-based discovery silently
+  drops them. This plan's Tasks 1-4 already avoid this (fresh structural parser, not
+  `DataIndex`) — this constraint exists to keep it that way through every later task too.
+- **`excluded_trials.json`** (repo root, `pt_report_common.EXCLUDED_TRIALS_PATH`) is a
+  hand-maintained registry of trials to drop from every discovery/report/sweep — e.g. a trial
+  where the participant used their own muscles to stop the pendulum swing instead of a passive
+  release, which would let a candidate config spuriously score well against non-passive motion.
+  `discover_scorable_trials()` (Task 4) must filter against it via
+  `pt_report_common.load_excluded_trials()` and `pt_report_common.trial_key(participant, leg,
+  condition, trial_number)` — the same legacy string-key format `pt_report_common.py` and
+  `pt_cohort_common.py` already use for this registry. This is a *different* key from this
+  module's own SHA-256 structural `trial_key` (§4) — never conflate the two; the legacy string key
+  is only ever used as a lookup into the exclusion registry, never as cache or ranking identity.
 - `trial_key` is a hash of the **structural** tuple `(participant, leg, condition, session,
   position, height, trial_number)` — never of which source files exist (§4's fix, corrected
   twice during review — see the spec's revision note for why).
 - Ranking/promotion always operates on a **frozen cohort** per methodology per sweep — a
   candidate that fails a required cohort trial is excluded from ranking, never aggregated over a
-  smaller/easier subset (§7.2). Concretely: a candidate must score **every** trial in the cohort
-  to be eligible to win — there is no partial-coverage floor — see Task 9's correction below.
-- **Merged in 2026-08-07 from a parallel session's plan, per Codex arbitration between the two:**
-  `excluded_trials.json` (repo root, already committed to `main`) lists non-viable trials — e.g.
-  a trial where the participant actively used their own muscles to stop the pendulum swing
-  instead of a passive release — that must never enter discovery, scoring, or ranking. It's
-  already wired into `pt_report_common.discover_all_trials()` via
-  `pt_report_common.load_excluded_trials()` and `pt_report_common.trial_key(participant, leg,
-  condition, trial_number)`, a **4-field** key — participant/leg/condition/trial_number only, no
-  session/position/height. This module's own `trial_key` (7-field structural hash, above) is a
-  different identity scheme for a different purpose (cache/ranking identity) and must not be used
-  for the exclusion lookup. Task 4 below builds the exclusion-registry lookup key separately from
-  its own `trial_key`, using `pt_report_common.trial_key()` directly so both modules agree on
-  which trials are excluded without duplicating the registry format.
+  smaller/easier subset (§7.2).
 - The `sweep_cache/`'s stat-pre-filter (skip re-hashing an unchanged file) is a speed
   optimization for the frequently-retriggered path only. It has no place in this plan's
   correctness-critical reconciliation logic — that logic belongs to the watcher plan, not this
@@ -588,7 +579,8 @@ git commit -m "feat: add generalized video/MediaPipe trial discovery"
 
 ---
 
-### Task 4: Merge into `TrialRecord`s with capability flags and ambiguity exclusion
+### Task 4: Merge into `TrialRecord`s with capability flags, ambiguity exclusion, and the
+shared exclusion registry
 
 **Files:**
 - Modify: `rmse_pipeline_common.py`
@@ -596,11 +588,8 @@ git commit -m "feat: add generalized video/MediaPipe trial discovery"
 
 **Interfaces:**
 - Consumes: `discover_imu_trials`, `discover_video_trials` (Tasks 2-3);
-  `pt_report_common.load_excluded_trials() -> dict` and `pt_report_common.trial_key(participant,
-  leg, condition, trial_number) -> str` — already implemented and committed to `main` (added
-  2026-08-07 alongside `excluded_trials.json`, ahead of this plan), not something this task
-  creates. Note `pt_report_common.trial_key()` takes 4 positional args in that exact order — it
-  is unrelated to this module's own 7-field `compute_trial_key(fields: dict)` from Task 1.
+  `pt_report_common.load_excluded_trials()`, `pt_report_common.trial_key()` (existing, Global
+  Constraints)
 - Produces: `rmse_pipeline_common.discover_scorable_trials() -> list[dict]` — the `TrialRecord`
   list from design spec §4
 
@@ -667,69 +656,36 @@ def test_discover_scorable_trials_conflicting_optitrack_path_excluded_as_ambiguo
     assert result == []
 
 
-def test_discover_scorable_trials_duplicate_imu_source_same_key_excluded_as_ambiguous(monkeypatch):
-    # Two distinct IMU anchors that both parse to the same structural
-    # trial_key (e.g. a genuine duplicate/misfiled recording) and agree on
-    # optitrack_path -- the conflicting-path check alone would miss this,
-    # since it only compares optitrack_path across sides. Must still be
-    # flagged ambiguous, not silently overwritten by whichever came last.
-    dup_a = _imu_trial(imu_anchor_path="anchor_A.csv")
-    dup_b = _imu_trial(imu_anchor_path="anchor_B.csv")
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [dup_a, dup_b])
-    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
-    assert rpc.discover_scorable_trials() == []
-
-
-def test_discover_scorable_trials_duplicate_video_source_same_key_excluded_as_ambiguous(monkeypatch):
-    dup_a = _video_trial(video_path="vid_A.avi")
-    dup_b = _video_trial(video_path="vid_B.avi")
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [])
-    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [dup_a, dup_b])
-    assert rpc.discover_scorable_trials() == []
-
-
-# ── excluded_trials.json filtering (merged from the parallel session's plan) ──
+# ── excluded_trials.json filtering (Global Constraints -- added after the
+# post-plan Codex consult found this repo's shared exclusion registry) ────
 
 def test_discover_scorable_trials_filters_excluded_trial(monkeypatch):
-    import pt_report_common as prc
-    imu = _imu_trial()
-    key = prc.trial_key(imu["participant"], imu["leg"], imu["condition"], imu["trial_number"])
-    monkeypatch.setattr(prc, "load_excluded_trials", lambda: {key: "muscle intervention"})
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [imu])
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
     monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    # _imu_trial()'s defaults are participant=13, leg=left, condition=post,
+    # trial_number=1 -- the legacy key pt_report_common.trial_key builds
+    # from those same fields.
+    legacy_key = "13_left_post_T1"
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {legacy_key: "operator-confirmed: active swing"})
     assert rpc.discover_scorable_trials() == []
 
 
 def test_discover_scorable_trials_keeps_non_excluded_trial(monkeypatch):
-    import pt_report_common as prc
-    imu = _imu_trial()
-    monkeypatch.setattr(prc, "load_excluded_trials",
-                        lambda: {"some_other_participant_left_pre_T9": "n/a"})
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [imu])
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
     monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials",
+                        lambda: {"99_right_pre_T9": "unrelated trial"})
     result = rpc.discover_scorable_trials()
     assert len(result) == 1
 
 
-def test_discover_scorable_trials_filters_video_only_excluded_trial(monkeypatch):
-    import pt_report_common as prc
-    vid = _video_trial()
-    key = prc.trial_key(vid["participant"], vid["leg"], vid["condition"], vid["trial_number"])
-    monkeypatch.setattr(prc, "load_excluded_trials", lambda: {key: "muscle intervention"})
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [])
-    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [vid])
-    assert rpc.discover_scorable_trials() == []
-
-
-def test_discover_scorable_trials_filters_dual_modality_excluded_trial(monkeypatch):
-    import pt_report_common as prc
-    imu = _imu_trial()
-    vid = _video_trial()
-    key = prc.trial_key(imu["participant"], imu["leg"], imu["condition"], imu["trial_number"])
-    monkeypatch.setattr(prc, "load_excluded_trials", lambda: {key: "muscle intervention"})
-    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [imu])
-    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [vid])
-    assert rpc.discover_scorable_trials() == []
+def test_discover_scorable_trials_empty_registry_excludes_nothing(monkeypatch):
+    monkeypatch.setattr(rpc, "discover_imu_trials", lambda: [_imu_trial()])
+    monkeypatch.setattr(rpc, "discover_video_trials", lambda: [])
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials", lambda: {})
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -741,40 +697,18 @@ Expected: FAIL — `AttributeError: module 'rmse_pipeline_common' has no attribu
 
 Append:
 
-Add near the top of `rmse_pipeline_common.py` (with the other imports):
-
-```python
-import pt_report_common as excluded_trials_registry
-```
-
 ```python
 def discover_scorable_trials():
     """Merge discover_imu_trials()/discover_video_trials() by trial_key
     into TrialRecords with per-methodology capability flags (design spec
     §4). A trial_key with no optitrack_path on the side(s) that produced
-    it, disagreeing optitrack_path values across sides, or a second
-    distinct source (IMU anchor or video) landing on the same trial_key as
-    one already recorded, is excluded as ambiguous rather than
-    heuristically resolved -- a silent wrong pairing, or a silent
-    last-write-wins overwrite of a genuine duplicate, is worse than a
-    skipped trial. Finally, any trial_key present in
-    pt_report_common.load_excluded_trials() (e.g. active muscle
-    intervention during the swing, confirmed by the recording operator) is
-    dropped entirely -- looked up via pt_report_common.trial_key(), the
-    registry's own 4-field (participant, leg, condition, trial_number) key
-    format, not this module's 7-field structural trial_key."""
-    excluded = excluded_trials_registry.load_excluded_trials()
-
-    def _excluded(rec):
-        key = excluded_trials_registry.trial_key(
-            rec["participant"], rec["leg"], rec["condition"], rec["trial_number"])
-        return key in excluded
-
+    it, or with disagreeing optitrack_path values across sides, is
+    excluded rather than heuristically resolved -- a silent wrong pairing
+    is worse than a skipped trial."""
     by_key = {}
     for imu in discover_imu_trials():
         if not imu["optitrack_path"]:
             continue
-        is_new = imu["trial_key"] not in by_key
         rec = by_key.setdefault(imu["trial_key"], {
             **{k: imu[k] for k in _TRIAL_KEY_FIELDS},
             "trial_key": imu["trial_key"], "optitrack_path": imu["optitrack_path"],
@@ -784,9 +718,6 @@ def discover_scorable_trials():
         if rec["optitrack_path"] != imu["optitrack_path"]:
             rec["exclusion_reasons"].append("conflicting_optitrack_path")
             continue
-        if not is_new and rec["has_imu_rmse"] and rec["imu_anchor_path"] != imu["imu_anchor_path"]:
-            rec["exclusion_reasons"].append("duplicate_imu_source")
-            continue
         rec["imu_anchor_path"] = imu["imu_anchor_path"]
         rec["imu_component_paths"] = imu["imu_component_paths"]
         rec["has_imu_rmse"] = True
@@ -794,7 +725,6 @@ def discover_scorable_trials():
     for vid in discover_video_trials():
         if not vid["optitrack_path"]:
             continue
-        is_new = vid["trial_key"] not in by_key
         rec = by_key.setdefault(vid["trial_key"], {
             **{k: vid[k] for k in _TRIAL_KEY_FIELDS},
             "trial_key": vid["trial_key"], "optitrack_path": vid["optitrack_path"],
@@ -804,26 +734,38 @@ def discover_scorable_trials():
         if rec["optitrack_path"] != vid["optitrack_path"]:
             rec["exclusion_reasons"].append("conflicting_optitrack_path")
             continue
-        if not is_new and rec["has_mediapipe_rmse"] and rec["video_path"] != vid["video_path"]:
-            rec["exclusion_reasons"].append("duplicate_video_source")
-            continue
         rec["video_path"] = vid["video_path"]
         rec["has_mediapipe_rmse"] = True
 
-    return [rec for rec in by_key.values()
-           if not rec["exclusion_reasons"] and not _excluded(rec)]
+    excluded = pt_report_common.load_excluded_trials()
+    kept = []
+    for rec in by_key.values():
+        if rec["exclusion_reasons"]:
+            continue
+        legacy_key = pt_report_common.trial_key(
+            rec["participant"], rec["leg"], rec["condition"], rec["trial_number"])
+        if legacy_key in excluded:
+            continue
+        kept.append(rec)
+    return kept
 ```
+
+Add `import pt_report_common` to the module's imports (alongside the other repo-local imports).
+`pt_report_common.load_excluded_trials()`/`trial_key()` are the shared exclusion-registry
+functions (Global Constraints) -- always called live, never cached across `discover_scorable_
+trials()` calls, so a hand-edit to `excluded_trials.json` takes effect on the next call without
+restarting anything.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k discover_scorable_trials -v`
-Expected: PASS (11 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add rmse_pipeline_common.py tests/test_rmse_pipeline_common.py
-git commit -m "feat: merge IMU/video discovery into TrialRecords, dedupe conflicting sources, filter excluded_trials.json"
+git commit -m "feat: merge IMU/video discovery into TrialRecords, filter excluded_trials.json"
 ```
 
 ---
@@ -836,12 +778,8 @@ git commit -m "feat: merge IMU/video discovery into TrialRecords, dedupe conflic
 
 **Interfaces:**
 - Produces: `rmse_pipeline_common.sha256_file(path: str, stat_cache: dict, force: bool = False) -> str`,
-  `rmse_pipeline_common.compute_input_fingerprints(trial: dict, methodology: str, stat_cache: dict, force: bool = False, model_path: str | None = None) -> dict`,
-  `rmse_pipeline_common.compute_implementation_fingerprint() -> str`. **Correction (2026-08-07
-  Codex-arbitrated merge review):** `compute_input_fingerprints` gained `model_path` — for
-  `methodology="mediapipe"`, the `.task` model file's content hash must be part of the input
-  fingerprint (`fps["model"]`), not just the video, otherwise a model-weight update with the same
-  variant name silently reuses stale cached landmarks (Task 7 relies on this).
+  `rmse_pipeline_common.compute_input_fingerprints(trial: dict, methodology: str, stat_cache: dict, force: bool = False) -> dict`,
+  `rmse_pipeline_common.compute_implementation_fingerprint() -> str`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -913,29 +851,10 @@ def test_compute_input_fingerprints_mediapipe(tmp_path):
     video.write_bytes(b"fake")
     opti = tmp_path / "opti.csv"
     opti.write_text("opti", encoding="utf-8")
-    model = tmp_path / "pose_landmarker_full.task"
-    model.write_bytes(b"fake weights")
     trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
-    fps = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model))
-    assert "video" in fps and "optitrack" in fps and "model" in fps
+    fps = rpc.compute_input_fingerprints(trial, "mediapipe", {})
+    assert "video" in fps and "optitrack" in fps
     assert "imu" not in fps
-
-
-def test_compute_input_fingerprints_mediapipe_changes_with_model_file(tmp_path):
-    # A model-weight update (same variant name, different file content) must
-    # change the fingerprint -- otherwise extract_landmarks_cached (Task 7)
-    # would silently keep serving landmarks extracted with the old weights.
-    video = tmp_path / "v.mp4"
-    video.write_bytes(b"fake")
-    opti = tmp_path / "opti.csv"
-    opti.write_text("opti", encoding="utf-8")
-    model = tmp_path / "pose_landmarker_full.task"
-    model.write_bytes(b"weights v1")
-    trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
-    fp1 = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model))
-    model.write_bytes(b"weights v2, retrained")
-    fp2 = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model))
-    assert fp1["model"] != fp2["model"]
 
 
 def test_compute_implementation_fingerprint_stable():
@@ -982,24 +901,17 @@ def sha256_file(path, stat_cache, force=False):
     return digest
 
 
-def compute_input_fingerprints(trial, methodology, stat_cache, force=False, model_path=None):
+def compute_input_fingerprints(trial, methodology, stat_cache, force=False):
     """Per design spec §7.1: every input file a candidate's score actually
     depends on, for the given methodology. optitrack is always included;
     imu's four split CSVs are included for methodology="imu", the video
-    AND the .task model file's content hash for methodology="mediapipe"
-    (the model file is a real dependency of the extraction step -- omitting
-    it, caught during the 2026-08-07 Codex-arbitrated merge review, would
-    let a model-weight update silently keep serving landmarks extracted
-    with the old weights, since only video/model_variant NAME were
-    fingerprinted before)."""
+    for methodology="mediapipe"."""
     fps = {"optitrack": sha256_file(trial["optitrack_path"], stat_cache, force=force)}
     if methodology == "imu":
         fps["imu"] = {name: sha256_file(p, stat_cache, force=force)
                       for name, p in trial["imu_component_paths"].items()}
     elif methodology == "mediapipe":
         fps["video"] = sha256_file(trial["video_path"], stat_cache, force=force)
-        if model_path is not None:
-            fps["model"] = sha256_file(model_path, stat_cache, force=force)
     else:
         raise ValueError(f"unknown methodology: {methodology!r}")
     return fps
@@ -1045,7 +957,7 @@ def compute_implementation_fingerprint():
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k "sha256_file or fingerprint" -v`
-Expected: PASS (10 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1182,9 +1094,7 @@ git commit -m "feat: add IMU candidate RMSE scoring"
 
 **Interfaces:**
 - Consumes: `sweep_mediapipe_config.extract_raw_landmarks`, `sweep_mediapipe_config.angles_from_raw`,
-  `workbench_engine.compare_pair`, `sha256_file`, `compute_implementation_fingerprint` (Task 5) —
-  `extract_landmarks_cached`'s own cache key now depends on both of the latter two directly (not
-  just `sha256_file` on the video), see the correction note in Step 3 below.
+  `workbench_engine.compare_pair`, `compute_implementation_fingerprint` (Task 5)
 - Produces: `rmse_pipeline_common.extract_landmarks_cached(trial: dict, model_variant: str, model_path: str) -> list[dict]`,
   `rmse_pipeline_common.score_mediapipe_candidate(trial: dict, model_variant: str, model_path: str, vis_thresh: float) -> float | None`
 
@@ -1197,14 +1107,12 @@ def test_extract_landmarks_cached_calls_extraction_once(tmp_path, monkeypatch):
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
     video = tmp_path / "v.mp4"
     video.write_bytes(b"fake")
-    model = tmp_path / "model.task"
-    model.write_bytes(b"weights")
     calls = []
     monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
                         lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
     trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    rpc.extract_landmarks_cached(trial, "full", str(model))
-    rpc.extract_landmarks_cached(trial, "full", str(model))
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    rpc.extract_landmarks_cached(trial, "full", "model.task")
     assert len(calls) == 1
 
 
@@ -1212,53 +1120,12 @@ def test_extract_landmarks_cached_re_extracts_on_video_change(tmp_path, monkeypa
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
     video = tmp_path / "v.mp4"
     video.write_bytes(b"fake")
-    model = tmp_path / "model.task"
-    model.write_bytes(b"weights")
     calls = []
     monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
                         lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
     trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    rpc.extract_landmarks_cached(trial, "full", str(model))
-    video.write_bytes(b"different content, changes the hash")
-    rpc.extract_landmarks_cached(trial, "full", str(model))
-    assert len(calls) == 2
-
-
-def test_extract_landmarks_cached_re_extracts_on_model_file_change(tmp_path, monkeypatch):
-    # Correction, 2026-08-07 Codex-arbitrated merge review: the landmark
-    # cache's own key (independent of Task 8's RMSE-score cache) originally
-    # only covered (trial_key, model_variant NAME, video hash) -- a
-    # model-weight update with the same variant name ("full") would
-    # silently keep serving landmarks extracted with the OLD weights.
-    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
-    video = tmp_path / "v.mp4"
-    video.write_bytes(b"fake")
-    model = tmp_path / "model.task"
-    model.write_bytes(b"weights v1")
-    calls = []
-    monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
-                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
-    trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    rpc.extract_landmarks_cached(trial, "full", str(model))
-    model.write_bytes(b"weights v2, retrained")
-    rpc.extract_landmarks_cached(trial, "full", str(model))
-    assert len(calls) == 2
-
-
-def test_extract_landmarks_cached_re_extracts_on_extraction_code_change(tmp_path, monkeypatch):
-    # Same correction: extraction-code changes (e.g. a bugfix to
-    # batch_mediapipe's landmark-selection logic) must also invalidate the
-    # landmark cache, since the cache stores the OUTPUT of that code.
-    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
-    video = tmp_path / "v.mp4"
-    video.write_bytes(b"fake")
-    calls = []
-    monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
-                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
-    trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl_v1")
     rpc.extract_landmarks_cached(trial, "full", "model.task")
-    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl_v2")
+    video.write_bytes(b"different content, changes the hash")
     rpc.extract_landmarks_cached(trial, "full", "model.task")
     assert len(calls) == 2
 
@@ -1304,24 +1171,13 @@ def extract_landmarks_cached(trial, model_variant, model_path):
     review round) -- a per-(trial, full-config) RMSE cache alone would
     re-run MediaPipe inference every time vis_thresh changes even though
     only the cheap re-thresholding step actually depends on it. Cache key:
-    (trial_key, video content hash, model FILE content hash,
-    extraction-code fingerprint) -- NOT model_variant name (correction,
-    2026-08-07 Codex-arbitrated merge review: the original key used the
-    variant name string, e.g. "full", so a model-weight update that kept
-    the same variant name would silently keep serving landmarks extracted
-    with the old weights; same for a bugfix to the extraction code itself,
-    which compute_implementation_fingerprint() already covers via
-    _FINGERPRINTED_MODULES including sweep_mediapipe_config/batch_mediapipe)."""
+    (trial_key, model_variant, video content hash)."""
     stat_cache = {}
     video_fp = sha256_file(trial["video_path"], stat_cache)
-    model_fp = sha256_file(model_path, stat_cache)
-    impl_fp = compute_implementation_fingerprint()
-    cache_key = hashlib.sha256(
-        f"{trial['trial_key']}\x00{video_fp}\x00{model_fp}\x00{impl_fp}".encode("utf-8")
-    ).hexdigest()
     cache_dir = _LANDMARK_CACHE_DIR()
     os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, f"{cache_key}.pkl")
+    cache_file = os.path.join(
+        cache_dir, f"{trial['trial_key']}_{model_variant}_{video_fp}.pkl")
     if os.path.isfile(cache_file):
         with open(cache_file, "rb") as f:
             return pickle.load(f)
@@ -1347,7 +1203,7 @@ def score_mediapipe_candidate(trial, model_variant, model_path, vis_thresh):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k "extract_landmarks_cached or score_mediapipe_candidate" -v`
-Expected: PASS (6 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1489,16 +1345,10 @@ git commit -m "feat: add content-addressed sweep_cache manifest"
 - Test: `tests/test_rmse_pipeline_common.py` (append)
 
 **Interfaces:**
-- Produces: `rmse_pipeline_common.rank_candidates(candidate_scores: dict[tuple, dict[str, float]], min_participants: int = 3) -> list[dict]`
+- Produces: `rmse_pipeline_common.rank_candidates(candidate_scores: dict[tuple, dict[str, float]], min_coverage_fraction: float = 0.8, min_participants: int = 3) -> list[dict]`
   — `candidate_scores` maps a JSON-stable candidate key to `{trial_key: rmse_deg}` for every
   trial where that candidate scored successfully; participant counts are derived from a
-  `trial_key -> participant` map passed alongside. **Correction (found during a Codex-arbitrated
-  merge review, 2026-08-07):** the original draft of this task took a `min_coverage_fraction:
-  float = 0.8` parameter, letting a candidate missing up to 20% of the cohort still win. That
-  contradicts this plan's own Global Constraints ("a candidate that fails a required cohort trial
-  is excluded from ranking, never aggregated over a smaller/easier subset") — there is no partial
-  floor. `min_coverage_fraction` is removed entirely; coverage means scoring every trial in the
-  cohort, full stop.
+  `trial_key -> participant` map passed alongside.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1554,24 +1404,6 @@ def test_rank_candidates_cohort_below_minimum_participants_returns_empty():
     scores = {'{"beta": 0.08}': {t: 3.0 for t in cohort}}
     ranked = rpc.rank_candidates(scores, cohort, participant_of)
     assert ranked == []
-
-
-def test_rank_candidates_missing_even_one_cohort_trial_is_low_coverage():
-    # Global Constraints: "a candidate that fails a required cohort trial is
-    # excluded from ranking, never aggregated over a smaller/easier subset."
-    # 4 of 5 (80%) must still be low_coverage -- there is no partial-coverage
-    # floor, coverage means the WHOLE cohort or nothing.
-    cohort, participant_of = _cohort_and_participants(n_trials=5, n_participants=3)
-    scores = {
-        '{"beta": 0.01}': {t: 0.1 for t in cohort[:4]},   # misses cohort[4]
-        '{"beta": 0.08}': {t: 3.0 for t in cohort},        # full coverage
-    }
-    ranked = rpc.rank_candidates(scores, cohort, participant_of)
-    winners = [r for r in ranked if not r["low_coverage"]]
-    assert len(winners) == 1
-    assert winners[0]["candidate_key"] == '{"beta": 0.08}'
-    partial = [r for r in ranked if r["candidate_key"] == '{"beta": 0.01}'][0]
-    assert partial["low_coverage"] is True
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1584,22 +1416,23 @@ Expected: FAIL — `AttributeError`
 Append:
 
 ```python
-def rank_candidates(candidate_scores, cohort, participant_of, min_participants=3):
+def rank_candidates(candidate_scores, cohort, participant_of,
+                    min_coverage_fraction=0.8, min_participants=3):
     """Design spec §7.2: one frozen ranking cohort (every eligible trial
     for this methodology), every candidate scored against the same cohort.
-    A candidate that didn't score EVERY trial in the cohort is marked
-    low_coverage and reported but excluded from the winner -- no partial
-    floor, per this plan's own Global Constraints (fixed during the
-    2026-08-07 Codex-arbitrated merge review: an earlier draft's
-    min_coverage_fraction=0.8 let a candidate missing up to 20% of the
-    cohort still win, directly contradicting that constraint). If the
-    cohort itself has fewer than min_participants distinct participants,
-    ranking is skipped for this sweep entirely (returns [])."""
+    A candidate that didn't score a required cohort trial is marked
+    low_coverage and reported but excluded from the winner (never
+    aggregated over an easier subset -- this is what makes "same scored
+    subset" literally true rather than aspirational, fixed after the
+    second Codex review round caught the earlier version's
+    self-contradiction). If the cohort itself has fewer than
+    min_participants distinct participants, ranking is skipped for this
+    sweep entirely (returns [])."""
     cohort_participants = {participant_of[t] for t in cohort}
     if len(cohort_participants) < min_participants:
         return []
 
-    required_n = len(cohort)
+    required_n = max(1, int(len(cohort) * min_coverage_fraction))
     rows = []
     for candidate_key, per_trial in candidate_scores.items():
         scored_in_cohort = [t for t in cohort if t in per_trial]
@@ -1621,13 +1454,13 @@ def rank_candidates(candidate_scores, cohort, participant_of, min_participants=3
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k rank_candidates -v`
-Expected: PASS (5 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add rmse_pipeline_common.py tests/test_rmse_pipeline_common.py
-git commit -m "feat: add frozen-cohort candidate ranking, full-cohort coverage rule (no partial floor)"
+git commit -m "feat: add frozen-cohort candidate ranking with coverage rule"
 ```
 
 ---
@@ -1849,7 +1682,7 @@ def _stub_pipeline(monkeypatch, tmp_path, trials, imu_rmse_by_config, mp_rmse_by
     monkeypatch.setattr(rpc, "discover_scorable_trials", lambda: trials)
     monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl1")
     monkeypatch.setattr(rpc, "compute_input_fingerprints",
-                        lambda trial, methodology, cache, force=False, model_path=None: {"optitrack": "h"})
+                        lambda trial, methodology, cache, force=False: {"optitrack": "h"})
 
     import sweep_imu_config
     import sweep_mediapipe_config
@@ -1903,28 +1736,6 @@ def test_run_full_sweep_handles_no_trials(tmp_path, monkeypatch):
     assert result["mediapipe"]["promoted"] is False
 
 
-def test_run_full_sweep_rescoring_dropped_incumbent(tmp_path, monkeypatch):
-    # beta=0.041 is promoted as incumbent in sweep 1. Sweep 2's hand-edited
-    # grid no longer contains it -- but it must still be explicitly scored
-    # (via _grid_with_incumbent) and win again on its own merits, not be
-    # silently treated as "unrankable" just because it fell out of the grid.
-    trials = [_trial(f"k{i}", f"p{i % 3}") for i in range(5)]
-    imu_scores = {}
-    mp_scores = {}
-    for t in trials:
-        imu_scores[(t["trial_key"], '{"beta": 0.041}')] = 2.0   # best in both sweeps
-        imu_scores[(t["trial_key"], '{"beta": 0.08}')] = 3.0
-        mp_scores[(t["trial_key"], '{"model_variant": "full", "vis_thresh": 0.4}')] = 6.0
-    _stub_pipeline(monkeypatch, tmp_path, trials, imu_scores, mp_scores)
-    rpc.run_full_sweep()
-    assert rpc.load_best_config()["imu"]["config"] == '{"beta": 0.041}'
-
-    import sweep_imu_config
-    monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.08}])  # 0.041 dropped
-    rpc.run_full_sweep()
-    assert rpc.load_best_config()["imu"]["config"] == '{"beta": 0.041}'  # still wins, re-scored
-
-
 def test_run_full_sweep_isolates_per_trial_scoring_failure(tmp_path, monkeypatch, capsys):
     trials = [_trial(f"k{i}", f"p{i % 3}") for i in range(5)]
     imu_scores = {}
@@ -1967,8 +1778,7 @@ def _score_grid(trials, has_flag, grid, score_fn, cache, methodology, model_path
         if not trial.get(has_flag):
             continue
         try:
-            input_fps = compute_input_fingerprints(
-                trial, methodology, stat_cache, model_path=model_path)
+            input_fps = compute_input_fingerprints(trial, methodology, stat_cache)
         except Exception as e:
             print(f"[rmse_pipeline_common] fingerprint failure for {trial['trial_key']}: {e}")
             continue
@@ -1995,37 +1805,13 @@ def _score_grid(trials, has_flag, grid, score_fn, cache, methodology, model_path
     return results
 
 
-def _grid_with_incumbent(grid, methodology):
-    """Union `grid` with the current best-config's candidate, parsed back
-    into a dict, if any -- so the incumbent is ALWAYS explicitly scored
-    against this sweep's cohort, never left to chance membership in
-    sweep_imu_config.WIDE_GRID / the MediaPipe grid. Without this, a
-    hand-edit that drops the incumbent's exact params from the live grid
-    silently causes record_sweep_result to treat it as "unrankable" and
-    promote whatever's left -- a promotion that isn't actually a fair win,
-    just an artifact of the incumbent never being re-tested (found during
-    the 2026-08-07 Codex-arbitrated merge review; Tasks 10/11's original
-    text claimed incumbent re-scoring was guaranteed but nothing actually
-    guaranteed the incumbent's config reached _score_grid)."""
-    best = load_best_config().get(methodology)
-    if best is None:
-        return grid
-    incumbent_candidate = json.loads(best["config"])
-    if incumbent_candidate in grid:
-        return grid
-    return grid + [incumbent_candidate]
-
-
 def run_full_sweep(priority_trial_keys=None):
-    """Design spec §5/§7: discover -> score both grids (each explicitly
-    unioned with its current incumbent, so promotion is always
-    apples-to-apples against a freshly-scored incumbent, not a
-    grid-membership accident) over the whole dataset (priority_trial_keys
-    is an ordering/caching hint only, never a filter -- with or without it
-    this returns the same ranking for the same underlying data) -> rank
-    each methodology on its own frozen cohort -> promote -> write outputs.
-    Never raises on a single trial or candidate's scoring failure (see
-    _score_grid)."""
+    """Design spec §5/§7: discover -> score both grids over the whole
+    dataset (priority_trial_keys is an ordering/caching hint only, never a
+    filter -- with or without it this returns the same ranking for the
+    same underlying data) -> rank each methodology on its own frozen
+    cohort -> promote -> write outputs. Never raises on a single trial or
+    candidate's scoring failure (see _score_grid)."""
     del priority_trial_keys  # ordering hint only in this module; the watcher plan uses it
     os.makedirs(RMSE_TRACKING_DIR, exist_ok=True)
     trials = discover_scorable_trials()
@@ -2034,14 +1820,11 @@ def run_full_sweep(priority_trial_keys=None):
 
     import sweep_imu_config
     import sweep_mediapipe_config
-    imu_grid = _grid_with_incumbent(list(sweep_imu_config.WIDE_GRID), "imu")
-    imu_scores = _score_grid(trials, "has_imu_rmse", imu_grid,
+    imu_scores = _score_grid(trials, "has_imu_rmse", sweep_imu_config.WIDE_GRID,
                              score_imu_candidate, cache, "imu")
-    mp_grid = _grid_with_incumbent(
-        [{"model_variant": v, "vis_thresh": t}
-        for v in sweep_mediapipe_config.MODEL_VARIANTS
-        for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES],
-        "mediapipe")
+    mp_grid = [{"model_variant": v, "vis_thresh": t}
+              for v in sweep_mediapipe_config.MODEL_VARIANTS
+              for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES]
     model_path = os.path.join(BASE_DIR, "models", "mediapipe", "pose_landmarker_full.task")
     mp_scores = _score_grid(trials, "has_mediapipe_rmse", mp_grid,
                             score_mediapipe_candidate, cache, "mediapipe", model_path=model_path)
@@ -2095,13 +1878,9 @@ Append:
 def _savefig_atomic(fig, out_path):
     """Write-to-temp-then-rename for figure outputs (design spec §7.3 --
     applies to every output file, not just the CSV, so a crash mid-write
-    never leaves a partially-written PNG in place). format="png" is
-    explicit (correction, 2026-08-07 Codex-arbitrated merge review):
-    matplotlib infers format from the filename extension by default, and
-    tmp_path ends in ".png.tmp", not ".png" -- without the explicit format,
-    savefig would either raise or guess the wrong format entirely."""
+    never leaves a partially-written PNG in place)."""
     tmp_path = out_path + ".tmp"
-    fig.savefig(tmp_path, format="png", dpi=150, facecolor="white", bbox_inches="tight")
+    fig.savefig(tmp_path, dpi=150, facecolor="white", bbox_inches="tight")
     os.replace(tmp_path, out_path)
 
 
@@ -2157,13 +1936,12 @@ def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort):
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -k run_full_sweep -v`
-Expected: PASS (4 tests)
+Expected: PASS (3 tests)
 
 - [ ] **Step 6: Run the full new test file**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_rmse_pipeline_common.py -v`
-Expected: PASS (all tests from Tasks 1-11, ~65 tests total — count grew during the 2026-08-07
-Codex-arbitrated merge review's corrections)
+Expected: PASS (all tests from Tasks 1-11, ~50 tests total)
 
 - [ ] **Step 7: Commit**
 

@@ -17,6 +17,26 @@ Superseded points from earlier revisions (the size/mtime cache key from the Grok
 revision, and the source-path-hash and position-omitting `trial_key` from rounds 1-2)
 are called out explicitly where replaced.
 
+**Post-implementation note (2026-08-07):** two deliberate, human-confirmed design changes
+were made while implementing `rmse_pipeline_common.py` that supersede what §5 and §7.2 say
+below. The body text of those sections is left as originally written (it records the
+reasoning at design time); this note is the authority where they disagree.
+
+1. **Coverage is full cohort coverage, not an 80% floor.** §7.2's body (and the plan doc's
+   Task 9 reference code) still mention the earlier fractional floor in places. A candidate
+   is ranking-eligible only if it scored *every* trial in the frozen cohort. Reason: task
+   review found the fractional floor was a live cherry-picking bug — a candidate that
+   skipped only the hardest cohort trial (4 of 5) could beat a candidate that scored all
+   five, which is precisely what the "same scored subset" rule exists to prevent.
+2. **A zero-valid-candidate sweep preserves an existing incumbent rather than wiping it to
+   `unavailable`.** §5 currently says the opposite ("never a silently-retained number that's
+   no longer comparable to anything just scored"). Reason: once coverage is *full* coverage
+   (change 1 above), one trial going transiently unscoreable can knock every candidate —
+   including the incumbent — out of contention at once. That is an inconclusive sweep, not a
+   demotion, and a single transient trial failure shouldn't destroy a previously-validated
+   result. Such a sweep leaves the incumbent completely untouched and appends no history
+   entry; an incumbent that was never recorded simply stays unrecorded.
+
 ## 1. Goal
 
 Give Pendulastic a pipeline that reacts automatically as new trial data lands, so that

@@ -46,6 +46,8 @@ P001_MSParticipant2_history.csv
 tracking_selections.json
 imu_calibration_config.json
 imu_calibration_config.json.tmp
+sweep_cache/
+rmse_best_config.json
 
 # Large outputs and scratch
 Model_Analysis_Outputs/
