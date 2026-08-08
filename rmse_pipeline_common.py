@@ -772,11 +772,44 @@ def run_full_sweep(priority_trial_keys=None):
     imu_result = record_sweep_result("imu", imu_ranked, dataset_fp, impl_fp)
     mp_result = record_sweep_result("mediapipe", mp_ranked, dataset_fp, impl_fp)
 
+    # Design spec §7.2: imu_vs_mediapipe_rmse.png compares the two
+    # methodologies over the intersection of their frozen cohorts, using
+    # each side's SELECTED best candidate's per-trial scores restricted to
+    # that intersection -- not each side's already-aggregated cohort-wide
+    # median, which is computed over two different (and usually differently
+    # sized) trial sets and so isn't a comparison at all. These are the last
+    # consumers of imu_scores/mp_scores before they go out of scope.
+    imu_winner_scores = _winner_per_trial_scores(imu_scores, imu_ranked)
+    mp_winner_scores = _winner_per_trial_scores(mp_scores, mp_ranked)
+
     _write_sweep_results_csv(imu_ranked, mp_ranked)
-    _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort)
+    _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort,
+                  imu_winner_scores, mp_winner_scores)
 
     return {"imu": imu_result, "mediapipe": mp_result,
            "imu_ranked": imu_ranked, "mediapipe_ranked": mp_ranked}
+
+
+def _winner_per_trial_scores(candidate_scores, ranked):
+    """The per-trial {trial_key: rmse} dict belonging to `ranked`'s winning
+    candidate, or {} if this sweep produced no valid winner. Kept separate
+    from ranking so §7.2's comparison figure can restrict to the
+    intersection cohort instead of reusing a cohort-wide median."""
+    if not ranked or ranked[0]["low_coverage"]:
+        return {}
+    return candidate_scores.get(ranked[0]["candidate_key"], {})
+
+
+def _intersection_median(winner_scores, intersection):
+    """Median RMSE of one methodology's selected best candidate, restricted
+    to the trials both methodologies could score (design spec §7.2).
+    Returns None -- never 0.0 -- when there is nothing to aggregate, so
+    callers can render "unavailable" instead of a misleadingly excellent
+    zero-height bar."""
+    values = [winner_scores[t] for t in sorted(intersection) if t in winner_scores]
+    if not values:
+        return None
+    return float(np.median(values))
 
 
 def _write_sweep_results_csv(imu_ranked, mp_ranked):
@@ -802,10 +835,21 @@ def _savefig_atomic(fig, out_path):
     os.replace(tmp_path, out_path)
 
 
-def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort):
+def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort,
+                  imu_winner_scores=None, mp_winner_scores=None):
     """rmse_trend.png, sweep_heatmap.png, imu_vs_mediapipe_rmse.png (design
     spec §7.3). Smoke-tested only via the live-data run in Task 11 Step 6 --
-    this repo's other plotting functions have no pixel tests either."""
+    this repo's other plotting functions have no pixel tests either, so the
+    two pieces of real logic here (§7.2's intersection restriction and the
+    trend's dataset-size annotation) are factored into _intersection_median()
+    and _trend_points(), which are unit-tested directly.
+
+    imu_winner_scores/mp_winner_scores are the {trial_key: rmse} dicts of
+    each methodology's SELECTED best candidate (see
+    _winner_per_trial_scores). They are what makes the comparison figure a
+    real comparison per §7.2; passing neither degrades the comparison
+    figure to "unavailable" rather than silently falling back to the
+    cohort-wide medians, which are not comparable across methodologies."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -835,13 +879,31 @@ def _make_figures(imu_ranked, mp_ranked, trials, imu_cohort, mp_cohort):
     _savefig_atomic(fig, os.path.join(RMSE_TRACKING_DIR, "sweep_heatmap.png"))
     plt.close(fig)
 
+    # ── imu_vs_mediapipe_rmse.png: design spec §7.2's frozen intersection.
+    # Each bar is that methodology's selected best candidate's median over
+    # the trials BOTH methodologies could score -- not its cohort-wide
+    # median, which is aggregated over a different trial set and therefore
+    # isn't comparable to the other bar at all.
     intersection = set(imu_cohort) & set(mp_cohort)
+    bars = [("IMU", "#d62728", _intersection_median(imu_winner_scores or {}, intersection)),
+            ("MediaPipe", "#2ca02c", _intersection_median(mp_winner_scores or {}, intersection))]
+    available = [(label, color, value) for label, color, value in bars if value is not None]
+    unavailable = [label for label, _color, value in bars if value is None]
+
     fig, ax = plt.subplots(figsize=(4, 4), facecolor="white")
-    imu_best = imu_ranked[0]["median_rmse"] if imu_ranked and not imu_ranked[0]["low_coverage"] else None
-    mp_best = mp_ranked[0]["median_rmse"] if mp_ranked and not mp_ranked[0]["low_coverage"] else None
-    ax.bar(["IMU", "MediaPipe"], [imu_best or 0.0, mp_best or 0.0],
-          color=["#d62728", "#2ca02c"], alpha=0.6)
-    ax.set_ylabel("median RMSE (deg)")
+    if available:
+        ax.bar([label for label, _, _ in available], [value for _, _, value in available],
+               color=[color for _, color, _ in available], alpha=0.6)
+        for i, (_label, _color, value) in enumerate(available):
+            ax.annotate(f"{value:.2f}", (i, value), ha="center", va="bottom", fontsize=8)
+    if unavailable:
+        # Never render an unavailable value as a 0-height bar -- that reads
+        # as a perfect score. Say so explicitly instead.
+        note = ("no overlapping trials" if not intersection
+                else "no valid candidate: " + ", ".join(unavailable))
+        ax.text(0.5, 0.5, note, transform=ax.transAxes, ha="center", va="center",
+                fontsize=8, color="#666666")
+    ax.set_ylabel("median RMSE (deg), intersection only")
     n_participants = len({p for t, p in
                          [(t, next(tr["participant"] for tr in trials if tr["trial_key"] == t))
                           for t in intersection]}) if intersection else 0
