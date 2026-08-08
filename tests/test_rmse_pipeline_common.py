@@ -1064,6 +1064,86 @@ def test_run_full_sweep_mediapipe_scores_each_variant_against_its_own_model_file
     assert lite_model_paths == {str(model_dir / "pose_landmarker_lite.task")}
 
 
+# ── end-to-end content-addressed caching ─────────────────────────────────
+
+def _real_file_trial(tmp_path, key, participant):
+    """A TrialRecord whose input paths are REAL files, so
+    compute_input_fingerprints can genuinely hash them."""
+    d = tmp_path / "data" / key
+    d.mkdir(parents=True)
+    opti = d / "trial_1_optitrack.csv"
+    opti.write_text(f"t,angle\n0,{participant}\n", encoding="utf-8")
+    components = {}
+    for name in ("imu", "accel", "gyro", "mag"):
+        p = d / f"{name}.csv"
+        p.write_text(f"{key}-{name}", encoding="utf-8")
+        components[name] = str(p)
+    return {"trial_key": key, "participant": participant, "leg": "left",
+            "condition": "post", "session": "post", "position": "1", "height": "none",
+            "trial_number": "1", "imu_anchor_path": components["imu"],
+            "imu_component_paths": components, "video_path": None,
+            "optitrack_path": str(opti), "has_imu_rmse": True,
+            "has_mediapipe_rmse": False, "exclusion_reasons": []}
+
+
+def test_run_full_sweep_cache_hits_on_identical_rerun_and_misses_on_changed_input(
+        tmp_path, monkeypatch):
+    # Final-review finding (pairs with the landmark-cache fix): every other
+    # run_full_sweep test stubs BOTH compute_implementation_fingerprint and
+    # compute_input_fingerprints, so the real content-addressed caching path
+    # in _score_grid never actually executed end-to-end -- which is exactly
+    # the seam the stale-landmark bug lived in.
+    #
+    # Here compute_input_fingerprints runs for real against real tmp_path
+    # files; only compute_implementation_fingerprint is pinned to a constant
+    # (still in the call path, just not re-reading this repo's sources on
+    # every call).
+    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl-fixed")
+    monkeypatch.setattr(rpc, "_make_figures", lambda *a, **k: None)
+
+    trials = [_real_file_trial(tmp_path, f"k{i}", f"p{i}") for i in range(3)]
+    monkeypatch.setattr(rpc, "discover_scorable_trials", lambda: trials)
+
+    import sweep_imu_config
+    import sweep_mediapipe_config
+    monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.041}, {"beta": 0.08}])
+    monkeypatch.setattr(sweep_mediapipe_config, "MODEL_VARIANTS", [])  # IMU-only sweep
+
+    scored = []
+
+    def counting_score_imu(trial, params):
+        scored.append((trial["trial_key"], json.dumps(params, sort_keys=True)))
+        return 3.0 if params == {"beta": 0.08} else 5.0
+    monkeypatch.setattr(rpc, "score_imu_candidate", counting_score_imu)
+
+    # Sweep 1: cold cache -> every (trial, candidate) pair is scored once.
+    rpc.run_full_sweep()
+    assert len(scored) == 6            # 3 trials x 2 candidates
+    assert len(set(scored)) == 6
+
+    # Sweep 2: identical inputs -> every pair is a cache hit, zero re-scores.
+    scored.clear()
+    rpc.run_full_sweep()
+    assert scored == []
+
+    # Mutate ONE trial's input file -> only that trial re-scores.
+    with open(trials[1]["optitrack_path"], "w", encoding="utf-8") as f:
+        f.write("t,angle\n0,999\n1,998\n")   # different content AND size
+    scored.clear()
+    rpc.run_full_sweep()
+    assert sorted(scored) == [("k1", '{"beta": 0.041}'), ("k1", '{"beta": 0.08}')]
+
+    # And a code/grid change (implementation fingerprint) re-scores everything.
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl-changed")
+    scored.clear()
+    rpc.run_full_sweep()
+    assert len(scored) == 6
+
+
 # ── §7.3 updated_at + dataset-size annotation ────────────────────────────
 
 def _assert_iso_utc(value):
