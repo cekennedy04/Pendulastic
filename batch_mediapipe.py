@@ -33,6 +33,8 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
+import patient_identity_tracker as pit
+
 ROOT      = Path(__file__).parent
 REC_ROOT  = ROOT / "Recordings"
 OPTI_ROOT = ROOT / "OptiTrack_Recordings"
@@ -45,6 +47,11 @@ MP_LEG_IDX = {
 }
 
 VIS_THRESH = 0.40   # lower than training — we want coverage, not perfection
+
+CSV_FIELDNAMES = ["frame", "time_sec", "leg",
+                   "hip_x", "hip_y", "knee_x", "knee_y", "ankle_x", "ankle_y",
+                   "hip_score", "knee_score", "ankle_score", "knee_angle_deg",
+                   "identity_score", "identity_ambiguous"]
 
 # BlazePose connections to draw (subset: torso + both legs)
 _DRAW_CONNECTIONS = [
@@ -117,11 +124,12 @@ def _has_annotated_video(folder: Path, trial_n: int) -> bool:
     return any(pat.match(p.name) for p in folder.iterdir() if p.is_file())
 
 
-def discover_new_trials():
+def discover_new_trials(force: bool = False):
     """
     Yield dicts for trials that are missing a CSV, an annotated video, or both.
     Each dict carries 'need_csv' and 'need_video' flags so process_trial knows
-    which outputs to write.
+    which outputs to write. force=True treats every discovered trial as
+    needing both, regardless of what already exists on disk.
     """
     for opti_csv in sorted(OPTI_ROOT.rglob("*_optitrack.csv")):
         m = re.match(r"Trial_(\d+)_optitrack\.csv", opti_csv.name, re.IGNORECASE)
@@ -148,9 +156,9 @@ def discover_new_trials():
         vid_dir     = video.parent
         participant = rel.parts[0] if rel.parts else "unknown"
 
-        has_csv = (_has_mediapipe_csv(vid_dir, trial_n) or
-                   _has_mediapipe_csv(opti_dir, trial_n))
-        has_vid = _has_annotated_video(vid_dir, trial_n)
+        has_csv = (not force) and (_has_mediapipe_csv(vid_dir, trial_n) or
+                                    _has_mediapipe_csv(opti_dir, trial_n))
+        has_vid = (not force) and _has_annotated_video(vid_dir, trial_n)
 
         if has_csv and has_vid:
             print(f"  [skip] {participant} T{trial_n} — CSV + annotated video both exist")
@@ -234,6 +242,7 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
     rows      = []
     mp_hits   = 0
     frame_idx = 0
+    tracker   = pit.PatientIdentityTracker(h_idx, k_idx, a_idx)
 
     try:
         while True:
@@ -247,18 +256,24 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
             angle = float("nan")
             result = None
             lms    = None
+            identity_score = float("nan")
+            identity_ambiguous = True
 
             try:
                 rgb      = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 result   = landmarker.detect(mp_image)
 
-                if result.pose_landmarks:
-                    # When the assessor is in frame, MediaPipe detects two
-                    # people; _select_patient_pose picks the reclining one by
-                    # trunk orientation, not by frame position (see its
-                    # docstring for why a position-based heuristic was wrong).
-                    lms = _select_patient_pose(result.pose_landmarks)
+                # Stateful, hysteresis-gated patient/assessor identity
+                # tracking -- replaces the old per-frame, memory-less
+                # _select_patient_pose() call site (that function itself is
+                # unchanged and still used by sweep_mediapipe_config.py).
+                sel = tracker.select(result.pose_landmarks or [], w, h)
+                lms = sel.pose
+                identity_score = sel.score
+                identity_ambiguous = sel.ambiguous
+
+                if lms is not None:
                     hl  = lms[h_idx]; kl = lms[k_idx]; al = lms[a_idx]
 
                     hip_s = float(hl.visibility)
@@ -320,6 +335,8 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
                 "knee_score":     round(kne_s, 3),
                 "ankle_score":    round(ank_s, 3),
                 "knee_angle_deg": round(angle, 4) if np.isfinite(angle) else "",
+                "identity_score":     round(identity_score, 4) if np.isfinite(identity_score) else "",
+                "identity_ambiguous": identity_ambiguous,
             })
             frame_idx += 1
 
@@ -335,17 +352,16 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
     if need_csv:
         out_name = f"{participant}_T_{trial_n}_mediapipe_full_0.5.csv"
         out_path = vid_dir / out_name
-        fieldnames = ["frame", "time_sec", "leg",
-                      "hip_x", "hip_y", "knee_x", "knee_y", "ankle_x", "ankle_y",
-                      "hip_score", "knee_score", "ankle_score", "knee_angle_deg"]
         with open(out_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             writer.writerows(rows)
         print(f"  CSV   -> {out_name}")
 
     pct = 100 * mp_hits // max(len(rows), 1)
     print(f"  MediaPipe: {mp_hits}/{len(rows)} frames ({pct}%)")
+    print(f"  Identity: {tracker.n_switches} switches, "
+          f"{tracker.n_ambiguous}/{len(rows)} ambiguous frames")
     if need_video:
         print(f"  Video -> {vid_out_name}")
 
@@ -361,6 +377,8 @@ def main():
                     help="Force this leg for all trials (default: infer from name)")
     ap.add_argument("--dry-run", action="store_true",
                     help="List trials that would be processed without running")
+    ap.add_argument("--force", action="store_true",
+                    help="Reprocess trials even if CSV/annotated video already exist")
     args = ap.parse_args()
 
     if not MP_MODEL_PATH.exists():
@@ -369,7 +387,7 @@ def main():
         sys.exit(1)
 
     print("Scanning for trials needing MediaPipe processing ...\n")
-    trials = list(discover_new_trials())
+    trials = list(discover_new_trials(force=args.force))
 
     if not trials:
         print("All trials already have mediapipe_full_0.5 CSVs.")
