@@ -144,10 +144,27 @@ def discover_imu_trials():
     component-path derivation and OptiTrack matching are already correct
     and tested). Re-parsed through parse_structural_fields() for the
     canonical trial_key rather than trusting the source script's own
-    participant/position labels, which don't capture session/height."""
+    participant/position labels, which don't capture session/height.
+
+    Parsed against imu_discovery.REC_ROOT -- the root that module actually
+    discovered t["imu"] under -- not this module's own REC_ROOT. The two
+    are usually the same file path in normal deployment (both point at
+    <checkout>/Recordings), but imu_discovery.BASE_DIR is a hardcoded
+    literal or otherwise not guaranteed to equal this module's __file__-
+    derived BASE_DIR (e.g. a differently-located checkout, another OS, or
+    this module's own copy running somewhere other than where
+    batch_imu_vs_optitrack_rmse.py's data actually lives). Using the wrong
+    root here doesn't fail loudly -- os.path.relpath() against an unrelated
+    root still returns *a* string, just one salted with leftover ".."/root
+    directory segments that survive into the "condition" field uncaught.
+    That corrupted condition then flows into
+    pt_report_common.trial_key(...), the lookup key into
+    excluded_trials.json -- a corrupted key silently never matches a real
+    registry entry, so a trial that's supposed to be excluded (e.g. a
+    non-passive release) leaks into scoring instead of being dropped."""
     out = []
     for t in imu_discovery.discover_trials():
-        fields = parse_structural_fields(t["imu"], REC_ROOT)
+        fields = parse_structural_fields(t["imu"], imu_discovery.REC_ROOT)
         if fields is None:
             continue
         out.append({
