@@ -50,3 +50,95 @@ def _anatomical_penalty(pose, hip_idx, knee_idx, ankle_idx, w, h) -> float:
     if ANATOMICAL_MIN_RATIO <= ratio <= ANATOMICAL_MAX_RATIO:
         return 1.0
     return ANATOMICAL_PENALTY
+
+
+SelectionResult = namedtuple("SelectionResult", ["pose", "score", "ambiguous"])
+
+
+class PatientIdentityTracker:
+    """Stateful per-trial identity tracker. One instance per trial video."""
+
+    def __init__(self, hip_idx, knee_idx, ankle_idx,
+                 hysteresis_frames: int = DEFAULT_HYSTERESIS_FRAMES,
+                 confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR):
+        self._hip_idx = hip_idx
+        self._knee_idx = knee_idx
+        self._ankle_idx = ankle_idx
+        self._hysteresis_frames = hysteresis_frames
+        self._confidence_floor = confidence_floor
+        self._locked_knee_px = None
+        self._challenger_streak = 0
+        self.n_switches = 0
+        self.n_ambiguous = 0
+        self.n_frames = 0
+
+    def _knee_px(self, pose, w, h):
+        lm = pose[self._knee_idx]
+        return (lm.x * w, lm.y * h)
+
+    def _geometric_score(self, pose, w, h) -> float:
+        horiz = _trunk_horizontal_score(pose)
+        vis = _visibility_score(pose, self._hip_idx, self._knee_idx, self._ankle_idx)
+        anat = _anatomical_penalty(pose, self._hip_idx, self._knee_idx,
+                                    self._ankle_idx, w, h)
+        return ((horiz + vis) / 2.0) * anat
+
+    def select(self, poses, w, h) -> "SelectionResult":
+        self.n_frames += 1
+
+        if not poses:
+            self.n_ambiguous += 1
+            return SelectionResult(None, 0.0, True)
+
+        if len(poses) == 1:
+            pose = poses[0]
+            score = self._geometric_score(pose, w, h)
+            if score < self._confidence_floor:
+                self.n_ambiguous += 1
+                return SelectionResult(None, score, True)
+            self._challenger_streak = 0
+            self._locked_knee_px = self._knee_px(pose, w, h)
+            return SelectionResult(pose, score, False)
+
+        # len(poses) == 2: MediaPipe options cap num_poses at 2 upstream.
+        if self._locked_knee_px is None:
+            scored = sorted(
+                ((self._geometric_score(p, w, h), p) for p in poses),
+                key=lambda t: t[0], reverse=True,
+            )
+            best_score, best_pose = scored[0]
+            if best_score < self._confidence_floor:
+                self.n_ambiguous += 1
+                return SelectionResult(None, best_score, True)
+            self._challenger_streak = 0
+            self._locked_knee_px = self._knee_px(best_pose, w, h)
+            return SelectionResult(best_pose, best_score, False)
+
+        dists = sorted(
+            ((math.hypot(*(a - b for a, b in
+                           zip(self._knee_px(p, w, h), self._locked_knee_px))), p)
+             for p in poses),
+            key=lambda t: t[0],
+        )
+        tracked_pose, challenger_pose = dists[0][1], dists[1][1]
+        tracked_score = self._geometric_score(tracked_pose, w, h)
+        challenger_score = self._geometric_score(challenger_pose, w, h)
+
+        if challenger_score > tracked_score:
+            self._challenger_streak += 1
+        else:
+            self._challenger_streak = 0
+
+        if self._challenger_streak >= self._hysteresis_frames:
+            selected, score = challenger_pose, challenger_score
+            self._challenger_streak = 0
+            self.n_switches += 1
+        else:
+            selected, score = tracked_pose, tracked_score
+
+        if score < self._confidence_floor:
+            self.n_ambiguous += 1
+            return SelectionResult(None, score, True)
+
+        self._locked_knee_px = self._knee_px(selected, w, h)
+        return SelectionResult(selected, score, False)
