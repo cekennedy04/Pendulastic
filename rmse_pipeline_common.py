@@ -693,12 +693,18 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
     return {"promoted": False, "reason": "within_epsilon"}
 
 
-def _score_grid(trials, has_flag, grid, score_fn, cache, methodology, model_path=None):
+def _score_grid(trials, has_flag, grid, cache, methodology, model_path=None):
     """Score every (trial, candidate) pair in `grid` for trials with
     `has_flag` True, using sweep_cache when available. Returns
     {candidate_key: {trial_key: rmse}}. One failing trial/candidate is
     logged and skipped, never aborts the whole sweep (design spec §6/§10,
-    matching run_pt_analysis.py's per-participant failure isolation)."""
+    matching run_pt_analysis.py's per-participant failure isolation).
+
+    Dispatch is by `methodology`, deliberately with no injectable score_fn
+    parameter: this used to accept one and then ignore it entirely, which
+    read like a seam but silently wasn't. Substituting a scorer (in tests
+    or elsewhere) means patching the module-level score_imu_candidate /
+    score_mediapipe_candidate, which is what actually takes effect."""
     impl_fp = compute_implementation_fingerprint()
     stat_cache = {}
     results = {}
@@ -750,7 +756,7 @@ def run_full_sweep(priority_trial_keys=None):
     import sweep_imu_config
     import sweep_mediapipe_config
     imu_scores = _score_grid(trials, "has_imu_rmse", sweep_imu_config.WIDE_GRID,
-                             score_imu_candidate, cache, "imu")
+                             cache, "imu")
 
     # Each model variant has its own weight file and must be scored against
     # it -- deriving a single model_path outside this loop (the original
@@ -768,7 +774,7 @@ def run_full_sweep(priority_trial_keys=None):
         variant_grid = [{"model_variant": variant, "vis_thresh": t}
                         for t in sweep_mediapipe_config.VIS_THRESH_CANDIDATES]
         mp_scores.update(_score_grid(trials, "has_mediapipe_rmse", variant_grid,
-                                     score_mediapipe_candidate, cache, "mediapipe",
+                                     cache, "mediapipe",
                                      model_path=variant_model_path))
     save_sweep_cache(cache)
 
