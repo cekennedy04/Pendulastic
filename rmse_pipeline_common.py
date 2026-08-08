@@ -678,6 +678,17 @@ def record_sweep_result(methodology, ranked, dataset_fingerprint,
         _save_best_config(cfg)
         return {"promoted": True}
 
+    # Non-promotion, but the incumbent WAS re-scored against today's cohort
+    # (that re-score is exactly what decided this comparison). Persist those
+    # fresh numbers over the original promotion-time ones: rmse_best_config
+    # .json is read by a human deciding whether to hand-apply a config
+    # change, and an RMSE measured on a stale, possibly much smaller cohort
+    # is the number most likely to mislead them. The config itself is
+    # unchanged, so no history entry is appended -- history only grows on an
+    # actual promotion.
+    cfg[methodology]["rmse"] = incumbent_still_ranked["median_rmse"]
+    cfg[methodology]["n_trials"] = incumbent_still_ranked["n_trials"]
+    cfg[methodology]["n_participants"] = incumbent_still_ranked["n_participants"]
     _save_best_config(cfg)
     return {"promoted": False, "reason": "within_epsilon"}
 
