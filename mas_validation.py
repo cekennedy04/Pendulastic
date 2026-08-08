@@ -202,7 +202,7 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     with open(csv_path, newline="", encoding="utf-8") as f:
         fieldnames = csv.DictReader(f).fieldnames
 
-    if not fieldnames:
+    if fieldnames is None:
         # Zero-byte file that exists but never got a header written -- e.g.
         # an earlier run crashed between creating the file and writing the
         # header. Nothing to preserve; start from the canonical schema.
@@ -212,6 +212,17 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
                 widened.append(k)
         _atomic_write_mas_csv(csv_path, widened, [], row)
         return
+
+    if not fieldnames:
+        # fieldnames == [] (as opposed to None above) means the file's
+        # first line parsed as blank -- NOT the same as a truly empty file.
+        # A blank first line can still have real clinical rows below it;
+        # treating this the same as "nothing to preserve" would silently
+        # replace all of that data with just the new row. Refuse instead
+        # of guessing.
+        raise ValueError(
+            f"{csv_path}: header row is blank -- fix this file by hand "
+            f"before stronger_leg/notes can be added automatically")
 
     new_fields = [k for k in WIDENABLE_MAS_FIELDS
                  if k in row and k not in fieldnames]

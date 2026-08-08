@@ -543,3 +543,24 @@ def test_append_mas_score_widens_empty_file_ignores_unrecognized_keys(tmp_path):
     assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
     assert "stronger_le" not in lines[0].split(",")
     assert len(lines[0].split(",")) == 9
+
+
+def test_append_mas_score_raises_on_blank_first_line_with_data_below(tmp_path):
+    """A blank first line (fieldnames == [], distinct from fieldnames is
+    None for a truly empty file) must never be treated as "nothing to
+    preserve" -- csv.DictReader maps every real row below it into the
+    None-key overflow, so the naive fast path would silently replace all
+    of that clinical data with just the new row. Must refuse instead."""
+    csv_path = tmp_path / "mas_scores.csv"
+    original = (
+        "\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n"
+        "14,left,pre,multiple sclerosis,1+,VL,2026-08-02\n")
+    csv_path.write_text(original)
+    with pytest.raises(ValueError, match="header row is blank"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "", "diagnosis": "",
+             "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "stronger_leg": "right", "notes": ""},
+            csv_path=str(csv_path))
+    assert csv_path.read_text() == original
