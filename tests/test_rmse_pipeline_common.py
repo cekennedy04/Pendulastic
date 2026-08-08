@@ -395,10 +395,49 @@ def test_compute_input_fingerprints_mediapipe(tmp_path):
     video.write_bytes(b"fake")
     opti = tmp_path / "opti.csv"
     opti.write_text("opti", encoding="utf-8")
+    model = tmp_path / "pose_landmarker_full.task"
+    model.write_bytes(b"model-weights-A")
     trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
-    fps = rpc.compute_input_fingerprints(trial, "mediapipe", {})
+    fps = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model))
     assert "video" in fps and "optitrack" in fps
     assert "imu" not in fps
+    # Design spec §7.1 lists model_file among the mediapipe branch's hashed
+    # inputs -- swapping the .task weights changes every MediaPipe RMSE
+    # without touching a single trial file.
+    assert "model_file" in fps
+    assert len(fps["model_file"]) == 64
+
+
+def test_compute_input_fingerprints_mediapipe_differs_on_model_file(tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"fake")
+    opti = tmp_path / "opti.csv"
+    opti.write_text("opti", encoding="utf-8")
+    trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
+    model_a = tmp_path / "a" / "pose_landmarker_full.task"
+    model_b = tmp_path / "b" / "pose_landmarker_full.task"
+    model_a.parent.mkdir()
+    model_b.parent.mkdir()
+    model_a.write_bytes(b"model-weights-A")
+    model_b.write_bytes(b"model-weights-B -- retrained, different bytes")
+
+    fps_a = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model_a))
+    fps_b = rpc.compute_input_fingerprints(trial, "mediapipe", {}, model_path=str(model_b))
+    assert fps_a["model_file"] != fps_b["model_file"]
+
+
+def test_compute_input_fingerprints_mediapipe_requires_model_path(tmp_path):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"fake")
+    opti = tmp_path / "opti.csv"
+    opti.write_text("opti", encoding="utf-8")
+    trial = {"imu_component_paths": None, "optitrack_path": str(opti), "video_path": str(video)}
+    try:
+        rpc.compute_input_fingerprints(trial, "mediapipe", {})
+    except ValueError as e:
+        assert "model_path" in str(e)
+    else:
+        raise AssertionError("expected ValueError when model_path is omitted for mediapipe")
 
 
 def test_compute_implementation_fingerprint_stable():
@@ -461,30 +500,78 @@ def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
 
 # ── extract_landmarks_cached / score_mediapipe_candidate ────────────────
 
-def test_extract_landmarks_cached_calls_extraction_once(tmp_path, monkeypatch):
+def _landmark_cache_fixture(tmp_path, monkeypatch, impl_fp="impl1"):
+    """Shared setup for the landmark-cache tests: an isolated cache dir, a
+    real video file (extract_landmarks_cached content-hashes it), a real
+    .task model file (it content-hashes that too now), and a counting stub
+    for the expensive extraction call. compute_implementation_fingerprint
+    is pinned to a constant rather than stubbed out of the call path, so
+    the cache key genuinely includes it."""
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: impl_fp)
     video = tmp_path / "v.mp4"
     video.write_bytes(b"fake")
+    model = tmp_path / "models" / "pose_landmarker_full.task"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"model-weights-A")
     calls = []
     monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
                         lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
     trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    rpc.extract_landmarks_cached(trial, "full", "model.task")
-    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    return trial, video, model, calls
+
+
+def test_extract_landmarks_cached_calls_extraction_once(tmp_path, monkeypatch):
+    trial, _video, model, calls = _landmark_cache_fixture(tmp_path, monkeypatch)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    rpc.extract_landmarks_cached(trial, "full", str(model))
     assert len(calls) == 1
 
 
 def test_extract_landmarks_cached_re_extracts_on_video_change(tmp_path, monkeypatch):
-    monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
-    video = tmp_path / "v.mp4"
-    video.write_bytes(b"fake")
-    calls = []
-    monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
-                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
-    trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
-    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    trial, video, model, calls = _landmark_cache_fixture(tmp_path, monkeypatch)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
     video.write_bytes(b"different content, changes the hash")
-    rpc.extract_landmarks_cached(trial, "full", "model.task")
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    assert len(calls) == 2
+
+
+def test_extract_landmarks_cached_re_extracts_on_model_file_change(tmp_path, monkeypatch):
+    # Final-review finding (critical): the cache filename keyed only on
+    # (trial_key, model_variant, video fingerprint) -- 3 of the 5 components
+    # design spec §7.1 requires. Two *different* .task files with the same
+    # basename and the same model_variant label therefore collided, so
+    # swapping the weights returned the OLD landmarks while the RMSE-level
+    # cache correctly re-scored -- a "fresh" RMSE silently computed from
+    # superseded extraction output.
+    trial, _video, model_a, calls = _landmark_cache_fixture(tmp_path, monkeypatch)
+    model_b = tmp_path / "models_v2" / "pose_landmarker_full.task"
+    model_b.parent.mkdir(parents=True, exist_ok=True)
+    model_b.write_bytes(b"model-weights-B -- retrained, different bytes")
+
+    rpc.extract_landmarks_cached(trial, "full", str(model_a))
+    rpc.extract_landmarks_cached(trial, "full", str(model_b))
+    assert len(calls) == 2
+
+    # And each model's landmarks live in their own cache entry -- neither
+    # overwrote the other, so going back to model A is still a cache hit.
+    rpc.extract_landmarks_cached(trial, "full", str(model_a))
+    assert len(calls) == 2
+    cache_dir = os.path.join(str(tmp_path / "sweep_cache"), "landmarks")
+    assert len([n for n in os.listdir(cache_dir) if n.endswith(".pkl")]) == 2
+
+
+def test_extract_landmarks_cached_re_extracts_on_implementation_fingerprint_change(
+        tmp_path, monkeypatch):
+    # The other missing §7.1 component: if the extraction code itself
+    # changes (e.g. sweep_mediapipe_config.extract_raw_landmarks is fixed),
+    # the landmark cache must miss too -- otherwise the RMSE-level cache's
+    # correct miss just re-scores stale landmarks.
+    trial, _video, model, calls = _landmark_cache_fixture(tmp_path, monkeypatch,
+                                                          impl_fp="impl1")
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl2")
+    rpc.extract_landmarks_cached(trial, "full", str(model))
     assert len(calls) == 2
 
 
@@ -734,8 +821,9 @@ def _stub_pipeline(monkeypatch, tmp_path, trials, imu_rmse_by_config, mp_rmse_by
     monkeypatch.setattr(rpc, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(rpc, "discover_scorable_trials", lambda: trials)
     monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl1")
-    monkeypatch.setattr(rpc, "compute_input_fingerprints",
-                        lambda trial, methodology, cache, force=False: {"optitrack": "h"})
+    monkeypatch.setattr(
+        rpc, "compute_input_fingerprints",
+        lambda trial, methodology, cache, force=False, model_path=None: {"optitrack": "h"})
 
     import sweep_imu_config
     import sweep_mediapipe_config
