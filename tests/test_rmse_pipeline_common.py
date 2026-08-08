@@ -1064,6 +1064,111 @@ def test_run_full_sweep_mediapipe_scores_each_variant_against_its_own_model_file
     assert lite_model_paths == {str(model_dir / "pose_landmarker_lite.task")}
 
 
+# ── §7.3 updated_at + dataset-size annotation ────────────────────────────
+
+def _assert_iso_utc(value):
+    from datetime import datetime, timezone
+    assert isinstance(value, str) and value, f"not a timestamp string: {value!r}"
+    parsed = datetime.fromisoformat(value)          # raises if not ISO format
+    assert parsed.tzinfo is not None                # tz-aware, not naive local time
+    delta = abs((datetime.now(timezone.utc) - parsed).total_seconds())
+    assert delta < 600, f"timestamp is not plausibly now: {value!r}"
+    return parsed
+
+
+def test_record_sweep_result_records_updated_at_on_promotion(tmp_path, monkeypatch):
+    # Design spec §7.3: rmse_best_config.json entries include updated_at.
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    ranked = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+              "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", ranked, "ds1", "impl1")
+    cfg = rpc.load_best_config()
+    _assert_iso_utc(cfg["imu"]["updated_at"])
+    _assert_iso_utc(cfg["history"][0]["updated_at"])
+
+
+def test_record_sweep_result_updated_at_moves_with_a_within_epsilon_rescore(tmp_path, monkeypatch):
+    # updated_at tracks when the recorded numbers were last measured, not
+    # when the config last changed -- on the within_epsilon path the numbers
+    # are refreshed (see the incumbent-rescore fix), so the timestamp is too.
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    first = [{"candidate_key": '{"beta": 0.041}', "median_rmse": 5.0,
+             "n_trials": 5, "n_participants": 3, "low_coverage": False}]
+    rpc.record_sweep_result("imu", first, "ds1", "impl1")
+    original = rpc.load_best_config()["imu"]["updated_at"]
+
+    second = [
+        {"candidate_key": '{"beta": 0.041}', "median_rmse": 5.4,
+         "n_trials": 12, "n_participants": 5, "low_coverage": False},
+        {"candidate_key": '{"beta": 0.08}', "median_rmse": 5.35,
+         "n_trials": 12, "n_participants": 5, "low_coverage": False},
+    ]
+    result = rpc.record_sweep_result("imu", second, "ds2", "impl1")
+    assert result["promoted"] is False
+    cfg = rpc.load_best_config()
+    _assert_iso_utc(cfg["imu"]["updated_at"])
+    assert cfg["imu"]["updated_at"] >= original
+    assert len(cfg["history"]) == 1
+
+
+def test_trend_points_carries_n_trials_and_shared_x_axis():
+    history = [
+        {"methodology": "imu", "rmse": 5.0, "n_trials": 6},
+        {"methodology": "mediapipe", "rmse": 9.0, "n_trials": 4},
+        {"methodology": "imu", "rmse": 6.5, "n_trials": 40},
+    ]
+    assert rpc._trend_points(history, "imu") == [(0, 5.0, 6), (2, 6.5, 40)]
+    assert rpc._trend_points(history, "mediapipe") == [(1, 9.0, 4)]
+
+
+def test_trend_points_skips_entries_without_rmse():
+    history = [{"methodology": "imu", "rmse": None, "n_trials": 6},
+              {"methodology": "imu", "n_trials": 6},
+              {"methodology": "imu", "rmse": 5.0, "n_trials": 6}]
+    assert rpc._trend_points(history, "imu") == [(2, 5.0, 6)]
+
+
+def test_make_figures_annotates_trend_points_with_dataset_size(tmp_path, monkeypatch):
+    # Design spec §7.3: rmse_trend.png is "annotated with dataset size at
+    # each point so growth isn't mistaken for a regression". Here the second
+    # IMU promotion looks worse (6.5 vs 5.0) purely because the cohort grew
+    # from 6 trials to 40 -- without the annotation that reads as a
+    # regression.
+    monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    os.makedirs(str(tmp_path / "RMSE_Tracking"), exist_ok=True)
+    with open(str(tmp_path / "best.json"), "w", encoding="utf-8") as f:
+        json.dump({"imu": None, "mediapipe": None, "history": [
+            {"methodology": "imu", "rmse": 5.0, "n_trials": 6, "n_participants": 3},
+            {"methodology": "imu", "rmse": 6.5, "n_trials": 40, "n_participants": 9},
+        ]}, f)
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.axes
+    real_annotate = matplotlib.axes.Axes.annotate
+    annotations = []
+
+    def spy_annotate(self, text, *a, **k):
+        annotations.append((text, a, k))
+        return real_annotate(self, text, *a, **k)
+    monkeypatch.setattr(matplotlib.axes.Axes, "annotate", spy_annotate)
+
+    trials = [_trial("k0", "p0"), _trial("k1", "p1")]
+    imu_ranked = [{"candidate_key": '{"beta": 0.08}', "median_rmse": 3.0,
+                  "n_trials": 2, "n_participants": 2, "low_coverage": False}]
+    mp_ranked = [{"candidate_key": '{"model_variant": "full", "vis_thresh": 0.4}',
+                 "median_rmse": 6.0, "n_trials": 2, "n_participants": 2, "low_coverage": False}]
+    rpc._make_figures(imu_ranked, mp_ranked, trials, ["k0", "k1"], ["k0", "k1"],
+                      {"k0": 2.5, "k1": 3.5}, {"k0": 5.5, "k1": 6.5})
+
+    size_labels = [text for text, _a, _k in annotations if str(text).startswith("n=")]
+    assert size_labels == ["n=6", "n=40"]
+    # Each label sits at its own point's (x, rmse) coordinate.
+    size_points = [a[0] for text, a, _k in annotations if str(text).startswith("n=")]
+    assert size_points == [(0, 5.0), (1, 6.5)]
+
+
 # ── §7.2 frozen-intersection comparison figure ───────────────────────────
 
 def test_winner_per_trial_scores_picks_the_selected_candidate():
