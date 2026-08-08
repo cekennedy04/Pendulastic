@@ -154,12 +154,18 @@ def test_discover_imu_trials_parses_against_imu_discovery_rec_root_not_own(tmp_p
     # excluded_trials.json. A corrupted key silently never matches a real
     # registry entry, so a trial meant to be excluded (e.g. a non-passive
     # release) would leak into scoring instead of being dropped.
+    #
+    # Follow-up (final review, Fix 2): this module no longer defines a
+    # REC_ROOT of its own at all -- discover_video_trials() had the same
+    # bug and was fixed the same way, so imu_discovery is now the single
+    # source of truth for both halves of discovery and there is no second
+    # constant left to accidentally parse against.
+    assert not hasattr(rpc, "REC_ROOT")
+
     real_rec_root = tmp_path / "actual_checkout" / "Recordings"
-    wrong_rec_root = tmp_path / "unrelated_dir" / "Recordings"
     imu_path = real_rec_root / "Participant_13" / "Left" / "week_1_post" / "Trial_1_imu.csv"
 
     monkeypatch.setattr(rpc.imu_discovery, "REC_ROOT", str(real_rec_root))
-    monkeypatch.setattr(rpc, "REC_ROOT", str(wrong_rec_root))
 
     fake_trials = [{
         "participant": "Participant_13", "position": "unknown", "trial": "Trial_1",
@@ -183,6 +189,15 @@ def test_discover_imu_trials_parses_against_imu_discovery_rec_root_not_own(tmp_p
 
 # ── discover_video_trials ────────────────────────────────────────────────
 
+def _point_discovery_roots(monkeypatch, opti_root, rec_root):
+    """discover_video_trials() sources its roots from imu_discovery
+    (batch_imu_vs_optitrack_rmse.py) -- the same single source of truth
+    discover_imu_trials() parses against -- not from constants of its own,
+    so both halves of discovery are guaranteed to walk the same tree."""
+    monkeypatch.setattr(rpc.imu_discovery, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(rpc.imu_discovery, "REC_ROOT", str(rec_root))
+
+
 def test_discover_video_trials_finds_matching_video(tmp_path, monkeypatch):
     opti_root = tmp_path / "OptiTrack_Recordings"
     rec_root = tmp_path / "Recordings"
@@ -193,8 +208,7 @@ def test_discover_video_trials_finds_matching_video(tmp_path, monkeypatch):
     video_dir.mkdir(parents=True)
     (video_dir / "Trial_3.avi").write_bytes(b"fake video")
 
-    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
-    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    _point_discovery_roots(monkeypatch, opti_root, rec_root)
     result = rpc.discover_video_trials()
     assert len(result) == 1
     rec = result[0]
@@ -212,8 +226,7 @@ def test_discover_video_trials_no_video_excluded(tmp_path, monkeypatch):
     (opti_dir / "trial_1_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
     rec_root.mkdir(parents=True)
 
-    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
-    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    _point_discovery_roots(monkeypatch, opti_root, rec_root)
     assert rpc.discover_video_trials() == []
 
 
@@ -229,11 +242,47 @@ def test_discover_video_trials_checks_opti_side_video_too(tmp_path, monkeypatch)
     (opti_dir / "Trial_2.mp4").write_bytes(b"fake video")
     rec_root.mkdir(parents=True)
 
-    monkeypatch.setattr(rpc, "OPTI_ROOT", str(opti_root))
-    monkeypatch.setattr(rpc, "REC_ROOT", str(rec_root))
+    _point_discovery_roots(monkeypatch, opti_root, rec_root)
     result = rpc.discover_video_trials()
     assert len(result) == 1
     assert result[0]["video_path"] == str(opti_dir / "Trial_2.mp4")
+
+
+def test_discover_video_trials_uses_imu_discovery_roots_not_own(tmp_path, monkeypatch):
+    # Final-review finding: discover_video_trials() globbed against this
+    # module's own __file__-derived OPTI_ROOT/REC_ROOT while
+    # discover_imu_trials() (fixed in an earlier round) parses against
+    # imu_discovery.REC_ROOT -- so the two halves of discovery could walk
+    # two different filesystem trees. Confirmed live: from a git worktree,
+    # this module's OPTI_ROOT pointed at a nonexistent worktree-local path
+    # while imu_discovery's pointed at the real data, and this function
+    # returned ZERO video trials against a dataset that plainly has video.
+    #
+    # The fix is one source of truth: patching ONLY imu_discovery's roots
+    # must be enough for discovery to find the trial. This module no longer
+    # defines REC_ROOT/OPTI_ROOT at all, which is asserted here so a future
+    # edit can't quietly reintroduce a second, shadowing pair.
+    assert not hasattr(rpc, "OPTI_ROOT")
+    assert not hasattr(rpc, "REC_ROOT")
+
+    opti_root = tmp_path / "real_tree" / "OptiTrack_Recordings"
+    rec_root = tmp_path / "real_tree" / "Recordings"
+    opti_dir = opti_root / "Participant_14" / "Left" / "pre"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_3_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    video_dir = rec_root / "Participant_14" / "Left" / "pre"
+    video_dir.mkdir(parents=True)
+    (video_dir / "Trial_3.avi").write_bytes(b"fake video")
+
+    monkeypatch.setattr(rpc.imu_discovery, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(rpc.imu_discovery, "REC_ROOT", str(rec_root))
+
+    result = rpc.discover_video_trials()
+    assert len(result) == 1
+    assert result[0]["video_path"] == str(video_dir / "Trial_3.avi")
+    assert result[0]["optitrack_path"] == str(opti_dir / "trial_3_optitrack.csv")
+
+
 
 
 # ── discover_scorable_trials ─────────────────────────────────────────────
@@ -294,6 +343,31 @@ def test_discover_scorable_trials_conflicting_optitrack_path_excluded_as_ambiguo
                         lambda: [_video_trial(optitrack_path="opti_B.csv")])
     result = rpc.discover_scorable_trials()
     assert result == []
+
+
+def test_discover_scorable_trials_cosmetic_path_difference_is_not_a_conflict(monkeypatch):
+    # The ambiguity guard must fire on a genuine disagreement about WHICH
+    # OptiTrack file a trial maps to -- never on how the same path happened
+    # to be spelled. A trial silently dropped over a "./" segment or a
+    # drive-letter/case difference between the IMU and video sides is
+    # exactly the false positive Fix 2 has to avoid, since the two halves
+    # of discovery build their paths independently.
+    monkeypatch.setattr(rpc.pt_report_common, "load_excluded_trials", lambda: {})
+    imu_side = os.path.join("data", "Opti_A.csv")
+    # normcase() is a no-op on POSIX and lowercases on Windows, so this is
+    # a pure "./"-segment difference on POSIX and a "./"+case difference on
+    # Windows -- cosmetic on both, and the same real file on both.
+    video_side = os.path.join("data", ".", os.path.normcase("Opti_A.csv"))
+    assert imu_side != video_side
+    monkeypatch.setattr(rpc, "discover_imu_trials",
+                        lambda: [_imu_trial(optitrack_path=imu_side)])
+    monkeypatch.setattr(rpc, "discover_video_trials",
+                        lambda: [_video_trial(optitrack_path=video_side)])
+    result = rpc.discover_scorable_trials()
+    assert len(result) == 1
+    assert result[0]["has_imu_rmse"] is True
+    assert result[0]["has_mediapipe_rmse"] is True
+    assert result[0]["exclusion_reasons"] == []
 
 
 # ── excluded_trials.json filtering (Global Constraints -- added after the
