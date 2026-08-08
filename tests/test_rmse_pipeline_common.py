@@ -1031,6 +1031,144 @@ def test_run_full_sweep_mediapipe_scores_each_variant_against_its_own_model_file
     assert lite_model_paths == {str(model_dir / "pose_landmarker_lite.task")}
 
 
+# ── §7.2 frozen-intersection comparison figure ───────────────────────────
+
+def test_winner_per_trial_scores_picks_the_selected_candidate():
+    scores = {'{"beta": 0.041}': {"k0": 5.0}, '{"beta": 0.08}': {"k0": 3.0}}
+    ranked = [{"candidate_key": '{"beta": 0.08}', "median_rmse": 3.0,
+              "n_trials": 1, "n_participants": 1, "low_coverage": False}]
+    assert rpc._winner_per_trial_scores(scores, ranked) == {"k0": 3.0}
+
+
+def test_winner_per_trial_scores_empty_when_no_valid_winner():
+    scores = {'{"beta": 0.08}': {"k0": 3.0}}
+    assert rpc._winner_per_trial_scores(scores, []) == {}
+    low_cov = [{"candidate_key": '{"beta": 0.08}', "median_rmse": None,
+               "n_trials": 1, "n_participants": 1, "low_coverage": True}]
+    assert rpc._winner_per_trial_scores(scores, low_cov) == {}
+
+
+def test_intersection_median_restricts_to_intersection():
+    # Full-cohort median is 3.0; restricted to the intersection it is 2.0.
+    winner_scores = {"k0": 1.0, "k1": 2.0, "k2": 3.0, "k3": 100.0, "k4": 101.0}
+    assert rpc._intersection_median(winner_scores, {"k0", "k1", "k2"}) == 2.0
+    assert rpc._intersection_median(winner_scores, set(winner_scores)) == 3.0
+
+
+def test_intersection_median_none_when_nothing_to_aggregate():
+    # Must be None, never 0.0 -- a 0-height bar reads as a perfect score.
+    assert rpc._intersection_median({}, {"k0"}) is None
+    assert rpc._intersection_median({"k0": 3.0}, set()) is None
+    assert rpc._intersection_median({"k9": 3.0}, {"k0"}) is None
+
+
+def test_make_figures_comparison_uses_intersection_not_cohort_medians(tmp_path, monkeypatch):
+    # Final-review finding: imu_vs_mediapipe_rmse.png's bars were each
+    # methodology's own best candidate's median over its OWN full cohort --
+    # two numbers aggregated over two different trial sets, which is not a
+    # comparison. Design spec §7.2 requires the intersection of the two
+    # frozen cohorts, scored with each side's selected best candidate.
+    #
+    # Data is built so the two differ unambiguously: for IMU the cohort-wide
+    # median is 3.0 but the intersection-restricted median is 2.0; for
+    # MediaPipe 30.0 vs 20.0.
+    trials = [
+        _trial("k0", "p0", has_imu=True, has_mp=True),
+        _trial("k1", "p1", has_imu=True, has_mp=True),
+        _trial("k2", "p2", has_imu=True, has_mp=True),
+        _trial("k3", "p0", has_imu=True, has_mp=False),
+        _trial("k4", "p1", has_imu=True, has_mp=False),
+        _trial("k5", "p0", has_imu=False, has_mp=True),
+        _trial("k6", "p1", has_imu=False, has_mp=True),
+    ]
+    imu_by_trial = {"k0": 1.0, "k1": 2.0, "k2": 3.0, "k3": 100.0, "k4": 101.0}
+    mp_by_trial = {"k0": 10.0, "k1": 20.0, "k2": 30.0, "k5": 1000.0, "k6": 1001.0}
+    imu_scores = {}
+    mp_scores = {}
+    for t in trials:
+        k = t["trial_key"]
+        if k in imu_by_trial:
+            imu_scores[(k, '{"beta": 0.08}')] = imu_by_trial[k]
+            imu_scores[(k, '{"beta": 0.041}')] = 50.0   # full coverage, loses
+        if k in mp_by_trial:
+            mp_scores[(k, '{"model_variant": "full", "vis_thresh": 0.4}')] = mp_by_trial[k]
+
+    real_make_figures = rpc._make_figures
+    real_intersection_median = rpc._intersection_median
+    _stub_pipeline(monkeypatch, tmp_path, trials, imu_scores, mp_scores)
+    # Un-stub the figure code: this test needs the real thing to prove the
+    # figure itself does the restriction, not just that the data was
+    # threaded to its door.
+    monkeypatch.setattr(rpc, "_make_figures", real_make_figures)
+
+    seen = []
+
+    def recording_intersection_median(winner_scores, intersection):
+        value = real_intersection_median(winner_scores, intersection)
+        seen.append((dict(winner_scores), set(intersection), value))
+        return value
+    monkeypatch.setattr(rpc, "_intersection_median", recording_intersection_median)
+
+    result = rpc.run_full_sweep()
+
+    # Sanity: the cohort-wide medians the OLD code would have plotted.
+    assert result["imu_ranked"][0]["candidate_key"] == '{"beta": 0.08}'
+    assert result["imu_ranked"][0]["median_rmse"] == 3.0
+    assert result["mediapipe_ranked"][0]["median_rmse"] == 30.0
+
+    # What the figure actually computed: one call per methodology, each
+    # restricted to the 3-trial intersection, giving the intersection
+    # medians -- not 3.0 / 30.0.
+    assert len(seen) == 2
+    imu_call, mp_call = seen
+    assert imu_call[1] == {"k0", "k1", "k2"}
+    assert mp_call[1] == {"k0", "k1", "k2"}
+    assert imu_call[0] == imu_by_trial          # winner's per-trial scores
+    assert mp_call[0] == mp_by_trial
+    assert imu_call[2] == 2.0
+    assert mp_call[2] == 20.0
+    assert os.path.isfile(os.path.join(str(tmp_path / "RMSE_Tracking"),
+                                       "imu_vs_mediapipe_rmse.png"))
+
+
+def test_make_figures_empty_intersection_renders_no_bars(tmp_path, monkeypatch):
+    # Guard for the empty-intersection case: an unavailable value must not
+    # be drawn as a 0-height bar (which reads as a perfect score).
+    monkeypatch.setattr(rpc, "RMSE_TRACKING_DIR", str(tmp_path / "RMSE_Tracking"))
+    monkeypatch.setattr(rpc, "BEST_CONFIG_JSON", str(tmp_path / "best.json"))
+    os.makedirs(str(tmp_path / "RMSE_Tracking"), exist_ok=True)
+
+    trials = [_trial("k0", "p0"), _trial("k1", "p1")]
+    imu_ranked = [{"candidate_key": '{"beta": 0.08}', "median_rmse": 3.0,
+                  "n_trials": 1, "n_participants": 1, "low_coverage": False}]
+    mp_ranked = [{"candidate_key": '{"model_variant": "full", "vis_thresh": 0.4}',
+                 "median_rmse": 6.0, "n_trials": 1, "n_participants": 1,
+                 "low_coverage": False}]
+
+    bar_calls = []
+    real_make_figures = rpc._make_figures
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.axes
+    real_bar = matplotlib.axes.Axes.bar
+
+    def spy_bar(self, *a, **k):
+        bar_calls.append((a, k))
+        return real_bar(self, *a, **k)
+    monkeypatch.setattr(matplotlib.axes.Axes, "bar", spy_bar)
+
+    # Disjoint cohorts -> empty intersection.
+    real_make_figures(imu_ranked, mp_ranked, trials, ["k0"], ["k1"],
+                      {"k0": 3.0}, {"k1": 6.0})
+
+    # Only the sweep_heatmap bar chart drew bars; the comparison figure
+    # drew none rather than two zeros.
+    assert len(bar_calls) == 1
+    assert os.path.isfile(os.path.join(str(tmp_path / "RMSE_Tracking"),
+                                       "imu_vs_mediapipe_rmse.png"))
+
+
 def test_make_figures_writes_three_png_files_without_stubbing(tmp_path, monkeypatch):
     # Task-11-review bug: _savefig_atomic passed a ".tmp"-suffixed path
     # straight to fig.savefig() with no format= kwarg, so matplotlib could
@@ -1048,7 +1186,8 @@ def test_make_figures_writes_three_png_files_without_stubbing(tmp_path, monkeypa
     mp_ranked = [{"candidate_key": '{"model_variant": "full", "vis_thresh": 0.4}',
                  "median_rmse": 6.0, "n_trials": 2, "n_participants": 2, "low_coverage": False}]
 
-    rpc._make_figures(imu_ranked, mp_ranked, trials, ["k0", "k1"], ["k0", "k1"])
+    rpc._make_figures(imu_ranked, mp_ranked, trials, ["k0", "k1"], ["k0", "k1"],
+                      {"k0": 2.5, "k1": 3.5}, {"k0": 5.5, "k1": 6.5})
 
     out_dir = str(tmp_path / "RMSE_Tracking")
     for name in ("rmse_trend.png", "sweep_heatmap.png", "imu_vs_mediapipe_rmse.png"):
