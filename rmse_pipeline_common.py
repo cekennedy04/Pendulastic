@@ -307,17 +307,27 @@ def sha256_file(path, stat_cache, force=False):
     return digest
 
 
-def compute_input_fingerprints(trial, methodology, stat_cache, force=False):
+def compute_input_fingerprints(trial, methodology, stat_cache, force=False, model_path=None):
     """Per design spec §7.1: every input file a candidate's score actually
     depends on, for the given methodology. optitrack is always included;
     imu's four split CSVs are included for methodology="imu", the video
-    for methodology="mediapipe"."""
+    *and the selected .task model file* for methodology="mediapipe".
+
+    model_path is required for methodology="mediapipe": §7.1 lists
+    `model_file` among the hashed inputs precisely because swapping the
+    .task weights changes every MediaPipe RMSE without touching a single
+    trial file. Omitting it is a programming error, not a defaultable
+    condition, so it raises rather than silently producing a fingerprint
+    that can't tell two model files apart."""
     fps = {"optitrack": sha256_file(trial["optitrack_path"], stat_cache, force=force)}
     if methodology == "imu":
         fps["imu"] = {name: sha256_file(p, stat_cache, force=force)
                       for name, p in trial["imu_component_paths"].items()}
     elif methodology == "mediapipe":
+        if not model_path:
+            raise ValueError("model_path is required for methodology='mediapipe'")
         fps["video"] = sha256_file(trial["video_path"], stat_cache, force=force)
+        fps["model_file"] = sha256_file(model_path, stat_cache, force=force)
     else:
         raise ValueError(f"unknown methodology: {methodology!r}")
     return fps
@@ -391,14 +401,40 @@ def extract_landmarks_cached(trial, model_variant, model_path):
     per-config RMSE cache (design spec §7.1, added in the second Codex
     review round) -- a per-(trial, full-config) RMSE cache alone would
     re-run MediaPipe inference every time vis_thresh changes even though
-    only the cheap re-thresholding step actually depends on it. Cache key:
-    (trial_key, model_variant, video content hash)."""
+    only the cheap re-thresholding step actually depends on it.
+
+    Cache key: all five components design spec §7.1 requires --
+    (trial_key, model_variant, video fingerprint, model-file fingerprint,
+    extraction-code fingerprint). The last two were missing originally,
+    which defeated the whole implementation-fingerprint design for the
+    expensive half of the pipeline: change sweep_mediapipe_config.
+    extract_raw_landmarks or swap the .task weights and the RMSE-level
+    cache correctly misses and re-scores, but this cache would hand the
+    re-score the OLD landmarks, so a "fresh" RMSE was silently computed
+    from superseded extraction code.
+
+    The extraction-code fingerprint used is the full
+    compute_implementation_fingerprint() -- broader than strictly
+    necessary (it also covers the IMU scoring path, which cannot affect
+    landmarks), but consistent with how the rest of this module treats
+    that fingerprint, and erring toward extra cache misses rather than
+    stale landmarks."""
     stat_cache = {}
     video_fp = sha256_file(trial["video_path"], stat_cache)
+    model_fp = sha256_file(model_path, stat_cache)
+    impl_fp = compute_implementation_fingerprint()
     cache_dir = _LANDMARK_CACHE_DIR()
     os.makedirs(cache_dir, exist_ok=True)
+    # The three digests are folded into one, not concatenated into the
+    # filename: trial_key + three raw 64-char hex digests would blow past
+    # NTFS's 255-character filename limit. trial_key and model_variant
+    # stay in the clear so the cache directory is still greppable by hand.
+    cache_id = hashlib.sha256(json.dumps({
+        "video": video_fp, "model_file": model_fp,
+        "implementation": impl_fp,
+    }, sort_keys=True).encode("utf-8")).hexdigest()
     cache_file = os.path.join(
-        cache_dir, f"{trial['trial_key']}_{model_variant}_{video_fp}.pkl")
+        cache_dir, f"{trial['trial_key']}_{model_variant}_{cache_id}.pkl")
     if os.path.isfile(cache_file):
         with open(cache_file, "rb") as f:
             return pickle.load(f)
@@ -608,7 +644,8 @@ def _score_grid(trials, has_flag, grid, score_fn, cache, methodology, model_path
         if not trial.get(has_flag):
             continue
         try:
-            input_fps = compute_input_fingerprints(trial, methodology, stat_cache)
+            input_fps = compute_input_fingerprints(trial, methodology, stat_cache,
+                                                   model_path=model_path)
         except Exception as e:
             print(f"[rmse_pipeline_common] fingerprint failure for {trial['trial_key']}: {e}")
             continue
