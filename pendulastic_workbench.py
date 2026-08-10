@@ -457,6 +457,20 @@ class WorkbenchView(tk.Frame):
         sb.pack(side="right", fill="y")
         return tree
 
+    def reset_for_new_trial(self) -> None:
+        """Clears per-trace release-mark state before a genuinely new trial
+        loads (design spec Section 3.6) -- must run before set_traces(),
+        whose own prev_lag-preservation would otherwise reuse the same
+        StringVar object (and its stale text) for a same-named label."""
+        self._release_marks = {}
+        self._lag_provenance = {}
+        for lag_var in self._lag_override_vars.values():
+            lag_var.set("")
+        for release_var in self._release_entry_vars.values():
+            release_var.set("")
+        self._armed_release_label = None
+        self._release_artists = {}
+
     def set_traces(self, traces: dict) -> None:
         """traces: {label: (t, angle)}. Rebuilds the plot and the visibility/
         lag-override widgets, but preserves each *already-present* label's
@@ -1317,6 +1331,7 @@ class App(tk.Tk):
 
         self._load_panel.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
+        self._workbench_view.reset_for_new_trial()
         self._workbench_view.set_traces(traces)
 
         if selection["video_path"]:

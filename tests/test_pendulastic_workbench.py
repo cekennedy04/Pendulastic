@@ -1254,3 +1254,55 @@ def test_reference_change_triggers_release_lag_recompute():
     r.update()
 
     assert wv._lag_override_vars["imu"].get() == "1.500"
+
+
+def test_reset_for_new_trial_clears_release_marks_and_lag_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+    wv._lag_provenance["imu"] = "manual"
+    wv._lag_override_vars["imu"].set("0.42")
+
+    wv.reset_for_new_trial()
+    r.update()
+
+    assert wv._release_marks == {}
+    assert wv._lag_provenance == {}
+    assert wv._lag_override_vars["imu"].get() == ""
+    assert wv._armed_release_label is None
+
+
+def test_reset_for_new_trial_then_set_traces_does_not_leak_old_lag_into_same_labels():
+    """Loading a genuinely new trial that happens to reuse the same trace
+    labels (imu, optitrack) must not silently carry over the previous
+    trial's release-derived lag value -- reset_for_new_trial() must run
+    before set_traces()'s own prev_lag-preservation reuses the same
+    StringVar object.
+
+    set_traces() legitimately auto-seeds fresh release marks for the new
+    trial (Task 8) and recomputes lag from them (Task 9) -- with this
+    helper's identical-shaped synthetic curves that fresh recompute lands
+    on a real "0.000", not a blank. That's new data, not a leak, so the
+    marks are cleared here (mirroring
+    test_recompute_release_lags_noop_when_neither_marked) to isolate the
+    actual invariant under test: the StringVar reused for "imu" across the
+    two set_traces() calls must not still be showing the old manual "7.0"."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._lag_override_vars["imu"].set("7.0")
+    wv._lag_provenance["imu"] = "manual"
+
+    wv.reset_for_new_trial()
+    wv.set_traces(_traces("imu", "optitrack"))  # "new trial", same labels
+    wv._release_marks.pop("imu", None)
+    wv._release_marks.pop("optitrack", None)
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
