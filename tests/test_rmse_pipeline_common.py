@@ -283,6 +283,57 @@ def test_discover_video_trials_uses_imu_discovery_roots_not_own(tmp_path, monkey
     assert result[0]["optitrack_path"] == str(opti_dir / "trial_3_optitrack.csv")
 
 
+def test_discover_video_trials_finds_video_under_non_mirrored_deeper_tree(tmp_path, monkeypatch):
+    # Real observed case (see batch_imu_vs_optitrack_rmse.find_optitrack_match's
+    # docstring): Participant_13_right_post's OptiTrack CSV sits one level
+    # higher than the fully-mirrored guess -- directly under .../Session_post/
+    # -- while the actual video (and IMU data) lives at the deeper
+    # .../Session_post/Position_1/Height_Joint-Level/. A single
+    # os.listdir(rec_dir) check never looks inside that subdirectory, so
+    # before the fix this trial's video was never found at all.
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    opti_dir = opti_root / "Participant_13_right_post" / "Session_post"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_4_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    video_dir = (rec_root / "Participant_13_right_post" / "Session_post" /
+                 "Position_1" / "Height_Joint-Level")
+    video_dir.mkdir(parents=True)
+    (video_dir / "Trial_4.avi").write_bytes(b"fake video")
+
+    _point_discovery_roots(monkeypatch, opti_root, rec_root)
+    result = rpc.discover_video_trials()
+    assert len(result) == 1
+    rec = result[0]
+    assert rec["video_path"] == str(video_dir / "Trial_4.avi")
+    # The fix's other half: fields must come from the video's own (deeper)
+    # path, not the shallower opti_path -- otherwise position/height would
+    # come back "none" here while the matching IMU trial (parsed from its
+    # own deep Recordings/ path) has real values, producing a different
+    # trial_key and permanently preventing the dual-modality merge in
+    # discover_scorable_trials().
+    assert rec["position"] == "1"
+    assert rec["height"] == "joint-level"
+
+
+def test_discover_video_trials_ambiguous_deep_match_skipped(tmp_path, monkeypatch, recwarn):
+    # If the depth mismatch could plausibly resolve to more than one
+    # sub-position, guessing which one is wrong is worse than skipping --
+    # mirrors find_optitrack_match's own position-collision guard.
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    opti_dir = opti_root / "Participant_13_right_post" / "Session_post"
+    opti_dir.mkdir(parents=True)
+    (opti_dir / "trial_4_optitrack.csv").write_text("t,angle\n", encoding="utf-8")
+    for pos in ("Position_1", "Position_2"):
+        video_dir = (rec_root / "Participant_13_right_post" / "Session_post" /
+                     pos / "Height_Joint-Level")
+        video_dir.mkdir(parents=True)
+        (video_dir / "Trial_4.avi").write_bytes(b"fake video")
+
+    _point_discovery_roots(monkeypatch, opti_root, rec_root)
+    assert rpc.discover_video_trials() == []
+    assert any("Ambiguous video match" in str(w.message) for w in recwarn.list)
 
 
 # ── discover_scorable_trials ─────────────────────────────────────────────
@@ -522,6 +573,49 @@ def test_compute_implementation_fingerprint_changes_with_grid(monkeypatch):
     fp1 = rpc.compute_implementation_fingerprint()
     import sweep_imu_config
     monkeypatch.setattr(sweep_imu_config, "WIDE_GRID", [{"beta": 0.99}])
+    fp2 = rpc.compute_implementation_fingerprint()
+    assert fp1 != fp2
+
+
+def test_compute_implementation_fingerprint_covers_analysis_pipeline_and_pt_score():
+    # Regression: workbench_engine.compare_pair calls into
+    # analysis_pipeline.synchronize_signals/compute_rmse and
+    # pendulastic_pt_score.load_optitrack, but neither module was listed
+    # in _FINGERPRINTED_MODULES -- a change to either (e.g. this branch's
+    # own bounded-lag-search fix in analysis_pipeline.synchronize_signals)
+    # left the fingerprint unchanged, so an existing sweep manifest would
+    # keep reusing RMSEs computed by the old scoring code instead of
+    # recomputing them.
+    assert "analysis_pipeline" in rpc._FINGERPRINTED_MODULES
+    assert "pendulastic_pt_score" in rpc._FINGERPRINTED_MODULES
+
+
+def test_compute_implementation_fingerprint_changes_with_analysis_pipeline_source(monkeypatch):
+    import analysis_pipeline
+    real_getsource = rpc.inspect.getsource
+
+    def fake_getsource(mod):
+        if mod is analysis_pipeline:
+            return real_getsource(mod) + "\n# perturbed"
+        return real_getsource(mod)
+
+    fp1 = rpc.compute_implementation_fingerprint()
+    monkeypatch.setattr(rpc.inspect, "getsource", fake_getsource)
+    fp2 = rpc.compute_implementation_fingerprint()
+    assert fp1 != fp2
+
+
+def test_compute_implementation_fingerprint_changes_with_pt_score_source(monkeypatch):
+    import pendulastic_pt_score
+    real_getsource = rpc.inspect.getsource
+
+    def fake_getsource(mod):
+        if mod is pendulastic_pt_score:
+            return real_getsource(mod) + "\n# perturbed"
+        return real_getsource(mod)
+
+    fp1 = rpc.compute_implementation_fingerprint()
+    monkeypatch.setattr(rpc.inspect, "getsource", fake_getsource)
     fp2 = rpc.compute_implementation_fingerprint()
     assert fp1 != fp2
 

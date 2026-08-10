@@ -29,6 +29,7 @@ import pt_report_common
 import re
 import scipy
 import sys
+import warnings
 from datetime import datetime, timezone
 
 import imu_calibration_tuner
@@ -185,6 +186,42 @@ def discover_imu_trials():
     return out
 
 
+def _find_video_under_tree(rec_dir, trial_n):
+    """Recursively search rec_dir's subtree for Trial_{trial_n}.{mp4,avi}.
+
+    Needed because OPTI_ROOT and REC_ROOT are not always mirrored at the
+    same depth -- confirmed on real data (see
+    batch_imu_vs_optitrack_rmse.find_optitrack_match's docstring):
+    Participant_13_right_post's OptiTrack CSVs can sit one directory level
+    higher than the fully-mirrored guess, directly under .../Session_post/
+    rather than .../Session_post/Position_1/Height_Joint-Level/. A single
+    os.listdir(rec_dir) check (this function's caller's first attempt)
+    never looks inside such a Position_*/Height_*/ subdirectory, so the
+    video silently never gets found -- not merged with its IMU counterpart,
+    not even kept as a video-only record.
+
+    Returns None (not a guess) if more than one matching video exists in
+    the subtree, mirroring find_optitrack_match's own position-collision
+    guard: a depth mismatch that could belong to more than one sub-position
+    is genuinely ambiguous, and a silent wrong pairing is worse than a
+    skipped trial."""
+    if not os.path.isdir(rec_dir):
+        return None
+    candidate_names = {f"trial_{trial_n}.mp4", f"trial_{trial_n}.avi"}
+    matches = []
+    for dirpath, _dirnames, filenames in os.walk(rec_dir):
+        for fn in filenames:
+            if fn.lower() in candidate_names:
+                matches.append(os.path.join(dirpath, fn))
+    if len(matches) > 1:
+        warnings.warn(
+            f"Ambiguous video match under {rec_dir!r} for trial {trial_n}: "
+            f"{matches} -- skipping rather than guessing which one belongs "
+            f"to this OptiTrack record.", stacklevel=2)
+        return None
+    return matches[0] if matches else None
+
+
 def discover_video_trials():
     """Every trial with an OptiTrack CSV and a matching video, walking
     imu_discovery.OPTI_ROOT the same way batch_mediapipe.discover_new_trials()
@@ -247,10 +284,27 @@ def discover_video_trials():
                         video_path = os.path.join(dirname, candidate_basename)
                         break
 
+        video_from_deep_search = False
+        if video_path is None:
+            video_path = _find_video_under_tree(rec_dir, trial_n)
+            video_from_deep_search = video_path is not None
+
         if video_path is None:
             continue
 
-        fields = parse_structural_fields(opti_path, opti_root)
+        # Prefer parsing structural fields from the video's own location
+        # when it was found via the recursive Recordings/ search: that
+        # path reflects the actual recording-tree depth (position/height),
+        # matching how discover_imu_trials() derives fields from the IMU
+        # trial's own path. Deriving from opti_path instead when OPTI_ROOT
+        # sits shallower than REC_ROOT for this trial would silently drop
+        # position/height, producing a different trial_key than the IMU
+        # side and preventing discover_scorable_trials() from merging the
+        # two into one dual-modality record.
+        if video_from_deep_search:
+            fields = parse_structural_fields(video_path, rec_root)
+        else:
+            fields = parse_structural_fields(opti_path, opti_root)
         if fields is None:
             continue
         out.append({
@@ -387,7 +441,8 @@ def compute_input_fingerprints(trial, methodology, stat_cache, force=False, mode
 
 _FINGERPRINTED_MODULES = ("rmse_pipeline_common", "workbench_engine",
                           "imu_calibration_tuner", "reconstruct_imu_raw_logs",
-                          "sweep_imu_config", "sweep_mediapipe_config", "batch_mediapipe")
+                          "sweep_imu_config", "sweep_mediapipe_config", "batch_mediapipe",
+                          "analysis_pipeline", "pendulastic_pt_score")
 
 
 def compute_implementation_fingerprint():
