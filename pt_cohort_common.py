@@ -344,19 +344,25 @@ def print_composition_banner(rows):
 
 
 def _collect_arm_data(pids):
-    """pids -> (summaries, raw_trials, contributing_pids). summaries /
-    raw_trials: {"left": [...], "right": [...]}. summaries holds one
-    aggregate_participant_summary() dict per participant that had at
+    """pids -> (summaries, raw_trials, contributing_pids, summaries_by_pid).
+    summaries / raw_trials: {"left": [...], "right": [...]}. summaries holds
+    one aggregate_participant_summary() dict per participant that had at
     least one scored trial for that leg (the statistical layer --
     compute_cohort_stats and the figure's box/whiskers read only from
     this). raw_trials holds every individual scored trial record (the
     figure's descriptive-layer background jitter only -- never used for
     a statistic). contributing_pids is the post-filter participant set,
     which can be smaller than `pids` itself (see aggregate_participant_
-    summary's None case, design spec §7.2 step 4)."""
+    summary's None case, design spec §7.2 step 4). summaries_by_pid is
+    {(pid, leg): summary|None} for every pid in `pids` -- needed by
+    leg_cohort_reference() to compute a leave-one-out median when the
+    report's own participant is a member of the arm being shown as their
+    reference; the plain list in `summaries` has no pid attached to each
+    entry, so it can't support excluding one participant."""
     summaries = {"left": [], "right": []}
     raw_trials = {"left": [], "right": []}
     contributing_pids = set()
+    summaries_by_pid = {}
     for pid in pids:
         by_leg_tp, _ = common.collect_participant(pid)
         for leg in _LEGS:
@@ -364,10 +370,11 @@ def _collect_arm_data(pids):
                      if leg_key == leg for r in recs]
             raw_trials[leg].extend(trials)
             summary = aggregate_participant_summary(trials)
+            summaries_by_pid[(pid, leg)] = summary
             if summary is not None:
                 summaries[leg].append(summary)
                 contributing_pids.add(pid)
-    return summaries, raw_trials, contributing_pids
+    return summaries, raw_trials, contributing_pids, summaries_by_pid
 
 
 def write_stats_csv(stats_rows, out_path):
@@ -393,35 +400,105 @@ def write_stats_csv(stats_rows, out_path):
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════
 
-def run_cohort_comparison():
-    """Called once, with no arguments, at the end of run_pt_analysis.py's
-    main() -- recomputes the full MS-vs-Control cohort comparison from
-    scratch every run (design spec §6.1, §7.2). Always writes
-    cohort_composition.csv, even when the comparison itself ends up
-    skipped for lacking one arm."""
+def build_cohort_snapshot():
+    """I/O-bearing snapshot builder (reads participant_groups.json/
+    metadata.json, calls discovery and collect_participant() -- writes
+    nothing). Not a pure function in the no-I/O sense, only in the
+    no-side-effects sense. Returns a single snapshot dict used by both
+    per-participant reports (pt_report_common.make_report_figure(), via
+    leg_cohort_reference()) and the end-of-run cohort artifacts
+    (write_cohort_artifacts()), so the two never rescan independently and
+    diverge within one run_pt_analysis.py invocation. Takes no arguments
+    -- always recomputes the full qualifying set (design spec §6.1)."""
     pids = current_qualifying_participants()
     rows = build_composition_rows(pids)
-    write_composition_csv(rows)
-    print_composition_banner(rows)
+    n_excluded_unclassified = sum(1 for r in rows if r["group"] in ("Excluded", "Unclassified"))
 
     ms_pids = [r["pid"] for r in rows if r["group"] == "MS"]
     control_pids = [r["pid"] for r in rows if r["group"] == "Control"]
+
     if not ms_pids or not control_pids:
-        print(f"Cohort comparison skipped: {len(ms_pids)} MS / {len(control_pids)} Control "
-             f"qualifying participants (need >=1 in each arm).")
+        return {
+            "composition_rows": rows, "ms_pids": ms_pids, "control_pids": control_pids,
+            "ms_summaries": None, "control_summaries": None,
+            "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
+            "ms_n_participants": None, "ms_n_trials": None,
+            "control_n_participants": None, "control_n_trials": None,
+            "stats_rows": None, "n_excluded_unclassified": n_excluded_unclassified,
+        }
+
+    ms_summaries, ms_raw, ms_contrib, ms_by_pid = _collect_arm_data(ms_pids)
+    control_summaries, control_raw, control_contrib, control_by_pid = _collect_arm_data(control_pids)
+    stats_rows = compute_cohort_stats(ms_summaries, control_summaries)
+
+    return {
+        "composition_rows": rows, "ms_pids": ms_pids, "control_pids": control_pids,
+        "ms_summaries": ms_summaries, "control_summaries": control_summaries,
+        "ms_raw": ms_raw, "control_raw": control_raw,
+        "summaries_by_pid": {**ms_by_pid, **control_by_pid},
+        "ms_n_participants": len(ms_contrib), "ms_n_trials": sum(len(v) for v in ms_raw.values()),
+        "control_n_participants": len(control_contrib),
+        "control_n_trials": sum(len(v) for v in control_raw.values()),
+        "stats_rows": stats_rows, "n_excluded_unclassified": n_excluded_unclassified,
+    }
+
+
+def write_cohort_artifacts(snapshot):
+    """Writes cohort_composition.csv (always), and ms_vs_control_stats.csv
+    / ms_vs_control_boxplots.png (only when both arms are non-empty) from
+    an already-built snapshot -- zero rediscovery, zero recollection.
+    Renamed from today's run_cohort_comparison(), which now only writes
+    artifacts from a snapshot instead of recomputing one."""
+    write_composition_csv(snapshot["composition_rows"])
+    print_composition_banner(snapshot["composition_rows"])
+
+    if not snapshot["ms_pids"] or not snapshot["control_pids"]:
+        print(f"Cohort comparison skipped: {len(snapshot['ms_pids'])} MS / "
+             f"{len(snapshot['control_pids'])} Control qualifying participants "
+             f"(need >=1 in each arm).")
         return
 
-    ms_summaries, ms_raw, ms_contrib = _collect_arm_data(ms_pids)
-    control_summaries, control_raw, control_contrib = _collect_arm_data(control_pids)
-
-    stats_rows = compute_cohort_stats(ms_summaries, control_summaries)
-    write_stats_csv(stats_rows, STATS_CSV)
-
-    n_excluded_unclassified = sum(1 for r in rows if r["group"] in ("Excluded", "Unclassified"))
+    write_stats_csv(snapshot["stats_rows"], STATS_CSV)
     make_cohort_comparison_figure(
-        ms_summaries, ms_raw, len(ms_contrib), sum(len(v) for v in ms_raw.values()),
-        control_summaries, control_raw, len(control_contrib), sum(len(v) for v in control_raw.values()),
-        n_excluded_unclassified, FIGURE_PNG, stats_rows)
+        snapshot["ms_summaries"], snapshot["ms_raw"],
+        snapshot["ms_n_participants"], snapshot["ms_n_trials"],
+        snapshot["control_summaries"], snapshot["control_raw"],
+        snapshot["control_n_participants"], snapshot["control_n_trials"],
+        snapshot["n_excluded_unclassified"], FIGURE_PNG, snapshot["stats_rows"])
+
+
+def run_cohort_comparison():
+    """Back-compat combinator: build_cohort_snapshot() + write_cohort_artifacts().
+    Kept so every existing caller/test that calls run_cohort_comparison()
+    directly keeps working unchanged. run_pt_analysis.py's main() (Task 13
+    of the implementation plan) calls the two halves directly instead, so
+    it can also pass the snapshot into per-participant reports before the
+    artifacts are written."""
+    write_cohort_artifacts(build_cohort_snapshot())
+
+
+def leg_cohort_reference(snapshot, participant_id, leg):
+    """{"ms_median", "ms_n", "control_median", "control_n",
+    "leave_one_out_arm"} for one leg, using leave-one-out on whichever arm
+    `participant_id` itself belongs to (small cohorts make an inclusive
+    median partially self-referential -- design spec §5.6). Returns None
+    when the snapshot has no comparison at all (either arm empty)."""
+    if not snapshot["ms_pids"] or not snapshot["control_pids"]:
+        return None
+
+    def _median_excluding(arm_pids, exclude_pid):
+        vals = [snapshot["summaries_by_pid"][(pid, leg)]["pt7"]
+                for pid in arm_pids
+                if pid != exclude_pid and snapshot["summaries_by_pid"].get((pid, leg)) is not None]
+        return (float(np.median(vals)) if vals else None), len(vals)
+
+    is_ms = participant_id in snapshot["ms_pids"]
+    is_control = participant_id in snapshot["control_pids"]
+    ms_median, ms_n = _median_excluding(snapshot["ms_pids"], participant_id if is_ms else None)
+    control_median, control_n = _median_excluding(snapshot["control_pids"], participant_id if is_control else None)
+    return {"ms_median": ms_median, "ms_n": ms_n,
+           "control_median": control_median, "control_n": control_n,
+           "leave_one_out_arm": "MS" if is_ms else ("Control" if is_control else None)}
 
 
 # ══════════════════════════════════════════════════════════════════════════
