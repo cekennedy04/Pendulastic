@@ -518,12 +518,18 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
             clin_txt or "—",
         ])
 
-    tbl = ax.table(cellText=table_rows,
-                   colLabels=["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
-                             "Δ", "Accounting", "Clinician MAS"],
-                   loc="center", cellLoc="center")
+    col_labels = ["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
+                 "Δ", "Accounting", "Clinician MAS"]
+    tbl = ax.table(cellText=table_rows, colLabels=col_labels, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(6.5)
+    # Equal-width columns (ax.table()'s default) overlap: "Accounting"'s long
+    # status strings bleed into "Clinician MAS", and the numeric "Δ" values
+    # (e.g. "+0.747") bleed into "Accounting" -- confirmed against real
+    # participant data (2026-08-10 full-report-hpe-accuracy plan, Task 14
+    # manual verification). auto_set_column_width sizes each column to its
+    # own widest cell (including header) instead.
+    tbl.auto_set_column_width(col=list(range(len(col_labels))))
     tbl.scale(1, 1.4)
     return matches_by_leg_condition
 

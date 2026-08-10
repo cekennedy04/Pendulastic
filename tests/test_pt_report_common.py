@@ -436,6 +436,48 @@ def test_draw_row5_table_empty_timepoints_does_not_raise():
     plt.close(fig)
 
 
+def test_draw_row5_table_columns_sized_to_content(monkeypatch):
+    """Regression: found via Task 14 manual verification against real
+    participant 14 data -- ax.table() defaults every column to equal
+    width regardless of content length, so the narrow "delta" column's
+    wide numeric text (e.g. "+0.747") visually overlapped the neighboring
+    "Accounting" column's long text, and long headers overlapped their
+    neighbors too. auto_set_column_width() must be called so a column
+    with long content (Accounting) ends up wider than one with short
+    content (the bare "delta" symbol column)."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+
+    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, a_: {"fake": True})
+    monkeypatch.setattr(common.pt, "compute_pt_score", lambda params: 0.25)
+    monkeypatch.setattr(common.pt, "pt_to_mas", lambda score: "1")
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves",
+                        lambda *a, **k: ([{"name": "mediapipe", "t": t, "ang": ang, "rmse": 2.0}], []))
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: [])
+
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+          "neutral_deg_raw": 180.0, "mediapipe_curve": {"t": t, "ang": ang}, "imu_curve": None}
+    by_leg_tp = {("left", "pre"): [rec]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    fig, ax = plt.subplots()
+    common._draw_row5_table(ax, "left", by_leg_tp, timepoints, "13")
+    fig.canvas.draw()   # auto_set_column_width needs a renderer to measure cell text
+
+    tbl = ax.tables[0]
+    col_widths = {}
+    for (row, col), cell in tbl.get_celld().items():
+        if row == 0:   # header row
+            col_widths[col] = cell.get_width()
+    accounting_col = 5   # "Accounting" -- long text
+    delta_col = 4         # "Δ" -- short text
+    assert col_widths[accounting_col] > col_widths[delta_col]
+    plt.close(fig)
+
+
 def test_build_caption_text_includes_cohort_reference_when_snapshot_present(monkeypatch):
     import pt_cohort_common as pcc
     fake_ref = {"ms_median": 0.41, "ms_n": 2, "control_median": 0.15, "control_n": 3,
