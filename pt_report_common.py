@@ -696,11 +696,14 @@ def collect_participant(participant_id, include_archive=True):
 
 
 def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, caveat_text,
-                       save=True, return_fig=False):
-    """3x2 grid: rows = Waveforms / 7-param bars / PT-score trend,
+                       cohort_snapshot=None, save=True, return_fig=False):
+    """5x2 grid: rows = Waveforms (+ HPE/IMU overlay) / 7-param bars /
+    PT-score trend / RMSE agreement / PT7-MAS source-agreement table,
     columns = Left leg / Right leg. `by_leg_tp` keys are (leg, tp_key) with
-    leg in ("left","right") and tp_key matching timepoints' first element."""
-    fig, axes = plt.subplots(3, 2, figsize=(15, 13), facecolor='white')
+    leg in ("left","right") and tp_key matching timepoints' first element.
+    cohort_snapshot (pt_cohort_common.build_cohort_snapshot() output) is
+    optional -- None simply omits the caption's cohort-reference lines."""
+    fig, axes = plt.subplots(5, 2, figsize=(15, 21), facecolor='white')
 
     waveforms = {}
     t_lo, t_hi = 0.0, 0.0
@@ -729,6 +732,9 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
             t_plot, a_plot, rep = entry
             ax.plot(t_plot, a_plot, color=color, linewidth=1.5,
                    label=f'{tp_label} (PT={rep["pt7"]:.2f}, T{rep["trial"]})')
+            for source_label, linestyle, hpe_t, hpe_a in _hpe_overlay_series(rep):
+                ax.plot(hpe_t, hpe_a, color=color, linewidth=1.1, linestyle=linestyle,
+                       alpha=0.85, label=f'{tp_label} {source_label}')
         ax.axvline(0, color='gray', linestyle='--', linewidth=0.8)
         ax.set_xlim(shared_xlim)
         ax.set_title(f'{participant_label} {leg_label} – Waveforms', fontsize=10, fontweight='bold', pad=10)
@@ -804,9 +810,27 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
         ax.set_xlim(-0.5, len(timepoints) - 0.4)
         ax.set_ylim(0, y_max)
 
+    # participant_label always has the "P{pid}" shape every existing call
+    # site (run_pt_analysis.py, p13_full_report.py, p5_full_report.py) uses,
+    # so lstrip("P") recovers the raw participant id clinician_mas_matches/
+    # write_clinician_mas_sidecar/trial_candidates expect.
+    for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
+        ax4 = axes[3, col_idx]
+        _draw_rmse_axes(ax4, leg, by_leg_tp, timepoints)
+        ax4.set_title(f'{participant_label} {leg_label} – RMSE vs OptiTrack', fontsize=10, fontweight='bold', pad=10)
+
+        ax5 = axes[4, col_idx]
+        matches_used = _draw_row5_table(ax5, leg, by_leg_tp, timepoints, participant_label.lstrip("P"))
+        if matches_used:
+            write_clinician_mas_sidecar(participant_label.lstrip("P"), matches_used)
+        ax5.set_title(f'{participant_label} {leg_label} – PT7/MAS Source Agreement', fontsize=10, fontweight='bold', pad=10)
+
     fig.suptitle(f"{participant_label} — Full Report (7-parameter Popovic PT score)\n{caveat_text}",
                 fontsize=10, y=0.998, color='#333333')
-    plt.tight_layout(rect=[0, 0, 1, 0.965])
+    caption = _build_caption_text(participant_label, participant_label.lstrip("P"), by_leg_tp, timepoints, cohort_snapshot)
+    if caption:
+        fig.text(0.02, 0.005, caption, fontsize=6.5, color="#444444", va="bottom", ha="left")
+    plt.tight_layout(rect=[0, 0.04, 1, 0.975])
     out_path = None
     if save:
         out_path = os.path.join(OUT_DIR, out_filename)
