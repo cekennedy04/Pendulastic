@@ -42,6 +42,64 @@ def test_detrend_true_removes_drift_without_destroying_A0():
         f"A0 mismatch after detrend: drift={p_drift['A0_deg']:.1f} clean={p_clean['A0_deg']:.1f}"
 
 
+def _long_hold_signal(n=400, fps=30.0, hold_frac=0.25, total_drop=55.0, freq=0.7, decay=0.3):
+    """A pre-release hold long/large enough relative to the recording to
+    reproduce the real-world failure mode: 1/4 of the recording flat at
+    180deg, then a real swing large enough to net a big settle-point drop
+    (mirrors an actual OptiTrack trial's ~3s hold / ~13s total, ~55deg drop
+    from 180 to its settled resting angle)."""
+    t = np.arange(n) / fps
+    hold = int(hold_frac * n)
+    ang = np.empty(n)
+    ang[:hold] = 180.0
+    settle = 180.0 - total_drop
+    amp0 = total_drop
+    for i in range(hold, n):
+        ti = (i - hold) / fps
+        ang[i] = settle + amp0 * math.exp(-decay * ti) * math.cos(2 * math.pi * freq * ti)
+    return t, ang, hold
+
+
+def test_release_detected_at_true_hold_boundary_not_detrend_artifact():
+    """Detrending the WHOLE trial (long flat hold + real swing together)
+    injects a spurious slope into the flat hold region; if release
+    detection runs on that detrended signal it can fire seconds before the
+    leg actually moves, discarding the trial (A0 < 3deg floor) or scoring a
+    swing that never happened. Release must be detected on the raw/smoothed
+    (non-detrended) signal instead -- same fix already applied in
+    pt_report_common.release_aligned_waveform for plotting, here required of
+    compute_pt_params itself since that's what actually computes the score."""
+    t, ang, hold = _long_hold_signal()
+    expected_t = t[hold]
+
+    p = compute_pt_params(t, ang)
+
+    assert p is not None, (
+        "A real, large swing must not be discarded as sub-3deg just because "
+        "detrend-induced drift during a long hold fooled release detection")
+    assert abs(p["t_r"][0] - expected_t) < 0.2, (
+        f"Release detected at t={p['t_r'][0]:.3f}, expected ~{expected_t:.3f} "
+        "(the actual hold-to-swing boundary)")
+
+
+def test_long_hold_before_large_swing_keeps_true_release_amplitude():
+    """A whole-trial least-squares detrend (hold + swing together) lets a
+    big real swing pull the fitted line, shrinking the apparent amplitude
+    right at the (correctly-detected) release point -- confirmed against a
+    real trial where a genuine ~49deg release-point swing read as ~2.65deg
+    after whole-trial detrending, discarding it under the sub-3deg sanity
+    floor. The drift correction must be fit from the pre-release baseline
+    only, so a long hold before a large swing doesn't warp the swing it's
+    supposed to leave alone."""
+    t, ang, hold = _long_hold_signal(n=1600, fps=120.0, hold_frac=0.23,
+                                     total_drop=55.0, freq=0.6, decay=0.35)
+    p = compute_pt_params(t, ang)
+    assert p is not None, "A large real swing after a long hold must not be discarded"
+    # A0 should reflect the real ~55deg swing, not be shrunk by a whole-
+    # trial detrend fit to a couple of degrees.
+    assert p["A0_deg"] > 30.0, f"A0 too small ({p['A0_deg']:.2f}) -- swing amplitude was distorted"
+
+
 def test_detrend_false_accepts_param_without_crash():
     t, ang = _damped_sinusoid()
     p = compute_pt_params(t, ang, detrend=False)
