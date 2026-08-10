@@ -5,71 +5,37 @@ Participant 5: full clinical-report-style figure, same structure/methodology
 as p13_full_report.py (see pt_report_common.py). Uses the full 7-parameter
 Popovic PT score.
 
-P5's raw OptiTrack data is NOT in the live OptiTrack_Recordings/ (which
-currently only holds Participant_13) -- it was found intact in the archive:
-  OneDrive/Desktop/Shirley Ryan/Pendulastic_7_28_Archive/Optitrack recordings/
-    Participant_5_{left,right}_{side,post,post_again}/
-      Position_1/Height_Joint-Level/trial_N_optitrack.csv
+P5's OptiTrack data now lives in the live tree --
+OptiTrack_Recordings/Participant_5/{Left,Right}/{pre,post,week_1_post}/
+trial_N_optitrack.csv -- discovered the same generic way run_pt_analysis.py
+discovers every other participant, via pt_report_common.collect_participant().
 
-Three timepoints per leg: side (initial/pre), post (post-training),
-post_again (+1 week later) -- verified genuinely distinct via checksum, not
-a duplicate-export bug like P13's right_post originally was. Read directly
-from the archive path (read-only); nothing is copied into the repo.
-
-Note: Participant_5_right_side/ has a stray nested Participant_0_control/
-subfolder (looks like a misplaced archival artifact, not P5 data) -- the
-glob below is non-recursive so it's excluded automatically.
+This used to read directly from an OneDrive archive (Pendulastic_7_28_Archive/
+Optitrack recordings/Participant_5_{leg}_{side,post,post_again}/...) because
+P5's data hadn't been migrated into the live tree yet. It since has been, and
+that archive path no longer contains any Participant_5_* folders on this
+machine (confirmed 2026-08-10) -- glob.glob() against a since-removed archive
+directory returns no matches rather than raising, so this script kept
+running and silently wrote out an all-empty report (every leg/timepoint
+showing "0 valid trial(s)") instead of failing loudly. Delegating to
+collect_participant() instead of maintaining a second, now-stale discovery
+path means this can't silently drift out of sync with where the data
+actually lives again.
 
 Run:
     .venv\\Scripts\\python.exe p5_full_report.py
 """
 from __future__ import annotations
 
-import glob
-import os
-
-import pendulastic_pt_score as pt
 import pt_report_common as common
 
-ARCHIVE_ROOT = (r"C:\Users\cladi\OneDrive\Desktop\Shirley Ryan\Pendulastic_7_28_Archive"
-                r"\Optitrack recordings")
-
-TIMEPOINTS = [("side", "Initial", common.COLORS['red']),
-              ("post", "Post", common.COLORS['green']),
-              ("post_again", "+1wk Post", common.COLORS['purple'])]
-
-CAVEAT = ("Source: archived OptiTrack export (Pendulastic_7_28_Archive), read-only. "
+CAVEAT = ("Source: live OptiTrack_Recordings/Participant_5/ tree. "
          "Same 7-parameter Popovic scoring as the P13 report for direct comparability.")
 
 
-def collect_all():
-    records = []
-    for leg in ("left", "right"):
-        for tp_key, _, _ in TIMEPOINTS:
-            folder = os.path.join(ARCHIVE_ROOT, f"Participant_5_{leg}_{tp_key}",
-                                  "Position_1", "Height_Joint-Level")
-            pid = f"5_{leg}_{tp_key}"
-            for csv_path in sorted(glob.glob(os.path.join(folder, "trial_*_optitrack.csv"))):
-                trial = os.path.basename(csv_path).split("_")[1]
-                try:
-                    t, angle = pt.load_optitrack(csv_path)
-                except Exception:
-                    continue
-                rec = common.score_trial(pid, trial, t, angle)
-                if rec is not None:
-                    records.append(rec)
-
-    by_leg_tp = {}
-    for leg in ("left", "right"):
-        for tp_key, _, _ in TIMEPOINTS:
-            pid = f"5_{leg}_{tp_key}"
-            by_leg_tp[(leg, tp_key)] = [r for r in records if r["pid"] == pid]
-    return by_leg_tp
-
-
 if __name__ == "__main__":
-    by_leg_tp = collect_all()
+    by_leg_tp, timepoints = common.collect_participant("5")
     for (leg, tp), trials in by_leg_tp.items():
         print(f"{leg}/{tp}: {len(trials)} valid trial(s)")
-    common.make_report_figure("Participant 5", by_leg_tp, TIMEPOINTS,
+    common.make_report_figure("Participant 5", by_leg_tp, timepoints,
                               "P5_full_report.png", CAVEAT)
