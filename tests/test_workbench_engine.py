@@ -3,6 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
 import pytest
+import analysis_pipeline
 import workbench_engine as engine
 
 _IMU_REFERENCE_HEADER = ("t_epoch,t_rel,phone_ts_ms,t_phone_aligned,"
@@ -376,7 +377,13 @@ def test_bind_split_csv_components_raises_when_one_kind_not_ok(tmp_path):
 
 
 def test_load_imu_trial_from_components_produces_finite_angle_series(tmp_path):
-    validations = _write_full_component_set(tmp_path)
+    # n=350 (not the fixture's default 150): the AHRS replay's zero-capture
+    # guard (2026-08-07 fix, imu_calibration_tuner._recently_calm) requires
+    # a full ~1s trailing window of low-magnitude gyro before it will trust
+    # a motion burst as the true release -- the default fixture's 0.5s
+    # pre-burst hold doesn't leave enough margin for that on top of the
+    # window itself, so the trial would never zero.
+    validations = _write_full_component_set(tmp_path, n=350)
     config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
              "gravity_seed": True, "method": "relative"}
     t, angle, imu_reference = engine.load_imu_trial_from_components(validations, config=config)
@@ -384,7 +391,7 @@ def test_load_imu_trial_from_components_produces_finite_angle_series(tmp_path):
     assert len(angle) > 0
     assert np.isfinite(t).all()
     assert np.isfinite(angle).all()
-    assert len(imu_reference) == 150
+    assert len(imu_reference) == 350
 
 
 def _decaying_oscillation_with_tail(n_osc_cycles=4, tail_s=10.0, fs=100.0):
@@ -456,6 +463,40 @@ def test_compare_pair_lag_override_shifts_test_signal():
     assert result_manual["status"] == "ok"
     assert abs(result_manual["lag_sec"] - (-0.2)) < 1e-9
     assert result_manual["rmse_deg"] < 1.0
+
+
+def test_synchronize_signals_lag_search_is_bounded():
+    """Root-cause regression test for the 2026-08-08 fix: a real trial
+    (Participant_14/Right/pre/Trial_4, raw signals ~30-48s long) had an
+    unbounded cross-correlation search pick a lag of -18 to -21s over the
+    true near-zero alignment, because a long, periodic signal can have a
+    numerically higher-correlation match at a huge, physically implausible
+    lag. Reproduced deterministically: a pure sinusoid repeated over many
+    periods has EQUAL correlation at every period-multiple lag, so an
+    unbounded search can land arbitrarily far from the true small lag
+    (numpy's argmax picks the first/most-negative tie). The bounded search
+    must find the true lag within analysis_pipeline.MAX_LAG_SEC instead."""
+    period = 2.0
+    true_lag = 0.15
+    t = np.arange(0, 40, 1 / 60)   # 20 periods -- long enough for the
+                                    # unbounded global argmax to land tens
+                                    # of seconds from the true lag
+    ref_y = np.sin(2 * np.pi * t / period)
+    test_y = np.sin(2 * np.pi * (t - true_lag) / period)
+
+    result = engine.compare_pair(t, ref_y, t, test_y)
+    assert result["status"] == "ok"
+    assert abs(result["lag_sec"]) <= analysis_pipeline.MAX_LAG_SEC
+    # A pure periodic sinusoid ties the correlation at every period-multiple
+    # lag (both +true_lag and -true_lag + k*period score identically), so
+    # this doesn't assert an exact signed match -- it asserts the bounded
+    # search picked one of the NEAR ties (within half a period of zero),
+    # not one of the many equally-valid far ties an unbounded search could
+    # have landed on arbitrarily.
+    assert abs(result["lag_sec"]) < period / 2, (
+        f"expected a lag near zero (within half a period), got "
+        f"{result['lag_sec']}s -- the bounded search should never return "
+        f"a far tied peak just because argmax happened to find it first")
 
 
 def test_compare_pair_ignores_divergent_resting_tail():
