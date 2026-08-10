@@ -162,7 +162,11 @@ def test_get_metrics_snapshot_pt_score_is_healthy_for_clean_damped_signal():
     wv = WorkbenchView(r, _Ctrl())
     fs = 100.0
     hold_s = 0.6
-    total_s = 6.0
+    # decay=0.3/s needs ~12.3s post-release to actually settle under 1deg
+    # from a 40deg start (exp(-0.3*12.3)=0.025) -- 6.0s left ~8deg of
+    # residual oscillation at the recording's end, which is not "settled",
+    # contradicting this test's own docstring/intent.
+    total_s = 14.0
     t = np.arange(0, total_s, 1.0 / fs)
     hold_n = int(hold_s * fs)
     angle = np.empty_like(t)
