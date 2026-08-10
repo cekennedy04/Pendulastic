@@ -758,10 +758,10 @@ class AcquisitionPanel(tk.Frame):
         else:
             self.canvas_tele.grid_remove()
 
-    def enter_processing(self) -> None:
+    def enter_processing(self, message: str = "Running MediaPipe tracking…") -> None:
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="disabled")
-        self.status_var.set("Running MediaPipe tracking…")
+        self.status_var.set(message)
 
     def update_preview(self, frame_bgr) -> None:
         """Forward a live BGR frame to the separate webcam viewer window,
@@ -2597,7 +2597,11 @@ class App(tk.Tk):
             ).start()
         elif pending_imu_tune:
             self._state = "processing"
-            self._acq.enter_processing()
+            # No MediaPipe involved here -- this is the IMU-only auto-tuning
+            # grid search (imu_calibration_tuner), not RGB/video HPE. The
+            # default message misleadingly claimed MediaPipe was running for
+            # a pure-IMU trial.
+            self._acq.enter_processing("Tuning IMU calibration…")
             self._pending_review = source_angles
             threading.Thread(
                 target=self._run_imu_tuning,

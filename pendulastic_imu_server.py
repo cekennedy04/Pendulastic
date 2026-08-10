@@ -435,14 +435,44 @@ class _IMUDevice:
     def calibrate_accel_bias(self, accel_hold_buf: list[tuple[float, np.ndarray]]) -> None:
         """Estimate this device's accelerometer static bias from a
         verified-stillness window. During true stillness, raw accel should
-        equal [0, 0, 9.81] (gravity only); any deviation is bias. Store the
+        equal [0, 0, ±g] (gravity only); any deviation is bias. Store the
         estimate for continuous subtraction in on_accel(). Same pattern as
-        calibrate_gyro_bias()."""
+        calibrate_gyro_bias().
+
+        g's magnitude is picked from the measured data's own scale rather
+        than hardcoded, because Sensor Stream's iOS build reports
+        accelerometer data in g's (magnitude ~1 -- Apple's CoreMotion
+        convention) while its Android build reports m/s² (magnitude ~9.81
+        -- the Android SensorManager convention); this file already
+        tolerates iOS/Android schema differences (see _parse_xyz) but
+        previously assumed the Android unit unconditionally. Using the
+        wrong constant corrupts the bias into a near-fixed ~9.81-per-axis
+        offset that dwarfs the true stillness signal, which silently
+        disables both this bias correction and the AHRS's accelerometer
+        correction step (its gate compares against this same offset scale)
+        for the rest of the session -- the orientation then free-integrates
+        gyro data with no drift anchor, even while the phone is held still.
+
+        Its sign is likewise picked from the data rather than assumed
+        positive: this Z-axis assumption only holds for a mounting whose
+        rest pose reads +g on Z, but a phone strapped the other way up
+        reads -g at rest (confirmed from real recordings, both trials).
+        Assuming +g there still passes the AHRS's correction gate (the
+        resulting bias-corrected vector has the right magnitude) but points
+        180° off in Z -- the filter then actively, continuously steers the
+        orientation toward that wrong reference instead of doing nothing,
+        producing a bounded-but-wrong drift even while genuinely still."""
         if not accel_hold_buf or len(accel_hold_buf) < 2:
             return
         vals = np.array([v for _, v in accel_hold_buf])
         mean_accel = vals.mean(axis=0)
-        gravity = np.array([0.0, 0.0, 9.81])
+        mag = float(np.linalg.norm(mean_accel))
+        # ~9.81 (m/s²) vs ~1 (g) builds are separated by nearly an order of
+        # magnitude; 3.0 sits comfortably in the gap clear of realistic
+        # bias/noise on either side.
+        g = 9.81 if mag > 3.0 else 1.0
+        sign = 1.0 if mean_accel[2] >= 0.0 else -1.0
+        gravity = np.array([0.0, 0.0, sign * g])
         self.accel_bias = mean_accel - gravity
 
     def is_stationary(self) -> bool:
@@ -479,7 +509,16 @@ class _IMUDevice:
             dt = 0.01
         self.last_gyro_t = ts
         if self.accel is not None:
-            self.ahrs.update(v_corr, self.accel, self.mag, dt)
+            # Magnetometer correction deliberately not used: indoor magnetic
+            # fields are commonly disturbed (confirmed on a real trial --
+            # the raw log's magnetometer stream froze mid-recording), and a
+            # disturbed reading actively steers the AHRS toward a wrong
+            # heading rather than doing nothing. Yaw isn't clinically
+            # relevant to knee flexion anyway -- swing_angle_deg() already
+            # isolates the sagittal flexion axis once captured, and the
+            # AHRS's gravity-only correction is exactly the "IMU-only
+            # fallback" path its own update() already supports (mag=None).
+            self.ahrs.update(v_corr, self.accel, None, dt)
             # Only overwrite the display Euler angles from AHRS when we are not
             # receiving an orientation stream; the orientation stream sets them
             # directly via on_orientation() and may be higher quality.
