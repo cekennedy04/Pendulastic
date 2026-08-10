@@ -30,6 +30,44 @@ from imu_calibration_config import load_config, save_config
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
 
+# Zero-orientation capture guard (2026-08-07 fix): the raw gyro magnitude for
+# the qualifying role must have stayed below this bound for a full trailing
+# GYRO_BIAS_WINDOW_S before a _FLEX_CAPTURE_THRESHOLD crossing is trusted as
+# the true release, not contamination (examiner still positioning/releasing
+# the sensor as the log starts). Deliberately gyro-magnitude-only, not
+# _is_stationary_window's stricter per-axis gyro+accel peak-to-peak check --
+# that check is tuned for bias-grade stillness and, verified empirically
+# across the full real trial corpus, never fires at all for a meaningful
+# fraction of genuinely fine trials (real accel noise from a handheld/
+# strapped sensor commonly exceeds its 0.18 m/s^2 bound even at rest), so
+# using it as a hard precondition here silently drops good trials.
+# GUARD_RAD_S=0.3 (30% of _FLEX_CAPTURE_THRESHOLD) is empirically derived,
+# not guessed: across every real trial with a matching OptiTrack pair, the
+# longest contiguous below-0.3-rad/s run before the original (unfixed)
+# crossing was >=1.2s for all 32 trials with a genuine pre-release hold, and
+# <=0.14s for the 2 contaminated trials that motivated this fix
+# (Participant_15/Left/pre/Trial_4: 0.00s; Participant_13_left_post/
+# Session_post/Position_1/Height_Joint-Level/Trial_4: 0.14s) -- a clean,
+# wide margin at any guard between roughly 0.15 and 0.5 rad/s.
+_ZERO_CAPTURE_GUARD_RAD_S = 0.3
+
+
+def _recently_calm(gyro_hold_buf: list, now: float) -> bool:
+    """True if gyro_hold_buf (a role's trailing raw-gyro buffer, already
+    pruned to GYRO_BIAS_WINDOW_S by the caller) spans a full window and
+    every sample in it is below _ZERO_CAPTURE_GUARD_RAD_S. Mirrors
+    _is_stationary_window's "0.95 * window" full-span requirement (not
+    just "has enough entries") but checks only raw gyro magnitude, not
+    accel -- see _ZERO_CAPTURE_GUARD_RAD_S's derivation for why."""
+    if not gyro_hold_buf:
+        return False
+    oldest_t = gyro_hold_buf[0][0]
+    if now - oldest_t < 0.95 * GYRO_BIAS_WINDOW_S:
+        return False
+    return all(np.linalg.norm(v) < _ZERO_CAPTURE_GUARD_RAD_S
+              for _, v in gyro_hold_buf)
+
+
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
      "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
@@ -78,6 +116,23 @@ class _RoleState:
         # -magnitude check. Mirrors gyro_hold_buf.
         self.accel_hold_buf: list = []   # [(t, raw_v), ...]
         self.calib_was_stable = False
+        # Two-state zero-capture eligibility machine (see replay_trial's
+        # gyro branch for the transitions; 2026-08-07 fix, hardened after
+        # adversarial review surfaced a gap in an earlier single-flag
+        # design). calm_qualified: a genuine trailing-window calm period
+        # has been confirmed and not yet spent. pending_departure: an
+        # above-guard excursion is currently in progress following a
+        # qualified calm period -- only while this is True is a
+        # _FLEX_CAPTURE_THRESHOLD crossing trusted as the true release.
+        # If that excursion settles back below guard before ever reaching
+        # the capture threshold, it's treated as handling, not a release:
+        # both flags reset and a fresh full calm window is required
+        # before the next excursion can be trusted. This deliberately
+        # replaces a single permanent "ever calm" latch, which a calm
+        # hold followed by an unrelated later handling burst could fool
+        # into zeroing on that burst instead of the true release.
+        self.calm_qualified = False
+        self.pending_departure = False
 
     def calibrate_accel_bias(self) -> None:
         """Estimate accel bias from the current accel_hold_buf during a
@@ -198,22 +253,60 @@ def replay_trial(raw_samples: list, params: dict):
             # timing marker for where "zero" is measured; flex_axis_capture
             # separately controls whether the resulting delta is
             # axis-projected further down.
-            if flex_axis_armed:
-                omega_mag = float(np.linalg.norm(v))
+            #
+            # Two-state calm/departure machine (see st.calm_qualified's
+            # docstring): without this, a raw log that starts already in
+            # motion -- or one that goes calm, then gets handled again,
+            # then finally released -- can have its zero captured from
+            # that contamination instead of the true pre-release pose,
+            # offsetting every downstream angle by a large, roughly-
+            # constant bias. See _ZERO_CAPTURE_GUARD_RAD_S's derivation
+            # for the empirical evidence and why this checks raw gyro
+            # magnitude over a trailing window rather than reusing
+            # _is_stationary_window (too strict against real accel noise
+            # -- verified empirically to never fire at all for a
+            # meaningful fraction of genuinely fine real trials).
+            omega_mag = float(np.linalg.norm(v))
+            is_calm_sample = omega_mag < _ZERO_CAPTURE_GUARD_RAD_S
+
+            # Earn eligibility only while not already mid-departure: read
+            # from gyro_hold_buf before this sample is appended to it
+            # further below, so it reflects the window as of just before
+            # now (avoids the chicken-and-egg where a real release's own
+            # ramp-up would poison the very check gating it).
+            if not st.pending_departure and _recently_calm(st.gyro_hold_buf, samp["t"]):
+                st.calm_qualified = True
+
+            if st.calm_qualified and not st.pending_departure and not is_calm_sample:
+                # First above-guard sample after a qualified calm period:
+                # a candidate release ramp begins. Eligibility is not
+                # revoked yet -- a genuine gradual release must be
+                # allowed to keep climbing from here to the capture
+                # threshold.
+                st.pending_departure = True
+
+            if st.pending_departure and is_calm_sample:
+                # The above-guard episode settled back down without ever
+                # reaching the capture threshold: handling, not a
+                # release. Revoke eligibility -- a fresh full calm window
+                # is required before the next excursion can be trusted.
+                st.pending_departure = False
+                st.calm_qualified = False
+
+            # Only a qualifying role's burst may arm/capture — a
+            # non-qualifying role's motion is ignored entirely
+            # (flex_axis_armed stays True), exactly matching
+            # on_gyro()'s is_distal/is_solo gate.
+            is_distal = (role == ROLE_DISTAL)
+            is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
+            if flex_axis_armed and st.pending_departure and (is_distal or is_solo):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
-                    # Only a qualifying role's burst may arm/capture — a
-                    # non-qualifying role's motion is ignored entirely
-                    # (flex_axis_armed stays True), exactly matching
-                    # on_gyro()'s is_distal/is_solo gate.
-                    is_distal = (role == ROLE_DISTAL)
-                    is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
-                    if is_distal or is_solo:
-                        if not zero_captured:
-                            q_zero = _snapshot()
-                            zero_captured = True
-                        if params["flex_axis_capture"]:
-                            flex_axis = v / omega_mag
-                        flex_axis_armed = False
+                    if not zero_captured:
+                        q_zero = _snapshot()
+                        zero_captured = True
+                    if params["flex_axis_capture"]:
+                        flex_axis = v / omega_mag
+                    flex_axis_armed = False
 
             # Gyro-bias calibration, gated on genuine raw-signal stillness --
             # low raw gyro variance AND stable raw accel magnitude over the

@@ -4,6 +4,93 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest
 
 import batch_imu_vs_optitrack_rmse as batch
+import workbench_engine as engine
+
+
+# ── Real-data regression: 2026-08-07 zero-capture-contamination fix ────────
+#
+# Root cause: two real trials' raw gyro logs started already in motion
+# (examiner still positioning/releasing the sensor) instead of from a
+# genuine still hold. imu_calibration_tuner.replay_trial's zero-orientation
+# capture (_swing_from_quats' q_zero) armed on the very first sample above
+# _FLEX_CAPTURE_THRESHOLD with no stillness precondition, so it zeroed on
+# that contamination -- offsetting every downstream angle by a large,
+# roughly-constant bias (26.9/28.4 deg bias, 32.8/33.0 deg RMSE vs
+# OptiTrack, both nearly double the corpus median). Fixed by
+# imu_calibration_tuner._recently_calm + _RoleState.ever_calm, gating the
+# capture on a confirmed trailing window of low gyro magnitude. See
+# tests/test_imu_calibration_tuner.py::
+# test_replay_trial_ignores_pre_release_contamination_when_capturing_zero
+# for the synthetic unit-level regression test of the same fix.
+#
+# Skipped when the real Recordings/ tree isn't present (large, gitignored,
+# machine-local participant data -- see CLAUDE.md) so this suite still
+# passes in a fresh checkout; it only runs, and only matters, on the
+# machine holding the actual recordings.
+
+RECORDINGS_PRESENT = os.path.isdir(batch.REC_ROOT) and os.path.isdir(batch.OPTI_ROOT)
+skip_without_real_recordings = pytest.mark.skipif(
+    not RECORDINGS_PRESENT,
+    reason="Real Recordings_/OptiTrack_Recordings trees not present on this machine")
+
+
+def _score_real_trial(imu_path):
+    paths = batch.derive_component_paths(imu_path)
+    opti_path = batch.find_optitrack_match(imu_path, batch.REC_ROOT, batch.OPTI_ROOT)
+    assert opti_path is not None, f"no OptiTrack match found for {imu_path!r}"
+    return batch.evaluate_trial(paths["imu"], paths["accel"], paths["gyro"],
+                                paths["mag"], opti_path)
+
+
+@skip_without_real_recordings
+def test_contaminated_trial_no_longer_has_extreme_bias():
+    """Participant_13_left_post Trial_4: 32.8 deg RMSE / 26.9 deg bias
+    before the fix (see Model_Analysis_Outputs/imu_vs_optitrack_rmse.csv,
+    captured pre-fix). Post-fix this trial's zero now captures from the
+    genuine hold instead of pre-release contamination, cutting RMSE to
+    ~21.7 deg -- a real, large improvement, though NOT yet under the
+    project's 10 deg target (other, separate causes of RMSE noted in the
+    2026-08-07 investigation still apply: e.g. this trial's own remaining
+    bias, and unrelated sync/reference-frame issues on other trials). This
+    pins the improvement as a floor so it can't silently regress back
+    toward the pre-fix value, without overclaiming a target this one fix
+    doesn't reach on its own."""
+    imu_path = os.path.join(
+        batch.REC_ROOT, "Participant_13_left_post", "Session_post",
+        "Position_1", "Height_Joint-Level", "Trial_4_imu.csv")
+    row = _score_real_trial(imu_path)
+    assert row["status"] == "ok", row.get("error")
+    # Measured post-fix value is 21.7 deg; 23.0 leaves headroom for benign
+    # numeric noise (library version drift, float rounding) without
+    # tolerating a slide back toward the pre-fix 32.8 deg.
+    assert row["rmse_deg"] < 23.0, (
+        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~21.7 deg (the measured "
+        f"post-fix value); this catches a regression toward the pre-fix "
+        f"32.8 deg, not just any improvement")
+
+
+@skip_without_real_recordings
+def test_trial_with_no_genuine_pre_release_calm_is_flagged_not_silently_wrong():
+    """Participant_15/Left/pre/Trial_4: 33.0 deg RMSE / 28.4 deg bias
+    before the fix, and unlike Trial_4 above, this raw log has NO
+    contiguous stretch of low gyro magnitude anywhere before its original
+    (contaminated) zero-capture point -- there is no genuine still baseline
+    to recover. Post-fix this trial correctly comes back as unscoreable
+    (status="error", "Need at least 4 finite samples...") rather than
+    silently reporting a ~30 deg-wrong angle: an honest "cannot score this"
+    is the right outcome here, matching the project's accuracy-over-
+    coverage goal, not a regression to guard against."""
+    imu_path = os.path.join(
+        batch.REC_ROOT, "Participant_15", "Left", "pre", "Trial_4_imu.csv")
+    row = _score_real_trial(imu_path)
+    assert row["status"] == "error"
+    # Must fail for the specific reason this test is about (replay_trial
+    # never zeroing -> compare_pair's "too few finite samples" error), not
+    # any other failure -- an unrelated error (bad path, validation
+    # failure, mag-rate floor) would make this assertion vacuously true.
+    assert "finite samples" in (row.get("error") or ""), (
+        f"expected the 'too few finite samples' error from an unzeroed "
+        f"replay, got: {row.get('error')!r}")
 
 
 # ── derive_component_paths ──────────────────────────────────────────────────

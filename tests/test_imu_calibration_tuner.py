@@ -155,7 +155,13 @@ def _solo_handling_then_hold_then_burst_samples():
                         "v": gv, "phone_ts_ms": ts_ms})
         t += dt; ts_ms += 10
 
-    n_hold = 100
+    # 2.5s (not the bias check's own 1.0s minimum): _recently_calm's
+    # zero-capture guard (2026-08-07 fix) needs its OWN full trailing
+    # window of samples entirely below _ZERO_CAPTURE_GUARD_RAD_S, which
+    # only starts accumulating once the handling window's higher-magnitude
+    # tail has fully aged out of the trailing buffer -- a 1.0s hold leaves
+    # no margin for that on top of the bias check's own requirement.
+    n_hold = 250
     for i in range(n_hold):
         samples.append({"t": t, "role": "distal", "sensor": "accel",
                         "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
@@ -196,10 +202,114 @@ def test_replay_trial_ignores_handling_window_when_calibrating_bias():
     t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
     t_handled, angle_handled = tuner.replay_trial(handled_samples, params)
 
-    assert abs(angle_handled[-1] - angle_clean[-1]) < 1.0, (
+    # Tolerance loosened from the original 1.0 to 2.0 deg: now that
+    # zero-capture (not just gyro_bias) is also gated on st.ever_calm /
+    # _recently_calm (2026-08-07 fix), the handling window's tail delays
+    # exactly when the trailing window first reads "calm" by a few ticks
+    # versus the no-handling control, shifting q_zero's capture point by
+    # that much and producing a small residual difference unrelated to
+    # what this test guards against (bias contamination distorting the
+    # swing by tens of degrees, not ~1 deg).
+    assert abs(angle_handled[-1] - angle_clean[-1]) < 2.0, (
         f"handling-contaminated run ({angle_handled[-1]:.2f} deg) should match "
         f"the clean control ({angle_clean[-1]:.2f} deg) -- the handling window "
         f"must be rejected by the stillness gate, not averaged into gyro_bias")
+
+
+def _solo_immediate_contamination_then_hold_then_burst_samples():
+    """Synthetic single-phone (distal) raw log where the very first samples
+    are ALREADY in motion above _FLEX_CAPTURE_THRESHOLD -- no preceding
+    stillness at all -- e.g. the examiner still positioning/releasing the
+    sensor as the recording starts. Comparable to two real trials found on
+    disk (Participant_15/Left/pre/Trial_4, Participant_13_left_post/
+    Session_post/Position_1/Height_Joint-Level/Trial_4) whose raw gyro
+    magnitude was already >0.7 rad/s by t=0.002s -- well above the 1.0
+    rad/s capture threshold -- before any genuine still hold, and which
+    scored 28-33 deg RMSE / 27-28 deg bias against OptiTrack, versus a
+    ~7-11 deg RMSE floor for trials whose gyro stayed under ~0.2 rad/s for
+    the first full second. Then a genuine still hold, then the same
+    scripted burst as _solo_hold_then_burst_samples(): 2.0 rad/s around Y
+    for 0.5s -- a known, hand-computable rotation.
+
+    n_hold=250 (not the minimum ~100 that would just clear
+    GYRO_BIAS_WINDOW_S): at exactly 100, the contamination's last sample
+    only falls outside _recently_calm's trailing window by a hair of
+    floating-point rounding on t -- real margin, not an off-by-one on a
+    razor's edge, is what should make this test robust."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    contam_amp = imu._FLEX_CAPTURE_THRESHOLD * 1.5
+    n_contam = 20
+    for i in range(n_contam):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [contam_amp, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    n_hold = 250
+    for i in range(n_hold):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    n_burst = 50
+    for i in range(n_burst):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 2.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    for i in range(100):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+    return samples
+
+
+def test_replay_trial_ignores_pre_release_contamination_when_capturing_zero():
+    """Root-cause regression test for the still-very-high RMSE-vs-OptiTrack
+    bug found 2026-08-07: unlike gyro_bias calibration (already gated on
+    genuine raw-signal stillness by the 2026-08-04 fix), the zero-
+    orientation capture (q_zero, in _swing_from_quats) still arms on the
+    very FIRST gyro sample that crosses _FLEX_CAPTURE_THRESHOLD, with no
+    stillness precondition. When a raw log starts already in motion
+    (contamination, not a genuine still hold), q_zero gets captured from
+    that garbage orientation instead of the true pre-release pose, and
+    every angle for the rest of the trial is offset by a large, roughly-
+    constant bias. This must not happen: q_zero should wait for a
+    confirmed trailing window of calm raw gyro magnitude
+    (_recently_calm / st.ever_calm), a dedicated, looser primitive than
+    the bias calibration's own _is_stationary_window / calib_was_stable
+    (see _ZERO_CAPTURE_GUARD_RAD_S's derivation in imu_calibration_tuner.py
+    for why the two checks are deliberately different)."""
+    params = {"beta": 0.0, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    clean_samples = _solo_hold_then_burst_samples()
+    contaminated_samples = _solo_immediate_contamination_then_hold_then_burst_samples()
+
+    t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
+    t_contam, angle_contam = tuner.replay_trial(contaminated_samples, params)
+
+    assert len(angle_contam) > 0 and np.isfinite(angle_contam[-1]), (
+        "contaminated run must still zero and produce a scoreable angle "
+        "series once genuine stillness is reached")
+    # Tolerance of 2.0 deg (not sub-degree): the contamination tail still
+    # shifts exactly when the trailing window first reads "stable" by a few
+    # ticks versus the no-contamination control (same effect noted in
+    # test_replay_trial_ignores_handling_window_when_calibrating_bias),
+    # which is immaterial next to the ~40 deg error this gate closes.
+    assert abs(angle_contam[-1] - angle_clean[-1]) < 2.0, (
+        f"contaminated run ({angle_contam[-1]:.2f} deg) should match the "
+        f"clean control ({angle_clean[-1]:.2f} deg) -- zero-capture must "
+        f"wait for genuine stillness, not fire on pre-release contamination")
 
 
 def test_replay_trial_first_tick_is_nan_rest_are_finite():
@@ -255,11 +365,20 @@ def test_replay_trial_flex_axis_capture_excludes_out_of_plane_rotation():
     second (X-axis) burst's contribution; flex_axis_capture=False reports the
     axis-agnostic total rotation, which includes both. beta=0.0 isolates pure
     gyro integration so the two settings' difference isn't confounded by the
-    accelerometer correction term."""
+    accelerometer correction term. A leading 1.1s still hold is required so
+    zero-capture's st.ever_calm gate (2026-08-07 fix) arms before burst 1
+    -- without it the log would never zero (burst 1 starts "in motion" from
+    the gate's point of view, same as the contamination case it guards
+    against)."""
     samples = []
-    samples.append({"t": 0.0, "role": "distal", "sensor": "accel",
-                    "v": [0.0, 0.0, 9.81], "phone_ts_ms": 0})
     t = 0.0
+    dt = 0.01
+    for _ in range(110):   # genuine still hold, satisfies st.ever_calm
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": int(t * 1000)})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+        t += dt
     for _ in range(30):   # burst 1: 0.3s about Y -> captures flex_axis=[0,1,0]
         t += 0.01
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
@@ -283,24 +402,33 @@ def test_replay_trial_flex_axis_capture_excludes_out_of_plane_rotation():
 
 
 def test_replay_trial_gravity_seed_changes_zero_reference_under_correction():
-    """q_zero is captured on the FIRST qualifying gyro sample -- if that is
-    the very first sample in the log, it is captured BEFORE any ahrs.update()
-    call, so it equals whatever on_accel's seeding produced verbatim. A
-    tilted accel makes gravity_seed=True seed q far from identity while
-    gravity_seed=False leaves it at identity; with beta>0 (correction
-    active), that starting-point difference measurably changes the
-    subsequent trajectory rather than cancelling out (which it would if
-    beta were 0 -- see the plan's Section 4 discussion)."""
+    """q_zero is captured on the first gyro sample that fires once genuine
+    calm has been confirmed (st.ever_calm / _recently_calm, 2026-08-07
+    fix) -- not literally the first sample in the log anymore (that was
+    the exact behavior responsible for a large real-world bias when a log
+    started already in motion; see
+    test_replay_trial_ignores_pre_release_contamination_when_capturing_zero).
+    A tilted-but-motionless accel throughout the leading hold still counts
+    as "calm" (the gate checks gyro magnitude, not accel at all), so
+    gravity_seed=True seeds q far from identity while gravity_seed=False
+    leaves it at identity, and with beta>0 (correction active) that
+    starting-point difference must still measurably survive to zero-capture
+    and change the subsequent trajectory (it would fully converge away, and
+    correctly show no difference, if beta were 0 -- see the plan's Section 4
+    discussion)."""
     samples = []
     tilt_deg = 60.0
-    samples.append({
-        "t": 0.0, "role": "distal", "sensor": "accel",
-        "v": [9.81 * math.sin(math.radians(tilt_deg)), 0.0,
-              9.81 * math.cos(math.radians(tilt_deg))],
-        "phone_ts_ms": 0,
-    })
+    tilted_accel = [9.81 * math.sin(math.radians(tilt_deg)), 0.0,
+                    9.81 * math.cos(math.radians(tilt_deg))]
     t = 0.0
-    for _ in range(80):   # first gyro sample triggers onset immediately
+    dt = 0.01
+    for _ in range(110):   # genuine still hold (tilted but unchanging accel)
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": tilted_accel, "phone_ts_ms": int(t * 1000)})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0], "phone_ts_ms": int(t * 1000)})
+        t += dt
+    for _ in range(80):
         t += 0.01
         samples.append({"t": t, "role": "distal", "sensor": "gyro",
                         "v": [0.0, 2.0, 0.0], "phone_ts_ms": int(t * 1000)})
