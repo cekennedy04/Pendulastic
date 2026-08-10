@@ -111,6 +111,47 @@ def release_aligned_waveform(rep):
     return t_plot, a_plot
 
 
+def release_aligned_hpe_curve(mdl_t, mdl_ang):
+    """Per-source mirror of release_aligned_waveform() for an HPE/IMU curve
+    (mdl_t, mdl_ang) rather than a trial record dict -- SG-smooth, detect
+    release with pt._detect_release on the raw/smoothed (not detrended)
+    signal, shift so that curve's OWN detected release lands at t=0.
+    Without this, a source's timing offset from OptiTrack would visually
+    read as an angle-tracking error instead of a timing artifact.
+
+    Owns its own input validation (pt._detect_release doesn't reject
+    degenerate input): fewer than 4 finite samples, or non-monotonic t,
+    returns None rather than raising or producing a bogus alignment --
+    same "unavailable for this timepoint" path callers already use for a
+    missing/rejected HPE curve. No separate short-window guard is needed:
+    pt._sg() degrades gracefully (returns the signal unsmoothed) for a
+    window too small to fit, rather than raising, matching how
+    _detect_release() already tolerates short input.
+
+    Known caveat (2026-08-10 full-report-hpe-accuracy design spec §5.1):
+    pt._detect_release silently returns its own baseline-window boundary
+    index when no real threshold crossing is found, rather than raising --
+    a flat/degenerate curve that passes the validation here but has no
+    real release can still silently misalign. Tracked by the separate
+    2026-08-10 release-start-alignment spec's still-unimplemented fix,
+    not addressed here."""
+    mask = np.isfinite(mdl_ang) & np.isfinite(mdl_t)
+    if mask.sum() < 4:
+        return None
+    t_masked = mdl_t[mask]
+    a_masked = mdl_ang[mask]
+    if np.any(np.diff(t_masked) <= 0):
+        return None
+    a_smooth = pt._sg(a_masked, w=15, p=3)
+    release_idx = pt._detect_release(t_masked, a_smooth)
+    release_idx = max(0, min(release_idx, len(t_masked) - 1))
+    t_release = t_masked[release_idx]
+    y_off = 180.0 - float(a_smooth[release_idx])
+    t_plot = t_masked - t_release
+    a_plot = a_masked + y_off
+    return t_plot, a_plot
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Generic multi-participant discovery
 #
