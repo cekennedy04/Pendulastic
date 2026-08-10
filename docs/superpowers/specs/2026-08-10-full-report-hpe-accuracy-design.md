@@ -1,6 +1,6 @@
 # Full-Report HPE/IMU Accuracy Comparison — Design Spec
 
-**Status:** Draft — revised after 2nd-pass Codex review, pending user review
+**Status:** Draft — revised after 3 Codex review passes, pending user review
 **Date:** 2026-08-10
 
 ---
@@ -48,12 +48,15 @@ that anything was dropped.
   collision with the existing `compute_cohort_stats()`, a release-alignment risk between sources,
   mismatched comparison denominators, self-referential cohort statistics, and silent data loss.
   See §9 for the full list and how each was resolved.
-- The written spec (this document, first pass) was then re-reviewed by the same Codex session
-  against its own prior findings. That pass caught two further correctness bugs — a circular
-  import between `pt_report_common.py` and `mas_validation.py`, and a completeness-tally design
-  that referenced data `discover_all_trials()`/`collect_participant()` structurally cannot
-  produce — both fixed in this revision (§5.5, §5.6). It also correctly downgraded three items
-  in §9 from "resolved" to "partially resolved" with the concrete remaining gap named.
+- The written spec (this document, first pass) was then re-reviewed twice more by the same Codex
+  session against its own prior findings. The second pass caught two further correctness bugs — a
+  circular import between `pt_report_common.py` and `mas_validation.py`, and a completeness-tally
+  design that referenced data `discover_all_trials()`/`collect_participant()` structurally cannot
+  produce. The third pass caught that those fixes were still incomplete — a files-that-can't-be-
+  parsed gap in `trial_candidates()`, `load_hpe_model_curves()` needing an actual behavior change
+  rather than a wrapper, a direct contradiction between "show all clinician matches" and the
+  table's own overflow policy, and a cohort snapshot missing fields its own artifact writer needs.
+  All fixed in this revision. See §9 for the full history across all three passes.
 
 ## 3. Scope
 
@@ -67,8 +70,9 @@ block. Adds a cohort-snapshot builder to `pt_cohort_common.py`. Small addition t
 
 | File | Nature of change |
 |---|---|
-| `pt_report_common.py` | `attach_rmse()` keeps HPE/IMU curve arrays, not just RMSE. New: `release_aligned_hpe_curve()`, `trial_candidates()` (lower-level enumeration backing both `discover_all_trials()` and the completeness tally), `clinician_mas_matches()` (local-imports `mas_validation`), deterministic candidate selection, Row 5 source-agreement table, caption assembly. `make_report_figure()` grid grows 3×2 → 5×2. RMSE plotting logic extracted into a shared helper used by both the standalone RMSE figure and the new Row 4. |
-| `pt_cohort_common.py` | New `build_cohort_snapshot()` — snapshot builder (I/O-bearing, not pure — see §6) returning one snapshot (classifications, per-participant/leg summaries, the *existing* `compute_cohort_stats()` output, composition counts). `run_cohort_comparison()`'s artifact-writing half becomes `write_cohort_artifacts(snapshot)`, taking a snapshot instead of recomputing. |
+| `pt_report_common.py` | `attach_rmse()` keeps HPE/IMU curve arrays, not just RMSE. New: `release_aligned_hpe_curve()`, `trial_candidates()` (lower-level enumeration backing both `discover_all_trials()` and the completeness tally, including an `"unparseable"` status), `clinician_mas_matches()` (local-imports `mas_validation`), deterministic candidate selection, Row 5 source-agreement table, `P{pid}_clinician_mas.csv` sidecar writer, caption assembly. `make_report_figure()` grid grows 3×2 → 5×2. RMSE plotting logic extracted into a shared helper used by both the standalone RMSE figure and the new Row 4. |
+| `pendulastic_pt_score.py` | `load_hpe_model_curves()` gains an optional `return_rejected=False` parameter; when `True`, also returns filtered-out candidates with their rejection reason. Default behavior/return shape unchanged for existing callers. |
+| `pt_cohort_common.py` | New `build_cohort_snapshot()` — snapshot builder (I/O-bearing, not pure — see §6) returning one snapshot (classifications, per-participant/leg summaries, the *existing* `compute_cohort_stats()` output, composition counts, **and** every field `write_cohort_artifacts()` needs to render without recollecting — see §6). `run_cohort_comparison()`'s artifact-writing half becomes `write_cohort_artifacts(snapshot)`, taking a snapshot instead of recomputing. |
 | `run_pt_analysis.py` | Calls `build_cohort_snapshot()` once at the top of `main()`, before the per-participant loop; passes the snapshot into every `make_report_figure()` call and into `write_cohort_artifacts()` at the end. |
 | `mas_validation.py` | No signature changes. `pt_report_common.clinician_mas_matches()` locally imports this module and reuses `_tokenize_condition()`/`_valid_grade()` — see §5.5 for why the import must be local, not module-scope. |
 | `tests/test_pt_report_common.py` (new or extended) | Unit tests per §8. |
@@ -102,11 +106,12 @@ Existing OptiTrack-only trace, plus MediaPipe/IMU overlays, with two correctness
   conventions repo-wide is out of scope here — see §10.)
   - **`release_aligned_hpe_curve()` owns its own input validation** — `_detect_release()` itself
     does not reject degenerate input, so the new helper must, before calling it: reject fewer than
-    4 finite samples (matching `detect_release_t0()`'s own guard, for consistency), reject
-    non-monotonic `t`, and fall back to no-overlay (not a crash) if the Savitzky-Golay window
-    required by `pt._sg()` doesn't fit the curve's sample count. On any of these, treat that
-    source as unavailable for this timepoint (same path as "no candidate curve" in §5.5), not as
-    a rendering error.
+    4 finite samples (matching `detect_release_t0()`'s own guard, for consistency) and reject
+    non-monotonic `t`. (No separate "SG window too small" guard is needed — verified directly
+    against `pt._sg()`: for `w < p+2` it returns the signal unsmoothed rather than raising, so a
+    short curve degrades gracefully the same way `_detect_release()` already tolerates, not a
+    third failure mode to define.) On either rejection, treat that source as unavailable for this
+    timepoint (same path as "no candidate curve" in §5.5), not as a rendering error.
   - **Known caveat, stated precisely.** `_detect_release()` silently returns its own
     baseline-window boundary index when no threshold crossing is found (a flat/degenerate signal
     that *passes* the validation above but still has no real release), rather than raising. The
@@ -163,19 +168,28 @@ column — see below for why. One row per timepoint.
   sources but on curves with different sampling, smoothing, and cleaning characteristics."* PT7
   agreement across sources is a derived-measure comparison, not a validated clinical score for
   MediaPipe/IMU.
-- **Missing/rejected/unscored accounting — three stages, not two.** `load_hpe_model_curves()`
-  already filters candidates against OptiTrack (rejects if peak flexion is `<30%` of OptiTrack's
-  peak, among other checks) before ever returning them, and a curve that *passes* that gate can
-  still fail to produce a PT7 (`compute_pt_params()` returns `None` — the same "no clean
-  release/oscillation" failure mode `pt_report_common.score_trial()` already handles for
-  OptiTrack). Collapsing these into one "missing" bucket would hide where a source actually drops
-  out. A footnote per timepoint states all three counts, e.g. `"MediaPipe: 3/5 trials had a
+- **Missing/rejected/unscored accounting — three stages, defined at trial level.**
+  `load_hpe_model_curves()` already filters candidates against OptiTrack (rejects if peak flexion
+  is `<30%` of OptiTrack's peak, among other checks) before ever returning them, and a curve that
+  *passes* that gate can still fail to produce a PT7 (`compute_pt_params()` returns `None` — the
+  same "no clean release/oscillation" failure mode `pt_report_common.score_trial()` already
+  handles for OptiTrack). Collapsing these into one "missing" bucket would hide where a source
+  actually drops out. Counts are per-*trial*, not per-candidate-CSV (a single trial can have more
+  than one matching MediaPipe/IMU CSV; §5.1 already picks one deterministic candidate per trial,
+  and these counts follow that same selected candidate, not every file found): `"has ≥1 source
+  candidate"`, `"selected candidate passed the quality gate"`, `"selected candidate produced a
+  scoreable PT7"`. A footnote per timepoint states all three, e.g. `"MediaPipe: 3/5 trials had a
   candidate curve, 2/3 passed the OptiTrack-agreement quality gate, 2/2 of those produced a
-  scoreable PT7."` This requires `load_hpe_model_curves()` (or a thin wrapper around it) to report
-  the pre-filter candidate count, not just the post-filter survivors, alongside the existing
-  scoring step.
-- **Clinician MAS: show all matches, never silently pick one, via a local import.**
-  `mas_validation.py` already imports `pt_report_common` at module scope
+  scoreable PT7."`
+  **This is a real behavior change to `load_hpe_model_curves()`, not a display-only wrapper** —
+  Codex's third-pass review correctly caught that the function currently returns *only* post-gate
+  survivors, so pre-gate candidate identity and gate-rejection reasons don't escape it today.
+  `load_hpe_model_curves()` gains an optional `return_rejected=False` parameter; when `True`, it
+  additionally returns the candidates it filtered out, each tagged with why (amplitude-ratio
+  fail, inversion, etc.). Existing callers (`pendulastic_pt_score.py`'s own single-trial plots)
+  are unaffected since the default keeps today's return shape.
+- **Clinician MAS, via a local import — figure shows a bounded summary, sidecar CSV is the
+  complete record.** `mas_validation.py` already imports `pt_report_common` at module scope
   (`import pt_report_common as common`), so `pt_report_common.py` importing `mas_validation` at
   module scope would be circular. New `pt_report_common.clinician_mas_matches(participant_id, leg,
   condition)` does `import mas_validation as mv` **locally, inside the function** — safe because
@@ -185,20 +199,27 @@ column — see below for why. One row per timepoint.
   own `pair_pt_and_mas()`/`_pt_lookup_factory()` already use, and `mv._valid_grade()` to exclude
   malformed rows — matching `mas_validation.py`'s own existing exclusion behavior, not
   reimplementing it. Unlike `pair_pt_and_mas()` (which pairs one row against one PT score for
-  validation stats), this returns **every** matching row for that leg/condition — duplicate or
-  conflicting clinician assessments are shown together with their `assessed_date` (or
-  `"date n/a"` when blank), never silently reduced to one.
-- **Density / overflow policy.** Each row already carries two PT7/MAS/Δ/n triples plus a
-  potentially multi-line clinician field; a participant with many conditions or duplicate
-  clinician rows can overflow a fixed-height table row. Policy: clinician MAS shows at most the 2
-  most recent matches (by `assessed_date`, blank dates last) plus `"+N more, see
-  mas_scores.csv"` beyond that; the table itself shows at most 6 timepoints per leg (if a
-  participant has more, show the first/baseline timepoint plus the 5 most recent, with a
-  `"+N earlier timepoints omitted"` note) — the standalone `ms_vs_control_stats.csv` /
-  `cohort_composition.csv` remain the source of truth for anything truncated here. Figure height
-  grows accordingly (`figsize` increases from the original 3-row `(15, 13)` to accommodate two
-  additional rows, with Row 5 given more vertical space per row than the plot rows since it's
-  table-typeset, not a chart).
+  validation stats), this returns **every** matching row for that leg/condition.
+  Codex's third pass correctly caught that an unbounded "show all matches" contradicts a bounded
+  table: the *figure* shows at most the 2 most recent matches by `assessed_date`, real
+  `datetime.strptime(date, "%m/%d/%Y")` parsing (matching the format already seen in
+  `mas_scores.csv`, e.g. `"8/6/2026"`) — **not lexicographic string sort**, which would silently
+  misorder `"12/1/2026"` before `"8/6/2026"`. Rows with an unparseable or blank date sort last.
+  When there are more than 2 matches, the figure adds `"+N more"` **and** every match — full set,
+  no truncation — is written to a new per-participant sidecar,
+  `Model_Analysis_Outputs/PT_Scores/P{pid}_clinician_mas.csv`. This mirrors the pattern this
+  codebase already uses for the cohort artifacts (`ms_vs_control_stats.csv` /
+  `cohort_composition.csv` as the complete record, the PNG as a bounded quick-look summary) rather
+  than pretending a fixed-size table image is the authoritative complete data.
+- **Timepoint truncation, same pattern.** The table itself shows at most 6 timepoints per leg (if
+  a participant has more, show the first/baseline timepoint plus the 5 most recent, with a
+  `"+N earlier timepoints omitted"` note). The same sidecar CSV above carries the untruncated
+  per-timepoint PT7/MAS/n data for every source, so "all relevant participant data is included"
+  is true of the report's full output (figure + sidecar CSV together), not claimed of the PNG
+  image in isolation — that distinction is stated explicitly in the report, not left implicit.
+  Figure height grows accordingly (`figsize` increases from the original 3-row `(15, 13)` to
+  accommodate two additional rows, with Row 5 given more vertical space per row than the plot rows
+  since it's table-typeset, not a chart).
 
 ### 5.6 Caption block (below the figure)
 
@@ -224,15 +245,20 @@ column — see below for why. One row per timepoint.
   New `pt_report_common.trial_candidates(participant_id, include_archive=True)`: a lower-level
   enumeration that walks the same raw glob `discover_all_trials()` does (every
   `trial_*_optitrack.csv` under `OPTI_ROOT`/`ARCHIVE_ROOT`), but keeps every candidate — including
-  `INVALID`-path and excluded ones — annotated with a terminal status: `"invalid_path"`,
-  `"excluded"` (with the reason string from `load_excluded_trials()`), `"unreadable"` (
-  `pt.load_optitrack()` raised), `"unscoreable"` (`score_trial()` returned `None`), or `"scored"`
+  ones `_parse_trial_path()` can't parse at all — annotated with a terminal status:
+  `"unparseable"` (`_parse_trial_path()` returned `None` — missing/ambiguous participant or leg
+  token in the path; caught by Codex's third-pass review as a gap the first fix still missed,
+  since these files can't reach any of the other statuses either), `"invalid_path"` (`INVALID` in
+  the path), `"excluded"` (with the reason string from `load_excluded_trials()`), `"unreadable"`
+  (`pt.load_optitrack()` raised), `"unscoreable"` (`score_trial()` returned `None`), or `"scored"`
   (with the scored record attached). `discover_all_trials()` becomes a thin filter over this
-  (`status not in ("invalid_path", "excluded")`), and `collect_participant()`'s scoring loop
-  becomes a thin filter for `status == "scored"` — both keep their current external behavior
-  exactly, this only adds a shared lower layer neither had before. The caption's completeness line
-  is a group-by-status count over `trial_candidates()`'s output for the plotted leg/condition,
-  which is now actually possible instead of only asserted.
+  (`status not in ("unparseable", "invalid_path", "excluded")`), and `collect_participant()`'s
+  scoring loop becomes a thin filter for `status == "scored"` — both keep their current external
+  behavior exactly, this only adds a shared lower layer neither had before. The caption's
+  completeness line is a group-by-status count over `trial_candidates()`'s output for the plotted
+  leg/condition; `unparseable`/`invalid_path` counts are shown too (not folded into "excluded"),
+  since a file this tool structurally can't attribute to a participant/leg is a different kind of
+  gap than a knowingly-excluded trial.
 
 ## 6. `pt_cohort_common.build_cohort_snapshot()` (replaces the flawed two-function split from the first draft)
 
@@ -258,11 +284,28 @@ def build_cohort_snapshot():
         on both legs (via pt_report_common.leg_trial_counts()).
       - classifications: {pid: (group, source)} via classify_participant().
       - summaries: {(pid, leg): aggregate_participant_summary(...) | None}.
+      - raw_pt7: {(pid, leg): [pt7, ...]} -- every individual trial's pt7,
+        not just the per-participant median in `summaries`. Needed because
+        make_cohort_comparison_figure()'s existing "descriptive layer" (all
+        individual trial values, jittered under the box) plots raw per-trial
+        values, not just participant medians -- omitting this from the
+        snapshot would force write_cohort_artifacts() to recollect trial
+        data on its own, reintroducing exactly the divergence risk this
+        split exists to remove. Verified directly against
+        make_cohort_comparison_figure()'s existing signature/behavior
+        before adding this field.
       - stats: the *existing* compute_cohort_stats(ms_summaries, control_summaries)
-        output — reused as an internal step, not reimplemented.
-      - composition: the existing cohort_composition.csv row data.
+        output -- reused as an internal step, not reimplemented.
+      - composition: the existing cohort_composition.csv row data (pid,
+        group, source, n_trials_left, n_trials_right for every qualifying
+        participant, including excluded/unclassified).
     """
 ```
+
+Every field the existing cohort figure/CSV code actually reads must live in this snapshot — the
+list above was checked against `make_cohort_comparison_figure()`'s and the composition-CSV
+writer's existing inputs (not assumed), per Codex's third-pass finding that raw per-trial values
+and the excluded/unclassified composition data were missing from the first version of this list.
 
 `run_pt_analysis.py.main()` calls `build_cohort_snapshot()` once, at the top of `main()`, before
 the per-participant loop, and:
@@ -297,15 +340,22 @@ mid-run), not eliminated by this design. Unifying the two scans is a larger refa
 - Cohort snapshot unavailable (arm empty, or `build_cohort_snapshot()` raises) → the caption's
   cohort-reference line is omitted; everything else in the report renders normally. Same
   non-fatal `try`/`except` pattern `main()` already uses today around cohort-comparison calls.
-- Fewer than 4 finite samples, non-monotonic `t`, or an unusable SG window for an HPE/IMU curve →
+- Fewer than 4 finite samples, or non-monotonic `t`, for an HPE/IMU curve →
   `release_aligned_hpe_curve()` rejects it before calling `_detect_release()`; that source is
-  treated as unavailable for that timepoint, same path as "no candidate curve."
+  treated as unavailable for that timepoint, same path as "no candidate curve." (No separate
+  short-window rejection is needed — `pt._sg()` already degrades gracefully instead of raising.)
 - A degenerate/flat HPE or IMU curve that *passes* that validation but still has no real
   threshold crossing is not specially detected by this design — `_detect_release()` silently
   returns its baseline-window boundary in that case (see §5.1's caveat), an inherited risk tracked
   separately by the 2026-08-10 release-alignment spec's still-unimplemented §3.2 fix.
 - `load_excluded_trials()` missing or malformed → treated as `{}` (already this module's existing
   behavior), so the data-completeness tally's "excluded" count is simply 0, not an error.
+- A discovered file `_parse_trial_path()` can't attribute to a participant/leg (missing or
+  ambiguous token in the path) → `trial_candidates()` status `"unparseable"`, counted explicitly
+  in the caption rather than silently absent from every bucket.
+- More than 2 clinician MAS matches for a leg/condition → figure shows the 2 most recent (by
+  parsed `assessed_date`) plus a `"+N more"` note; the full set is still written to
+  `P{pid}_clinician_mas.csv`, never dropped outright.
 
 ## 8. Testing — `tests/test_pt_report_common.py`
 
@@ -314,13 +364,14 @@ mid-run), not eliminated by this design. Unifying the two scans is a larger refa
   (best-RMSE) one is used consistently for waveform, PT7, and RMSE, not silently overwritten.
 - `test_release_aligned_hpe_curve` — known synthetic curve → release lands at t=0, matching
   `release_aligned_waveform()`'s existing OptiTrack behavior on an equivalent synthetic input.
-- `test_release_aligned_hpe_curve_rejects_degenerate_input` — fewer than 4 finite samples,
-  non-monotonic `t`, and an SG-window-too-small curve each fall back to "unavailable" without
-  raising out of `make_report_figure()`.
-- `test_trial_candidates_preserves_all_statuses` — a synthetic mix of invalid-path, excluded,
-  unreadable, unscoreable, and scored files each land in the correct status bucket; regression
-  test directly against the finding that `discover_all_trials()`/`collect_participant()` cannot
-  reconstruct this on their own.
+- `test_release_aligned_hpe_curve_rejects_degenerate_input` — fewer than 4 finite samples and
+  non-monotonic `t` each fall back to "unavailable" without raising out of `make_report_figure()`;
+  a short-but-valid curve is NOT rejected (`pt._sg()` degrades gracefully, verified separately).
+- `test_trial_candidates_preserves_all_statuses` — a synthetic mix of unparseable, invalid-path,
+  excluded, unreadable, unscoreable, and scored files each land in the correct status bucket;
+  regression test directly against the finding that `discover_all_trials()`/`collect_participant()`
+  cannot reconstruct this on their own, and that a path `_parse_trial_path()` can't parse doesn't
+  silently vanish from every status either.
 - `test_discover_all_trials_matches_prior_behavior` — `trial_candidates()`-backed
   `discover_all_trials()` returns the same trial set it did before the refactor, for a fixed
   synthetic input (no behavior change to existing callers).
@@ -329,57 +380,80 @@ mid-run), not eliminated by this design. Unifying the two scans is a larger refa
   trial sets), not one shared/ambiguous number.
 - `test_row5_missing_vs_rejected_vs_unscored_counts` — a trial with no HPE CSV at all, one whose
   curve was rejected by the `load_hpe_model_curves()` quality gate, and one that passed the gate
-  but failed `compute_pt_params()` scoring, each produce distinct, correctly labeled counts.
+  but failed `compute_pt_params()` scoring, each produce distinct, correctly labeled counts,
+  counted per-trial (via the selected deterministic candidate) even when a trial has multiple
+  candidate CSVs.
+- `test_load_hpe_model_curves_return_rejected` — `return_rejected=True` returns filtered-out
+  candidates with a rejection reason; `return_rejected=False` (default) keeps today's exact return
+  shape, verified against `pendulastic_pt_score.py`'s own existing callers being unaffected.
 - `test_clinician_mas_matches_local_import` — `clinician_mas_matches()` is callable from
   `pt_report_common.py` without a module-load-time `ImportError`, verifying the local-import fix
   actually avoids the circular dependency with `mas_validation.py`.
-- `test_clinician_mas_shows_all_matches` — two `mas_scores.csv` rows matching the same
-  leg/condition both appear, neither silently dropped; an invalid-grade row is excluded.
+- `test_clinician_mas_date_parsing` — `"12/1/2026"` sorts after `"8/6/2026"` (regression test
+  directly against the finding that lexicographic string sort would get this backwards); a blank
+  or unparseable date sorts last, not first.
+- `test_clinician_mas_shows_all_matches_with_sidecar` — more than 2 matching `mas_scores.csv` rows
+  for one leg/condition: the figure shows only the 2 most recent plus a `"+N more"` note, but
+  `P{pid}_clinician_mas.csv` contains every match, none dropped; an invalid-grade row is excluded
+  from both.
 - `test_cohort_leave_one_out` — a participant who is themselves in the MS arm gets a leave-one-out
   median for MS, unmodified median for Control.
 - `test_build_cohort_snapshot_single_computation` — `build_cohort_snapshot()` called once produces
   identical numbers whether read by a simulated per-participant report call or by
   `write_cohort_artifacts()`, i.e. no independent rescan divergence.
-- `test_data_completeness_tally` — a leg/condition with a mix of recorded/excluded/unreadable/
-  unscoreable trials produces correct counts in each bucket, via `trial_candidates()`.
+- `test_write_cohort_artifacts_no_recollection` — `write_cohort_artifacts(snapshot)` renders the
+  figure/CSVs using only fields present on `snapshot` (mock/patch `collect_participant()` and
+  discovery calls to raise if invoked from within this function) — regression test directly
+  against the finding that the first snapshot schema was missing fields the artifact writer
+  actually needs.
+- `test_data_completeness_tally` — a leg/condition with a mix of recorded/unparseable/excluded/
+  unreadable/unscoreable trials produces correct counts in each bucket, via `trial_candidates()`.
 - Visual figure output isn't unit-tested (matches this module's existing convention) — manual run
   against a real participant to confirm the figure renders and Row 5 / caption aren't visually
   overcrowded, including a participant with >6 timepoints to check the truncation policy.
 
 ## 9. Codex Review Findings and Resolution
 
-Two Codex review passes shaped this spec: the first (`/codex consult`) reviewed a prose draft
+Three Codex review passes shaped this spec: the first (`/codex consult`) reviewed a prose draft
 before anything was written up; the second resumed the same session to check the *written* spec
-against its own first-pass findings, and correctly caught three of them as overstated and two
-further correctness bugs the first revision had introduced. This table reflects both passes.
+against its own first-pass findings and caught two rows as overstated plus two new correctness
+bugs the first revision had introduced; the third resumed again to check that revision's fixes and
+caught one further structural gap (`trial_candidates()` still missing unparseable paths), one
+under-scoped fix (`load_hpe_model_curves()` needing a real behavior change, not a wrapper), one
+self-contradiction (an unbounded "show all matches" promise next to a bounded table), and one
+incomplete snapshot schema (missing fields the cohort artifact writer actually needs). This table
+reflects all three passes.
 
 | Finding | Status | Resolution |
 |---|---|---|
 | Layout contradiction: "Row 4 unchanged" vs. folding RMSE into a 4×2 grid | RESOLVED | §5.4 — explicit shared-helper extraction, RMSE becomes a real row, standalone figure unaffected |
 | Row 3 would be unreadable with 3 sources + labels + cohort lines | RESOLVED | §5.3/§5.5 — Row 3 reverted to unchanged; source/cohort content moved to new Row 5 table + caption |
 | Color/linestyle ambiguity at point level | RESOLVED | Point-level source markers removed from Row 3 entirely; Row 1's linestyle grammar only has to survive as continuous curves, not discrete points |
-| HPE curves not release-aligned to the same event as OptiTrack | PARTIALLY RESOLVED | §5.1 — `release_aligned_hpe_curve()` applies the same alignment procedure per source, with its own input validation added in this revision. Still open: `_detect_release()`'s silent bogus-index fallback on a degenerate-but-valid curve, tracked by the (unimplemented) 2026-08-10 release-alignment spec, not this one |
-| "Missing HPE" conflates never-recorded with rejected-by-quality-gate | RESOLVED | §5.5 — three explicit counts (candidate found / passed gate / produced a scoreable PT7), expanded in this revision from two |
+| HPE curves not release-aligned to the same event as OptiTrack | PARTIALLY RESOLVED | §5.1 — `release_aligned_hpe_curve()` applies the same alignment procedure per source, with its own input validation (3rd pass confirmed the validation scope is now correct — no phantom SG-window guard). Still open: `_detect_release()`'s silent bogus-index fallback on a degenerate-but-valid curve, tracked by the (unimplemented) 2026-08-10 release-alignment spec, not this one |
+| "Missing HPE" conflates never-recorded with rejected-by-quality-gate, and with passed-gate-but-unscored | RESOLVED (revised, 3rd pass) | §5.5 — three trial-level counts (candidate found / passed gate / scoreable). 2nd-pass version was itself under-scoped (assumed a "thin wrapper" over `load_hpe_model_curves()` could expose pre-gate data it doesn't currently return); fixed with a real `return_rejected=False` parameter on that function |
 | "MediaPipe" candidate underspecified, `attach_rmse` overwrite bug | RESOLVED | §5.1 — deterministic first-by-RMSE candidate, reused across waveform/PT7/RMSE |
 | PT7 not apples-to-apples across sources despite same formula | PARTIALLY RESOLVED | §5.5 — framing caveat is honest about this, but the table still prominently reports source-derived MAS grades; a rigorous cross-source bias/agreement study is out of scope (§10), so this remains a labeling mitigation, not a full resolution |
-| Mismatched comparison denominators (OptiTrack full sample vs. HPE-paired subset) | RESOLVED (revised) | §5.5 — first revision's single "paired subset" was itself ambiguous (Codex's second-pass finding) when MediaPipe and IMU pair different trial sets; fixed with two independent per-source OptiTrack baselines instead of one shared number |
-| Clinician MAS matching fragility, duplicate rows | RESOLVED | §5.5 — show all matches with dates, never silently pick one |
+| Mismatched comparison denominators (OptiTrack full sample vs. HPE-paired subset) | RESOLVED (revised, 2nd pass) | §5.5 — first revision's single "paired subset" was itself ambiguous when MediaPipe and IMU pair different trial sets; fixed with two independent per-source OptiTrack baselines instead of one shared number |
+| Clinician MAS matching fragility, duplicate rows | RESOLVED (revised, 3rd pass) | §5.5 — 2nd-pass "show all matches" directly contradicted the density/overflow policy also added that pass (which caps the table at 2). Fixed by splitting the claim: the *figure* is a bounded summary (2 most recent, real date-parsed, not string-sorted), the new `P{pid}_clinician_mas.csv` sidecar is the complete, untruncated record — same pattern this codebase already uses for cohort artifacts |
 | Cohort reference must be leg-specific | RESOLVED | §5.6 — caption line is always per-leg |
 | Cohort reference self-referential for small cohorts | RESOLVED | §5.6 — leave-one-out for the participant's own arm |
 | `compute_cohort_stats()` naming collision in proposed split | RESOLVED | §6 — replaced with `build_cohort_snapshot()`, reusing the existing function internally instead of renaming over it |
 | "Cohort n=2 (7 trials)" undefined (participants vs. contributors vs. trials) | RESOLVED | §5.6 — every `n` is explicitly labeled by what it counts |
-| "All relevant participant data" still missing excluded/unreadable/unscoreable counts | RESOLVED (revised) | §5.6 — first revision asserted this was already surfaceable from existing functions; Codex's second pass correctly caught that `discover_all_trials()`/`collect_participant()` structurally cannot produce it. Fixed with new `trial_candidates()`, a lower-level enumeration both functions now filter |
-| `mas_validation.py` reuse creates a circular import | RESOLVED (new, 2nd pass) | §5.5 — `mas_validation.py` already imports `pt_report_common` at module scope; `clinician_mas_matches()` uses a local import instead of a module-scope one |
-| `build_cohort_snapshot()` mislabeled "pure" | RESOLVED (new, 2nd pass) | §6 — relabeled a snapshot builder; it reads registries/metadata and calls discovery, it just writes nothing |
+| "All relevant participant data" still missing excluded/unreadable/unscoreable counts | RESOLVED (revised, 3rd pass) | §5.6 — 2nd-pass `trial_candidates()` still couldn't attribute files `_parse_trial_path()` returns `None` for (missing/ambiguous participant or leg token), so they were silently invisible to every status bucket. Fixed with a new `"unparseable"` status, counted explicitly rather than folded into "excluded." Combined with the sidecar-CSV framing above, "all relevant data included" now applies honestly to the report's full output (figure + sidecar), stated as such, not to the PNG in isolation |
+| `mas_validation.py` reuse creates a circular import | RESOLVED (2nd pass) | §5.5 — `mas_validation.py` already imports `pt_report_common` at module scope; `clinician_mas_matches()` uses a local import instead of a module-scope one |
+| `build_cohort_snapshot()` mislabeled "pure" | RESOLVED (2nd pass) | §6 — relabeled a snapshot builder; it reads registries/metadata and calls discovery, it just writes nothing |
+| `build_cohort_snapshot()`'s field list incomplete for `write_cohort_artifacts()` to avoid recollecting | RESOLVED (new, 3rd pass) | §6 — added `raw_pt7` (individual trial values, needed by the existing figure's descriptive/jittered layer) and full composition data, both checked directly against the existing figure/CSV code's actual inputs rather than assumed |
 
-**Known remaining gaps, named rather than silently dropped** (per Codex's second pass, not fixed
-in this revision — see §10 for scope reasoning):
+**Known remaining gaps, named rather than silently dropped** (not fixed in this revision — see
+§10 for scope reasoning):
 - The redundant report-vs-cohort-snapshot scan (§6) — accepted tradeoff for this tool's manual,
   single-machine usage pattern.
-- Row 5's density/overflow policy (§5.5) is now specified, but hasn't been visually verified
-  against a real multi-condition, multi-clinician-row participant — first real run is the actual
-  test.
+- Row 5's density/overflow policy (§5.5) is now specified and reconciled with the completeness
+  claim via the sidecar CSV, but hasn't been visually verified against a real multi-condition,
+  multi-clinician-row participant — first real run is the actual test.
 - `_detect_release()`'s degenerate-signal fallback (§5.1) — inherited, tracked by a different spec.
+- A rigorous cross-source PT7 bias/agreement validation study — §5.5's framing caveat is an honest
+  label, not a substitute for one; out of scope here (§10).
 
 ## 10. Out of Scope / Future
 
