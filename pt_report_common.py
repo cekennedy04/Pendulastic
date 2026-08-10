@@ -528,6 +528,66 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
     return matches_by_leg_condition
 
 
+def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints, cohort_snapshot):
+    """Caption block below the full-report figure: leg-specific MS/Control
+    cohort reference (leave-one-out for the participant's own arm, if
+    any) plus a per-leg/condition data-completeness tally. Every `n` is
+    explicitly labeled by what it counts -- never a bare number.
+    cohort_snapshot=None (or either arm empty) simply omits the cohort
+    lines rather than raising."""
+    lines = []
+
+    if cohort_snapshot is not None:
+        import pt_cohort_common as pcc
+        for leg in ("left", "right"):
+            own_trials = [r for (leg_key, _cond), recs in by_leg_tp.items()
+                         if leg_key == leg for r in recs]
+            if not own_trials:
+                continue
+            own_pt7 = float(np.mean([r["pt7"] for r in own_trials]))
+            ref = pcc.leg_cohort_reference(cohort_snapshot, participant_id, leg)
+            if ref is None:
+                continue
+            leg_label = leg.capitalize()
+            parts = [f"{leg_label} leg — this participant PT7 (n={len(own_trials)} trials): {own_pt7:.2f}"]
+            ms_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "MS" else ""
+            control_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "Control" else ""
+            ms_txt = f"{ref['ms_median']:.2f}" if ref["ms_median"] is not None else "n/a"
+            control_txt = f"{ref['control_median']:.2f}" if ref["control_median"] is not None else "n/a"
+            parts.append(f"MS arm median (n={ref['ms_n']} contributing participants{ms_suffix}): {ms_txt}")
+            parts.append(f"Control arm median (n={ref['control_n']}{control_suffix}): {control_txt}")
+            lines.append(" | ".join(parts))
+
+    candidates = trial_candidates(participant_id)
+    by_leg_condition = {}
+    for c in candidates:
+        if c["leg"] is None:
+            continue
+        key = (c["leg"], c["condition"])
+        by_leg_condition.setdefault(key, {"recorded": 0, "excluded": 0, "unreadable": 0,
+                                          "unscoreable": 0, "scored": 0})
+        if c["status"] in ("excluded",):
+            by_leg_condition[key]["excluded"] += 1
+        elif c["status"] == "unreadable":
+            by_leg_condition[key]["unreadable"] += 1
+        elif c["status"] == "unscoreable":
+            by_leg_condition[key]["unscoreable"] += 1
+        elif c["status"] == "scored":
+            by_leg_condition[key]["scored"] += 1
+        if c["status"] != "invalid_path":
+            by_leg_condition[key]["recorded"] += 1
+
+    plotted_keys = {(leg_key, cond_key) for (leg_key, cond_key) in by_leg_tp.keys()}
+    for (leg, cond), tally in sorted(by_leg_condition.items()):
+        if (leg, cond) not in plotted_keys:
+            continue
+        lines.append(f"{leg.capitalize()}/{cond}: {tally['recorded']} recorded, "
+                     f"{tally['excluded']} excluded, {tally['unreadable']} unreadable, "
+                     f"{tally['unscoreable']} unscoreable, {tally['scored']} scored")
+
+    return "\n".join(lines)
+
+
 def discover_all_trials(include_archive=True):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
