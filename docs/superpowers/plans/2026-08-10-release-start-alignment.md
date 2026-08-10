@@ -560,11 +560,11 @@ Add the new methods near `_on_mark_milestone` (after it, before `_draw_milestone
         self._recompute_release_lags()
 ```
 
-`_draw_release_artist` and `_recompute_release_lags` are stubbed as no-ops for this task only if
-needed to make it importable — but Task 6 and Task 8 define them for real immediately after, in
-the same session, so a bare `pass`-bodied placeholder is acceptable *only* as a same-task stepping
-stone, never left in place across a commit. To keep this task's commit self-consistent and every
-test green on its own, define minimal real versions now (Task 6/8 will replace them):
+This task's own tests call `_on_clear_release`/`_on_release_entry_commit`, both of which need
+`_draw_release_artist` (final, complete version — no later task modifies it) and
+`_recompute_release_lags` (a real, working, intentionally minimal version for this task only —
+Task 9 replaces its body with the full provenance-aware logic; until then it correctly just
+refreshes the metrics tables). Add both now:
 
 ```python
     def _draw_release_artist(self, label: str, t_trace: float) -> None:
@@ -584,10 +584,8 @@ test green on its own, define minimal real versions now (Task 6/8 will replace t
         self._recompute_metrics()
 ```
 
-(Task 8 replaces `_recompute_release_lags`'s body with the real provenance-aware computation;
-`_draw_release_artist` written here is already Task 6/7's final version, included now so this
-task's own tests — which call `_on_clear_release`/`_on_release_entry_commit`, both of which call
-it — pass without a placeholder.)
+(Task 9 replaces `_recompute_release_lags`'s body with the real provenance-aware computation.
+`_draw_release_artist` written here is already final — no later task modifies it.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -615,7 +613,7 @@ git commit -m "feat: add per-trace release-mark UI (arm/clear/numeric entry) and
 - Test: `tests/test_pendulastic_workbench.py` (append)
 
 **Interfaces:**
-- Consumes: `self._armed_release_label`, `self._traces`, `self._draw_release_artist` (Task 5), `self._recompute_release_lags` (Task 5 stub, Task 8 final).
+- Consumes: `self._armed_release_label`, `self._traces`, `self._draw_release_artist` (Task 5), `self._recompute_release_lags` (Task 5 stub, Task 9 final).
 - Produces: `_mark_release_at(label, x_click)` — a small helper so `_on_plot_click` stays a thin dispatcher, matching the existing style where `_on_plot_click` already delegates to `_on_scrub`.
 
 - [ ] **Step 1: Write the failing tests**
