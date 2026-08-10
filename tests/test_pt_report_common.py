@@ -565,3 +565,23 @@ def test_make_report_figure_default_cohort_snapshot_none_does_not_raise(tmp_path
     out_path = common.make_report_figure("P13", {}, [], "P13_full_report.png", "caveat")
     assert out_path == os.path.join(str(tmp_path), "P13_full_report.png")
     assert os.path.isfile(out_path)
+
+
+def test_main_builds_cohort_snapshot_once_before_participant_loop(monkeypatch):
+    calls = []
+    monkeypatch.setattr(run_pt_analysis.common, "list_participants", lambda: {"13": {}})
+    monkeypatch.setattr(run_pt_analysis, "run_for_participant",
+                        lambda pid, cohort_snapshot=None: calls.append(("run_for_participant", pid, cohort_snapshot)) or [])
+    fake_snapshot = {"ms_pids": [], "control_pids": []}
+    monkeypatch.setattr(run_pt_analysis.pt_cohort_common, "build_cohort_snapshot",
+                        lambda: (calls.append(("build_cohort_snapshot",)) or fake_snapshot))
+    monkeypatch.setattr(run_pt_analysis.pt_cohort_common, "write_cohort_artifacts",
+                        lambda snap: calls.append(("write_cohort_artifacts", snap)))
+    monkeypatch.setattr(run_pt_analysis, "_mas_scored_participants", lambda: set())
+    monkeypatch.setattr(sys, "argv", ["run_pt_analysis.py"])
+
+    run_pt_analysis.main()
+
+    assert calls[0] == ("build_cohort_snapshot",)
+    assert calls[1] == ("run_for_participant", "13", fake_snapshot)
+    assert calls[2] == ("write_cohort_artifacts", fake_snapshot)
