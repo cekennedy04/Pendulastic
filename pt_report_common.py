@@ -234,6 +234,84 @@ def load_excluded_trials():
     return data if isinstance(data, dict) else {}
 
 
+def trial_candidates(participant_id, include_archive=True):
+    """Every trial_*_optitrack.csv discovered for this participant, kept
+    regardless of exclusion/validity/scoreability, each tagged with a
+    terminal status -- the data source for the full report's data-
+    completeness caption line (2026-08-10 full-report-hpe-accuracy design
+    spec §5.6). Standalone from discover_all_trials()/collect_participant()
+    by design (see this function's task in the implementation plan for
+    why) -- does its own raw glob rather than filtering their output, so
+    it can preserve candidates they intentionally drop (INVALID paths,
+    excluded trials) plus files _parse_trial_path() can't attribute to a
+    participant/leg at all (status "unparseable").
+
+    Never raises -- matches this module's other discovery/loader
+    conventions. status is one of:
+      "unparseable"  -- _parse_trial_path() returned None
+      "invalid_path" -- "INVALID" in the path
+      "excluded"     -- key present in load_excluded_trials(); reason set
+      "unreadable"   -- pt.load_optitrack() raised
+      "unscoreable"  -- score_trial() returned None
+      "scored"       -- record set to the scored trial dict
+    """
+    excluded = load_excluded_trials()
+    out = []
+    seen = set()
+    roots = [OPTI_ROOT] + ([ARCHIVE_ROOT] if include_archive and os.path.isdir(ARCHIVE_ROOT) else [])
+    for root in roots:
+        for csv_path in glob.glob(os.path.join(root, "**", "trial_*_optitrack.csv"), recursive=True):
+            real = os.path.realpath(csv_path)
+            if real in seen:
+                continue
+            seen.add(real)
+
+            if "INVALID" in csv_path.upper():
+                rec = _parse_trial_path(csv_path, root)
+                if rec is not None and rec["participant"] != participant_id:
+                    continue
+                out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
+                           "status": "invalid_path", "reason": None, "record": None})
+                continue
+
+            rec = _parse_trial_path(csv_path, root)
+            if rec is None:
+                # Can't attribute to a participant at all -- can't filter
+                # by participant_id either, so every unparseable file in
+                # the tree is included regardless of which pid was asked
+                # for. Callers building a per-participant completeness
+                # tally should treat this bucket as tree-wide, not
+                # per-participant, and say so in the UI copy.
+                out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
+                           "status": "unparseable", "reason": None, "record": None})
+                continue
+            if rec["participant"] != participant_id:
+                continue
+
+            key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
+            if key in excluded:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "excluded", "reason": excluded[key], "record": None})
+                continue
+
+            try:
+                t, angle = pt.load_optitrack(csv_path)
+            except Exception:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "unreadable", "reason": None, "record": None})
+                continue
+
+            pid_key = f"{participant_id}_{rec['leg']}_{rec['condition']}"
+            record = score_trial(pid_key, rec["trial"], t, angle)
+            if record is None:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "unscoreable", "reason": None, "record": None})
+            else:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "scored", "reason": None, "record": record})
+    return out
+
+
 def discover_all_trials(include_archive=True):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
