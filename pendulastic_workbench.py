@@ -1019,15 +1019,42 @@ class WorkbenchView(tk.Frame):
             self._plot_canvas.draw_idle()
 
     def _on_plot_click(self, event) -> None:
-        """Clicking the plot seeks the video to the nearest frame --
-        generalizes pendulastic_viewer.py's single-purpose release-frame
-        click handler into an arbitrary seek (design spec Section 5)."""
-        if event.inaxes is not self._ax or event.xdata is None or self._fps <= 0:
+        """Clicking the plot seeks the video to the nearest frame -- unless
+        a trace is currently armed for release-marking (self._armed_release_
+        label), in which case the click marks that trace's release instead
+        and does not also seek the video."""
+        if event.inaxes is not self._ax or event.xdata is None:
+            return
+        if self._armed_release_label is not None:
+            self._mark_release_at(self._armed_release_label, event.xdata)
+            return
+        if self._fps <= 0:
             return
         fi = int(round(event.xdata * self._fps))
         fi = max(0, min(fi, self._n_frames - 1))
         self._scrub_var.set(fi)
         self._on_scrub(str(fi))
+
+    def _mark_release_at(self, label: str, x_click: float) -> None:
+        """Snaps x_click to `label`'s own nearest actual sample timestamp --
+        event.xdata is already in that trace's native time coordinates,
+        since each trace was plotted as self._ax.plot(t, angle) with its
+        own t array (design spec Section 2a)."""
+        t_arr, _y_arr = self._traces.get(label, (np.array([]), np.array([])))
+        if len(t_arr) == 0:
+            self._armed_release_label = None
+            if label in self._release_buttons:
+                self._release_buttons[label].configure(text="Mark Release")
+            return
+        idx = int(np.argmin(np.abs(t_arr - x_click)))
+        snapped_t = float(t_arr[idx])
+        self._release_marks[label] = {"t_trace": snapped_t, "source": "manual"}
+        self._release_entry_vars[label].set(f"{snapped_t:.3f}")
+        self._draw_release_artist(label, snapped_t)
+        self._armed_release_label = None
+        self._release_buttons[label].configure(text="Mark Release")
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
 
     def current_frame_index(self) -> int:
         """Reads the scrubber's bound Tkinter variable directly -- never

@@ -1002,3 +1002,60 @@ def test_release_artist_redraw_survives_axes_clear():
     # Neither call should raise NotImplementedError on the now-invalidated artists.
     wv._draw_release_artist("imu", 2.0)
     wv._on_clear_release("imu")
+
+
+class _FakeClickEvent:
+    def __init__(self, inaxes, xdata):
+        self.inaxes = inaxes
+        self.xdata = xdata
+
+
+def test_plot_click_while_armed_marks_release_and_disarms():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._on_arm_release("imu")
+
+    t_arr, _ = wv._traces["imu"]
+    click_x = float(t_arr[10])
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=click_x))
+    r.update()
+
+    assert wv._release_marks["imu"]["t_trace"] == pytest.approx(t_arr[10])
+    assert wv._release_marks["imu"]["source"] == "manual"
+    assert wv._armed_release_label is None
+    assert wv._release_buttons["imu"].cget("text") == "Mark Release"
+
+
+def test_plot_click_snaps_to_nearest_sample():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._on_arm_release("imu")
+
+    t_arr, _ = wv._traces["imu"]
+    # Click slightly off-grid, between sample 10 and 11 but closer to 10.
+    click_x = float(t_arr[10]) + 0.3 * (float(t_arr[11]) - float(t_arr[10]))
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=click_x))
+
+    assert wv._release_marks["imu"]["t_trace"] == pytest.approx(t_arr[10])
+
+
+def test_plot_click_without_arming_falls_back_to_video_seek():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    wv._fps = 30.0
+    wv._n_frames = 100
+    r.update()
+
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=1.0))
+    r.update()
+
+    assert "imu" not in wv._release_marks
+    assert wv._scrub_var.get() == pytest.approx(30.0)
