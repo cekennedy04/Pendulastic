@@ -76,3 +76,59 @@ def test_select_patient_pose_ignores_degenerate_zero_length_trunk():
     degenerate = _make_pose((0.5, 0.5), (0.5, 0.5))   # shoulder == hip, mag=0
     patient = _make_pose(shoulder_mid=(0.75, 0.40), hip_mid=(0.55, 0.42))
     assert bm._select_patient_pose([degenerate, patient]) is patient
+
+
+# ── CSV_FIELDNAMES ───────────────────────────────────────────────────────────
+
+def test_csv_fieldnames_includes_identity_columns():
+    assert "identity_score" in bm.CSV_FIELDNAMES
+    assert "identity_ambiguous" in bm.CSV_FIELDNAMES
+    # Existing columns must still be present -- additive only, per the
+    # design's CSV backward-compatibility constraint.
+    for col in ("frame", "time_sec", "leg", "hip_x", "hip_y", "knee_x",
+                "knee_y", "ankle_x", "ankle_y", "hip_score", "knee_score",
+                "ankle_score", "knee_angle_deg"):
+        assert col in bm.CSV_FIELDNAMES
+
+
+# ── discover_new_trials(force=...) ───────────────────────────────────────────
+
+def _write_bytes(path, data=b"x"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def test_discover_new_trials_skips_existing_by_default(tmp_path, monkeypatch):
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    monkeypatch.setattr(bm, "OPTI_ROOT", opti_root)
+    monkeypatch.setattr(bm, "REC_ROOT", rec_root)
+
+    trial_dir = opti_root / "Participant_99" / "Right" / "pre"
+    _write_bytes(trial_dir / "Trial_1_optitrack.csv")
+    _write_bytes(trial_dir / "Trial_1.avi")
+    _write_bytes(trial_dir / "Participant_99_T_1_mediapipe_full_0.5.csv")
+    _write_bytes(trial_dir / "Participant_99_T_1_mediapipe_full_0.5_annotated.mp4")
+
+    trials = list(bm.discover_new_trials(force=False))
+    assert trials == []
+
+
+def test_discover_new_trials_force_reprocesses_existing(tmp_path, monkeypatch):
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    rec_root = tmp_path / "Recordings"
+    monkeypatch.setattr(bm, "OPTI_ROOT", opti_root)
+    monkeypatch.setattr(bm, "REC_ROOT", rec_root)
+
+    trial_dir = opti_root / "Participant_99" / "Right" / "pre"
+    _write_bytes(trial_dir / "Trial_1_optitrack.csv")
+    _write_bytes(trial_dir / "Trial_1.avi")
+    _write_bytes(trial_dir / "Participant_99_T_1_mediapipe_full_0.5.csv")
+    _write_bytes(trial_dir / "Participant_99_T_1_mediapipe_full_0.5_annotated.mp4")
+
+    trials = list(bm.discover_new_trials(force=True))
+    assert len(trials) == 1
+    assert trials[0]["participant"] == "Participant_99"
+    assert trials[0]["trial_n"] == 1
+    assert trials[0]["need_csv"] is True
+    assert trials[0]["need_video"] is True
