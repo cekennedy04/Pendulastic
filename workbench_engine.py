@@ -146,6 +146,17 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     }
 
 
+def release_lag_sec(ref_t: float, test_t: float) -> float:
+    """Time offset to shift a test trace by so its release aligns with the
+    reference trace's release: shifted_test_t = test_t + release_lag_sec(...)
+    matches compare_pair()'s lag_override_sec convention directly."""
+    ref_t = float(ref_t)
+    test_t = float(test_t)
+    if not (math.isfinite(ref_t) and math.isfinite(test_t)):
+        raise ValueError("ref_t and test_t must both be finite.")
+    return ref_t - test_t
+
+
 _PT_PARAM_KEYS = ("R2n", "N", "phi_max_ratio", "omega_max_n", "f",
                   "area_ratio", "omega_min_n")
 

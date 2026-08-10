@@ -950,3 +950,15 @@ def test_compute_raw_sensor_diagnostics_returns_both_keys(tmp_path):
     assert diagnostics["peak_gyro_velocity_dps"] == 5.0
     assert diagnostics["accel_release_time_sec"] is not None
     assert abs(diagnostics["accel_release_time_sec"] - 1.0) < 0.15
+
+
+def test_release_lag_sec_returns_ref_minus_test():
+    assert engine.release_lag_sec(2.5, 1.0) == pytest.approx(1.5)
+    assert engine.release_lag_sec(1.0, 2.5) == pytest.approx(-1.5)
+
+
+def test_release_lag_sec_rejects_non_finite_input():
+    with pytest.raises(ValueError):
+        engine.release_lag_sec(float("nan"), 1.0)
+    with pytest.raises(ValueError):
+        engine.release_lag_sec(1.0, float("inf"))
