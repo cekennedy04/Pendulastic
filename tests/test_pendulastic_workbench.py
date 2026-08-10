@@ -1306,3 +1306,41 @@ def test_reset_for_new_trial_then_set_traces_does_not_leak_old_lag_into_same_lab
     r.update()
 
     assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_get_release_marks_returns_copy():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+
+    marks = wv.get_release_marks()
+    assert marks == {"imu": {"t_trace": 1.0, "source": "manual"}}
+    marks["imu"]["t_trace"] = 99.0
+    assert wv._release_marks["imu"]["t_trace"] == 1.0, "must be a shallow copy at the top level"
+
+
+def test_export_csv_menu_release_marks_entry_disabled_when_no_marks():
+    """set_traces() legitimately auto-seeds a release mark for "imu" from
+    this helper's detectable synthetic curve (Task 8), so the "no marks"
+    state has to be established explicitly here (mirroring
+    test_recompute_release_lags_noop_when_neither_marked) rather than
+    assumed to hold right after set_traces()."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks.pop("imu", None)
+    wv._update_export_csv_state()
+    r.update()
+
+    assert wv._export_csv_menu.entrycget(4, "state") == "disabled"
+
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+    wv._update_export_csv_state()
+    r.update()
+
+    assert wv._export_csv_menu.entrycget(4, "state") == "normal"

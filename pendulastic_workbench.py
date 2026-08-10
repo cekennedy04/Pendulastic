@@ -384,6 +384,8 @@ class WorkbenchView(tk.Frame):
                                           command=self._on_export_vs_reference_csv)
         self._export_csv_menu.add_command(label="Annotations...",
                                           command=self._on_export_annotations_csv)
+        self._export_csv_menu.add_command(label="Release Marks...",
+                                          command=self._on_export_release_marks_csv)
         self._export_csv_button.configure(menu=self._export_csv_menu)
         self._export_csv_button.pack(side="right", padx=6)
 
@@ -860,6 +862,9 @@ class WorkbenchView(tk.Frame):
     def get_annotations(self) -> dict:
         return dict(self._annotations)
 
+    def get_release_marks(self) -> dict:
+        return {label: dict(mark) for label, mark in self._release_marks.items()}
+
     def set_raw_diagnostics(self, diagnostics: Optional[dict]) -> None:
         self._raw_diagnostics = diagnostics
         self._recompute_metrics()
@@ -881,9 +886,11 @@ class WorkbenchView(tk.Frame):
     def _update_export_csv_state(self) -> None:
         has_traces = bool(self._traces)
         has_annotations = bool(self._annotations)
+        has_release_marks = bool(self._release_marks)
         for i in (0, 1, 2):
             self._export_csv_menu.entryconfig(i, state="normal" if has_traces else "disabled")
         self._export_csv_menu.entryconfig(3, state="normal" if has_annotations else "disabled")
+        self._export_csv_menu.entryconfig(4, state="normal" if has_release_marks else "disabled")
 
     def _meta_ids(self) -> tuple:
         meta = self.controller.get_trial_meta()
@@ -942,6 +949,12 @@ class WorkbenchView(tk.Frame):
         fieldnames, rows = engine.annotations_to_csv_rows(
             self.get_annotations(), participant_id, session_date)
         self._prompt_and_write_csv("annotations", fieldnames, rows)
+
+    def _on_export_release_marks_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.release_marks_to_csv_rows(
+            self.get_release_marks(), participant_id, session_date)
+        self._prompt_and_write_csv("release_marks", fieldnames, rows)
 
     def _save_current_trial(self, participant_id: str, leg: str,
                             session_label: str, date: str) -> None:
