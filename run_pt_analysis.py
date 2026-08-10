@@ -64,6 +64,15 @@ def run_for_participant(pid, cohort_snapshot=None):
     label = f"P{pid}"
     outputs = []
 
+    # make_report_figure()'s Row 1 (HPE/IMU overlay), Row 4 (RMSE bars), and
+    # Row 5 (per-source paired PT7) all read rec["mediapipe_curve"]/
+    # rec["mediapipe_rmse"] -- fields only attach_rmse() ever sets. It must
+    # run before make_report_figure(), not just before make_rmse_figure()
+    # (which also calls it internally, redundantly but harmlessly, on the
+    # already-attached records) -- otherwise those rows silently render
+    # empty on every run even when real MediaPipe/IMU data exists.
+    common.attach_rmse(by_leg_tp)
+
     outputs.append(common.make_report_figure(
         label, by_leg_tp, timepoints, f"P{pid}_full_report.png",
         caveat_text=f"Auto-generated {READY_AFTER_SECONDS // 60} min after the first recording "

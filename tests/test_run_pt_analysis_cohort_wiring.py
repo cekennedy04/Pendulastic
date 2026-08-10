@@ -40,6 +40,37 @@ def test_run_for_participant_proceeds_after_ready_after_seconds_with_low_trial_c
     assert outputs == ["report.png"]
 
 
+def test_run_for_participant_attaches_rmse_before_report_figure(monkeypatch):
+    """Regression: make_report_figure()'s Row 1 (HPE/IMU overlay), Row 4
+    (RMSE bars), and Row 5 (per-source paired PT7) all read
+    rec["mediapipe_curve"]/rec["mediapipe_rmse"] -- fields only
+    attach_rmse() ever sets. Confirmed against real participant data
+    (2026-08-10 full-report-hpe-accuracy plan, Task 14 manual verification):
+    calling make_report_figure() before attach_rmse() has ever run on
+    by_leg_tp silently renders those rows empty even when real MediaPipe/
+    IMU data exists, because make_rmse_figure() (the only other caller of
+    attach_rmse()) used to run second. attach_rmse() must run before
+    make_report_figure() is called."""
+    now = 10_000.0
+    calls = []
+    monkeypatch.setattr(rpa.time, "time", lambda: now)
+    monkeypatch.setattr(rpa, "leg_trial_counts", lambda pid: {"left": 1, "right": 1})
+    monkeypatch.setattr(rpa.common, "first_recording_time", lambda pid: now - 31 * 60)
+    by_leg_tp = {("left", "pre"): [{"mediapipe_rmse": None}]}
+    monkeypatch.setattr(rpa.common, "collect_participant", lambda pid: (by_leg_tp, []))
+    monkeypatch.setattr(rpa.common, "attach_rmse", lambda blt: calls.append("attach_rmse") or blt)
+    monkeypatch.setattr(rpa.common, "make_report_figure",
+                        lambda *a, **k: calls.append("make_report_figure") or "report.png")
+    monkeypatch.setattr(rpa.common, "make_rmse_figure",
+                        lambda *a, **k: calls.append("make_rmse_figure") or ("rmse.png", False))
+    monkeypatch.setattr(rpa.common, "make_comparison_figure", lambda *a, **k: "comparison.png")
+
+    rpa.run_for_participant("15")
+
+    assert "attach_rmse" in calls
+    assert calls.index("attach_rmse") < calls.index("make_report_figure")
+
+
 def test_main_calls_write_cohort_artifacts_once(monkeypatch):
     # 2026-08-10 full-report-hpe-accuracy plan (Task 13): main() now builds
     # one cohort snapshot up front and threads it into every per-participant
