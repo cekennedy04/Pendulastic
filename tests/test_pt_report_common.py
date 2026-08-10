@@ -423,3 +423,43 @@ def test_draw_row5_table_empty_timepoints_does_not_raise():
     matches = common._draw_row5_table(ax, "left", {}, [], "13")
     assert matches == {}
     plt.close(fig)
+
+
+def test_build_caption_text_includes_cohort_reference_when_snapshot_present(monkeypatch):
+    import pt_cohort_common as pcc
+    fake_ref = {"ms_median": 0.41, "ms_n": 2, "control_median": 0.15, "control_n": 3,
+               "leave_one_out_arm": "MS"}
+    monkeypatch.setattr(pcc, "leg_cohort_reference", lambda snap, pid, leg: fake_ref)
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: [])
+
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30}
+    text = common._build_caption_text("P13", "13", {("left", "pre"): [rec]}, [("pre", "Pre", "#d62728")],
+                                      cohort_snapshot={"ms_pids": ["13"], "control_pids": ["6"]})
+
+    assert "MS arm median" in text
+    assert "0.41" in text
+    assert "leave-one-out" in text
+
+
+def test_build_caption_text_omits_cohort_reference_when_snapshot_none():
+    text = common._build_caption_text("P13", "13", {("left", "pre"): []}, [("pre", "Pre", "#d62728")],
+                                      cohort_snapshot=None)
+    assert "MS arm median" not in text
+
+
+def test_build_caption_text_includes_data_completeness(monkeypatch):
+    fake_candidates = [
+        {"leg": "left", "condition": "pre", "status": "scored"},
+        {"leg": "left", "condition": "pre", "status": "scored"},
+        {"leg": "left", "condition": "pre", "status": "excluded", "reason": "active muscle"},
+        {"leg": "left", "condition": "pre", "status": "unreadable"},
+    ]
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: fake_candidates)
+
+    text = common._build_caption_text("P13", "13", {("left", "pre"): []}, [("pre", "Pre", "#d62728")],
+                                      cohort_snapshot=None)
+
+    assert "Left/pre" in text or "Left/Pre" in text
+    assert "2 scored" in text
+    assert "1 excluded" in text
+    assert "1 unreadable" in text
