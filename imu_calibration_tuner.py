@@ -137,12 +137,26 @@ class _RoleState:
     def calibrate_accel_bias(self) -> None:
         """Estimate accel bias from the current accel_hold_buf during a
         verified-stillness window. During true stillness, raw accel should
-        equal [0, 0, 9.81] (gravity only); any deviation is bias."""
+        equal [0, 0, ±g] (gravity only); any deviation is bias.
+
+        g's magnitude and sign are picked from the data's own scale, not
+        hardcoded -- see pendulastic_imu_server._IMUDevice.
+        calibrate_accel_bias for why (iOS g-units vs Android m/s²; and a
+        phone mounted screen-down reads -g on Z at rest, not the +g a fixed
+        constant assumes). Kept in sync with that function since this tuner
+        replays the same pipeline offline -- it's what actually produces
+        the final saved/scored angle series after a live recording ends
+        (see pendulastic_app.py's _run_imu_tuning), so a mismatch here
+        reproduces the live bug in every saved trial regardless of the
+        live-server fix."""
         if not self.accel_hold_buf or len(self.accel_hold_buf) < 2:
             return
         vals = np.array([v for _, v in self.accel_hold_buf])
         mean_accel = vals.mean(axis=0)
-        gravity = np.array([0.0, 0.0, 9.81])
+        mag = float(np.linalg.norm(mean_accel))
+        g = 9.81 if mag > 3.0 else 1.0
+        sign = 1.0 if mean_accel[2] >= 0.0 else -1.0
+        gravity = np.array([0.0, 0.0, sign * g])
         self.accel_bias = mean_accel - gravity
 
 
@@ -349,7 +363,14 @@ def replay_trial(raw_samples: list, params: dict):
                                 if t >= bias_cutoff]
 
             if st.accel is not None:
-                st.ahrs.update(v - st.gyro_bias, st.accel, st.mag, dt)
+                # Magnetometer correction deliberately not used here either --
+                # see pendulastic_imu_server._IMUDevice.on_gyro for why (a
+                # disturbed indoor magnetic reading actively steers toward a
+                # wrong heading, and yaw isn't clinically relevant to knee
+                # flexion). Kept in sync with the live server so a config
+                # this tuner scores/persists reflects what the live server
+                # will actually do with it.
+                st.ahrs.update(v - st.gyro_bias, st.accel, None, dt)
 
     while next_tick_i < n_ticks:
         tick_quats.append(_snapshot())

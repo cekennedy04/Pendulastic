@@ -987,6 +987,121 @@ def test_imudevice_calibrate_accel_bias_from_stillness():
     np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
 
 
+def test_imudevice_calibrate_accel_bias_from_stillness_g_units():
+    """Regression test: iOS's CoreMotion reports accel in g's (magnitude ~1),
+    not the ~9.81 m/s² Android's SensorManager uses. calibrate_accel_bias()
+    must recognise the g-unit case from the data's own scale and calibrate
+    against gravity=1.0, not silently apply the m/s²-sized constant -- doing
+    so corrupts the bias by ~9.81 per axis, which then disables the AHRS's
+    accelerometer correction step for the rest of the session and lets the
+    fused angle drift indefinitely even while the phone is held still (the
+    real-world symptom this test guards against)."""
+    dev = imu._IMUDevice("12.0.1.10")
+    now = __import__("time").time()
+
+    bias_true = np.array([0.01, -0.02, 0.03])
+    accel_hold_buf = []
+    for i in range(21):
+        t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+        raw_accel = np.array([0.0, 0.0, 1.0]) + bias_true
+        accel_hold_buf.append((t, raw_accel))
+
+    dev.calibrate_accel_bias(accel_hold_buf)
+
+    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+
+
+def test_calibrate_accel_bias_g_units_keeps_ahrs_correction_gate_open():
+    """End-to-end regression test for the reported bug: on a g-unit build,
+    _a_est self-calibrates from raw (pre-bias) accel *before* zero() ever
+    fires -- exactly like production, where the device streams for a bit
+    before the auto-tare hold is confirmed. If calibrate_accel_bias() then
+    applies the wrong-unit (m/s²) constant, the post-calibration corrected
+    accel norm jumps to ~9.81 while _a_est is still anchored near the true
+    ~1.0 g-unit scale, permanently closing the AHRS's accelerometer
+    correction gate (_do_correct) -- the filter then free-integrates gyro
+    drift even while the phone is held still, which is the reported bug."""
+    dev = imu._IMUDevice("12.0.1.11")
+    now = __import__("time").time()
+
+    still_g = np.array([0.01, -0.02, 1.0])   # a realistic iPhone "at rest" sample
+
+    # Pre-calibration: device streams raw accel (bias not yet set), same as
+    # real usage before the auto-tare hold confirms and zero() fires.
+    for _ in range(50):
+        dev.accel = still_g - dev.accel_bias   # bias is still zero here
+        dev.ahrs._a_est = (float(np.linalg.norm(dev.accel)) if dev.ahrs._a_est == 0.0
+                            else 0.999 * dev.ahrs._a_est + 0.001 * float(np.linalg.norm(dev.accel)))
+
+    accel_hold_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, still_g)
+                       for i in range(21)]
+    dev.calibrate_accel_bias(accel_hold_buf)
+
+    # Post-calibration: the phone is still held still, sending the same
+    # raw sample -- now bias-corrected with whatever calibrate_accel_bias()
+    # computed.
+    dev.accel = still_g - dev.accel_bias
+    a_norm = float(np.linalg.norm(dev.accel))
+    a_est = dev.ahrs._a_est
+    gate_open = a_est > 1e-9 and 0.9 * a_est <= a_norm <= 1.1 * a_est
+    assert gate_open, (
+        f"AHRS accel-correction gate closed after g-unit calibration "
+        f"(a_norm={a_norm:.3f}, a_est={a_est:.3f}) -- drift will not "
+        f"self-correct while the phone is held still")
+
+
+def test_imudevice_calibrate_accel_bias_negative_z_at_rest():
+    """Regression test: a phone mounted the other way up reads -g on Z at
+    rest (confirmed from real recordings), not the +g calibrate_accel_bias()
+    used to assume unconditionally. Applying +g there still produces a
+    plausible-looking bias (right magnitude) but wrong by ~2g in Z, which
+    still passes the AHRS's magnitude-only correction gate while pointing
+    the gravity reference 180° off in that axis -- the filter then actively
+    steers the orientation toward that wrong reference every tick instead
+    of correctly doing nothing, producing a bounded-but-wrong drift even
+    while the phone is genuinely still (the real-world symptom this test
+    guards against: a stationary 32s trial reported knee angle sliding from
+    ~170 to ~55 degrees)."""
+    dev = imu._IMUDevice("12.0.1.12")
+    now = __import__("time").time()
+
+    bias_true = np.array([0.01, -0.02, 0.03])
+    accel_hold_buf = []
+    for i in range(21):
+        t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
+        raw_accel = np.array([0.0, 0.0, -1.0]) + bias_true   # -g at rest
+        accel_hold_buf.append((t, raw_accel))
+
+    dev.calibrate_accel_bias(accel_hold_buf)
+
+    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+
+
+def test_calibrate_accel_bias_negative_z_keeps_correction_pointed_right_way():
+    """End-to-end regression test: after calibrating against a -g-at-rest
+    mounting, the bias-corrected accel for a still phone must still point
+    close to its own raw (measured) direction -- not be flipped by the
+    erroneous +g assumption. A flip here is what let the AHRS's gate stay
+    open while actively correcting toward the wrong hemisphere."""
+    dev = imu._IMUDevice("12.0.1.13")
+    now = __import__("time").time()
+
+    still_g = np.array([0.01, -0.02, -1.0])   # a realistic "mounted upside down" rest sample
+    accel_hold_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, still_g)
+                       for i in range(21)]
+    dev.calibrate_accel_bias(accel_hold_buf)
+
+    corrected = still_g - dev.accel_bias
+    # Corrected accel should recover the clean gravity-only reading
+    # ([0,0,-1], offset removed) -- not flip toward [0,0,+1] the way the
+    # old unconditional-+g code would.
+    assert corrected[2] < 0, (
+        f"corrected accel z={corrected[2]:.3f} flipped positive -- the AHRS "
+        f"will steer orientation toward the wrong (opposite) gravity "
+        f"reference for a phone that reads -g at rest")
+    np.testing.assert_allclose(corrected, [0.0, 0.0, -1.0], atol=1e-6)
+
+
 def test_imudevice_on_accel_subtracts_bias():
     """on_accel() should subtract accel_bias from raw accel before storing
     it as self.accel, so AHRS sees bias-corrected data."""

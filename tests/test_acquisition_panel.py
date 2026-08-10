@@ -130,6 +130,37 @@ def test_enter_idle_hides_telemetry():
         r.destroy()
 
 
+def test_enter_processing_default_message_mentions_mediapipe():
+    """Default enter_processing() message must stay MediaPipe-specific --
+    it's still correct for the RGB and video-file processing call sites."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_processing(); r.update()
+        assert "MediaPipe" in p.status_var.get()
+    finally:
+        r.destroy()
+
+
+def test_enter_processing_accepts_custom_message_for_non_mediapipe_work():
+    """Regression test: enter_processing() previously hardcoded 'Running
+    MediaPipe tracking…' unconditionally, including for the IMU-only
+    auto-tuning path (imu_calibration_tuner grid search), which never
+    touches MediaPipe at all -- misleading a user recording IMU-only into
+    thinking MediaPipe was running when it wasn't. Callers doing non-
+    MediaPipe background work must be able to show an accurate message."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_processing("Tuning IMU calibration…"); r.update()
+        assert p.status_var.get() == "Tuning IMU calibration…"
+        assert "MediaPipe" not in p.status_var.get()
+    finally:
+        r.destroy()
+
+
 
 
 def test_validate_empty_pid_fails():

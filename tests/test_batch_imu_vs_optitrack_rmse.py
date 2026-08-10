@@ -45,28 +45,66 @@ def _score_real_trial(imu_path):
 @skip_without_real_recordings
 def test_contaminated_trial_no_longer_has_extreme_bias():
     """Participant_13_left_post Trial_4: 32.8 deg RMSE / 26.9 deg bias
-    before the fix (see Model_Analysis_Outputs/imu_vs_optitrack_rmse.csv,
-    captured pre-fix). Post-fix this trial's zero now captures from the
-    genuine hold instead of pre-release contamination, cutting RMSE to
-    ~21.7 deg -- a real, large improvement, though NOT yet under the
-    project's 10 deg target (other, separate causes of RMSE noted in the
-    2026-08-07 investigation still apply: e.g. this trial's own remaining
-    bias, and unrelated sync/reference-frame issues on other trials). This
-    pins the improvement as a floor so it can't silently regress back
-    toward the pre-fix value, without overclaiming a target this one fix
-    doesn't reach on its own."""
+    before the 2026-08-07 zero-capture-contamination fix (see
+    Model_Analysis_Outputs/imu_vs_optitrack_rmse.csv, captured pre-fix).
+    That fix alone cut RMSE to ~21.7 deg.
+
+    2026-08-10 accel-bias fixes (see _RoleState.calibrate_accel_bias /
+    pendulastic_imu_server._IMUDevice.calibrate_accel_bias and .on_gyro),
+    three compounding bugs found from a live phone reporting knee-angle
+    drift while held stationary:
+      1. calibrate_accel_bias() assumed accel data is in m/s² (gravity=
+         9.81); this phone's build reports g's (gravity=1) -- the huge
+         resulting unit-mismatched bias silently disabled the AHRS's
+         accelerometer-correction gate for the whole trial (pure,
+         uncorrected gyro integration).
+      2. It also assumed gravity reads +g on the sensor's Z axis at rest;
+         this phone's mounting reads -g -- the ~2g-off bias this produced
+         still passed the correction gate (right magnitude) but pointed
+         gravity 180 deg off, so the filter actively steered orientation
+         toward a wrong-but-stable reference instead of doing nothing.
+      3. The AHRS also used magnetometer data for yaw correction; indoor
+         magnetic fields are commonly disturbed (this phone's magnetometer
+         stream froze mid-recording) and yaw isn't clinically relevant to
+         knee flexion, so a disturbed reading was actively steering yaw
+         wrong. Magnetometer correction is now unused (mag=None passed to
+         AHRS.update(), its own documented "IMU-only" fallback path).
+    Together these are unambiguously the right fix: confirmed against a
+    live phone held stationary for 32s -- pre-fix the reported angle
+    drifted 170->55 deg with zero real motion; with only fixes 1-2 it
+    still drifted to a stable-but-wrong ~77 deg (magnetometer-driven);
+    with all three it holds flat to within ~2 deg (see conversation, not
+    a separate persisted test here).
+
+    For THIS trial, fixes 1-2 alone made RMSE *worse* (21.7 -> ~27.9 deg)
+    because of a separate, pre-existing issue: calibrate_accel_bias()'s
+    Z-axis-at-rest assumption doesn't hold for this trial's mounting
+    (measured hold-window accel ~[-0.70,-0.26,0.66] -- gravity spread
+    across all three axes, not Z-dominant like the phone above). Fix 3
+    (dropping magnetometer correction) then improved it past even the
+    original 21.7 deg baseline, to ~20.3 deg -- apparently this trial's
+    magnetic environment was ALSO disturbed enough to be net-harmful, same
+    root cause as the stationary-hold bug, independent of the Z-axis
+    mismatch. The Z-axis mismatch itself is unresolved and tracked
+    separately, not fixed here.
+
+    This pins the current (post-fix) value as a floor so a future change
+    can't silently regress bias/heading estimation further, without
+    reintroducing bugs 1-3 to chase a number this trial's own Z-axis
+    mounting mismatch prevents from reaching the project's 10 deg
+    target."""
     imu_path = os.path.join(
         batch.REC_ROOT, "Participant_13_left_post", "Session_post",
         "Position_1", "Height_Joint-Level", "Trial_4_imu.csv")
     row = _score_real_trial(imu_path)
     assert row["status"] == "ok", row.get("error")
-    # Measured post-fix value is 21.7 deg; 23.0 leaves headroom for benign
-    # numeric noise (library version drift, float rounding) without
-    # tolerating a slide back toward the pre-fix 32.8 deg.
+    # Measured value is 20.3 deg; 23.0 leaves headroom for benign numeric
+    # noise (library version drift, float rounding) without tolerating a
+    # slide back toward the pre-fix values (32.8 / 21.7 / 27.9 deg).
     assert row["rmse_deg"] < 23.0, (
-        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~21.7 deg (the measured "
-        f"post-fix value); this catches a regression toward the pre-fix "
-        f"32.8 deg, not just any improvement")
+        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~20.3 deg (the measured "
+        f"post-fix value, all three accel-bias/magnetometer bugs fixed); "
+        f"this catches a regression, not just any change")
 
 
 @skip_without_real_recordings
