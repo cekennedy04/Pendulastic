@@ -50,24 +50,35 @@ OUT_DIR   = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "PT_Scores")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Healthy reference values ───────────────────────────────────────────────────
-# Data-driven medians from n=13 control, n=8 MS participants (ASU Pendulastic
-# study, 2024-2025; Mann-Whitney analysis in ms_vs_healthy_stats.csv).
+# PROVISIONAL (2026-08-10): recalibrated after fixing three compute_pt_params
+# bugs (release detection firing during a detrend artifact, whole-trial
+# detrend distorting swing amplitude, single-sample "tail median") that
+# invalidated the scores the ORIGINAL n=13 control / n=8 MS calibration was
+# computed from. That larger cohort isn't present in this repo's live data,
+# so these medians come from whatever's currently classified in
+# participant_groups.json instead: n=4 control (P2,8,9,12), n=3 MS
+# (P11,13,14), pre/baseline trials only, both legs pooled, corrected
+# pipeline. Control-vs-MS separation still holds (PT7 median 0.111 vs 0.448,
+# Mann-Whitney p=0.0001) but with only 7 participants this is a much
+# lower-powered estimate than the original -- replace with the full cohort
+# once available. See scratchpad recalibrate_healthy_ref.py for the
+# derivation.
 # One-directional penalties: only penalise deviations in the impaired direction.
 HEALTHY_REF = {
-    "R2n":           1.012,  # control median n=13 (literature 0.91)
-    "N":             7.0,    # control median n=13 (literature 8.0)
-    "phi_max_ratio": 0.787,  # control median n=13; strongest discriminator (Cliff δ=−0.981)
-    "omega_max_n":   5.692,  # control median n=13 (literature 4.5)
-    "omega_min_n":   0.002,  # control median n=8 OptiTrack trials; near-zero by physics
-    # f: our subjects oscillate at 0.89–0.93 Hz (longer shanks than literature)
-    "f":             1.10,
-    "area_ratio":    0.09,   # |P+−P−|/P_total; ~0 = balanced = healthy (Popovic 2018)
+    "R2n":           1.1019,  # control median n=4 (2026-08-10 recalibration)
+    "N":             5.5,     # control median n=4
+    "phi_max_ratio": 0.6387,  # control median n=4
+    "omega_max_n":   7.4494,  # control median n=4
+    "omega_min_n":   0.0012,  # control median n=4
+    "f":             0.9006,  # control median n=4
+    "area_ratio":    0.0497,  # control median n=4
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
-# control median PT=0.037 (IQR=0.047), MS median PT=0.389 (IQR=0.274), p=0.0004
-PT_HEALTHY_MAX    = 0.09   # covers control 75th-pct; below this = healthy
-PT_BORDERLINE_MAX = 0.20   # midpoint of gap between populations
+# PROVISIONAL (2026-08-10): control median PT=0.111, 75th-pct=0.150;
+# MS median PT=0.448; Mann-Whitney p=0.0001. Same n=7 caveat as HEALTHY_REF.
+PT_HEALTHY_MAX    = 0.150  # covers control 75th-pct; below this = healthy
+PT_BORDERLINE_MAX = 0.299  # midpoint of gap between populations
 
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
