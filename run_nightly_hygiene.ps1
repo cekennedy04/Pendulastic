@@ -22,7 +22,9 @@ $logPath = "docs\hygiene\last-run.log"
 $startTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 "=== Nightly hygiene run started: $startTime ===" | Out-File -FilePath $logPath -Encoding utf8
 
-Get-Content -Raw -Path $runbookPath | & $claudeExe -p `
+$runbookContent = Get-Content -Raw -Path $runbookPath
+
+& $claudeExe -p $runbookContent `
     --permission-mode bypassPermissions `
     --max-budget-usd 3 `
     --output-format text `
