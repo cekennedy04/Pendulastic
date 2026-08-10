@@ -398,6 +398,136 @@ def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_di
     return out_path
 
 
+def _row5_source_pt7(rec, curve_key):
+    """PT7 (7-param, same compute_pt_score used for OptiTrack everywhere
+    else in this module) computed directly from one source's own curve on
+    this trial record, or None if the curve is missing or fails to
+    score. curve_key is "mediapipe_curve" or "imu_curve" (set by
+    attach_rmse, Task 2)."""
+    curve = rec.get(curve_key)
+    if curve is None:
+        return None
+    params = pt.compute_pt_params(curve["t"], curve["ang"])
+    if params is None:
+        return None
+    return pt.compute_pt_score(params)
+
+
+def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
+    """PT7/MAS source-agreement table for one leg: OptiTrack vs MediaPipe
+    and OptiTrack vs IMU, each with its OWN paired OptiTrack baseline
+    (not one shared number -- MediaPipe and IMU can pass the quality gate
+    on different trial subsets), three-stage missing/rejected/unscored
+    accounting, and clinician MAS shown at most 2-most-recent with a
+    '+N more' note (full record goes to the sidecar CSV -- see
+    write_clinician_mas_sidecar, Task 6). Returns
+    {(leg, condition): matches_used} so the caller can write the sidecar
+    from the exact matches this table displayed, without recomputing."""
+    ax.axis("off")
+    matches_by_leg_condition = {}
+    rows = []
+
+    for tp_key, tp_label, color in timepoints:
+        trials = by_leg_tp.get((leg, tp_key), [])
+        if not trials:
+            continue
+
+        # Per-trial gate accounting, fetched fresh with return_rejected=True
+        # -- attach_rmse's rec["mediapipe_curve"]/rec["imu_curve"] only
+        # carries POST-gate survivors, so re-deriving "had a candidate at
+        # all" from those keys would conflate "no candidate CSV" with
+        # "candidate CSV existed but was rejected by the quality gate",
+        # exactly the distinction Task 1's return_rejected mode exists to
+        # preserve. One call per trial, reused for both sources below.
+        gate_by_trial = {}
+        for r in trials:
+            try:
+                accepted, rejected = pt.load_hpe_model_curves(
+                    r["pid"], "1", r["trial"], r["t_raw"], r["angle_raw"], r["neutral_deg_raw"],
+                    return_rejected=True)
+            except Exception:
+                accepted, rejected = [], []
+            gate_by_trial[id(r)] = (accepted, rejected)
+
+        for source_label, curve_key, name_matches in (
+            ("MediaPipe", "mediapipe_curve", lambda n: n.startswith("mediapipe")),
+            ("IMU", "imu_curve", lambda n: n == "imu_viewer"),
+        ):
+            n_candidate = 0
+            n_passed_gate = 0
+            for r in trials:
+                accepted, rejected = gate_by_trial[id(r)]
+                has_accepted = any(name_matches(c["name"]) for c in accepted)
+                has_rejected = any(name_matches(c["name"]) for c in rejected)
+                if has_accepted or has_rejected:
+                    n_candidate += 1
+                if has_accepted:
+                    n_passed_gate += 1
+
+            source_pt7s = [_row5_source_pt7(r, curve_key) for r in trials if r.get(curve_key) is not None]
+            n_scored = sum(1 for v in source_pt7s if v is not None)
+            paired_opti = [r["pt7"] for r in trials if r.get(curve_key) is not None]
+            opti_paired_mean = float(np.mean(paired_opti)) if paired_opti else None
+            source_mean = float(np.mean([v for v in source_pt7s if v is not None])) if n_scored else None
+            delta = (source_mean - opti_paired_mean) if (source_mean is not None and opti_paired_mean is not None) else None
+
+            rows.append({
+                "timepoint": tp_label, "source": source_label,
+                "opti_paired_pt7": opti_paired_mean, "opti_paired_n": len(paired_opti),
+                "source_pt7": source_mean, "source_mas": pt.pt_to_mas(source_mean) if source_mean is not None else None,
+                "delta": delta,
+                "n_candidate": n_candidate, "n_passed_gate": n_passed_gate,
+                "n_total": len(trials), "n_scored": n_scored,
+            })
+
+        matches = clinician_mas_matches(participant_id, leg, tp_key)
+        matches_by_leg_condition[(leg, tp_key)] = matches
+
+    if not rows:
+        ax.text(0.5, 0.5, "No timepoints available", transform=ax.transAxes,
+               ha="center", va="center", color="#888888", fontsize=9)
+        return matches_by_leg_condition
+
+    def _fmt_pt7(v):
+        return f"{v:.3f}" if v is not None else "—"
+
+    def _fmt_delta(v):
+        return f"{v:+.3f}" if v is not None else "—"
+
+    caveat = ("Algorithm agreement, not independent clinical scores — PT7 computed identically "
+             "across sources but on curves with different sampling, smoothing, and cleaning "
+             "characteristics.")
+    ax.text(0.0, 1.0, caveat, transform=ax.transAxes, fontsize=6.5, style="italic",
+           color="#666666", ha="left", va="top", wrap=True)
+
+    table_rows = []
+    for r in rows:
+        clin = matches_by_leg_condition.get((leg, next(tp for tp, lbl, _ in timepoints if lbl == r["timepoint"])), [])
+        clin_shown = clin[:2]
+        clin_txt = "; ".join(f"{m['mas_grade']} ({m.get('assessed_date') or 'date n/a'})" for m in clin_shown)
+        if len(clin) > 2:
+            clin_txt += f" +{len(clin) - 2} more"
+        table_rows.append([
+            r["timepoint"], r["source"],
+            f"{_fmt_pt7(r['opti_paired_pt7'])} (n={r['opti_paired_n']})",
+            f"{_fmt_pt7(r['source_pt7'])}" + (f" [{r['source_mas']}]" if r["source_mas"] else ""),
+            _fmt_delta(r["delta"]),
+            f"{r['n_candidate']}/{r['n_total']} had candidate, "
+            f"{r['n_passed_gate']}/{r['n_candidate'] or 1} passed gate, "
+            f"{r['n_scored']}/{r['n_passed_gate'] or 1} scored",
+            clin_txt or "—",
+        ])
+
+    tbl = ax.table(cellText=table_rows,
+                   colLabels=["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
+                             "Δ", "Accounting", "Clinician MAS"],
+                   loc="center", cellLoc="center")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(6.5)
+    tbl.scale(1, 1.4)
+    return matches_by_leg_condition
+
+
 def discover_all_trials(include_archive=True):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
