@@ -234,3 +234,33 @@ def test_clinician_mas_matches_condition_bag_of_tokens(tmp_path, monkeypatch):
     # "week_1_post" and "1 week post" tokenize to the same set.
     result = common.clinician_mas_matches("13", "left", "week_1_post")
     assert len(result) == 1
+
+
+def test_write_clinician_mas_sidecar_writes_every_match(tmp_path):
+    matches_by_leg_condition = {
+        ("left", "pre"): [
+            {"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "1",
+            "assessed_by": "VL", "assessed_date": "12/1/2026"},
+            {"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "1+",
+            "assessed_by": "VL", "assessed_date": "8/6/2026"},
+        ],
+        ("right", "pre"): [
+            {"participant": "13", "leg": "right", "condition": "pre", "mas_grade": "2",
+            "assessed_by": "VL", "assessed_date": "8/6/2026"},
+        ],
+    }
+    out_path = common.write_clinician_mas_sidecar("13", matches_by_leg_condition, out_dir=str(tmp_path))
+
+    import csv
+    with open(out_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 3
+    assert {r["mas_grade"] for r in rows} == {"1", "1+", "2"}
+
+
+def test_write_clinician_mas_sidecar_empty_matches_still_writes_header(tmp_path):
+    out_path = common.write_clinician_mas_sidecar("13", {}, out_dir=str(tmp_path))
+    import csv
+    with open(out_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows == []

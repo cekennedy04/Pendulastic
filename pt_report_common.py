@@ -9,6 +9,7 @@ representative-trial selection, same styling.
 """
 from __future__ import annotations
 
+import csv
 import glob
 import json
 import os
@@ -353,6 +354,29 @@ def clinician_mas_matches(participant_id, leg, condition):
     matches.sort(key=lambda r: _parse_mas_assessed_date(r.get("assessed_date")) or datetime.date.min,
                 reverse=True)
     return matches
+
+
+def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_dir=None):
+    """Complete, untruncated clinician-MAS record for this participant --
+    Row 5 of the full report (see _draw_row5_table) may only show the 2
+    most recent matches per leg/condition for density reasons, but this
+    file always has every match, so 'all relevant participant data is
+    included' is true of the report's full output (figure + sidecar),
+    not just the PNG in isolation. Same pattern this codebase already
+    uses for the MS-vs-Control cohort artifacts (ms_vs_control_stats.csv
+    as the complete record, the PNG as a bounded summary)."""
+    out_dir = out_dir or OUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"P{participant_id}_clinician_mas.csv")
+    fieldnames = ["participant", "leg", "condition", "diagnosis", "mas_grade",
+                 "assessed_by", "assessed_date"]
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for matches in matches_by_leg_condition.values():
+            for row in matches:
+                w.writerow(row)
+    return out_path
 
 
 def discover_all_trials(include_archive=True):
