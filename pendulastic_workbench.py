@@ -789,11 +789,13 @@ class WorkbenchView(tk.Frame):
         if not hasattr(self, "_annotation_artists"):
             self._annotation_artists = {}
         if label in self._annotation_artists:
-            self._annotation_artists[label].remove()
-        self._annotation_artists[label] = self._ax.annotate(
+            for artist in self._annotation_artists[label]:
+                artist.remove()
+        text_artist = self._ax.annotate(
             label, xy=(t_sec, self._ax.get_ylim()[1]),
             rotation=90, va="top", ha="right", fontsize=7, color="#DC2626")
-        self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
+        line_artist = self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
+        self._annotation_artists[label] = (text_artist, line_artist)
 
     def _redraw_annotations(self) -> None:
         """set_traces()'s _ax.clear() wipes the plotted milestone markers,
