@@ -39,7 +39,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks, savgol_filter, detrend as _detrend
+from scipy.signal import find_peaks, savgol_filter
 from scipy.spatial.transform import Rotation as _R
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -801,20 +801,41 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         return None
 
     t_c   = t[mask]
-    ang_c = angle_raw[mask]
-    ang_c_raw = ang_c   # pre-detrend, for neutral_deg_raw below
-    if detrend:
-        ang_c = _detrend(ang_c, type='linear')
-    ang_s = _sg(ang_c, w=15, p=3)
+    ang_c_raw = angle_raw[mask]   # pristine raw, for neutral_deg_raw below
 
-    # Release detection — use manual override if provided
+    # Release detection always runs on the raw/smoothed (NOT detrended)
+    # signal. A trial's pre-release hold is a genuinely flat plateau
+    # (frequently 180.0 exactly, sometimes 5+ seconds); detrending the WHOLE
+    # trial (hold + real swing together) before detecting release injects a
+    # spurious slope into that flat region, which can cross
+    # _detect_release's adaptive threshold seconds before the leg actually
+    # moves -- same failure mode already documented and worked around in
+    # pt_report_common.release_aligned_waveform for plotting, needed here
+    # too since this is what computes the score.
+    ang_s_raw = _sg(ang_c_raw, w=15, p=3)
     if release_idx is not None:
         # Map raw frame index into the finite-only compressed array
         finite_indices = np.where(mask)[0]
         rel_i = int(np.searchsorted(finite_indices, release_idx))
         rel_i = max(0, min(rel_i, len(t_c) - 1))
     else:
-        rel_i = _detect_release(t_c, ang_s)
+        rel_i = _detect_release(t_c, ang_s_raw)
+
+    # Linear drift correction, fit ONLY from the pre-release baseline
+    # (which should be physically flat/at rest) and extrapolated across the
+    # trial -- NOT scipy.signal.detrend's whole-trial least-squares fit,
+    # which lets the real post-release swing pull the fitted line and
+    # distorts swing amplitude right where it matters: a trial with a long
+    # hold before a large swing had its true ~49deg release-point amplitude
+    # read as ~2.65deg after whole-trial detrending, discarding a
+    # perfectly good trial under the sub-3deg sanity floor below.
+    _MIN_BASELINE = 10
+    if detrend and rel_i >= _MIN_BASELINE:
+        slope, _ = np.polyfit(t_c[:rel_i], ang_c_raw[:rel_i], 1)
+        ang_c = ang_c_raw - slope * (t_c - t_c[0])
+    else:
+        ang_c = ang_c_raw
+    ang_s = _sg(ang_c, w=15, p=3)
     # Pre-release angle: median of the window just before release
     # (the held/extended leg position — used as the "Rest" reference on the graph)
     pre_n = max(3, min(20, rel_i))
