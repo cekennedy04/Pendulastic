@@ -163,3 +163,74 @@ def test_trial_candidates_only_this_participant(tmp_path, monkeypatch):
 
     candidates = common.trial_candidates("13", include_archive=False)
     assert len(candidates) == 1
+
+
+def test_clinician_mas_matches_local_import_does_not_raise(tmp_path, monkeypatch):
+    """Regression test for the circular-import risk: calling this function
+    must not raise ImportError/circular-import errors."""
+    empty_csv = tmp_path / "mas_scores.csv"
+    empty_csv.write_text("participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n")
+    import mas_validation as mv
+    monkeypatch.setattr(mv, "MAS_CSV", str(empty_csv))
+    result = common.clinician_mas_matches("13", "left", "pre")
+    assert result == []
+
+
+def test_clinician_mas_matches_returns_all_matches_sorted_by_date(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,left,pre,MS,1,VL,8/6/2026\n"
+        "13,left,pre,MS,1+,VL,12/1/2026\n"
+    )
+    import mas_validation as mv
+    monkeypatch.setattr(mv, "MAS_CSV", str(csv_path))
+
+    result = common.clinician_mas_matches("13", "left", "pre")
+    assert len(result) == 2
+    # 12/1/2026 is chronologically AFTER 8/6/2026 -- lexicographic string
+    # sort would get this backwards ("1" < "8"). Most-recent-first means
+    # the 12/1/2026 row comes first.
+    assert result[0]["assessed_date"] == "12/1/2026"
+    assert result[1]["assessed_date"] == "8/6/2026"
+
+
+def test_clinician_mas_matches_blank_date_sorts_last(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,left,pre,MS,1,VL,\n"
+        "13,left,pre,MS,1+,VL,8/6/2026\n"
+    )
+    import mas_validation as mv
+    monkeypatch.setattr(mv, "MAS_CSV", str(csv_path))
+
+    result = common.clinician_mas_matches("13", "left", "pre")
+    assert result[0]["assessed_date"] == "8/6/2026"
+    assert result[1]["assessed_date"] == ""
+
+
+def test_clinician_mas_matches_excludes_invalid_grade(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,left,pre,MS,not_a_grade,VL,8/6/2026\n"
+    )
+    import mas_validation as mv
+    monkeypatch.setattr(mv, "MAS_CSV", str(csv_path))
+
+    assert common.clinician_mas_matches("13", "left", "pre") == []
+
+
+def test_clinician_mas_matches_condition_bag_of_tokens(tmp_path, monkeypatch):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,left,1 week post,MS,2,VL,8/6/2026\n"
+    )
+    import mas_validation as mv
+    monkeypatch.setattr(mv, "MAS_CSV", str(csv_path))
+
+    # "week_1_post" and "1 week post" tokenize to the same set.
+    result = common.clinician_mas_matches("13", "left", "week_1_post")
+    assert len(result) == 1

@@ -312,6 +312,49 @@ def trial_candidates(participant_id, include_archive=True):
     return out
 
 
+def _parse_mas_assessed_date(date_str):
+    """mas_scores.csv's assessed_date column is free-text M/D/YYYY (e.g.
+    "8/6/2026"), not zero-padded or ISO -- lexicographic string sort would
+    silently misorder "12/1/2026" before "8/6/2026". Returns a
+    datetime.date, or None for blank/unparseable (sorted last by callers,
+    never raised)."""
+    import datetime
+    date_str = (date_str or "").strip()
+    if not date_str:
+        return None
+    try:
+        return datetime.datetime.strptime(date_str, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
+def clinician_mas_matches(participant_id, leg, condition):
+    """All valid mas_scores.csv rows for this participant/leg/condition,
+    sorted most-recent-first by assessed_date. Local import of
+    mas_validation -- mas_validation.py already imports pt_report_common
+    at module scope, so a module-scope import here would be circular; a
+    function-local import is safe since both modules are fully
+    initialized in Python's module cache by the time this is ever called
+    (during report generation). Reuses mas_validation's own bag-of-tokens
+    condition matching and grade validation rather than reimplementing
+    them, so this stays consistent with mas_validation.py's own
+    pair_pt_and_mas()/_pt_lookup_factory()."""
+    import datetime
+    import mas_validation as mv
+    if not os.path.isfile(mv.MAS_CSV):
+        return []
+    wanted = mv._tokenize_condition(condition)
+    rows = mv.load_mas_scores(mv.MAS_CSV)
+    matches = [r for r in rows
+              if r.get("participant") == participant_id
+              and r.get("leg") == leg
+              and mv._tokenize_condition(r.get("condition", "")) == wanted
+              and mv._valid_grade(r.get("mas_grade", ""))]
+    matches.sort(key=lambda r: _parse_mas_assessed_date(r.get("assessed_date")) or datetime.date.min,
+                reverse=True)
+    return matches
+
+
 def discover_all_trials(include_archive=True):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
