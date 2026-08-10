@@ -746,7 +746,8 @@ class WorkbenchView(tk.Frame):
             self._release_entry_vars[label].set("")
         if label in self._release_artists:
             for artist in self._release_artists[label]:
-                artist.remove()
+                if artist.axes is not None:
+                    artist.remove()
             del self._release_artists[label]
         if self._armed_release_label == label:
             self._armed_release_label = None
@@ -770,7 +771,8 @@ class WorkbenchView(tk.Frame):
     def _draw_release_artist(self, label: str, t_trace: float) -> None:
         if label in self._release_artists:
             for artist in self._release_artists[label]:
-                artist.remove()
+                if artist.axes is not None:
+                    artist.remove()
             del self._release_artists[label]
         color = (self._trace_lines[label].get_color()
                 if label in self._trace_lines else "#DC2626")

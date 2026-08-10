@@ -980,3 +980,25 @@ def test_lag_entry_manual_edit_sets_manual_provenance():
     r.update()
 
     assert wv._lag_provenance["imu"] == "manual"
+
+
+def test_release_artist_redraw_survives_axes_clear():
+    """set_traces() calls self._ax.clear() on every invocation (e.g. the
+    async-HPE-results reload case), which invalidates any previously drawn
+    matplotlib artists -- .remove() on such an artist raises
+    NotImplementedError. _release_artists entries are not reset by
+    set_traces() itself (that's Task 8's job), so _draw_release_artist and
+    _on_clear_release must tolerate a stale/invalidated artist without
+    crashing regardless of when Task 8 lands."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._draw_release_artist("imu", 1.0)
+    wv._ax.clear()  # simulates what set_traces()'s ax.clear() does mid-reload
+
+    # Neither call should raise NotImplementedError on the now-invalidated artists.
+    wv._draw_release_artist("imu", 2.0)
+    wv._on_clear_release("imu")
