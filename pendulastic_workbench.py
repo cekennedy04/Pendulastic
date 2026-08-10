@@ -480,6 +480,9 @@ class WorkbenchView(tk.Frame):
         self._trace_lines = {}
         self._visible_vars = {}
         self._lag_override_vars = {}
+        self._release_entry_vars = {}
+        self._release_buttons = {}
+        self._armed_release_label = None
 
         for label, (t, angle) in traces.items():
             # Styled "chip" per trace (design spec Section 4) -- card-colored
@@ -512,8 +515,30 @@ class WorkbenchView(tk.Frame):
                                  highlightbackground=ws.PALETTE["BORDER"],
                                  font=ws.FONT_BODY)
             lag_entry.pack(side="left")
-            lag_entry.bind("<Return>", lambda e: self._recompute_metrics())
-            lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
+            lag_entry.bind("<Return>", lambda e, l=label: self._on_lag_entry_commit(l))
+            lag_entry.bind("<FocusOut>", lambda e, l=label: self._on_lag_entry_commit(l))
+
+            existing_mark = self._release_marks.get(label)
+            release_var = tk.StringVar(
+                value=(f"{existing_mark['t_trace']:.3f}" if existing_mark else ""))
+            self._release_entry_vars[label] = release_var
+            release_btn = tk.Button(
+                row, text="Mark Release", command=lambda l=label: self._on_arm_release(l),
+                bg=ws.PALETTE["BTN"], fg=ws.PALETTE["FG"], relief="flat", bd=0,
+                padx=6, pady=2, font=ws.FONT_SMALL, cursor="hand2")
+            release_btn.pack(side="left", padx=(6, 2))
+            self._release_buttons[label] = release_btn
+            release_entry = tk.Entry(row, textvariable=release_var, width=6,
+                                     bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"],
+                                     insertbackground=ws.PALETTE["FG"], relief="flat",
+                                     highlightthickness=1, highlightbackground=ws.PALETTE["BORDER"],
+                                     font=ws.FONT_BODY)
+            release_entry.pack(side="left")
+            release_entry.bind("<Return>", lambda e, l=label: self._on_release_entry_commit(l))
+            release_entry.bind("<FocusOut>", lambda e, l=label: self._on_release_entry_commit(l))
+            tk.Button(row, text="Clear", command=lambda l=label: self._on_clear_release(l),
+                      bg=ws.PALETTE["BTN"], fg=ws.PALETTE["FG"], relief="flat", bd=0,
+                      padx=6, pady=2, font=ws.FONT_SMALL, cursor="hand2").pack(side="left", padx=(2, 6))
 
             line, = self._ax.plot(t, angle, label=label)
             line.set_visible(var.get())
@@ -702,6 +727,61 @@ class WorkbenchView(tk.Frame):
         self._draw_milestone_artist(label, t_sec)
         self._plot_canvas.draw_idle()
         self._update_export_csv_state()
+
+    def _on_lag_entry_commit(self, label: str) -> None:
+        self._lag_provenance[label] = "manual"
+        self._recompute_metrics()
+
+    def _on_arm_release(self, label: str) -> None:
+        if (self._armed_release_label is not None
+                and self._armed_release_label in self._release_buttons):
+            self._release_buttons[self._armed_release_label].configure(text="Mark Release")
+        self._armed_release_label = label
+        self._release_buttons[label].configure(text="Click plot…")
+
+    def _on_clear_release(self, label: str) -> None:
+        self._release_marks.pop(label, None)
+        self._lag_provenance.pop(label, None)
+        if label in self._release_entry_vars:
+            self._release_entry_vars[label].set("")
+        if label in self._release_artists:
+            for artist in self._release_artists[label]:
+                artist.remove()
+            del self._release_artists[label]
+        if self._armed_release_label == label:
+            self._armed_release_label = None
+            self._release_buttons[label].configure(text="Mark Release")
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
+
+    def _on_release_entry_commit(self, label: str) -> None:
+        text = self._release_entry_vars[label].get().strip()
+        if not text:
+            return
+        try:
+            t_val = float(text)
+        except ValueError:
+            return
+        self._release_marks[label] = {"t_trace": t_val, "source": "manual"}
+        self._draw_release_artist(label, t_val)
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
+
+    def _draw_release_artist(self, label: str, t_trace: float) -> None:
+        if label in self._release_artists:
+            for artist in self._release_artists[label]:
+                artist.remove()
+            del self._release_artists[label]
+        color = (self._trace_lines[label].get_color()
+                if label in self._trace_lines else "#DC2626")
+        line_artist = self._ax.axvline(t_trace, color=color, linewidth=1.2, linestyle=":")
+        text_artist = self._ax.annotate(
+            f"R:{label}", xy=(t_trace, self._ax.get_ylim()[1]),
+            rotation=90, va="top", ha="right", fontsize=7, color=color)
+        self._release_artists[label] = (line_artist, text_artist)
+
+    def _recompute_release_lags(self) -> None:
+        self._recompute_metrics()
 
     def _draw_milestone_artist(self, label: str, t_sec: float) -> None:
         if not hasattr(self, "_annotation_artists"):
