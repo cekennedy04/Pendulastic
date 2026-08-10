@@ -1,6 +1,7 @@
 # tests/test_pt_score.py
 import os, sys, math
 import numpy as np
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from pendulastic_pt_score import compute_pt_params
 
@@ -197,6 +198,36 @@ def test_imu_and_optitrack_trials_overlay_after_independent_t0_alignment():
     # samples worth of threshold-crossing time — allow that, not sub-frame exactness.
     assert abs(t_imu_aligned[hold_imu]) < 0.1
     assert abs(t_opti_aligned[hold_opti]) < 0.1
+
+
+def test_detect_release_t0_rejects_mismatched_lengths():
+    from pendulastic_pt_score import detect_release_t0
+    t = np.arange(10) / 30.0
+    signal = np.zeros(9)
+    with pytest.raises(ValueError):
+        detect_release_t0(t, signal)
+
+
+def test_detect_release_t0_rejects_non_monotonic_time():
+    from pendulastic_pt_score import detect_release_t0
+    t = np.array([0.0, 0.1, 0.05, 0.2, 0.3, 0.4, 0.5, 0.6])
+    signal = np.array([180.0, 179.0, 178.0, 180.0, 165.0, 160.0, 158.0, 157.0])
+    with pytest.raises(ValueError):
+        detect_release_t0(t, signal)
+
+
+def test_detect_release_t0_raises_on_flat_signal_instead_of_returning_baseline_index():
+    """Regression: a constant signal has signal_range=0, so _detect_release's
+    forward scan never crosses its own threshold and silently falls through
+    to the baseline-window boundary index. Before this fix, detect_release_t0
+    returned that boundary time as if it were a real release -- exactly the
+    "bogus auto-seeded mark" failure mode the workbench's auto-seed feature
+    must not hit."""
+    from pendulastic_pt_score import detect_release_t0
+    t = np.arange(90) / 30.0
+    signal = np.full(90, 180.0)
+    with pytest.raises(ValueError):
+        detect_release_t0(t, signal, baseline_sec=1.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════

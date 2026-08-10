@@ -730,13 +730,40 @@ def detect_release_t0(t: np.ndarray, signal: np.ndarray,
     -threshold detector (_detect_release) on it. Returning a time rather than
     a sample index lets independently-sampled trials (different frame rates
     or device clocks) each be synchronized to their own release moment.
+
+    Raises ValueError if t/signal don't match, t isn't non-decreasing, fewer
+    than 4 finite samples remain, or no release is ever detected (the
+    adaptive threshold is never crossed -- see _detect_release; that case
+    would otherwise silently return the baseline window's own boundary time
+    as if it were a real release).
     """
-    mask = np.isfinite(signal)
+    t = np.asarray(t, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+    if t.shape != signal.shape:
+        raise ValueError("t and signal must have the same shape.")
+    if len(t) >= 2 and np.any(np.diff(t) < 0):
+        raise ValueError("t must be non-decreasing.")
+    mask = np.isfinite(signal) & np.isfinite(t)
     if mask.sum() < 4:
         raise ValueError("Need at least 4 finite samples to detect release.")
     t_c = t[mask]
     sig_s = _sg(signal[mask])
+    baseline_i = max(3, int(np.searchsorted(t_c, t_c[0] + baseline_sec)))
+    baseline_i = min(baseline_i, len(t_c) - 1)
     rel_i = _detect_release(t_c, sig_s, baseline_sec=baseline_sec)
+    # A perfectly (or near-perfectly) flat signal has no genuine variation to
+    # detect a release from. In exact arithmetic this always falls through to
+    # rel_i == baseline_i (see below), but savgol_filter's boundary handling
+    # can leave ~1e-13-scale floating point noise on an otherwise-constant
+    # signal; _detect_release's own adaptive threshold is derived from that
+    # same noise (0.08 * signal_range), so it can spuriously "cross" it near
+    # the array tail. Guard against that by treating a signal_range at the
+    # floating-point noise floor as no genuine variation at all -- well below
+    # any physically real sensor signal (e.g. the smallest real release swing
+    # this module tests is 0.5 units).
+    signal_range = float(np.nanpercentile(sig_s, 97) - np.nanpercentile(sig_s, 3))
+    if rel_i == baseline_i or signal_range < 1e-9:
+        raise ValueError("No release detected: signal never crossed the adaptive threshold.")
     return float(t_c[rel_i])
 
 
