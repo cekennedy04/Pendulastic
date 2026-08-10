@@ -868,3 +868,18 @@ def test_dashboard_back_returns_to_load_panel():
         assert not app._dashboard_view.winfo_ismapped()
     finally:
         app.destroy()
+
+
+def test_milestone_labels_no_longer_include_release_start():
+    from pendulastic_workbench import MILESTONE_LABELS
+    assert "Release Start" not in MILESTONE_LABELS
+    assert MILESTONE_LABELS == ["First Peak Extension", "Maximum Flexion", "Rest/Settled"]
+
+
+def test_workbench_view_starts_with_empty_release_mark_state():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    assert wv._release_marks == {}
+    assert wv._lag_provenance == {}
+    assert wv._armed_release_label is None

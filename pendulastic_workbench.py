@@ -34,8 +34,7 @@ import longitudinal_dashboard
 import pendulastic_pt_score
 import workbench_style as ws
 
-MILESTONE_LABELS = ["Release Start", "First Peak Extension",
-                    "Maximum Flexion", "Rest/Settled"]
+MILESTONE_LABELS = ["First Peak Extension", "Maximum Flexion", "Rest/Settled"]
 
 
 def _mean_nearest_extremum_offset(ref_times, test_times) -> Optional[float]:
@@ -299,6 +298,12 @@ class WorkbenchView(tk.Frame):
         self._lag_override_vars: dict = {}   # {label: tk.StringVar}, blank = auto
         self._reference_var = tk.StringVar(value="")
         self._annotations: dict = {}     # {label: (frame_index, t_sec)}
+        self._release_marks: dict = {}       # {label: {"t_trace": float, "source": "auto"|"manual"}}
+        self._lag_provenance: dict = {}      # {label: "auto"|"manual"}
+        self._armed_release_label: Optional[str] = None
+        self._release_artists: dict = {}     # {label: (line_artist, text_artist)}
+        self._release_entry_vars: dict = {}  # {label: tk.StringVar}
+        self._release_buttons: dict = {}     # {label: tk.Button}
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
         self._raw_diagnostics: Optional[dict] = None
         self._build_widgets()
