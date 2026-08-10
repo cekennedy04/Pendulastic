@@ -328,3 +328,98 @@ def test_hpe_overlay_series_skips_alignment_failure(monkeypatch):
     # Single-sample curve fails release_aligned_hpe_curve's own validation (< 4 samples).
     series = common._hpe_overlay_series(rec)
     assert series == []
+
+
+def test_draw_row5_table_shows_per_source_paired_baselines(monkeypatch):
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+
+    def fake_pt7(params):
+        return 0.25
+
+    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, a_: {"fake": True})
+    monkeypatch.setattr(common.pt, "compute_pt_score", fake_pt7)
+    monkeypatch.setattr(common.pt, "pt_to_mas", lambda score: "1")
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves",
+                        lambda *a, **k: ([{"name": "mediapipe", "t": t, "ang": ang, "rmse": 2.0}], []))
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: [])
+
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+          "neutral_deg_raw": 180.0, "mediapipe_curve": {"t": t, "ang": ang}, "imu_curve": None}
+    by_leg_tp = {("left", "pre"): [rec]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    fig, ax = plt.subplots()
+    matches = common._draw_row5_table(ax, "left", by_leg_tp, timepoints, "13")
+
+    assert isinstance(matches, dict)
+    plt.close(fig)
+
+
+def test_draw_row5_table_three_stage_accounting_distinguishes_gate_from_scoring(monkeypatch):
+    """The whole point of Task 1's return_rejected mode: a trial can have a
+    candidate CSV that gets REJECTED by the quality gate (never reaches
+    attach_rmse's rec["mediapipe_curve"] at all), which must show up as
+    "had a candidate" but NOT "passed gate" -- distinct from a trial with
+    zero candidate CSVs at all. This regression-tests that _draw_row5_table
+    actually calls load_hpe_model_curves(return_rejected=True) itself
+    rather than only reading attach_rmse's already-filtered rec["mediapipe_curve"]."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    call_log = []
+
+    def fake_load_curves(pid, pos, trial, t_opti, angle_raw, neutral_deg, csv_files=None, return_rejected=False):
+        call_log.append(return_rejected)
+        assert return_rejected is True, "Row 5 must request rejection accounting, not the default"
+        if trial == "1":
+            return [], [{"name": "mediapipe", "reason": "did_not_track_swing"}]
+        return [], []
+
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", fake_load_curves)
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: [])
+
+    rec_rejected = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+                    "neutral_deg_raw": 180.0, "mediapipe_curve": None, "imu_curve": None}
+    rec_no_candidate = {"pid": "13_left_pre", "trial": "2", "pt7": 0.32, "t_raw": t, "angle_raw": ang,
+                        "neutral_deg_raw": 180.0, "mediapipe_curve": None, "imu_curve": None}
+    by_leg_tp = {("left", "pre"): [rec_rejected, rec_no_candidate]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    fig, ax = plt.subplots()
+    common._draw_row5_table(ax, "left", by_leg_tp, timepoints, "13")
+
+    assert True in call_log   # confirms return_rejected=True was actually requested
+    plt.close(fig)
+
+
+def test_draw_row5_table_returns_clinician_matches_used(monkeypatch):
+    import matplotlib.pyplot as plt
+    fake_matches = [{"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "1",
+                    "assessed_by": "VL", "assessed_date": "8/6/2026"}]
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: fake_matches)
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30, "t_raw": [0.0], "angle_raw": [180.0],
+          "neutral_deg_raw": 180.0, "mediapipe_curve": None, "imu_curve": None}
+    by_leg_tp = {("left", "pre"): [rec]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    fig, ax = plt.subplots()
+    matches = common._draw_row5_table(ax, "left", by_leg_tp, timepoints, "13")
+
+    assert matches[("left", "pre")] == fake_matches
+    plt.close(fig)
+
+
+def test_draw_row5_table_empty_timepoints_does_not_raise():
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    matches = common._draw_row5_table(ax, "left", {}, [], "13")
+    assert matches == {}
+    plt.close(fig)
