@@ -66,3 +66,100 @@ def test_release_aligned_hpe_curve_rejects_non_monotonic_time():
     ang = np.array([180.0, 179.0, 178.0, 177.0, 176.0])
     result = common.release_aligned_hpe_curve(t, ang)
     assert result is None
+
+
+def test_trial_candidates_classifies_invalid_path(tmp_path, monkeypatch):
+    invalid_dir = tmp_path / "Participant_13_left" / "INVALID_bad_run"
+    invalid_dir.mkdir(parents=True)
+    csv_path = invalid_dir / "trial_1_optitrack.csv"
+    csv_path.write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "invalid_path"
+
+
+def test_trial_candidates_classifies_unparseable(tmp_path, monkeypatch):
+    # No participant number in the path at all -- _parse_trial_path returns None.
+    bad_dir = tmp_path / "left"
+    bad_dir.mkdir(parents=True)
+    csv_path = bad_dir / "trial_1_optitrack.csv"
+    csv_path.write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "unparseable"
+
+
+def test_trial_candidates_classifies_excluded_with_reason(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    csv_path = rec_dir / "trial_1_optitrack.csv"
+    csv_path.write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials",
+                        lambda: {"13_left_pre_T1": "active muscle intervention"})
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "excluded"
+    assert candidates[0]["reason"] == "active muscle intervention"
+
+
+def test_trial_candidates_classifies_unreadable(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    csv_path = rec_dir / "trial_1_optitrack.csv"
+    csv_path.write_text("not,a,valid,optitrack,csv\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    monkeypatch.setattr(common.pt, "load_optitrack", lambda path: (_ for _ in ()).throw(ValueError("bad csv")))
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "unreadable"
+
+
+def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatch):
+    import numpy as np
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    monkeypatch.setattr(common.pt, "load_optitrack",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0])))
+    monkeypatch.setattr(common, "score_trial", lambda pid, trial, t, angle: None)
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "unscoreable"
+
+    monkeypatch.setattr(common, "score_trial",
+                        lambda pid, trial, t, angle: {"pid": pid, "trial": trial, "pt7": 0.5})
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert candidates[0]["status"] == "scored"
+    assert candidates[0]["record"]["pt7"] == 0.5
+
+
+def test_trial_candidates_only_this_participant(tmp_path, monkeypatch):
+    for pid in ("13", "14"):
+        rec_dir = tmp_path / f"Participant_{pid}_left_pre"
+        rec_dir.mkdir(parents=True)
+        (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    monkeypatch.setattr(common.pt, "load_optitrack", lambda path: (_ for _ in ()).throw(ValueError()))
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
