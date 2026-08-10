@@ -159,3 +159,174 @@ def test_run_offline_track_default_returns_list_not_tuple(monkeypatch):
         "nonexistent.mp4", lambda p: None, leg="right")
     assert result == []
     assert isinstance(result, list)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_detect_people_at_frame_returns_poses(tmp_path, monkeypatch):
+    import numpy as np
+    video_path = str(tmp_path / "people_test.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"), 30.0, (320, 240))
+    for _ in range(3):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    fake_poses = [["pose1_landmarks"], ["pose2_landmarks"]]
+
+    class _FakeDetector:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def detect(self, image):
+            return types.SimpleNamespace(pose_landmarks=fake_poses)
+
+    class _FakePoseLandmarker:
+        @staticmethod
+        def create_from_options(opts):
+            return _FakeDetector()
+
+    class _FakeRunningMode:
+        IMAGE = "IMAGE"
+
+    class _FakeVision:
+        PoseLandmarkerOptions = staticmethod(lambda **kw: kw)
+        PoseLandmarker = _FakePoseLandmarker
+        RunningMode = _FakeRunningMode
+
+    class _FakeTasks:
+        vision = _FakeVision
+        BaseOptions = staticmethod(lambda **kw: kw)
+
+    fake_mp = types.SimpleNamespace(
+        tasks=_FakeTasks,
+        Image=lambda **kw: kw,
+        ImageFormat=types.SimpleNamespace(SRGB="SRGB"),
+    )
+
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+    monkeypatch.setattr(_app, "_mp", fake_mp)
+    monkeypatch.setattr(_app, "_MP_MODEL", "fake_model_path")
+
+    engine = BiomechanicalEngine("rgb")
+    frame, poses = engine.detect_people_at_frame(video_path, frame_index=0)
+
+    assert frame is not None
+    assert frame.shape == (240, 320, 3)
+    assert poses == fake_poses
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_detect_people_at_frame_returns_empty_for_bad_video():
+    engine = BiomechanicalEngine("rgb")
+    frame, poses = engine.detect_people_at_frame("nonexistent_file.mp4")
+    assert frame is None
+    assert poses == []
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_detect_people_at_frame_returns_empty_past_end_of_clip(tmp_path):
+    import numpy as np
+    video_path = str(tmp_path / "short.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"), 30.0, (320, 240))
+    out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    engine = BiomechanicalEngine("rgb")
+    frame, poses = engine.detect_people_at_frame(video_path, frame_index=999)
+    assert frame is None
+    assert poses == []
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_detect_people_at_frame_catches_detection_exception(tmp_path, monkeypatch):
+    import numpy as np
+    video_path = str(tmp_path / "people_test2.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"), 30.0, (320, 240))
+    out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    class _RaisingOptions:
+        def __init__(self, **kw):
+            raise RuntimeError("model load failed")
+
+    class _RaisingVision:
+        PoseLandmarkerOptions = _RaisingOptions
+
+    class _RaisingTasks:
+        vision = _RaisingVision
+        BaseOptions = staticmethod(lambda **kw: kw)
+
+    fake_mp = types.SimpleNamespace(tasks=_RaisingTasks)
+
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+    monkeypatch.setattr(_app, "_mp", fake_mp)
+    monkeypatch.setattr(_app, "_MP_MODEL", "fake_model_path")
+
+    engine = BiomechanicalEngine("rgb")
+    frame, poses = engine.detect_people_at_frame(video_path)
+
+    assert frame is not None    # frame WAS read successfully
+    assert poses == []          # detection failure -> empty poses, no raise
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_manual_seed_skips_patient_detector(tmp_path, monkeypatch):
+    """When manual_seed is given, tracker.init is called with exactly that
+    seed on the first frame -- _PatientDetector.detect must never be
+    called at all."""
+    import numpy as np
+    video_path = str(tmp_path / "seed_test.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"), 30.0, (320, 240))
+    for _ in range(4):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    detector_called = {"count": 0}
+
+    class FakeDetector:
+        def detect(self, frame):
+            detector_called["count"] += 1
+            return None, None   # would normally block initialisation
+
+    init_calls = []
+
+    class FakeTracker:
+        def __init__(self, side, fps): pass
+        def init(self, frame, hip, knee, ankle):
+            init_calls.append((hip, knee, ankle))
+        def step(self, frame):
+            return (10, 20), (30, 40), (50, 60), 155.0
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    seed = ((100.0, 60.0), (100.0, 120.0), (100.0, 200.0))
+    engine = BiomechanicalEngine("rgb")
+    angles = engine.run_offline_track(
+        video_path, lambda p: None, leg="right", manual_seed=seed)
+
+    assert detector_called["count"] == 0
+    assert len(init_calls) == 1
+    assert init_calls[0] == seed
+    assert len(angles) == 4
+    assert all(a == 155.0 for a in angles)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_none_seed_unaffected(monkeypatch):
+    """manual_seed defaulting to None must not change the existing
+    auto-detect behavior or return type for any pre-existing caller."""
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", False)
+    result = BiomechanicalEngine("rgb").run_offline_track(
+        "nonexistent.mp4", lambda p: None, leg="right")
+    assert result == []
+    assert isinstance(result, list)
