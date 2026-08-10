@@ -1059,3 +1059,26 @@ def test_plot_click_without_arming_falls_back_to_video_seek():
 
     assert "imu" not in wv._release_marks
     assert wv._scrub_var.get() == pytest.approx(30.0)
+
+
+def test_remarking_same_milestone_does_not_leak_axvline():
+    """Regression: _draw_milestone_artist only ever removed the old text
+    annotation, never the old axvline, so re-marking the same milestone
+    within one session (without an intervening set_traces() call, which
+    would have wiped it via _ax.clear()) accumulated stray dashed lines."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._scrub_var.set(10)
+    wv._on_mark_milestone()
+    lines_after_first_mark = len(wv._ax.lines)
+
+    wv._scrub_var.set(20)
+    wv._on_mark_milestone()
+    r.update()
+
+    assert len(wv._ax.lines) == lines_after_first_mark, (
+        "re-marking the same milestone must replace, not accumulate, its axvline")
