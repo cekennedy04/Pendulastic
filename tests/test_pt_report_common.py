@@ -526,3 +526,42 @@ def test_attach_rmse_no_curves_leaves_curve_fields_none(monkeypatch):
 
     assert rec.get("mediapipe_curve") is None
     assert rec.get("imu_curve") is None
+
+
+def test_make_report_figure_5x2_grid_with_all_rows(tmp_path, monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(common, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: [])
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: [])
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.3, "t_raw": t, "angle_raw": ang,
+          "neutral_deg_raw": 180.0, "R2n": 0.9, "N": 3.0, "phi_max_ratio": 0.5,
+          "omega_max_n": 1.0, "omega_min_n": 0.2, "f": 1.5, "area_ratio": 0.1,
+          "mediapipe_curve": None, "imu_curve": None, "mediapipe_rmse": None, "imu_rmse": None}
+    by_leg_tp = {("left", "pre"): [rec], ("right", "pre"): []}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    out_path, fig = common.make_report_figure("P13", by_leg_tp, timepoints, "P13_full_report.png",
+                                               "test caveat", cohort_snapshot=None,
+                                               save=False, return_fig=True)
+
+    assert len(fig.axes) >= 10   # 5 rows x 2 cols, at minimum (table axes count too)
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+
+def test_make_report_figure_default_cohort_snapshot_none_does_not_raise(tmp_path, monkeypatch):
+    """Existing callers (p13_full_report.py, p5_full_report.py,
+    run_pt_analysis.py before Task 13) don't pass cohort_snapshot -- the
+    default must keep working exactly as before this task."""
+    monkeypatch.setattr(common, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: [])
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: [])
+
+    out_path = common.make_report_figure("P13", {}, [], "P13_full_report.png", "caveat")
+    assert out_path == os.path.join(str(tmp_path), "P13_full_report.png")
+    assert os.path.isfile(out_path)
