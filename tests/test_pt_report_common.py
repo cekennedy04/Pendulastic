@@ -264,3 +264,39 @@ def test_write_clinician_mas_sidecar_empty_matches_still_writes_header(tmp_path)
     with open(out_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows == []
+
+
+def test_draw_rmse_axes_returns_true_when_bars_drawn():
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    rec = {"trial": "1", "mediapipe_rmse": 3.2, "imu_rmse": None}
+    by_leg_tp = {"left": [rec]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    any_bars = common._draw_rmse_axes(ax, "left", {("left", "pre"): [rec]}, timepoints)
+
+    assert any_bars is True
+    plt.close(fig)
+
+
+def test_draw_rmse_axes_returns_false_when_no_data():
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    any_bars = common._draw_rmse_axes(ax, "left", {}, [("pre", "Pre", "#d62728")])
+    assert any_bars is False
+    plt.close(fig)
+
+
+def test_make_rmse_figure_unchanged_behavior(tmp_path, monkeypatch):
+    """Regression: make_rmse_figure()'s own external contract (return
+    shape, output file) must be identical after the extraction."""
+    monkeypatch.setattr(common, "OUT_DIR", str(tmp_path))
+    rec = {"trial": "1", "mediapipe_rmse": 3.2, "imu_rmse": 4.1}
+    by_leg_tp = {("left", "pre"): [rec], ("right", "pre"): []}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    out_path, any_bars = common.make_rmse_figure("P13", by_leg_tp, timepoints, "P13_rmse.png")
+
+    assert any_bars is True
+    assert out_path == str(tmp_path / "P13_rmse.png") or out_path == os.path.join(str(tmp_path), "P13_rmse.png")
+    assert os.path.isfile(out_path)
