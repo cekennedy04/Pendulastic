@@ -883,3 +883,100 @@ def test_workbench_view_starts_with_empty_release_mark_state():
     assert wv._release_marks == {}
     assert wv._lag_provenance == {}
     assert wv._armed_release_label is None
+
+
+def test_mark_release_button_and_entry_exist_per_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    assert "imu" in wv._release_buttons
+    assert "optitrack" in wv._release_entry_vars
+
+
+def test_arm_release_sets_armed_label_and_button_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    wv._on_arm_release("imu")
+    r.update()
+
+    assert wv._armed_release_label == "imu"
+    assert "Click" in wv._release_buttons["imu"].cget("text")
+
+
+def test_arm_release_disarms_previous_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    wv._on_arm_release("imu")
+    wv._on_arm_release("optitrack")
+    r.update()
+
+    assert wv._armed_release_label == "optitrack"
+    assert wv._release_buttons["imu"].cget("text") == "Mark Release"
+
+
+def test_release_entry_commit_stores_manual_mark():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._release_entry_vars["imu"].set("1.5")
+    wv._on_release_entry_commit("imu")
+    r.update()
+
+    assert wv._release_marks["imu"] == {"t_trace": 1.5, "source": "manual"}
+
+
+def test_release_entry_commit_ignores_unparseable_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._release_entry_vars["imu"].set("not-a-number")
+    wv._on_release_entry_commit("imu")
+    r.update()
+
+    assert "imu" not in wv._release_marks
+
+
+def test_clear_release_removes_mark_and_resets_entry():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+
+    wv._on_clear_release("imu")
+    r.update()
+
+    assert "imu" not in wv._release_marks
+    assert wv._release_entry_vars["imu"].get() == ""
+
+
+def test_lag_entry_manual_edit_sets_manual_provenance():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._lag_override_vars["imu"].set("0.42")
+    wv._on_lag_entry_commit("imu")
+    r.update()
+
+    assert wv._lag_provenance["imu"] == "manual"
