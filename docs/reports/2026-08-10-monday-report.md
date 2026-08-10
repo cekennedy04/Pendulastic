@@ -1,70 +1,51 @@
-# Weekly Progress Report — Pendulastic
-**Week of:** August 4 – August 10, 2026
-**Prepared by:** Claire Kennedy (research assistant)
-**Prepared for:** Project supervisor
+# Pendulastic — Weekly Update (Aug 4–10, 2026)
+
+Plain-language version, organized by: what was done, what was fixed, what's still open, what was asked of Claude, and what's next.
 
 ---
 
-## 1. Greeting & Overview
+## What was done (new stuff built)
 
-Hi — here's a summary of last week's progress on Pendulastic. It was a heavy build week (~150 commits across Aug 4–7, no activity over the weekend). The main thrust was closing the loop between our two clinical validation axes — **MAS-vs-PT-score agreement** and **MS-vs-Control group separation** — and giving the in-app MAS entry workflow a real UI so scores no longer have to be hand-edited into a CSV. Alongside that, a scheduled nightly code-hygiene agent went live and has already run three times, and we absorbed a large batch of previously-uncommitted analysis/calibration scripts into version control so they're no longer at risk of being lost to a local-only working copy.
+- **New screen for entering MAS scores** in the app — type in a clinician's MAS grade, which leg is stronger, and notes, then hit Save/Export. Before this, scores had to be typed directly into a CSV file by hand. (`61694ec`…`8d4a4aa`)
+- **Automatic MS-vs-Control comparison.** Every analysis run now also compares MS patients against Control participants and produces a chart + statistics, using the same scoring method as the individual reports. (`f0952e0`, `965453c`, `7a41b4b`)
+- **MAS-vs-PT-score validation tool.** Checks how well the app's own score agrees with the clinician's MAS grade, and can fit thresholds between them. (`4673cb6`)
+- **Nightly automatic code cleanup checker** went live and ran for the first time. It scans the project and writes a list of suggested cleanups (old files, clutter, etc.) — it never deletes or changes anything itself, only proposes. (`1c83c3c`→`63b7839`)
+- **Recovered 18 old scripts** (e.g. `align_and_calibrate.py`, `train_angle_regressor.py`, `validate_tracking.py`) that were sitting only on a local computer — now safely stored in the project history. (`4f45334`)
 
-No participant data lives in this environment, so nothing below reflects a specific participant's clinical outcome — it's a status report on the pipeline and tooling.
+## What was fixed
 
-## 2. Key Work & Development Done
+- **Some sessions never got a report.** The system used to wait for a minimum trial count that some short sessions never reached. Fixed by generating a report 30 minutes after the first recording instead, using whatever trials exist by then. (`7500c4e`)
+- **Bad trials were skewing scores.** 5 trials from participant P15 were invalid — the participant used their own muscles instead of letting the leg swing freely, which throws off the math. Fixed by adding an `excluded_trials.json` list so these are automatically skipped everywhere. (`e716c8a`)
+- **A save could corrupt the score file** if the MAS score CSV's first line was blank. Fixed same day. (`4c7c54d`)
+- **Score file safety was too loose** — tightened which columns are allowed to be auto-added to the CSV. (`28fa3e7`)
+- **The nightly cleanup checker had two early bugs** — it once suggested deleting the main project folder itself, and it crashed when its code-checking tool ran without a properly set-up environment. Both caught and fixed the same day. (`03f5cbf`, `67313a7`)
 
-**Clinical validation pipelines**
-- Added `pt_cohort_common.py`: MS-vs-Control classification (metadata.json + registry priority), participant-level median aggregation (to avoid trial-level pseudoreplication), Mann-Whitney/Cliff's-delta group-separation stats, a cohort composition audit trail, and a light/clinical-style comparison figure — then wired the whole thing to run automatically at the end of every `run_pt_analysis.py` invocation (`f0952e0`, `965453c`, `7a41b4b`).
-- Added `mas_validation.py`: MAS-vs-PT-score clinical validation and threshold-fitting (`4673cb6`), plus `append_mas_score()` for writing new MAS entries into `mas_scores.csv` with allowlisted, safety-checked header widening (`c76033b`, `28fa3e7`, and a same-day fix to refuse widening on a blank first line, `4c7c54d`).
-- Report generation is no longer gated on hitting a fixed trial-count threshold — some sessions never accumulate `TRIAL_THRESHOLD` (4) trials per leg and would otherwise never generate a report. It now fires 30 minutes after a participant's first discoverable recording, using whatever trials exist at that point (`7500c4e`).
+## What issues persist (still open)
 
-**MAS entry UI**
-- Built out `MasEntryPanel` end-to-end inside `pendulastic_app.py`: skeleton + nav wiring → live dashboard refresh (on open, not just after Save) → Save/Export buttons → Stronger Leg + Notes fields → export-error handling and save confirmation (`61694ec` → `8d4a4aa`, seven incremental commits). This replaces manual CSV editing for MAS score entry.
+- **Marker-tracking warning on almost every trial** for the reference participant used for comparison — a data-quality flag keeps showing up, root cause not found yet.
+- **No new charts actually got produced this week.** The two new chart tools (MAS validation chart, MS-vs-Control chart) haven't been run against real recordings yet — needs to happen on the lab machine, not in the environment this report was written in.
+- **No screenshot yet** of the new MAS entry screen.
+- **Automated tests could not be run** in the environment this report was written in (missing test tool) — still needs confirming on your machine.
+- **4 planned features have a spec but no code yet:** multi-person disambiguation ("Pick Person"), a phone-sensor pairing helper, a tracking-accuracy validation pipeline, and an in-app button to mark bad trials instead of editing a file by hand.
 
-**Trial-quality bookkeeping**
-- Added `excluded_trials.json`, a registry of trials an operator has confirmed as non-viable (see §4), and wired `discover_all_trials()` to filter against it so excluded trials never silently leak into a report or the RMSE pipeline (`e716c8a`).
+## What you asked Claude to do
 
-**Housekeeping / infra**
-- Committed a batch of previously-local-only analysis and calibration scripts (`align_and_calibrate.py`, `train_angle_regressor.py`, `validate_tracking.py`, and 15 others) along with their tests — these existed only as working-copy files before this week (`4f45334`).
-- The nightly code-hygiene agent (spec'd and built this week, `1c83c3c` → `7f932dd` → `63b7839`) produced its first two real reports on 2026-08-06 and 2026-08-07; the 08-06 report's approved items (15, 17, 29–70, 89, 96 — mostly gitignore cleanup) were applied same-day (`8e71f17`).
-- Four design specs went in for next-sprint work that hasn't started yet: stateful MediaPipe patient-identity tracking, an IMU-hotspot phone-pairing setup helper, an RMSE validation pipeline, and a trial-exclusion UI panel in `AnalysisPanel` (currently spec-only, no code).
+Reconstructed from notes left in the project's own planning documents — not a transcript, so flag anything that doesn't match what you actually asked for:
 
-## 3. Visuals, Figures & UI State
+- After trying the new MAS entry screen yourself, you asked for two more fields: which leg is stronger, and a free-text notes box.
+- You confirmed the real MAS score data is one score per participant per leg, not per session — this changed how the validation tool matches scores to trials.
+- You chose to have the score file update itself automatically the first time a new field is saved, instead of a separate one-time migration script.
+- You reported that the video-upload tool had no way to say which person in frame is the patient, or fix a bad tracking frame — a "Pick Person" spec was written in response (not built yet).
+- You asked for the nightly cleanup checker to run unattended overnight and only ever suggest changes, never make them, based on past experience of unattended tools quietly introducing bugs.
 
-Straight answer up front: **no new figures were generated by the pipeline this week in this environment**, because there's no participant recording data present here to run `run_pt_analysis.py` against. The two new figure-producing code paths that shipped this week —
+## What needs to be done next
 
-- `mas_validation.py` → `mas_validation_figure.png`
-- `pt_cohort_common.py` → `ms_vs_control_boxplots.png`
+- Run the two new chart tools against real recordings on the lab machine and check the output.
+- Take a screenshot of the new MAS entry screen.
+- Decide whether to root-cause the marker-tracking warning now, or keep it as a caveat.
+- Pick which of the 4 unbuilt features to do next.
+- Confirm the automated tests pass on your machine.
 
-— write into `Model_Analysis_Outputs/`, which currently contains only two RMSE CSVs and no PNGs. I'd want to run both against real data on a machine that has the recordings before I can show you what they look like.
+---
 
-The most recent figures actually checked into the repo are four PNGs from the acquisition-screen restyle work (`lateral_impact_presentation.png`, `lateral_impact_presentation_P1_Pos2_T1.png`, `oneoff_lateral_check.png`, `oneoff_lateral_check_P1_Pos2_T1.png`) — one-off lateral-view calibration checks, not this week's new validation output:
-
-![Lateral impact presentation view](../../lateral_impact_presentation.png)
-![One-off lateral check, P1 Pos2 T1](../../oneoff_lateral_check_P1_Pos2_T1.png)
-
-Similarly, I don't have a dashboard screenshot to include — the `MasEntryPanel`/`DashboardView` UI work landed this week but I haven't captured a screenshot of it running. Happy to grab one next week if that's useful for your review.
-
-## 4. Roadblocks, Errors, & Solutions
-
-- **Non-passive trials contaminating PT-score physics.** The operator confirmed that participant P15 used their own muscles to actively stop the pendulum swing on 5 trials (left T2/T4/T5, right T2/T3) instead of a passive release, which invalidates the Popovic PT-score physics for those trials. Fix: added `excluded_trials.json` as a shared registry and filtered it into `discover_all_trials()` so those trials are dropped from every report/sweep rather than needing to remember to exclude them by hand each time (`e716c8a`).
-- **Marker-tracking quality flag on nearly every trial.** `p13_full_report.py`/`p13_leg_session_comparison.py` carry a standing caveat that every trial shows an area-ratio quality warning from duo-session marker tracking, and since area_ratio feeds the 7-parameter score directly, this is part of why scores cluster in the "Impaired" zone for that reference participant. This is flagged as a known caveat in the report output rather than silently affecting scores — it hasn't been root-caused yet (see open question in §5).
-- **Trial-count gating left some sessions with no report at all.** Sessions that don't reach 4 trials per leg were being skipped indefinitely. Fixed by switching the gate to "30 minutes since first recording" instead of a trial-count floor (`7500c4e`).
-- **CSV-widening safety.** Two same-day follow-up fixes on `append_mas_score()`: it was allowed to widen `mas_scores.csv`'s header on a blank first line (now refused, `4c7c54d`), and the allowlist enforcement on which columns could be added was too loose (tightened, `28fa3e7`).
-- **Hygiene-agent false positives.** The nightly hygiene agent initially flagged the main-branch worktree itself as safe to delete and mis-invoked `vulture` against an unactivated venv; both fixed same-day the bugs were caught (`03f5cbf`, `67313a7`).
-- I could not run the test suite in this environment (no `pytest` installed here), so I can't report a pass/fail count for this week's changes from this machine — will confirm on the dev box.
-
-## 5. Questions & Request for Feedback
-
-1. On the area-ratio/marker-tracking caveat in §4 — is this worth root-causing now (e.g. re-checking camera placement or marker visibility for duo-session recordings), or is it acceptable to keep reporting it as a caveat alongside the score for the time being?
-2. For `excluded_trials.json`: right now exclusion requires an operator to explicitly confirm "non-passive swing" after the fact. Would you want a lighter-weight in-session flag (e.g. a button during acquisition) so we catch these before the participant leaves, rather than relying on someone noticing it in review later?
-3. The MS-vs-Control comparison now runs automatically after every `run_pt_analysis.py` call. Is that the right trigger, or should it stay a separate, manually-invoked step until we have more participants in the Control arm?
-4. Four design specs (patient-identity tracking, IMU hotspot pairing, RMSE validation pipeline, trial-exclusion UI) are written but not yet implemented — could you help me rank these against the MediaPipe patient-identity spec, since that one blocks multi-patient sessions?
-
-## 6. Next Week's Action Plan
-
-- Implement the RMSE validation pipeline against the spec finalized this week (`rmse-validation-pipeline-design.md`), filtering against the same `excluded_trials.json` registry.
-- Build the trial-exclusion UI panel in `AnalysisPanel` so operators can flag non-viable trials in-app instead of hand-editing the JSON registry.
-- Run `mas_validation.py` and `pt_cohort_common.py` against real recorded data on the lab machine and bring back the actual figures (blocked here on data access, see §3).
-- Start implementation on the stateful MediaPipe patient-identity tracking spec, pending your ranking from §5.
-- Continue triaging nightly hygiene reports as they land; apply low-risk `[Safe to Delete]`/`[Gitignore Candidate]` items promptly, leave `[Needs Review]` items for discussion.
+*The four PNGs already in the repo from earlier calibration work (not new this week) are viewable in the repo root: `lateral_impact_presentation.png`, `oneoff_lateral_check.png`, and their `_P1_Pos2_T1` variants.*
