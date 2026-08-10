@@ -348,7 +348,7 @@ class WorkbenchView(tk.Frame):
         self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "",
                                               style=ws.STYLE_MENUBUTTON)
         self._reference_menu.pack(side="left", padx=6)
-        self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
+        self._reference_var.trace_add("write", lambda *a: self._recompute_release_lags())
         self._load_another_button = ws.secondary_button(
             top_controls, "← Load Different Trial",
             lambda: self.controller.on_workbench_load_another())
@@ -794,6 +794,24 @@ class WorkbenchView(tk.Frame):
         self._release_artists[label] = (line_artist, text_artist)
 
     def _recompute_release_lags(self) -> None:
+        ref_label = self._reference_var.get()
+        ref_mark = self._release_marks.get(ref_label)
+        for label in self._traces:
+            if label == ref_label:
+                continue
+            if self._lag_provenance.get(label) == "manual":
+                continue
+            lag_var = self._lag_override_vars.get(label)
+            if lag_var is None:
+                continue
+            test_mark = self._release_marks.get(label)
+            if ref_mark is not None and test_mark is not None:
+                lag = engine.release_lag_sec(ref_mark["t_trace"], test_mark["t_trace"])
+                lag_var.set(f"{lag:.3f}")
+                self._lag_provenance[label] = "auto"
+            elif lag_var.get().strip():
+                lag_var.set("")
+                self._lag_provenance.pop(label, None)
         self._recompute_metrics()
 
     def _draw_milestone_artist(self, label: str, t_sec: float) -> None:

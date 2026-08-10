@@ -68,14 +68,23 @@ def test_set_traces_new_label_gets_defaults():
     """A genuinely new trace arriving in a later set_traces() call must
     still get sensible defaults (visible, no lag override) -- the fix for
     preserving prior state must not accidentally apply stale state to
-    labels that never existed before."""
+    labels that never existed before.
+
+    Uses flat (degenerate) traces rather than _traces()'s sinusoid: a
+    non-degenerate shared shape lets Task 8's set_traces() auto-seed a
+    release mark for both labels, and Task 9's now-real
+    _recompute_release_lags() would then legitimately auto-fill a lag --
+    which is the intended feature, not the "stale state" bug this test
+    guards against. Flat traces keep this test isolated to that bug."""
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
     wv = WorkbenchView(r, _Ctrl())
-    wv.set_traces(_traces("imu"))
+    t = np.arange(90) / 30.0
+    wv.set_traces({"imu": (t, np.full(90, 180.0))})
     r.update()
 
-    wv.set_traces(_traces("imu", "mediapipe"))
+    wv.set_traces({"imu": (t, np.full(90, 180.0)),
+                    "mediapipe": (t, np.full(90, 175.0))})
     r.update()
 
     assert wv._visible_vars["mediapipe"].get() is True
@@ -1155,3 +1164,93 @@ def test_set_traces_does_not_reseed_already_marked_trace():
     r.update()
 
     assert wv._release_marks["imu"] == {"t_trace": 99.0, "source": "manual"}
+
+
+def test_recompute_release_lags_fills_auto_field_from_marks():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "1.500"
+    assert wv._lag_provenance["imu"] == "auto"
+
+
+def test_recompute_release_lags_never_overwrites_manual_provenance():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "manual"}
+    wv._lag_override_vars["imu"].set("9.999")
+    wv._lag_provenance["imu"] = "manual"
+
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "9.999"
+
+
+def test_recompute_release_lags_clears_stale_auto_field_when_mark_removed():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+    wv._recompute_release_lags()
+    r.update()
+    assert wv._lag_override_vars["imu"].get() == "1.500"
+
+    del wv._release_marks["imu"]
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_recompute_release_lags_noop_when_neither_marked():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    # _traces()'s sinusoid is non-degenerate, so Task 8's set_traces()
+    # auto-seed already populated both labels' _release_marks; explicitly
+    # clear them here so this test actually exercises the "neither marked"
+    # case its name promises, rather than the auto-fill path.
+    wv._release_marks.pop("imu", None)
+    wv._release_marks.pop("optitrack", None)
+    wv._reference_var.set("optitrack")
+
+    wv._recompute_release_lags()   # must not raise
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_reference_change_triggers_release_lag_recompute():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "auto"}
+
+    wv._reference_var.set("optitrack")
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "1.500"
