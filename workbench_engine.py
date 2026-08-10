@@ -811,3 +811,19 @@ def annotations_to_csv_rows(annotations: dict, participant_id: str,
             "t_sec": float(t_sec),
         })
     return fieldnames, rows
+
+
+def release_marks_to_csv_rows(release_marks: dict, participant_id: str,
+                              session_date: str) -> tuple:
+    """One row per per-trace release mark from WorkbenchView.get_release_marks()."""
+    fieldnames = ["participant_id", "session_date", "label", "t_trace", "source"]
+    rows = []
+    for label, mark in release_marks.items():
+        rows.append({
+            "participant_id": participant_id,
+            "session_date": session_date,
+            "label": label,
+            "t_trace": float(mark["t_trace"]),
+            "source": mark["source"],
+        })
+    return fieldnames, rows
