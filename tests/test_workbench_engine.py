@@ -962,3 +962,23 @@ def test_release_lag_sec_rejects_non_finite_input():
         engine.release_lag_sec(float("nan"), 1.0)
     with pytest.raises(ValueError):
         engine.release_lag_sec(1.0, float("inf"))
+
+
+def test_release_marks_to_csv_rows_empty_returns_no_rows():
+    fieldnames, rows = engine.release_marks_to_csv_rows({}, "P5", "2026-08-04")
+    assert rows == []
+    assert fieldnames == ["participant_id", "session_date", "label", "t_trace", "source"]
+
+
+def test_release_marks_to_csv_rows_one_row_per_trace():
+    release_marks = {
+        "imu": {"t_trace": 1.23, "source": "manual"},
+        "optitrack": {"t_trace": 0.98, "source": "auto"},
+    }
+    fieldnames, rows = engine.release_marks_to_csv_rows(release_marks, "P5", "2026-08-04")
+    assert len(rows) == 2
+    row = next(r for r in rows if r["label"] == "imu")
+    assert row == {
+        "participant_id": "P5", "session_date": "2026-08-04",
+        "label": "imu", "t_trace": 1.23, "source": "manual",
+    }
