@@ -1106,11 +1106,34 @@ def load_optitrack_csv(csv_path):
 # =============================================================================
 # 5. TEMPORAL SYNCHRONIZATION
 # =============================================================================
+# Bound on the cross-correlation lag search below (2026-08-08 fix): an
+# unbounded np.correlate(..., mode="full") search considers every possible
+# overlap between the two signals, including lags spanning the signals'
+# entire duration. For a long or multi-oscillation trial this can find a
+# spuriously higher-correlation match at a physically implausible lag --
+# confirmed on a real trial (Participant_14/Right/pre/Trial_4, raw signals
+# ~30-48s long): the unbounded search picked lag=-18 to -21s (correlation
+# ~129k) over the true near-zero alignment (correlation ~88k, still the
+# stronger PHYSICAL match, just not the strongest NUMERICAL one), producing
+# 24 deg RMSE where a correctly-aligned comparison would score far lower.
+# MAX_LAG_SEC=5.0 is empirically derived: every other real trial's
+# auto-detected lag in this corpus falls in [-4.07, 1.78] seconds (phone/
+# OptiTrack clock-sync jitter, not model error), so 5s gives comfortable
+# margin without being wide enough to re-admit spurious multi-second
+# matches like the one above.
+MAX_LAG_SEC = 5.0
+
+
 def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0):
     """
     Align a model-derived knee-angle time-series (test) to the OptiTrack
     reference (ref) using cross-correlation for the time-lag estimate,
     followed by linear-interpolation resampling onto a shared time base.
+
+    The lag search is bounded to +/-MAX_LAG_SEC (see its own docstring) --
+    the true alignment is always the strongest correlation peak within a
+    physically plausible clock-offset window, even when it isn't the
+    single strongest peak in the unbounded search.
     """
     if len(ref_t) < 2 or len(test_t) < 2:
         raise ValueError("Need at least 2 samples in both signals to synchronize.")
@@ -1133,7 +1156,13 @@ def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0):
     test_zm = test_resampled - test_resampled.mean()
 
     correlation = np.correlate(ref_zm, test_zm, mode="full")
-    lag_samples = np.argmax(correlation) - (len(test_zm) - 1)
+    # index i in `correlation` corresponds to lag_samples = i - (len(test_zm) - 1)
+    zero_lag_idx = len(test_zm) - 1
+    max_lag_samples = max(1, int(round(MAX_LAG_SEC / dt)))
+    lo = max(0, zero_lag_idx - max_lag_samples)
+    hi = min(len(correlation), zero_lag_idx + max_lag_samples + 1)
+    best_idx = lo + int(np.argmax(correlation[lo:hi]))
+    lag_samples = best_idx - zero_lag_idx
     lag_sec = lag_samples * dt
 
     shifted_test_t = test_t + lag_sec
