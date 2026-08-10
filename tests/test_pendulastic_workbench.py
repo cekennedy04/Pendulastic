@@ -554,7 +554,16 @@ def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkey
     fake_engine = type("FakeEngine", (), {
         "load_imu_trial_from_components": staticmethod(
             lambda validations, ft_ratio=None, method=None:
-                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"]))
+                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"])),
+        # set_traces() now synchronously calls _recompute_release_lags() ->
+        # _recompute_metrics() -> get_metrics_snapshot(), which needs
+        # windowed_pt_params on whatever `engine` is monkeypatched to.
+        "windowed_pt_params": staticmethod(lambda t, y: {
+            "R2n": 0.0, "N": 0.0, "phi_max_ratio": 0.0, "omega_max_n": 0.0,
+            "f": 0.0, "area_ratio": 0.0, "omega_min_n": 0.0}),
+        "extrema_jitter": staticmethod(lambda t, y: {
+            "pk_i": np.array([], dtype=int), "tr_i": np.array([], dtype=int),
+            "cycle_times": np.array([])}),
     })()
     monkeypatch.setattr(_m, "engine", fake_engine)
 
@@ -945,12 +954,16 @@ def test_release_entry_commit_ignores_unparseable_text():
     wv = WorkbenchView(r, _Ctrl())
     wv.set_traces(_traces("imu"))
     r.update()
+    # set_traces() auto-seeds via detect_release_t0 (Task 8); capture
+    # whatever it produced (if anything) as the baseline this commit must
+    # leave untouched, rather than assuming an empty _release_marks.
+    before = dict(wv._release_marks)
 
     wv._release_entry_vars["imu"].set("not-a-number")
     wv._on_release_entry_commit("imu")
     r.update()
 
-    assert "imu" not in wv._release_marks
+    assert wv._release_marks == before
 
 
 def test_clear_release_removes_mark_and_resets_entry():
@@ -1053,11 +1066,16 @@ def test_plot_click_without_arming_falls_back_to_video_seek():
     wv._fps = 30.0
     wv._n_frames = 100
     r.update()
+    # set_traces() auto-seeds via detect_release_t0 (Task 8); capture
+    # whatever it produced (if anything) as the baseline this click-without-
+    # arming must leave untouched, rather than assuming an empty
+    # _release_marks.
+    before = dict(wv._release_marks)
 
     wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=1.0))
     r.update()
 
-    assert "imu" not in wv._release_marks
+    assert wv._release_marks == before
     assert wv._scrub_var.get() == pytest.approx(30.0)
 
 
@@ -1082,3 +1100,58 @@ def test_remarking_same_milestone_does_not_leak_axvline():
 
     assert len(wv._ax.lines) == lines_after_first_mark, (
         "re-marking the same milestone must replace, not accumulate, its axvline")
+
+
+def _release_traces(*labels, n=120, fps=30.0):
+    """Like _traces(), but with a real hold-then-swing release event (not a
+    pure sine from t=0) so detect_release_t0 has something to find."""
+    t = np.arange(n) / fps
+    out = {}
+    for i, label in enumerate(labels):
+        ang = np.full(n, 180.0)
+        hold = int(fps)
+        for j in range(hold, n):
+            tj = (j - hold) / fps
+            ang[j] = 165.0 - i + 15.0 * np.exp(-0.3 * tj) * np.cos(2 * np.pi * 0.9 * tj)
+        out[label] = (t, ang)
+    return out
+
+
+def test_set_traces_auto_seeds_release_mark_for_new_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_release_traces("imu"))
+    r.update()
+
+    assert "imu" in wv._release_marks
+    assert wv._release_marks["imu"]["source"] == "auto"
+    assert 0.8 <= wv._release_marks["imu"]["t_trace"] <= 1.2
+
+
+def test_set_traces_leaves_degenerate_trace_unmarked_no_exception():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    t = np.arange(90) / 30.0
+    flat = {"imu": (t, np.full(90, 180.0))}
+
+    wv.set_traces(flat)   # must not raise
+    r.update()
+
+    assert "imu" not in wv._release_marks
+
+
+def test_set_traces_does_not_reseed_already_marked_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    traces = _release_traces("imu")
+    wv.set_traces(traces)
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 99.0, "source": "manual"}
+
+    wv.set_traces(traces)  # same trial's async-reload style re-call
+    r.update()
+
+    assert wv._release_marks["imu"] == {"t_trace": 99.0, "source": "manual"}
