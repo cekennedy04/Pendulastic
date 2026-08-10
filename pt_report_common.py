@@ -153,6 +153,25 @@ def release_aligned_hpe_curve(mdl_t, mdl_ang):
     return t_plot, a_plot
 
 
+def _hpe_overlay_series(rec):
+    """For one trial record (after attach_rmse), returns
+    [(source_label, linestyle, t_plot, a_plot), ...] for whichever of
+    mediapipe_curve/imu_curve are present and release-align successfully.
+    OptiTrack itself is plotted separately by the existing Row 1 loop
+    (unchanged) -- this only covers the two overlay sources."""
+    out = []
+    for key, label, linestyle in (("mediapipe_curve", "MediaPipe", "--"), ("imu_curve", "IMU", ":")):
+        curve = rec.get(key)
+        if curve is None:
+            continue
+        aligned = release_aligned_hpe_curve(curve["t"], curve["ang"])
+        if aligned is None:
+            continue
+        t_plot, a_plot = aligned
+        out.append((label, linestyle, t_plot, a_plot))
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Generic multi-participant discovery
 #

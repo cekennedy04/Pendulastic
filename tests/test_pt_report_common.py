@@ -300,3 +300,31 @@ def test_make_rmse_figure_unchanged_behavior(tmp_path, monkeypatch):
     assert any_bars is True
     assert out_path == str(tmp_path / "P13_rmse.png") or out_path == os.path.join(str(tmp_path), "P13_rmse.png")
     assert os.path.isfile(out_path)
+
+
+def test_hpe_overlay_series_includes_both_sources_when_present():
+    import numpy as np
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    rec = {"mediapipe_curve": {"t": t, "ang": ang}, "imu_curve": {"t": t, "ang": ang}}
+
+    series = common._hpe_overlay_series(rec)
+
+    labels = {s[0] for s in series}
+    assert labels == {"MediaPipe", "IMU"}
+    linestyles = {s[0]: s[1] for s in series}
+    assert linestyles["MediaPipe"] == "--"
+    assert linestyles["IMU"] == ":"
+
+
+def test_hpe_overlay_series_skips_missing_curve():
+    rec = {"mediapipe_curve": None, "imu_curve": None}
+    assert common._hpe_overlay_series(rec) == []
+
+
+def test_hpe_overlay_series_skips_alignment_failure(monkeypatch):
+    import numpy as np
+    rec = {"mediapipe_curve": {"t": np.array([0.0]), "ang": np.array([180.0])}, "imu_curve": None}
+    # Single-sample curve fails release_aligned_hpe_curve's own validation (< 4 samples).
+    series = common._hpe_overlay_series(rec)
+    assert series == []
