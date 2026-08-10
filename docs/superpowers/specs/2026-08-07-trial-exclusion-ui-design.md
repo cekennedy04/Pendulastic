@@ -13,7 +13,8 @@ muscles to actively stop the pendulum swing instead of a passive release) direct
 production (5 entries excluding non-viable Participant 15 trials, added 2026-08-07). The only
 existing way to add an entry is hand-editing the JSON file directly. This spec adds a UI for it.
 
-**Revision note:** this design went through two Codex-arbitrated review rounds. Round 1 found
+**Revision note:** this design went through three Codex-arbitrated review rounds (round 3 verdict:
+"needs another round" — its findings are folded in below, marked round 3). Round 1 found
 `trial_key` (the 4-field `(participant, leg, condition, trial_number)` string already used by the
 shipped registry) is not guaranteed to identify a single physical recording — `discover_all_trials()`
 dedupes by real file path, not by `trial_key`, so two distinct recordings could theoretically
@@ -26,7 +27,15 @@ revision. Round 2 (reviewing the written round-1 spec against the actual `pendul
 call `set_trials_excluded` without it), a genuine data-loss path where a malformed registry would
 be silently overwritten, an incomplete Generate-in-flight lock, wrong import names against the
 real file, an unspecified `<<ListboxSelect>>` binding (none currently exists on this panel), and
-several other gaps. All are corrected in place below.
+several other gaps. Round 3 (checking round 2's fixes against the real code again) found several
+of them still didn't hold: per-record discovery-failure isolation is unimplementable as written
+because the failure point is inside `discover_all_trials()`'s own internals, stale table jobs could
+still repopulate the table after the user cleared their selection, fully-excluded participants
+would silently vanish from the sidebar with no way to undo, the corruption check only covered
+unparseable JSON (not valid-but-wrong-shape JSON), the UI test approach targeted the wrong test
+double, the viewer's scrollbars weren't accounted for in the view-switch, `_REPORT_AVAIL` (a
+separate guard from `_PT_AVAIL`) wasn't addressed, and total discovery failure had no terminal
+error path. All corrected in place below.
 
 ## 3. Data Layer (`pt_report_common.py`)
 
@@ -40,6 +49,21 @@ several other gaps. All are corrected in place below.
   produces for that record — the UI needs this to call `set_trials_excluded`, round-1's spec text
   claimed callers "never re-derive the key" but never actually added the field) and
   `excluded: bool`. The two new fields exist together, only on the `include_excluded=True` path.
+- **Per-record discovery-failure isolation (round 3 fix — round 2's version was unimplementable):**
+  `discover_all_trials()` calls `_parse_trial_path()` internally, which calls `os.path.getmtime()`
+  uncaught today — a single deleted/inaccessible file currently aborts the *entire* discovery call,
+  not just that one record, so the table-load worker (§4) would never even receive a partial
+  result to isolate a failure from. Fix belongs in `discover_all_trials()` itself: wrap
+  `_parse_trial_path()`'s call site in a `try/except`, and skip (not abort) any path that raises,
+  the same way an unparseable path already returns `None` and gets skipped today.
+- `list_participants(include_archive=True, *, include_excluded=False)` — **new parameter, same
+  pattern as `discover_all_trials()` (round 3 fix):** default unchanged for every existing caller
+  (`run_pt_analysis.py`, `pt_cohort_common.py`, etc., which must keep seeing only participants with
+  at least one non-excluded trial). When `True`, a participant whose *every* trial has been
+  excluded still appears (with `n_trials` reflecting only non-excluded trials, i.e. `0`, so the UI
+  can visually flag it). Without this, excluding a participant's last remaining trial makes them
+  vanish from `AnalysisPanel`'s own participant list on the very next refresh — with no way to
+  re-select them and undo it. `AnalysisPanel` (§4) is the only caller that passes `include_excluded=True`.
 - `duplicate_trial_keys(records: list[dict]) -> dict[str, list[str]]` — a **pure function over an
   already-fetched record list**, not a second discovery call. `{trial_key: [path, ...]}` for every
   key with more than one path among `records`. The caller (§4) always passes it the exact same
@@ -54,14 +78,18 @@ several other gaps. All are corrected in place below.
   For each unique key: sets a fixed placeholder reason (`"excluded via Analysis panel"`) when
   `excluded=True`, or **removes the key entirely** when `excluded=False` (a falsy/blank value would
   still satisfy `key in excluded`, corrupting the gate).
-  - **Malformed on-disk registry (data-loss fix, round 2):** if `excluded_trials.json` exists but
-    fails to parse, `set_trials_excluded` **raises `RegistryCorruptError` and refuses to write** —
-    it must never treat a parse failure as "empty" and then save, since that would silently discard
-    every exclusion the corrupt file actually contained. This is deliberately stricter than
-    `load_excluded_trials()`'s own read-time behavior (which treats a malformed file as `{}` for
-    report generation, where failing open is worse than temporarily un-filtering) — a *write* path
-    must never destroy data it can't fully account for. The UI (§4) surfaces this as a hard error
-    telling the operator to fix or restore the file by hand before excluding/including anything.
+  - **Malformed on-disk registry (data-loss fix, round 2; scope widened round 3):** if
+    `excluded_trials.json` exists but either (a) fails to parse as JSON, or (b) parses to anything
+    other than a `dict` with all-`str` keys and all-`str` values — round 3 caught that round 2's
+    check only covered case (a); valid JSON like `[]`, `null`, or a list would still have been
+    silently treated as `{}` and overwritten, exactly the same data-loss path for a different
+    input — `set_trials_excluded` **raises `RegistryCorruptError` and refuses to write** in either
+    case. It must never treat a parse failure *or* a wrong-shape result as "empty" and then save,
+    since both would silently discard every exclusion the file actually contained. This is
+    deliberately stricter than `load_excluded_trials()`'s own read-time behavior (which treats
+    either case as `{}` for report generation, where failing open is worse than temporarily
+    un-filtering) — a *write* path must never destroy data it can't fully account for. The UI (§4)
+    surfaces this as a hard error telling the operator to fix or restore the file by hand.
   - **Atomic write, scope stated explicitly (round 2):** temp file via `tempfile.mkstemp(dir=...,
     prefix=...)` in the same directory + `os.replace`, wrapped in `try/finally` so the temp file is
     always removed even if `os.replace` itself raises. This protects against a crash mid-write
@@ -79,16 +107,34 @@ currently holds `_viewer_canvas`) when exactly one participant is selected in th
 "view mode" for that same space, not a new cramped column. Selecting 0 or 2+ participants reverts
 the right side to the existing figure-viewer placeholder/last-generated-figure state and disables
 the trial table entirely (multi-select stays reserved for the existing 2-participant comparison
-flow). **Widget lifecycle (round 2):** switching views never destroys `_viewer_canvas` or its
-current Matplotlib figure — both are `grid_remove()`d, and the table frame `grid()`d in the same
-cell; switching back to figure view re-`grid()`s the canvas, so a previously generated figure is
-still there untouched, not regenerated or lost.
+flow). **Widget lifecycle (round 2; scrollbars added round 3):** switching views never destroys
+`_viewer_canvas` or its current Matplotlib figure — both are `grid_remove()`d, and the table frame
+`grid()`d in the same cell; switching back re-`grid()`s the canvas. Round 3 caught that
+`_build_widgets` currently creates the viewer's `vbar`/`hbar` scrollbars as **local variables**,
+never stored on `self` — left as-is, `grid_remove()`ing only the canvas leaves two orphaned
+scrollbars gridded next to the table. Fix: promote them to `self._viewer_vbar`/`self._viewer_hbar`
+when created, and `grid_remove()`/`grid()` them in lockstep with the canvas.
+
+**Participant list uses `include_excluded=True` (round 3 fix):** `_refresh_participants()` now
+calls `common.list_participants(include_excluded=True)` (§3) instead of the default-filtered call,
+so a participant whose every trial has been excluded still appears — labeled distinctly (e.g. a
+trailing "(all excluded)" suffix when `n_trials == 0` after exclusion) rather than vanishing with
+no way to re-select and undo it. This was round 2's blind spot: its "if still present" clause for
+re-selecting after a toggle silently assumed the participant would always still be present, which
+round 3 showed is false in exactly the case this feature exists to support (excluding all of
+someone's bad trials).
 
 **New selection binding (round 2 — none exists today):** `AnalysisPanel` currently only reads
 `self._participant_list.curselection()` when the Generate button is clicked; there is no live
 reaction to selection changes. This spec adds one: `self._participant_list.bind("<<ListboxSelect>>",
 self._on_participant_selection_changed)`. That handler is what decides single/zero/multi and
-drives the view switch above and the table-load job below.
+drives the view switch above and the table-load job below. **Request-id discipline (round 3
+fix):** the handler increments `self._table_request_id` on **every** call, regardless of outcome —
+zero/multi selection, a busy-rejected change, or a valid single selection all bump it. Round 2's
+version only issued a new id when actually starting a load job, so a slow, still-in-flight
+single-participant job could complete *after* the user cleared their selection, find its id still
+matched "latest" (since nothing newer had been issued), and incorrectly repopulate an already-cleared
+table.
 
 **Table:** `ttk.Treeview(show="headings")` with columns Leg | Condition | Trial # | N |
 phi_max_ratio | area_ratio, plus a `⚠` indicator column populated only for rows whose `trial_key`
