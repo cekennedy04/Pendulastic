@@ -63,13 +63,27 @@ except ImportError:
     _CV2_AVAIL = False
 
 try:
-    from pendulastic_viewer import _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN
+    from PIL import Image, ImageTk
+    _PIL_AVAIL = True
+except Exception:
+    Image = None
+    ImageTk = None
+    _PIL_AVAIL = False
+
+try:
+    from pendulastic_viewer import (
+        _MPBatchTracker, _PatientDetector, _draw, TRAIL_LEN, _MP_MODEL,
+        draw_person_select_overlay, resolve_person_click,
+    )
     _VIEWER_AVAIL = True
 except Exception:
     _MPBatchTracker = None
     _PatientDetector = None
     _draw = None
     TRAIL_LEN = 150
+    _MP_MODEL = None
+    draw_person_select_overlay = None
+    resolve_person_click = None
     _VIEWER_AVAIL = False
 
 _mp_pose = _mp_draw = _mp_styles = None
@@ -209,6 +223,7 @@ class BiomechanicalEngine:
         progress_cb: Callable[[float], None],
         leg: str = "right",
         collect_landmarks: bool = False,
+        manual_seed: tuple | None = None,
     ):
         """
         Offline MediaPipe tracking on a recorded video.
@@ -228,6 +243,12 @@ class BiomechanicalEngine:
         len(angles) always -- and fps is the video's true source frame rate.
         When False (default), returns angles only, matching the original
         signature exactly.
+
+        manual_seed, when given as a (hip, knee, ankle) triple, skips the
+        per-frame _PatientDetector search entirely -- the tracker is
+        initialised from that seed on the first frame read instead. When
+        None (default), behavior is unchanged from before this parameter
+        existed.
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
             return ([], [], 30.0) if collect_landmarks else []
@@ -258,13 +279,18 @@ class BiomechanicalEngine:
                     break
 
                 if not initialised:
-                    patient_kps, _ = detector.detect(frame)
-                    if patient_kps is not None and patient_kps.shape[0] >= 17:
-                        hip   = patient_kps[hip_i].astype(float)
-                        knee  = patient_kps[knee_i].astype(float)
-                        ankle = patient_kps[ank_i].astype(float)
+                    if manual_seed is not None:
+                        hip, knee, ankle = manual_seed
                         tracker.init(frame, hip, knee, ankle)
                         initialised = True
+                    else:
+                        patient_kps, _ = detector.detect(frame)
+                        if patient_kps is not None and patient_kps.shape[0] >= 17:
+                            hip   = patient_kps[hip_i].astype(float)
+                            knee  = patient_kps[knee_i].astype(float)
+                            ankle = patient_kps[ank_i].astype(float)
+                            tracker.init(frame, hip, knee, ankle)
+                            initialised = True
 
                 if initialised:
                     try:
@@ -288,6 +314,62 @@ class BiomechanicalEngine:
 
         progress_cb(1.0)
         return (angles, landmarks, fps_v) if collect_landmarks else angles
+
+    def detect_people_at_frame(
+        self, video_path: str, frame_index: int = 0,
+    ) -> tuple:
+        """
+        Run MediaPipe PoseLandmarker (IMAGE mode, up to 4 candidates) on a
+        single frame of video_path, for multi-person disambiguation before
+        a full offline track.
+
+        Returns (frame, poses):
+          - frame: the raw BGR frame (np.ndarray) at frame_index, or None
+            if the video couldn't be opened or that frame couldn't be
+            read (including a frame_index past the end of the clip).
+          - poses: a list of pose landmark sets (mediapipe's
+            pose_landmarks result), or [] if detection found nobody, or
+            detection itself raised an exception.
+
+        Never raises -- any exception from running detection is caught
+        internally and treated as "0 people found" so callers have one
+        fallback path regardless of failure cause.
+        """
+        if not (_VIEWER_AVAIL and _CV2_AVAIL):
+            return (None, [])
+
+        cap = _cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            cap.release()
+            return (None, [])
+
+        try:
+            cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ret, frame = cap.read()
+        finally:
+            cap.release()
+
+        if not ret or frame is None:
+            return (None, [])
+
+        try:
+            V = _mp.tasks.vision
+            opts = V.PoseLandmarkerOptions(
+                base_options=_mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
+                running_mode=V.RunningMode.IMAGE,
+                num_poses=4,
+                min_pose_detection_confidence=0.25,
+                min_pose_presence_confidence=0.25,
+            )
+            with V.PoseLandmarker.create_from_options(opts) as detector:
+                rgb    = _cv2.cvtColor(frame, _cv2.COLOR_BGR2RGB)
+                result = detector.detect(
+                    _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb))
+            poses = result.pose_landmarks or []
+        except Exception:
+            poses = []
+
+        return (frame, poses)
 
 
 # ---------------------------------------------------------------------------
@@ -1166,6 +1248,115 @@ class UploadMetaView(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# PersonPickerDialog
+# ---------------------------------------------------------------------------
+
+class PersonPickerDialog(tk.Toplevel):
+    """Modal dialog: shows every MediaPipe-detected person in a frame with a
+    numbered colored skeleton overlay and lets the user click the patient.
+
+    On a resolved click, self.result is set to (hip, knee, ankle) pixel
+    coordinates before the dialog closes. self.result stays None if the
+    user cancels/closes the dialog without a successful resolution.
+    """
+
+    MAX_DISPLAY_WIDTH   = 900
+    TRY_NEXT_FRAME_STEP = 15
+
+    def __init__(self, parent, video_path: str, frame_index: int,
+                 frame: np.ndarray, poses: list, leg: str) -> None:
+        super().__init__(parent)
+        self.title("Select the Patient")
+        self.resizable(False, False)
+        self.transient(parent)
+
+        self._video_path  = video_path
+        self._frame_index = frame_index
+        self._frame        = frame
+        self._poses         = poses
+        self._leg           = leg
+        self._engine         = BiomechanicalEngine("rgb")
+        self._scale          = 1.0
+        self.result: tuple | None = None
+
+        self._status_var = tk.StringVar(
+            value=f"MediaPipe detected {len(poses)} person(s) — click the PATIENT.")
+
+        self._image_label = tk.Label(self, cursor="crosshair")
+        self._image_label.pack()
+        self._image_label.bind("<Button-1>", self._on_click)
+
+        status_row = tk.Frame(self)
+        status_row.pack(fill="x", padx=8, pady=(4, 0))
+        tk.Label(status_row, textvariable=self._status_var,
+                 anchor="w", wraplength=self.MAX_DISPLAY_WIDTH).pack(
+            side="left", fill="x", expand=True)
+
+        button_row = tk.Frame(self)
+        button_row.pack(fill="x", padx=8, pady=8)
+        self.btn_next_frame = tk.Button(
+            button_row, text="Try Next Frame", command=self._on_try_next_frame)
+        self.btn_next_frame.pack(side="left")
+        tk.Button(button_row, text="Cancel", command=self.destroy).pack(
+            side="right")
+
+        self._render_frame()
+        self.grab_set()
+
+    def _render_frame(self) -> None:
+        overlay = draw_person_select_overlay(self._frame, self._poses)
+        h, w = overlay.shape[:2]
+        if w > self.MAX_DISPLAY_WIDTH:
+            self._scale = self.MAX_DISPLAY_WIDTH / w
+            disp = _cv2.resize(overlay, (int(w * self._scale), int(h * self._scale)))
+        else:
+            self._scale = 1.0
+            disp = overlay
+        rgb = _cv2.cvtColor(disp, _cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        self._photo = ImageTk.PhotoImage(img)
+        self._image_label.configure(image=self._photo)
+
+    def _on_click(self, event) -> None:
+        frame_h, frame_w = self._frame.shape[:2]
+        click_xy = (event.x / self._scale, event.y / self._scale)
+        result = resolve_person_click(
+            self._poses, click_xy, frame_w, frame_h, self._leg)
+
+        if result is None:
+            self._status_var.set(
+                "No detected person near that click — try clicking directly "
+                "on a numbered skeleton.")
+            return
+
+        hip, knee, ankle = result
+        if ankle is None:
+            self._status_var.set(
+                "Ankle visibility too low for that candidate — try clicking "
+                "a different candidate, or Try Next Frame.")
+            return
+
+        self.result = (hip, knee, ankle)
+        self.destroy()
+
+    def _on_try_next_frame(self) -> None:
+        next_index = self._frame_index + self.TRY_NEXT_FRAME_STEP
+        frame, poses = self._engine.detect_people_at_frame(
+            self._video_path, frame_index=next_index)
+        if frame is None:
+            self.btn_next_frame.config(state="disabled")
+            self._status_var.set(
+                "End of clip reached — try a different video.")
+            return
+        self._frame_index = next_index
+        self._frame        = frame
+        self._poses         = poses
+        self._status_var.set(
+            f"MediaPipe detected {len(poses)} person(s) — click the PATIENT.")
+        self._render_frame()
+
+
+# ---------------------------------------------------------------------------
 # PostProcessingPanel
 # ---------------------------------------------------------------------------
 
@@ -1403,14 +1594,39 @@ class PostProcessingPanel(tk.Frame):
                        ("All files", "*.*")])
         if not path:
             return
-        self.status_var.set("HPE processing: 0%")
+
         leg    = self._meta.get("leg", "right") if self._meta else "right"
+        engine = BiomechanicalEngine("rgb")
+
+        self.status_var.set("Detecting people…")
+        self.update_idletasks()
+        frame, poses = engine.detect_people_at_frame(path)
+
+        manual_seed = None
+        if len(poses) == 1:
+            # Only one candidate -- resolve_person_click's nearest-pose
+            # search trivially picks it regardless of click position, so
+            # any point in frame bounds works here; this reuses the same
+            # leg-resolution/ankle-visibility logic as the 2+-person
+            # disambiguation path below.
+            fh, fw = frame.shape[:2]
+            result = resolve_person_click(poses, (fw / 2, fh / 2), fw, fh, leg)
+            if result is not None and result[2] is not None:
+                manual_seed = result
+        elif len(poses) >= 2:
+            dialog = PersonPickerDialog(self, path, 0, frame, poses, leg)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                self.status_var.set("Upload cancelled — no patient selected.")
+                return
+            manual_seed = dialog.result
+
+        self.status_var.set("HPE processing: 0%")
         self._video_path = path
         self._hpe_leg     = leg
         self._hpe_landmarks = None
         self._source_angles.pop("hpe_upload", None)
         self.btn_export_video.config(state="disabled")
-        engine = BiomechanicalEngine("rgb")
 
         def _progress(pct: float) -> None:
             self.after(0, lambda p=pct: self.status_var.set(
@@ -1418,7 +1634,8 @@ class PostProcessingPanel(tk.Frame):
 
         def _run() -> None:
             angles, landmarks, video_fps = engine.run_offline_track(
-                path, _progress, leg=leg.lower(), collect_landmarks=True)
+                path, _progress, leg=leg.lower(), collect_landmarks=True,
+                manual_seed=manual_seed)
             self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=video_fps))
 
         threading.Thread(target=_run, daemon=True).start()
