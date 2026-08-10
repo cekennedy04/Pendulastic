@@ -44,8 +44,8 @@ RMSE_GOAL_DEG = 5.0
 WIDE_GRID = [
     {"beta": beta, "ema_alpha": alpha, "flex_axis_capture": fac,
      "gravity_seed": gs, "method": method}
-    for beta in (0.01, 0.02, 0.041, 0.06, 0.08, 0.10, 0.15, 0.20)
-    for alpha in (0.05, 0.1, 0.2, 0.3, 0.5, 0.7)
+    for beta in (0.01, 0.02, 0.041, 0.06, 0.08, 0.10)
+    for alpha in (0.05, 0.1, 0.2, 0.3)
     for fac in (True, False)
     for gs in (True, False)
     for method in ("relative", "ockendon", "ockendon_flipped")
