@@ -107,6 +107,8 @@ class MasterApp:
         self.var_record_imu = tk.BooleanVar(value=_IMU_AVAIL)
         self._imu_recording = False
         self._imu_csv_path  = ""
+        self._imu_raw_recording = False
+        self._imu_raw_jsonl_path = ""
         self._sync_after_id = None                # pending after() for status poll
         if _IMU_AVAIL:
             try:
@@ -327,7 +329,14 @@ class MasterApp:
         return True, ""
 
     def _start_imu(self, trial_dir, pid, trial):
-        """Open the IMU CSV for this trial. Never fatal to the main capture."""
+        """Open the IMU CSV and raw JSONL log for this trial. Never fatal to
+        the main capture -- each of the two loggers is attempted and
+        reported on independently, since one can fail while the other
+        succeeds."""
+        self._imu_recording = False
+        self._imu_csv_path = ""
+        self._imu_raw_recording = False
+        self._imu_raw_jsonl_path = ""
         if not (_IMU_AVAIL and self.var_record_imu.get()):
             return
         path = os.path.join(trial_dir, f"Trial_{trial}_imu.csv")
@@ -350,14 +359,34 @@ class MasterApp:
                 f"Webcam is recording, but the IMU CSV could not be opened:\n\n"
                 f"{type(e).__name__}: {e}")
 
-    def _stop_imu(self):
-        if not self._imu_recording:
-            return
-        self._imu_recording = False
+        raw_path = os.path.join(trial_dir, f"Trial_{trial}_imu_raw.jsonl")
         try:
-            imu_server.stop_recording()
-        except Exception:
-            pass
+            imu_server.start_raw_log(raw_path)
+            self._imu_raw_recording = True
+            self._imu_raw_jsonl_path = raw_path
+        except Exception as e:
+            messagebox.showwarning(
+                "IMU Goniometer",
+                f"IMU recording continues, but the raw JSONL log could not "
+                f"be opened:\n\n{type(e).__name__}: {e}")
+
+    def _stop_imu(self):
+        if self._imu_recording:
+            try:
+                imu_server.stop_recording()
+            except Exception:
+                pass
+            finally:
+                self._imu_recording = False
+
+        if self._imu_raw_recording:
+            try:
+                imu_server.stop_raw_log()
+            except Exception:
+                pass
+            finally:
+                self._imu_raw_recording = False
+                self._imu_raw_jsonl_path = ""
 
     def rescan_cameras(self):
         """Detect the connected camera, then pre-open it so START is instant."""
