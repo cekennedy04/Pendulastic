@@ -829,9 +829,20 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # hold before a large swing had its true ~49deg release-point amplitude
     # read as ~2.65deg after whole-trial detrending, discarding a
     # perfectly good trial under the sub-3deg sanity floor below.
+    #
+    # _detect_release fires once its threshold is CROSSED, not at the true
+    # hold-to-swing boundary itself, so rel_i can land a few samples into
+    # real motion (confirmed: a fast-onset synthetic swing was already 6
+    # samples/~0.06s into its drop by the time detection fired). Those
+    # samples are real signal, not baseline -- for a long hold they're a
+    # negligible fraction of the fit window, but for a short hold they can
+    # dominate it and bias the slope badly. Trim a small time margin off
+    # the END of the baseline window so detection lag never enters the fit.
     _MIN_BASELINE = 10
-    if detrend and rel_i >= _MIN_BASELINE:
-        slope, _ = np.polyfit(t_c[:rel_i], ang_c_raw[:rel_i], 1)
+    _LAG_MARGIN_SEC = 0.05
+    baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
+    if detrend and baseline_end >= _MIN_BASELINE:
+        slope, _ = np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
         ang_c = ang_c_raw
@@ -854,7 +865,13 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     min_dist = max(3, int(fps_eff / 3.5))   # samples per half-period at 3.5 Hz max
 
     # ── Neutral from settled tail of signal (used internally for phi/A0/R2n) ──
-    tail_start = max(int(0.75 * len(ang_r)), len(ang_r) - 1)
+    # min(), not max(): the window is the LAST 25% of samples. max() always
+    # picks len(ang_r)-1 once there are more than ~4 post-release samples
+    # (0.75*L < L-1 whenever L>4), collapsing "tail-median of the settled
+    # section" into whichever single oscillation phase the recording
+    # happened to end on -- confirmed against a synthetic trial where that
+    # single last sample read 30deg off the true settled center.
+    tail_start = min(int(0.75 * len(ang_r)), len(ang_r) - 1)
     neutral = float(np.nanmedian(ang_r[tail_start:]))
 
     # Same tail-median, but in raw (undetrended) signal space — for aligning

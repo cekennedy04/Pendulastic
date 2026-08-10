@@ -100,6 +100,35 @@ def test_long_hold_before_large_swing_keeps_true_release_amplitude():
     assert p["A0_deg"] > 30.0, f"A0 too small ({p['A0_deg']:.2f}) -- swing amplitude was distorted"
 
 
+def test_neutral_deg_uses_tail_window_median_not_single_last_sample():
+    """neutral_deg is documented as 'tail-median of settled section (last
+    25%)', but `tail_start = max(int(0.75*len(ang_r)), len(ang_r)-1)` always
+    evaluates to len(ang_r)-1 for any trial longer than ~4 post-release
+    samples (0.75*L < L-1 whenever L>4) -- collapsing the "window" to a
+    single sample: whatever phase the oscillation happens to be at on the
+    very last recorded frame, not a genuine settled-region estimate. An
+    undamped oscillation ending near a trough (30deg below true center)
+    while release itself lands near a peak must not report that trough
+    value as neutral."""
+    import math
+    fs = 100.0
+    hold = 60
+    freq = 1.0
+    total_s = 0.6 + 3.5 / freq   # recording ends ~half a cycle off release's phase
+    t = np.arange(0, total_s, 1.0 / fs)
+    ang = np.empty_like(t)
+    ang[:hold] = 180.0
+    tr = t[hold:] - t[hold]
+    ang[hold:] = 165.0 + 30.0 * np.cos(2 * math.pi * freq * tr)
+
+    p = compute_pt_params(t, ang, detrend=False)
+    assert p is not None
+    assert abs(p["neutral_deg"] - 165.0) < 15.0, (
+        f"neutral_deg={p['neutral_deg']:.2f}, expected near the true settled "
+        "center (165) -- a single end-of-recording sample let the trailing "
+        "oscillation phase leak into the baseline")
+
+
 def test_detrend_false_accepts_param_without_crash():
     t, ang = _damped_sinusoid()
     p = compute_pt_params(t, ang, detrend=False)
