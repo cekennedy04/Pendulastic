@@ -44,7 +44,7 @@ MAS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mas_scores.c
 leg_trial_counts = common.leg_trial_counts
 
 
-def run_for_participant(pid):
+def run_for_participant(pid, cohort_snapshot=None):
     counts = leg_trial_counts(pid)
     first_ts = common.first_recording_time(pid)
     if first_ts is None:
@@ -68,7 +68,8 @@ def run_for_participant(pid):
         label, by_leg_tp, timepoints, f"P{pid}_full_report.png",
         caveat_text=f"Auto-generated {READY_AFTER_SECONDS // 60} min after the first recording "
                    f"landed, from whatever trials were available at that point "
-                   f"(right={counts['right']}, left={counts['left']})."))
+                   f"(right={counts['right']}, left={counts['left']}).",
+        cohort_snapshot=cohort_snapshot))
 
     rmse_path, has_rmse_data = common.make_rmse_figure(
         label, by_leg_tp, timepoints, f"P{pid}_rmse.png")
@@ -107,9 +108,18 @@ def main():
     else:
         pids = list(common.list_participants().keys())
 
+    try:
+        cohort_snapshot = pt_cohort_common.build_cohort_snapshot()
+    except Exception as e:
+        # A malformed hand-edit to participant_groups.json (or any other
+        # cohort-snapshot failure) shouldn't take down the whole run --
+        # per-participant reports still generate, just without cohort context.
+        print(f"Cohort snapshot build failed, reports will omit cohort context: {e}")
+        cohort_snapshot = None
+
     qualified = set()
     for pid in pids:
-        if run_for_participant(pid):
+        if run_for_participant(pid, cohort_snapshot=cohort_snapshot):
             qualified.add(pid)
 
     ready_for_mas = qualified & _mas_scored_participants()
@@ -118,7 +128,7 @@ def main():
              f"-- run mas_validation.py to refresh the validation report.")
 
     try:
-        pt_cohort_common.run_cohort_comparison()
+        pt_cohort_common.write_cohort_artifacts(cohort_snapshot)
     except Exception as e:
         # A malformed hand-edit to participant_groups.json (or any other
         # cohort-comparison failure) shouldn't take down the whole run --
