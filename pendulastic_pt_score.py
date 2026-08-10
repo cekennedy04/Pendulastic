@@ -1066,6 +1066,40 @@ def _clean_hpe_angle(ang: np.ndarray, outlier_thresh: float = 25.0,
     return a
 
 
+def _replay_raw_imu_fallback(rec_dir: str, trial: str):
+    """When no hand-exported "..._imu_viewer.csv" exists for this trial,
+    replay the raw phone-IMU split logs (Trial_{trial}_accel/gyro/mag.csv,
+    written automatically by every recording session) through the same
+    fusion pipeline the live app uses, and the same reconstruct+replay path
+    rmse_pipeline_common's score_imu_candidate uses for the sweep pipeline.
+
+    This exists because the "imu_viewer" curve has historically only ever
+    been produced by a human opening pendulastic_viewer.py and using its
+    "Export CSV" dialog by hand -- done exactly once, for P13's reference
+    dataset, and never for any other participant even though every
+    recording session captures the raw components needed to reconstruct it.
+
+    Returns (t_seconds, angle_deg) or None if the raw components aren't
+    present, or replay finds no scoreable motion -- never raises, matching
+    this module's other best-effort-fallback conventions."""
+    accel = os.path.join(rec_dir, f"Trial_{trial}_accel.csv")
+    gyro = os.path.join(rec_dir, f"Trial_{trial}_gyro.csv")
+    mag = os.path.join(rec_dir, f"Trial_{trial}_mag.csv")
+    if not (os.path.isfile(accel) and os.path.isfile(gyro) and os.path.isfile(mag)):
+        return None
+    try:
+        from imu_calibration_config import load_config
+        from imu_calibration_tuner import replay_trial
+        from reconstruct_imu_raw_logs import reconstruct_trial
+        samples = reconstruct_trial(accel, gyro, mag)
+        t_m, ang_m = replay_trial(samples, load_config())
+    except Exception:
+        return None
+    if len(t_m) == 0 or np.count_nonzero(np.isfinite(ang_m)) < 10:
+        return None
+    return t_m, ang_m
+
+
 def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
                           t_opti: np.ndarray, angle_raw: np.ndarray,
                           neutral_deg: float, csv_files: Optional[list] = None) -> list:
@@ -1091,6 +1125,7 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
       {"name": str, "t": ndarray, "ang": ndarray, "rmse": float, "raw_pct": float}
     """
     MAX_HPE_OVERLAY = 8
+    _rec_dir_for_fallback = None   # set below only in auto-discovery mode
 
     if csv_files is None:
         # Locate HPE directory (Recordings/ first, fallback to OptiTrack_Recordings/).
@@ -1136,6 +1171,7 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         rec_dir = _find_rec_dir(HPE_ROOT) or _find_rec_dir(OPTI_ROOT)
         if not rec_dir:
             return []
+        _rec_dir_for_fallback = rec_dir
 
         # Find all HPE CSVs for this trial number
         csv_files = sorted(glob.glob(os.path.join(rec_dir, f"*_T_{trial}_*.csv")))
@@ -1146,7 +1182,23 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
                      and not os.path.basename(f).lower().endswith("_annotated.mp4")
                      and ".csv" in f.lower()]
 
-    if not csv_files:
+    # No manually-exported "..._imu_viewer.csv" among the discovered CSVs?
+    # Fall back to replaying the raw phone-IMU split logs directly (see
+    # _replay_raw_imu_fallback) so the phone-IMU curve doesn't silently
+    # disappear for every participant except P13's hand-curated reference
+    # set, where a human happened to run pendulastic_viewer.py's manual
+    # "Export CSV" step.
+    _has_imu_viewer_csv = False
+    for _f in csv_files:
+        _m = re.search(r"_T_\d+_(.+?)\.csv$", os.path.basename(_f), re.I)
+        if _m and _m.group(1) == "imu_viewer":
+            _has_imu_viewer_csv = True
+            break
+    _replayed_imu = None
+    if _rec_dir_for_fallback and not _has_imu_viewer_csv:
+        _replayed_imu = _replay_raw_imu_fallback(_rec_dir_for_fallback, trial)
+
+    if not csv_files and _replayed_imu is None:
         return []
 
     valid_mask = np.isfinite(angle_raw)
@@ -1167,27 +1219,15 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
     sw_t = t_opti[in_swing]
     sw_lo, sw_hi = float(sw_t[0]) - 0.5, float(sw_t[-1]) + 0.5
 
-    candidates = []
-    for csv_path in csv_files:
-        bn = os.path.basename(csv_path)
-        m = re.search(r"_T_\d+_(.+?)\.csv$", bn, re.I)
-        if not m:
-            continue
-        model_name = m.group(1)
-
-        try:
-            df = pd.read_csv(csv_path)
-            if "knee_angle_deg" not in df.columns or "time_sec" not in df.columns:
-                continue
-            t_m   = df["time_sec"].values.astype(float)
-            ang_m = df["knee_angle_deg"].values.astype(float)
-        except Exception:
-            continue
-
+    def _evaluate_candidate(model_name, t_m, ang_m):
+        """Shared alignment/cleaning/swing-tracking-filter/RMSE pipeline for
+        one HPE/IMU model curve, regardless of whether it came from a CSV
+        file or a raw-IMU replay (_replay_raw_imu_fallback). Returns a
+        candidate dict, or None if this curve fails a quality gate."""
         raw_valid = np.isfinite(ang_m)
         raw_pct = 100.0 * raw_valid.mean()
         if raw_pct < 5:
-            continue
+            return None
 
         # Model neutral: mean of first 0.5 s of valid readings (hold/extended phase)
         dt = float(np.diff(t_m[:min(20, len(t_m))]).mean()) if len(t_m) > 5 else 0.033
@@ -1201,7 +1241,7 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
             ref_valid = raw_valid[:ref_n2]
             ref_n = ref_n2
         if ref_valid.sum() < 3:
-            continue
+            return None
         model_neutral = float(np.nanmean(ang_m[:ref_n][ref_valid[:ref_n]]))
 
         # Align HPE to OptiTrack interior-angle space.
@@ -1223,7 +1263,7 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         # Model flexion-past-neutral in swing window
         sw_mask = (t_m >= sw_lo) & (t_m <= sw_hi) & np.isfinite(cleaned)
         if sw_mask.sum() < 3:
-            continue
+            return None
         model_flex_sw = neutral_deg - cleaned[sw_mask]
         model_peak = float(np.nanmax(model_flex_sw)) if model_flex_sw.size else -np.inf
 
@@ -1243,10 +1283,10 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
                 model_flex_sw  = alt_sw
                 model_peak     = alt_peak
             else:
-                continue   # neither direction tracks the swing
+                return None   # neither direction tracks the swing
 
         if model_peak / opti_peak < 0.30:
-            continue   # model didn't track the swing
+            return None   # model didn't track the swing
 
         # RMSE in flexion space interpolated onto OptiTrack time grid
         model_flex_full = neutral_deg - cleaned
@@ -1256,10 +1296,34 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         rmse = float(np.sqrt(np.mean((opti_flex[ok] - model_flex_interp[ok]) ** 2))) \
                if ok.sum() >= 10 else np.nan
 
-        candidates.append({
-            "name": model_name, "t": t_m, "ang": cleaned,
-            "raw_pct": raw_pct, "rmse": rmse,
-        })
+        return {"name": model_name, "t": t_m, "ang": cleaned,
+                "raw_pct": raw_pct, "rmse": rmse}
+
+    candidates = []
+    for csv_path in csv_files:
+        bn = os.path.basename(csv_path)
+        m = re.search(r"_T_\d+_(.+?)\.csv$", bn, re.I)
+        if not m:
+            continue
+        model_name = m.group(1)
+
+        try:
+            df = pd.read_csv(csv_path)
+            if "knee_angle_deg" not in df.columns or "time_sec" not in df.columns:
+                continue
+            t_m   = df["time_sec"].values.astype(float)
+            ang_m = df["knee_angle_deg"].values.astype(float)
+        except Exception:
+            continue
+
+        cand = _evaluate_candidate(model_name, t_m, ang_m)
+        if cand is not None:
+            candidates.append(cand)
+
+    if _replayed_imu is not None:
+        cand = _evaluate_candidate("imu_viewer", *_replayed_imu)
+        if cand is not None:
+            candidates.append(cand)
 
     if not candidates:
         return []

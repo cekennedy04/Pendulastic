@@ -288,6 +288,71 @@ def test_load_hpe_model_curves_finds_simplified_folder_structure(tmp_path, monke
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# load_hpe_model_curves: raw-IMU-replay fallback (no hand-exported imu_viewer.csv)
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_load_hpe_model_curves_falls_back_to_raw_imu_replay(tmp_path, monkeypatch):
+    """No manually-exported "..._imu_viewer.csv" for this trial, but raw
+    split-IMU logs (Trial_1_accel/gyro/mag.csv, captured by every recording
+    session) do exist -- _replay_raw_imu_fallback's synthesized curve must
+    flow through the same alignment/RMSE pipeline as any CSV-sourced one."""
+    import pendulastic_pt_score as pt
+
+    hpe_root = tmp_path / "Recordings"
+    rec_dir = hpe_root / "Participant_15" / "Right" / "pre"
+    rec_dir.mkdir(parents=True)
+    monkeypatch.setattr(pt, "HPE_ROOT", str(hpe_root))
+    monkeypatch.setattr(pt, "OPTI_ROOT", str(tmp_path / "no_such_optitrack_dir"))
+
+    # Raw component files only need to exist -- _replay_raw_imu_fallback
+    # itself is monkeypatched below, so their content is never parsed.
+    for suffix in ("accel", "gyro", "mag"):
+        (rec_dir / f"Trial_1_{suffix}.csv").write_text("dummy")
+
+    t, ang = _damped_sinusoid(n=300, fps=30.0)
+    monkeypatch.setattr(pt, "_replay_raw_imu_fallback",
+                        lambda rec_dir_arg, trial_arg: (t.copy(), ang.copy()))
+
+    curves = pt.load_hpe_model_curves("15_right_pre", "1", "1", t, ang, 180.0)
+    assert len(curves) == 1
+    assert curves[0]["name"] == "imu_viewer"
+    assert curves[0]["rmse"] < 0.1
+
+
+def test_load_hpe_model_curves_skips_raw_imu_fallback_when_imu_viewer_csv_exists(tmp_path, monkeypatch):
+    """A hand-exported imu_viewer.csv (the P13 reference-dataset convention)
+    must win -- the raw-replay fallback must not run or override it."""
+    import pendulastic_pt_score as pt
+    import pandas as pd
+
+    hpe_root = tmp_path / "Recordings"
+    rec_dir = hpe_root / "Participant_13" / "Right" / "pre"
+    rec_dir.mkdir(parents=True)
+    monkeypatch.setattr(pt, "HPE_ROOT", str(hpe_root))
+    monkeypatch.setattr(pt, "OPTI_ROOT", str(tmp_path / "no_such_optitrack_dir"))
+
+    t, ang = _damped_sinusoid(n=300, fps=30.0)
+    csv_path = rec_dir / "Participant_13_T_1_imu_viewer.csv"
+    pd.DataFrame({"time_sec": t, "knee_angle_deg": ang}).to_csv(csv_path, index=False)
+
+    calls = []
+    monkeypatch.setattr(pt, "_replay_raw_imu_fallback",
+                        lambda *a, **k: calls.append(a) or None)
+
+    curves = pt.load_hpe_model_curves("13_right_pre", "1", "1", t, ang, 180.0)
+    assert len(curves) == 1
+    assert curves[0]["name"] == "imu_viewer"
+    assert calls == [], "fallback must not run when a hand-exported imu_viewer.csv exists"
+
+
+def test_replay_raw_imu_fallback_returns_none_without_raw_components(tmp_path):
+    """No Trial_{n}_accel/gyro/mag.csv siblings in rec_dir -> None, not an
+    exception -- matches this module's other best-effort-fallback pattern."""
+    import pendulastic_pt_score as pt
+    assert pt._replay_raw_imu_fallback(str(tmp_path), "1") is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # draw_pt_annotations: Clinical plot annotation rendering
 # ══════════════════════════════════════════════════════════════════════════
 
