@@ -644,7 +644,7 @@ class MasterApp:
                     f"{os.path.basename(video_path)} already exists for "
                     f"{leg} / {characterization}.\n\n"
                     "Recording again will overwrite that trial's video, IMU CSV, "
-                    "and Motive take.\n\nOverwrite it?"):
+                    "raw IMU JSONL log, and Motive take.\n\nOverwrite it?"):
                 self.var_status.set("Idle - recording cancelled (trial already exists).")
                 return
 
