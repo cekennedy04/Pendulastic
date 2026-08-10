@@ -785,52 +785,66 @@ def attach_rmse(by_leg_tp):
     return by_leg_tp
 
 
+def _draw_rmse_axes(ax, leg, by_leg_tp, timepoints, methodologies=("mediapipe", "imu")):
+    """Per-trial RMSE bars vs OptiTrack for one leg's axes -- extracted
+    from make_rmse_figure() so both the standalone P{pid}_rmse.png and
+    Row 4 of the full report (make_report_figure(), Task 11) draw from
+    the exact same code and can never drift apart. Returns whether any
+    bars were drawn."""
+    ax.set_facecolor('#f8f9fa')
+    ax.grid(True, color=BG_GRID, linestyle='-', linewidth=0.8, axis='y')
+
+    bar_records = []
+    for tp_key, tp_label, _ in timepoints:
+        for rec in by_leg_tp.get((leg, tp_key), []):
+            has_mp = "mediapipe" in methodologies and rec.get("mediapipe_rmse") is not None
+            has_imu = "imu" in methodologies and rec.get("imu_rmse") is not None
+            if has_mp or has_imu:
+                bar_records.append((tp_label, rec))
+
+    any_bars = False
+    if bar_records:
+        any_bars = True
+        labels = [f"{tp}\nT{rec['trial']}" for tp, rec in bar_records]
+        xpos = np.arange(len(bar_records))
+        width = 0.36
+        if "mediapipe" in methodologies:
+            vals = [rec.get("mediapipe_rmse", np.nan) if rec.get("mediapipe_rmse") is not None else np.nan
+                   for _, rec in bar_records]
+            ax.bar(xpos - width / 2, vals, width, color=_C_MEDIAPIPE, label="OptiTrack vs MediaPipe", zorder=3)
+        if "imu" in methodologies:
+            vals = [rec.get("imu_rmse", np.nan) if rec.get("imu_rmse") is not None else np.nan
+                   for _, rec in bar_records]
+            ax.bar(xpos + width / 2, vals, width, color=_C_IMU, label="OptiTrack vs IMU (Viewer)", zorder=3)
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(labels, fontsize=7.5)
+        ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
+    else:
+        ax.text(0.5, 0.5, "No MediaPipe/IMU comparison data found\nfor the selected methodology",
+               transform=ax.transAxes, ha='center', va='center', color='#888888', fontsize=10)
+        ax.set_xticks([])
+
+    ax.set_ylabel('RMSE (deg)', fontsize=8)
+    ax.tick_params(labelsize=8)
+    return any_bars
+
+
 def make_rmse_figure(participant_label, by_leg_tp, timepoints, out_filename,
                      methodologies=("mediapipe", "imu"), save=True, return_fig=False):
     """1x2 grid (Left, Right): per-trial RMSE bars vs OptiTrack, for whichever
     of MediaPipe/IMU data is actually available. `methodologies` filters
-    which series to show even if both were found."""
+    which series to show even if both were found. Unchanged external
+    behavior from before the _draw_rmse_axes extraction (Task 8 of the
+    implementation plan)."""
     attach_rmse(by_leg_tp)
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.5), facecolor='white')
     any_bars = False
 
     for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
         ax = axes[col_idx]
-        ax.set_facecolor('#f8f9fa')
-        ax.grid(True, color=BG_GRID, linestyle='-', linewidth=0.8, axis='y')
-
-        bar_records = []
-        for tp_key, tp_label, _ in timepoints:
-            for rec in by_leg_tp.get((leg, tp_key), []):
-                has_mp = "mediapipe" in methodologies and rec.get("mediapipe_rmse") is not None
-                has_imu = "imu" in methodologies and rec.get("imu_rmse") is not None
-                if has_mp or has_imu:
-                    bar_records.append((tp_label, rec))
-
-        if bar_records:
-            any_bars = True
-            labels = [f"{tp}\nT{rec['trial']}" for tp, rec in bar_records]
-            xpos = np.arange(len(bar_records))
-            width = 0.36
-            if "mediapipe" in methodologies:
-                vals = [rec.get("mediapipe_rmse", np.nan) if rec.get("mediapipe_rmse") is not None else np.nan
-                       for _, rec in bar_records]
-                ax.bar(xpos - width / 2, vals, width, color=_C_MEDIAPIPE, label="OptiTrack vs MediaPipe", zorder=3)
-            if "imu" in methodologies:
-                vals = [rec.get("imu_rmse", np.nan) if rec.get("imu_rmse") is not None else np.nan
-                       for _, rec in bar_records]
-                ax.bar(xpos + width / 2, vals, width, color=_C_IMU, label="OptiTrack vs IMU (Viewer)", zorder=3)
-            ax.set_xticks(xpos)
-            ax.set_xticklabels(labels, fontsize=7.5)
-            ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
-        else:
-            ax.text(0.5, 0.5, "No MediaPipe/IMU comparison data found\nfor the selected methodology",
-                   transform=ax.transAxes, ha='center', va='center', color='#888888', fontsize=10)
-            ax.set_xticks([])
-
+        bars_this_leg = _draw_rmse_axes(ax, leg, by_leg_tp, timepoints, methodologies)
+        any_bars = any_bars or bars_this_leg
         ax.set_title(f'{participant_label} {leg_label} – RMSE vs OptiTrack', fontsize=10, fontweight='bold', pad=10)
-        ax.set_ylabel('RMSE (deg)', fontsize=8)
-        ax.tick_params(labelsize=8)
 
     fig.suptitle(f"{participant_label} — Flexion-Angle RMSE Agreement (lower = better)",
                 fontsize=11, y=1.0, color='#333333')
