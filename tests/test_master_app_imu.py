@@ -246,3 +246,43 @@ def test_repeated_start_imu_calls_leave_no_stale_state(tmp_path, monkeypatch):
         assert app._imu_raw_jsonl_path == os.path.join(str(tmp_path), "Trial_2_imu_raw.jsonl")
     finally:
         _teardown(app, r)
+
+
+def test_overwrite_confirmation_names_raw_jsonl_log(monkeypatch):
+    import shutil
+
+    r = _root()
+    app = None
+    pid = "PYTESTIMUOVW1"
+    try:
+        app = _app(r)
+        app.var_record_imu.set(False)  # skip the unrelated IMU-readiness prompt
+        app.entry_id.delete(0, tk.END)
+        app.entry_id.insert(0, pid)
+        app.var_leg.set("Right")
+        app.entry_characterization.delete(0, tk.END)
+        app.entry_characterization.insert(0, "pre")
+        app.var_trial.set("1")
+
+        _, video_path, _ = app._build_paths(pid)
+        with open(video_path, "wb") as f:
+            f.write(b"placeholder")
+
+        asked = {}
+        def fake_askyesno(title, message):
+            asked["message"] = message
+            return False
+        monkeypatch.setattr(master_app.messagebox, "askyesno", fake_askyesno)
+
+        app.start_recording()
+
+        assert "raw IMU JSONL" in asked["message"]
+    finally:
+        if app is not None:
+            if app.writing_flag.is_set():
+                app.stop_recording()
+            app._close_camera()
+        r.destroy()
+        p = os.path.join(master_app.ROOT_DIR, f"Participant_{pid}")
+        if os.path.isdir(p):
+            shutil.rmtree(p)
