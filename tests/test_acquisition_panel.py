@@ -3,6 +3,8 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
+import numpy as np
+
 
 def _root():
     r = tk.Tk(); r.withdraw(); return r
@@ -1008,6 +1010,30 @@ def test_research_sources_frame_hidden_by_default():
         r.destroy()
 
 
+def test_update_preview_does_not_swap_red_and_blue_channels():
+    """Regression: update_preview() used to convert BGR -> RGB itself and
+    hand that RGB array to cv2.imencode, which assumes BGR input and does
+    its own internal channel swap when writing the PNG -- the double swap
+    turned every red pixel blue and vice versa in the live preview. The
+    embedded lbl_preview this originally rendered into is gone (see
+    test_preview_label_removed); update_preview() now only forwards the
+    frame to the separate WebcamViewerWindow, so this pins the same
+    channel-order guarantee on that window's lbl_video instead."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pack()
+        p._ensure_viewer_window()
+        bgr = np.zeros((20, 20, 3), dtype="uint8")
+        bgr[:, :, 2] = 255   # pure red, expressed in BGR order (B=0, G=0, R=255)
+        p.update_preview(bgr)
+        r.update()
+        assert p._viewer_window.lbl_video._photo.get(0, 0) == (255, 0, 0)
+    finally:
+        r.destroy()
+
+
 def test_toggle_research_sources_shows_and_hides_frame():
     from pendulastic_app import AcquisitionPanel
     r = _root()
@@ -1078,6 +1104,28 @@ def test_panel_and_header_use_shared_palette():
         p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
         assert str(p.cget("bg")) == ws.PALETTE["BG"]
         assert str(p.lbl_status.cget("bg")) == ws.PALETTE["BG"]
+    finally:
+        r.destroy()
+
+
+def test_phone_camera_entry_constant_has_expected_shape():
+    from pendulastic_app import PHONE_CAMERA_ENTRY, PHONE_CAMERA_LABEL
+    assert PHONE_CAMERA_ENTRY == {"kind": "phone", "label": PHONE_CAMERA_LABEL}
+
+
+def test_show_phone_pairing_panel_displays_url_text():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        p.pack()
+        p.show_phone_pairing_panel("https://192.168.1.50:8880/")
+        r.update()
+        assert p._phone_pairing_frame.winfo_manager() == "pack"
+        assert "192.168.1.50" in p._phone_pairing_url_var.get()
+        p.hide_phone_pairing_panel()
+        r.update()
+        assert p._phone_pairing_frame.winfo_manager() == ""
     finally:
         r.destroy()
 

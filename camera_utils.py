@@ -403,9 +403,15 @@ class PhoneCameraSession:
                     went_live = True
                     self._safe_status("live")
 
-                if self._frame_size is None:
-                    h, w = item["frame"].shape[:2]
-                    self._frame_size = (w, h)
+                # Keep this current rather than locking to the very first
+                # frame: iOS Safari's getUserMedia stream can deliver a
+                # different-sized warm-up frame before settling at its real
+                # steady-state resolution. A stale frame_size here means
+                # _start_rgb_recording configures cv2.VideoWriter for the
+                # wrong size, and every write() then silently no-ops --
+                # producing a header-only, zero-frame video file.
+                h, w = item["frame"].shape[:2]
+                self._frame_size = (w, h)
 
                 if fps < degraded_fps:
                     if low_fps_since is None:
