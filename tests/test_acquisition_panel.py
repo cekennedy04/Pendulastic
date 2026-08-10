@@ -443,6 +443,76 @@ def test_on_source_changed_syncs_camera_frame_visibility():
 
 
 
+def test_imu_pairing_frame_visible_by_default_with_address():
+    """IMU defaults to checked, so the pairing hint (IP:port for the
+    Sensor Stream app) should be visible immediately -- previously this
+    info only ever appeared in the console log, forcing the operator to
+    go find it there."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._src_imu.get() is True
+        assert p._imu_pairing_frame.winfo_manager() == "pack"
+        addr = p._imu_pairing_var.get()
+        assert ":" in addr and addr != "no network connection"
+    finally:
+        r.destroy()
+
+
+def test_on_source_changed_syncs_imu_pairing_frame_visibility():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p._imu_pairing_frame.winfo_manager() == "pack"
+        p._src_imu.set(False)
+        p._on_source_changed()
+        r.update()
+        assert p._imu_pairing_frame.winfo_manager() == ""
+        p._src_imu.set(True)
+        p._on_source_changed()
+        r.update()
+        assert p._imu_pairing_frame.winfo_manager() == "pack"
+    finally:
+        r.destroy()
+
+
+def test_update_imu_pairing_info_shows_no_network_message_when_no_ips(monkeypatch):
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as app_mod
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        monkeypatch.setattr(app_mod._imu, "get_all_local_ips", lambda: [])
+        p._update_imu_pairing_info()
+        assert p._imu_pairing_var.get() == "no network connection"
+        assert p._imu_pairing_hint_var.get() == ""
+    finally:
+        r.destroy()
+
+
+def test_update_imu_pairing_info_shows_secondary_ip_hint(monkeypatch):
+    """Regression test: a machine can have more than one usable address
+    (e.g. regular Wi-Fi vs. a phone tethered through Windows Mobile
+    Hotspot use different subnets), and guessing wrong which one the
+    phone should connect to is a real support cost -- the UI must name a
+    fallback, not just the single best guess."""
+    from pendulastic_app import AcquisitionPanel
+    import pendulastic_app as app_mod
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        monkeypatch.setattr(app_mod._imu, "get_all_local_ips",
+                            lambda: ["192.168.137.1", "172.31.225.130"])
+        monkeypatch.setattr(app_mod._imu, "PORT", 5000, raising=False)
+        p._update_imu_pairing_info()
+        assert p._imu_pairing_var.get() == "192.168.137.1:5000"
+        assert "172.31.225.130:5000" in p._imu_pairing_hint_var.get()
+    finally:
+        r.destroy()
+
+
 def test_checking_rgb_shows_camera_frame_and_rescans():
     from pendulastic_app import AcquisitionPanel
     r = _root()

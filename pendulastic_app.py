@@ -572,6 +572,27 @@ class AcquisitionPanel(tk.Frame):
         for chk in (chk_imu, chk_rgb):
             chk.pack(side="left", padx=8)
 
+        # IMU pairing hint -- shown whenever "iPhone IMU" is checked, so the
+        # operator doesn't have to go digging in the console log for the
+        # ws:// address to enter into the Sensor Stream app. Static text
+        # computed once per show (the machine's IP doesn't change mid-
+        # session); mirrors the existing _phone_pairing_frame pattern used
+        # for the RGB phone-camera connection below.
+        self._imu_pairing_frame = tk.Frame(meth_f, bg=ws.PALETTE["PANEL"])
+        self._imu_pairing_var = tk.StringVar(value="")
+        tk.Label(self._imu_pairing_frame, text="Sensor Stream app -> ",
+                 font=("Segoe UI", 8), fg=ws.PALETTE["FG2"],
+                 bg=ws.PALETTE["PANEL"]).pack(side="left")
+        tk.Entry(self._imu_pairing_frame, textvariable=self._imu_pairing_var,
+                 font=("Consolas", 8, "bold"), width=22,
+                 state="readonly", readonlybackground=ws.PALETTE["PANEL"],
+                 relief="flat", justify="left").pack(side="left")
+        self._imu_pairing_hint_var = tk.StringVar(value="")
+        tk.Label(self._imu_pairing_frame, textvariable=self._imu_pairing_hint_var,
+                 font=("Segoe UI", 7), fg=ws.PALETTE["FG3"],
+                 bg=ws.PALETTE["PANEL"]).pack(side="left", padx=(4, 0))
+        self._imu_pairing_frame.pack_forget()   # hidden until IMU is checked
+
         # Collapsed "Research sources" disclosure -- OptiTrack and Video
         # File are research-only extras, rarely used in routine clinical
         # sessions (design spec Section 3), so they start hidden.
@@ -826,12 +847,41 @@ class AcquisitionPanel(tk.Frame):
         else:
             self.countdown_chk.config(state="normal")
 
+    def _update_imu_pairing_info(self) -> None:
+        """Populate the IMU pairing hint with this machine's best-guess LAN
+        IP and the Sensor Stream port. A machine can have more than one
+        usable address (e.g. regular Wi-Fi vs. a phone tethered through
+        Windows Mobile Hotspot use different subnets) and guessing wrong is
+        a real support cost, so a second candidate is named as a fallback
+        rather than only showing the primary guess."""
+        try:
+            ips = _imu.get_all_local_ips()
+        except Exception:
+            ips = []
+        if not ips:
+            self._imu_pairing_var.set("no network connection")
+            self._imu_pairing_hint_var.set("")
+            return
+        port = getattr(_imu, "PORT", 5000)
+        self._imu_pairing_var.set(f"{ips[0]}:{port}")
+        self._imu_pairing_hint_var.set(
+            f"(or {ips[1]}:{port} if tethered)" if len(ips) > 1 else "")
+
     def _on_source_changed(self) -> None:
         """Called on any source checkbox toggle. Updates status label and
         forces the countdown on (IMU trials have no other calibration path
         now that the manual Zero Sensor button is gone)."""
         sources = self.get_active_sources()
         self._apply_countdown_lock()
+        # Show/hide IMU pairing hint, refreshing the address each time it
+        # becomes visible (cheap; guards against the machine's IP having
+        # changed since the frame was last shown, e.g. a different Wi-Fi
+        # network since the app was launched).
+        if self._src_imu.get() and _IMU_AVAIL:
+            self._update_imu_pairing_info()
+            self._imu_pairing_frame.pack(side="top", anchor="w", pady=(2, 0))
+        else:
+            self._imu_pairing_frame.pack_forget()
         # Show/hide video file path frame
         if self._src_video_file.get():
             self._video_path_frame.pack(side="top", anchor="w", pady=(2, 0))
