@@ -48,6 +48,7 @@ imu_calibration_config.json
 imu_calibration_config.json.tmp
 sweep_cache/
 rmse_best_config.json
+calibration_coefficients*.json
 
 # Large outputs and scratch
 Model_Analysis_Outputs/
@@ -67,6 +68,13 @@ pip_install_log.txt
 
 # Claude session files
 .claude/
+
+# Skill-local scratch/session state (codex session continuity, superpowers
+# sdd scratch space — the latter already self-excludes via its own nested
+# .superpowers/sdd/.gitignore; this formalizes the same intent at the root
+# so it stops showing as untracked noise in git status)
+.context/
+.superpowers/
 
 # Isolated worktrees for plan execution
 .worktrees/
