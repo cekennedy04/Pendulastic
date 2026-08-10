@@ -473,6 +473,15 @@ class WorkbenchView(tk.Frame):
         prev_scrub_t    = self.current_time_sec()
 
         self._traces = traces
+        for label, (t, angle) in traces.items():
+            if label in self._release_marks:
+                continue
+            try:
+                t0 = pendulastic_pt_score.detect_release_t0(np.asarray(t), np.asarray(angle))
+            except Exception:
+                continue
+            self._release_marks[label] = {"t_trace": t0, "source": "auto"}
+
         for widget in self._visibility_frame.winfo_children():
             widget.destroy()
         self._ax.clear()
@@ -563,8 +572,10 @@ class WorkbenchView(tk.Frame):
                 self._reference_var.set(default_ref)
 
         self._redraw_annotations()
+        self._redraw_release_marks()
         self._plot_canvas.draw_idle()
         self._update_export_csv_state()
+        self._recompute_release_lags()
 
     def _default_reference(self, traces: dict) -> str:
         """OptiTrack present -> OptiTrack; else IMU present -> IMU; else the
@@ -807,6 +818,12 @@ class WorkbenchView(tk.Frame):
         self._annotation_artists = {}
         for label, (_fi, t_sec) in self._annotations.items():
             self._draw_milestone_artist(label, t_sec)
+
+    def _redraw_release_marks(self) -> None:
+        self._release_artists = {}
+        for label, mark in self._release_marks.items():
+            if label in self._traces:
+                self._draw_release_artist(label, mark["t_trace"])
 
     def get_annotations(self) -> dict:
         return dict(self._annotations)
