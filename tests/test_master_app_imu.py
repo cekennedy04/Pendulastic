@@ -248,6 +248,59 @@ def test_repeated_start_imu_calls_leave_no_stale_state(tmp_path, monkeypatch):
         _teardown(app, r)
 
 
+def test_camera_lost_stops_imu_loggers(monkeypatch):
+    r = _root()
+    app = None
+    try:
+        app = _app(r)
+        monkeypatch.setattr(master_app.messagebox, "showerror",
+                             lambda title, message: None)
+
+        stopped = []
+        app._imu_recording = True
+        app._imu_csv_path = "fake_csv_path"
+        app._imu_raw_recording = True
+        app._imu_raw_jsonl_path = "fake_raw_path"
+        monkeypatch.setattr(master_app.imu_server, "stop_recording",
+                             lambda: stopped.append("csv"))
+        monkeypatch.setattr(master_app.imu_server, "stop_raw_log",
+                             lambda: stopped.append("raw"))
+
+        app._on_camera_lost()
+
+        assert stopped == ["csv", "raw"]
+        assert app._imu_recording is False
+        assert app._imu_raw_recording is False
+        assert app._imu_raw_jsonl_path == ""
+    finally:
+        _teardown(app, r)
+
+
+def test_start_imu_does_nothing_when_checkbox_off(tmp_path, monkeypatch):
+    r = _root()
+    app = None
+    try:
+        app = _app(r)
+        app.var_record_imu.set(False)
+
+        called = {"start_recording": False, "start_raw_log": False}
+        monkeypatch.setattr(
+            master_app.imu_server, "start_recording",
+            lambda path, meta: called.__setitem__("start_recording", True))
+        monkeypatch.setattr(
+            master_app.imu_server, "start_raw_log",
+            lambda path: called.__setitem__("start_raw_log", True))
+
+        app._start_imu(str(tmp_path), "PYTESTIMU6", 1)
+
+        assert called["start_recording"] is False
+        assert called["start_raw_log"] is False
+        assert app._imu_recording is False
+        assert app._imu_raw_recording is False
+    finally:
+        _teardown(app, r)
+
+
 def test_overwrite_confirmation_names_raw_jsonl_log(monkeypatch):
     import shutil
 
