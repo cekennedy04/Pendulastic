@@ -637,8 +637,9 @@ class MasterApp:
             # Collapsing Position/Height out of the folder tree means Leg +
             # Characterization + Trial Number are now the only discriminators,
             # so a repeated combination can silently overwrite a prior take's
-            # video (and its IMU CSV / Motive mirror) — confirm before that
-            # happens instead of clobbering already-collected data.
+            # video (and its IMU CSV, raw IMU JSONL log, and Motive mirror) —
+            # confirm before that happens instead of clobbering already-
+            # collected data.
             if os.path.exists(video_path) and not messagebox.askyesno(
                     "Trial Already Recorded",
                     f"{os.path.basename(video_path)} already exists for "
@@ -676,8 +677,9 @@ class MasterApp:
             # Start the webcam immediately (the stream thread writes frames now)
             # and lock the UI. Locking first disables the text entries, so the
             # Motive keystrokes below can never land in them.
-            # Start the IMU CSV in the same tick as the video writer so both
-            # share a start epoch; every IMU row carries time.time().
+            # Start the IMU CSV and raw JSONL log in the same tick as the
+            # video writer so both share a start epoch; every IMU row and
+            # raw JSONL record carries time.time().
             self._start_imu(os.path.dirname(video_path), pid,
                             self.var_trial.get())
 
@@ -840,6 +842,7 @@ class MasterApp:
         """Handle the camera dropping out (called on the main thread)."""
         was_recording = self.writing_flag.is_set()
         self.writing_flag.clear()
+        self._stop_imu()              # close the IMU CSV and raw JSONL log alongside the video
         self._finalize_writer()
         if was_recording:
             try:
@@ -873,7 +876,7 @@ class MasterApp:
         # Stop the webcam first (instant), then stop Motive. A Motive failure
         # must not lose the already-saved webcam file.
         self.writing_flag.clear()     # stop writing frames immediately
-        self._stop_imu()              # close the IMU CSV alongside the video
+        self._stop_imu()              # close the IMU CSV and raw JSONL log alongside the video
         self._finalize_writer()       # finalize and close the .avi
         try:
             motive_sync.stop_local_motive()
