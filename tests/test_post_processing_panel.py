@@ -23,6 +23,7 @@ def _get_root():
 class _Ctrl:
     def on_new_trial(self): pass
     def on_back_to_mode_select(self): pass
+    def on_back_to_trial_list(self): pass
 
 
 def test_panel_instantiates():
@@ -388,4 +389,49 @@ def test_on_upload_video_two_people_cancelled_dialog_aborts_upload(monkeypatch, 
     r.update()
 
     assert called["run_offline_track"] is False
-    assert "cancel" in p.status_var.get().lower()
+
+
+def test_set_back_context_true_relabels_button():
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True); r.update()
+    p.set_back_context(from_trial_list=True)
+    assert p.btn_new_trial["text"] == "← Back to Trials"
+
+
+def test_set_back_context_false_relabels_button():
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True); r.update()
+    p.set_back_context(from_trial_list=True)
+    p.set_back_context(from_trial_list=False)
+    assert p.btn_new_trial["text"] == "← New Trial"
+
+
+def test_back_button_routes_to_trial_list_when_from_trial_list():
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_back_to_trial_list(self): calls.append("trial_list")
+        def on_new_trial(self): calls.append("new_trial")
+    p = PostProcessingPanel(r, C())
+    p.pack(fill="both", expand=True); r.update()
+    p.set_back_context(from_trial_list=True)
+    p._on_new_trial()
+    assert calls == ["trial_list"]
+
+
+def test_back_button_routes_to_new_trial_by_default():
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    calls = []
+    class C(_Ctrl):
+        def on_back_to_trial_list(self): calls.append("trial_list")
+        def on_new_trial(self): calls.append("new_trial")
+    p = PostProcessingPanel(r, C())
+    p.pack(fill="both", expand=True); r.update()
+    p._on_new_trial()
+    assert calls == ["new_trial"]

@@ -1549,6 +1549,7 @@ class PostProcessingPanel(tk.Frame):
         self._source_angles: dict  = {}
         self._fps: float           = 30.0
         self._meta: dict | None    = None
+        self._from_trial_list      = False
         self._plot_annots: list    = []
         self._last_pt_params: dict | None = None
         self._video_path: str | None = None
@@ -1624,8 +1625,8 @@ class PostProcessingPanel(tk.Frame):
 
         # row 3 — action buttons (utility actions, no single primary action
         # on a review-only screen -- all secondary-styled)
-        ws.secondary_button(self, "← New Trial", self._on_new_trial).grid(
-            row=3, column=0, padx=10, pady=12, sticky="e")
+        self.btn_new_trial = ws.secondary_button(self, "← New Trial", self._on_new_trial)
+        self.btn_new_trial.grid(row=3, column=0, padx=10, pady=12, sticky="e")
         ws.secondary_button(self, "Load OptiTrack CSV", self._on_load_optitrack).grid(
             row=3, column=1, padx=10, pady=12, sticky="w")
         self.btn_upload_video = ws.secondary_button(
@@ -1647,6 +1648,11 @@ class PostProcessingPanel(tk.Frame):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_back_context(self, from_trial_list: bool) -> None:
+        self._from_trial_list = from_trial_list
+        self.btn_new_trial.config(
+            text="← Back to Trials" if from_trial_list else "← New Trial")
+
     def load_trial(
         self,
         source_angles: dict,
@@ -1958,7 +1964,10 @@ class PostProcessingPanel(tk.Frame):
                             f"Annotated video saved:\n{out_path}")
 
     def _on_new_trial(self) -> None:
-        self.controller.on_new_trial()
+        if self._from_trial_list:
+            self.controller.on_back_to_trial_list()
+        else:
+            self.controller.on_new_trial()
 
     def _on_load_optitrack(self) -> None:
         path = filedialog.askopenfilename(
@@ -3443,6 +3452,7 @@ class App(tk.Tk):
             self._finish_trial_multi_mode(source_angles, meta, base_fn)
             return
         self._state = "review"
+        self._post.set_back_context(from_trial_list=False)
         self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
         self._acq.pack_forget()
         self._upload_meta.pack_forget()
@@ -3483,6 +3493,24 @@ class App(tk.Tk):
                 pass
         self._session_trials.remove(entry)
         self._acq.set_multi_trial_list(self._session_trials_view())
+
+    def on_view_trial(self, trial_num: int) -> None:
+        entry = next((e for e in self._session_trials
+                     if e["trial_num"] == trial_num), None)
+        if entry is None or entry["status"] != "saved":
+            return
+        self._state = "review"
+        self._post.set_back_context(from_trial_list=True)
+        self._post.load_trial(entry["source_angles"], entry["fps"],
+                              entry["meta"], entry["base_filename"])
+        self._acq.pack_forget()
+        self._post.pack(fill="both", expand=True)
+
+    def on_back_to_trial_list(self) -> None:
+        self._post.pack_forget()
+        self._acq.pack(fill="both", expand=True)
+        self._acq.enter_idle()
+        self._state = "idle"
 
     def _show_recording_saved_confirmation(self, source_angles: dict, meta: dict,
                                            base_fn: str) -> None:
