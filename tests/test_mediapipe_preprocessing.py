@@ -81,3 +81,63 @@ def test_knee_angle_rotation_invariant_under_arbitrary_rotation():
     rotated = mp_pre.knee_angle_from_points(hip_r, knee_r, ankle_r)
 
     assert math.isclose(original, rotated, abs_tol=1e-6)
+
+
+def _solid_frame(h, w, value):
+    return np.full((h, w, 3), value, dtype=np.uint8)
+
+
+def test_find_motion_bbox_locates_high_motion_region():
+    h, w = 20, 30
+    base = _solid_frame(h, w, 50)
+    moving = base.copy()
+    moving[2:6, 22:28] = 200
+    frames = [base, moving, base, moving]
+    bbox = mp_pre._find_motion_bbox(frames)
+    assert bbox == (22, 2, 6, 4)
+
+
+def test_find_motion_bbox_none_for_static_input():
+    h, w = 20, 30
+    frames = [_solid_frame(h, w, 50) for _ in range(4)]
+    assert mp_pre._find_motion_bbox(frames) is None
+
+
+def test_find_motion_bbox_none_for_fewer_than_two_frames():
+    assert mp_pre._find_motion_bbox([_solid_frame(10, 10, 0)]) is None
+
+
+def test_crop_to_moving_leg_crops_around_motion_region():
+    h, w = 40, 60
+    fps = 10.0
+    n_baseline = int(mp_pre.CROP_BASELINE_SEC * fps)  # 30 static frames
+    frames = [_solid_frame(h, w, 50) for _ in range(n_baseline)]
+    for i in range(10):
+        frame = _solid_frame(h, w, 50)
+        if i % 2 == 1:
+            frame[5:15, 45:58] = 200
+        frames.append(frame)
+
+    result = mp_pre.crop_to_moving_leg(frames, fps)
+
+    assert len(result) == len(frames)
+    out_h, out_w = result[0].shape[:2]
+    assert out_h < h and out_w < w
+
+
+def test_crop_to_moving_leg_falls_back_when_shorter_than_baseline():
+    h, w = 20, 30
+    fps = 10.0
+    frames = [_solid_frame(h, w, 50) for _ in range(5)]  # < CROP_BASELINE_SEC * fps
+    result = mp_pre.crop_to_moving_leg(frames, fps)
+    assert len(result) == len(frames)
+    assert result[0].shape == frames[0].shape
+
+
+def test_crop_to_moving_leg_falls_back_when_no_motion_found():
+    h, w = 20, 30
+    fps = 10.0
+    frames = [_solid_frame(h, w, 50) for _ in range(60)]  # all static
+    result = mp_pre.crop_to_moving_leg(frames, fps)
+    assert len(result) == len(frames)
+    assert result[0].shape == frames[0].shape
