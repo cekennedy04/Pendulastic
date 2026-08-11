@@ -576,13 +576,21 @@ _C_IMU = "#FF9000"
 
 
 def attach_rmse(by_leg_tp):
-    """Best-effort MediaPipe/IMU RMSE lookup for every scored trial, via
-    pt.load_hpe_model_curves's standard Recordings/Participant_{pid}/
+    """Best-effort MediaPipe/IMU RMSE + curve lookup for every scored trial,
+    via pt.load_hpe_model_curves's standard Recordings/Participant_{pid}/
     Position_1/Height_Joint-Level/ convention (with its own recursive
     Session_*/ fallback). Silently finds nothing (not an error) for
     participants/conditions laid out differently or never processed through
-    MediaPipe -- those simply won't have RMSE bars. Mutates trial records
-    in place and returns by_leg_tp for chaining."""
+    MediaPipe -- those simply won't have RMSE bars or curve overlays.
+    Mutates trial records in place and returns by_leg_tp for chaining.
+
+    Deterministic candidate: curves arrive sorted best-RMSE-first from
+    load_hpe_model_curves, so the FIRST mediapipe-name match and the FIRST
+    imu_viewer match are used -- not whichever the loop happens to see
+    last -- and that same candidate's rmse and t/ang curve are stored
+    together, so a later consumer (the waveform overlay, the PT7 score,
+    the RMSE bar) can never end up looking at mismatched candidates for
+    the same trial."""
     for trials in by_leg_tp.values():
         for rec in trials:
             try:
@@ -591,11 +599,12 @@ def attach_rmse(by_leg_tp):
                     rec["t_raw"], rec["angle_raw"], rec["neutral_deg_raw"])
             except Exception:
                 curves = []
-            for c in curves:
-                if c["name"].startswith("mediapipe"):
-                    rec["mediapipe_rmse"] = c.get("rmse")
-                elif c["name"] == "imu_viewer":
-                    rec["imu_rmse"] = c.get("rmse")
+            mediapipe_curve = next((c for c in curves if c["name"].startswith("mediapipe")), None)
+            imu_curve = next((c for c in curves if c["name"] == "imu_viewer"), None)
+            rec["mediapipe_rmse"] = mediapipe_curve.get("rmse") if mediapipe_curve else None
+            rec["mediapipe_curve"] = {"t": mediapipe_curve["t"], "ang": mediapipe_curve["ang"]} if mediapipe_curve else None
+            rec["imu_rmse"] = imu_curve.get("rmse") if imu_curve else None
+            rec["imu_curve"] = {"t": imu_curve["t"], "ang": imu_curve["ang"]} if imu_curve else None
     return by_leg_tp
 
 
