@@ -693,15 +693,27 @@ class AcquisitionPanel(tk.Frame):
         ttk.Separator(self, orient="horizontal").grid(
             row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
-        # row 11 — countdown checkbox (forced on/locked while IMU is an
-        # active source -- it's the only calibration path now)
+        # row 11 — countdown + multi-trial checkboxes, stacked in one frame
+        # so no other row needs renumbering.
+        chk_stack = tk.Frame(self, bg=ws.PALETTE["BG"])
+        chk_stack.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+
         self.countdown_var = tk.BooleanVar(value=False)
         self.countdown_chk = tk.Checkbutton(
-            self, text="5-second countdown before recording",
+            chk_stack, text="5-second countdown before recording",
             variable=self.countdown_var,
             bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
             selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"])
-        self.countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self.countdown_chk.pack(side="top", anchor="w")
+
+        self._multi_trial_var = tk.BooleanVar(value=False)
+        self.multi_trial_chk = tk.Checkbutton(
+            chk_stack, text="Record multiple trials",
+            variable=self._multi_trial_var,
+            bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
+            selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"],
+            command=self._on_multi_trial_toggle)
+        self.multi_trial_chk.pack(side="top", anchor="w")
 
         # row 12 — START / STOP (START never moves from col 0)
         self.btn_start = tk.Button(
@@ -717,22 +729,29 @@ class AcquisitionPanel(tk.Frame):
             command=self._on_stop_clicked)
         self.btn_stop.grid(row=12, column=1, padx=10, pady=12)
 
-        # row 13 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
+        # row 13 — trial list (multi-trial mode; hidden until toggled on and
+        # at least one trial exists this session)
+        self._trial_rows_data: list = []
+        self._trial_list_frame = ws.card_frame(self, title="TRIALS THIS SESSION")
+        self._trial_list_container = tk.Frame(self._trial_list_frame, bg=ws.PALETTE["PANEL"])
+        self._trial_list_container.pack(side="top", fill="x")
+
+        # row 14 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
         self.canvas_tele = tk.Canvas(
             self, width=440, height=80, bg="#0B1928", highlightthickness=0)
 
-        # row 14 — status bar
+        # row 15 — status bar
         self.status_var = tk.StringVar(value="Idle — ready to record.")
         self.lbl_status = tk.Label(
             self, textvariable=self.status_var, relief="sunken", anchor="w",
             bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"])
-        self.lbl_status.grid(row=14, column=0, columnspan=2,
+        self.lbl_status.grid(row=15, column=0, columnspan=2,
                              sticky="ew", padx=10, pady=(4, 10))
 
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self.countdown_chk, self.multi_trial_chk, chk_opti, chk_rgb, chk_imu, chk_video,
             self._research_toggle_btn,
             self.btn_back, self.drop_cam, self.btn_rescan,
         ]
@@ -774,7 +793,7 @@ class AcquisitionPanel(tk.Frame):
         now lives entirely in the separate WebcamViewerWindow, so this
         panel no longer needs its own embedded copy."""
         if self._is_recording:
-            self.canvas_tele.grid(row=13, column=0, columnspan=2,
+            self.canvas_tele.grid(row=14, column=0, columnspan=2,
                                   padx=10, pady=4)
         else:
             self.canvas_tele.grid_remove()
@@ -937,6 +956,51 @@ class AcquisitionPanel(tk.Frame):
     def get_video_file_path(self) -> str:
         """Return the currently selected video file path, or empty string."""
         return getattr(self, "_stored_video_path", "")
+
+    def _on_multi_trial_toggle(self) -> None:
+        self._sync_trial_list_visibility()
+
+    def _sync_trial_list_visibility(self) -> None:
+        show = self._multi_trial_var.get() and bool(self._trial_rows_data)
+        if show:
+            self._trial_list_frame.grid(row=13, column=0, columnspan=2,
+                                        sticky="ew", padx=12, pady=4)
+        else:
+            self._trial_list_frame.grid_remove()
+
+    def set_multi_trial_list(self, trials: list) -> None:
+        self._trial_rows_data = list(trials)
+        for w in self._trial_list_container.winfo_children():
+            w.destroy()
+        for t in self._trial_rows_data:
+            self._build_trial_row(t)
+        self._sync_trial_list_visibility()
+
+    _SOURCE_LABELS = {"imu": "IMU", "rgb": "RGB", "optitrack": "OptiTrack"}
+
+    def _build_trial_row(self, t: dict) -> None:
+        row = tk.Frame(self._trial_list_container, bg=ws.PALETTE["PANEL"])
+        row.pack(side="top", fill="x", pady=1)
+        src_label = " + ".join(self._SOURCE_LABELS.get(s, s) for s in t["sources"])
+        status_label = "Processing…" if t["status"] == "processing" else "Saved"
+        text = f"Trial {t['trial_num']} · {src_label} · {status_label}"
+        lbl = tk.Label(row, text=text, anchor="w", cursor="hand2",
+                       bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"])
+        lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        lbl.bind("<Button-1>", lambda e, n=t["trial_num"]: self.controller.on_view_trial(n))
+        btn_del = tk.Button(
+            row, text="✕", relief="flat", bd=0, cursor="hand2",
+            bg=ws.PALETTE["PANEL"], fg=_RED,
+            state="disabled" if t["status"] == "processing" else "normal",
+            command=lambda n=t["trial_num"]: self._on_delete_clicked(n))
+        btn_del.pack(side="right", padx=4)
+
+    def _on_delete_clicked(self, trial_num: int) -> None:
+        if messagebox.askyesno(
+                "Delete Trial",
+                f"Delete Trial {trial_num}? This removes its saved files "
+                "and can't be undone."):
+            self.controller.on_delete_trial(trial_num)
 
     def _on_rgb_checkbox_toggled(self) -> None:
         if self._src_rgb.get():
@@ -1485,6 +1549,7 @@ class PostProcessingPanel(tk.Frame):
         self._source_angles: dict  = {}
         self._fps: float           = 30.0
         self._meta: dict | None    = None
+        self._from_trial_list      = False
         self._plot_annots: list    = []
         self._last_pt_params: dict | None = None
         self._video_path: str | None = None
@@ -1560,8 +1625,8 @@ class PostProcessingPanel(tk.Frame):
 
         # row 3 — action buttons (utility actions, no single primary action
         # on a review-only screen -- all secondary-styled)
-        ws.secondary_button(self, "← New Trial", self._on_new_trial).grid(
-            row=3, column=0, padx=10, pady=12, sticky="e")
+        self.btn_new_trial = ws.secondary_button(self, "← New Trial", self._on_new_trial)
+        self.btn_new_trial.grid(row=3, column=0, padx=10, pady=12, sticky="e")
         ws.secondary_button(self, "Load OptiTrack CSV", self._on_load_optitrack).grid(
             row=3, column=1, padx=10, pady=12, sticky="w")
         self.btn_upload_video = ws.secondary_button(
@@ -1583,6 +1648,11 @@ class PostProcessingPanel(tk.Frame):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_back_context(self, from_trial_list: bool) -> None:
+        self._from_trial_list = from_trial_list
+        self.btn_new_trial.config(
+            text="← Back to Trials" if from_trial_list else "← New Trial")
+
     def load_trial(
         self,
         source_angles: dict,
@@ -1894,7 +1964,10 @@ class PostProcessingPanel(tk.Frame):
                             f"Annotated video saved:\n{out_path}")
 
     def _on_new_trial(self) -> None:
-        self.controller.on_new_trial()
+        if self._from_trial_list:
+            self.controller.on_back_to_trial_list()
+        else:
+            self.controller.on_new_trial()
 
     def _on_load_optitrack(self) -> None:
         path = filedialog.askopenfilename(
@@ -2490,6 +2563,8 @@ class App(tk.Tk):
         self._rec_angles:     dict     = {}   # {"imu": [...], "rgb": [...]}
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
         self._pending_review: dict     = {}
+        self._session_trials: list     = []
+        self._pending_trial_entry: Optional[dict] = None
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
@@ -2603,6 +2678,20 @@ class App(tk.Tk):
             self._pose_estimator = None
 
         meta           = self._acq.get_metadata()
+        if self._is_multi_trial_mode():
+            entry = {
+                "trial_num": meta["trial"],
+                "sources": list(self._active_sources),
+                "status": "processing",
+                "meta": meta,
+                "source_angles": None,
+                "fps": None,
+                "base_filename": None,
+                "file_paths": self._trial_file_paths(meta, self._active_sources),
+            }
+            self._session_trials.append(entry)
+            self._pending_trial_entry = entry
+            self._acq.set_multi_trial_list(self._session_trials_view())
         source_angles: dict = {}
         pending_rgb    = False
         imu_raw_log_path: Optional[str] = None
@@ -3001,6 +3090,9 @@ class App(tk.Tk):
         self._rec_angles      = {}
         self._rec_timestamps  = {}
         self._pending_review  = {}
+        self._session_trials  = []
+        self._pending_trial_entry = None
+        self._acq.set_multi_trial_list([])
 
     def _start_upload_analysis(self) -> None:
         meta = self._upload_meta.get_metadata()
@@ -3324,6 +3416,32 @@ class App(tk.Tk):
                     f"Could not trigger Motive:\n{type(e).__name__}: {e}\n\n"
                     "Recording will continue without OptiTrack sync.")
 
+    def _is_multi_trial_mode(self) -> bool:
+        return self._acq._multi_trial_var.get()
+
+    def _trial_file_paths(self, meta: dict, sources: list) -> list:
+        """Candidate file paths that may be written for a trial with these
+        sources. For RGB, includes <video>.timestamps.csv even though it is
+        only written for phone-camera recordings (not plain USB webcam);
+        Task 5's delete logic treats a missing file as a no-op. Returns imu
+        and rgb CSV paths + the .avi and .avi.timestamps.csv video paths for
+        RGB trials. OptiTrack writes nothing here (Motive owns that file)."""
+        base_fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        paths = []
+        if "imu" in sources:
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+            paths.append(os.path.join(DataManager.DATA_DIR, fn))
+        if "rgb" in sources:
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="rgb")
+            paths.append(os.path.join(DataManager.DATA_DIR, fn))
+            video_path = os.path.join(DataManager.DATA_DIR, base_fn.replace(".csv", ".avi"))
+            paths.append(video_path)
+            paths.append(video_path + ".timestamps.csv")
+        return paths
+
     # ------------------------------------------------------------------
     # Panel switching
     # ------------------------------------------------------------------
@@ -3332,10 +3450,16 @@ class App(tk.Tk):
         """from_recording distinguishes an actual live-recording stop (which
         gets a "Recording Saved" confirmation) from the upload-CSV/
         upload-video-file review paths, which process an already-existing
-        file rather than saving a new one."""
-        self._state = "review"
+        file rather than saving a new one. In multi-trial mode, a live
+        recording never reaches this screen automatically at all -- see
+        _finish_trial_multi_mode()."""
         base_fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        if from_recording and self._is_multi_trial_mode():
+            self._finish_trial_multi_mode(source_angles, meta, base_fn)
+            return
+        self._state = "review"
+        self._post.set_back_context(from_trial_list=False)
         self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
         self._acq.pack_forget()
         self._upload_meta.pack_forget()
@@ -3346,6 +3470,69 @@ class App(tk.Tk):
             pass
         if from_recording:
             self._show_recording_saved_confirmation(source_angles, meta, base_fn)
+
+    def _finish_trial_multi_mode(self, source_angles: dict, meta: dict, base_fn: str) -> None:
+        entry = self._pending_trial_entry
+        if entry is None:
+            # The clinician already navigated away (e.g. back to mode
+            # select) before this background trial finished, which clears
+            # _pending_trial_entry. There is nothing left to finalize --
+            # the trial's data was already discarded -- so do not touch
+            # the acquisition panel or app state; that would resurrect UI
+            # (e.g. the camera preview window) on a screen the user left.
+            return
+        entry["status"] = "saved"
+        entry["source_angles"] = source_angles
+        entry["fps"] = self._fps_for(meta)
+        entry["base_filename"] = base_fn
+        self._pending_trial_entry = None
+        self._acq.increment_trial()
+        self._acq.set_multi_trial_list(self._session_trials_view())
+        self._acq.enter_idle()
+        self._state = "idle"
+
+    def _session_trials_view(self) -> list:
+        return [{"trial_num": e["trial_num"], "sources": e["sources"], "status": e["status"]}
+                for e in self._session_trials]
+
+    def on_delete_trial(self, trial_num: int) -> None:
+        entry = next((e for e in self._session_trials
+                     if e["trial_num"] == trial_num), None)
+        if entry is None:
+            return
+        errors = []
+        for path in entry["file_paths"]:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                errors.append((path, e))
+        if errors:
+            self._acq.status_var.set(
+                f"Trial {trial_num}: could not delete all files "
+                f"({os.path.basename(errors[0][0])}: {errors[0][1]}) — not removed.")
+            return
+        self._session_trials.remove(entry)
+        self._acq.set_multi_trial_list(self._session_trials_view())
+
+    def on_view_trial(self, trial_num: int) -> None:
+        entry = next((e for e in self._session_trials
+                     if e["trial_num"] == trial_num), None)
+        if entry is None or entry["status"] != "saved":
+            return
+        self._state = "review"
+        self._post.set_back_context(from_trial_list=True)
+        self._post.load_trial(entry["source_angles"], entry["fps"],
+                              entry["meta"], entry["base_filename"])
+        self._acq.pack_forget()
+        self._post.pack(fill="both", expand=True)
+
+    def on_back_to_trial_list(self) -> None:
+        self._post.pack_forget()
+        self._acq.pack(fill="both", expand=True)
+        self._acq.enter_idle()
+        self._state = "idle"
 
     def _show_recording_saved_confirmation(self, source_angles: dict, meta: dict,
                                            base_fn: str) -> None:
