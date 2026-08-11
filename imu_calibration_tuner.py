@@ -137,26 +137,37 @@ class _RoleState:
     def calibrate_accel_bias(self) -> None:
         """Estimate accel bias from the current accel_hold_buf during a
         verified-stillness window. During true stillness, raw accel should
-        equal [0, 0, ±g] (gravity only); any deviation is bias.
+        equal gravity (magnitude g, direction wherever the hold actually
+        pointed) plus a small sensor offset; any excess magnitude beyond g
+        is bias.
 
-        g's magnitude and sign are picked from the data's own scale, not
-        hardcoded -- see pendulastic_imu_server._IMUDevice.
-        calibrate_accel_bias for why (iOS g-units vs Android m/s²; and a
-        phone mounted screen-down reads -g on Z at rest, not the +g a fixed
-        constant assumes). Kept in sync with that function since this tuner
-        replays the same pipeline offline -- it's what actually produces
-        the final saved/scored angle series after a live recording ends
-        (see pendulastic_app.py's _run_imu_tuning), so a mismatch here
-        reproduces the live bug in every saved trial regardless of the
-        live-server fix."""
+        g's magnitude is picked from the data's own scale, not hardcoded --
+        see pendulastic_imu_server._IMUDevice.calibrate_accel_bias for why
+        (iOS g-units vs Android m/s²). The reference direction is taken
+        from the measured mean_accel itself, not forced onto +Z: a hold
+        that isn't level has real gravity components off-axis, and forcing
+        those onto Z bakes them into "bias" instead, actively steering the
+        AHRS toward a wrong orientation (confirmed on Participant_13_
+        left_post Trial_4 and Participant_5_left_post_1month Trial_3, both
+        with hold-window gravity spread across all three axes). Correcting
+        only the magnitude along the measured direction leaves direction to
+        _gravity_seed()'s tilt-quaternion seeding and the AHRS's own
+        continuous correction step. Kept in sync with
+        pendulastic_imu_server._IMUDevice.calibrate_accel_bias since this
+        tuner replays the same pipeline offline -- it's what actually
+        produces the final saved/scored angle series after a live
+        recording ends (see pendulastic_app.py's _run_imu_tuning), so a
+        mismatch here reproduces a live bug in every saved trial regardless
+        of the live-server fix."""
         if not self.accel_hold_buf or len(self.accel_hold_buf) < 2:
             return
         vals = np.array([v for _, v in self.accel_hold_buf])
         mean_accel = vals.mean(axis=0)
         mag = float(np.linalg.norm(mean_accel))
+        if mag < 1e-9:
+            return
         g = 9.81 if mag > 3.0 else 1.0
-        sign = 1.0 if mean_accel[2] >= 0.0 else -1.0
-        gravity = np.array([0.0, 0.0, sign * g])
+        gravity = mean_accel * (g / mag)
         self.accel_bias = mean_accel - gravity
 
 

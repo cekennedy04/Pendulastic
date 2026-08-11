@@ -65,6 +65,22 @@ _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 # noisier); lower = trusts gyro more. 0.041 is Madgwick's suggested MARG value.
 BETA = 0.041
 
+# MadgwickAHRS.update()'s accelerometer-correction gate: below this angular
+# velocity, treat the sensor as still enough that its accel reading is a
+# trustworthy gravity reference. Magnitude-proximity-to-g alone (the gate's
+# other, older condition) is not sufficient -- a slowly swinging/settling
+# pendulum has real centripetal/tangential acceleration whose magnitude can
+# sit within the gate's tolerance of g while its direction is meaningfully
+# off from true gravity, so correcting toward it steers orientation toward
+# the pendulum's own motion instead of doing nothing. 0.3 rad/s (~17 deg/s)
+# matches this codebase's existing "recently calm" bar
+# (imu_calibration_tuner._ZERO_CAPTURE_GUARD_RAD_S) rather than introducing
+# a new one; confirmed via corpus-wide validation against every real trial
+# with an OptiTrack match (Model_Analysis_Outputs/imu_vs_optitrack_rmse.csv)
+# that it lowers RMSE broadly rather than only on the trials that motivated
+# it -- see git history for the before/after numbers.
+ACCEL_CORRECTION_GYRO_MAX_RAD_S = 0.3
+
 # A device is considered disconnected if no packet arrives within this window.
 STALE_AFTER_S = 2.0
 
@@ -149,9 +165,15 @@ class MadgwickAHRS:
         self._a_est = (a_norm if self._a_est == 0.0
                        else 0.999 * self._a_est + 0.001 * a_norm)
         # Skip the accelerometer correction step during high-impact transients
-        # so the gravity-direction estimate is not distorted by linear accel.
+        # (magnitude check) and during any meaningful rotation (gyro-magnitude
+        # check) so the gravity-direction estimate is not distorted by linear
+        # accel from an actively swinging/settling sensor -- magnitude alone
+        # cannot tell "held still" apart from "moving slowly enough that
+        # magnitude happens to sit near g" (see ACCEL_CORRECTION_GYRO_MAX_RAD_S).
+        omega_mag = float(np.linalg.norm(gyro))
         _do_correct = (self._a_est > 1e-9
-                       and 0.9 * self._a_est <= a_norm <= 1.1 * self._a_est)
+                       and 0.9 * self._a_est <= a_norm <= 1.1 * self._a_est
+                       and omega_mag < ACCEL_CORRECTION_GYRO_MAX_RAD_S)
         if a_norm > 1e-9 and _do_correct:
             ax, ay, az = np.asarray(accel, float) / a_norm
 
@@ -435,9 +457,10 @@ class _IMUDevice:
     def calibrate_accel_bias(self, accel_hold_buf: list[tuple[float, np.ndarray]]) -> None:
         """Estimate this device's accelerometer static bias from a
         verified-stillness window. During true stillness, raw accel should
-        equal [0, 0, ±g] (gravity only); any deviation is bias. Store the
-        estimate for continuous subtraction in on_accel(). Same pattern as
-        calibrate_gyro_bias().
+        equal gravity (magnitude g, direction wherever the hold actually
+        pointed) plus a small sensor offset; any excess magnitude beyond g
+        is bias. Store the estimate for continuous subtraction in
+        on_accel(). Same pattern as calibrate_gyro_bias().
 
         g's magnitude is picked from the measured data's own scale rather
         than hardcoded, because Sensor Stream's iOS build reports
@@ -453,26 +476,34 @@ class _IMUDevice:
         for the rest of the session -- the orientation then free-integrates
         gyro data with no drift anchor, even while the phone is held still.
 
-        Its sign is likewise picked from the data rather than assumed
-        positive: this Z-axis assumption only holds for a mounting whose
-        rest pose reads +g on Z, but a phone strapped the other way up
-        reads -g at rest (confirmed from real recordings, both trials).
-        Assuming +g there still passes the AHRS's correction gate (the
-        resulting bias-corrected vector has the right magnitude) but points
-        180° off in Z -- the filter then actively, continuously steers the
-        orientation toward that wrong reference instead of doing nothing,
-        producing a bounded-but-wrong drift even while genuinely still."""
+        The reference direction is likewise taken from the data rather than
+        assumed to be +Z: an earlier version forced gravity onto
+        [0, 0, sign*g], picking sign from the data but still assuming the
+        hold was flat (gravity purely on Z). That's indistinguishable from
+        a sensor offset using only this one static sample -- and false for
+        any hold where the limb/mount wasn't level. Forcing a tilted hold's
+        real gravity components onto Z bakes them into "bias" instead,
+        which then actively, continuously steers the AHRS toward a wrong
+        orientation (confirmed against real recordings: Participant_13_
+        left_post Trial_4 and Participant_5_left_post_1month Trial_3 both
+        have hold-window gravity spread across all three axes, not
+        Z-dominant, and both showed corrupted post-fix angle curves before
+        this change). Correcting only the magnitude along the MEASURED
+        direction leaves direction to _gravity_seed()'s tilt-quaternion
+        seeding and the AHRS's own continuous correction step, instead of
+        fighting them."""
         if not accel_hold_buf or len(accel_hold_buf) < 2:
             return
         vals = np.array([v for _, v in accel_hold_buf])
         mean_accel = vals.mean(axis=0)
         mag = float(np.linalg.norm(mean_accel))
+        if mag < 1e-9:
+            return
         # ~9.81 (m/s²) vs ~1 (g) builds are separated by nearly an order of
         # magnitude; 3.0 sits comfortably in the gap clear of realistic
         # bias/noise on either side.
         g = 9.81 if mag > 3.0 else 1.0
-        sign = 1.0 if mean_accel[2] >= 0.0 else -1.0
-        gravity = np.array([0.0, 0.0, sign * g])
+        gravity = mean_accel * (g / mag)
         self.accel_bias = mean_accel - gravity
 
     def is_stationary(self) -> bool:

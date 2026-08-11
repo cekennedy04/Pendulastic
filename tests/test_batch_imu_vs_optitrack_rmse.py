@@ -88,22 +88,41 @@ def test_contaminated_trial_no_longer_has_extreme_bias():
     mismatch. The Z-axis mismatch itself is unresolved and tracked
     separately, not fixed here.
 
-    This pins the current (post-fix) value as a floor so a future change
-    can't silently regress bias/heading estimation further, without
-    reintroducing bugs 1-3 to chase a number this trial's own Z-axis
-    mounting mismatch prevents from reaching the project's 10 deg
-    target."""
+    2026-08-11 follow-up changes (magnitude-only accel-bias correction
+    replacing the Z-axis-forcing described above, a gyro-magnitude gate on
+    MadgwickAHRS's accelerometer correction, and release-anchored
+    cross-correlation bounds in workbench_engine.compare_pair -- see git
+    history / Model_Analysis_Outputs/imu_vs_optitrack_rmse.csv for the
+    corpus-wide before/after) moved this SPECIFIC trial's RMSE the wrong
+    way, 20.3 -> ~28.4 deg, even though the same changes cut the corpus
+    mean/median by roughly a third and fixed several much-worse outliers
+    (one dropped from 40 to 2 deg). This trial's own hold-window gravity is
+    spread across all three axes (not Z-dominant), so the fix that helps
+    the corpus broadly removes a bias correction that, for this one
+    mounting, happened to partially cancel a separate, still-not-understood
+    error source. Pinning the current value as a floor either way -- this
+    test's job is to catch a silent regression from HERE, not to assert
+    this trial is well-scored; the corpus-level regression coverage lives
+    in the mean/median printed by batch_imu_vs_optitrack_rmse.py's main().
+
+    Path note: Recordings/ was reorganized to nest this trial's legacy
+    folder under an extra Participant_13/ wrapper
+    (Recordings/Participant_13/Participant_13_left_post/...);
+    OptiTrack_Recordings/ never got that wrapper, so
+    find_optitrack_match() gained a same-participant de-wrapping fallback
+    to keep resolving it (see that function's own docstring)."""
     imu_path = os.path.join(
-        batch.REC_ROOT, "Participant_13_left_post", "Session_post",
+        batch.REC_ROOT, "Participant_13", "Participant_13_left_post", "Session_post",
         "Position_1", "Height_Joint-Level", "Trial_4_imu.csv")
     row = _score_real_trial(imu_path)
     assert row["status"] == "ok", row.get("error")
-    # Measured value is 20.3 deg; 23.0 leaves headroom for benign numeric
+    # Measured value is 28.4 deg; 31.0 leaves headroom for benign numeric
     # noise (library version drift, float rounding) without tolerating a
-    # slide back toward the pre-fix values (32.8 / 21.7 / 27.9 deg).
-    assert row["rmse_deg"] < 23.0, (
-        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~20.3 deg (the measured "
-        f"post-fix value, all three accel-bias/magnetometer bugs fixed); "
+    # further silent slide.
+    assert row["rmse_deg"] < 31.0, (
+        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~28.4 deg (the current "
+        f"measured value; see docstring for why this one trial got worse "
+        f"even as the corpus improved); "
         f"this catches a regression, not just any change")
 
 

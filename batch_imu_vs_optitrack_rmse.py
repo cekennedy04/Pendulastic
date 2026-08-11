@@ -150,36 +150,60 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
         return None
 
     parts = rel.split(os.sep)
-    pos_idx = next((i for i, p in enumerate(parts)
-                    if p.lower().startswith("position_")), None)
 
-    for depth in range(len(parts), 0, -1):
-        candidate_dir = os.path.join(opti_root, *parts[:depth])
-        if not os.path.isdir(candidate_dir):
-            continue
-        for entry in os.listdir(candidate_dir):
-            if entry.lower() != target_name:
+    # Redundant-wrapper fallback (2026-08-11 fix): Recordings/ was
+    # reorganized to nest each participant's legacy per-condition folders
+    # under one Participant_N/ parent (e.g.
+    # Recordings/Participant_13/Participant_13_left_post/...), but
+    # OptiTrack_Recordings/ never got that extra wrapper for those legacy
+    # folders -- they still sit as flat top-level siblings
+    # (OptiTrack_Recordings/Participant_13_left_post/...), alongside a
+    # SEPARATE OptiTrack_Recordings/Participant_13/ for newer recordings
+    # that genuinely are mirrored. The depth-walk below only ever shrinks
+    # from the END of `parts`, so it can never find a match that's missing
+    # a component from the FRONT. When parts[0] and parts[1] both name the
+    # same participant (the exact double-nesting signature), also try the
+    # de-wrapped path with parts[0] dropped, tried strictly after every
+    # depth of the direct path so a genuine mirrored match is always
+    # preferred over the fallback.
+    _pid_re = re.compile(r"^Participant_(\d+)$", re.IGNORECASE)
+    part_candidates = [parts]
+    if len(parts) > 1:
+        m0, m1 = _pid_re.match(parts[0]), re.match(r"^Participant_(\d+)[_/]", parts[1], re.IGNORECASE)
+        if m0 and m1 and m0.group(1) == m1.group(1):
+            part_candidates.append(parts[1:])
+
+    for candidate_parts in part_candidates:
+        pos_idx = next((i for i, p in enumerate(candidate_parts)
+                        if p.lower().startswith("position_")), None)
+
+        for depth in range(len(candidate_parts), 0, -1):
+            candidate_dir = os.path.join(opti_root, *candidate_parts[:depth])
+            if not os.path.isdir(candidate_dir):
                 continue
-            match_path = os.path.join(candidate_dir, entry)
-            if pos_idx is not None and depth <= pos_idx:
-                # Walked up to/above the Position_* level -- the match is
-                # no longer inherently scoped to this trial's position.
-                # Verify no sibling position also has this trial number
-                # before trusting it.
-                scope_dir = os.path.join(rec_root, *parts[:pos_idx])
-                positions = _positions_with_trial(scope_dir, trial_n)
-                if len(positions) > 1:
-                    warnings.warn(
-                        f"Ambiguous OptiTrack match for {imu_path!r}: "
-                        f"candidate {match_path!r} sits above the "
-                        f"Position_* level ({scope_dir!r}) and "
-                        f"{sorted(positions)} all have a trial "
-                        f"{trial_n} IMU file. Skipping rather than "
-                        f"guessing which position it belongs to.",
-                        stacklevel=2,
-                    )
-                    return None
-            return match_path
+            for entry in os.listdir(candidate_dir):
+                if entry.lower() != target_name:
+                    continue
+                match_path = os.path.join(candidate_dir, entry)
+                if pos_idx is not None and depth <= pos_idx:
+                    # Walked up to/above the Position_* level -- the match is
+                    # no longer inherently scoped to this trial's position.
+                    # Verify no sibling position also has this trial number
+                    # before trusting it.
+                    scope_dir = os.path.join(rec_root, *parts[:len(parts) - len(candidate_parts) + pos_idx])
+                    positions = _positions_with_trial(scope_dir, trial_n)
+                    if len(positions) > 1:
+                        warnings.warn(
+                            f"Ambiguous OptiTrack match for {imu_path!r}: "
+                            f"candidate {match_path!r} sits above the "
+                            f"Position_* level ({scope_dir!r}) and "
+                            f"{sorted(positions)} all have a trial "
+                            f"{trial_n} IMU file. Skipping rather than "
+                            f"guessing which position it belongs to.",
+                            stacklevel=2,
+                        )
+                        return None
+                return match_path
     return None
 
 

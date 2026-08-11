@@ -132,6 +132,71 @@ def test_dynamic_beta_skips_correction_during_impact():
         err_msg="Impact accel should not distort orientation (correction skipped)")
 
 
+def test_accel_correction_skipped_during_rotation_despite_near_g_norm():
+    """Regression test for the 2026-08-10 gate fix: magnitude-proximity-to-g
+    alone is not enough to trust an accel reading as a gravity reference. A
+    sensor that's actively rotating (e.g. a slowly swinging/settling
+    pendulum) can produce real centripetal/tangential acceleration whose
+    NORM sits within the gate's old ±10% tolerance while its DIRECTION is
+    meaningfully off from true gravity -- correcting toward that direction
+    steers orientation toward the sensor's own motion instead of doing
+    nothing. update() must now also require low gyro magnitude before
+    trusting accel direction.
+
+    Proof: with gyro magnitude above ACCEL_CORRECTION_GYRO_MAX_RAD_S, two
+    accel vectors of the same (near-g) magnitude but different directions
+    must produce the SAME resulting orientation -- if correction were still
+    firing, the two directions would pull the filter apart."""
+    gyro_rotating = np.array([0.0, 0.0, 0.6])   # above the 0.3 rad/s gate
+    assert np.linalg.norm(gyro_rotating) > imu.ACCEL_CORRECTION_GYRO_MAX_RAD_S
+
+    ahrs_a = imu.MadgwickAHRS(beta=0.5)
+    ahrs_b = imu.MadgwickAHRS(beta=0.5)
+    g_vec = np.array([0.0, 0.0, 9.81])
+    gyro_zero = np.array([0.0, 0.0, 0.0])
+    for ahrs in (ahrs_a, ahrs_b):
+        for _ in range(20):
+            ahrs.update(gyro_zero, g_vec, None, 0.01)   # warm up _a_est near g
+
+    accel_a = np.array([0.0, 0.0, 9.81])                       # gravity-aligned
+    accel_b = np.array([3.0, 3.0, math.sqrt(9.81**2 - 18.0)])  # tilted, same norm as accel_a
+    np.testing.assert_allclose(np.linalg.norm(accel_a), np.linalg.norm(accel_b), atol=1e-9)
+
+    ahrs_a.update(gyro_rotating, accel_a, None, 0.01)
+    ahrs_b.update(gyro_rotating, accel_b, None, 0.01)
+
+    np.testing.assert_allclose(ahrs_a.q, ahrs_b.q, atol=1e-9,
+        err_msg="Differing accel direction changed the result while gyro was "
+                "above the rotation gate -- accel correction is still firing "
+                "during rotation instead of being gated off")
+
+
+def test_accel_correction_still_applies_when_genuinely_still():
+    """Companion to the rotation-gate test above: below
+    ACCEL_CORRECTION_GYRO_MAX_RAD_S, differing accel direction MUST still
+    change the result -- the new gyro-magnitude check must not accidentally
+    disable correction outright."""
+    gyro_still = np.array([0.0, 0.0, 0.05])   # well below the 0.3 rad/s gate
+
+    ahrs_a = imu.MadgwickAHRS(beta=0.5)
+    ahrs_b = imu.MadgwickAHRS(beta=0.5)
+    g_vec = np.array([0.0, 0.0, 9.81])
+    gyro_zero = np.array([0.0, 0.0, 0.0])
+    for ahrs in (ahrs_a, ahrs_b):
+        for _ in range(20):
+            ahrs.update(gyro_zero, g_vec, None, 0.01)
+
+    accel_a = np.array([0.0, 0.0, 9.81])
+    accel_b = np.array([3.0, 3.0, 9.14])
+
+    ahrs_a.update(gyro_still, accel_a, None, 0.01)
+    ahrs_b.update(gyro_still, accel_b, None, 0.01)
+
+    assert not np.allclose(ahrs_a.q, ahrs_b.q, atol=1e-6), (
+        "Correction should still fire while genuinely still -- differing "
+        "accel direction should have produced different orientations")
+
+
 def test_calibrate_gyro_bias_uses_trailing_hold_buffer_mean():
     """calibrate_gyro_bias() must set gyro_bias to the mean of the buffered
     raw samples, once enough have accumulated."""
@@ -967,24 +1032,28 @@ def test_imudevice_accel_bias_defaults_to_zero():
 
 
 def test_imudevice_calibrate_accel_bias_from_stillness():
-    """calibrate_accel_bias() should estimate bias as the mean raw accel
-    minus expected gravity [0, 0, 9.81]."""
+    """calibrate_accel_bias() should estimate bias as the radial
+    (magnitude-only) excess of the measured mean accel over gravity's
+    expected magnitude, along the measured direction -- not the mean raw
+    accel minus a fixed [0, 0, 9.81] reference. A fixed-axis reference
+    can't tell a levelled sensor's true offset apart from a merely-tilted
+    hold; see calibrate_accel_bias()'s docstring."""
     dev = imu._IMUDevice("12.0.1.8")
     now = __import__("time").time()
 
-    # Simulate accel readings with a constant bias
-    bias_true = np.array([0.1, -0.05, 0.2])
+    # A stillness hold whose measured gravity is 5% too strong along its
+    # own (level) direction -- a pure magnitude bias, no tilt involved.
+    true_dir = np.array([0.0, 0.0, 1.0])
+    measured_mag = 9.81 * 1.05
     accel_hold_buf = []
     for i in range(21):
         t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
-        raw_accel = np.array([0.0, 0.0, 9.81]) + bias_true
-        accel_hold_buf.append((t, raw_accel))
+        accel_hold_buf.append((t, true_dir * measured_mag))
 
-    # Calibrate
     dev.calibrate_accel_bias(accel_hold_buf)
 
-    # Bias should match the simulated offset
-    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+    expected_bias = true_dir * (measured_mag - 9.81)
+    np.testing.assert_allclose(dev.accel_bias, expected_bias, atol=1e-6)
 
 
 def test_imudevice_calibrate_accel_bias_from_stillness_g_units():
@@ -999,16 +1068,50 @@ def test_imudevice_calibrate_accel_bias_from_stillness_g_units():
     dev = imu._IMUDevice("12.0.1.10")
     now = __import__("time").time()
 
-    bias_true = np.array([0.01, -0.02, 0.03])
+    true_dir = np.array([0.0, 0.0, 1.0])
+    measured_mag = 1.03   # 3% magnitude bias, no tilt
     accel_hold_buf = []
     for i in range(21):
         t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
-        raw_accel = np.array([0.0, 0.0, 1.0]) + bias_true
-        accel_hold_buf.append((t, raw_accel))
+        accel_hold_buf.append((t, true_dir * measured_mag))
 
     dev.calibrate_accel_bias(accel_hold_buf)
 
-    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+    expected_bias = true_dir * (measured_mag - 1.0)
+    np.testing.assert_allclose(dev.accel_bias, expected_bias, atol=1e-6)
+
+
+def test_imudevice_calibrate_accel_bias_tilted_hold_not_treated_as_bias():
+    """Regression test for the 2026-08-10 gravity-direction fix: a hold
+    that isn't level (gravity spread across all three axes, e.g. a
+    limb-mounted sensor at rest) must NOT have its off-axis components
+    zeroed out as if they were sensor bias -- that was the bug that
+    produced a corrupted, drift-then-settle angle curve on real trials
+    (Participant_13_left_post Trial_4, Participant_5_left_post_1month
+    Trial_3). Only the magnitude should be corrected; the measured
+    direction must survive calibration essentially unchanged."""
+    dev = imu._IMUDevice("12.0.1.9")
+    now = __import__("time").time()
+
+    # Real-world-shaped tilted hold (only 57% of magnitude on Z), no bias.
+    tilted = np.array([0.74, -0.34, 0.56])
+    tilted = tilted / np.linalg.norm(tilted)   # unit direction
+    accel_hold_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, tilted * 1.0)
+                       for i in range(21)]
+
+    dev.calibrate_accel_bias(accel_hold_buf)
+    corrected = tilted - dev.accel_bias
+
+    # The old Z-forcing code would have produced a bias of roughly
+    # tilted - [0,0,1], baking the real X/Y tilt into "bias" and leaving
+    # corrected close to [0,0,1] -- i.e. erasing the hold's true
+    # orientation. The fix must instead leave direction intact.
+    cos_sim = float(np.dot(corrected, tilted) / (
+        np.linalg.norm(corrected) * np.linalg.norm(tilted)))
+    assert cos_sim > 0.999, (
+        f"corrected direction diverged from the measured tilt (cos_sim="
+        f"{cos_sim:.4f}) -- calibrate_accel_bias() is forcing gravity "
+        f"toward an assumed axis again instead of using the measured one")
 
 
 def test_calibrate_accel_bias_g_units_keeps_ahrs_correction_gate_open():
@@ -1052,37 +1155,32 @@ def test_calibrate_accel_bias_g_units_keeps_ahrs_correction_gate_open():
 
 def test_imudevice_calibrate_accel_bias_negative_z_at_rest():
     """Regression test: a phone mounted the other way up reads -g on Z at
-    rest (confirmed from real recordings), not the +g calibrate_accel_bias()
-    used to assume unconditionally. Applying +g there still produces a
-    plausible-looking bias (right magnitude) but wrong by ~2g in Z, which
-    still passes the AHRS's magnitude-only correction gate while pointing
-    the gravity reference 180° off in that axis -- the filter then actively
-    steers the orientation toward that wrong reference every tick instead
-    of correctly doing nothing, producing a bounded-but-wrong drift even
-    while the phone is genuinely still (the real-world symptom this test
-    guards against: a stationary 32s trial reported knee angle sliding from
-    ~170 to ~55 degrees)."""
+    rest (confirmed from real recordings). calibrate_accel_bias() must not
+    flip toward +g there -- it now derives both magnitude and direction
+    from the measured data itself (see docstring), so a pure magnitude
+    bias on a -Z-at-rest mounting must be recovered along -Z, not +Z."""
     dev = imu._IMUDevice("12.0.1.12")
     now = __import__("time").time()
 
-    bias_true = np.array([0.01, -0.02, 0.03])
+    true_dir = np.array([0.0, 0.0, -1.0])
+    measured_mag = 1.03   # 3% magnitude bias, no tilt
     accel_hold_buf = []
     for i in range(21):
         t = now - imu.GYRO_BIAS_WINDOW_S + i * 0.05
-        raw_accel = np.array([0.0, 0.0, -1.0]) + bias_true   # -g at rest
-        accel_hold_buf.append((t, raw_accel))
+        accel_hold_buf.append((t, true_dir * measured_mag))
 
     dev.calibrate_accel_bias(accel_hold_buf)
 
-    np.testing.assert_allclose(dev.accel_bias, bias_true, atol=1e-6)
+    expected_bias = true_dir * (measured_mag - 1.0)
+    np.testing.assert_allclose(dev.accel_bias, expected_bias, atol=1e-6)
 
 
 def test_calibrate_accel_bias_negative_z_keeps_correction_pointed_right_way():
     """End-to-end regression test: after calibrating against a -g-at-rest
     mounting, the bias-corrected accel for a still phone must still point
-    close to its own raw (measured) direction -- not be flipped by the
-    erroneous +g assumption. A flip here is what let the AHRS's gate stay
-    open while actively correcting toward the wrong hemisphere."""
+    close to its own raw (measured) direction -- not be flipped by an
+    erroneous +g assumption, and not have its small real-world tilt
+    (0.01, -0.02) zeroed out as if it were bias (the 2026-08-10 fix)."""
     dev = imu._IMUDevice("12.0.1.13")
     now = __import__("time").time()
 
@@ -1092,14 +1190,23 @@ def test_calibrate_accel_bias_negative_z_keeps_correction_pointed_right_way():
     dev.calibrate_accel_bias(accel_hold_buf)
 
     corrected = still_g - dev.accel_bias
-    # Corrected accel should recover the clean gravity-only reading
-    # ([0,0,-1], offset removed) -- not flip toward [0,0,+1] the way the
-    # old unconditional-+g code would.
+    # Corrected accel should stay close to its own measured direction and
+    # magnitude (~1.0) -- not flip toward [0,0,+1] the way the old
+    # unconditional-+g code would, and not get forced to exactly [0,0,-1]
+    # the way the old unconditional-Z-axis code would (that would erase
+    # the genuine 0.01/-0.02 tilt).
     assert corrected[2] < 0, (
         f"corrected accel z={corrected[2]:.3f} flipped positive -- the AHRS "
         f"will steer orientation toward the wrong (opposite) gravity "
         f"reference for a phone that reads -g at rest")
-    np.testing.assert_allclose(corrected, [0.0, 0.0, -1.0], atol=1e-6)
+    assert abs(float(np.linalg.norm(corrected)) - 1.0) < 1e-6, (
+        "corrected accel magnitude should be exactly g after bias removal")
+    cos_sim = float(np.dot(corrected, still_g) / (
+        np.linalg.norm(corrected) * np.linalg.norm(still_g)))
+    assert cos_sim > 0.999, (
+        f"corrected direction diverged from the measured tilt (cos_sim="
+        f"{cos_sim:.4f}) -- calibrate_accel_bias() is forcing gravity "
+        f"toward an assumed axis again instead of using the measured one")
 
 
 def test_imudevice_on_accel_subtracts_bias():

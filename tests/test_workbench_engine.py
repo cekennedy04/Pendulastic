@@ -130,6 +130,22 @@ def test_validate_component_csv_fs_eff_at_floor_is_not_a_false_positive(tmp_path
     assert result["ok"] is True
 
 
+def test_validate_component_csv_mag_below_floor_is_still_ok(tmp_path):
+    """Regression test for the 2026-08-11 fix: magnetometer correction is
+    never fed into the AHRS (mag=None always passed to
+    MadgwickAHRS.update()), so a slow/sparse mag stream cannot degrade
+    fusion and must not block an otherwise-valid trial. Real Sensor Stream
+    recordings confirmed this happens (~1 Hz mag while accel/gyro run
+    ~100 Hz) -- unlike accel/gyro, which must still be rejected below the
+    floor (see test_validate_component_csv_fs_eff_below_floor)."""
+    rows = [(i * 1000.0, int(i * 1000), "proximal", "Magnetometer", 0.0, 0.0, 22.6)
+           for i in range(5)]   # 1000ms spacing == 1 Hz, below the 10 Hz floor
+    path = tmp_path / "Trial_1_mag.csv"
+    _write_component_csv(path, "mag", rows)
+    result = engine.validate_component_csv(str(path), "mag")
+    assert result["ok"] is True
+
+
 def test_validate_component_csv_too_few_rows(tmp_path):
     rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81)]
     path = tmp_path / "Trial_1_accel.csv"
