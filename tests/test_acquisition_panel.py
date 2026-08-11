@@ -1231,3 +1231,26 @@ def test_show_phone_pairing_panel_displays_url_text():
         r.destroy()
 
 
+def test_multi_trial_checkbox_default_off():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        assert p._multi_trial_var.get() is False
+    finally:
+        r.destroy()
+
+
+def test_multi_trial_checkbox_locks_during_recording():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_recording()
+        assert str(p.multi_trial_chk["state"]) == "disabled"
+        p.enter_idle()
+        assert str(p.multi_trial_chk["state"]) == "normal"
+    finally:
+        r.destroy()
+
+
