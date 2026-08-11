@@ -99,8 +99,13 @@ def test_compute_raw_sensor_diagnostics_hold_fields_none_when_too_few_samples(tm
 
 
 def test_compute_optitrack_quality_signals_no_dropout_no_warn():
-    t = np.linspace(0, 5, 200)
-    angle = 180.0 - 10.0 * np.sin(t)   # small, smooth oscillation -> low area_ratio
+    """Clean pendulum trial: flat pre-release hold at 180°, then exponentially
+    decaying oscillation settling near neutral angle. Real N>0 (peaks/troughs
+    detected), low area_ratio (balanced positive/negative areas), no warnings."""
+    t = np.linspace(0, 10, 400)
+    hold = t < 2.0
+    swing = 130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0))
+    angle = np.where(hold, 180.0, swing)
     signals = engine.compute_optitrack_quality_signals(t, angle)
     assert signals["optitrack_dropout_frac"] == pytest.approx(0.0)
     assert signals["optitrack_area_ratio_warn"] is False
