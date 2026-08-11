@@ -8,7 +8,7 @@ A markerless computer vision framework for quantifying lower-limb spasticity in 
 
 Spasticity assessment in MS currently relies on subjective clinical scales (Modified Ashworth Scale, Tardieu Scale), which are observer-dependent and impractical for remote or longitudinal monitoring. The Wartenberg pendulum test offers a biomechanically grounded alternative, but traditional implementations require expensive motion capture systems or inertial measurement units (IMUs).
 
-**Pendulastic** automates the pendulum test using standard smartphone or computer cameras and markerless pose estimation, producing quantitative, clinically interpretable spasticity metrics from ordinary video recordings.
+**Pendulastic** automates the pendulum test using standard smartphone or computer cameras and markerless pose estimation, producing quantitative, clinically interpretable spasticity metrics from ordinary video recordings. A second, actively-developed track (`pendulastic_imu_server.py`, `imu_calibration_tuner.py`) derives the same metrics from a phone/wearable IMU instead of video, for direct comparison against the markerless pipeline.
 
 ---
 
@@ -34,10 +34,18 @@ Spasticity assessment in MS currently relies on subjective clinical scales (Modi
   - Oscillatory dynamics and damping characteristics (logarithmic decrement, damping ratio)
 - **Quantitative spasticity scoring** — derived metric composites for comparison against clinical scales
 - **Portable and accessible** — runs on standard video from any camera; designed for clinical and remote-assessment settings
+- **IMU-based pathway (separate research track)** — `pendulastic_imu_server.py` / `imu_calibration_tuner.py` compute
+  the same pendulum-test metrics from a phone or wearable IMU via AHRS sensor fusion, for reliability comparison
+  against the markerless-video pipeline above
 
 ---
 
 ## Project Structure
+
+> Illustrative, not literal — shows the core `src/pendulastic` package layout. The repo root also
+> holds 100+ additional scripts, apps, and status docs (`pendulastic_app.py`, `master_app.py`,
+> `pendulastic_imu_server.py`, `imu_calibration_tuner.py`, `DEPLOYMENT_PLAN.md`, etc.) that change
+> too often to keep an exhaustive tree in sync here.
 
 ```
 Pendulastic/

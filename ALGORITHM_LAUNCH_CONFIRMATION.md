@@ -15,25 +15,29 @@ The new IMU accel bias correction algorithm is **already deployed in the main br
 **Core Components (All Active):**
 
 1. ✅ **Accel Bias Attribute**
-   - File: pendulastic_imu_server.py:341
+   - File: pendulastic_imu_server.py
    - Location: `_IMUDevice.accel_bias`
    - Status: Initialized to [0, 0, 0] at startup
 
 2. ✅ **Bias Subtraction in Real-Time Processing**
-   - File: pendulastic_imu_server.py:403
+   - File: pendulastic_imu_server.py
    - Method: `_IMUDevice.on_accel()`
    - Code: `self.accel = raw_accel - self.accel_bias`
    - Status: ACTIVE (every accel sample corrected)
 
 3. ✅ **Bias Calibration During Stillness**
-   - File: pendulastic_imu_server.py:435-446
+   - File: pendulastic_imu_server.py
    - Method: `_IMUDevice.calibrate_accel_bias()`
    - Status: ACTIVE (fires on verified-stillness detection)
 
 4. ✅ **Wiring to Auto-Tare Sequence**
-   - File: pendulastic_imu_server.py:707, 711, 718
+   - File: pendulastic_imu_server.py
    - Method: `zero()` function
    - Status: ACTIVE (calibrates when user performs tare)
+
+> Line numbers are intentionally omitted above — pendulastic_imu_server.py is under active
+> development and exact line citations go stale quickly; see the function/method names to locate
+> each piece.
 
 ---
 
@@ -78,9 +82,9 @@ Raw IMU Input
 
 ### ✅ Code Deployed
 - [x] Algorithm in pendulastic_imu_server.py
-- [x] Accel bias subtraction active (line 403)
-- [x] Calibration method implemented (lines 435-446)
-- [x] Wired to zero() function (lines 707-718)
+- [x] Accel bias subtraction active (`_IMUDevice.on_accel()`)
+- [x] Calibration method implemented (`_IMUDevice.calibrate_accel_bias()`)
+- [x] Wired to zero() function (`zero()`)
 - [x] Merged to main branch (commit 03a4a62)
 
 ### ✅ Testing Complete

@@ -2,7 +2,7 @@
 
 ## Deployment Overview
 
-**Status:** ✅ **READY FOR PRODUCTION DEPLOYMENT**
+**Status:** ✅ **DEPLOYED** — merged to `main` as commit `03a4a62` on 2026-08-05
 
 **Branch:** `worktree-imu-stillness-gyro-bias` (75 commits ahead of main)
 **Commits to Deploy:** 3 key commits + all prior work through this branch
@@ -42,6 +42,9 @@
 ---
 
 ## Deployment Strategy
+
+> **Already executed** (2026-08-05, commit `03a4a62`). Kept below as a record of the exact
+> commands that were run, not as a pending action.
 
 ### Option 1: Direct Merge to Main (Recommended)
 
@@ -122,12 +125,11 @@ integration_test_task10.py (200+ lines)
 ```
 docs/superpowers/plans/2026-08-04-imu-stillness-gyro-bias.md
   - Full plan specification with Task 10 added
-  - ~3500 lines total
+  - 2146 lines total
 
-.superpowers/sdd/2026-08-04-imu-stillness-gyro-bias/
-  - task-5-report.md: Diagnostic results
-  - task-10-integration-report.md: Integration testing
-  - FINAL-SUMMARY.md: Complete plan summary
+.superpowers/sdd/2026-08-04-imu-stillness-gyro-bias/task-5-report.md, task-10-integration-report.md,
+and FINAL-SUMMARY.md were never committed to the repo -- see the plan and design spec above for
+the equivalent detail.
 ```
 
 ---
@@ -307,7 +309,7 @@ IF app_crash_in_accel_bias_path:
 
 **Critical Issue:** Contact [system administrator]
 **Urgent Question:** Contact [tech lead]
-**General Question:** See FINAL-SUMMARY.md for detailed documentation
+**General Question:** See the Plan and Design Spec under References below
 
 ---
 
@@ -315,12 +317,12 @@ IF app_crash_in_accel_bias_path:
 
 - **Plan:** docs/superpowers/plans/2026-08-04-imu-stillness-gyro-bias.md
 - **Design Spec:** docs/superpowers/specs/2026-08-04-imu-stillness-gyro-bias-design.md
-- **Task 5 Report:** .superpowers/sdd/2026-08-04-imu-stillness-gyro-bias/task-5-report.md
-- **Final Summary:** .superpowers/sdd/2026-08-04-imu-stillness-gyro-bias/FINAL-SUMMARY.md
+- **Task 5 Report / Final Summary:** never committed to the repo (`.superpowers/sdd/2026-08-04-imu-stillness-gyro-bias/`
+  does not exist) — see the Plan and Design Spec above for the equivalent detail.
 - **Integration Test:** integration_test_task10.py (run via pytest for validation)
 
 ---
 
 **Prepared:** 2026-08-05
-**Status:** ✅ READY FOR DEPLOYMENT
-**Approval Required:** Yes (merge to main requires review)
+**Status:** ✅ DEPLOYED (2026-08-05, commit `03a4a62`)
+**Approval Required:** No — already merged to main
