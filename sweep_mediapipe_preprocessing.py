@@ -82,61 +82,90 @@ def _select_pose_for_candidate(candidate, tracker, poses, w, h):
     return bm._select_patient_pose(poses)
 
 
+def _process_frame(frame_bgr, i, fps, rotate_deg, landmarker, candidate, tracker,
+                   h_idx, k_idx, a_idx):
+    """Run MediaPipe on one already-decoded frame and extract this
+    candidate's chosen pose's PIXEL-space (not normalized) hip/knee/ankle
+    coordinates -- required for mp_pre.knee_angle_from_points()'s
+    rotation-invariance property to actually hold for the rotate_+90/
+    rotate_-90 candidates (see that function's docstring)."""
+    t_sec = i / fps
+    row = {"t": t_sec, "hip_px": None, "knee_px": None, "ankle_px": None,
+           "hip_v": 0.0, "knee_v": 0.0, "ankle_v": 0.0}
+    try:
+        proc_frame = (mp_pre.rotate_to_upright(frame_bgr, rotate_deg)
+                     if rotate_deg else frame_bgr)
+        fh, fw = proc_frame.shape[:2]
+        rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        result = landmarker.detect(mp_image)
+        poses = result.pose_landmarks or []
+        pose = _select_pose_for_candidate(candidate, tracker, poses, fw, fh)
+        if pose is not None:
+            hl, kl, al = pose[h_idx], pose[k_idx], pose[a_idx]
+            row.update(
+                hip_px=(hl.x * fw, hl.y * fh),
+                knee_px=(kl.x * fw, kl.y * fh),
+                ankle_px=(al.x * fw, al.y * fh),
+                hip_v=float(hl.visibility), knee_v=float(kl.visibility),
+                ankle_v=float(al.visibility))
+    except Exception:
+        pass
+    return row
+
+
 def extract_landmarks_for_candidate(video_path, leg, model_path, candidate):
     """Runs one video through MediaPipe once for the given candidate's
-    preprocessing. Returns per-frame dicts with PIXEL-space (not
-    normalized) hip/knee/ankle coordinates -- required for
-    mp_pre.knee_angle_from_points()'s rotation-invariance property to
-    actually hold for the rotate_+90/rotate_-90 candidates (see that
-    function's docstring)."""
+    preprocessing, returning per-frame dicts (see _process_frame).
+
+    Only the "crop" candidate buffers the whole decoded video into a list
+    up front -- it genuinely needs every frame before mp_pre.crop_to_moving_leg
+    can locate the motion bounding box. Every other candidate streams
+    frame-by-frame straight from cv2.VideoCapture (matching
+    sweep_mediapipe_config.py's existing pattern), since holding a full
+    1080p 30s trial's decoded frames in RAM (~5.6GB) five times per trial --
+    once per candidate -- when four of the five candidates don't need it is
+    wasteful and risks an OOM that would otherwise get silently swallowed
+    and cached as an ordinary scoring failure."""
     h_idx, k_idx, a_idx = bm.MP_LEG_IDX[leg]
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return []
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-
-    raw_frames = []
-    while True:
-        ok, frame_bgr = cap.read()
-        if not ok:
-            break
-        raw_frames.append(frame_bgr)
-    cap.release()
-    if not raw_frames:
-        return []
-
-    if candidate["key"] == "crop":
-        raw_frames = mp_pre.crop_to_moving_leg(raw_frames, fps)
-
     rotate_deg = candidate.get("rotate_deg", 0)
     tracker = pit.PatientIdentityTracker(h_idx, k_idx, a_idx)
-
     frames_out = []
+
+    if candidate["key"] == "crop":
+        raw_frames = []
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+            raw_frames.append(frame_bgr)
+        cap.release()
+        if not raw_frames:
+            return []
+        raw_frames = mp_pre.crop_to_moving_leg(raw_frames, fps)
+
+        with _make_landmarker(model_path) as landmarker:
+            for i, frame_bgr in enumerate(raw_frames):
+                frames_out.append(_process_frame(
+                    frame_bgr, i, fps, rotate_deg, landmarker, candidate,
+                    tracker, h_idx, k_idx, a_idx))
+        return frames_out
+
     with _make_landmarker(model_path) as landmarker:
-        for i, frame_bgr in enumerate(raw_frames):
-            t_sec = i / fps
-            row = {"t": t_sec, "hip_px": None, "knee_px": None, "ankle_px": None,
-                   "hip_v": 0.0, "knee_v": 0.0, "ankle_v": 0.0}
-            try:
-                proc_frame = (mp_pre.rotate_to_upright(frame_bgr, rotate_deg)
-                             if rotate_deg else frame_bgr)
-                fh, fw = proc_frame.shape[:2]
-                rgb = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                result = landmarker.detect(mp_image)
-                poses = result.pose_landmarks or []
-                pose = _select_pose_for_candidate(candidate, tracker, poses, fw, fh)
-                if pose is not None:
-                    hl, kl, al = pose[h_idx], pose[k_idx], pose[a_idx]
-                    row.update(
-                        hip_px=(hl.x * fw, hl.y * fh),
-                        knee_px=(kl.x * fw, kl.y * fh),
-                        ankle_px=(al.x * fw, al.y * fh),
-                        hip_v=float(hl.visibility), knee_v=float(kl.visibility),
-                        ankle_v=float(al.visibility))
-            except Exception:
-                pass
-            frames_out.append(row)
+        i = 0
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+            frames_out.append(_process_frame(
+                frame_bgr, i, fps, rotate_deg, landmarker, candidate,
+                tracker, h_idx, k_idx, a_idx))
+            i += 1
+    cap.release()
     return frames_out
 
 
@@ -183,18 +212,66 @@ def _save_cache(cache):
 
 
 def _implementation_fingerprint():
-    parts = [inspect.getsource(sys.modules[__name__]), inspect.getsource(mp_pre)]
+    """Hash of everything that can silently change a candidate's score
+    without touching any trial's input file. Delegates the shared module
+    list (batch_mediapipe, workbench_engine, pendulastic_pt_score, etc. --
+    see rmse_pipeline_common._FINGERPRINTED_MODULES) plus installed
+    numpy/scipy/opencv/mediapipe versions to
+    rpc.compute_implementation_fingerprint(), then folds in the source of
+    every module that determines a candidate's score but sits outside that
+    shared list: this script itself and mp_pre (neither is in
+    _FINGERPRINTED_MODULES), and patient_identity_tracker -- the entire
+    identity_tracker candidate's selection logic, also not in
+    _FINGERPRINTED_MODULES, so without this its hysteresis/confidence-floor
+    constants could be re-tuned between runs and silently keep reusing
+    pre-tuning cached RMSEs."""
+    parts = [
+        rpc.compute_implementation_fingerprint(),
+        inspect.getsource(sys.modules[__name__]),
+        inspect.getsource(mp_pre),
+        inspect.getsource(pit),
+    ]
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 
 def _cache_key(trial, candidate_key, model_path, stat_cache, impl_fp):
-    video_fp = rpc.sha256_file(trial["video_path"], stat_cache)
-    model_fp = rpc.sha256_file(model_path, stat_cache)
+    """Content-addressed cache key: candidate identity + every file the
+    resulting RMSE actually depends on. Uses
+    rpc.compute_input_fingerprints(..., methodology="mediapipe") rather
+    than hand-rolling video/model hashes here, since that helper already
+    covers the OptiTrack ground-truth CSV too (its docstring: "optitrack
+    ... the video *and the selected .task model file*") -- OptiTrack is
+    loaded separately by the caller and previously wasn't part of this
+    key, so re-exporting a trial's OptiTrack CSV would have left stale
+    cached RMSEs forever."""
+    input_fps = rpc.compute_input_fingerprints(
+        trial, "mediapipe", stat_cache, model_path=model_path)
     blob = json.dumps({
         "trial_key": trial["trial_key"], "candidate": candidate_key,
-        "video": video_fp, "model": model_fp, "impl": impl_fp,
+        "inputs": input_fps, "impl": impl_fp,
     }, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _summarize_candidate(rmses, n_trials):
+    """Aggregate one candidate's per-trial RMSEs. pct_under_10deg is
+    computed against n_trials (the full trial cohort), not len(rmses)
+    (n_scored) -- a candidate that fails to score most trials but nails
+    the easy remainder must not be able to report a near-100% pass rate
+    by shrinking its own denominator, since this percentage is what a
+    human reads to decide what to promote to production. n_scored is
+    still returned so a reader can see coverage separately."""
+    n_scored = len(rmses)
+    n_under_goal = sum(1 for r in rmses if r < RMSE_GOAL_DEG)
+    pct_under_goal = (n_under_goal / n_trials * 100.0) if n_trials else 0.0
+    median_rmse = float(np.median(rmses)) if rmses else None
+    mean_rmse = float(np.mean(rmses)) if rmses else None
+    return {
+        "n_scored": n_scored,
+        "median_rmse_deg": median_rmse,
+        "mean_rmse_deg": mean_rmse,
+        "pct_under_10deg": pct_under_goal,
+    }
 
 
 def main():
@@ -234,27 +311,33 @@ def main():
                 except Exception as e:
                     print(f"  [error] {trial['trial_key']} / {candidate['key']}: {e}")
                     rmse = None
-                cache[cache_key] = rmse
+                # Only memoize a real result. A None here can be a transient
+                # failure (file lock, OOM, a momentarily-missing model file)
+                # -- caching it would permanently skip this (trial,
+                # candidate) pair on every future run until some hash
+                # changes, rather than retrying it next time.
+                if rmse is not None:
+                    cache[cache_key] = rmse
             if rmse is not None:
                 rmses.append(rmse)
 
         _save_cache(cache)
-        n_scored = len(rmses)
-        n_under_goal = sum(1 for r in rmses if r < RMSE_GOAL_DEG)
-        pct_under_goal = (n_under_goal / n_scored * 100.0) if n_scored else 0.0
-        median_rmse = float(np.median(rmses)) if rmses else None
-        mean_rmse = float(np.mean(rmses)) if rmses else None
+        summary = _summarize_candidate(rmses, len(trials))
 
         rows.append({
-            "candidate": candidate["key"], "n_trials": len(trials), "n_scored": n_scored,
-            "median_rmse_deg": median_rmse, "mean_rmse_deg": mean_rmse,
-            "pct_under_10deg": pct_under_goal,
+            "candidate": candidate["key"], "n_trials": len(trials),
+            "n_scored": summary["n_scored"],
+            "median_rmse_deg": summary["median_rmse_deg"],
+            "mean_rmse_deg": summary["mean_rmse_deg"],
+            "pct_under_10deg": summary["pct_under_10deg"],
         })
 
+        median_rmse = summary["median_rmse_deg"]
+        pct_under_goal = summary["pct_under_10deg"]
         median_str = f"{median_rmse:.2f}" if median_rmse is not None else "n/a"
-        print(f"{candidate['key']:16s} n_scored={n_scored}/{len(trials)}  "
+        print(f"{candidate['key']:16s} n_scored={summary['n_scored']}/{len(trials)}  "
              f"median={median_str} deg  %<10deg={pct_under_goal:.1f}%")
-        goal_met = n_scored > 0 and pct_under_goal >= GOAL_FRACTION * 100.0
+        goal_met = summary["n_scored"] > 0 and pct_under_goal >= GOAL_FRACTION * 100.0
         print(f"  {'GOAL MET' if goal_met else 'goal not met'} "
              f"({pct_under_goal:.1f}% of trials < {RMSE_GOAL_DEG:.0f} deg, "
              f"target {GOAL_FRACTION*100:.0f}%)")
