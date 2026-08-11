@@ -63,6 +63,38 @@ def _active_window_end(t: np.ndarray, angle: np.ndarray) -> int:
     return min(int(all_rev[-1]) + buf, n - 1)
 
 
+# Margin added on top of the two signals' independently-detected release-time
+# difference to bound compare_pair's cross-correlation lag search (2026-08-11
+# fix). MAX_LAG_SEC's own +/-5s bound already exists to stop the unbounded
+# search from aliasing onto a spuriously-higher-correlation but physically
+# implausible lag (see its docstring) -- but +/-5s is still wide enough to
+# alias onto a wrong-by-nearly-one-full-cycle lag for a ~1 Hz pendulum swing
+# (confirmed on real trials: Participant_14/Left/pre/Trial_3 dropped from
+# 40.2 deg RMSE at a wide-window lag of +2.97s to 2.0 deg RMSE once the
+# search was bounded near its own release-time estimate). 0.6s was the
+# smallest margin that didn't also clip a *different* real trial's genuine
+# correlation-refined lag (Participant_13/Left/week_1_post/Trial_4 needed
+# the full 0.6s of slack beyond its own release-time estimate to reach its
+# best alignment) -- see git history for the sweep across the real corpus.
+_RELEASE_ANCHOR_MARGIN_SEC = 0.6
+
+
+def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
+    """Independently-detected release-point time for one signal (no ground
+    truth / cross-signal information needed), or None if there aren't
+    enough finite samples to detect one. Reuses pendulastic_pt_score's own
+    release detector (the same one compute_pt_params uses) so this stays
+    consistent with how release is defined everywhere else in the
+    codebase."""
+    mask = np.isfinite(t) & np.isfinite(angle)
+    tc, ac = t[mask], angle[mask]
+    if len(tc) < 40:
+        return None
+    ac_s = pendulastic_pt_score._sg(ac, w=15, p=3)
+    rel_i = pendulastic_pt_score._detect_release(tc, ac_s)
+    return float(tc[rel_i])
+
+
 def compare_pair(ref_t, ref_y, test_t, test_y,
                  lag_override_sec: Optional[float] = None) -> dict:
     """Align test to ref and score RMSE/MAE/bias/LoA (design spec Section 4).
@@ -81,6 +113,14 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     "or manual sync alignment" requirement) -- ref stays fixed and test_t
     is shifted by lag_override_sec before resampling onto the same 60 Hz
     grid synchronize_signals itself uses.
+
+    Without an override, the cross-correlation search is bounded to each
+    signal's own independently-detected release time plus/minus
+    _RELEASE_ANCHOR_MARGIN_SEC (falling back to analysis_pipeline's wider
+    MAX_LAG_SEC bound if either signal's release can't be detected) -- see
+    _RELEASE_ANCHOR_MARGIN_SEC's own docstring for why the module-level
+    bound alone isn't tight enough to stop the search aliasing onto a
+    wrong-by-nearly-one-cycle lag.
     """
     ref_t = np.asarray(ref_t, dtype=float)
     ref_y = np.asarray(ref_y, dtype=float)
@@ -94,6 +134,17 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
 
     if len(ref_t) < 4 or len(test_t) < 4:
         return {"status": "error", "error": "Need at least 4 finite samples in both signals."}
+
+    # Release times must be measured on the finite-filtered signal BEFORE
+    # active-window truncation below -- _active_window_end() trims the TAIL
+    # (past the last oscillation extremum), but _detect_release()'s search
+    # is not invariant to how much of the array follows the true release
+    # point (confirmed on a real trial: truncating first shifted the
+    # detected release from t=1.40s to t=0.55s on the same signal). Release
+    # is a property of the signal's START; compute it before the END gets
+    # cut off.
+    ref_release = _release_time(ref_t, ref_y)
+    test_release = _release_time(test_t, test_y)
 
     ref_end = _active_window_end(ref_t, ref_y)
     test_end = _active_window_end(test_t, test_y)
@@ -119,9 +170,13 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
             "lag_sec": float(lag_override_sec),
         }
     else:
+        max_lag_sec = None
+        if ref_release is not None and test_release is not None:
+            max_lag_sec = abs(ref_release - test_release) + _RELEASE_ANCHOR_MARGIN_SEC
         try:
             sync = analysis_pipeline.synchronize_signals(
-                ref_t, ref_y, test_t, test_y, resample_hz=resample_hz)
+                ref_t, ref_y, test_t, test_y, resample_hz=resample_hz,
+                max_lag_sec=max_lag_sec)
         except ValueError as e:
             return {"status": "error", "error": str(e)}
 
@@ -445,7 +500,15 @@ def validate_component_csv(path: str, kind: str) -> dict:
             return _empty_component_validation(
                 f"{path!r} produced a non-finite effective sample rate; cannot validate.")
 
-        if fs_eff < _MIN_FS_FOR_FUSION_HZ:
+        # Magnetometer correction is never fed into the AHRS (mag=None is
+        # always passed to MadgwickAHRS.update() -- see
+        # pendulastic_imu_server.py's on_gyro / imu_calibration_tuner.py's
+        # replay_trial, both since the 2026-08-10 accel-bias fix), so a
+        # slow/sparse mag stream cannot degrade fusion quality and must not
+        # block an otherwise-valid trial from being scored. Real recordings
+        # confirmed this actually happens: some Sensor Stream sessions
+        # throttle magnetometer to ~1 Hz while accel/gyro stream at ~100 Hz.
+        if kind != "mag" and fs_eff < _MIN_FS_FOR_FUSION_HZ:
             return _empty_component_validation(
                 f"{path!r} has an effective sample rate of {fs_eff:.2f} Hz, below the "
                 f"{_MIN_FS_FOR_FUSION_HZ} Hz floor required for fusion.")

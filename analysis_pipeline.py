@@ -1124,20 +1124,29 @@ def load_optitrack_csv(csv_path):
 MAX_LAG_SEC = 5.0
 
 
-def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0):
+def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0,
+                        max_lag_sec=None):
     """
     Align a model-derived knee-angle time-series (test) to the OptiTrack
     reference (ref) using cross-correlation for the time-lag estimate,
     followed by linear-interpolation resampling onto a shared time base.
 
-    The lag search is bounded to +/-MAX_LAG_SEC (see its own docstring) --
-    the true alignment is always the strongest correlation peak within a
-    physically plausible clock-offset window, even when it isn't the
-    single strongest peak in the unbounded search.
+    max_lag_sec overrides the module-level MAX_LAG_SEC bound for this call
+    only, when the caller has a tighter physically-plausible bound of its
+    own (e.g. workbench_engine.compare_pair's release-anchored window --
+    see its own docstring for why +/-5s alone is still wide enough to
+    alias onto a wrong-by-nearly-one-cycle lag for a ~1 Hz pendulum swing).
+    Defaults to MAX_LAG_SEC when not given.
+
+    The lag search is bounded to +/-max_lag_sec (see MAX_LAG_SEC's own
+    docstring) -- the true alignment is always the strongest correlation
+    peak within a physically plausible clock-offset window, even when it
+    isn't the single strongest peak in the unbounded search.
     """
     if len(ref_t) < 2 or len(test_t) < 2:
         raise ValueError("Need at least 2 samples in both signals to synchronize.")
 
+    lag_bound_sec = MAX_LAG_SEC if max_lag_sec is None else max_lag_sec
     dt = 1.0 / resample_hz
 
     start = max(ref_t.min(), test_t.min())
@@ -1158,7 +1167,7 @@ def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0):
     correlation = np.correlate(ref_zm, test_zm, mode="full")
     # index i in `correlation` corresponds to lag_samples = i - (len(test_zm) - 1)
     zero_lag_idx = len(test_zm) - 1
-    max_lag_samples = max(1, int(round(MAX_LAG_SEC / dt)))
+    max_lag_samples = max(1, int(round(lag_bound_sec / dt)))
     lo = max(0, zero_lag_idx - max_lag_samples)
     hi = min(len(correlation), zero_lag_idx + max_lag_samples + 1)
     best_idx = lo + int(np.argmax(correlation[lo:hi]))
@@ -2257,6 +2266,32 @@ def parse_motive_csv(csv_path, target_points=None):
     type_row = [c.strip() for c in rows[type_idx]]
 
     # ── Locate the name_row (row above type_row with non-empty stripped cells) ─
+    #
+    # NOTE (2026-08-11): Motive 1.22's export inserts an extra "unique ID"
+    # row (32-char asset GUIDs) directly above type_row, between it and the
+    # true name row (Thigh/Shank/etc). That GUID row is non-empty, so this
+    # "first non-empty row above type_row" search currently stops there and
+    # every target label silently fails to match -- meaning
+    # _optitrack_knee_angle_series() (the rigid-body method) never actually
+    # succeeds against any real trial in this corpus; load_optitrack_trial()
+    # always falls back to the marker_pca method as a result.
+    #
+    # A more targeted fix (search backward for the row that actually
+    # contains a target label, e.g. "Thigh"/"Shank") DOES find the labels
+    # and lets the rigid-body method run -- but its output is not on the
+    # same angle convention as marker_pca/the rest of this codebase (raw
+    # angle-between-local-X-axes spans ~35-90 deg on real data, vs
+    # marker_pca's 127-180 deg "180=extended" convention everything else
+    # here assumes), and there is no known per-mounting calibration to
+    # reconcile the two. Fixing the label lookup alone would silently swap
+    # every trial's ground truth onto an incompatible reference frame --
+    # confirmed to blow up corpus RMSE from ~15 to ~60 deg. Do not "fix"
+    # this without also establishing (from real calibration data, not a
+    # curve-fit against marker_pca) what _optitrack_knee_angle_series's
+    # local-X convention actually means in the project's 180=extended
+    # frame. Left as the historical "first non-empty row" heuristic
+    # deliberately, so the (working, validated) marker_pca fallback keeps
+    # firing until that calibration work happens.
     name_idx = next(
         (i for i in range(type_idx - 1, -1, -1)
          if any(_strip_motive_prefix(c) for c in rows[i])),
