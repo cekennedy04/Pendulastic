@@ -10,6 +10,16 @@ def _root():
     r = tk.Tk(); r.withdraw(); return r
 
 
+def _is_gridded(widget) -> bool:
+    """grid_info() truthiness rather than winfo_ismapped() -- the latter
+    requires the toplevel to actually be mapped on screen, which doesn't
+    hold for the shared withdrawn test root (see _root()). grid_info()
+    reliably returns {} once a widget has been grid_remove()'d, so this
+    is the headless-safe way to check grid visibility (mirrors _is_packed
+    in tests/test_pendulastic_workbench.py for pack-managed widgets)."""
+    return bool(widget.grid_info())
+
+
 class _Ctrl:
     """Minimal fake controller."""
     def __init__(self):
@@ -24,6 +34,8 @@ class _Ctrl:
     def on_camera_disabled(self): self.calls.append("disabled")
     def on_countdown_start(self): pass
     def is_imu_calibrated(self): return True
+    def on_view_trial(self, trial_num): pass
+    def on_delete_trial(self, trial_num): pass
 
 
 def test_panel_instantiates():
@@ -1250,6 +1262,164 @@ def test_multi_trial_checkbox_locks_during_recording():
         assert str(p.multi_trial_chk["state"]) == "disabled"
         p.enter_idle()
         assert str(p.multi_trial_chk["state"]) == "normal"
+    finally:
+        r.destroy()
+
+
+def test_set_multi_trial_list_renders_rows():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([
+            {"trial_num": 1, "sources": ["imu", "rgb"], "status": "saved"},
+            {"trial_num": 2, "sources": ["imu"], "status": "processing"},
+        ])
+        r.update()
+        assert _is_gridded(p._trial_list_frame)
+        assert len(p._trial_list_container.winfo_children()) == 2
+    finally:
+        r.destroy()
+
+
+def test_trial_list_hidden_when_toggle_off():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.set_multi_trial_list([{"trial_num": 1, "sources": ["imu"], "status": "saved"}])
+        r.update()
+        assert not _is_gridded(p._trial_list_frame)
+    finally:
+        r.destroy()
+
+
+def test_trial_list_hidden_when_empty():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([])
+        r.update()
+        assert not _is_gridded(p._trial_list_frame)
+    finally:
+        r.destroy()
+
+
+def test_multi_trial_list_persists_across_toggle_off_and_on():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([{"trial_num": 1, "sources": ["imu"], "status": "saved"}])
+        r.update()
+        p.multi_trial_chk.invoke()   # toggles var False and fires the command
+        r.update()
+        assert not _is_gridded(p._trial_list_frame)
+        p.multi_trial_chk.invoke()   # toggles var True again
+        r.update()
+        assert _is_gridded(p._trial_list_frame)
+        assert len(p._trial_list_container.winfo_children()) == 1
+    finally:
+        r.destroy()
+
+
+def test_delete_button_disabled_while_processing():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([{"trial_num": 1, "sources": ["imu"], "status": "processing"}])
+        r.update()
+        row = p._trial_list_container.winfo_children()[0]
+        btn_del = row.winfo_children()[-1]
+        assert str(btn_del["state"]) == "disabled"
+    finally:
+        r.destroy()
+
+
+def test_delete_click_confirms_then_calls_controller(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **k: True)
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def on_delete_trial(self, n): calls.append(n)
+        p = _m.AcquisitionPanel(r, C()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([{"trial_num": 3, "sources": ["imu"], "status": "saved"}])
+        r.update()
+        row = p._trial_list_container.winfo_children()[0]
+        btn_del = row.winfo_children()[-1]
+        btn_del.invoke()
+        r.update()
+        assert calls == [3]
+    finally:
+        r.destroy()
+
+
+def test_delete_click_declined_does_not_call_controller(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **k: False)
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def on_delete_trial(self, n): calls.append(n)
+        p = _m.AcquisitionPanel(r, C()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([{"trial_num": 3, "sources": ["imu"], "status": "saved"}])
+        r.update()
+        row = p._trial_list_container.winfo_children()[0]
+        btn_del = row.winfo_children()[-1]
+        btn_del.invoke()
+        r.update()
+        assert calls == []
+    finally:
+        r.destroy()
+
+
+def test_row_click_calls_view_trial():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        calls = []
+        class C(_Ctrl):
+            def on_view_trial(self, n): calls.append(n)
+        p = AcquisitionPanel(r, C()); p.pack(); r.update()
+        p._multi_trial_var.set(True)
+        p.set_multi_trial_list([{"trial_num": 5, "sources": ["rgb"], "status": "saved"}])
+        r.update()
+        row = p._trial_list_container.winfo_children()[0]
+        lbl = row.winfo_children()[0]
+        # event_generate needs a mapped (non-withdrawn) toplevel on Windows
+        # to actually deliver the synthetic click to the widget.
+        r.deiconify()
+        r.update()
+        lbl.event_generate("<Button-1>", x=5, y=5)
+        r.update()
+        assert calls == [5]
+    finally:
+        r.destroy()
+
+
+def test_telemetry_canvas_still_not_gridded_at_init():
+    """Regression: row renumbering (row 13 -> 14) must not break the
+    existing telemetry-canvas visibility contract."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        assert p.canvas_tele.grid_info() == {}
+        p.enter_recording()
+        r.update()
+        assert p.canvas_tele.grid_info() != {}
+        assert int(p.canvas_tele.grid_info()["row"]) == 14
     finally:
         r.destroy()
 

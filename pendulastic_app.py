@@ -711,7 +711,8 @@ class AcquisitionPanel(tk.Frame):
             chk_stack, text="Record multiple trials",
             variable=self._multi_trial_var,
             bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
-            selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"])
+            selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"],
+            command=self._on_multi_trial_toggle)
         self.multi_trial_chk.pack(side="top", anchor="w")
 
         # row 12 — START / STOP (START never moves from col 0)
@@ -728,16 +729,23 @@ class AcquisitionPanel(tk.Frame):
             command=self._on_stop_clicked)
         self.btn_stop.grid(row=12, column=1, padx=10, pady=12)
 
-        # row 13 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
+        # row 13 — trial list (multi-trial mode; hidden until toggled on and
+        # at least one trial exists this session)
+        self._trial_rows_data: list = []
+        self._trial_list_frame = ws.card_frame(self, title="TRIALS THIS SESSION")
+        self._trial_list_container = tk.Frame(self._trial_list_frame, bg=ws.PALETTE["PANEL"])
+        self._trial_list_container.pack(side="top", fill="x")
+
+        # row 14 — live telemetry canvas (NOT gridded at init; shown during RECORDING)
         self.canvas_tele = tk.Canvas(
             self, width=440, height=80, bg="#0B1928", highlightthickness=0)
 
-        # row 14 — status bar
+        # row 15 — status bar
         self.status_var = tk.StringVar(value="Idle — ready to record.")
         self.lbl_status = tk.Label(
             self, textvariable=self.status_var, relief="sunken", anchor="w",
             bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"])
-        self.lbl_status.grid(row=14, column=0, columnspan=2,
+        self.lbl_status.grid(row=15, column=0, columnspan=2,
                              sticky="ew", padx=10, pady=(4, 10))
 
         # Track every form widget that must be locked during recording
@@ -785,7 +793,7 @@ class AcquisitionPanel(tk.Frame):
         now lives entirely in the separate WebcamViewerWindow, so this
         panel no longer needs its own embedded copy."""
         if self._is_recording:
-            self.canvas_tele.grid(row=13, column=0, columnspan=2,
+            self.canvas_tele.grid(row=14, column=0, columnspan=2,
                                   padx=10, pady=4)
         else:
             self.canvas_tele.grid_remove()
@@ -948,6 +956,51 @@ class AcquisitionPanel(tk.Frame):
     def get_video_file_path(self) -> str:
         """Return the currently selected video file path, or empty string."""
         return getattr(self, "_stored_video_path", "")
+
+    def _on_multi_trial_toggle(self) -> None:
+        self._sync_trial_list_visibility()
+
+    def _sync_trial_list_visibility(self) -> None:
+        show = self._multi_trial_var.get() and bool(self._trial_rows_data)
+        if show:
+            self._trial_list_frame.grid(row=13, column=0, columnspan=2,
+                                        sticky="ew", padx=12, pady=4)
+        else:
+            self._trial_list_frame.grid_remove()
+
+    def set_multi_trial_list(self, trials: list) -> None:
+        self._trial_rows_data = list(trials)
+        for w in self._trial_list_container.winfo_children():
+            w.destroy()
+        for t in self._trial_rows_data:
+            self._build_trial_row(t)
+        self._sync_trial_list_visibility()
+
+    _SOURCE_LABELS = {"imu": "IMU", "rgb": "RGB", "optitrack": "OptiTrack"}
+
+    def _build_trial_row(self, t: dict) -> None:
+        row = tk.Frame(self._trial_list_container, bg=ws.PALETTE["PANEL"])
+        row.pack(side="top", fill="x", pady=1)
+        src_label = " + ".join(self._SOURCE_LABELS.get(s, s) for s in t["sources"])
+        status_label = "Processing…" if t["status"] == "processing" else "Saved"
+        text = f"Trial {t['trial_num']} · {src_label} · {status_label}"
+        lbl = tk.Label(row, text=text, anchor="w", cursor="hand2",
+                       bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"])
+        lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        lbl.bind("<Button-1>", lambda e, n=t["trial_num"]: self.controller.on_view_trial(n))
+        btn_del = tk.Button(
+            row, text="✕", relief="flat", bd=0, cursor="hand2",
+            bg=ws.PALETTE["PANEL"], fg=_RED,
+            state="disabled" if t["status"] == "processing" else "normal",
+            command=lambda n=t["trial_num"]: self._on_delete_clicked(n))
+        btn_del.pack(side="right", padx=4)
+
+    def _on_delete_clicked(self, trial_num: int) -> None:
+        if messagebox.askyesno(
+                "Delete Trial",
+                f"Delete Trial {trial_num}? This removes its saved files "
+                "and can't be undone."):
+            self.controller.on_delete_trial(trial_num)
 
     def _on_rgb_checkbox_toggled(self) -> None:
         if self._src_rgb.get():
