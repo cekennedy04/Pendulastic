@@ -9,6 +9,7 @@ representative-trial selection, same styling.
 """
 from __future__ import annotations
 
+import csv
 import glob
 import json
 import os
@@ -111,6 +112,76 @@ def release_aligned_waveform(rep):
     return t_plot, a_plot
 
 
+def release_aligned_hpe_curve(mdl_t, mdl_ang):
+    """Per-source mirror of release_aligned_waveform() for an HPE/IMU curve
+    (mdl_t, mdl_ang) rather than a trial record dict -- SG-smooth, detect
+    release with pt._detect_release on the raw/smoothed (not detrended)
+    signal, shift so that curve's OWN detected release lands at t=0.
+    Without this, a source's timing offset from OptiTrack would visually
+    read as an angle-tracking error instead of a timing artifact.
+
+    Owns its own input validation (pt._detect_release doesn't reject
+    degenerate input): fewer than 4 finite samples, or non-monotonic t,
+    returns None rather than raising or producing a bogus alignment --
+    same "unavailable for this timepoint" path callers already use for a
+    missing/rejected HPE curve. No separate short-window guard is needed:
+    pt._sg() degrades gracefully (returns the signal unsmoothed) for a
+    window too small to fit, rather than raising, matching how
+    _detect_release() already tolerates short input.
+
+    Early-release guard (2026-08-10 full-report-hpe-accuracy design spec
+    §5.1, addressed here after real-data verification against participant
+    14): pt._detect_release's adaptive threshold can fire almost
+    immediately when a curve's very first samples are themselves noisy --
+    e.g. unreliable early MediaPipe pose tracking -- rather than a real
+    pre-release hold. Using that index as the alignment anchor confirmed
+    shifting a real MediaPipe curve to physically implausible knee angles
+    (~260 degrees, against OptiTrack's own ~150 degree range for the same
+    trial). The global constraint on this plan forbids modifying
+    _detect_release's own algorithm, so this function instead refuses to
+    trust an anchor with fewer than MIN_BASELINE_SAMPLES pre-release
+    samples -- too few to represent a real hold baseline -- and returns
+    None (same "unavailable for this timepoint" path as every other
+    rejection here) rather than a silently-misaligned curve."""
+    MIN_BASELINE_SAMPLES = 4
+    mask = np.isfinite(mdl_ang) & np.isfinite(mdl_t)
+    if mask.sum() < 4:
+        return None
+    t_masked = mdl_t[mask]
+    a_masked = mdl_ang[mask]
+    if np.any(np.diff(t_masked) <= 0):
+        return None
+    a_smooth = pt._sg(a_masked, w=15, p=3)
+    release_idx = pt._detect_release(t_masked, a_smooth)
+    release_idx = max(0, min(release_idx, len(t_masked) - 1))
+    if release_idx < MIN_BASELINE_SAMPLES:
+        return None
+    t_release = t_masked[release_idx]
+    y_off = 180.0 - float(a_smooth[release_idx])
+    t_plot = t_masked - t_release
+    a_plot = a_masked + y_off
+    return t_plot, a_plot
+
+
+def _hpe_overlay_series(rec):
+    """For one trial record (after attach_rmse), returns
+    [(source_label, linestyle, t_plot, a_plot), ...] for whichever of
+    mediapipe_curve/imu_curve are present and release-align successfully.
+    OptiTrack itself is plotted separately by the existing Row 1 loop
+    (unchanged) -- this only covers the two overlay sources."""
+    out = []
+    for key, label, linestyle in (("mediapipe_curve", "MediaPipe", "--"), ("imu_curve", "IMU", ":")):
+        curve = rec.get(key)
+        if curve is None:
+            continue
+        aligned = release_aligned_hpe_curve(curve["t"], curve["ang"])
+        if aligned is None:
+            continue
+        t_plot, a_plot = aligned
+        out.append((label, linestyle, t_plot, a_plot))
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Generic multi-participant discovery
 #
@@ -191,6 +262,346 @@ def load_excluded_trials():
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def trial_candidates(participant_id, include_archive=True):
+    """Every trial_*_optitrack.csv discovered for this participant, kept
+    regardless of exclusion/validity/scoreability, each tagged with a
+    terminal status -- the data source for the full report's data-
+    completeness caption line (2026-08-10 full-report-hpe-accuracy design
+    spec §5.6). Standalone from discover_all_trials()/collect_participant()
+    by design (see this function's task in the implementation plan for
+    why) -- does its own raw glob rather than filtering their output, so
+    it can preserve candidates they intentionally drop (INVALID paths,
+    excluded trials) plus files _parse_trial_path() can't attribute to a
+    participant/leg at all (status "unparseable").
+
+    Never raises -- matches this module's other discovery/loader
+    conventions. status is one of:
+      "unparseable"  -- _parse_trial_path() returned None
+      "invalid_path" -- "INVALID" in the path
+      "excluded"     -- key present in load_excluded_trials(); reason set
+      "unreadable"   -- pt.load_optitrack() raised
+      "unscoreable"  -- score_trial() returned None
+      "scored"       -- record set to the scored trial dict
+    """
+    excluded = load_excluded_trials()
+    out = []
+    seen = set()
+    roots = [OPTI_ROOT] + ([ARCHIVE_ROOT] if include_archive and os.path.isdir(ARCHIVE_ROOT) else [])
+    for root in roots:
+        for csv_path in glob.glob(os.path.join(root, "**", "trial_*_optitrack.csv"), recursive=True):
+            real = os.path.realpath(csv_path)
+            if real in seen:
+                continue
+            seen.add(real)
+
+            if "INVALID" in csv_path.upper():
+                rec = _parse_trial_path(csv_path, root)
+                if rec is not None and rec["participant"] != participant_id:
+                    continue
+                out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
+                           "status": "invalid_path", "reason": None, "record": None})
+                continue
+
+            rec = _parse_trial_path(csv_path, root)
+            if rec is None:
+                # Can't attribute to a participant at all -- can't filter
+                # by participant_id either, so every unparseable file in
+                # the tree is included regardless of which pid was asked
+                # for. Callers building a per-participant completeness
+                # tally should treat this bucket as tree-wide, not
+                # per-participant, and say so in the UI copy.
+                out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
+                           "status": "unparseable", "reason": None, "record": None})
+                continue
+            if rec["participant"] != participant_id:
+                continue
+
+            key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
+            if key in excluded:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "excluded", "reason": excluded[key], "record": None})
+                continue
+
+            try:
+                t, angle = pt.load_optitrack(csv_path)
+            except Exception:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "unreadable", "reason": None, "record": None})
+                continue
+
+            pid_key = f"{participant_id}_{rec['leg']}_{rec['condition']}"
+            record = score_trial(pid_key, rec["trial"], t, angle)
+            if record is None:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "unscoreable", "reason": None, "record": None})
+            else:
+                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                           "path": csv_path, "status": "scored", "reason": None, "record": record})
+    return out
+
+
+def _parse_mas_assessed_date(date_str):
+    """mas_scores.csv's assessed_date column is free-text M/D/YYYY (e.g.
+    "8/6/2026"), not zero-padded or ISO -- lexicographic string sort would
+    silently misorder "12/1/2026" before "8/6/2026". Returns a
+    datetime.date, or None for blank/unparseable (sorted last by callers,
+    never raised)."""
+    import datetime
+    date_str = (date_str or "").strip()
+    if not date_str:
+        return None
+    try:
+        return datetime.datetime.strptime(date_str, "%m/%d/%Y").date()
+    except ValueError:
+        return None
+
+
+def clinician_mas_matches(participant_id, leg, condition):
+    """All valid mas_scores.csv rows for this participant/leg/condition,
+    sorted most-recent-first by assessed_date. Local import of
+    mas_validation -- mas_validation.py already imports pt_report_common
+    at module scope, so a module-scope import here would be circular; a
+    function-local import is safe since both modules are fully
+    initialized in Python's module cache by the time this is ever called
+    (during report generation). Reuses mas_validation's own bag-of-tokens
+    condition matching and grade validation rather than reimplementing
+    them, so this stays consistent with mas_validation.py's own
+    pair_pt_and_mas()/_pt_lookup_factory()."""
+    import datetime
+    import mas_validation as mv
+    if not os.path.isfile(mv.MAS_CSV):
+        return []
+    wanted = mv._tokenize_condition(condition)
+    rows = mv.load_mas_scores(mv.MAS_CSV)
+    matches = [r for r in rows
+              if r.get("participant") == participant_id
+              and r.get("leg") == leg
+              and mv._tokenize_condition(r.get("condition", "")) == wanted
+              and mv._valid_grade(r.get("mas_grade", ""))]
+    matches.sort(key=lambda r: _parse_mas_assessed_date(r.get("assessed_date")) or datetime.date.min,
+                reverse=True)
+    return matches
+
+
+def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_dir=None):
+    """Complete, untruncated clinician-MAS record for this participant --
+    Row 5 of the full report (see _draw_row5_table) may only show the 2
+    most recent matches per leg/condition for density reasons, but this
+    file always has every match, so 'all relevant participant data is
+    included' is true of the report's full output (figure + sidecar),
+    not just the PNG in isolation. Same pattern this codebase already
+    uses for the MS-vs-Control cohort artifacts (ms_vs_control_stats.csv
+    as the complete record, the PNG as a bounded summary)."""
+    out_dir = out_dir or OUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"P{participant_id}_clinician_mas.csv")
+    fieldnames = ["participant", "leg", "condition", "diagnosis", "mas_grade",
+                 "assessed_by", "assessed_date"]
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        for matches in matches_by_leg_condition.values():
+            for row in matches:
+                w.writerow(row)
+    return out_path
+
+
+def _row5_source_pt7(rec, curve_key):
+    """PT7 (7-param, same compute_pt_score used for OptiTrack everywhere
+    else in this module) computed directly from one source's own curve on
+    this trial record, or None if the curve is missing or fails to
+    score. curve_key is "mediapipe_curve" or "imu_curve" (set by
+    attach_rmse, Task 2)."""
+    curve = rec.get(curve_key)
+    if curve is None:
+        return None
+    params = pt.compute_pt_params(curve["t"], curve["ang"])
+    if params is None:
+        return None
+    return pt.compute_pt_score(params)
+
+
+def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
+    """PT7/MAS source-agreement table for one leg: OptiTrack vs MediaPipe
+    and OptiTrack vs IMU, each with its OWN paired OptiTrack baseline
+    (not one shared number -- MediaPipe and IMU can pass the quality gate
+    on different trial subsets), three-stage missing/rejected/unscored
+    accounting, and clinician MAS shown at most 2-most-recent with a
+    '+N more' note (full record goes to the sidecar CSV -- see
+    write_clinician_mas_sidecar, Task 6). Returns
+    {(leg, condition): matches_used} so the caller can write the sidecar
+    from the exact matches this table displayed, without recomputing."""
+    ax.axis("off")
+    matches_by_leg_condition = {}
+    rows = []
+
+    for tp_key, tp_label, color in timepoints:
+        trials = by_leg_tp.get((leg, tp_key), [])
+        if not trials:
+            continue
+
+        # Per-trial gate accounting, fetched fresh with return_rejected=True
+        # -- attach_rmse's rec["mediapipe_curve"]/rec["imu_curve"] only
+        # carries POST-gate survivors, so re-deriving "had a candidate at
+        # all" from those keys would conflate "no candidate CSV" with
+        # "candidate CSV existed but was rejected by the quality gate",
+        # exactly the distinction Task 1's return_rejected mode exists to
+        # preserve. One call per trial, reused for both sources below.
+        gate_by_trial = {}
+        for r in trials:
+            try:
+                accepted, rejected = pt.load_hpe_model_curves(
+                    r["pid"], "1", r["trial"], r["t_raw"], r["angle_raw"], r["neutral_deg_raw"],
+                    return_rejected=True)
+            except Exception:
+                accepted, rejected = [], []
+            gate_by_trial[id(r)] = (accepted, rejected)
+
+        for source_label, curve_key, name_matches in (
+            ("MediaPipe", "mediapipe_curve", lambda n: n.startswith("mediapipe")),
+            ("IMU", "imu_curve", lambda n: n == "imu_viewer"),
+        ):
+            n_candidate = 0
+            n_passed_gate = 0
+            for r in trials:
+                accepted, rejected = gate_by_trial[id(r)]
+                has_accepted = any(name_matches(c["name"]) for c in accepted)
+                has_rejected = any(name_matches(c["name"]) for c in rejected)
+                if has_accepted or has_rejected:
+                    n_candidate += 1
+                if has_accepted:
+                    n_passed_gate += 1
+
+            source_pt7s = [_row5_source_pt7(r, curve_key) for r in trials if r.get(curve_key) is not None]
+            n_scored = sum(1 for v in source_pt7s if v is not None)
+            paired_opti = [r["pt7"] for r in trials if r.get(curve_key) is not None]
+            opti_paired_mean = float(np.mean(paired_opti)) if paired_opti else None
+            source_mean = float(np.mean([v for v in source_pt7s if v is not None])) if n_scored else None
+            delta = (source_mean - opti_paired_mean) if (source_mean is not None and opti_paired_mean is not None) else None
+
+            rows.append({
+                "timepoint": tp_label, "source": source_label,
+                "opti_paired_pt7": opti_paired_mean, "opti_paired_n": len(paired_opti),
+                "source_pt7": source_mean, "source_mas": pt.pt_to_mas(source_mean) if source_mean is not None else None,
+                "delta": delta,
+                "n_candidate": n_candidate, "n_passed_gate": n_passed_gate,
+                "n_total": len(trials), "n_scored": n_scored,
+            })
+
+        matches = clinician_mas_matches(participant_id, leg, tp_key)
+        matches_by_leg_condition[(leg, tp_key)] = matches
+
+    if not rows:
+        ax.text(0.5, 0.5, "No timepoints available", transform=ax.transAxes,
+               ha="center", va="center", color="#888888", fontsize=9)
+        return matches_by_leg_condition
+
+    def _fmt_pt7(v):
+        return f"{v:.3f}" if v is not None else "—"
+
+    def _fmt_delta(v):
+        return f"{v:+.3f}" if v is not None else "—"
+
+    caveat = ("Algorithm agreement, not independent clinical scores — PT7 computed identically "
+             "across sources but on curves with different sampling, smoothing, and cleaning "
+             "characteristics.")
+    ax.text(0.0, 1.0, caveat, transform=ax.transAxes, fontsize=6.5, style="italic",
+           color="#666666", ha="left", va="top", wrap=True)
+
+    table_rows = []
+    for r in rows:
+        clin = matches_by_leg_condition.get((leg, next(tp for tp, lbl, _ in timepoints if lbl == r["timepoint"])), [])
+        clin_shown = clin[:2]
+        clin_txt = "; ".join(f"{m['mas_grade']} ({m.get('assessed_date') or 'date n/a'})" for m in clin_shown)
+        if len(clin) > 2:
+            clin_txt += f" +{len(clin) - 2} more"
+        table_rows.append([
+            r["timepoint"], r["source"],
+            f"{_fmt_pt7(r['opti_paired_pt7'])} (n={r['opti_paired_n']})",
+            f"{_fmt_pt7(r['source_pt7'])}" + (f" [{r['source_mas']}]" if r["source_mas"] else ""),
+            _fmt_delta(r["delta"]),
+            f"{r['n_candidate']}/{r['n_total']} had candidate, "
+            f"{r['n_passed_gate']}/{r['n_candidate'] or 1} passed gate, "
+            f"{r['n_scored']}/{r['n_passed_gate'] or 1} scored",
+            clin_txt or "—",
+        ])
+
+    col_labels = ["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
+                 "Δ", "Accounting", "Clinician MAS"]
+    tbl = ax.table(cellText=table_rows, colLabels=col_labels, loc="center", cellLoc="center")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(6.5)
+    # Equal-width columns (ax.table()'s default) overlap: "Accounting"'s long
+    # status strings bleed into "Clinician MAS", and the numeric "Δ" values
+    # (e.g. "+0.747") bleed into "Accounting" -- confirmed against real
+    # participant data (2026-08-10 full-report-hpe-accuracy plan, Task 14
+    # manual verification). auto_set_column_width sizes each column to its
+    # own widest cell (including header) instead.
+    tbl.auto_set_column_width(col=list(range(len(col_labels))))
+    tbl.scale(1, 1.4)
+    return matches_by_leg_condition
+
+
+def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints, cohort_snapshot):
+    """Caption block below the full-report figure: leg-specific MS/Control
+    cohort reference (leave-one-out for the participant's own arm, if
+    any) plus a per-leg/condition data-completeness tally. Every `n` is
+    explicitly labeled by what it counts -- never a bare number.
+    cohort_snapshot=None (or either arm empty) simply omits the cohort
+    lines rather than raising."""
+    lines = []
+
+    if cohort_snapshot is not None:
+        import pt_cohort_common as pcc
+        for leg in ("left", "right"):
+            own_trials = [r for (leg_key, _cond), recs in by_leg_tp.items()
+                         if leg_key == leg for r in recs]
+            if not own_trials:
+                continue
+            own_pt7 = float(np.mean([r["pt7"] for r in own_trials]))
+            ref = pcc.leg_cohort_reference(cohort_snapshot, participant_id, leg)
+            if ref is None:
+                continue
+            leg_label = leg.capitalize()
+            parts = [f"{leg_label} leg — this participant PT7 (n={len(own_trials)} trials): {own_pt7:.2f}"]
+            ms_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "MS" else ""
+            control_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "Control" else ""
+            ms_txt = f"{ref['ms_median']:.2f}" if ref["ms_median"] is not None else "n/a"
+            control_txt = f"{ref['control_median']:.2f}" if ref["control_median"] is not None else "n/a"
+            parts.append(f"MS arm median (n={ref['ms_n']} contributing participants{ms_suffix}): {ms_txt}")
+            parts.append(f"Control arm median (n={ref['control_n']}{control_suffix}): {control_txt}")
+            lines.append(" | ".join(parts))
+
+    candidates = trial_candidates(participant_id)
+    by_leg_condition = {}
+    for c in candidates:
+        if c["leg"] is None:
+            continue
+        key = (c["leg"], c["condition"])
+        by_leg_condition.setdefault(key, {"recorded": 0, "excluded": 0, "unreadable": 0,
+                                          "unscoreable": 0, "scored": 0})
+        if c["status"] in ("excluded",):
+            by_leg_condition[key]["excluded"] += 1
+        elif c["status"] == "unreadable":
+            by_leg_condition[key]["unreadable"] += 1
+        elif c["status"] == "unscoreable":
+            by_leg_condition[key]["unscoreable"] += 1
+        elif c["status"] == "scored":
+            by_leg_condition[key]["scored"] += 1
+        if c["status"] != "invalid_path":
+            by_leg_condition[key]["recorded"] += 1
+
+    plotted_keys = {(leg_key, cond_key) for (leg_key, cond_key) in by_leg_tp.keys()}
+    for (leg, cond), tally in sorted(by_leg_condition.items()):
+        if (leg, cond) not in plotted_keys:
+            continue
+        lines.append(f"{leg.capitalize()}/{cond}: {tally['recorded']} recorded, "
+                     f"{tally['excluded']} excluded, {tally['unreadable']} unreadable, "
+                     f"{tally['unscoreable']} unscoreable, {tally['scored']} scored")
+
+    return "\n".join(lines)
 
 
 def discover_all_trials(include_archive=True):
@@ -301,11 +712,14 @@ def collect_participant(participant_id, include_archive=True):
 
 
 def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, caveat_text,
-                       save=True, return_fig=False):
-    """3x2 grid: rows = Waveforms / 7-param bars / PT-score trend,
+                       cohort_snapshot=None, save=True, return_fig=False):
+    """5x2 grid: rows = Waveforms (+ HPE/IMU overlay) / 7-param bars /
+    PT-score trend / RMSE agreement / PT7-MAS source-agreement table,
     columns = Left leg / Right leg. `by_leg_tp` keys are (leg, tp_key) with
-    leg in ("left","right") and tp_key matching timepoints' first element."""
-    fig, axes = plt.subplots(3, 2, figsize=(15, 13), facecolor='white')
+    leg in ("left","right") and tp_key matching timepoints' first element.
+    cohort_snapshot (pt_cohort_common.build_cohort_snapshot() output) is
+    optional -- None simply omits the caption's cohort-reference lines."""
+    fig, axes = plt.subplots(5, 2, figsize=(15, 21), facecolor='white')
 
     waveforms = {}
     t_lo, t_hi = 0.0, 0.0
@@ -334,6 +748,9 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
             t_plot, a_plot, rep = entry
             ax.plot(t_plot, a_plot, color=color, linewidth=1.5,
                    label=f'{tp_label} (PT={rep["pt7"]:.2f}, T{rep["trial"]})')
+            for source_label, linestyle, hpe_t, hpe_a in _hpe_overlay_series(rep):
+                ax.plot(hpe_t, hpe_a, color=color, linewidth=1.1, linestyle=linestyle,
+                       alpha=0.85, label=f'{tp_label} {source_label}')
         ax.axvline(0, color='gray', linestyle='--', linewidth=0.8)
         ax.set_xlim(shared_xlim)
         ax.set_title(f'{participant_label} {leg_label} – Waveforms', fontsize=10, fontweight='bold', pad=10)
@@ -409,9 +826,27 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
         ax.set_xlim(-0.5, len(timepoints) - 0.4)
         ax.set_ylim(0, y_max)
 
+    # participant_label always has the "P{pid}" shape every existing call
+    # site (run_pt_analysis.py, p13_full_report.py, p5_full_report.py) uses,
+    # so lstrip("P") recovers the raw participant id clinician_mas_matches/
+    # write_clinician_mas_sidecar/trial_candidates expect.
+    for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
+        ax4 = axes[3, col_idx]
+        _draw_rmse_axes(ax4, leg, by_leg_tp, timepoints)
+        ax4.set_title(f'{participant_label} {leg_label} – RMSE vs OptiTrack', fontsize=10, fontweight='bold', pad=10)
+
+        ax5 = axes[4, col_idx]
+        matches_used = _draw_row5_table(ax5, leg, by_leg_tp, timepoints, participant_label.lstrip("P"))
+        if matches_used:
+            write_clinician_mas_sidecar(participant_label.lstrip("P"), matches_used)
+        ax5.set_title(f'{participant_label} {leg_label} – PT7/MAS Source Agreement', fontsize=10, fontweight='bold', pad=10)
+
     fig.suptitle(f"{participant_label} — Full Report (7-parameter Popovic PT score)\n{caveat_text}",
                 fontsize=10, y=0.998, color='#333333')
-    plt.tight_layout(rect=[0, 0, 1, 0.965])
+    caption = _build_caption_text(participant_label, participant_label.lstrip("P"), by_leg_tp, timepoints, cohort_snapshot)
+    if caption:
+        fig.text(0.02, 0.005, caption, fontsize=6.5, color="#444444", va="bottom", ha="left")
+    plt.tight_layout(rect=[0, 0.04, 1, 0.975])
     out_path = None
     if save:
         out_path = os.path.join(OUT_DIR, out_filename)
@@ -608,52 +1043,66 @@ def attach_rmse(by_leg_tp):
     return by_leg_tp
 
 
+def _draw_rmse_axes(ax, leg, by_leg_tp, timepoints, methodologies=("mediapipe", "imu")):
+    """Per-trial RMSE bars vs OptiTrack for one leg's axes -- extracted
+    from make_rmse_figure() so both the standalone P{pid}_rmse.png and
+    Row 4 of the full report (make_report_figure(), Task 11) draw from
+    the exact same code and can never drift apart. Returns whether any
+    bars were drawn."""
+    ax.set_facecolor('#f8f9fa')
+    ax.grid(True, color=BG_GRID, linestyle='-', linewidth=0.8, axis='y')
+
+    bar_records = []
+    for tp_key, tp_label, _ in timepoints:
+        for rec in by_leg_tp.get((leg, tp_key), []):
+            has_mp = "mediapipe" in methodologies and rec.get("mediapipe_rmse") is not None
+            has_imu = "imu" in methodologies and rec.get("imu_rmse") is not None
+            if has_mp or has_imu:
+                bar_records.append((tp_label, rec))
+
+    any_bars = False
+    if bar_records:
+        any_bars = True
+        labels = [f"{tp}\nT{rec['trial']}" for tp, rec in bar_records]
+        xpos = np.arange(len(bar_records))
+        width = 0.36
+        if "mediapipe" in methodologies:
+            vals = [rec.get("mediapipe_rmse", np.nan) if rec.get("mediapipe_rmse") is not None else np.nan
+                   for _, rec in bar_records]
+            ax.bar(xpos - width / 2, vals, width, color=_C_MEDIAPIPE, label="OptiTrack vs MediaPipe", zorder=3)
+        if "imu" in methodologies:
+            vals = [rec.get("imu_rmse", np.nan) if rec.get("imu_rmse") is not None else np.nan
+                   for _, rec in bar_records]
+            ax.bar(xpos + width / 2, vals, width, color=_C_IMU, label="OptiTrack vs IMU (Viewer)", zorder=3)
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(labels, fontsize=7.5)
+        ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
+    else:
+        ax.text(0.5, 0.5, "No MediaPipe/IMU comparison data found\nfor the selected methodology",
+               transform=ax.transAxes, ha='center', va='center', color='#888888', fontsize=10)
+        ax.set_xticks([])
+
+    ax.set_ylabel('RMSE (deg)', fontsize=8)
+    ax.tick_params(labelsize=8)
+    return any_bars
+
+
 def make_rmse_figure(participant_label, by_leg_tp, timepoints, out_filename,
                      methodologies=("mediapipe", "imu"), save=True, return_fig=False):
     """1x2 grid (Left, Right): per-trial RMSE bars vs OptiTrack, for whichever
     of MediaPipe/IMU data is actually available. `methodologies` filters
-    which series to show even if both were found."""
+    which series to show even if both were found. Unchanged external
+    behavior from before the _draw_rmse_axes extraction (Task 8 of the
+    implementation plan)."""
     attach_rmse(by_leg_tp)
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.5), facecolor='white')
     any_bars = False
 
     for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
         ax = axes[col_idx]
-        ax.set_facecolor('#f8f9fa')
-        ax.grid(True, color=BG_GRID, linestyle='-', linewidth=0.8, axis='y')
-
-        bar_records = []
-        for tp_key, tp_label, _ in timepoints:
-            for rec in by_leg_tp.get((leg, tp_key), []):
-                has_mp = "mediapipe" in methodologies and rec.get("mediapipe_rmse") is not None
-                has_imu = "imu" in methodologies and rec.get("imu_rmse") is not None
-                if has_mp or has_imu:
-                    bar_records.append((tp_label, rec))
-
-        if bar_records:
-            any_bars = True
-            labels = [f"{tp}\nT{rec['trial']}" for tp, rec in bar_records]
-            xpos = np.arange(len(bar_records))
-            width = 0.36
-            if "mediapipe" in methodologies:
-                vals = [rec.get("mediapipe_rmse", np.nan) if rec.get("mediapipe_rmse") is not None else np.nan
-                       for _, rec in bar_records]
-                ax.bar(xpos - width / 2, vals, width, color=_C_MEDIAPIPE, label="OptiTrack vs MediaPipe", zorder=3)
-            if "imu" in methodologies:
-                vals = [rec.get("imu_rmse", np.nan) if rec.get("imu_rmse") is not None else np.nan
-                       for _, rec in bar_records]
-                ax.bar(xpos + width / 2, vals, width, color=_C_IMU, label="OptiTrack vs IMU (Viewer)", zorder=3)
-            ax.set_xticks(xpos)
-            ax.set_xticklabels(labels, fontsize=7.5)
-            ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
-        else:
-            ax.text(0.5, 0.5, "No MediaPipe/IMU comparison data found\nfor the selected methodology",
-                   transform=ax.transAxes, ha='center', va='center', color='#888888', fontsize=10)
-            ax.set_xticks([])
-
+        bars_this_leg = _draw_rmse_axes(ax, leg, by_leg_tp, timepoints, methodologies)
+        any_bars = any_bars or bars_this_leg
         ax.set_title(f'{participant_label} {leg_label} – RMSE vs OptiTrack', fontsize=10, fontweight='bold', pad=10)
-        ax.set_ylabel('RMSE (deg)', fontsize=8)
-        ax.tick_params(labelsize=8)
 
     fig.suptitle(f"{participant_label} — Flexion-Angle RMSE Agreement (lower = better)",
                 fontsize=11, y=1.0, color='#333333')
