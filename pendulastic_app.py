@@ -3086,6 +3086,8 @@ class App(tk.Tk):
         self._rec_angles      = {}
         self._rec_timestamps  = {}
         self._pending_review  = {}
+        self._session_trials  = []
+        self._acq.set_multi_trial_list([])
 
     def _start_upload_analysis(self) -> None:
         meta = self._upload_meta.get_metadata()

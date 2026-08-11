@@ -2345,3 +2345,22 @@ def test_on_back_to_trial_list_returns_to_acquisition_without_incrementing():
         assert len(app._acq._trial_rows_data) == 1
     finally:
         app.destroy()
+
+
+def test_on_back_to_mode_select_clears_session_trials():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [],
+        }]
+        app._acq._multi_trial_var.set(True)
+        app._acq.set_multi_trial_list(app._session_trials_view())
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._session_trials == []
+        assert app._acq._trial_rows_data == []
+    finally:
+        app.destroy()
