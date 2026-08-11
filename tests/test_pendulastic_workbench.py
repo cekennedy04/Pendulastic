@@ -68,14 +68,23 @@ def test_set_traces_new_label_gets_defaults():
     """A genuinely new trace arriving in a later set_traces() call must
     still get sensible defaults (visible, no lag override) -- the fix for
     preserving prior state must not accidentally apply stale state to
-    labels that never existed before."""
+    labels that never existed before.
+
+    Uses flat (degenerate) traces rather than _traces()'s sinusoid: a
+    non-degenerate shared shape lets Task 8's set_traces() auto-seed a
+    release mark for both labels, and Task 9's now-real
+    _recompute_release_lags() would then legitimately auto-fill a lag --
+    which is the intended feature, not the "stale state" bug this test
+    guards against. Flat traces keep this test isolated to that bug."""
     from pendulastic_workbench import WorkbenchView
     r = _get_root()
     wv = WorkbenchView(r, _Ctrl())
-    wv.set_traces(_traces("imu"))
+    t = np.arange(90) / 30.0
+    wv.set_traces({"imu": (t, np.full(90, 180.0))})
     r.update()
 
-    wv.set_traces(_traces("imu", "mediapipe"))
+    wv.set_traces({"imu": (t, np.full(90, 180.0)),
+                    "mediapipe": (t, np.full(90, 175.0))})
     r.update()
 
     assert wv._visible_vars["mediapipe"].get() is True
@@ -558,7 +567,16 @@ def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkey
     fake_engine = type("FakeEngine", (), {
         "load_imu_trial_from_components": staticmethod(
             lambda validations, ft_ratio=None, method=None:
-                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"]))
+                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"])),
+        # set_traces() now synchronously calls _recompute_release_lags() ->
+        # _recompute_metrics() -> get_metrics_snapshot(), which needs
+        # windowed_pt_params on whatever `engine` is monkeypatched to.
+        "windowed_pt_params": staticmethod(lambda t, y: {
+            "R2n": 0.0, "N": 0.0, "phi_max_ratio": 0.0, "omega_max_n": 0.0,
+            "f": 0.0, "area_ratio": 0.0, "omega_min_n": 0.0}),
+        "extrema_jitter": staticmethod(lambda t, y: {
+            "pk_i": np.array([], dtype=int), "tr_i": np.array([], dtype=int),
+            "cycle_times": np.array([])}),
     })()
     monkeypatch.setattr(_m, "engine", fake_engine)
 
@@ -872,3 +890,461 @@ def test_dashboard_back_returns_to_load_panel():
         assert not app._dashboard_view.winfo_ismapped()
     finally:
         app.destroy()
+
+
+def test_milestone_labels_no_longer_include_release_start():
+    from pendulastic_workbench import MILESTONE_LABELS
+    assert "Release Start" not in MILESTONE_LABELS
+    assert MILESTONE_LABELS == ["First Peak Extension", "Maximum Flexion", "Rest/Settled"]
+
+
+def test_workbench_view_starts_with_empty_release_mark_state():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    assert wv._release_marks == {}
+    assert wv._lag_provenance == {}
+    assert wv._armed_release_label is None
+
+
+def test_mark_release_button_and_entry_exist_per_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    assert "imu" in wv._release_buttons
+    assert "optitrack" in wv._release_entry_vars
+
+
+def test_arm_release_sets_armed_label_and_button_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    wv._on_arm_release("imu")
+    r.update()
+
+    assert wv._armed_release_label == "imu"
+    assert "Click" in wv._release_buttons["imu"].cget("text")
+
+
+def test_arm_release_disarms_previous_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+
+    wv._on_arm_release("imu")
+    wv._on_arm_release("optitrack")
+    r.update()
+
+    assert wv._armed_release_label == "optitrack"
+    assert wv._release_buttons["imu"].cget("text") == "Mark Release"
+
+
+def test_release_entry_commit_stores_manual_mark():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._release_entry_vars["imu"].set("1.5")
+    wv._on_release_entry_commit("imu")
+    r.update()
+
+    assert wv._release_marks["imu"] == {"t_trace": 1.5, "source": "manual"}
+
+
+def test_release_entry_commit_ignores_unparseable_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    # set_traces() auto-seeds via detect_release_t0 (Task 8); capture
+    # whatever it produced (if anything) as the baseline this commit must
+    # leave untouched, rather than assuming an empty _release_marks.
+    before = dict(wv._release_marks)
+
+    wv._release_entry_vars["imu"].set("not-a-number")
+    wv._on_release_entry_commit("imu")
+    r.update()
+
+    assert wv._release_marks == before
+
+
+def test_clear_release_removes_mark_and_resets_entry():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+
+    wv._on_clear_release("imu")
+    r.update()
+
+    assert "imu" not in wv._release_marks
+    assert wv._release_entry_vars["imu"].get() == ""
+
+
+def test_lag_entry_manual_edit_sets_manual_provenance():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._lag_override_vars["imu"].set("0.42")
+    wv._on_lag_entry_commit("imu")
+    r.update()
+
+    assert wv._lag_provenance["imu"] == "manual"
+
+
+def test_release_artist_redraw_survives_axes_clear():
+    """set_traces() calls self._ax.clear() on every invocation (e.g. the
+    async-HPE-results reload case), which invalidates any previously drawn
+    matplotlib artists -- .remove() on such an artist raises
+    NotImplementedError. _release_artists entries are not reset by
+    set_traces() itself (that's Task 8's job), so _draw_release_artist and
+    _on_clear_release must tolerate a stale/invalidated artist without
+    crashing regardless of when Task 8 lands."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._draw_release_artist("imu", 1.0)
+    wv._ax.clear()  # simulates what set_traces()'s ax.clear() does mid-reload
+
+    # Neither call should raise NotImplementedError on the now-invalidated artists.
+    wv._draw_release_artist("imu", 2.0)
+    wv._on_clear_release("imu")
+
+
+class _FakeClickEvent:
+    def __init__(self, inaxes, xdata):
+        self.inaxes = inaxes
+        self.xdata = xdata
+
+
+def test_plot_click_while_armed_marks_release_and_disarms():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._on_arm_release("imu")
+
+    t_arr, _ = wv._traces["imu"]
+    click_x = float(t_arr[10])
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=click_x))
+    r.update()
+
+    assert wv._release_marks["imu"]["t_trace"] == pytest.approx(t_arr[10])
+    assert wv._release_marks["imu"]["source"] == "manual"
+    assert wv._armed_release_label is None
+    assert wv._release_buttons["imu"].cget("text") == "Mark Release"
+
+
+def test_plot_click_snaps_to_nearest_sample():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._on_arm_release("imu")
+
+    t_arr, _ = wv._traces["imu"]
+    # Click slightly off-grid, between sample 10 and 11 but closer to 10.
+    click_x = float(t_arr[10]) + 0.3 * (float(t_arr[11]) - float(t_arr[10]))
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=click_x))
+
+    assert wv._release_marks["imu"]["t_trace"] == pytest.approx(t_arr[10])
+
+
+def test_plot_click_without_arming_falls_back_to_video_seek():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    wv._fps = 30.0
+    wv._n_frames = 100
+    r.update()
+    # set_traces() auto-seeds via detect_release_t0 (Task 8); capture
+    # whatever it produced (if anything) as the baseline this click-without-
+    # arming must leave untouched, rather than assuming an empty
+    # _release_marks.
+    before = dict(wv._release_marks)
+
+    wv._on_plot_click(_FakeClickEvent(inaxes=wv._ax, xdata=1.0))
+    r.update()
+
+    assert wv._release_marks == before
+    assert wv._scrub_var.get() == pytest.approx(30.0)
+
+
+def test_remarking_same_milestone_does_not_leak_axvline():
+    """Regression: _draw_milestone_artist only ever removed the old text
+    annotation, never the old axvline, so re-marking the same milestone
+    within one session (without an intervening set_traces() call, which
+    would have wiped it via _ax.clear()) accumulated stray dashed lines."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+
+    wv._scrub_var.set(10)
+    wv._on_mark_milestone()
+    lines_after_first_mark = len(wv._ax.lines)
+
+    wv._scrub_var.set(20)
+    wv._on_mark_milestone()
+    r.update()
+
+    assert len(wv._ax.lines) == lines_after_first_mark, (
+        "re-marking the same milestone must replace, not accumulate, its axvline")
+
+
+def _release_traces(*labels, n=120, fps=30.0):
+    """Like _traces(), but with a real hold-then-swing release event (not a
+    pure sine from t=0) so detect_release_t0 has something to find."""
+    t = np.arange(n) / fps
+    out = {}
+    for i, label in enumerate(labels):
+        ang = np.full(n, 180.0)
+        hold = int(fps)
+        for j in range(hold, n):
+            tj = (j - hold) / fps
+            ang[j] = 165.0 - i + 15.0 * np.exp(-0.3 * tj) * np.cos(2 * np.pi * 0.9 * tj)
+        out[label] = (t, ang)
+    return out
+
+
+def test_set_traces_auto_seeds_release_mark_for_new_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_release_traces("imu"))
+    r.update()
+
+    assert "imu" in wv._release_marks
+    assert wv._release_marks["imu"]["source"] == "auto"
+    assert 0.8 <= wv._release_marks["imu"]["t_trace"] <= 1.2
+
+
+def test_set_traces_leaves_degenerate_trace_unmarked_no_exception():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    t = np.arange(90) / 30.0
+    flat = {"imu": (t, np.full(90, 180.0))}
+
+    wv.set_traces(flat)   # must not raise
+    r.update()
+
+    assert "imu" not in wv._release_marks
+
+
+def test_set_traces_does_not_reseed_already_marked_trace():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    traces = _release_traces("imu")
+    wv.set_traces(traces)
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 99.0, "source": "manual"}
+
+    wv.set_traces(traces)  # same trial's async-reload style re-call
+    r.update()
+
+    assert wv._release_marks["imu"] == {"t_trace": 99.0, "source": "manual"}
+
+
+def test_recompute_release_lags_fills_auto_field_from_marks():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "1.500"
+    assert wv._lag_provenance["imu"] == "auto"
+
+
+def test_recompute_release_lags_never_overwrites_manual_provenance():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "manual"}
+    wv._lag_override_vars["imu"].set("9.999")
+    wv._lag_provenance["imu"] = "manual"
+
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "9.999"
+
+
+def test_recompute_release_lags_clears_stale_auto_field_when_mark_removed():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._reference_var.set("optitrack")
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "manual"}
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+    wv._recompute_release_lags()
+    r.update()
+    assert wv._lag_override_vars["imu"].get() == "1.500"
+
+    del wv._release_marks["imu"]
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_recompute_release_lags_noop_when_neither_marked():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    # _traces()'s sinusoid is non-degenerate, so Task 8's set_traces()
+    # auto-seed already populated both labels' _release_marks; explicitly
+    # clear them here so this test actually exercises the "neither marked"
+    # case its name promises, rather than the auto-fill path.
+    wv._release_marks.pop("imu", None)
+    wv._release_marks.pop("optitrack", None)
+    wv._reference_var.set("optitrack")
+
+    wv._recompute_release_lags()   # must not raise
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_reference_change_triggers_release_lag_recompute():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 0.5, "source": "auto"}
+    wv._release_marks["optitrack"] = {"t_trace": 2.0, "source": "auto"}
+
+    wv._reference_var.set("optitrack")
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == "1.500"
+
+
+def test_reset_for_new_trial_clears_release_marks_and_lag_text():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+    wv._lag_provenance["imu"] = "manual"
+    wv._lag_override_vars["imu"].set("0.42")
+
+    wv.reset_for_new_trial()
+    r.update()
+
+    assert wv._release_marks == {}
+    assert wv._lag_provenance == {}
+    assert wv._lag_override_vars["imu"].get() == ""
+    assert wv._armed_release_label is None
+
+
+def test_reset_for_new_trial_then_set_traces_does_not_leak_old_lag_into_same_labels():
+    """Loading a genuinely new trial that happens to reuse the same trace
+    labels (imu, optitrack) must not silently carry over the previous
+    trial's release-derived lag value -- reset_for_new_trial() must run
+    before set_traces()'s own prev_lag-preservation reuses the same
+    StringVar object.
+
+    set_traces() legitimately auto-seeds fresh release marks for the new
+    trial (Task 8) and recomputes lag from them (Task 9) -- with this
+    helper's identical-shaped synthetic curves that fresh recompute lands
+    on a real "0.000", not a blank. That's new data, not a leak, so the
+    marks are cleared here (mirroring
+    test_recompute_release_lags_noop_when_neither_marked) to isolate the
+    actual invariant under test: the StringVar reused for "imu" across the
+    two set_traces() calls must not still be showing the old manual "7.0"."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu", "optitrack"))
+    r.update()
+    wv._lag_override_vars["imu"].set("7.0")
+    wv._lag_provenance["imu"] = "manual"
+
+    wv.reset_for_new_trial()
+    wv.set_traces(_traces("imu", "optitrack"))  # "new trial", same labels
+    wv._release_marks.pop("imu", None)
+    wv._release_marks.pop("optitrack", None)
+    wv._recompute_release_lags()
+    r.update()
+
+    assert wv._lag_override_vars["imu"].get() == ""
+
+
+def test_get_release_marks_returns_copy():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+
+    marks = wv.get_release_marks()
+    assert marks == {"imu": {"t_trace": 1.0, "source": "manual"}}
+    marks["imu"]["t_trace"] = 99.0
+    assert wv._release_marks["imu"]["t_trace"] == 1.0, "must be a shallow copy at the top level"
+
+
+def test_export_csv_menu_release_marks_entry_disabled_when_no_marks():
+    """set_traces() legitimately auto-seeds a release mark for "imu" from
+    this helper's detectable synthetic curve (Task 8), so the "no marks"
+    state has to be established explicitly here (mirroring
+    test_recompute_release_lags_noop_when_neither_marked) rather than
+    assumed to hold right after set_traces()."""
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _Ctrl())
+    wv.set_traces(_traces("imu"))
+    r.update()
+    wv._release_marks.pop("imu", None)
+    wv._update_export_csv_state()
+    r.update()
+
+    assert wv._export_csv_menu.entrycget(4, "state") == "disabled"
+
+    wv._release_marks["imu"] = {"t_trace": 1.0, "source": "manual"}
+    wv._update_export_csv_state()
+    r.update()
+
+    assert wv._export_csv_menu.entrycget(4, "state") == "normal"
