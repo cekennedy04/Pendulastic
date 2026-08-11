@@ -32,6 +32,7 @@ import workbench_engine as engine
 import pendulastic_storage
 import longitudinal_dashboard
 import pendulastic_pt_score
+import pt_report_common
 import workbench_style as ws
 
 MILESTONE_LABELS = ["Release Start", "First Peak Extension",
@@ -676,9 +677,15 @@ class WorkbenchView(tk.Frame):
             release_t = self._raw_diagnostics["accel_release_time_sec"]
             release_str = (f"t={release_t:.2f}s" if release_t is not None
                            else "unavailable (sample rate too low)")
+            hold_z = self._raw_diagnostics.get("hold_gravity_z_frac")
+            hold_ok = self._raw_diagnostics.get("hold_stillness_ok")
+            hold_z_str = f"{hold_z * 100:.0f}% on Z" if hold_z is not None else "unavailable"
+            hold_ok_str = ("n/a" if hold_ok is None
+                           else "passed" if hold_ok else "FAILED (handling detected)")
             self._raw_diag_label.configure(
                 text=f"Peak angular velocity (raw gyro): {peak_vel:.1f} deg/s   |   "
-                     f"Release detected (raw accel, 5Hz low-pass): {release_str}")
+                     f"Release detected (raw accel, 5Hz low-pass): {release_str}   |   "
+                     f"Hold gravity: {hold_z_str}   |   Hold stillness: {hold_ok_str}")
         else:
             self._raw_diag_label.configure(
                 text="(independent of PT score fusion -- none loaded)")
@@ -750,6 +757,33 @@ class WorkbenchView(tk.Frame):
     def _meta_ids(self) -> tuple:
         meta = self.controller.get_trial_meta()
         return meta.get("participant_id", ""), meta.get("session_date", "")
+
+    def _current_trial_key(self, opti_root=None, rec_root=None) -> Optional[str]:
+        """Derive the pt_report_common.trial_key() for the currently-loaded
+        trial, for the Flag Trial Quality dialog (Task 4). Prefers the
+        OptiTrack path (the convention pt_report_common._parse_trial_path
+        is most proven against), falling back to any one of the loaded
+        IMU component paths under Recordings/. Returns None if neither is
+        available or parses -- the dialog disables saving in that case.
+        opti_root/rec_root default to pt_report_common.OPTI_ROOT/REC_ROOT;
+        overridable for tests."""
+        opti_root = opti_root or pt_report_common.OPTI_ROOT
+        rec_root = rec_root or pt_report_common.REC_ROOT
+        meta = self.controller.get_trial_meta()
+
+        parsed = None
+        optitrack_path = meta.get("optitrack_path")
+        if optitrack_path:
+            parsed = pt_report_common._parse_trial_path(optitrack_path, opti_root)
+        if parsed is None:
+            imu_paths = meta.get("imu_paths") or {}
+            anchor = imu_paths.get("accel") or meta.get("imu_path")
+            if anchor:
+                parsed = pt_report_common._parse_trial_path(anchor, rec_root)
+        if parsed is None:
+            return None
+        return pt_report_common.trial_key(
+            parsed["participant"], parsed["leg"], parsed["condition"], parsed["trial"])
 
     def _default_csv_filename(self, prefix: str) -> str:
         participant_id, session_date = self._meta_ids()
