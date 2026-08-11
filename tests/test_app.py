@@ -2286,3 +2286,62 @@ def test_on_delete_trial_leaves_gap_in_numbering(tmp_path, monkeypatch):
         assert int(app._acq.trial_var.get()) == 4   # untouched by delete
     finally:
         app.destroy()
+
+
+def test_on_view_trial_shows_post_processing_panel():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1},
+            "source_angles": {"imu": [170.0, 165.0]}, "fps": 30.0,
+            "base_filename": "PID_P1_LEG_Right_MS_TRIAL_1.csv",
+            "file_paths": [],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.on_view_trial(1)
+        app.update()
+        assert app._post.winfo_ismapped()
+        assert not app._acq.winfo_ismapped()
+        assert app._post._from_trial_list is True
+    finally:
+        app.destroy()
+
+
+def test_on_view_trial_ignores_unknown_trial():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.pack(fill="both", expand=True)
+        app.on_view_trial(99)
+        app.update()
+        assert app._acq.winfo_ismapped()
+        assert not app._post.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_trial_list_returns_to_acquisition_without_incrementing():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.trial_var.set("4")
+        app._acq._multi_trial_var.set(True)
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [],
+        }]
+        app._acq.set_multi_trial_list(app._session_trials_view())
+        app._post.pack(fill="both", expand=True)
+        app.on_back_to_trial_list()
+        app.update()
+        assert app._acq.winfo_ismapped()
+        assert not app._post.winfo_ismapped()
+        assert int(app._acq.trial_var.get()) == 4
+        # The trial list survives the round trip -- on_back_to_trial_list
+        # must not clear or touch it.
+        assert len(app._acq._trial_rows_data) == 1
+    finally:
+        app.destroy()
