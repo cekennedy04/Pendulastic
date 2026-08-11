@@ -40,6 +40,7 @@ import warnings
 from typing import Optional
 
 import workbench_engine as engine
+import pt_report_common
 
 BASE_DIR = r"C:\Users\cladi\Pendulastic"
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
@@ -221,22 +222,53 @@ def _parse_trial_identifiers(imu_path: str) -> dict:
     return {"participant": participant, "position": position, "trial": trial}
 
 
+def _trial_key_for(imu_path: str, optitrack_path):
+    """Derive the pt_report_common.trial_key() for one discovered trial,
+    reusing pt_report_common._parse_trial_path -- the same
+    participant/leg/condition/trial parser excluded_trials.json's and
+    trial_quality_tags.json's existing entries were authored against.
+    Prefers the matched OptiTrack path (the convention this parser is most
+    proven against), falling back to the IMU path under REC_ROOT when
+    there's no OptiTrack match. Returns None if neither path parses --
+    e.g. an archived-data nesting collision (see _parse_trial_path's own
+    docstring) -- in which case this trial is simply never exclude-able by
+    key (matches current behavior: it was never checked against
+    excluded_trials.json at all before this change)."""
+    parsed = None
+    if optitrack_path:
+        parsed = pt_report_common._parse_trial_path(optitrack_path, OPTI_ROOT)
+    if parsed is None:
+        parsed = pt_report_common._parse_trial_path(imu_path, REC_ROOT)
+    if parsed is None:
+        return None
+    return pt_report_common.trial_key(
+        parsed["participant"], parsed["leg"], parsed["condition"], parsed["trial"])
+
+
 def discover_trials() -> list:
     """Glob Recordings/**/Trial_*_imu.csv, derive each trial's 4 component
     sibling paths and matching OptiTrack path. Trials with no OptiTrack
     match are still returned (optitrack_path=None) so main() can count and
     log them as skipped rather than silently dropping them from the
-    discovery output."""
+    discovery output. Trials present in pt_report_common.load_excluded_trials()
+    are dropped entirely (2026-08-11 addition) -- this pipeline previously
+    did not respect that registry at all, unlike pt_report_common's own
+    discover_all_trials()."""
+    excluded = pt_report_common.load_excluded_trials()
     trials = []
     pattern = os.path.join(REC_ROOT, "**", "Trial_*_imu.csv")
     for imu_path in sorted(glob.glob(pattern, recursive=True)):
         ids = _parse_trial_identifiers(imu_path)
         component_paths = derive_component_paths(imu_path)
         optitrack_path = find_optitrack_match(imu_path, REC_ROOT, OPTI_ROOT)
+        trial_key = _trial_key_for(imu_path, optitrack_path)
+        if trial_key is not None and trial_key in excluded:
+            continue
         trials.append({
             **ids,
             **component_paths,
             "optitrack_path": optitrack_path,
+            "trial_key": trial_key,
         })
     return trials
 
@@ -253,6 +285,7 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
 
     row = {
         "participant": ids["participant"],
+        "trial_key": ids.get("trial_key"),
         "position": ids["position"],
         "trial": ids["trial"],
         "imu_path": imu_path,
@@ -306,9 +339,47 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
     return row
 
 
-_FIELDNAMES = ["participant", "position", "trial", "imu_path", "optitrack_path",
+_FIELDNAMES = ["participant", "trial_key", "position", "trial", "imu_path", "optitrack_path",
               "status", "rmse_deg", "mae_deg", "bias_deg", "lag_sec",
               "n_samples", "optitrack_method", "error"]
+
+
+def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) -> dict:
+    """Given evaluate_trial() rows (each must have 'status', 'rmse_deg',
+    'trial_key') and trial_quality_tags.json's loaded dict, compute RMSE
+    stats over all successfully-scored rows, plus the same stats
+    recomputed with each present tag category's trials excluded. Returns
+    {"all": {...} | None, "excluding_<category>": {...} | None, ...} --
+    each present value is {"n", "mean", "median", "n_under_goal"}, or None
+    if n==0 after filtering. Pure function (no I/O) so it's testable
+    independent of a real corpus (design spec Section 6)."""
+    ok_rows = [r for r in rows if r["status"] == "ok"]
+
+    def _stats(subset):
+        vals = [r["rmse_deg"] for r in subset]
+        if not vals:
+            return None
+        return {
+            "n": len(vals),
+            "mean": statistics.mean(vals),
+            "median": statistics.median(vals),
+            "n_under_goal": sum(1 for v in vals if v < goal_deg),
+        }
+
+    result = {"all": _stats(ok_rows)}
+    categories_present = {
+        quality_tags[r["trial_key"]]["category"]
+        for r in ok_rows
+        if r.get("trial_key") and r["trial_key"] in quality_tags
+    }
+    for category in sorted(categories_present):
+        subset = [
+            r for r in ok_rows
+            if not (r.get("trial_key") and r["trial_key"] in quality_tags
+                   and quality_tags[r["trial_key"]]["category"] == category)
+        ]
+        result[f"excluding_{category}"] = _stats(subset)
+    return result
 
 
 def main():
@@ -355,6 +426,20 @@ def main():
               f"{RMSE_GOAL_DEG}-degree goal.")
     else:
         print("No successful trials to summarize.")
+
+    quality_tags = pt_report_common.load_quality_tags()
+    strat = compute_stratified_stats(rows, quality_tags, RMSE_GOAL_DEG)
+    if strat["all"] is not None:
+        print(f"\nStratified (RMSE < {RMSE_GOAL_DEG} deg goal):")
+        s = strat["all"]
+        print(f"  all trials           n={s['n']:3d}  mean={s['mean']:6.2f}  "
+              f"median={s['median']:6.2f}  {s['n_under_goal']}/{s['n']} under goal")
+        for key in sorted(k for k in strat if k != "all"):
+            s = strat[key]
+            if s is None:
+                continue
+            print(f"  {key:<20s} n={s['n']:3d}  mean={s['mean']:6.2f}  "
+                  f"median={s['median']:6.2f}  {s['n_under_goal']}/{s['n']} under goal")
 
 
 if __name__ == "__main__":
