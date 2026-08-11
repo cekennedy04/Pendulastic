@@ -2198,3 +2198,91 @@ def test_on_stop_no_placeholder_when_multi_trial_off(monkeypatch):
         assert app._session_trials == []
     finally:
         app.destroy()
+
+
+def test_on_delete_trial_removes_files_and_entry(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        f1 = tmp_path / "trial1_imu.csv"
+        f1.write_text("data")
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [str(f1)],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.on_delete_trial(1)
+        app.update()
+        assert not f1.exists()
+        assert app._session_trials == []
+    finally:
+        app.destroy()
+
+
+def test_on_delete_trial_ignores_missing_files(tmp_path, monkeypatch):
+    """A file already gone (e.g. hand-deleted) must not raise."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        missing = str(tmp_path / "already_gone.csv")
+        app._session_trials = [{
+            "trial_num": 2, "sources": ["imu"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [missing],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.on_delete_trial(2)
+        app.update()
+        assert app._session_trials == []
+    finally:
+        app.destroy()
+
+
+def test_on_delete_trial_unknown_trial_num_is_noop():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.on_delete_trial(99)
+        app.update()
+        assert len(app._session_trials) == 1
+    finally:
+        app.destroy()
+
+
+def test_on_delete_trial_leaves_gap_in_numbering(tmp_path, monkeypatch):
+    """Deleting Trial 2 of {1,2,3} must not renumber 3 down to 2, and a
+    freshly-recorded next trial (driven by the spinner, untouched by
+    delete) must not reuse 2."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        app._acq.trial_var.set("4")   # spinner already past trial 3
+        app._session_trials = [
+            {"trial_num": 1, "sources": ["imu"], "status": "saved",
+             "meta": {}, "source_angles": {}, "fps": 30.0,
+             "base_filename": "a.csv", "file_paths": []},
+            {"trial_num": 2, "sources": ["imu"], "status": "saved",
+             "meta": {}, "source_angles": {}, "fps": 30.0,
+             "base_filename": "b.csv", "file_paths": []},
+            {"trial_num": 3, "sources": ["imu"], "status": "saved",
+             "meta": {}, "source_angles": {}, "fps": 30.0,
+             "base_filename": "c.csv", "file_paths": []},
+        ]
+        app._acq.pack(fill="both", expand=True)
+        app.on_delete_trial(2)
+        app.update()
+        remaining = sorted(e["trial_num"] for e in app._session_trials)
+        assert remaining == [1, 3]
+        assert int(app._acq.trial_var.get()) == 4   # untouched by delete
+    finally:
+        app.destroy()
