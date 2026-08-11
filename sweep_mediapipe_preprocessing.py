@@ -114,9 +114,21 @@ def _process_frame(frame_bgr, i, fps, rotate_deg, landmarker, candidate, tracker
     return row
 
 
-def extract_landmarks_for_candidate(video_path, leg, model_path, candidate):
-    """Runs one video through MediaPipe once for the given candidate's
+def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate):
+    """Runs one video through MediaPipe for the given candidate's
     preprocessing, returning per-frame dicts (see _process_frame).
+
+    Takes an already-open `landmarker` rather than a model_path: the caller
+    (main()) opens one landmarker per CANDIDATE and reuses it across every
+    trial, instead of this function creating-and-closing a fresh one per
+    trial. That reuse is what makes this function safe to call ~135 times
+    (once per trial) without exhausting native memory -- MediaPipe's Tasks
+    Python API has real-world reports of not fully releasing native memory
+    across many create/destroy cycles of PoseLandmarker within one process
+    (even though `.close()`/the `with` block is scoped correctly at the
+    Python level), and running_mode=IMAGE means `.detect()` carries no
+    cross-image state, so reusing one instance across trials is also
+    semantically safe, not just faster.
 
     Only the "crop" candidate buffers the whole decoded video into a list
     up front -- it genuinely needs every frame before mp_pre.crop_to_moving_leg
@@ -125,8 +137,7 @@ def extract_landmarks_for_candidate(video_path, leg, model_path, candidate):
     sweep_mediapipe_config.py's existing pattern), since holding a full
     1080p 30s trial's decoded frames in RAM (~5.6GB) five times per trial --
     once per candidate -- when four of the five candidates don't need it is
-    wasteful and risks an OOM that would otherwise get silently swallowed
-    and cached as an ordinary scoring failure."""
+    wasteful."""
     h_idx, k_idx, a_idx = bm.MP_LEG_IDX[leg]
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -148,23 +159,21 @@ def extract_landmarks_for_candidate(video_path, leg, model_path, candidate):
             return []
         raw_frames = mp_pre.crop_to_moving_leg(raw_frames, fps)
 
-        with _make_landmarker(model_path) as landmarker:
-            for i, frame_bgr in enumerate(raw_frames):
-                frames_out.append(_process_frame(
-                    frame_bgr, i, fps, rotate_deg, landmarker, candidate,
-                    tracker, h_idx, k_idx, a_idx))
-        return frames_out
-
-    with _make_landmarker(model_path) as landmarker:
-        i = 0
-        while True:
-            ok, frame_bgr = cap.read()
-            if not ok:
-                break
+        for i, frame_bgr in enumerate(raw_frames):
             frames_out.append(_process_frame(
                 frame_bgr, i, fps, rotate_deg, landmarker, candidate,
                 tracker, h_idx, k_idx, a_idx))
-            i += 1
+        return frames_out
+
+    i = 0
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+        frames_out.append(_process_frame(
+            frame_bgr, i, fps, rotate_deg, landmarker, candidate,
+            tracker, h_idx, k_idx, a_idx))
+        i += 1
     cap.release()
     return frames_out
 
@@ -182,9 +191,9 @@ def angles_from_raw(frames, vis_thresh):
     return np.array(t_list), np.array(ang_list)
 
 
-def score_candidate(video_path, leg, model_path, candidate, opti_t, opti_ang,
+def score_candidate(video_path, leg, landmarker, candidate, opti_t, opti_ang,
                     vis_thresh=VIS_THRESH):
-    frames = extract_landmarks_for_candidate(video_path, leg, model_path, candidate)
+    frames = extract_landmarks_for_candidate(video_path, leg, landmarker, candidate)
     t_m, ang_m = angles_from_raw(frames, vis_thresh)
     if np.count_nonzero(np.isfinite(ang_m)) < 10:
         return None
@@ -294,32 +303,43 @@ def main():
 
     for candidate in CANDIDATES:
         rmses = []
-        for trial in trials:
-            try:
-                opti_t, opti_ang = pt.load_optitrack(trial["optitrack_path"])
-            except Exception as e:
-                print(f"  [skip] {trial['trial_key']}: OptiTrack load failed: {e}")
-                continue
-
-            cache_key = _cache_key(trial, candidate["key"], model_path, stat_cache, impl_fp)
-            if cache_key in cache:
-                rmse = cache[cache_key]
-            else:
+        # One landmarker per CANDIDATE (not per trial): MediaPipe's Tasks
+        # Python API has real-world reports of not fully releasing native
+        # memory across many PoseLandmarker create/destroy cycles within one
+        # process, even though each per-trial `with` block closed correctly
+        # at the Python level. Over ~135 trials x 5 candidates that was up to
+        # 675 create/destroy cycles and caused genuine OS-level OOM partway
+        # through a real 135-trial run. running_mode=IMAGE means .detect()
+        # carries no cross-image state, so reusing one instance across every
+        # trial of a candidate is semantically safe, not just faster.
+        with _make_landmarker(model_path) as landmarker:
+            for trial in trials:
                 try:
-                    rmse = score_candidate(trial["video_path"], trial["leg"], model_path,
-                                           candidate, opti_t, opti_ang)
+                    opti_t, opti_ang = pt.load_optitrack(trial["optitrack_path"])
                 except Exception as e:
-                    print(f"  [error] {trial['trial_key']} / {candidate['key']}: {e}")
-                    rmse = None
-                # Only memoize a real result. A None here can be a transient
-                # failure (file lock, OOM, a momentarily-missing model file)
-                # -- caching it would permanently skip this (trial,
-                # candidate) pair on every future run until some hash
-                # changes, rather than retrying it next time.
+                    print(f"  [skip] {trial['trial_key']}: OptiTrack load failed: {e}")
+                    continue
+
+                cache_key = _cache_key(trial, candidate["key"], model_path, stat_cache, impl_fp)
+                if cache_key in cache:
+                    rmse = cache[cache_key]
+                else:
+                    try:
+                        rmse = score_candidate(trial["video_path"], trial["leg"], landmarker,
+                                               candidate, opti_t, opti_ang)
+                    except Exception as e:
+                        print(f"  [error] {trial['trial_key']} / {candidate['key']}: {e}")
+                        rmse = None
+                    # Only memoize a real result. A None here can be a
+                    # transient failure (file lock, OOM, a momentarily-
+                    # missing model file) -- caching it would permanently
+                    # skip this (trial, candidate) pair on every future run
+                    # until some hash changes, rather than retrying it next
+                    # time.
+                    if rmse is not None:
+                        cache[cache_key] = rmse
                 if rmse is not None:
-                    cache[cache_key] = rmse
-            if rmse is not None:
-                rmses.append(rmse)
+                    rmses.append(rmse)
 
         _save_cache(cache)
         summary = _summarize_candidate(rmses, len(trials))
