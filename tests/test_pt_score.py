@@ -501,3 +501,56 @@ def test_draw_pt_annotations_manual_release_label():
     artists = draw_pt_annotations(ax, params, manual_release=True)
     texts = [a.get_text() for a in artists if hasattr(a, "get_text")]
     assert any("manual" in t for t in texts)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# load_hpe_model_curves: return_rejected accounting mode
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_load_hpe_model_curves_default_unchanged_when_return_rejected_false():
+    """return_rejected=False (the default) must keep today's exact return
+    shape -- a bare list, not a tuple -- so every existing caller
+    (pendulastic_pt_score.py's own single-trial plots) is unaffected."""
+    import pendulastic_pt_score as pt
+    t = np.linspace(0, 2, 60)
+    angle = 180 - 40 * np.sin(np.pi * t / 2) * (t < 1.0)
+    result = pt.load_hpe_model_curves("999_left_pre", "1", "1", t, angle, 180.0, csv_files=[])
+    assert isinstance(result, list)
+    assert result == []
+
+
+def test_load_hpe_model_curves_return_rejected_true_gives_tuple(tmp_path, monkeypatch):
+    """return_rejected=True must give (accepted, rejected), both lists,
+    even when nothing was ever discovered (no csv_files, no replay
+    fallback) -- rejected is [] in that case, not a crash."""
+    import pendulastic_pt_score as pt
+    t = np.linspace(0, 2, 60)
+    angle = 180 - 40 * np.sin(np.pi * t / 2) * (t < 1.0)
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, angle, 180.0, csv_files=[], return_rejected=True)
+    assert accepted == []
+    assert rejected == []
+
+
+def test_load_hpe_model_curves_return_rejected_reports_did_not_track_swing(tmp_path):
+    """A candidate CSV whose knee_angle_deg never leaves neutral (flat
+    signal) fails the swing-tracking quality gate -- with
+    return_rejected=True this must show up in `rejected` with a reason,
+    not silently vanish the way it does today."""
+    import pendulastic_pt_score as pt
+    import pandas as pd
+
+    t_opti = np.linspace(0, 2, 60)
+    angle_opti = 180 - 40 * np.sin(np.pi * t_opti / 2) * (t_opti < 1.0)
+
+    flat_csv = tmp_path / "P_T_1_mediapipe.csv"
+    t_m = np.linspace(0, 2, 60)
+    pd.DataFrame({"time_sec": t_m, "knee_angle_deg": np.full(60, 180.0)}).to_csv(flat_csv, index=False)
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t_opti, angle_opti, 180.0,
+        csv_files=[str(flat_csv)], return_rejected=True)
+    assert accepted == []
+    assert len(rejected) == 1
+    assert rejected[0]["name"] == "mediapipe"
+    assert rejected[0]["reason"] == "did_not_track_swing"
