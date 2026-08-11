@@ -129,13 +129,21 @@ def release_aligned_hpe_curve(mdl_t, mdl_ang):
     window too small to fit, rather than raising, matching how
     _detect_release() already tolerates short input.
 
-    Known caveat (2026-08-10 full-report-hpe-accuracy design spec §5.1):
-    pt._detect_release silently returns its own baseline-window boundary
-    index when no real threshold crossing is found, rather than raising --
-    a flat/degenerate curve that passes the validation here but has no
-    real release can still silently misalign. Tracked by the separate
-    2026-08-10 release-start-alignment spec's still-unimplemented fix,
-    not addressed here."""
+    Early-release guard (2026-08-10 full-report-hpe-accuracy design spec
+    §5.1, addressed here after real-data verification against participant
+    14): pt._detect_release's adaptive threshold can fire almost
+    immediately when a curve's very first samples are themselves noisy --
+    e.g. unreliable early MediaPipe pose tracking -- rather than a real
+    pre-release hold. Using that index as the alignment anchor confirmed
+    shifting a real MediaPipe curve to physically implausible knee angles
+    (~260 degrees, against OptiTrack's own ~150 degree range for the same
+    trial). The global constraint on this plan forbids modifying
+    _detect_release's own algorithm, so this function instead refuses to
+    trust an anchor with fewer than MIN_BASELINE_SAMPLES pre-release
+    samples -- too few to represent a real hold baseline -- and returns
+    None (same "unavailable for this timepoint" path as every other
+    rejection here) rather than a silently-misaligned curve."""
+    MIN_BASELINE_SAMPLES = 4
     mask = np.isfinite(mdl_ang) & np.isfinite(mdl_t)
     if mask.sum() < 4:
         return None
@@ -146,6 +154,8 @@ def release_aligned_hpe_curve(mdl_t, mdl_ang):
     a_smooth = pt._sg(a_masked, w=15, p=3)
     release_idx = pt._detect_release(t_masked, a_smooth)
     release_idx = max(0, min(release_idx, len(t_masked) - 1))
+    if release_idx < MIN_BASELINE_SAMPLES:
+        return None
     t_release = t_masked[release_idx]
     y_off = 180.0 - float(a_smooth[release_idx])
     t_plot = t_masked - t_release
