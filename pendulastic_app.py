@@ -2564,6 +2564,7 @@ class App(tk.Tk):
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
         self._pending_review: dict     = {}
         self._session_trials: list     = []
+        self._pending_trial_entry: Optional[dict] = None
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
@@ -2678,7 +2679,7 @@ class App(tk.Tk):
 
         meta           = self._acq.get_metadata()
         if self._is_multi_trial_mode():
-            self._session_trials.append({
+            entry = {
                 "trial_num": meta["trial"],
                 "sources": list(self._active_sources),
                 "status": "processing",
@@ -2687,7 +2688,10 @@ class App(tk.Tk):
                 "fps": None,
                 "base_filename": None,
                 "file_paths": self._trial_file_paths(meta, self._active_sources),
-            })
+            }
+            self._session_trials.append(entry)
+            self._pending_trial_entry = entry
+            self._acq.set_multi_trial_list(self._session_trials_view())
         source_angles: dict = {}
         pending_rgb    = False
         imu_raw_log_path: Optional[str] = None
@@ -3467,13 +3471,13 @@ class App(tk.Tk):
             self._show_recording_saved_confirmation(source_angles, meta, base_fn)
 
     def _finish_trial_multi_mode(self, source_angles: dict, meta: dict, base_fn: str) -> None:
-        entry = next((e for e in self._session_trials
-                     if e["trial_num"] == meta["trial"]), None)
+        entry = self._pending_trial_entry
         if entry is not None:
             entry["status"] = "saved"
             entry["source_angles"] = source_angles
             entry["fps"] = self._fps_for(meta)
             entry["base_filename"] = base_fn
+            self._pending_trial_entry = None
         self._acq.increment_trial()
         self._acq.set_multi_trial_list(self._session_trials_view())
         self._acq.enter_idle()
@@ -3488,11 +3492,19 @@ class App(tk.Tk):
                      if e["trial_num"] == trial_num), None)
         if entry is None:
             return
+        errors = []
         for path in entry["file_paths"]:
             try:
                 os.remove(path)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                errors.append((path, e))
+        if errors:
+            self._acq.status_var.set(
+                f"Trial {trial_num}: could not delete all files "
+                f"({os.path.basename(errors[0][0])}: {errors[0][1]}) — not removed.")
+            return
         self._session_trials.remove(entry)
         self._acq.set_multi_trial_list(self._session_trials_view())
 

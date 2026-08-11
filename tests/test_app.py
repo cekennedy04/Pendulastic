@@ -575,11 +575,17 @@ def test_finish_trial_multi_mode_updates_entry_and_increments_trial():
     try:
         app._acq.trial_var.set("1")
         meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._session_trials = [{
+        entry = {
             "trial_num": 1, "sources": ["imu"], "status": "processing",
             "meta": meta, "source_angles": None, "fps": None,
             "base_filename": None, "file_paths": [],
-        }]
+        }
+        app._session_trials = [entry]
+        # _finish_trial_multi_mode() finalizes whichever entry on_stop()
+        # marked as pending -- it no longer looks the entry up by
+        # trial_num (see test_finish_trial_multi_mode_uses_pending_entry_
+        # not_trial_num_lookup for why).
+        app._pending_trial_entry = entry
         app._finish_trial_multi_mode(
             {"imu": [1.0, 2.0]}, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
         app.update()
@@ -588,6 +594,45 @@ def test_finish_trial_multi_mode_updates_entry_and_increments_trial():
         assert entry["source_angles"] == {"imu": [1.0, 2.0]}
         assert entry["base_filename"] == "PID_P1_LEG_Right_MS_TRIAL_1.csv"
         assert int(app._acq.trial_var.get()) == 2
+        assert app._pending_trial_entry is None
+    finally:
+        app.destroy()
+
+
+def test_finish_trial_multi_mode_uses_pending_entry_not_trial_num_lookup():
+    """Regression test: if the trial-number spinner is wound back to a
+    number already present in _session_trials (allowed -- the spinner is
+    user-editable between trials, and _session_trials is only cleared on
+    return to mode-select), _finish_trial_multi_mode() must finalize the
+    NEW recording via _pending_trial_entry, not the first (older, wrong)
+    entry a trial_num lookup would find."""
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.trial_var.set("1")
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        old_entry = {
+            "trial_num": 1, "sources": ["imu"], "status": "saved",
+            "meta": {"pid": "P0"}, "source_angles": {"imu": [999.0]},
+            "fps": 60.0, "base_filename": "OLD.csv", "file_paths": [],
+        }
+        new_entry = {
+            "trial_num": 1, "sources": ["rgb"], "status": "processing",
+            "meta": meta, "source_angles": None, "fps": None,
+            "base_filename": None, "file_paths": [],
+        }
+        app._session_trials = [old_entry, new_entry]
+        app._pending_trial_entry = new_entry
+        app._finish_trial_multi_mode(
+            {"rgb": [1.0, 2.0]}, meta, "NEW.csv")
+        app.update()
+        assert old_entry["status"] == "saved"
+        assert old_entry["source_angles"] == {"imu": [999.0]}
+        assert old_entry["base_filename"] == "OLD.csv"
+        assert new_entry["status"] == "saved"
+        assert new_entry["source_angles"] == {"rgb": [1.0, 2.0]}
+        assert new_entry["base_filename"] == "NEW.csv"
+        assert app._pending_trial_entry is None
     finally:
         app.destroy()
 
@@ -2200,6 +2245,57 @@ def test_on_stop_no_placeholder_when_multi_trial_off(monkeypatch):
         app.destroy()
 
 
+def test_on_stop_refreshes_trial_list_widget_synchronously(monkeypatch):
+    """End-to-end: drives the real App.on_stop() (no internal methods
+    stubbed) with no active sources -- the synchronous no-background-thread
+    path, which finalizes the trial within the same call (Task 4 behavior).
+
+    Asserts the finalized state (status == "saved", one widget row
+    reflecting it) AND -- by spying on every set_multi_trial_list() call
+    made during on_stop() -- that the widget was refreshed with the entry
+    in its "processing" state at some point before it was finalized to
+    "saved". That intermediate refresh is exactly what Finding 1 was
+    missing: _finish_trial_multi_mode() already refreshes the widget once
+    at the very end, so asserting only the post-call state would pass even
+    without the fix. Without the fix, set_multi_trial_list() is called
+    exactly once (at the end, already "saved") and this test fails."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq.trial_var.set("1")
+        app._acq._multi_trial_var.set(True)
+        app._active_sources = []
+
+        calls = []
+        orig_set_multi_trial_list = app._acq.set_multi_trial_list
+
+        def spy(trials):
+            calls.append([dict(t) for t in trials])
+            orig_set_multi_trial_list(trials)
+
+        monkeypatch.setattr(app._acq, "set_multi_trial_list", spy)
+
+        app.on_stop()
+        app.update()
+
+        assert len(app._session_trials) == 1
+        entry = app._session_trials[0]
+        assert entry["trial_num"] == 1
+        assert entry["status"] == "saved"
+
+        assert any(c and c[0]["status"] == "processing" for c in calls), (
+            "widget was never refreshed while the trial was 'processing' -- "
+            "the placeholder row never rendered before finalization")
+
+        assert len(app._acq._trial_rows_data) == 1
+        assert app._acq._trial_rows_data[0]["trial_num"] == 1
+        assert app._acq._trial_rows_data[0]["status"] == "saved"
+    finally:
+        app.destroy()
+
+
 def test_on_delete_trial_removes_files_and_entry(tmp_path, monkeypatch):
     import pendulastic_app as _m
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
@@ -2237,6 +2333,44 @@ def test_on_delete_trial_ignores_missing_files(tmp_path, monkeypatch):
         app.on_delete_trial(2)
         app.update()
         assert app._session_trials == []
+    finally:
+        app.destroy()
+
+
+def test_on_delete_trial_reports_real_error_and_keeps_entry(tmp_path, monkeypatch):
+    """A real deletion failure (e.g. a file still open on Windows, raised as
+    PermissionError -- a non-FileNotFoundError OSError) must not be silently
+    swallowed: the entry must stay in _session_trials (and its row on
+    screen), and the clinician must see a status-bar message saying the
+    trial wasn't fully deleted, instead of the row just vanishing while the
+    file is still on disk."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        locked = tmp_path / "locked.avi"
+        locked.write_text("data")
+        real_remove = os.remove
+
+        def fake_remove(path):
+            if str(path) == str(locked):
+                raise PermissionError("file in use")
+            return real_remove(path)
+
+        monkeypatch.setattr(os, "remove", fake_remove)
+        app._session_trials = [{
+            "trial_num": 3, "sources": ["rgb"], "status": "saved",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "x.csv", "file_paths": [str(locked)],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.on_delete_trial(3)
+        app.update()
+        assert len(app._session_trials) == 1
+        assert locked.exists()
+        status = app._acq.status_var.get()
+        assert "3" in status
+        assert status != ""
     finally:
         app.destroy()
 
