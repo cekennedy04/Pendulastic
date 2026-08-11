@@ -400,6 +400,54 @@ def test_draw_row5_table_shows_per_source_paired_baselines(monkeypatch):
     plt.close(fig)
 
 
+def test_draw_row5_table_truncates_clinician_mas_to_two_most_recent_with_more_note(monkeypatch):
+    """Task 14's manual-verification step calls for confirming this
+    truncation policy against a real dense participant, but no
+    participant in the current mas_scores.csv has 3+ MAS rows for the
+    same leg/condition to exercise it -- a real-data gap, not a code
+    gap. Covered directly here instead: clinician_mas_matches() can
+    return more than 2 matches (it's the untruncated source, per its own
+    docstring); the table must show only the 2 most recent with a
+    "+N more" note, while write_clinician_mas_sidecar (Task 6) still
+    gets the full, untruncated list via this function's return value."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    many_matches = [
+        {"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "12/1/2026"},
+        {"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "8/6/2026"},
+        {"participant": "13", "leg": "left", "condition": "pre", "mas_grade": "2",
+         "assessed_by": "WD", "assessed_date": "1/1/2026"},
+    ]
+
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+    monkeypatch.setattr(common, "clinician_mas_matches", lambda pid, leg, cond: many_matches)
+
+    rec = {"pid": "13_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+          "neutral_deg_raw": 180.0, "mediapipe_curve": None, "imu_curve": None}
+    by_leg_tp = {("left", "pre"): [rec]}
+    timepoints = [("pre", "Pre", "#d62728")]
+
+    fig, ax = plt.subplots()
+    matches = common._draw_row5_table(ax, "left", by_leg_tp, timepoints, "13")
+
+    # write_clinician_mas_sidecar's contract: the returned matches are
+    # untruncated, regardless of what the table itself displays.
+    assert matches[("left", "pre")] == many_matches
+
+    tbl = ax.tables[0]
+    clin_cell_text = tbl.get_celld()[(1, 6)].get_text().get_text()
+    assert "+1 more" in clin_cell_text
+    assert "1 (12/1/2026)" in clin_cell_text
+    assert "1+ (8/6/2026)" in clin_cell_text
+    assert "2 (1/1/2026)" not in clin_cell_text
+    plt.close(fig)
+
+
 def test_draw_row5_table_three_stage_accounting_distinguishes_gate_from_scoring(monkeypatch):
     """The whole point of Task 1's return_rejected mode: a trial can have a
     candidate CSV that gets REJECTED by the quality gate (never reaches
