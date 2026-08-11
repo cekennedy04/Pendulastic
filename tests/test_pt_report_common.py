@@ -68,6 +68,36 @@ def test_release_aligned_hpe_curve_rejects_non_monotonic_time():
     assert result is None
 
 
+def test_release_aligned_hpe_curve_rejects_release_index_too_early_for_a_reliable_baseline(monkeypatch):
+    """Confirmed against real participant data (2026-08-10 full-report-hpe-
+    accuracy plan, Task 14 manual verification): when _detect_release's
+    adaptive threshold fires almost immediately -- a handful of noisy
+    samples at the very start of a curve, not a real pre-release hold --
+    using that index as the alignment anchor shifted a real MediaPipe
+    curve to physically implausible knee angles (~260 degrees, vs
+    OptiTrack's ~150). The global constraint forbids modifying
+    _detect_release's own algorithm, so release_aligned_hpe_curve instead
+    refuses to trust an anchor with too few pre-release samples to
+    represent a real hold baseline."""
+    import numpy as np
+    t = np.linspace(0, 3, 90)
+    ang = 140.0 + 20.0 * np.sin(t)
+    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, a_: 1)
+    result = common.release_aligned_hpe_curve(t, ang)
+    assert result is None
+
+
+def test_release_aligned_hpe_curve_keeps_working_when_release_index_has_enough_baseline(monkeypatch):
+    """The early-release guard must not reject the ordinary case -- plenty
+    of samples precede a normally-detected release."""
+    import numpy as np
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, a_: 30)
+    result = common.release_aligned_hpe_curve(t, ang)
+    assert result is not None
+
+
 def test_trial_candidates_classifies_invalid_path(tmp_path, monkeypatch):
     invalid_dir = tmp_path / "Participant_13_left" / "INVALID_bad_run"
     invalid_dir.mkdir(parents=True)
