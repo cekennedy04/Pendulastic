@@ -552,11 +552,16 @@ def test_transition_to_review_multi_trial_mode_skips_post_panel(monkeypatch):
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._session_trials = [{
+        entry = {
             "trial_num": 1, "sources": ["imu"], "status": "processing",
             "meta": meta, "source_angles": None, "fps": None,
             "base_filename": None, "file_paths": [],
-        }]
+        }
+        app._session_trials = [entry]
+        # _finish_trial_multi_mode() (reached via _transition_to_review()) only
+        # finalizes when App._pending_trial_entry is set -- the real on_stop()
+        # call path sets it when the placeholder is appended.
+        app._pending_trial_entry = entry
         app._acq.pack(fill="both", expand=True)
         app.update()
         app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
@@ -633,6 +638,78 @@ def test_finish_trial_multi_mode_uses_pending_entry_not_trial_num_lookup():
         assert new_entry["source_angles"] == {"rgb": [1.0, 2.0]}
         assert new_entry["base_filename"] == "NEW.csv"
         assert app._pending_trial_entry is None
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_mode_select_clears_pending_trial_entry():
+    """If a background trial (RGB MediaPipe tracking / IMU tuning) is still
+    processing when the clinician clicks '<- Mode Select' -- enter_processing()
+    does not disable btn_back, so this is reachable -- on_back_to_mode_select()
+    must clear _pending_trial_entry too, not just _session_trials. Otherwise
+    the background thread's late-arriving _finish_trial_multi_mode() call
+    would still see a non-None pending entry and act on it."""
+    from pendulastic_app import App
+    app = App()
+    try:
+        entry = {
+            "trial_num": 1, "sources": ["rgb"], "status": "processing",
+            "meta": {}, "source_angles": None, "fps": None,
+            "base_filename": None, "file_paths": [],
+        }
+        app._session_trials = [entry]
+        app._pending_trial_entry = entry
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._pending_trial_entry is None
+    finally:
+        app.destroy()
+
+
+def test_finish_trial_multi_mode_noop_after_navigating_to_mode_select():
+    """Simulates a background trial (e.g. RGB MediaPipe tracking) finishing
+    AFTER the clinician has already navigated back to mode select. That
+    navigation clears _pending_trial_entry (see
+    test_on_back_to_mode_select_clears_pending_trial_entry), so when the
+    background thread's callback reaches _finish_trial_multi_mode(), it
+    must recognize there's nothing pending and do absolutely nothing --
+    no trial_var incrementing, no acquisition-panel trial-list refresh, no
+    self._state change away from "mode_select" -- since the user is looking
+    at the mode-select screen, not the acquisition panel."""
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.trial_var.set("1")
+        entry = {
+            "trial_num": 1, "sources": ["rgb"], "status": "processing",
+            "meta": {}, "source_angles": None, "fps": None,
+            "base_filename": None, "file_paths": [],
+        }
+        app._session_trials = [entry]
+        app._pending_trial_entry = entry
+        app.on_back_to_mode_select()
+        app.update()
+        assert app._state == "mode_select"
+
+        increment_calls = []
+        app._acq.increment_trial = lambda: increment_calls.append(True)
+        set_list_calls = []
+        app._acq.set_multi_trial_list = lambda trials: set_list_calls.append(trials)
+        enter_idle_calls = []
+        app._acq.enter_idle = lambda: enter_idle_calls.append(True)
+
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._finish_trial_multi_mode({"rgb": [1.0, 2.0]}, meta, "NEW.csv")
+        app.update()
+
+        assert app._state == "mode_select"
+        assert increment_calls == []
+        assert set_list_calls == []
+        assert enter_idle_calls == []
+        assert int(app._acq.trial_var.get()) == 1
+        # The orphaned entry itself is left untouched too -- nothing should
+        # write into it once it's been discarded.
+        assert entry["status"] == "processing"
     finally:
         app.destroy()
 

@@ -3091,6 +3091,7 @@ class App(tk.Tk):
         self._rec_timestamps  = {}
         self._pending_review  = {}
         self._session_trials  = []
+        self._pending_trial_entry = None
         self._acq.set_multi_trial_list([])
 
     def _start_upload_analysis(self) -> None:
@@ -3472,12 +3473,19 @@ class App(tk.Tk):
 
     def _finish_trial_multi_mode(self, source_angles: dict, meta: dict, base_fn: str) -> None:
         entry = self._pending_trial_entry
-        if entry is not None:
-            entry["status"] = "saved"
-            entry["source_angles"] = source_angles
-            entry["fps"] = self._fps_for(meta)
-            entry["base_filename"] = base_fn
-            self._pending_trial_entry = None
+        if entry is None:
+            # The clinician already navigated away (e.g. back to mode
+            # select) before this background trial finished, which clears
+            # _pending_trial_entry. There is nothing left to finalize --
+            # the trial's data was already discarded -- so do not touch
+            # the acquisition panel or app state; that would resurrect UI
+            # (e.g. the camera preview window) on a screen the user left.
+            return
+        entry["status"] = "saved"
+        entry["source_angles"] = source_angles
+        entry["fps"] = self._fps_for(meta)
+        entry["base_filename"] = base_fn
+        self._pending_trial_entry = None
         self._acq.increment_trial()
         self._acq.set_multi_trial_list(self._session_trials_view())
         self._acq.enter_idle()
