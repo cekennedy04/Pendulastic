@@ -389,6 +389,7 @@ def test_on_upload_video_two_people_cancelled_dialog_aborts_upload(monkeypatch, 
     r.update()
 
     assert called["run_offline_track"] is False
+    assert "cancel" in p.status_var.get().lower()
 
 
 def test_set_back_context_true_relabels_button():
