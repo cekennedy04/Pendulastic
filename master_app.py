@@ -107,6 +107,8 @@ class MasterApp:
         self.var_record_imu = tk.BooleanVar(value=_IMU_AVAIL)
         self._imu_recording = False
         self._imu_csv_path  = ""
+        self._imu_raw_recording = False
+        self._imu_raw_jsonl_path = ""
         self._sync_after_id = None                # pending after() for status poll
         if _IMU_AVAIL:
             try:
@@ -327,7 +329,14 @@ class MasterApp:
         return True, ""
 
     def _start_imu(self, trial_dir, pid, trial):
-        """Open the IMU CSV for this trial. Never fatal to the main capture."""
+        """Open the IMU CSV and raw JSONL log for this trial. Never fatal to
+        the main capture -- each of the two loggers is attempted and
+        reported on independently, since one can fail while the other
+        succeeds."""
+        self._imu_recording = False
+        self._imu_csv_path = ""
+        self._imu_raw_recording = False
+        self._imu_raw_jsonl_path = ""
         if not (_IMU_AVAIL and self.var_record_imu.get()):
             return
         path = os.path.join(trial_dir, f"Trial_{trial}_imu.csv")
@@ -350,14 +359,34 @@ class MasterApp:
                 f"Webcam is recording, but the IMU CSV could not be opened:\n\n"
                 f"{type(e).__name__}: {e}")
 
-    def _stop_imu(self):
-        if not self._imu_recording:
-            return
-        self._imu_recording = False
+        raw_path = os.path.join(trial_dir, f"Trial_{trial}_imu_raw.jsonl")
         try:
-            imu_server.stop_recording()
-        except Exception:
-            pass
+            imu_server.start_raw_log(raw_path)
+            self._imu_raw_recording = True
+            self._imu_raw_jsonl_path = raw_path
+        except Exception as e:
+            messagebox.showwarning(
+                "IMU Goniometer",
+                f"IMU recording continues, but the raw JSONL log could not "
+                f"be opened:\n\n{type(e).__name__}: {e}")
+
+    def _stop_imu(self):
+        if self._imu_recording:
+            try:
+                imu_server.stop_recording()
+            except Exception:
+                pass
+            finally:
+                self._imu_recording = False
+
+        if self._imu_raw_recording:
+            try:
+                imu_server.stop_raw_log()
+            except Exception:
+                pass
+            finally:
+                self._imu_raw_recording = False
+                self._imu_raw_jsonl_path = ""
 
     def rescan_cameras(self):
         """Detect the connected camera, then pre-open it so START is instant."""
@@ -608,14 +637,15 @@ class MasterApp:
             # Collapsing Position/Height out of the folder tree means Leg +
             # Characterization + Trial Number are now the only discriminators,
             # so a repeated combination can silently overwrite a prior take's
-            # video (and its IMU CSV / Motive mirror) — confirm before that
-            # happens instead of clobbering already-collected data.
+            # video (and its IMU CSV, raw IMU JSONL log, and Motive mirror) —
+            # confirm before that happens instead of clobbering already-
+            # collected data.
             if os.path.exists(video_path) and not messagebox.askyesno(
                     "Trial Already Recorded",
                     f"{os.path.basename(video_path)} already exists for "
                     f"{leg} / {characterization}.\n\n"
                     "Recording again will overwrite that trial's video, IMU CSV, "
-                    "and Motive take.\n\nOverwrite it?"):
+                    "raw IMU JSONL log, and Motive take.\n\nOverwrite it?"):
                 self.var_status.set("Idle - recording cancelled (trial already exists).")
                 return
 
@@ -647,8 +677,9 @@ class MasterApp:
             # Start the webcam immediately (the stream thread writes frames now)
             # and lock the UI. Locking first disables the text entries, so the
             # Motive keystrokes below can never land in them.
-            # Start the IMU CSV in the same tick as the video writer so both
-            # share a start epoch; every IMU row carries time.time().
+            # Start the IMU CSV and raw JSONL log in the same tick as the
+            # video writer so both share a start epoch; every IMU row and
+            # raw JSONL record carries time.time().
             self._start_imu(os.path.dirname(video_path), pid,
                             self.var_trial.get())
 
@@ -811,6 +842,7 @@ class MasterApp:
         """Handle the camera dropping out (called on the main thread)."""
         was_recording = self.writing_flag.is_set()
         self.writing_flag.clear()
+        self._stop_imu()              # close the IMU CSV and raw JSONL log alongside the video
         self._finalize_writer()
         if was_recording:
             try:
@@ -844,7 +876,7 @@ class MasterApp:
         # Stop the webcam first (instant), then stop Motive. A Motive failure
         # must not lose the already-saved webcam file.
         self.writing_flag.clear()     # stop writing frames immediately
-        self._stop_imu()              # close the IMU CSV alongside the video
+        self._stop_imu()              # close the IMU CSV and raw JSONL log alongside the video
         self._finalize_writer()       # finalize and close the .avi
         try:
             motive_sync.stop_local_motive()
