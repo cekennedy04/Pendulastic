@@ -3351,11 +3351,12 @@ class App(tk.Tk):
         return self._acq._multi_trial_var.get()
 
     def _trial_file_paths(self, meta: dict, sources: list) -> list:
-        """Every file this app itself writes for a trial with these sources
-        -- mirrors what _show_recording_saved_confirmation() already
-        enumerates, but returns real paths for deletion instead of a
-        display message. OptiTrack writes nothing here (Motive owns that
-        file)."""
+        """Candidate file paths that may be written for a trial with these
+        sources. For RGB, includes <video>.timestamps.csv even though it is
+        only written for phone-camera recordings (not plain USB webcam);
+        Task 5's delete logic treats a missing file as a no-op. Returns imu
+        and rgb CSV paths + the .avi and .avi.timestamps.csv video paths for
+        RGB trials. OptiTrack writes nothing here (Motive owns that file)."""
         base_fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
         paths = []
