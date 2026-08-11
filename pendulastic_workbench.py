@@ -34,8 +34,7 @@ import longitudinal_dashboard
 import pendulastic_pt_score
 import workbench_style as ws
 
-MILESTONE_LABELS = ["Release Start", "First Peak Extension",
-                    "Maximum Flexion", "Rest/Settled"]
+MILESTONE_LABELS = ["First Peak Extension", "Maximum Flexion", "Rest/Settled"]
 
 
 def _mean_nearest_extremum_offset(ref_times, test_times) -> Optional[float]:
@@ -299,6 +298,12 @@ class WorkbenchView(tk.Frame):
         self._lag_override_vars: dict = {}   # {label: tk.StringVar}, blank = auto
         self._reference_var = tk.StringVar(value="")
         self._annotations: dict = {}     # {label: (frame_index, t_sec)}
+        self._release_marks: dict = {}       # {label: {"t_trace": float, "source": "auto"|"manual"}}
+        self._lag_provenance: dict = {}      # {label: "auto"|"manual"}
+        self._armed_release_label: Optional[str] = None
+        self._release_artists: dict = {}     # {label: (line_artist, text_artist)}
+        self._release_entry_vars: dict = {}  # {label: tk.StringVar}
+        self._release_buttons: dict = {}     # {label: tk.Button}
         self._pending_milestone = tk.StringVar(value=MILESTONE_LABELS[0])
         self._raw_diagnostics: Optional[dict] = None
         self._build_widgets()
@@ -343,7 +348,7 @@ class WorkbenchView(tk.Frame):
         self._reference_menu = ttk.OptionMenu(top_controls, self._reference_var, "",
                                               style=ws.STYLE_MENUBUTTON)
         self._reference_menu.pack(side="left", padx=6)
-        self._reference_var.trace_add("write", lambda *a: self._recompute_metrics())
+        self._reference_var.trace_add("write", lambda *a: self._recompute_release_lags())
         self._load_another_button = ws.secondary_button(
             top_controls, "← Load Different Trial",
             lambda: self.controller.on_workbench_load_another())
@@ -379,6 +384,8 @@ class WorkbenchView(tk.Frame):
                                           command=self._on_export_vs_reference_csv)
         self._export_csv_menu.add_command(label="Annotations...",
                                           command=self._on_export_annotations_csv)
+        self._export_csv_menu.add_command(label="Release Marks...",
+                                          command=self._on_export_release_marks_csv)
         self._export_csv_button.configure(menu=self._export_csv_menu)
         self._export_csv_button.pack(side="right", padx=6)
 
@@ -452,6 +459,20 @@ class WorkbenchView(tk.Frame):
         sb.pack(side="right", fill="y")
         return tree
 
+    def reset_for_new_trial(self) -> None:
+        """Clears per-trace release-mark state before a genuinely new trial
+        loads (design spec Section 3.6) -- must run before set_traces(),
+        whose own prev_lag-preservation would otherwise reuse the same
+        StringVar object (and its stale text) for a same-named label."""
+        self._release_marks = {}
+        self._lag_provenance = {}
+        for lag_var in self._lag_override_vars.values():
+            lag_var.set("")
+        for release_var in self._release_entry_vars.values():
+            release_var.set("")
+        self._armed_release_label = None
+        self._release_artists = {}
+
     def set_traces(self, traces: dict) -> None:
         """traces: {label: (t, angle)}. Rebuilds the plot and the visibility/
         lag-override widgets, but preserves each *already-present* label's
@@ -468,6 +489,15 @@ class WorkbenchView(tk.Frame):
         prev_scrub_t    = self.current_time_sec()
 
         self._traces = traces
+        for label, (t, angle) in traces.items():
+            if label in self._release_marks:
+                continue
+            try:
+                t0 = pendulastic_pt_score.detect_release_t0(np.asarray(t), np.asarray(angle))
+            except Exception:
+                continue
+            self._release_marks[label] = {"t_trace": t0, "source": "auto"}
+
         for widget in self._visibility_frame.winfo_children():
             widget.destroy()
         self._ax.clear()
@@ -475,6 +505,9 @@ class WorkbenchView(tk.Frame):
         self._trace_lines = {}
         self._visible_vars = {}
         self._lag_override_vars = {}
+        self._release_entry_vars = {}
+        self._release_buttons = {}
+        self._armed_release_label = None
 
         for label, (t, angle) in traces.items():
             # Styled "chip" per trace (design spec Section 4) -- card-colored
@@ -507,8 +540,30 @@ class WorkbenchView(tk.Frame):
                                  highlightbackground=ws.PALETTE["BORDER"],
                                  font=ws.FONT_BODY)
             lag_entry.pack(side="left")
-            lag_entry.bind("<Return>", lambda e: self._recompute_metrics())
-            lag_entry.bind("<FocusOut>", lambda e: self._recompute_metrics())
+            lag_entry.bind("<Return>", lambda e, l=label: self._on_lag_entry_commit(l))
+            lag_entry.bind("<FocusOut>", lambda e, l=label: self._on_lag_entry_commit(l))
+
+            existing_mark = self._release_marks.get(label)
+            release_var = tk.StringVar(
+                value=(f"{existing_mark['t_trace']:.3f}" if existing_mark else ""))
+            self._release_entry_vars[label] = release_var
+            release_btn = tk.Button(
+                row, text="Mark Release", command=lambda l=label: self._on_arm_release(l),
+                bg=ws.PALETTE["BTN"], fg=ws.PALETTE["FG"], relief="flat", bd=0,
+                padx=6, pady=2, font=ws.FONT_SMALL, cursor="hand2")
+            release_btn.pack(side="left", padx=(6, 2))
+            self._release_buttons[label] = release_btn
+            release_entry = tk.Entry(row, textvariable=release_var, width=6,
+                                     bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"],
+                                     insertbackground=ws.PALETTE["FG"], relief="flat",
+                                     highlightthickness=1, highlightbackground=ws.PALETTE["BORDER"],
+                                     font=ws.FONT_BODY)
+            release_entry.pack(side="left")
+            release_entry.bind("<Return>", lambda e, l=label: self._on_release_entry_commit(l))
+            release_entry.bind("<FocusOut>", lambda e, l=label: self._on_release_entry_commit(l))
+            tk.Button(row, text="Clear", command=lambda l=label: self._on_clear_release(l),
+                      bg=ws.PALETTE["BTN"], fg=ws.PALETTE["FG"], relief="flat", bd=0,
+                      padx=6, pady=2, font=ws.FONT_SMALL, cursor="hand2").pack(side="left", padx=(2, 6))
 
             line, = self._ax.plot(t, angle, label=label)
             line.set_visible(var.get())
@@ -533,8 +588,10 @@ class WorkbenchView(tk.Frame):
                 self._reference_var.set(default_ref)
 
         self._redraw_annotations()
+        self._redraw_release_marks()
         self._plot_canvas.draw_idle()
         self._update_export_csv_state()
+        self._recompute_release_lags()
 
     def _default_reference(self, traces: dict) -> str:
         """OptiTrack present -> OptiTrack; else IMU present -> IMU; else the
@@ -698,15 +755,92 @@ class WorkbenchView(tk.Frame):
         self._plot_canvas.draw_idle()
         self._update_export_csv_state()
 
+    def _on_lag_entry_commit(self, label: str) -> None:
+        self._lag_provenance[label] = "manual"
+        self._recompute_metrics()
+
+    def _on_arm_release(self, label: str) -> None:
+        if (self._armed_release_label is not None
+                and self._armed_release_label in self._release_buttons):
+            self._release_buttons[self._armed_release_label].configure(text="Mark Release")
+        self._armed_release_label = label
+        self._release_buttons[label].configure(text="Click plot…")
+
+    def _on_clear_release(self, label: str) -> None:
+        self._release_marks.pop(label, None)
+        self._lag_provenance.pop(label, None)
+        if label in self._release_entry_vars:
+            self._release_entry_vars[label].set("")
+        if label in self._release_artists:
+            for artist in self._release_artists[label]:
+                if artist.axes is not None:
+                    artist.remove()
+            del self._release_artists[label]
+        if self._armed_release_label == label:
+            self._armed_release_label = None
+            self._release_buttons[label].configure(text="Mark Release")
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
+
+    def _on_release_entry_commit(self, label: str) -> None:
+        text = self._release_entry_vars[label].get().strip()
+        if not text:
+            return
+        try:
+            t_val = float(text)
+        except ValueError:
+            return
+        self._release_marks[label] = {"t_trace": t_val, "source": "manual"}
+        self._draw_release_artist(label, t_val)
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
+
+    def _draw_release_artist(self, label: str, t_trace: float) -> None:
+        if label in self._release_artists:
+            for artist in self._release_artists[label]:
+                if artist.axes is not None:
+                    artist.remove()
+            del self._release_artists[label]
+        color = (self._trace_lines[label].get_color()
+                if label in self._trace_lines else "#DC2626")
+        line_artist = self._ax.axvline(t_trace, color=color, linewidth=1.2, linestyle=":")
+        text_artist = self._ax.annotate(
+            f"R:{label}", xy=(t_trace, self._ax.get_ylim()[1]),
+            rotation=90, va="top", ha="right", fontsize=7, color=color)
+        self._release_artists[label] = (line_artist, text_artist)
+
+    def _recompute_release_lags(self) -> None:
+        ref_label = self._reference_var.get()
+        ref_mark = self._release_marks.get(ref_label)
+        for label in self._traces:
+            if label == ref_label:
+                continue
+            if self._lag_provenance.get(label) == "manual":
+                continue
+            lag_var = self._lag_override_vars.get(label)
+            if lag_var is None:
+                continue
+            test_mark = self._release_marks.get(label)
+            if ref_mark is not None and test_mark is not None:
+                lag = engine.release_lag_sec(ref_mark["t_trace"], test_mark["t_trace"])
+                lag_var.set(f"{lag:.3f}")
+                self._lag_provenance[label] = "auto"
+            elif lag_var.get().strip():
+                lag_var.set("")
+                self._lag_provenance.pop(label, None)
+        self._recompute_metrics()
+
     def _draw_milestone_artist(self, label: str, t_sec: float) -> None:
         if not hasattr(self, "_annotation_artists"):
             self._annotation_artists = {}
         if label in self._annotation_artists:
-            self._annotation_artists[label].remove()
-        self._annotation_artists[label] = self._ax.annotate(
+            for artist in self._annotation_artists[label]:
+                artist.remove()
+        text_artist = self._ax.annotate(
             label, xy=(t_sec, self._ax.get_ylim()[1]),
             rotation=90, va="top", ha="right", fontsize=7, color="#DC2626")
-        self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
+        line_artist = self._ax.axvline(t_sec, color="#DC2626", linewidth=0.8, linestyle="--")
+        self._annotation_artists[label] = (text_artist, line_artist)
 
     def _redraw_annotations(self) -> None:
         """set_traces()'s _ax.clear() wipes the plotted milestone markers,
@@ -719,8 +853,17 @@ class WorkbenchView(tk.Frame):
         for label, (_fi, t_sec) in self._annotations.items():
             self._draw_milestone_artist(label, t_sec)
 
+    def _redraw_release_marks(self) -> None:
+        self._release_artists = {}
+        for label, mark in self._release_marks.items():
+            if label in self._traces:
+                self._draw_release_artist(label, mark["t_trace"])
+
     def get_annotations(self) -> dict:
         return dict(self._annotations)
+
+    def get_release_marks(self) -> dict:
+        return {label: dict(mark) for label, mark in self._release_marks.items()}
 
     def set_raw_diagnostics(self, diagnostics: Optional[dict]) -> None:
         self._raw_diagnostics = diagnostics
@@ -743,9 +886,11 @@ class WorkbenchView(tk.Frame):
     def _update_export_csv_state(self) -> None:
         has_traces = bool(self._traces)
         has_annotations = bool(self._annotations)
+        has_release_marks = bool(self._release_marks)
         for i in (0, 1, 2):
             self._export_csv_menu.entryconfig(i, state="normal" if has_traces else "disabled")
         self._export_csv_menu.entryconfig(3, state="normal" if has_annotations else "disabled")
+        self._export_csv_menu.entryconfig(4, state="normal" if has_release_marks else "disabled")
 
     def _meta_ids(self) -> tuple:
         meta = self.controller.get_trial_meta()
@@ -804,6 +949,12 @@ class WorkbenchView(tk.Frame):
         fieldnames, rows = engine.annotations_to_csv_rows(
             self.get_annotations(), participant_id, session_date)
         self._prompt_and_write_csv("annotations", fieldnames, rows)
+
+    def _on_export_release_marks_csv(self) -> None:
+        participant_id, session_date = self._meta_ids()
+        fieldnames, rows = engine.release_marks_to_csv_rows(
+            self.get_release_marks(), participant_id, session_date)
+        self._prompt_and_write_csv("release_marks", fieldnames, rows)
 
     def _save_current_trial(self, participant_id: str, leg: str,
                             session_label: str, date: str) -> None:
@@ -932,15 +1083,42 @@ class WorkbenchView(tk.Frame):
             self._plot_canvas.draw_idle()
 
     def _on_plot_click(self, event) -> None:
-        """Clicking the plot seeks the video to the nearest frame --
-        generalizes pendulastic_viewer.py's single-purpose release-frame
-        click handler into an arbitrary seek (design spec Section 5)."""
-        if event.inaxes is not self._ax or event.xdata is None or self._fps <= 0:
+        """Clicking the plot seeks the video to the nearest frame -- unless
+        a trace is currently armed for release-marking (self._armed_release_
+        label), in which case the click marks that trace's release instead
+        and does not also seek the video."""
+        if event.inaxes is not self._ax or event.xdata is None:
+            return
+        if self._armed_release_label is not None:
+            self._mark_release_at(self._armed_release_label, event.xdata)
+            return
+        if self._fps <= 0:
             return
         fi = int(round(event.xdata * self._fps))
         fi = max(0, min(fi, self._n_frames - 1))
         self._scrub_var.set(fi)
         self._on_scrub(str(fi))
+
+    def _mark_release_at(self, label: str, x_click: float) -> None:
+        """Snaps x_click to `label`'s own nearest actual sample timestamp --
+        event.xdata is already in that trace's native time coordinates,
+        since each trace was plotted as self._ax.plot(t, angle) with its
+        own t array (design spec Section 2a)."""
+        t_arr, _y_arr = self._traces.get(label, (np.array([]), np.array([])))
+        if len(t_arr) == 0:
+            self._armed_release_label = None
+            if label in self._release_buttons:
+                self._release_buttons[label].configure(text="Mark Release")
+            return
+        idx = int(np.argmin(np.abs(t_arr - x_click)))
+        snapped_t = float(t_arr[idx])
+        self._release_marks[label] = {"t_trace": snapped_t, "source": "manual"}
+        self._release_entry_vars[label].set(f"{snapped_t:.3f}")
+        self._draw_release_artist(label, snapped_t)
+        self._armed_release_label = None
+        self._release_buttons[label].configure(text="Mark Release")
+        self._plot_canvas.draw_idle()
+        self._recompute_release_lags()
 
     def current_frame_index(self) -> int:
         """Reads the scrubber's bound Tkinter variable directly -- never
@@ -1166,6 +1344,7 @@ class App(tk.Tk):
 
         self._load_panel.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
+        self._workbench_view.reset_for_new_trial()
         self._workbench_view.set_traces(traces)
 
         if selection["video_path"]:
