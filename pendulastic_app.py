@@ -3434,10 +3434,15 @@ class App(tk.Tk):
         """from_recording distinguishes an actual live-recording stop (which
         gets a "Recording Saved" confirmation) from the upload-CSV/
         upload-video-file review paths, which process an already-existing
-        file rather than saving a new one."""
-        self._state = "review"
+        file rather than saving a new one. In multi-trial mode, a live
+        recording never reaches this screen automatically at all -- see
+        _finish_trial_multi_mode()."""
         base_fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        if from_recording and self._is_multi_trial_mode():
+            self._finish_trial_multi_mode(source_angles, meta, base_fn)
+            return
+        self._state = "review"
         self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
         self._acq.pack_forget()
         self._upload_meta.pack_forget()
@@ -3448,6 +3453,23 @@ class App(tk.Tk):
             pass
         if from_recording:
             self._show_recording_saved_confirmation(source_angles, meta, base_fn)
+
+    def _finish_trial_multi_mode(self, source_angles: dict, meta: dict, base_fn: str) -> None:
+        entry = next((e for e in self._session_trials
+                     if e["trial_num"] == meta["trial"]), None)
+        if entry is not None:
+            entry["status"] = "saved"
+            entry["source_angles"] = source_angles
+            entry["fps"] = self._fps_for(meta)
+            entry["base_filename"] = base_fn
+        self._acq.increment_trial()
+        self._acq.set_multi_trial_list(self._session_trials_view())
+        self._acq.enter_idle()
+        self._state = "idle"
+
+    def _session_trials_view(self) -> list:
+        return [{"trial_num": e["trial_num"], "sources": e["sources"], "status": e["status"]}
+                for e in self._session_trials]
 
     def _show_recording_saved_confirmation(self, source_angles: dict, meta: dict,
                                            base_fn: str) -> None:

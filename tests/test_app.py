@@ -542,6 +542,73 @@ def test_transition_to_review_no_confirmation_for_optitrack_only(monkeypatch):
         app.destroy()
 
 
+def test_transition_to_review_multi_trial_mode_skips_post_panel(monkeypatch):
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq.trial_var.set("1")
+        app._acq._multi_trial_var.set(True)
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "processing",
+            "meta": meta, "source_angles": None, "fps": None,
+            "base_filename": None, "file_paths": [],
+        }]
+        app._acq.pack(fill="both", expand=True)
+        app.update()
+        app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
+        app.update()
+        assert shown == []
+        assert app._acq.winfo_ismapped()
+        assert not app._post.winfo_ismapped()
+        assert app._state == "idle"
+    finally:
+        app.destroy()
+
+
+def test_finish_trial_multi_mode_updates_entry_and_increments_trial():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.trial_var.set("1")
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["imu"], "status": "processing",
+            "meta": meta, "source_angles": None, "fps": None,
+            "base_filename": None, "file_paths": [],
+        }]
+        app._finish_trial_multi_mode(
+            {"imu": [1.0, 2.0]}, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+        app.update()
+        entry = app._session_trials[0]
+        assert entry["status"] == "saved"
+        assert entry["source_angles"] == {"imu": [1.0, 2.0]}
+        assert entry["base_filename"] == "PID_P1_LEG_Right_MS_TRIAL_1.csv"
+        assert int(app._acq.trial_var.get()) == 2
+    finally:
+        app.destroy()
+
+
+def test_transition_to_review_single_trial_mode_unchanged(monkeypatch):
+    """Toggle off must still force the review screen + confirmation,
+    exactly as before this feature existed."""
+    import pendulastic_app as _m
+    shown = []
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
+    app = _m.App()
+    try:
+        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
+        app.update()
+        assert len(shown) == 1
+        assert app._post.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
 def test_app_creates_camera_session_when_cv2_available():
     import pendulastic_app as _m
     app = _m.App()
@@ -2091,6 +2158,13 @@ def test_trial_file_paths_optitrack_only(tmp_path, monkeypatch):
 
 
 def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch):
+    """Verifies the placeholder append that happens at the top of on_stop(),
+    in isolation from the finalize call at the bottom of on_stop(). With no
+    active sources, on_stop() has no async work to do and -- since Task 4 --
+    calls _transition_to_review() synchronously within the same on_stop()
+    call, which immediately finalizes the entry to "saved" in multi-trial
+    mode. _transition_to_review is stubbed out here so this test can keep
+    checking the append step on its own."""
     import pendulastic_app as _m
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
@@ -2099,6 +2173,7 @@ def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch)
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = []
+        monkeypatch.setattr(app, "_transition_to_review", lambda *a, **k: None)
         app.on_stop()
         app.update()
         assert len(app._session_trials) == 1
