@@ -693,15 +693,26 @@ class AcquisitionPanel(tk.Frame):
         ttk.Separator(self, orient="horizontal").grid(
             row=10, column=0, columnspan=2, sticky="ew", padx=10, pady=4)
 
-        # row 11 — countdown checkbox (forced on/locked while IMU is an
-        # active source -- it's the only calibration path now)
+        # row 11 — countdown + multi-trial checkboxes, stacked in one frame
+        # so no other row needs renumbering.
+        chk_stack = tk.Frame(self, bg=ws.PALETTE["BG"])
+        chk_stack.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+
         self.countdown_var = tk.BooleanVar(value=False)
         self.countdown_chk = tk.Checkbutton(
-            self, text="5-second countdown before recording",
+            chk_stack, text="5-second countdown before recording",
             variable=self.countdown_var,
             bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
             selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"])
-        self.countdown_chk.grid(row=11, column=0, columnspan=2, sticky="w", padx=12, pady=4)
+        self.countdown_chk.pack(side="top", anchor="w")
+
+        self._multi_trial_var = tk.BooleanVar(value=False)
+        self.multi_trial_chk = tk.Checkbutton(
+            chk_stack, text="Record multiple trials",
+            variable=self._multi_trial_var,
+            bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"],
+            selectcolor=ws.PALETTE["SURFACE"], activebackground=ws.PALETTE["BG"])
+        self.multi_trial_chk.pack(side="top", anchor="w")
 
         # row 12 — START / STOP (START never moves from col 0)
         self.btn_start = tk.Button(
@@ -732,7 +743,7 @@ class AcquisitionPanel(tk.Frame):
         # Track every form widget that must be locked during recording
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
-            self.countdown_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            self.countdown_chk, self.multi_trial_chk, chk_opti, chk_rgb, chk_imu, chk_video,
             self._research_toggle_btn,
             self.btn_back, self.drop_cam, self.btn_rescan,
         ]
