@@ -39,6 +39,128 @@ def _imu_reference_rows_100hz(n=60):
     return rows
 
 
+def test_compute_raw_sensor_diagnostics_hold_gravity_z_frac_level_hold(tmp_path):
+    """A hold where gravity reads (0,0,9.81) -- perfectly level -- must
+    report hold_gravity_z_frac close to 1.0."""
+    base = tmp_path / "Trial_1"
+    _write_component_csv(str(base) + "_accel.csv", "accel", _accel_rows_100hz(n=150))
+    gyro_rows = [(i * 10.0, int(i * 10), "proximal", "Gyroscope", 0.0, 0.0, 0.0)
+                for i in range(150)]
+    _write_component_csv(str(base) + "_gyro.csv", "gyro", gyro_rows)
+
+    diag = engine.compute_raw_sensor_diagnostics(str(base) + "_accel.csv")
+    assert diag["hold_gravity_z_frac"] == pytest.approx(1.0, abs=1e-6)
+    assert diag["hold_stillness_ok"] is True
+
+
+def test_compute_raw_sensor_diagnostics_hold_gravity_z_frac_tilted_hold(tmp_path):
+    """A hold whose measured gravity is spread across X/Y as well as Z
+    (a real tilted-hold shape, e.g. ~[5,5,8]) must report a fraction well
+    below 1.0."""
+    base = tmp_path / "Trial_1"
+    accel_rows = [(i * 10.0, int(i * 10), "proximal", "Accelerometer", 5.0, 5.0, 8.0)
+                 for i in range(150)]
+    _write_component_csv(str(base) + "_accel.csv", "accel", accel_rows)
+    gyro_rows = [(i * 10.0, int(i * 10), "proximal", "Gyroscope", 0.0, 0.0, 0.0)
+                for i in range(150)]
+    _write_component_csv(str(base) + "_gyro.csv", "gyro", gyro_rows)
+
+    diag = engine.compute_raw_sensor_diagnostics(str(base) + "_accel.csv")
+    expected = 8.0 / (5.0 ** 2 + 5.0 ** 2 + 8.0 ** 2) ** 0.5
+    assert diag["hold_gravity_z_frac"] == pytest.approx(expected, abs=1e-6)
+
+
+def test_compute_raw_sensor_diagnostics_hold_stillness_ok_false_when_handled(tmp_path):
+    """A hold with real gyro motion (examiner still handling the sensor)
+    must report hold_stillness_ok=False, not silently pass."""
+    base = tmp_path / "Trial_1"
+    _write_component_csv(str(base) + "_accel.csv", "accel", _accel_rows_100hz(n=150))
+    gyro_rows = [(i * 10.0, int(i * 10), "proximal", "Gyroscope",
+                 1.5 if i % 2 == 0 else -1.5, 0.0, 0.0)
+                for i in range(150)]   # oscillating +/-1.5 rad/s, above GYRO_STATIONARY_MAX_RAD_S
+    _write_component_csv(str(base) + "_gyro.csv", "gyro", gyro_rows)
+
+    diag = engine.compute_raw_sensor_diagnostics(str(base) + "_accel.csv")
+    assert diag["hold_stillness_ok"] is False
+
+
+def test_compute_raw_sensor_diagnostics_hold_fields_none_when_too_few_samples(tmp_path):
+    """Fewer than GYRO_BIAS_MIN_SAMPLES in the hold window must report None
+    (unknown), never a misleadingly-computed value from too little data."""
+    base = tmp_path / "Trial_1"
+    accel_rows = [(0.0, 0, "proximal", "Accelerometer", 0.0, 0.0, 9.81)]
+    _write_component_csv(str(base) + "_accel.csv", "accel", accel_rows)
+    gyro_rows = [(0.0, 0, "proximal", "Gyroscope", 0.0, 0.0, 0.0)]
+    _write_component_csv(str(base) + "_gyro.csv", "gyro", gyro_rows)
+
+    diag = engine.compute_raw_sensor_diagnostics(str(base) + "_accel.csv")
+    assert diag["hold_gravity_z_frac"] is None
+    assert diag["hold_stillness_ok"] is None
+
+
+def test_compute_optitrack_quality_signals_no_dropout_no_warn():
+    t = np.linspace(0, 5, 200)
+    angle = 180.0 - 10.0 * np.sin(t)   # small, smooth oscillation -> low area_ratio
+    signals = engine.compute_optitrack_quality_signals(t, angle)
+    assert signals["optitrack_dropout_frac"] == pytest.approx(0.0)
+    assert signals["optitrack_area_ratio_warn"] is False
+
+
+def test_compute_optitrack_quality_signals_reports_dropout_fraction():
+    t = np.linspace(0, 5, 200)
+    angle = 180.0 - 10.0 * np.sin(t)
+    angle[:80] = np.nan   # 40% missing
+    signals = engine.compute_optitrack_quality_signals(t, angle)
+    assert signals["optitrack_dropout_frac"] == pytest.approx(0.40, abs=1e-6)
+
+
+def test_suggest_quality_tag_no_signal_returns_none_category():
+    raw = {"hold_gravity_z_frac": 0.99, "hold_stillness_ok": True}
+    opti = {"optitrack_dropout_frac": 0.01, "optitrack_area_ratio_warn": False}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion == {"category": None, "details": ""}
+
+
+def test_suggest_quality_tag_tilted_hold_suggests_calibration_hold():
+    raw = {"hold_gravity_z_frac": 0.57, "hold_stillness_ok": True}
+    opti = {"optitrack_dropout_frac": 0.01, "optitrack_area_ratio_warn": False}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion["category"] == "calibration_hold"
+    assert "57%" in suggestion["details"]
+
+
+def test_suggest_quality_tag_unstable_hold_suggests_calibration_hold():
+    raw = {"hold_gravity_z_frac": 0.99, "hold_stillness_ok": False}
+    opti = {"optitrack_dropout_frac": 0.01, "optitrack_area_ratio_warn": False}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion["category"] == "calibration_hold"
+
+
+def test_suggest_quality_tag_high_dropout_suggests_marker_occlusion():
+    raw = {"hold_gravity_z_frac": 0.99, "hold_stillness_ok": True}
+    opti = {"optitrack_dropout_frac": 0.45, "optitrack_area_ratio_warn": False}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion["category"] == "marker_occlusion"
+    assert "45%" in suggestion["details"]
+
+
+def test_suggest_quality_tag_area_ratio_warn_suggests_marker_occlusion():
+    raw = {"hold_gravity_z_frac": 0.99, "hold_stillness_ok": True}
+    opti = {"optitrack_dropout_frac": 0.01, "optitrack_area_ratio_warn": True}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion["category"] == "marker_occlusion"
+
+
+def test_suggest_quality_tag_calibration_hold_takes_priority_over_dropout():
+    """When both a tilted hold and high dropout are present, calibration
+    hold wins -- it's checked first (design spec Section 4's ordered rule
+    list)."""
+    raw = {"hold_gravity_z_frac": 0.50, "hold_stillness_ok": True}
+    opti = {"optitrack_dropout_frac": 0.60, "optitrack_area_ratio_warn": False}
+    suggestion = engine.suggest_quality_tag(raw, opti)
+    assert suggestion["category"] == "calibration_hold"
+
+
 def test_validate_component_csv_happy_path_accel(tmp_path):
     path = tmp_path / "Trial_1_accel.csv"
     _write_component_csv(path, "accel", _accel_rows_100hz())
