@@ -3471,6 +3471,19 @@ class App(tk.Tk):
         return [{"trial_num": e["trial_num"], "sources": e["sources"], "status": e["status"]}
                 for e in self._session_trials]
 
+    def on_delete_trial(self, trial_num: int) -> None:
+        entry = next((e for e in self._session_trials
+                     if e["trial_num"] == trial_num), None)
+        if entry is None:
+            return
+        for path in entry["file_paths"]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self._session_trials.remove(entry)
+        self._acq.set_multi_trial_list(self._session_trials_view())
+
     def _show_recording_saved_confirmation(self, source_angles: dict, meta: dict,
                                            base_fn: str) -> None:
         """Clear, unmissable confirmation of exactly what got written to
