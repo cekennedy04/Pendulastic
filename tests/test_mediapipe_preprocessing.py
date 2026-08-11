@@ -183,3 +183,21 @@ def test_select_pose_for_candidate_uses_stateless_selector_for_other_candidates(
     assert result == "pose_a"
     assert calls == [poses]
     assert tracker.calls == []
+
+
+def test_summarize_candidate_percent_uses_full_trial_count_as_denominator():
+    """Regression test for a real bug: pct_under_10deg must be % of the
+    full trial cohort, not % of only the trials that happened to score.
+    1 trial scored under goal out of 4 total trials should read 25%, not
+    100% (which len(rmses)-as-denominator would incorrectly report)."""
+    summary = smp._summarize_candidate([5.0], n_trials=4)
+    assert summary["n_scored"] == 1
+    assert math.isclose(summary["pct_under_10deg"], 25.0)
+
+
+def test_summarize_candidate_handles_no_scored_trials():
+    summary = smp._summarize_candidate([], n_trials=3)
+    assert summary["n_scored"] == 0
+    assert summary["pct_under_10deg"] == 0.0
+    assert summary["median_rmse_deg"] is None
+    assert summary["mean_rmse_deg"] is None
