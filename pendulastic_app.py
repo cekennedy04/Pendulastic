@@ -2501,6 +2501,7 @@ class App(tk.Tk):
         self._rec_angles:     dict     = {}   # {"imu": [...], "rgb": [...]}
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
         self._pending_review: dict     = {}
+        self._session_trials: list     = []
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
@@ -2614,6 +2615,17 @@ class App(tk.Tk):
             self._pose_estimator = None
 
         meta           = self._acq.get_metadata()
+        if self._is_multi_trial_mode():
+            self._session_trials.append({
+                "trial_num": meta["trial"],
+                "sources": list(self._active_sources),
+                "status": "processing",
+                "meta": meta,
+                "source_angles": None,
+                "fps": None,
+                "base_filename": None,
+                "file_paths": self._trial_file_paths(meta, self._active_sources),
+            })
         source_angles: dict = {}
         pending_rgb    = False
         imu_raw_log_path: Optional[str] = None
@@ -3334,6 +3346,31 @@ class App(tk.Tk):
                     "Motive Sync",
                     f"Could not trigger Motive:\n{type(e).__name__}: {e}\n\n"
                     "Recording will continue without OptiTrack sync.")
+
+    def _is_multi_trial_mode(self) -> bool:
+        return self._acq._multi_trial_var.get()
+
+    def _trial_file_paths(self, meta: dict, sources: list) -> list:
+        """Every file this app itself writes for a trial with these sources
+        -- mirrors what _show_recording_saved_confirmation() already
+        enumerates, but returns real paths for deletion instead of a
+        display message. OptiTrack writes nothing here (Motive owns that
+        file)."""
+        base_fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+        paths = []
+        if "imu" in sources:
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
+            paths.append(os.path.join(DataManager.DATA_DIR, fn))
+        if "rgb" in sources:
+            fn = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="rgb")
+            paths.append(os.path.join(DataManager.DATA_DIR, fn))
+            video_path = os.path.join(DataManager.DATA_DIR, base_fn.replace(".csv", ".avi"))
+            paths.append(video_path)
+            paths.append(video_path + ".timestamps.csv")
+        return paths
 
     # ------------------------------------------------------------------
     # Panel switching

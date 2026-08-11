@@ -2051,3 +2051,75 @@ def test_app_applies_ttk_theme_even_when_workbench_unavailable(monkeypatch):
         assert str(app.cget("bg")) == _m.ws.PALETTE["BG"]
     finally:
         app.destroy()
+
+
+def test_is_multi_trial_mode_reflects_checkbox():
+    from pendulastic_app import App
+    app = App()
+    try:
+        assert app._is_multi_trial_mode() is False
+        app._acq._multi_trial_var.set(True)
+        assert app._is_multi_trial_mode() is True
+    finally:
+        app.destroy()
+
+
+def test_trial_file_paths_imu_and_rgb(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        names = [os.path.basename(p) for p in app._trial_file_paths(meta, ["imu", "rgb"])]
+        assert "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv" in names
+        assert "PID_P1_LEG_Right_MS_TRIAL_1_rgb.csv" in names
+        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi" in names
+        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi.timestamps.csv" in names
+    finally:
+        app.destroy()
+
+
+def test_trial_file_paths_optitrack_only(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    app = _m.App()
+    try:
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        assert app._trial_file_paths(meta, ["optitrack"]) == []
+    finally:
+        app.destroy()
+
+
+def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq.trial_var.set("1")
+        app._acq._multi_trial_var.set(True)
+        app._active_sources = []
+        app.on_stop()
+        app.update()
+        assert len(app._session_trials) == 1
+        entry = app._session_trials[0]
+        assert entry["trial_num"] == 1
+        assert entry["sources"] == []
+        assert entry["status"] == "processing"
+    finally:
+        app.destroy()
+
+
+def test_on_stop_no_placeholder_when_multi_trial_off(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq.trial_var.set("1")
+        app._active_sources = []
+        app.on_stop()
+        app.update()
+        assert app._session_trials == []
+    finally:
+        app.destroy()
