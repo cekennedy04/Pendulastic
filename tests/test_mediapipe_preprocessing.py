@@ -141,3 +141,45 @@ def test_crop_to_moving_leg_falls_back_when_no_motion_found():
     result = mp_pre.crop_to_moving_leg(frames, fps)
     assert len(result) == len(frames)
     assert result[0].shape == frames[0].shape
+
+
+import batch_mediapipe as bm
+import patient_identity_tracker as pit
+import sweep_mediapipe_preprocessing as smp
+
+
+class _StubTracker:
+    def __init__(self, pose_to_return):
+        self.calls = []
+        self._pose = pose_to_return
+
+    def select(self, poses, w, h):
+        self.calls.append((poses, w, h))
+        return pit.SelectionResult(self._pose, 1.0, False)
+
+
+def test_select_pose_for_candidate_uses_identity_tracker_when_requested():
+    poses = ["pose_a", "pose_b"]
+    tracker = _StubTracker(pose_to_return="pose_b")
+    result = smp._select_pose_for_candidate(
+        {"key": "identity_tracker"}, tracker, poses, 640, 480)
+    assert result == "pose_b"
+    assert tracker.calls == [(poses, 640, 480)]
+
+
+def test_select_pose_for_candidate_uses_stateless_selector_for_other_candidates(monkeypatch):
+    poses = ["pose_a", "pose_b"]
+    calls = []
+
+    def _stub_select_patient_pose(p):
+        calls.append(p)
+        return "pose_a"
+
+    monkeypatch.setattr(bm, "_select_patient_pose", _stub_select_patient_pose)
+    tracker = _StubTracker(pose_to_return="pose_b")  # must NOT be used for this candidate
+
+    result = smp._select_pose_for_candidate({"key": "baseline"}, tracker, poses, 640, 480)
+
+    assert result == "pose_a"
+    assert calls == [poses]
+    assert tracker.calls == []
