@@ -173,6 +173,40 @@ def test_enter_processing_accepts_custom_message_for_non_mediapipe_work():
         r.destroy()
 
 
+def test_enter_processing_locks_back_button():
+    """Regression: enter_processing() previously left btn_back (and the
+    rest of the form) unlocked, letting a clinician navigate to mode
+    select while a trial was still processing in the background. That
+    orphaned the in-flight trial and, once the background thread finished,
+    left btn_start stuck disabled with no way to re-enable it (see
+    App._finish_trial_multi_mode's entry-is-None guard). Locking the whole
+    form here closes that escape hatch at its source, same as
+    enter_recording() already does."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_processing(); r.update()
+        assert str(p.btn_back.cget("state")) == "disabled"
+    finally:
+        r.destroy()
+
+
+def test_enter_idle_unlocks_back_button_after_processing():
+    """Complements the lock test above: returning to idle (as
+    App._finish_trial_multi_mode / _transition_to_review do once
+    processing completes) must restore btn_back."""
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl()); p.pack(); r.update()
+        p.enter_processing(); r.update()
+        p.enter_idle(); r.update()
+        assert str(p.btn_back.cget("state")) == "normal"
+    finally:
+        r.destroy()
+
+
 
 
 def test_validate_empty_pid_fails():
