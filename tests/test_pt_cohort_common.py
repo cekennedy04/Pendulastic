@@ -584,3 +584,86 @@ def test_make_cohort_comparison_figure_writes_png_without_raising(tmp_path):
         ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2, str(out_path), stats_rows)
     assert out_path.is_file()
     assert out_path.stat().st_size > 0
+
+
+# ── build_cohort_snapshot / write_cohort_artifacts / leg_cohort_reference ──
+
+def test_collect_arm_data_returns_summaries_by_pid(monkeypatch):
+    fake_by_leg_tp = {
+        ("left", "pre"): [{"pid": "13_left_pre", "trial": "1", "pt7": 0.3,
+                          "R2n": 0.9, "N": 3.0, "phi_max_ratio": 0.5, "omega_max_n": 1.0,
+                          "omega_min_n": 0.2, "f": 1.5, "area_ratio": 0.1}],
+        ("right", "pre"): [],
+    }
+    monkeypatch.setattr(pcc.common, "collect_participant", lambda pid: (fake_by_leg_tp, []))
+
+    summaries, raw_trials, contributing_pids, summaries_by_pid = pcc._collect_arm_data(["13"])
+
+    assert summaries_by_pid[("13", "left")] is not None
+    assert summaries_by_pid[("13", "left")]["pt7"] == 0.3
+    assert summaries_by_pid[("13", "right")] is None
+
+
+def test_build_cohort_snapshot_skipped_when_arm_empty(monkeypatch):
+    monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: {"13"})
+    monkeypatch.setattr(pcc, "build_composition_rows",
+                        lambda pids: [{"pid": "13", "group": "MS", "source": "metadata",
+                                      "diagnosis": "MS", "n_trials_left": 4, "n_trials_right": 4}])
+
+    snapshot = pcc.build_cohort_snapshot()
+
+    assert snapshot["ms_pids"] == ["13"]
+    assert snapshot["control_pids"] == []
+    assert snapshot["stats_rows"] is None
+    assert snapshot["ms_summaries"] is None
+
+
+def test_write_cohort_artifacts_no_recollection_when_arm_empty(monkeypatch, tmp_path):
+    """write_cohort_artifacts must render entirely from the snapshot --
+    patch collect_participant to raise if it's ever called from within
+    this function, proving no rescanning happens."""
+    monkeypatch.setattr(pcc.common, "collect_participant",
+                        lambda pid: (_ for _ in ()).throw(AssertionError("should not recollect")))
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    snapshot = {
+        "composition_rows": [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+                             "n_trials_left": 4, "n_trials_right": 4}],
+        "ms_pids": ["13"], "control_pids": [], "ms_summaries": None, "control_summaries": None,
+        "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
+        "ms_n_participants": None, "ms_n_trials": None,
+        "control_n_participants": None, "control_n_trials": None,
+        "stats_rows": None, "n_excluded_unclassified": 0,
+    }
+    pcc.write_cohort_artifacts(snapshot)   # must not raise
+
+
+def test_run_cohort_comparison_still_works_as_combinator(monkeypatch, tmp_path):
+    """run_cohort_comparison() must remain callable exactly as today's
+    tests already call it -- this is the back-compat contract for the 5
+    existing tests in this file that call pcc.run_cohort_comparison()
+    directly."""
+    monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: set())
+    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    pcc.run_cohort_comparison()   # must not raise, same as before this task
+
+
+def test_leg_cohort_reference_leave_one_out_for_own_arm(monkeypatch):
+    snapshot = {
+        "ms_pids": ["13", "14"], "control_pids": ["6", "7"],
+        "summaries_by_pid": {
+            ("13", "left"): {"pt7": 0.30}, ("14", "left"): {"pt7": 0.50},
+            ("6", "left"): {"pt7": 0.10}, ("7", "left"): {"pt7": 0.20},
+        },
+    }
+    ref = pcc.leg_cohort_reference(snapshot, "13", "left")
+    # MS arm excludes participant 13 -> only 14's 0.50 remains.
+    assert ref["ms_median"] == 0.50
+    assert ref["ms_n"] == 1
+    # Control arm is untouched -- participant 13 isn't in it.
+    assert ref["control_median"] == pytest.approx(0.15)   # median of 0.10, 0.20
+    assert ref["control_n"] == 2
+    assert ref["leave_one_out_arm"] == "MS"
+
+
+def test_leg_cohort_reference_none_when_not_comparable():
+    assert pcc.leg_cohort_reference({"ms_pids": ["13"], "control_pids": []}, "13", "left") is None

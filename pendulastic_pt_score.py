@@ -1171,13 +1171,13 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
     for data laid out in a folder convention discover_optitrack() doesn't
     recognize (e.g. Participant_N/Leg/characterization/, no Position_N level).
 
-    Returns list of dicts sorted by RMSE (tracking models only, best MAX_HPE):
-      {"name": str, "t": ndarray, "ang": ndarray, "rmse": float, "raw_pct": float}
-
     return_rejected: when True, returns (accepted, rejected) instead of
     just accepted -- rejected is a list of {"name": str, "reason": str}
     for every candidate _evaluate_candidate filtered out. Default False
     keeps today's exact return shape for every existing caller.
+
+    Returns list of dicts sorted by RMSE (tracking models only, best MAX_HPE):
+      {"name": str, "t": ndarray, "ang": ndarray, "rmse": float, "raw_pct": float}
     """
     def _finish(accepted_list, rejected_list):
         return (accepted_list, rejected_list) if return_rejected else accepted_list
