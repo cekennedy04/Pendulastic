@@ -2575,3 +2575,34 @@ def test_on_back_to_mode_select_clears_session_trials():
         assert app._acq._trial_rows_data == []
     finally:
         app.destroy()
+
+
+def test_enter_live_mode_recovers_from_stuck_processing_state():
+    """Regression: previously, re-entering Live Recording mode never reset
+    the acquisition panel's own button/lock state -- it just inherited
+    whatever the panel was last left in. Combined with enter_processing()
+    not locking navigation (see the AcquisitionPanel-level regression
+    tests for that fix), a clinician who navigated to mode select while a
+    trial was still processing in the background, then came back into Live
+    Recording, would find btn_start permanently stuck disabled with no way
+    to record another trial short of restarting the app. _enter_live_mode()
+    must always land on a fully usable idle screen, regardless of how the
+    panel was left."""
+    from pendulastic_app import App
+    app = App()
+    try:
+        app._acq.enter_processing("Tuning IMU calibration…")
+        app.update()
+        assert str(app._acq.btn_start.cget("state")) == "disabled"
+        assert str(app._acq.btn_back.cget("state")) == "disabled"
+
+        app._mode_select.pack(fill="both", expand=True)
+        app._acq.pack_forget()
+        app._enter_live_mode()
+        app.update()
+
+        assert str(app._acq.btn_start.cget("state")) == "normal"
+        assert str(app._acq.btn_back.cget("state")) == "normal"
+        assert app._acq.status_var.get() != "Tuning IMU calibration…"
+    finally:
+        app.destroy()
