@@ -97,6 +97,33 @@ def test_find_motion_bbox_locates_high_motion_region():
     assert bbox == (22, 2, 6, 4)
 
 
+def test_find_motion_bbox_selects_largest_connected_region_not_global_extent():
+    """Regression test for a real bug: the original implementation took the
+    global min/max over every above-threshold pixel anywhere in the frame,
+    which is indistinguishable from correct connected-component selection
+    when an input only has a single motion region (as in
+    test_find_motion_bbox_locates_high_motion_region above). This input has
+    TWO well-separated regions -- a large, dense moving blob in one corner,
+    and a small, isolated noise cluster in the opposite corner -- so a
+    global-extent implementation would return a bbox spanning almost the
+    whole frame (from one corner to the other), while a correct
+    largest-connected-region implementation returns a bbox covering only
+    the large blob."""
+    h, w = 40, 60
+    base = _solid_frame(h, w, 50)
+    moving = base.copy()
+    moving[2:12, 2:12] = 200      # large dense blob: 10x10 = 100 px
+    moving[35:38, 55:58] = 200    # small isolated noise cluster: 3x3 = 9 px
+    frames = [base, moving, base, moving]
+
+    bbox = mp_pre._find_motion_bbox(frames)
+
+    assert bbox == (2, 2, 10, 10)
+    # The noise cluster corner must not be part of the returned box.
+    x, y, bw, bh = bbox
+    assert x + bw <= 35 and y + bh <= 35
+
+
 def test_find_motion_bbox_none_for_static_input():
     h, w = 20, 30
     frames = [_solid_frame(h, w, 50) for _ in range(4)]
