@@ -90,9 +90,11 @@ reusing that QR-rendering code verbatim.
   handled the same way `pendulastic_imu_server.py` already tolerates a quiet/dropped Sensor Stream
   socket today — not treated as a fatal error, no crash, device simply stops producing until (if
   ever) the page reconnects.
-- Two browser tabs/phones connect to the IMU WS port at once: out of scope (Section 4) — v1
-  accepts one connection at a time; a second connect can be rejected or simply overrides the first,
-  whichever is simpler to implement, decided during implementation.
+- Two browser tabs/phones connect to the IMU WS port at once: out of scope (Section 4). Unlike
+  Sensor Stream Pro's `_device_for(ip)` (which keys a device by source IP and assigns roles across
+  up to two IPs), the v1 bridge only ever feeds one fixed `_IMUDevice` — there is no role
+  assignment to do. A second incoming connection simply takes over feeding that same device; the
+  first connection's socket is closed.
 
 ## 4. Out of Scope
 
