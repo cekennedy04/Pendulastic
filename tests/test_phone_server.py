@@ -167,6 +167,39 @@ def test_stream_page_has_no_mediapipe_dependency():
     assert "mediapipe" not in pps._STREAM_PAGE.lower()
 
 
+def test_imu_page_is_well_formed_utf8_html():
+    from html.parser import HTMLParser
+    page = pps._IMU_PAGE.encode("utf-8").decode("utf-8")
+    assert page.strip().startswith("<!DOCTYPE html>")
+    HTMLParser().feed(page)   # raises on structurally broken markup
+
+
+def test_imu_page_requests_motion_permission_and_uses_gravity_inclusive_accel():
+    page = pps._IMU_PAGE
+    assert "DeviceMotionEvent.requestPermission" in page
+    assert "accelerationIncludingGravity" in page
+    assert "event.acceleration." not in page   # must not use the gravity-excluded property
+
+
+def test_imu_page_uses_wake_lock_and_reconnects():
+    page = pps._IMU_PAGE
+    assert "wakeLock" in page
+    assert "navigator.wakeLock.request" in page
+    assert "onclose" in page and "setTimeout" in page   # reconnect-with-backoff, mirrors camera page
+
+
+def test_imu_page_connects_to_same_origin_wss_imu_ws_path():
+    assert "wss://' + location.host + '/imu_ws'" in pps._IMU_PAGE
+
+
+def test_imu_page_maps_rotation_rate_axes_correctly():
+    """DeviceMotionEvent.rotationRate's axis names do not map 1:1 by
+    position -- beta is rotation around X, gamma around Y, alpha around Z
+    (spec Section 3.3). Pin the exact mapping so a future edit can't
+    silently swap it."""
+    assert "gyro:  {x: r.beta, y: r.gamma, z: r.alpha}" in pps._IMU_PAGE
+
+
 def test_forward_imu_batch_dispatches_accel_and_gyro(monkeypatch):
     calls = []
     monkeypatch.setattr(pps.imu_server, "_dispatch",

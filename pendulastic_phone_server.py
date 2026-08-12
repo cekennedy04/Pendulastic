@@ -1447,6 +1447,123 @@ init();
 """
 
 
+# ─── minimal phone-IMU streaming page (accel + gyro only, no camera) ──────────
+
+_IMU_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Pendulastic — Phone IMU</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e2e8f0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center}
+#status{font-size:16px;margin-bottom:16px;text-align:center;padding:0 24px}
+#start{font-size:18px;padding:14px 32px;border-radius:10px;border:none;
+  background:#2563eb;color:#fff;cursor:pointer}
+#start:disabled{background:#475569}
+#error{display:none;color:#fca5a5;padding:16px 24px;text-align:center;font-size:14px}
+</style>
+</head>
+<body>
+<div id="status">Tap Start, then keep this tab open and the screen on.</div>
+<button id="start">Start Streaming</button>
+<div id="error"></div>
+<script>
+const statusEl = document.getElementById('status');
+const errorEl  = document.getElementById('error');
+const startBtn = document.getElementById('start');
+
+let ws = null, closedByUser = false, backoff = 500, wakeLock = null;
+let sendBuf = [];
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = 'block';
+}
+
+async function acquireWakeLock() {
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) { /* not fatal -- streaming still works, screen may just sleep */ }
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && ws) await acquireWakeLock();
+});
+
+function connectWs() {
+  if (closedByUser) return;
+  statusEl.textContent = 'Connecting...';
+  ws = new WebSocket('wss://' + location.host + '/imu_ws');
+
+  ws.onopen = () => {
+    statusEl.textContent = 'Streaming';
+    backoff = 500;
+  };
+  ws.onerror = () => { statusEl.textContent = 'Connection error'; };
+  ws.onclose = () => {
+    if (closedByUser) return;
+    statusEl.textContent = 'Reconnecting...';
+    setTimeout(connectWs, backoff);
+    backoff = Math.min(backoff * 2, 8000);
+  };
+}
+
+function flushBuffer() {
+  if (ws && ws.readyState === WebSocket.OPEN && sendBuf.length) {
+    ws.send(JSON.stringify({batch: sendBuf}));
+    sendBuf = [];
+  }
+}
+setInterval(flushBuffer, 50);   // batch at ~20Hz to keep message count low
+
+function onMotion(event) {
+  const a = event.accelerationIncludingGravity;
+  const r = event.rotationRate;
+  if (!a || a.x === null || !r || r.beta === null) return;
+  sendBuf.push({
+    ts: event.timeStamp,
+    accel: {x: a.x, y: a.y, z: a.z},
+    gyro:  {x: r.beta, y: r.gamma, z: r.alpha},
+  });
+}
+
+async function start() {
+  startBtn.disabled = true;
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined'
+        && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const result = await DeviceMotionEvent.requestPermission();
+      if (result !== 'granted') {
+        showError('Motion permission denied. Reload this page and tap Start again to retry.');
+        startBtn.disabled = false;
+        return;
+      }
+    }
+    await acquireWakeLock();
+    window.addEventListener('devicemotion', onMotion);
+    connectWs();
+    startBtn.style.display = 'none';
+  } catch (e) {
+    showError('Could not start motion streaming: ' + e.message);
+    startBtn.disabled = false;
+  }
+}
+
+if (typeof DeviceMotionEvent === 'undefined') {
+  showError('This browser does not support motion sensors.');
+  startBtn.disabled = true;
+} else {
+  startBtn.addEventListener('click', start);
+}
+</script>
+</body>
+</html>
+"""
+
+
 # ─── single-port HTTPS + WS stream server ──────────────────────────────────────
 
 class _StreamHandler(BaseHTTPRequestHandler):
