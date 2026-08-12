@@ -201,6 +201,17 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     }
 
 
+def release_lag_sec(ref_t: float, test_t: float) -> float:
+    """Time offset to shift a test trace by so its release aligns with the
+    reference trace's release: shifted_test_t = test_t + release_lag_sec(...)
+    matches compare_pair()'s lag_override_sec convention directly."""
+    ref_t = float(ref_t)
+    test_t = float(test_t)
+    if not (math.isfinite(ref_t) and math.isfinite(test_t)):
+        raise ValueError("ref_t and test_t must both be finite.")
+    return ref_t - test_t
+
+
 _PT_PARAM_KEYS = ("R2n", "N", "phi_max_ratio", "omega_max_n", "f",
                   "area_ratio", "omega_min_n")
 
@@ -861,5 +872,21 @@ def annotations_to_csv_rows(annotations: dict, participant_id: str,
             "label": label,
             "frame_index": int(frame_index),
             "t_sec": float(t_sec),
+        })
+    return fieldnames, rows
+
+
+def release_marks_to_csv_rows(release_marks: dict, participant_id: str,
+                              session_date: str) -> tuple:
+    """One row per per-trace release mark from WorkbenchView.get_release_marks()."""
+    fieldnames = ["participant_id", "session_date", "label", "t_trace", "source"]
+    rows = []
+    for label, mark in release_marks.items():
+        rows.append({
+            "participant_id": participant_id,
+            "session_date": session_date,
+            "label": label,
+            "t_trace": float(mark["t_trace"]),
+            "source": mark["source"],
         })
     return fieldnames, rows

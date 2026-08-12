@@ -799,6 +799,12 @@ class AcquisitionPanel(tk.Frame):
             self.canvas_tele.grid_remove()
 
     def enter_processing(self, message: str = "Running MediaPipe tracking…") -> None:
+        # Locks the whole form, including btn_back -- without this, a
+        # clinician could navigate to mode select while a trial was still
+        # processing in the background, orphaning it and (in multi-trial
+        # mode) leaving btn_start stuck disabled once that background
+        # thread later finished with nothing left to finalize into.
+        self._lock_form(True)
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="disabled")
         self.status_var.set(message)
@@ -2869,6 +2875,11 @@ class App(tk.Tk):
     def _enter_live_mode(self) -> None:
         self._mode_select.pack_forget()
         self._acq.pack(fill="both", expand=True)
+        # Always reset to idle on entry -- guarantees a fully usable screen
+        # (unlocked form, enabled START, fresh status text) regardless of
+        # whatever state the panel was left in previously, rather than
+        # silently inheriting it.
+        self._acq.enter_idle()
         self._state = "idle"
         # RGB defaults to checked (a routine clinical source), and
         # AcquisitionPanel's own build step only syncs the camera frame's
