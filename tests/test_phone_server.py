@@ -416,3 +416,89 @@ def test_stream_server_new_connection_replaces_old_active_one(tmp_path):
         assert pps.stream_frame_queue.empty()
     finally:
         pps.stop_stream_server()
+
+
+def test_start_imu_stream_server_serves_the_page_over_https(tmp_path):
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        assert b"200" in data.split(b"\r\n", 1)[0]
+        assert b"Start Streaming" in data
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_imu_stream_server_websocket_batch_reaches_dispatch(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append((path, ip)))
+
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        req = (
+            "GET /imu_ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(req.encode())
+        resp = sock.recv(4096)
+        assert b"101" in resp.split(b"\r\n", 1)[0]
+
+        payload = json.dumps({"batch": [
+            {"ts": 0, "accel": {"x": 0.1, "y": 9.8, "z": 0.0},
+                      "gyro":  {"x": 0.0, "y": 0.0, "z": 0.0}},
+        ]}).encode()
+        mask_key = b"\x11\x22\x33\x44"
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        plen = len(masked)
+        frame_hdr = bytes([0x81, 0x80 | plen]) if plen <= 125 else \
+            bytes([0x81, 0x80 | 126]) + _struct.pack(">H", plen)
+        sock.sendall(frame_hdr + mask_key + masked)
+
+        _time.sleep(0.3)
+        assert ("/accelerometer", "127.0.0.1") in calls
+        assert ("/gyroscope", "127.0.0.1") in calls
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_start_imu_stream_server_is_idempotent(tmp_path):
+    ip1, port1 = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    ip2, port2 = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        assert (ip1, port1) == (ip2, port2)
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_imu_stream_server_new_connection_replaces_old_active_one(tmp_path):
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock1 = _connect_tls(port)
+        req = (
+            "GET /imu_ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock1.sendall(req.encode())
+        assert b"101" in sock1.recv(4096).split(b"\r\n", 1)[0]
+
+        sock2 = _connect_tls(port)
+        sock2.sendall(req.encode())
+        assert b"101" in sock2.recv(4096).split(b"\r\n", 1)[0]
+
+        sock1.settimeout(2.0)
+        # The first connection's generation is now stale -- its read loop
+        # must exit (socket closes) rather than staying open forever.
+        data = sock1.recv(4096)
+        assert data == b""
+    finally:
+        pps.stop_imu_stream_server()
