@@ -1520,6 +1520,7 @@ function flushBuffer() {
 setInterval(flushBuffer, 50);   // batch at ~20Hz to keep message count low
 
 function onMotion(event) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const a = event.accelerationIncludingGravity;
   const r = event.rotationRate;
   if (!a || a.x === null || !r || r.beta === null) return;
