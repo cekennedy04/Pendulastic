@@ -43,6 +43,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+import pendulastic_imu_server as imu_server
+
 PORT_HTTP: int = 8877
 PORT_WS:   int = 8878
 
@@ -273,6 +275,49 @@ def build_ws_text_frame(text: str) -> bytes:
 
 def build_ws_close_frame() -> bytes:
     return _build_ws_frame(0x8, b"")
+
+
+def _forward_imu_batch(batch, ip: str) -> int:
+    """Decode one browser IMU batch message and forward each sample into
+    pendulastic_imu_server._dispatch() -- the same entry point Sensor Stream
+    Pro's own connection handler already calls, so every downstream
+    consumer (AHRS fusion, calibration, recording) is unmodified.
+
+    Timestamps sent to _dispatch() are this server's own receipt-time in
+    epoch ms, NOT the browser's event.timeStamp -- _payload_ts()'s
+    seconds-vs-ms heuristic (anything under ~1e11 is treated as seconds and
+    multiplied by 1000) is built for epoch-scale Sensor-Stream-Pro
+    timestamps and would silently corrupt a browser's small,
+    page-load-relative event.timeStamp by 1000x.
+
+    Never raises -- malformed input yields 0 forwarded samples."""
+    if not isinstance(batch, dict):
+        return 0
+    samples = batch.get("batch")
+    if not isinstance(samples, list):
+        return 0
+
+    n = 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        accel = sample.get("accel")
+        gyro  = sample.get("gyro")
+        if not isinstance(accel, dict) or not isinstance(gyro, dict):
+            continue
+        try:
+            ax, ay, az = float(accel["x"]), float(accel["y"]), float(accel["z"])
+            gx, gy, gz = float(gyro["x"]),  float(gyro["y"]),  float(gyro["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        ts_ms = int(time.time() * 1000)
+        imu_server._dispatch("/accelerometer",
+                             json.dumps({"Timestamp": ts_ms, "x": ax, "y": ay, "z": az}), ip)
+        imu_server._dispatch("/gyroscope",
+                             json.dumps({"Timestamp": ts_ms, "x": gx, "y": gy, "z": gz}), ip)
+        n += 1
+    return n
 
 
 def parse_stream_frame_payload(payload: bytes) -> tuple[int, int, bytes]:

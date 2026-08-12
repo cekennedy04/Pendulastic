@@ -167,6 +167,67 @@ def test_stream_page_has_no_mediapipe_dependency():
     assert "mediapipe" not in pps._STREAM_PAGE.lower()
 
 
+def test_forward_imu_batch_dispatches_accel_and_gyro(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append((path, json.loads(message), ip)))
+    monkeypatch.setattr(pps.time, "time", lambda: 1723456789.0)
+
+    batch = {"batch": [
+        {"ts": 1234.5,
+         "accel": {"x": 0.12, "y": 9.81, "z": 0.05},
+         "gyro":  {"x": 0.01, "y": -0.02, "z": 0.0}},
+    ]}
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+
+    assert n == 1
+    assert len(calls) == 2
+    accel_call = next(c for c in calls if c[0] == "/accelerometer")
+    gyro_call  = next(c for c in calls if c[0] == "/gyroscope")
+    assert accel_call[2] == "10.0.0.5"
+    assert accel_call[1]["x"] == 0.12
+    assert accel_call[1]["y"] == 9.81
+    assert accel_call[1]["z"] == 0.05
+    assert accel_call[1]["Timestamp"] == 1723456789000
+    assert gyro_call[1]["x"] == 0.01
+    assert gyro_call[1]["Timestamp"] == 1723456789000
+
+
+def test_forward_imu_batch_processes_multiple_samples_in_order(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append(path))
+    monkeypatch.setattr(pps.time, "time", lambda: 1000.0)
+
+    batch = {"batch": [
+        {"ts": 0, "accel": {"x": 0, "y": 0, "z": 0}, "gyro": {"x": 0, "y": 0, "z": 0}},
+        {"ts": 10, "accel": {"x": 1, "y": 1, "z": 1}, "gyro": {"x": 1, "y": 1, "z": 1}},
+    ]}
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+
+    assert n == 2
+    assert calls == ["/accelerometer", "/gyroscope", "/accelerometer", "/gyroscope"]
+
+
+def test_forward_imu_batch_missing_batch_key_returns_zero():
+    assert pps._forward_imu_batch({}, "10.0.0.5") == 0
+
+
+def test_forward_imu_batch_skips_sample_missing_accel_or_gyro(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append(path))
+    batch = {"batch": [{"ts": 0, "accel": {"x": 0, "y": 0, "z": 0}}]}   # no gyro
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+    assert n == 0
+    assert calls == []
+
+
+def test_forward_imu_batch_not_a_dict_returns_zero():
+    assert pps._forward_imu_batch("not a dict", "10.0.0.5") == 0
+    assert pps._forward_imu_batch(None, "10.0.0.5") == 0
+
+
 import json
 import ssl as _ssl
 import socket as _socket
