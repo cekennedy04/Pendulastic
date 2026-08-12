@@ -88,10 +88,17 @@ def _process_frame(frame_bgr, i, fps, rotate_deg, landmarker, candidate, tracker
     candidate's chosen pose's PIXEL-space (not normalized) hip/knee/ankle
     coordinates -- required for mp_pre.knee_angle_from_points()'s
     rotation-invariance property to actually hold for the rotate_+90/
-    rotate_-90 candidates (see that function's docstring)."""
+    rotate_-90 candidates (see that function's docstring).
+
+    Returns (row, exc): exc is the caught exception object, or None when
+    extraction succeeded for this frame. The caller aggregates these across
+    a trial so a non-zero per-frame failure count gets one visible warning
+    instead of silently producing an all-None row indistinguishable from
+    "the model legitimately found no person"."""
     t_sec = i / fps
     row = {"t": t_sec, "hip_px": None, "knee_px": None, "ankle_px": None,
            "hip_v": 0.0, "knee_v": 0.0, "ankle_v": 0.0}
+    exc = None
     try:
         proc_frame = (mp_pre.rotate_to_upright(frame_bgr, rotate_deg)
                      if rotate_deg else frame_bgr)
@@ -109,12 +116,12 @@ def _process_frame(frame_bgr, i, fps, rotate_deg, landmarker, candidate, tracker
                 ankle_px=(al.x * fw, al.y * fh),
                 hip_v=float(hl.visibility), knee_v=float(kl.visibility),
                 ankle_v=float(al.visibility))
-    except Exception:
-        pass
-    return row
+    except Exception as e:
+        exc = e
+    return row, exc
 
 
-def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate):
+def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate, trial_key="?"):
     """Runs one video through MediaPipe for the given candidate's
     preprocessing, returning per-frame dicts (see _process_frame).
 
@@ -137,7 +144,15 @@ def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate):
     sweep_mediapipe_config.py's existing pattern), since holding a full
     1080p 30s trial's decoded frames in RAM (~5.6GB) five times per trial --
     once per candidate -- when four of the five candidates don't need it is
-    wasteful."""
+    wasteful.
+
+    `trial_key` (defaults to "?" when the caller doesn't have one, e.g. a
+    direct unit-test call) is only used to label the per-frame-failure
+    warning below -- if any frame in this trial raised inside
+    _process_frame, that's logged once here with the failure count and the
+    first exception seen, rather than being silently swallowed. This makes
+    "the crop degraded to a pathological image and every frame legitimately
+    failed" distinguishable from "the model just didn't find a person"."""
     h_idx, k_idx, a_idx = bm.MP_LEG_IDX[leg]
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -146,6 +161,16 @@ def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate):
     rotate_deg = candidate.get("rotate_deg", 0)
     tracker = pit.PatientIdentityTracker(h_idx, k_idx, a_idx)
     frames_out = []
+    frame_error_count = 0
+    first_frame_exc = None
+
+    def _record(row, exc):
+        nonlocal frame_error_count, first_frame_exc
+        if exc is not None:
+            frame_error_count += 1
+            if first_frame_exc is None:
+                first_frame_exc = exc
+        frames_out.append(row)
 
     if candidate["key"] == "crop":
         raw_frames = []
@@ -160,21 +185,27 @@ def extract_landmarks_for_candidate(video_path, leg, landmarker, candidate):
         raw_frames = mp_pre.crop_to_moving_leg(raw_frames, fps)
 
         for i, frame_bgr in enumerate(raw_frames):
-            frames_out.append(_process_frame(
+            _record(*_process_frame(
                 frame_bgr, i, fps, rotate_deg, landmarker, candidate,
                 tracker, h_idx, k_idx, a_idx))
-        return frames_out
+    else:
+        i = 0
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+            _record(*_process_frame(
+                frame_bgr, i, fps, rotate_deg, landmarker, candidate,
+                tracker, h_idx, k_idx, a_idx))
+            i += 1
+        cap.release()
 
-    i = 0
-    while True:
-        ok, frame_bgr = cap.read()
-        if not ok:
-            break
-        frames_out.append(_process_frame(
-            frame_bgr, i, fps, rotate_deg, landmarker, candidate,
-            tracker, h_idx, k_idx, a_idx))
-        i += 1
-    cap.release()
+    if frame_error_count:
+        total = len(frames_out)
+        print(f"  [warn] {trial_key} / {candidate['key']}: "
+             f"{frame_error_count}/{total} frames raised; "
+             f"first error: {first_frame_exc!r}")
+
     return frames_out
 
 
@@ -192,13 +223,25 @@ def angles_from_raw(frames, vis_thresh):
 
 
 def score_candidate(video_path, leg, landmarker, candidate, opti_t, opti_ang,
-                    vis_thresh=VIS_THRESH):
-    frames = extract_landmarks_for_candidate(video_path, leg, landmarker, candidate)
+                    vis_thresh=VIS_THRESH, trial_key="?"):
+    """Score one (trial, candidate) pair. Returns (rmse_deg, reason):
+    rmse_deg is None and reason names why whenever no usable RMSE could be
+    produced (too few finite pixel-space samples on this side, or
+    compare_pair's own finite-sample/active-window guard on its side) --
+    letting the caller log a specific, non-silent skip reason instead of
+    just dropping the trial (this "scored but returned no usable result"
+    path turned out to be the overwhelmingly common cause of dropped
+    trials, not exceptions)."""
+    frames = extract_landmarks_for_candidate(
+        video_path, leg, landmarker, candidate, trial_key=trial_key)
     t_m, ang_m = angles_from_raw(frames, vis_thresh)
-    if np.count_nonzero(np.isfinite(ang_m)) < 10:
-        return None
+    n_finite = int(np.count_nonzero(np.isfinite(ang_m)))
+    if n_finite < 10:
+        return None, f"too few finite samples: {n_finite}/10 minimum"
     result = engine.compare_pair(opti_t, opti_ang, t_m, ang_m)
-    return result["rmse_deg"] if result.get("status") == "ok" else None
+    if result.get("status") != "ok":
+        return None, f"compare_pair status: {result.get('status')!r} ({result.get('error', '')})"
+    return result["rmse_deg"], None
 
 
 def _load_cache():
@@ -320,28 +363,48 @@ def main():
                     print(f"  [skip] {trial['trial_key']}: OptiTrack load failed: {e}")
                     continue
 
-                cache_key = _cache_key(trial, candidate["key"], model_path, stat_cache, impl_fp)
-                if cache_key in cache:
-                    rmse = cache[cache_key]
-                else:
-                    try:
-                        rmse = score_candidate(trial["video_path"], trial["leg"], landmarker,
-                                               candidate, opti_t, opti_ang)
-                    except Exception as e:
-                        print(f"  [error] {trial['trial_key']} / {candidate['key']}: {e}")
-                        rmse = None
-                    # Only memoize a real result. A None here can be a
-                    # transient failure (file lock, OOM, a momentarily-
-                    # missing model file) -- caching it would permanently
-                    # skip this (trial, candidate) pair on every future run
-                    # until some hash changes, rather than retrying it next
-                    # time.
-                    if rmse is not None:
-                        cache[cache_key] = rmse
+                # Cache-key computation (file hashing via
+                # rpc.compute_input_fingerprints -> os.stat) lives inside
+                # this same try/except as the rest of the trial's scoring:
+                # a missing/momentarily-locked video or model file at
+                # exactly this moment must be logged-and-skipped like every
+                # other per-trial failure, not abort the entire sweep.
+                rmse = None
+                try:
+                    cache_key = _cache_key(trial, candidate["key"], model_path,
+                                           stat_cache, impl_fp)
+                    if cache_key in cache:
+                        rmse = cache[cache_key]
+                    else:
+                        rmse, reason = score_candidate(
+                            trial["video_path"], trial["leg"], landmarker, candidate,
+                            opti_t, opti_ang, trial_key=trial["trial_key"])
+                        if rmse is None:
+                            print(f"  [skip] {trial['trial_key']} / {candidate['key']}: {reason}")
+                        else:
+                            # Only memoize a real result. A None here can be
+                            # a transient failure (file lock, OOM, a
+                            # momentarily-missing model file) -- caching it
+                            # would permanently skip this (trial, candidate)
+                            # pair on every future run until some hash
+                            # changes, rather than retrying it next time.
+                            cache[cache_key] = rmse
+                except Exception as e:
+                    print(f"  [error] {trial['trial_key']} / {candidate['key']}: {e}")
+                    rmse = None
+
                 if rmse is not None:
                     rmses.append(rmse)
 
-        _save_cache(cache)
+                # Checkpoint after every trial, not just after the whole
+                # candidate: a json.dump of this small dict + os.replace
+                # costs single-digit milliseconds against ~15+ seconds of
+                # real MediaPipe inference per trial, so there is no
+                # meaningful performance cost -- and an interrupted
+                # multi-hour run (session/environment issues, not code
+                # bugs, have killed real runs mid-candidate before) never
+                # loses more than one trial's worth of work.
+                _save_cache(cache)
         summary = _summarize_candidate(rmses, len(trials))
 
         rows.append({

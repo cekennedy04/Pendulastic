@@ -14,6 +14,12 @@ import numpy as np
 CROP_BASELINE_SEC = 3.0
 CROP_PAD_FRACTION = 0.20
 MOTION_DIFF_THRESHOLD = 15.0
+# If the largest connected motion component still covers more than this
+# fraction of the frame area, treat it the same as "no clear motion region
+# found" -- a component that big is not a localized moving leg, it's most of
+# the frame (e.g. camera shake, lighting flicker, or a genuinely degenerate
+# input), and cropping to it would not meaningfully isolate anything.
+MOTION_BBOX_MAX_FRAME_FRACTION = 0.80
 
 
 def rotate_to_upright(frame, angle_deg):
@@ -52,13 +58,27 @@ def knee_angle_from_points(hip_px, knee_px, ankle_px):
 
 
 def _find_motion_bbox(frames):
-    """Bounding box (x, y, w, h) in pixel coordinates of the region with
-    the highest cumulative motion across `frames` (BGR or grayscale numpy
+    """Bounding box (x, y, w, h) in pixel coordinates of the largest
+    connected region of motion across `frames` (BGR or grayscale numpy
     arrays, len(frames) >= 2 required). A pixel counts as "moving" when its
     mean absolute frame-to-frame grayscale difference exceeds
-    MOTION_DIFF_THRESHOLD. Returns None if no pixel exceeds that threshold
-    (degenerate/all-still input, or fewer than 2 frames) -- never guesses a
-    box."""
+    MOTION_DIFF_THRESHOLD.
+
+    This is a genuine connected-component selection, not the global
+    min/max extent of every above-threshold pixel: a small morphological
+    open first rejects isolated noise pixels, then
+    cv2.connectedComponentsWithStats() labels the remaining thresholded
+    mask and the single largest-area foreground component (by
+    cv2.CC_STAT_AREA) is used to build the box, via its
+    CC_STAT_LEFT/TOP/WIDTH/HEIGHT stats -- so a small, isolated moving leg
+    is not conflated with unrelated scattered motion (an assessor's hand,
+    background clutter, sensor noise) elsewhere in the frame.
+
+    Returns None if no pixel exceeds the threshold, fewer than 2 frames are
+    given, or the largest connected component still covers more than
+    MOTION_BBOX_MAX_FRAME_FRACTION of the frame area -- that last case is
+    treated the same as "no clear motion region found" (never guesses a
+    box)."""
     if len(frames) < 2:
         return None
     gray = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) if f.ndim == 3 else f
@@ -67,13 +87,33 @@ def _find_motion_bbox(frames):
     for a, b in zip(gray[:-1], gray[1:]):
         accum += np.abs(a.astype(np.float64) - b.astype(np.float64))
     mean_motion = accum / (len(frames) - 1)
-    mask = mean_motion > MOTION_DIFF_THRESHOLD
+    mask = (mean_motion > MOTION_DIFF_THRESHOLD).astype(np.uint8)
     if not np.any(mask):
         return None
-    ys, xs = np.where(mask)
-    x0, x1 = int(xs.min()), int(xs.max())
-    y0, y1 = int(ys.min()), int(ys.max())
-    return (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+
+    kernel = np.ones((3, 3), np.uint8)
+    opened = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    if not np.any(opened):
+        return None
+
+    n_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(opened)
+    if n_labels < 2:
+        # Only the background label (0) survived -- no foreground component.
+        return None
+
+    # Label 0 is always background; pick the largest-area label from 1..N-1.
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    largest_label = int(np.argmax(areas)) + 1
+    x = int(stats[largest_label, cv2.CC_STAT_LEFT])
+    y = int(stats[largest_label, cv2.CC_STAT_TOP])
+    w = int(stats[largest_label, cv2.CC_STAT_WIDTH])
+    h = int(stats[largest_label, cv2.CC_STAT_HEIGHT])
+
+    frame_area = mask.shape[0] * mask.shape[1]
+    if (w * h) > MOTION_BBOX_MAX_FRAME_FRACTION * frame_area:
+        return None
+
+    return (x, y, w, h)
 
 
 def crop_to_moving_leg(frames, fps):
