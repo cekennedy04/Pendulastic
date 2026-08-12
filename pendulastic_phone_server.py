@@ -52,6 +52,7 @@ CLOCK_SYNC_WINDOW = 10
 CLOCK_SYNC_MAD_K  = 3.0
 
 PORT_STREAM_HTTPS = 8880
+PORT_IMU_HTTPS = 8881
 STREAM_RESOLUTION = (1280, 720)
 STREAM_JPEG_QUALITY = 0.7
 CLOCK_SYNC_INITIAL_ROUNDS = 5
@@ -76,6 +77,15 @@ _stream_active_generation = 0   # bumped by each new WS connection; lets an
                                  # notice it's been superseded and stop
                                  # contributing frames (spec: only one phone
                                  # connection is active at a time).
+
+_imu_server = None
+_imu_thread = None
+_imu_running = False
+_imu_local_ip = "127.0.0.1"
+_imu_port = PORT_IMU_HTTPS
+_imu_active_generation = 0   # bumped by each new WS connection; lets an
+                             # older, still-technically-open connection
+                             # notice it's been superseded and stop
 
 # Uploaded video paths — one entry per completed upload.
 upload_queue: "queue.Queue[str]" = queue.Queue()
@@ -1733,6 +1743,115 @@ def stop_stream_server() -> None:
             stream_frame_queue.get_nowait()
         except Exception:
             break
+
+
+class _ImuStreamHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self._handle_ws_upgrade()
+            return
+        page = _IMU_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.end_headers()
+        self.wfile.write(page)
+
+    def _handle_ws_upgrade(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = compute_ws_accept_key(key)
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self._serve_imu_connection()
+
+    def _serve_imu_connection(self) -> None:
+        global _imu_active_generation
+        _imu_active_generation += 1
+        my_generation = _imu_active_generation
+        source_ip = self.client_address[0]
+
+        self.connection.settimeout(1.0)
+
+        def recv_exact(n: int) -> bytes:
+            buf = b""
+            while len(buf) < n:
+                chunk = self.rfile.read(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("peer closed")
+                buf += chunk
+            return buf
+
+        try:
+            while True:
+                if my_generation != _imu_active_generation:
+                    # A newer phone connection has taken over.
+                    break
+                try:
+                    opcode, payload = read_ws_frame(recv_exact)
+                except socket.timeout:
+                    continue
+
+                if my_generation != _imu_active_generation:
+                    break
+
+                if opcode == 0x8:
+                    break
+                elif opcode == 0x9:
+                    self.wfile.write(_build_ws_frame(0xA, payload[:125]))
+                elif opcode == 0x1:
+                    try:
+                        batch = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        continue
+                    _forward_imu_batch(batch, source_ip)
+        except Exception:
+            pass
+
+    def log_message(self, *_):
+        pass
+
+
+def start_imu_stream_server(cert_dir: str | None = None, port: int | None = None) -> tuple[str, int]:
+    """Start the single-port HTTPS+WS phone-IMU stream server. Idempotent."""
+    global _imu_server, _imu_thread, _imu_running, _imu_local_ip, _imu_port
+
+    if _imu_running:
+        return _imu_local_ip, _imu_port
+
+    if cert_dir is None:
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".certs")
+    bind_port = port if port is not None else PORT_IMU_HTTPS
+
+    _imu_local_ip = get_local_ip()
+    cert_path, key_path = get_or_create_self_signed_cert(cert_dir, _imu_local_ip)
+
+    server = _ThreadingHTTPSServer(("0.0.0.0", bind_port), _ImuStreamHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    _imu_server = server
+    _imu_port   = server.server_address[1]
+    _imu_thread = threading.Thread(target=server.serve_forever, daemon=True, name="pps-imu")
+    _imu_thread.start()
+    _imu_running = True
+    return _imu_local_ip, _imu_port
+
+
+def stop_imu_stream_server() -> None:
+    global _imu_server, _imu_running
+    _imu_running = False
+    try:
+        if _imu_server:
+            _imu_server.shutdown()
+            _imu_server.server_close()
+    except Exception:
+        pass
+    _imu_server = None
 
 
 # ─── HTTP server ──────────────────────────────────────────────────────────────
