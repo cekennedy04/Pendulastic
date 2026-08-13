@@ -100,6 +100,11 @@ except Exception:
     resolve_person_click = None
     _VIEWER_AVAIL = False
 
+try:
+    from video_review_dialog import AnnotatedVideoReviewDialog
+except Exception:
+    AnnotatedVideoReviewDialog = None
+
 _mp_pose = _mp_draw = _mp_styles = None
 try:
     import mediapipe as _mp
@@ -1827,16 +1832,25 @@ class PostProcessingPanel(tk.Frame):
             angles, landmarks, video_fps = engine.run_offline_track(
                 path, _progress, leg=leg.lower(), collect_landmarks=True,
                 manual_seed=manual_seed)
-            self.after(0, lambda: self._add_hpe_overlay(angles, landmarks, fps=video_fps))
+            self.after(0, lambda: self._add_hpe_overlay(
+                angles, landmarks, fps=video_fps, engine=engine))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _add_hpe_overlay(self, angles: list, landmarks: list | None = None,
-                          fps: float = 30.0) -> None:
+                          fps: float = 30.0, engine=None) -> None:
         if not angles:
             self.status_var.set(
                 "HPE: no pose detected — check video or leg selection.")
             return
+        if landmarks and engine is not None and self._video_path \
+                and AnnotatedVideoReviewDialog is not None:
+            dialog = AnnotatedVideoReviewDialog(
+                self, self._video_path, angles, landmarks, fps or self._fps,
+                self._hpe_leg, engine)
+            self.wait_window(dialog)
+            angles = dialog.angles
+            landmarks = dialog.landmarks
         self._source_angles["hpe_upload"] = angles
         self._hpe_landmarks = landmarks
         if not self._fps:

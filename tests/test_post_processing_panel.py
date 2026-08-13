@@ -296,6 +296,15 @@ def test_on_upload_video_zero_people_uses_automatic_fallback(monkeypatch, tmp_pa
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
 
+    class _PassthroughReviewDialog:
+        def __init__(self, parent, video_path, angles, landmarks, fps, leg, engine):
+            self.angles = angles
+            self.landmarks = landmarks
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "AnnotatedVideoReviewDialog", _PassthroughReviewDialog)
+    monkeypatch.setattr(p, "wait_window", lambda dlg: None)
+
     p._on_upload_video()
     r.update()
 
@@ -343,6 +352,15 @@ def test_on_upload_video_one_person_computes_manual_seed(monkeypatch, tmp_path):
         return ([170.0] * 5, [None] * 5, 30.0)
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
+
+    class _PassthroughReviewDialog:
+        def __init__(self, parent, video_path, angles, landmarks, fps, leg, engine):
+            self.angles = angles
+            self.landmarks = landmarks
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "AnnotatedVideoReviewDialog", _PassthroughReviewDialog)
+    monkeypatch.setattr(p, "wait_window", lambda dlg: None)
 
     p._on_upload_video()
     r.update()
@@ -436,3 +454,65 @@ def test_back_button_routes_to_new_trial_by_default():
     p.pack(fill="both", expand=True); r.update()
     p._on_new_trial()
     assert calls == ["new_trial"]
+
+
+def test_on_upload_video_opens_review_dialog_and_uses_corrected_results(monkeypatch, tmp_path):
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    video_path = str(tmp_path / "fake.mp4")
+    monkeypatch.setattr(_app.filedialog, "askopenfilename", lambda **kw: video_path)
+    monkeypatch.setattr(_app.threading, "Thread", _SyncThread)
+    monkeypatch.setattr(
+        _app.BiomechanicalEngine, "detect_people_at_frame",
+        lambda self, path, frame_index=0: (None, []))
+
+    def _fake_run_offline_track(self, path, progress_cb, leg="right",
+                                 collect_landmarks=False, manual_seed=None,
+                                 start_frame=0):
+        progress_cb(1.0)
+        return ([170.0] * 5, [None] * 5, 30.0)
+    monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
+                         _fake_run_offline_track)
+
+    opened = {}
+    class _StubReviewDialog:
+        def __init__(self, parent, video_path, angles, landmarks, fps, leg, engine):
+            opened["video_path"] = video_path
+            opened["angles"] = angles
+            self.angles = [999.0] * len(angles)   # simulate a user correction
+            self.landmarks = landmarks
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "AnnotatedVideoReviewDialog", _StubReviewDialog)
+    monkeypatch.setattr(p, "wait_window", lambda dlg: None)
+
+    p._on_upload_video()
+    r.update()
+
+    assert opened["video_path"] == video_path
+    assert p._source_angles["hpe_upload"] == [999.0] * 5
+
+
+def test_add_hpe_overlay_skips_dialog_when_no_landmarks(monkeypatch):
+    """Existing no-landmarks callers (e.g. a failed track) must not try to
+    open a review dialog at all."""
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+
+    opened = {"called": False}
+    class _StubReviewDialog:
+        def __init__(self, *a, **kw):
+            opened["called"] = True
+    monkeypatch.setattr(_app, "AnnotatedVideoReviewDialog", _StubReviewDialog)
+
+    p._add_hpe_overlay([170.0] * 3, landmarks=None, fps=30.0, engine=None)
+
+    assert opened["called"] is False
+    assert p._source_angles["hpe_upload"] == [170.0] * 3
