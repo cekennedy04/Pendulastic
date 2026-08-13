@@ -232,10 +232,14 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self.status_var.set(f"Retracking from frame {start_frame}...")
 
         def _run():
-            new_angles, new_landmarks, _fps = self.engine.run_offline_track(
-                self.video_path, lambda p: None, leg=self.leg,
-                collect_landmarks=True, manual_seed=seed,
-                start_frame=start_frame)
+            try:
+                new_angles, new_landmarks, _fps = self.engine.run_offline_track(
+                    self.video_path, lambda p: None, leg=self.leg,
+                    collect_landmarks=True, manual_seed=seed,
+                    start_frame=start_frame)
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._on_retrack_failed(exc))
+                return
             self.after(0, lambda: self._on_retrack_done(
                 start_frame, new_angles, new_landmarks))
 
@@ -251,3 +255,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_fix.config(state="normal")
         self.status_var.set(f"Retrack complete from frame {start_frame}.")
         self._redraw()
+
+    def _on_retrack_failed(self, exc: Exception) -> None:
+        self._retrack_in_progress = False
+        self._btn_fix.config(state="normal")
+        self.status_var.set(f"Retrack failed: {exc}")

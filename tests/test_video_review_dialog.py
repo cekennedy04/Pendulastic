@@ -493,3 +493,38 @@ def test_retrack_in_progress_blocks_a_second_fix_call(tmp_path, monkeypatch):
     dlg._on_fix_person_here()  # must no-op, not raise
 
     dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_retrack_engine_failure_clears_in_progress_and_shows_status(tmp_path, monkeypatch):
+    """A raising run_offline_track must not leave the dialog permanently
+    stuck -- _retrack_in_progress must clear and the Fix button must
+    re-enable, with a status message explaining the failure."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    video_path = str(tmp_path / "fix6.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    class _RaisingEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, *a, **kw):
+            raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_RaisingEngine())
+
+    dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _on_retrack_failed needs
+
+    assert dlg._retrack_in_progress is False
+    assert dlg._btn_fix["state"] == "normal"
+    assert "decoder exploded" in dlg.status_var.get()
+    dlg.destroy()
