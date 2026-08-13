@@ -16,6 +16,8 @@ import os
 import re
 import sys
 
+from datetime import datetime, timezone
+
 import matplotlib
 # pendulastic_app.py sets the TkAgg backend for its own embedded, live
 # figures before ever importing this module; forcing Agg here would yank
@@ -37,6 +39,7 @@ OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "PT_Scores")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 OPTI_ROOT = os.path.join(BASE_DIR, "OptiTrack_Recordings")
+REC_ROOT = os.path.join(BASE_DIR, "Recordings")
 ARCHIVE_ROOT = (r"C:\Users\cladi\OneDrive\Desktop\Shirley Ryan\Pendulastic_7_28_Archive"
                 r"\Optitrack recordings")
 
@@ -237,6 +240,14 @@ def _parse_trial_path(csv_path, root):
 
 
 EXCLUDED_TRIALS_PATH = os.path.join(BASE_DIR, "excluded_trials.json")
+TRIAL_QUALITY_TAGS_PATH = os.path.join(BASE_DIR, "trial_quality_tags.json")
+
+# Stratification-only tag categories (design spec
+# docs/superpowers/specs/2026-08-11-trial-quality-triage-design.md Section
+# 3) -- distinct from EXCLUDED_TRIALS_PATH's free-text reasons, which stay
+# unvalidated (existing behavior, unchanged).
+QUALITY_TAG_CATEGORIES = ("calibration_hold", "marker_occlusion", "mounting_slip",
+                          "release_contamination", "other")
 
 
 def trial_key(participant, leg, condition, trial):
@@ -262,6 +273,71 @@ def load_excluded_trials():
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _atomic_write_json(path, data):
+    """Temp-file-then-os.replace atomic write, matching
+    imu_calibration_config.save_config()'s existing pattern."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def load_quality_tags():
+    """{trial_key: {"category","details","timestamp"}} for trials tagged
+    with a quality concern. Drives stratified reporting only -- presence
+    here never removes a trial from discover_all_trials()/discover_trials()
+    (design spec Section 3). Missing or malformed file -> {}, matching
+    load_excluded_trials()'s convention."""
+    try:
+        with open(TRIAL_QUALITY_TAGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_quality_tag(key, category, details="", timestamp=None):
+    """Record (or overwrite) one trial's quality tag. Raises ValueError (no
+    write attempted) if category isn't one of QUALITY_TAG_CATEGORIES,
+    mirroring mas_validation._valid_grade()'s existing gate on mas_grade."""
+    if category not in QUALITY_TAG_CATEGORIES:
+        raise ValueError(
+            f"invalid category {category!r} (must be one of {QUALITY_TAG_CATEGORIES})")
+    tags = load_quality_tags()
+    tags[key] = {
+        "category": category,
+        "details": details,
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+    }
+    _atomic_write_json(TRIAL_QUALITY_TAGS_PATH, tags)
+
+
+def clear_quality_tag(key):
+    """Remove key's tag if present. No-op (not an error) if key isn't tagged."""
+    tags = load_quality_tags()
+    if key in tags:
+        del tags[key]
+        _atomic_write_json(TRIAL_QUALITY_TAGS_PATH, tags)
+
+
+def add_excluded_trial(key, reason):
+    """Add (or overwrite) key's hard-exclusion reason. No validation on
+    reason -- exclusion reasons have always been free text (see this file's
+    existing muscle-intervention entries); only quality tags (above) get a
+    validated category."""
+    excluded = load_excluded_trials()
+    excluded[key] = reason
+    _atomic_write_json(EXCLUDED_TRIALS_PATH, excluded)
+
+
+def clear_excluded_trial(key):
+    """Remove key's exclusion entry if present. No-op if key isn't excluded."""
+    excluded = load_excluded_trials()
+    if key in excluded:
+        del excluded[key]
+        _atomic_write_json(EXCLUDED_TRIALS_PATH, excluded)
 
 
 def trial_candidates(participant_id, include_archive=True):
