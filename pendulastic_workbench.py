@@ -361,6 +361,8 @@ class WorkbenchView(tk.Frame):
                             self._on_mark_milestone).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Save Trial to Dashboard",
                             self._on_save_trial_clicked).pack(side="right", padx=6)
+        ws.secondary_button(annot_toolbar, "Flag Trial Quality",
+                            self._on_flag_quality_clicked).pack(side="right", padx=6)
         ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
                             self._on_export_clicked).pack(side="right", padx=6)
         self._export_csv_button = tk.Menubutton(
@@ -932,6 +934,100 @@ class WorkbenchView(tk.Frame):
         button_row = tk.Frame(dialog)
         button_row.grid(row=5, column=0, columnspan=2, pady=8)
         tk.Button(button_row, text="Save", command=on_confirm).pack(side="left", padx=6)
+        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+
+    def _on_flag_quality_clicked(self) -> None:
+        trial_key = self._current_trial_key()
+        if trial_key is None:
+            messagebox.showerror(
+                "Cannot Flag Trial",
+                "Could not determine this trial's identity (participant/leg/"
+                "condition/trial number) from its OptiTrack or IMU paths -- "
+                "cannot save a quality tag or exclusion for it.")
+            return
+
+        raw_diag = self._raw_diagnostics or {}
+        opti_trace = self._traces.get("optitrack")
+        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False}
+        if opti_trace is not None:
+            ref_t, ref_angle = opti_trace
+            try:
+                opti_signals = engine.compute_optitrack_quality_signals(ref_t, ref_angle)
+            except Exception:
+                pass   # supplementary signal only -- dialog still opens without it
+        suggestion = engine.suggest_quality_tag(raw_diag, opti_signals)
+
+        existing_tags = pt_report_common.load_quality_tags()
+        existing_tag = existing_tags.get(trial_key)
+        existing_excluded = trial_key in pt_report_common.load_excluded_trials()
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Flag Trial Quality")
+        dialog.transient(self)
+
+        hold_z = raw_diag.get("hold_gravity_z_frac")
+        hold_ok = raw_diag.get("hold_stillness_ok")
+        signals_text = (
+            f"Hold gravity on Z: {f'{hold_z * 100:.0f}%' if hold_z is not None else 'unavailable'}\n"
+            f"Hold stillness gate: {'n/a' if hold_ok is None else ('passed' if hold_ok else 'FAILED')}\n"
+            f"OptiTrack dropout: {opti_signals['optitrack_dropout_frac'] * 100:.0f}%\n"
+            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}"
+        )
+        tk.Label(dialog, text=signals_text, justify="left", anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+
+        tk.Label(dialog, text="Category:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        _NEUTRAL = "No automated suggestion -- select category..."
+        category_options = [_NEUTRAL] + list(pt_report_common.QUALITY_TAG_CATEGORIES)
+        default_category = existing_tag["category"] if existing_tag else (
+            suggestion["category"] or _NEUTRAL)
+        category_var = tk.StringVar(value=default_category)
+        ttk.OptionMenu(dialog, category_var, default_category, *category_options).grid(
+            row=1, column=1, sticky="w", padx=8, pady=4)
+
+        tk.Label(dialog, text="Details:").grid(row=2, column=0, sticky="nw", padx=8, pady=4)
+        details_text = tk.Text(dialog, height=3, width=40, wrap="word")
+        details_text.insert(
+            "1.0", existing_tag["details"] if existing_tag else suggestion["details"])
+        details_text.grid(row=2, column=1, padx=8, pady=4)
+
+        exclude_var = tk.BooleanVar(value=existing_excluded)
+        tk.Checkbutton(dialog, text="Also exclude from all analysis",
+                      variable=exclude_var).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+        status_var = tk.StringVar(value="")
+        tk.Label(dialog, textvariable=status_var, fg="#B45309").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+
+        def on_save() -> None:
+            category = category_var.get()
+            if category == _NEUTRAL:
+                status_var.set("Select a category before saving.")
+                return
+            details = details_text.get("1.0", "end").strip()
+            try:
+                pt_report_common.save_quality_tag(trial_key, category, details)
+            except ValueError as e:
+                status_var.set(str(e))
+                return
+            if exclude_var.get():
+                pt_report_common.add_excluded_trial(trial_key, f"{category}: {details}")
+            else:
+                pt_report_common.clear_excluded_trial(trial_key)
+            dialog.destroy()
+            messagebox.showinfo("Flagged", f"Saved quality tag for {trial_key}.")
+
+        def on_clear() -> None:
+            pt_report_common.clear_quality_tag(trial_key)
+            pt_report_common.clear_excluded_trial(trial_key)
+            dialog.destroy()
+            messagebox.showinfo("Cleared", f"Cleared quality tag/exclusion for {trial_key}.")
+
+        button_row = tk.Frame(dialog)
+        button_row.grid(row=5, column=0, columnspan=2, pady=8)
+        tk.Button(button_row, text="Save", command=on_save).pack(side="left", padx=6)
+        tk.Button(button_row, text="Clear", command=on_clear).pack(side="left", padx=6)
         tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
 
     def load_video(self, path: str) -> None:
