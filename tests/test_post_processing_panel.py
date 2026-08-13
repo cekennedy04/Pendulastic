@@ -497,6 +497,38 @@ def test_on_upload_video_opens_review_dialog_and_uses_corrected_results(monkeypa
     assert p._source_angles["hpe_upload"] == [999.0] * 5
 
 
+def test_add_hpe_overlay_dialog_construction_failure_preserves_run(monkeypatch):
+    """Finding 2: if AnnotatedVideoReviewDialog's __init__ raises (e.g. the
+    video file was moved/deleted between upload and track completion, or a
+    PhotoImage/_draw failure on the constructor's own first _redraw()), the
+    multi-minute tracking run must not be lost. The original angles from
+    the run must still be saved to _source_angles, and the status message
+    must explain the dialog failure rather than being silently swallowed by
+    Tk's callback-exception handling."""
+    import pendulastic_app as _app
+    from pendulastic_app import PostProcessingPanel
+    r = _get_root()
+    p = PostProcessingPanel(r, _Ctrl())
+    p.pack(fill="both", expand=True)
+    p._video_path = "fake_video.mp4"
+
+    class _RaisingReviewDialog:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("video file moved")
+    monkeypatch.setattr(_app, "AnnotatedVideoReviewDialog", _RaisingReviewDialog)
+
+    fake_angles = [175.0, 160.0, 145.0] * 20
+    fake_landmarks = [((160, 60), (160, 120), (160, 200))] * 60
+
+    p._add_hpe_overlay(fake_angles, fake_landmarks, fps=30.0, engine=object())
+    r.update()
+
+    assert p._source_angles["hpe_upload"] == fake_angles
+    status = p.status_var.get().lower()
+    assert "video review unavailable" in status
+    assert "video file moved" in status
+
+
 def test_add_hpe_overlay_skips_dialog_when_no_landmarks(monkeypatch):
     """Existing no-landmarks callers (e.g. a failed track) must not try to
     open a review dialog at all."""

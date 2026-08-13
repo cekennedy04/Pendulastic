@@ -1843,14 +1843,24 @@ class PostProcessingPanel(tk.Frame):
             self.status_var.set(
                 "HPE: no pose detected — check video or leg selection.")
             return
+        review_error = None
         if landmarks and engine is not None and self._video_path \
                 and AnnotatedVideoReviewDialog is not None:
-            dialog = AnnotatedVideoReviewDialog(
-                self, self._video_path, angles, landmarks, fps or self._fps,
-                self._hpe_leg, engine)
-            self.wait_window(dialog)
-            angles = dialog.angles
-            landmarks = dialog.landmarks
+            try:
+                dialog = AnnotatedVideoReviewDialog(
+                    self, self._video_path, angles, landmarks,
+                    fps or self._fps, self._hpe_leg, engine)
+                self.wait_window(dialog)
+                angles = dialog.angles
+                landmarks = dialog.landmarks
+            except Exception as exc:
+                # Don't let a per-call dialog failure (e.g. the video file
+                # was moved/deleted between upload and track completion, or
+                # a PhotoImage/_draw failure in the dialog's first _redraw())
+                # discard the tracking run that already completed -- fall
+                # through to the normal path with the original angles and
+                # landmarks the run produced.
+                review_error = exc
         self._source_angles["hpe_upload"] = angles
         self._hpe_landmarks = landmarks
         if not self._fps:
@@ -1859,7 +1869,12 @@ class PostProcessingPanel(tk.Frame):
             self.title_var.set("HPE upload")
         self._plot_all_curves()
         self._show_pt_metrics_from_sources()
-        self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
+        if review_error is not None:
+            self.status_var.set(
+                f"Video review unavailable: {review_error} -- showing "
+                "results without review.")
+        else:
+            self.status_var.set(f"HPE overlay loaded — {len(angles)} frames")
         if landmarks and self._video_path:
             self.btn_export_video.config(state="normal")
 
