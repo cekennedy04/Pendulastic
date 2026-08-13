@@ -1083,7 +1083,7 @@ with:
                     collect_landmarks=True, manual_seed=seed,
                     start_frame=start_frame)
             except Exception as exc:
-                self.after(0, lambda: self._on_retrack_failed(exc))
+                self.after(0, lambda exc=exc: self._on_retrack_failed(exc))
                 return
             self.after(0, lambda: self._on_retrack_done(
                 start_frame, new_angles, new_landmarks))
