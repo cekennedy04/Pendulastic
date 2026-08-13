@@ -43,6 +43,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+import pendulastic_imu_server as imu_server
+
 PORT_HTTP: int = 8877
 PORT_WS:   int = 8878
 
@@ -50,6 +52,7 @@ CLOCK_SYNC_WINDOW = 10
 CLOCK_SYNC_MAD_K  = 3.0
 
 PORT_STREAM_HTTPS = 8880
+PORT_IMU_HTTPS = 8881
 STREAM_RESOLUTION = (1280, 720)
 STREAM_JPEG_QUALITY = 0.7
 CLOCK_SYNC_INITIAL_ROUNDS = 5
@@ -74,6 +77,15 @@ _stream_active_generation = 0   # bumped by each new WS connection; lets an
                                  # notice it's been superseded and stop
                                  # contributing frames (spec: only one phone
                                  # connection is active at a time).
+
+_imu_server = None
+_imu_thread = None
+_imu_running = False
+_imu_local_ip = "127.0.0.1"
+_imu_port = PORT_IMU_HTTPS
+_imu_active_generation = 0   # bumped by each new WS connection; lets an
+                             # older, still-technically-open connection
+                             # notice it's been superseded and stop
 
 # Uploaded video paths — one entry per completed upload.
 upload_queue: "queue.Queue[str]" = queue.Queue()
@@ -273,6 +285,49 @@ def build_ws_text_frame(text: str) -> bytes:
 
 def build_ws_close_frame() -> bytes:
     return _build_ws_frame(0x8, b"")
+
+
+def _forward_imu_batch(batch, ip: str) -> int:
+    """Decode one browser IMU batch message and forward each sample into
+    pendulastic_imu_server._dispatch() -- the same entry point Sensor Stream
+    Pro's own connection handler already calls, so every downstream
+    consumer (AHRS fusion, calibration, recording) is unmodified.
+
+    Timestamps sent to _dispatch() are this server's own receipt-time in
+    epoch ms, NOT the browser's event.timeStamp -- _payload_ts()'s
+    seconds-vs-ms heuristic (anything under ~1e11 is treated as seconds and
+    multiplied by 1000) is built for epoch-scale Sensor-Stream-Pro
+    timestamps and would silently corrupt a browser's small,
+    page-load-relative event.timeStamp by 1000x.
+
+    Never raises -- malformed input yields 0 forwarded samples."""
+    if not isinstance(batch, dict):
+        return 0
+    samples = batch.get("batch")
+    if not isinstance(samples, list):
+        return 0
+
+    n = 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        accel = sample.get("accel")
+        gyro  = sample.get("gyro")
+        if not isinstance(accel, dict) or not isinstance(gyro, dict):
+            continue
+        try:
+            ax, ay, az = float(accel["x"]), float(accel["y"]), float(accel["z"])
+            gx, gy, gz = float(gyro["x"]),  float(gyro["y"]),  float(gyro["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        ts_ms = int(time.time() * 1000)
+        imu_server._dispatch("/accelerometer",
+                             json.dumps({"Timestamp": ts_ms, "x": ax, "y": ay, "z": az}), ip)
+        imu_server._dispatch("/gyroscope",
+                             json.dumps({"Timestamp": ts_ms, "x": gx, "y": gy, "z": gz}), ip)
+        n += 1
+    return n
 
 
 def parse_stream_frame_payload(payload: bytes) -> tuple[int, int, bytes]:
@@ -1402,6 +1457,124 @@ init();
 """
 
 
+# ─── minimal phone-IMU streaming page (accel + gyro only, no camera) ──────────
+
+_IMU_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Pendulastic — Phone IMU</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e2e8f0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center}
+#status{font-size:16px;margin-bottom:16px;text-align:center;padding:0 24px}
+#start{font-size:18px;padding:14px 32px;border-radius:10px;border:none;
+  background:#2563eb;color:#fff;cursor:pointer}
+#start:disabled{background:#475569}
+#error{display:none;color:#fca5a5;padding:16px 24px;text-align:center;font-size:14px}
+</style>
+</head>
+<body>
+<div id="status">Tap Start, then keep this tab open and the screen on.</div>
+<button id="start">Start Streaming</button>
+<div id="error"></div>
+<script>
+const statusEl = document.getElementById('status');
+const errorEl  = document.getElementById('error');
+const startBtn = document.getElementById('start');
+
+let ws = null, closedByUser = false, backoff = 500, wakeLock = null;
+let sendBuf = [];
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = 'block';
+}
+
+async function acquireWakeLock() {
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) { /* not fatal -- streaming still works, screen may just sleep */ }
+}
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && ws) await acquireWakeLock();
+});
+
+function connectWs() {
+  if (closedByUser) return;
+  statusEl.textContent = 'Connecting...';
+  ws = new WebSocket('wss://' + location.host + '/imu_ws');
+
+  ws.onopen = () => {
+    statusEl.textContent = 'Streaming';
+    backoff = 500;
+  };
+  ws.onerror = () => { statusEl.textContent = 'Connection error'; };
+  ws.onclose = () => {
+    if (closedByUser) return;
+    statusEl.textContent = 'Reconnecting...';
+    setTimeout(connectWs, backoff);
+    backoff = Math.min(backoff * 2, 8000);
+  };
+}
+
+function flushBuffer() {
+  if (ws && ws.readyState === WebSocket.OPEN && sendBuf.length) {
+    ws.send(JSON.stringify({batch: sendBuf}));
+    sendBuf = [];
+  }
+}
+setInterval(flushBuffer, 50);   // batch at ~20Hz to keep message count low
+
+function onMotion(event) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const a = event.accelerationIncludingGravity;
+  const r = event.rotationRate;
+  if (!a || a.x === null || !r || r.beta === null) return;
+  sendBuf.push({
+    ts: event.timeStamp,
+    accel: {x: a.x, y: a.y, z: a.z},
+    gyro:  {x: r.beta, y: r.gamma, z: r.alpha},
+  });
+}
+
+async function start() {
+  startBtn.disabled = true;
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined'
+        && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const result = await DeviceMotionEvent.requestPermission();
+      if (result !== 'granted') {
+        showError('Motion permission denied. Reload this page and tap Start again to retry.');
+        startBtn.disabled = false;
+        return;
+      }
+    }
+    await acquireWakeLock();
+    window.addEventListener('devicemotion', onMotion);
+    connectWs();
+    startBtn.style.display = 'none';
+  } catch (e) {
+    showError('Could not start motion streaming: ' + e.message);
+    startBtn.disabled = false;
+  }
+}
+
+if (typeof DeviceMotionEvent === 'undefined') {
+  showError('This browser does not support motion sensors.');
+  startBtn.disabled = true;
+} else {
+  startBtn.addEventListener('click', start);
+}
+</script>
+</body>
+</html>
+"""
+
+
 # ─── single-port HTTPS + WS stream server ──────────────────────────────────────
 
 class _StreamHandler(BaseHTTPRequestHandler):
@@ -1570,6 +1743,115 @@ def stop_stream_server() -> None:
             stream_frame_queue.get_nowait()
         except Exception:
             break
+
+
+class _ImuStreamHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self._handle_ws_upgrade()
+            return
+        page = _IMU_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(page)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.end_headers()
+        self.wfile.write(page)
+
+    def _handle_ws_upgrade(self) -> None:
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = compute_ws_accept_key(key)
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self._serve_imu_connection()
+
+    def _serve_imu_connection(self) -> None:
+        global _imu_active_generation
+        _imu_active_generation += 1
+        my_generation = _imu_active_generation
+        source_ip = self.client_address[0]
+
+        self.connection.settimeout(1.0)
+
+        def recv_exact(n: int) -> bytes:
+            buf = b""
+            while len(buf) < n:
+                chunk = self.rfile.read(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("peer closed")
+                buf += chunk
+            return buf
+
+        try:
+            while True:
+                if my_generation != _imu_active_generation:
+                    # A newer phone connection has taken over.
+                    break
+                try:
+                    opcode, payload = read_ws_frame(recv_exact)
+                except socket.timeout:
+                    continue
+
+                if my_generation != _imu_active_generation:
+                    break
+
+                if opcode == 0x8:
+                    break
+                elif opcode == 0x9:
+                    self.wfile.write(_build_ws_frame(0xA, payload[:125]))
+                elif opcode == 0x1:
+                    try:
+                        batch = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        continue
+                    _forward_imu_batch(batch, source_ip)
+        except Exception:
+            pass
+
+    def log_message(self, *_):
+        pass
+
+
+def start_imu_stream_server(cert_dir: str | None = None, port: int | None = None) -> tuple[str, int]:
+    """Start the single-port HTTPS+WS phone-IMU stream server. Idempotent."""
+    global _imu_server, _imu_thread, _imu_running, _imu_local_ip, _imu_port
+
+    if _imu_running:
+        return _imu_local_ip, _imu_port
+
+    if cert_dir is None:
+        cert_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".certs")
+    bind_port = port if port is not None else PORT_IMU_HTTPS
+
+    _imu_local_ip = get_local_ip()
+    cert_path, key_path = get_or_create_self_signed_cert(cert_dir, _imu_local_ip)
+
+    server = _ThreadingHTTPSServer(("0.0.0.0", bind_port), _ImuStreamHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    _imu_server = server
+    _imu_port   = server.server_address[1]
+    _imu_thread = threading.Thread(target=server.serve_forever, daemon=True, name="pps-imu")
+    _imu_thread.start()
+    _imu_running = True
+    return _imu_local_ip, _imu_port
+
+
+def stop_imu_stream_server() -> None:
+    global _imu_server, _imu_running
+    _imu_running = False
+    try:
+        if _imu_server:
+            _imu_server.shutdown()
+            _imu_server.server_close()
+    except Exception:
+        pass
+    _imu_server = None
 
 
 # ─── HTTP server ──────────────────────────────────────────────────────────────
