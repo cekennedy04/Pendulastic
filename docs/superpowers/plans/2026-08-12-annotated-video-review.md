@@ -1077,10 +1077,14 @@ with:
         self.status_var.set(f"Retracking from frame {start_frame}...")
 
         def _run():
-            new_angles, new_landmarks, _fps = self.engine.run_offline_track(
-                self.video_path, lambda p: None, leg=self.leg,
-                collect_landmarks=True, manual_seed=seed,
-                start_frame=start_frame)
+            try:
+                new_angles, new_landmarks, _fps = self.engine.run_offline_track(
+                    self.video_path, lambda p: None, leg=self.leg,
+                    collect_landmarks=True, manual_seed=seed,
+                    start_frame=start_frame)
+            except Exception as exc:
+                self.after(0, lambda: self._on_retrack_failed(exc))
+                return
             self.after(0, lambda: self._on_retrack_done(
                 start_frame, new_angles, new_landmarks))
 
@@ -1096,12 +1100,66 @@ with:
         self._btn_fix.config(state="normal")
         self.status_var.set(f"Retrack complete from frame {start_frame}.")
         self._redraw()
+
+    def _on_retrack_failed(self, exc: Exception) -> None:
+        self._retrack_in_progress = False
+        self._btn_fix.config(state="normal")
+        self.status_var.set(f"Retrack failed: {exc}")
 ```
+
+- [ ] **Step 3b: Fix round — handle a failed retrack instead of hanging forever**
+
+Reviewer finding (Important, plan-mandated, user-approved fix): if `run_offline_track`
+raises on the background thread, `_retrack_in_progress` never clears, permanently
+disabling the Fix button, scrubbing, playback, and Done/close. Add a test for this
+before applying the `_run()`/`_on_retrack_failed` code above (already reflected in
+Step 3's code block — this step is the TDD record of how it got there):
+
+Append to `tests/test_video_review_dialog.py`:
+
+```python
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_retrack_engine_failure_clears_in_progress_and_shows_status(tmp_path, monkeypatch):
+    """A raising run_offline_track must not leave the dialog permanently
+    stuck -- _retrack_in_progress must clear and the Fix button must
+    re-enable, with a status message explaining the failure."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    video_path = str(tmp_path / "fix6.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    class _RaisingEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, *a, **kw):
+            raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_RaisingEngine())
+
+    dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _on_retrack_failed needs
+
+    assert dlg._retrack_in_progress is False
+    assert dlg._btn_fix["state"] == "normal"
+    assert "decoder exploded" in dlg.status_var.get()
+    dlg.destroy()
+```
+
+Run: `.venv\Scripts\python.exe -m pytest tests/test_video_review_dialog.py -k retrack_engine_failure -v`
+Expected: FAIL first (`AttributeError: 'AnnotatedVideoReviewDialog' object has no attribute '_on_retrack_failed'`), then apply the `_run()`/`_on_retrack_done`/`_on_retrack_failed` code shown in Step 3 above, then PASS.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_video_review_dialog.py -v`
-Expected: PASS (21 tests: 15 from Tasks 2-3 + 6 new)
+Expected: PASS (22 tests: 15 from Tasks 2-3 + 7 new)
 
 - [ ] **Step 5: Commit**
 
