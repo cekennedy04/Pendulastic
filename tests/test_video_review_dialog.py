@@ -253,3 +253,243 @@ def test_trail_for_near_start_of_video_does_not_go_negative(tmp_path):
 
     assert trail == [(0.0, 0.0), (1.0, 1.0)]
     dlg.destroy()
+
+
+class _SyncThread:
+    """Runs target() synchronously in start() -- makes the retrack
+    background thread deterministic for testing, matching the convention
+    in tests/test_post_processing_panel.py."""
+    def __init__(self, target=None, daemon=None, **kw):
+        self._target = target
+    def start(self):
+        self._target()
+
+
+class _LM:
+    def __init__(self, x, y, visibility=1.0):
+        self.x, self.y, self.visibility = x, y, visibility
+
+
+def _make_pose(knee_x=0.5, ankle_vis=0.9):
+    lm = [_LM(0.5, 0.5) for _ in range(33)]
+    lm[23] = _LM(knee_x - 0.02, 0.30)
+    lm[25] = _LM(knee_x, 0.55)
+    lm[27] = _LM(knee_x, 0.85, ankle_vis)
+    lm[24] = _LM(knee_x - 0.02, 0.30)
+    lm[26] = _LM(knee_x, 0.55)
+    lm[28] = _LM(knee_x, 0.85, ankle_vis)
+    return lm
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_zero_poses_shows_status_and_does_not_retrack(tmp_path, monkeypatch):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    video_path = str(tmp_path / "fix0.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    class _ZeroPoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (np.zeros((48, 64, 3), dtype=np.uint8), [])
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_ZeroPoseEngine())
+
+    dlg._on_fix_person_here()
+
+    assert "no person" in dlg.status_var.get().lower()
+    assert dlg._retrack_in_progress is False
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_one_pose_auto_resolves_and_retracks(tmp_path, monkeypatch):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    video_path = str(tmp_path / "fix1.avi")
+    _write_test_video(video_path, 6)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    captured = {}
+
+    class _OnePoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, path, progress_cb, leg="right",
+                               collect_landmarks=False, manual_seed=None,
+                               start_frame=0):
+            captured["manual_seed"] = manual_seed
+            captured["start_frame"] = start_frame
+            progress_cb(1.0)
+            n = 6 - start_frame
+            return ([170.0] * n, [None] * n, 30.0)
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 6, landmarks=[None] * 6,
+        fps=30.0, leg="right", engine=_OnePoseEngine())
+    dlg._frame_idx = 2
+
+    dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
+
+    assert captured["start_frame"] == 2
+    assert captured["manual_seed"] is not None
+    assert dlg.angles == [0.0, 0.0, 170.0, 170.0, 170.0, 170.0]
+    assert dlg._retrack_in_progress is False
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_two_poses_uses_person_picker_dialog(tmp_path, monkeypatch):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    import pendulastic_app as _app
+    video_path = str(tmp_path / "fix2.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.4), _make_pose(0.6)]
+
+    class _TwoPoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, path, progress_cb, leg="right",
+                               collect_landmarks=False, manual_seed=None,
+                               start_frame=0):
+            progress_cb(1.0)
+            n = 5 - start_frame
+            return ([99.0] * n, [None] * n, 30.0)
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    class _StubPickerDialog:
+        def __init__(self, *a, **kw):
+            self.result = ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0))
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "PersonPickerDialog", _StubPickerDialog)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_TwoPoseEngine())
+    monkeypatch.setattr(dlg, "wait_window", lambda w: None)
+    dlg._frame_idx = 1
+
+    dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
+
+    assert dlg.angles == [0.0, 99.0, 99.0, 99.0, 99.0]
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_cancelled_picker_dialog_does_not_retrack(tmp_path, monkeypatch):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    import pendulastic_app as _app
+    video_path = str(tmp_path / "fix3.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.4), _make_pose(0.6)]
+
+    called = {"retrack": False}
+
+    class _TwoPoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, *a, **kw):
+            called["retrack"] = True
+            return ([], [], 30.0)
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    class _CancelledPickerDialog:
+        def __init__(self, *a, **kw):
+            self.result = None
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "PersonPickerDialog", _CancelledPickerDialog)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_TwoPoseEngine())
+    monkeypatch.setattr(dlg, "wait_window", lambda w: None)
+
+    dlg._on_fix_person_here()
+
+    assert called["retrack"] is False
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_short_retrack_result_pads_not_leaves_stale(tmp_path, monkeypatch):
+    """If run_offline_track returns fewer frames than expected, the tail
+    must be padded (nan/None), never left as stale pre-fix landmarks --
+    spec S4 point 1."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    import math
+    video_path = str(tmp_path / "fix4.avi")
+    _write_test_video(video_path, 6)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    class _ShortReturnEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, path, progress_cb, leg="right",
+                               collect_landmarks=False, manual_seed=None,
+                               start_frame=0):
+            progress_cb(1.0)
+            return ([170.0], [(None, None, (99.0, 99.0))], 30.0)  # short!
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    # (None, None, (-1.0, -1.0)) is a distinguishable-but-valid sentinel --
+    # a bare string here would crash the constructor's own _redraw() call,
+    # since _draw() unpacks hip/knee/ankle expecting None or a coordinate.
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 6,
+        landmarks=[(None, None, (-1.0, -1.0))] * 6,
+        fps=30.0, leg="right", engine=_ShortReturnEngine())
+    dlg._frame_idx = 2
+
+    dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
+
+    assert dlg.angles[2] == 170.0
+    assert math.isnan(dlg.angles[3])
+    assert math.isnan(dlg.angles[4])
+    assert math.isnan(dlg.angles[5])
+    assert dlg.landmarks[3] is None
+    assert dlg.landmarks[4] is None
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_retrack_in_progress_blocks_a_second_fix_call(tmp_path, monkeypatch):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "fix5.avi")
+    _write_test_video(video_path, 4)
+    r = _get_root()
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 4, landmarks=[None] * 4,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._retrack_in_progress = True
+
+    dlg._on_fix_person_here()  # must no-op, not raise
+
+    dlg.destroy()
