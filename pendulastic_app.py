@@ -238,6 +238,7 @@ class BiomechanicalEngine:
         leg: str = "right",
         collect_landmarks: bool = False,
         manual_seed: tuple | None = None,
+        start_frame: int = 0,
     ):
         """
         Offline MediaPipe tracking on a recorded video.
@@ -263,6 +264,14 @@ class BiomechanicalEngine:
         initialised from that seed on the first frame read instead. When
         None (default), behavior is unchanged from before this parameter
         existed.
+
+        start_frame, when > 0, seeks the video to that frame before tracking
+        begins. The returned angles/landmarks then cover ONLY the suffix from
+        start_frame to the end of the video (length = total_frames -
+        start_frame), not the full video -- callers that want a full-video
+        result splice this suffix into their own existing arrays starting at
+        start_frame. Default 0 preserves the exact prior behavior (full video
+        from frame 0).
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
             return ([], [], 30.0) if collect_landmarks else []
@@ -273,6 +282,9 @@ class BiomechanicalEngine:
 
         fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
         total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
+        if start_frame > 0:
+            cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
+            total = max(total - start_frame, 1)
 
         # COCO column offsets: right leg offset=1, left leg offset=0
         col    = 1 if leg.lower() == "right" else 0
