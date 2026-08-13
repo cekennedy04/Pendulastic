@@ -15,7 +15,7 @@ def _splice_from(old: list, start_idx: int, new: list, pad_value) -> list:
     mutates old or new. This guards against a retrack returning a short or
     long suffix silently desyncing frame-index-to-array-index alignment --
     see design spec S4 point 1."""
-    target_len = len(old) - start_idx
+    target_len = max(0, len(old) - start_idx)
     adjusted = list(new[:target_len])
     if len(adjusted) < target_len:
         adjusted.extend([pad_value] * (target_len - len(adjusted)))
@@ -199,6 +199,11 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_play.config(text="▶")
 
         frame_idx = self._frame_idx
+        if frame_idx >= len(self.angles):
+            self.status_var.set(
+                "Cannot fix a frame beyond the tracked range -- try an "
+                "earlier frame.")
+            return
         frame, poses = self.engine.detect_people_at_frame(
             self.video_path, frame_index=frame_idx)
         if frame is None or not poses:
@@ -220,6 +225,13 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             dialog = PersonPickerDialog(
                 self, self.video_path, frame_idx, frame, poses, self.leg)
             self.wait_window(dialog)
+            # PersonPickerDialog's own grab_set() (in its __init__) steals
+            # the modal grab from this dialog, and Tk does not restore the
+            # previous grab when the picker is destroyed -- re-acquire it
+            # here regardless of whether the user confirmed or cancelled,
+            # or the panel underneath becomes clickable while this dialog
+            # is still open (see design spec / Finding 3).
+            self.grab_set()
             if dialog.result is None:
                 return
             seed = dialog.result

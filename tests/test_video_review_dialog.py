@@ -35,6 +35,26 @@ def test_splice_from_start_idx_at_end_leaves_old_unchanged():
     assert result == [1, 2, 3]
 
 
+def test_splice_from_start_idx_beyond_old_length_returns_old_unchanged():
+    """Finding 1: total_frames (from cv2.CAP_PROP_FRAME_COUNT) can
+    over-report vs len(self.angles) (from run_offline_track's
+    read-until-failure loop), so start_idx > len(old) is reachable in
+    production. target_len must clamp to 0, not go negative -- a negative
+    slice bound on new[:target_len] would silently slice from new's tail
+    instead of yielding []."""
+    old = [1, 2, 3]
+    result = _splice_from(old, 5, [9, 9, 9, 9], pad_value=0)
+    assert result == [1, 2, 3]
+    assert len(result) == 3
+
+
+def test_splice_from_start_idx_one_past_end_with_empty_new_returns_old_unchanged():
+    old = [1, 2, 3]
+    result = _splice_from(old, len(old) + 1, [], pad_value=0)
+    assert result == [1, 2, 3]
+    assert len(result) == 3
+
+
 def test_splice_from_does_not_mutate_input_lists():
     old = [1, 2, 3, 4, 5]
     new = [30, 40, 50]
@@ -527,4 +547,153 @@ def test_retrack_engine_failure_clears_in_progress_and_shows_status(tmp_path, mo
     assert dlg._retrack_in_progress is False
     assert dlg._btn_fix["state"] == "normal"
     assert "decoder exploded" in dlg.status_var.get()
+    dlg.destroy()
+
+
+class _CountingEngine:
+    """Counts calls into engine methods so tests can assert the engine was
+    never touched -- used for Finding 1's out-of-range guard."""
+    def __init__(self):
+        self.detect_calls = 0
+        self.retrack_calls = 0
+
+    def detect_people_at_frame(self, video_path, frame_index=0):
+        self.detect_calls += 1
+        return (None, [])
+
+    def run_offline_track(self, *a, **kw):
+        self.retrack_calls += 1
+        return ([], [], 30.0)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_frame_idx_beyond_angles_length_guards_out(tmp_path):
+    """Finding 1: the scrub bar's total_frames comes from
+    cv2.CAP_PROP_FRAME_COUNT, which can over-report vs len(self.angles)
+    (from run_offline_track's read-until-failure loop stopping early on a
+    mid-file decode hiccup). frame_idx can legitimately be >= len(angles).
+    _on_fix_person_here must guard this before calling into the engine at
+    all, and must leave a clear status message."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "fixoob.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+
+    engine = _CountingEngine()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=engine)
+    dlg._frame_idx = 5  # beyond the 3-length angles/landmarks arrays
+
+    dlg._on_fix_person_here()
+
+    assert engine.detect_calls == 0
+    assert engine.retrack_calls == 0
+    status = dlg.status_var.get().lower()
+    assert "beyond" in status or "range" in status
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_two_poses_regrabs_after_picker_confirmed(tmp_path, monkeypatch):
+    """Finding 3: PersonPickerDialog's own grab_set() (in its __init__)
+    steals the modal grab from the review dialog underneath it, and Tk does
+    not restore the previous grab when the picker is destroyed. After the
+    picker interaction concludes (confirmed here), the review dialog must
+    re-acquire its own grab or the panel underneath becomes clickable while
+    the review dialog is still open."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    import pendulastic_app as _app
+    video_path = str(tmp_path / "fix7.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.4), _make_pose(0.6)]
+
+    class _TwoPoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+        def run_offline_track(self, path, progress_cb, leg="right",
+                               collect_landmarks=False, manual_seed=None,
+                               start_frame=0):
+            progress_cb(1.0)
+            n = 5 - start_frame
+            return ([99.0] * n, [None] * n, 30.0)
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    class _StubPickerDialog:
+        def __init__(self, *a, **kw):
+            self.result = ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0))
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "PersonPickerDialog", _StubPickerDialog)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_TwoPoseEngine())
+    monkeypatch.setattr(dlg, "wait_window", lambda w: None)
+
+    # Spy installed after construction, so the constructor's own grab_set()
+    # call (Task 3's existing behavior) is not counted here -- this isolates
+    # the re-grab that must happen after the picker closes.
+    grab_calls = {"count": 0}
+    original_grab_set = dlg.grab_set
+    def _spy_grab_set():
+        grab_calls["count"] += 1
+        return original_grab_set()
+    monkeypatch.setattr(dlg, "grab_set", _spy_grab_set)
+
+    dlg._frame_idx = 1
+    dlg._on_fix_person_here()
+    r.update()
+
+    assert grab_calls["count"] == 1
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_fix_person_here_two_poses_regrabs_after_picker_cancelled(tmp_path, monkeypatch):
+    """Finding 3, cancelled variant: the re-grab must happen regardless of
+    whether the user confirmed or cancelled the picker."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    import video_review_dialog as vrd
+    import pendulastic_app as _app
+    video_path = str(tmp_path / "fix8.avi")
+    _write_test_video(video_path, 5)
+    r = _get_root()
+
+    fake_frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.4), _make_pose(0.6)]
+
+    class _TwoPoseEngine(_FakeEngine):
+        def detect_people_at_frame(self, video_path, frame_index=0):
+            return (fake_frame, fake_poses)
+
+    monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
+
+    class _CancelledPickerDialog:
+        def __init__(self, *a, **kw):
+            self.result = None
+        def destroy(self):
+            pass
+    monkeypatch.setattr(_app, "PersonPickerDialog", _CancelledPickerDialog)
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 5, landmarks=[None] * 5,
+        fps=30.0, leg="right", engine=_TwoPoseEngine())
+    monkeypatch.setattr(dlg, "wait_window", lambda w: None)
+
+    grab_calls = {"count": 0}
+    original_grab_set = dlg.grab_set
+    def _spy_grab_set():
+        grab_calls["count"] += 1
+        return original_grab_set()
+    monkeypatch.setattr(dlg, "grab_set", _spy_grab_set)
+
+    dlg._on_fix_person_here()
+
+    assert grab_calls["count"] == 1
     dlg.destroy()
