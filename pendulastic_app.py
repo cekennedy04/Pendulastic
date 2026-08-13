@@ -596,7 +596,7 @@ class AcquisitionPanel(tk.Frame):
             bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
             selectcolor=ws.PALETTE["SURFACE"],
             activebackground=ws.PALETTE["PANEL"],
-            command=lambda: self.controller.on_imu_browser_toggled())
+            command=self._on_imu_browser_checkbox_toggled)
         chk_imu_browser.pack(side="left", padx=8)
 
         # IMU pairing hint -- shown whenever "iPhone IMU" is checked, so the
@@ -894,7 +894,7 @@ class AcquisitionPanel(tk.Frame):
 
     def _apply_countdown_lock(self) -> None:
         """IMU trials have no calibration path other than the countdown."""
-        if self._src_imu.get():
+        if self._src_imu.get() or self._src_imu_browser.get():
             self.countdown_var.set(True)
             self.countdown_chk.config(state="disabled")
         else:
@@ -971,7 +971,8 @@ class AcquisitionPanel(tk.Frame):
     def get_active_sources(self) -> list:
         """Return sorted list of checked source keys."""
         sources = []
-        if self._src_imu.get():        sources.append("imu")
+        if self._src_imu.get() or self._src_imu_browser.get():
+            sources.append("imu")
         if self._src_optitrack.get():  sources.append("optitrack")
         if self._src_rgb.get():        sources.append("rgb")
         if self._src_video_file.get(): sources.append("video_file")
@@ -1044,6 +1045,10 @@ class AcquisitionPanel(tk.Frame):
         else:
             self._cam_frame.pack_forget()
             self.controller.on_camera_disabled()
+        self._on_source_changed()
+
+    def _on_imu_browser_checkbox_toggled(self) -> None:
+        self.controller.on_imu_browser_toggled()
         self._on_source_changed()
 
     def _on_toggle_research_sources(self) -> None:
@@ -1134,9 +1139,24 @@ class AcquisitionPanel(tk.Frame):
         except Exception as exc:
             self._phone_qr_label.config(image="", text=f"(QR unavailable: {exc})")
         self._phone_pairing_frame.pack(side="top", anchor="w", pady=(4, 0), fill="x")
+        self._grow_window_to_fit()
 
     def hide_phone_pairing_panel(self) -> None:
         self._phone_pairing_frame.pack_forget()
+
+    def _grow_window_to_fit(self) -> None:
+        """The QR panel adds ~150-200px to this card, pushing START/STOP and
+        everything below it further down the grid. The root Tk window's size
+        was fixed once via geometry(WxH) at startup, so Tkinter won't
+        auto-grow it to keep pace -- the extra content (including the
+        recording buttons) ends up laid out below the visible/clickable
+        window area. Grow the window's height (never shrink it) to keep the
+        buttons reachable."""
+        top = self.winfo_toplevel()
+        top.update_idletasks()
+        req_h = top.winfo_reqheight()
+        if req_h > top.winfo_height():
+            top.geometry(f"{top.winfo_width()}x{req_h}")
 
     # ------------------------------------------------------------------
     # Countdown
@@ -2620,9 +2640,7 @@ class App(tk.Tk):
         self._active_sources: list     = []
         self._rec_angles:     dict     = {}   # {"imu": [...], "rgb": [...]}
         self._rec_timestamps: dict     = {}   # {"imu": [...]}
-        self._pending_review: dict     = {}
         self._session_trials: list     = []
-        self._pending_trial_entry: Optional[dict] = None
         self._video_path:     str      = ""
         self._preview_queue:  queue.Queue = queue.Queue(maxsize=1)
         self._pose_estimator               = None
@@ -2700,9 +2718,16 @@ class App(tk.Tk):
         # video_file is a fully standalone path — process it immediately and bypass
         # the live recording loop so no other co-selected sources are started.
         if "video_file" in sources:
-            self._pending_review = {}
             self._start_video_file_processing(meta)
             return   # video_file is standalone — no live recording
+
+        # enter_recording() runs BEFORE starting the individual sources so
+        # that a non-blocking status message a source sets on failure (e.g.
+        # _start_rgb_recording()'s "no camera" notice) is the last thing
+        # written to status_var, instead of being immediately overwritten by
+        # enter_recording()'s own "RECORDING…" text.
+        self._state = "recording"
+        self._acq.enter_recording()
 
         for src in sources:
             if src == "imu":
@@ -2711,9 +2736,6 @@ class App(tk.Tk):
                 self._start_rgb_recording(meta)
             elif src == "optitrack":
                 self._start_optitrack_recording(meta)
-
-        self._state = "recording"
-        self._acq.enter_recording()
 
     def on_stop(self) -> None:
         # Clear the viewer window's "● REC" overlay immediately -- recording
@@ -2735,8 +2757,10 @@ class App(tk.Tk):
                 pass
             self._pose_estimator = None
 
-        meta           = self._acq.get_metadata()
-        if self._is_multi_trial_mode():
+        meta         = self._acq.get_metadata()
+        multi_trial  = self._is_multi_trial_mode()
+        entry: Optional[dict] = None
+        if multi_trial:
             entry = {
                 "trial_num": meta["trial"],
                 "sources": list(self._active_sources),
@@ -2748,10 +2772,10 @@ class App(tk.Tk):
                 "file_paths": self._trial_file_paths(meta, self._active_sources),
             }
             self._session_trials.append(entry)
-            self._pending_trial_entry = entry
             self._acq.set_multi_trial_list(self._session_trials_view())
         source_angles: dict = {}
         pending_rgb    = False
+        video_path: Optional[str] = None
         imu_raw_log_path: Optional[str] = None
         imu_csv_path:     Optional[str] = None
         fn_imu:           Optional[str] = None
@@ -2770,6 +2794,7 @@ class App(tk.Tk):
                     imu_raw_log_path = _imu.stop_raw_log()
 
             elif src == "rgb":
+                video_path = self._video_path
                 self._stop_rgb_recording()
                 pending_rgb = True
 
@@ -2784,13 +2809,41 @@ class App(tk.Tk):
         pending_imu_tune = (
             imu_raw_log_path is not None and not pending_rgb and _tuner is not None)
 
+        if multi_trial:
+            # Batch recording: the raw/untuned data is already safely on
+            # disk above. Don't run MediaPipe tracking or the IMU auto-tune
+            # grid search now -- both take real time (a minute or more) and
+            # used to lock the whole form for that whole span, so back-to-back
+            # trials couldn't be recorded without waiting between every one.
+            # Instead, stash what's needed and defer to _run_batch_processing,
+            # which runs once when the clinician leaves the batch (see
+            # on_back_to_mode_select) rather than once per trial.
+            entry["source_angles"] = source_angles
+            entry["fps"]           = self._fps_for(meta)
+            entry["base_filename"] = DataManager.build_filename(
+                meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
+            if pending_rgb:
+                entry["pending_rgb_path"] = video_path
+            elif pending_imu_tune:
+                entry["pending_imu_tune"] = {
+                    "raw_log_path":  imu_raw_log_path,
+                    "csv_path":      imu_csv_path,
+                    "csv_filename":  fn_imu,
+                }
+            else:
+                entry["status"] = "saved"
+            self._acq.set_multi_trial_list(self._session_trials_view())
+            self._acq.increment_trial()
+            self._acq.enter_idle()
+            self._state = "idle"
+            return
+
         if pending_rgb:
             self._state = "processing"
             self._acq.enter_processing()
-            self._pending_review = source_angles  # preserve already-done sources
             threading.Thread(
-                target=self._run_rgb_processing,
-                args=(meta,), daemon=True,
+                target=self._run_rgb_processing_async,
+                args=(video_path, meta, dict(source_angles)), daemon=True,
             ).start()
         elif pending_imu_tune:
             self._state = "processing"
@@ -2799,10 +2852,10 @@ class App(tk.Tk):
             # default message misleadingly claimed MediaPipe was running for
             # a pure-IMU trial.
             self._acq.enter_processing("Tuning IMU calibration…")
-            self._pending_review = source_angles
             threading.Thread(
-                target=self._run_imu_tuning,
-                args=(imu_raw_log_path, imu_csv_path, fn_imu, meta), daemon=True,
+                target=self._run_imu_tuning_async,
+                args=(imu_raw_log_path, imu_csv_path, fn_imu, meta,
+                      dict(source_angles)), daemon=True,
             ).start()
         else:
             self._transition_to_review(source_angles, meta, from_recording=True)
@@ -3151,6 +3204,57 @@ class App(tk.Tk):
         self._state = "mode_select"
 
     def on_back_to_mode_select(self) -> None:
+        """Leaving the acquisition screen. In multi-trial mode this is also
+        the natural point to run whatever MediaPipe tracking / IMU auto-tune
+        passes were deferred during the batch (see on_stop()) -- once per
+        batch instead of once per trial. If nothing is queued, this is just
+        the plain navigation it always was."""
+        queued = [e for e in self._session_trials if e["status"] == "processing"]
+        if queued:
+            self._run_batch_processing(queued)
+            return
+        self._finish_back_to_mode_select()
+
+    def _run_batch_processing(self, queued: list) -> None:
+        self._state = "batch_processing"
+        self._acq.enter_processing(f"Processing batch: trial 1 of {len(queued)}…")
+        threading.Thread(
+            target=self._batch_processing_worker, args=(queued,), daemon=True,
+        ).start()
+
+    def _batch_processing_worker(self, queued: list) -> None:
+        """Runs the deferred RGB/IMU-tune pass for each queued trial in turn.
+        Sequential on purpose -- these entries' recordings already finished,
+        so there's nothing left to overlap with, and running one at a time
+        avoids reasoning about concurrent MediaPipe/AHRS passes."""
+        total = len(queued)
+        for i, entry in enumerate(queued, start=1):
+            def set_status(msg):
+                self.after(0, lambda: self._acq.status_var.set(msg))
+            set_status(f"Processing batch: trial {i} of {total}…")
+            base = entry["source_angles"] or {}
+            if "pending_rgb_path" in entry:
+                def progress(pct):
+                    set_status(f"Processing batch: trial {i} of {total} "
+                               f"({int(pct * 100)}%)…")
+                result = self._compute_rgb_processing(
+                    entry["pending_rgb_path"], entry["meta"], base, progress)
+            elif "pending_imu_tune" in entry:
+                p = entry["pending_imu_tune"]
+                result = self._compute_imu_tuning(
+                    p["raw_log_path"], p["csv_path"], p["csv_filename"],
+                    entry["meta"], base)
+            else:
+                result = base
+            entry["source_angles"] = result
+            entry["status"] = "saved"
+        self.after(0, self._finish_batch_processing)
+
+    def _finish_batch_processing(self) -> None:
+        self._acq.set_multi_trial_list(self._session_trials_view())
+        self._finish_back_to_mode_select()
+
+    def _finish_back_to_mode_select(self) -> None:
         self._acq.pack_forget()
         self._post.pack_forget()
         self._upload_meta.pack_forget()
@@ -3166,9 +3270,7 @@ class App(tk.Tk):
         self._active_sources  = []
         self._rec_angles      = {}
         self._rec_timestamps  = {}
-        self._pending_review  = {}
         self._session_trials  = []
-        self._pending_trial_entry = None
         self._acq.set_multi_trial_list([])
 
     def _start_upload_analysis(self) -> None:
@@ -3329,16 +3431,24 @@ class App(tk.Tk):
                 self.after(0, _err_video)
 
     def _start_rgb_recording(self, meta: dict) -> None:
+        # Note: this runs from on_start()'s per-source dispatch loop, BEFORE
+        # self._acq.enter_recording() -- a blocking messagebox here used to
+        # freeze the whole app mid-transition into recording, with the
+        # countdown's camera-preview window already open on top and no
+        # visible way to dismiss it (see the "camera view keeps crashing"
+        # regression covering a Phone IMU (browser) trial that leaves the
+        # default-checked RGB source active with no working camera). Surface
+        # the problem via the non-blocking status line instead.
         if not _CV2_AVAIL:
-            messagebox.showerror("RGB", "OpenCV (cv2) is not installed.")
+            self._acq.status_var.set("RGB skipped: OpenCV (cv2) is not installed.")
             if "rgb" in self._active_sources:
                 self._active_sources.remove("rgb")
             self._video_path = ""
             return
         if self._camera is None or self._camera.active is None \
                 or self._camera.frame_size is None:
-            messagebox.showerror(
-                "RGB", "No camera selected. Click Rescan and pick a camera first.")
+            self._acq.status_var.set(
+                "RGB skipped: no camera selected. Click Rescan and pick a camera first.")
             if "rgb" in self._active_sources:
                 self._active_sources.remove("rgb")
             self._video_path = ""
@@ -3402,14 +3512,19 @@ class App(tk.Tk):
             writer.release()
         self._rgb_writer = None
 
-    def _run_imu_tuning(self, raw_log_path: str, csv_path: str,
-                        csv_filename: str, meta: dict) -> None:
+    def _compute_imu_tuning(self, raw_log_path: str, csv_path: str,
+                            csv_filename: str, meta: dict,
+                            source_angles_base: dict) -> dict:
         """Load this trial's raw IMU log, run the grid search, and — only if
         a passing configuration is found — rewrite the trial's saved CSV and
-        feed the tuned series into REVIEW. Must never raise: any failure
-        falls back to the originally-recorded series so tuning can never
-        block a clinician from seeing trial data."""
-        source_angles = dict(self._pending_review)
+        return the tuned series alongside source_angles_base. Must never
+        raise: any failure falls back to the originally-recorded series so
+        tuning can never block a clinician from seeing trial data. Pure
+        computation — takes every input explicitly instead of reading self
+        state, so it's safe to call for any trial (live or deferred/batch)
+        regardless of what the app is doing with self._video_path/self._engine
+        at the moment it actually runs."""
+        source_angles = dict(source_angles_base)
         try:
             raw_samples = []
             with open(raw_log_path, "r", encoding="utf-8") as f:
@@ -3456,30 +3571,56 @@ class App(tk.Tk):
             # and imu_calibration_tuner.py has no internal exception handling
             # of its own -- a malformed-but-JSON-parseable raw sample (e.g.
             # missing "role", or "v" not a 3-element list) could raise
-            # TypeError/IndexError from deep inside replay_trial. An uncaught
-            # exception here would kill the thread silently, the self.after
-            # transition below would never fire, and the app would sit in
-            # "processing" forever -- a direct violation of "tuning must
-            # never block the clinician from seeing trial data."
+            # TypeError/IndexError from deep inside replay_trial. Callers
+            # must not let an exception here go uncaught, or (in the live,
+            # non-batch path) the self.after transition never fires and the
+            # app sits in "processing" forever -- a direct violation of
+            # "tuning must never block the clinician from seeing trial data."
             pass   # fall back to the originally-recorded series
+        return source_angles
+
+    def _run_imu_tuning_async(self, raw_log_path: str, csv_path: str,
+                              csv_filename: str, meta: dict,
+                              source_angles_base: dict) -> None:
+        """Thread target for the single-trial (non-batch) path: compute then
+        hand off to the review screen on the Tk main thread."""
+        result = self._compute_imu_tuning(
+            raw_log_path, csv_path, csv_filename, meta, source_angles_base)
         self.after(0, lambda: self._transition_to_review(
-            source_angles, meta, from_recording=True))
+            result, meta, from_recording=True))
 
-    def _run_rgb_processing(self, meta: dict) -> None:
-        def progress(pct: float) -> None:
-            self.after(0, lambda p=pct: self._acq.status_var.set(
-                f"MediaPipe tracking: {int(p * 100)}%"))
-
+    def _compute_rgb_processing(self, video_path: str, meta: dict,
+                                source_angles_base: dict,
+                                progress: Optional[Callable[[float], None]] = None
+                                ) -> dict:
+        """Run MediaPipe offline tracking over an already-recorded video and
+        return the tracked series alongside source_angles_base. Pure
+        computation — uses its own BiomechanicalEngine instance rather than
+        self._engine (which reflects whatever trial is currently live), so
+        it's safe to call for a trial other than the one currently being
+        recorded."""
         leg    = meta.get("leg", "right").lower()
         fn_rgb = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="rgb")
-        angles = self._engine.run_offline_track(self._video_path, progress, leg=leg)
+        engine = BiomechanicalEngine("rgb")
+        angles = engine.run_offline_track(video_path, progress or (lambda pct: None), leg=leg)
         DataManager.save_trial(fn_rgb, angles, meta, fps=30.0, source="rgb")
 
-        source_angles = dict(self._pending_review)
+        source_angles = dict(source_angles_base)
         source_angles["rgb"] = angles
+        return source_angles
+
+    def _run_rgb_processing_async(self, video_path: str, meta: dict,
+                                  source_angles_base: dict) -> None:
+        """Thread target for the single-trial (non-batch) path: compute then
+        hand off to the review screen on the Tk main thread."""
+        def progress(pct: float) -> None:
+            self.after(0, lambda p=pct: self._acq.status_var.set(
+                f"MediaPipe tracking: {int(p * 100)}%"))
+        result = self._compute_rgb_processing(
+            video_path, meta, source_angles_base, progress)
         self.after(0, lambda: self._transition_to_review(
-            source_angles, meta, from_recording=True))
+            result, meta, from_recording=True))
 
     def _start_optitrack_recording(self, meta: dict) -> None:
         if _MOTIVE_AVAIL:
@@ -3527,14 +3668,11 @@ class App(tk.Tk):
         """from_recording distinguishes an actual live-recording stop (which
         gets a "Recording Saved" confirmation) from the upload-CSV/
         upload-video-file review paths, which process an already-existing
-        file rather than saving a new one. In multi-trial mode, a live
-        recording never reaches this screen automatically at all -- see
-        _finish_trial_multi_mode()."""
+        file rather than saving a new one. Multi-trial mode never reaches
+        this screen automatically from a live recording -- on_stop() returns
+        to idle directly instead (see on_stop() and _run_batch_processing)."""
         base_fn = DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"])
-        if from_recording and self._is_multi_trial_mode():
-            self._finish_trial_multi_mode(source_angles, meta, base_fn)
-            return
         self._state = "review"
         self._post.set_back_context(from_trial_list=False)
         self._post.load_trial(source_angles, self._fps_for(meta), meta, base_fn)
@@ -3547,26 +3685,6 @@ class App(tk.Tk):
             pass
         if from_recording:
             self._show_recording_saved_confirmation(source_angles, meta, base_fn)
-
-    def _finish_trial_multi_mode(self, source_angles: dict, meta: dict, base_fn: str) -> None:
-        entry = self._pending_trial_entry
-        if entry is None:
-            # The clinician already navigated away (e.g. back to mode
-            # select) before this background trial finished, which clears
-            # _pending_trial_entry. There is nothing left to finalize --
-            # the trial's data was already discarded -- so do not touch
-            # the acquisition panel or app state; that would resurrect UI
-            # (e.g. the camera preview window) on a screen the user left.
-            return
-        entry["status"] = "saved"
-        entry["source_angles"] = source_angles
-        entry["fps"] = self._fps_for(meta)
-        entry["base_filename"] = base_fn
-        self._pending_trial_entry = None
-        self._acq.increment_trial()
-        self._acq.set_multi_trial_list(self._session_trials_view())
-        self._acq.enter_idle()
-        self._state = "idle"
 
     def _session_trials_view(self) -> list:
         return [{"trial_num": e["trial_num"], "sources": e["sources"], "status": e["status"]}
