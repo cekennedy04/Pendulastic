@@ -1277,6 +1277,58 @@ def test_show_phone_pairing_panel_displays_url_text():
         r.destroy()
 
 
+def test_imu_browser_checkbox_default_off():
+    from pendulastic_app import AcquisitionPanel
+    r = _root()
+    try:
+        p = AcquisitionPanel(r, _Ctrl())
+        assert p._src_imu_browser.get() is False
+    finally:
+        r.destroy()
+
+
+def test_imu_browser_checkbox_checking_starts_server_and_shows_qr(monkeypatch):
+    from pendulastic_app import App
+    calls = []
+    monkeypatch.setattr(
+        "pendulastic_phone_server.start_imu_stream_server",
+        lambda: calls.append("start") or ("192.168.1.50", 8881))
+    app = App()
+    try:
+        app._acq._src_imu_browser.set(True)
+        app.on_imu_browser_toggled()
+        app.update()
+        assert calls == ["start"]
+        assert app._acq._phone_pairing_frame.winfo_manager() == "pack"
+        assert "192.168.1.50" in app._acq._phone_pairing_url_var.get()
+        assert "8881" in app._acq._phone_pairing_url_var.get()
+    finally:
+        app.destroy()
+
+
+def test_imu_browser_checkbox_unchecking_stops_server_and_hides_qr(monkeypatch):
+    from pendulastic_app import App
+    stop_calls = []
+    monkeypatch.setattr(
+        "pendulastic_phone_server.start_imu_stream_server",
+        lambda: ("192.168.1.50", 8881))
+    monkeypatch.setattr(
+        "pendulastic_phone_server.stop_imu_stream_server",
+        lambda: stop_calls.append("stop"))
+    app = App()
+    try:
+        app._acq._src_imu_browser.set(True)
+        app.on_imu_browser_toggled()
+        app.update()
+        app._acq._src_imu_browser.set(False)
+        app.on_imu_browser_toggled()
+        app.update()
+        assert stop_calls == ["stop"]
+        assert app._acq._phone_pairing_frame.winfo_manager() == ""
+    finally:
+        app.destroy()
+
+
 def test_multi_trial_checkbox_default_off():
     from pendulastic_app import AcquisitionPanel
     r = _root()
