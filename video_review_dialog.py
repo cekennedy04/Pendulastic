@@ -6,6 +6,8 @@ the full design.
 """
 from __future__ import annotations
 
+import threading
+
 
 def _splice_from(old: list, start_idx: int, new: list, pad_value) -> list:
     """Return old[:start_idx] + new, with new padded (using pad_value) or
@@ -26,7 +28,7 @@ from tkinter import ttk
 import cv2 as _cv2
 from PIL import Image, ImageTk
 
-from pendulastic_viewer import _draw, TRAIL_LEN
+from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click
 
 _MAX_DISPLAY_WIDTH = 960
 
@@ -191,4 +193,61 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self.destroy()
 
     def _on_fix_person_here(self) -> None:
-        pass  # implemented in Task 4
+        if self._retrack_in_progress:
+            return
+        self._playing = False
+        self._btn_play.config(text="▶")
+
+        frame_idx = self._frame_idx
+        frame, poses = self.engine.detect_people_at_frame(
+            self.video_path, frame_index=frame_idx)
+        if frame is None or not poses:
+            self.status_var.set(
+                "No person detected at this frame -- try a nearby frame.")
+            return
+
+        fh, fw = frame.shape[:2]
+        if len(poses) == 1:
+            result = resolve_person_click(
+                poses, (fw / 2, fh / 2), fw, fh, self.leg)
+            if result is None or result[2] is None:
+                self.status_var.set(
+                    "No person detected at this frame -- try a nearby frame.")
+                return
+            seed = result
+        else:
+            from pendulastic_app import PersonPickerDialog
+            dialog = PersonPickerDialog(
+                self, self.video_path, frame_idx, frame, poses, self.leg)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            seed = dialog.result
+
+        self._start_retrack(frame_idx, seed)
+
+    def _start_retrack(self, start_frame: int, seed: tuple) -> None:
+        self._retrack_in_progress = True
+        self._btn_fix.config(state="disabled")
+        self.status_var.set(f"Retracking from frame {start_frame}...")
+
+        def _run():
+            new_angles, new_landmarks, _fps = self.engine.run_offline_track(
+                self.video_path, lambda p: None, leg=self.leg,
+                collect_landmarks=True, manual_seed=seed,
+                start_frame=start_frame)
+            self.after(0, lambda: self._on_retrack_done(
+                start_frame, new_angles, new_landmarks))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_retrack_done(self, start_frame: int, new_angles: list,
+                          new_landmarks: list) -> None:
+        self.angles = _splice_from(self.angles, start_frame, new_angles,
+                                    float("nan"))
+        self.landmarks = _splice_from(self.landmarks, start_frame,
+                                       new_landmarks, None)
+        self._retrack_in_progress = False
+        self._btn_fix.config(state="normal")
+        self.status_var.set(f"Retrack complete from frame {start_frame}.")
+        self._redraw()
