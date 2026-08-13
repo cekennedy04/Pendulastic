@@ -32,6 +32,7 @@ import workbench_engine as engine
 import pendulastic_storage
 import longitudinal_dashboard
 import pendulastic_pt_score
+import pt_report_common
 import workbench_style as ws
 
 MILESTONE_LABELS = ["First Peak Extension", "Maximum Flexion", "Rest/Settled"]
@@ -365,6 +366,8 @@ class WorkbenchView(tk.Frame):
                             self._on_mark_milestone).pack(side="left", padx=6)
         ws.secondary_button(annot_toolbar, "Save Trial to Dashboard",
                             self._on_save_trial_clicked).pack(side="right", padx=6)
+        ws.secondary_button(annot_toolbar, "Flag Trial Quality",
+                            self._on_flag_quality_clicked).pack(side="right", padx=6)
         ws.secondary_button(annot_toolbar, "Export Session (JSON)...",
                             self._on_export_clicked).pack(side="right", padx=6)
         self._export_csv_button = tk.Menubutton(
@@ -733,9 +736,15 @@ class WorkbenchView(tk.Frame):
             release_t = self._raw_diagnostics["accel_release_time_sec"]
             release_str = (f"t={release_t:.2f}s" if release_t is not None
                            else "unavailable (sample rate too low)")
+            hold_z = self._raw_diagnostics.get("hold_gravity_z_frac")
+            hold_ok = self._raw_diagnostics.get("hold_stillness_ok")
+            hold_z_str = f"{hold_z * 100:.0f}% on Z" if hold_z is not None else "unavailable"
+            hold_ok_str = ("n/a" if hold_ok is None
+                           else "passed" if hold_ok else "FAILED (handling detected)")
             self._raw_diag_label.configure(
                 text=f"Peak angular velocity (raw gyro): {peak_vel:.1f} deg/s   |   "
-                     f"Release detected (raw accel, 5Hz low-pass): {release_str}")
+                     f"Release detected (raw accel, 5Hz low-pass): {release_str}   |   "
+                     f"Hold gravity: {hold_z_str}   |   Hold stillness: {hold_ok_str}")
         else:
             self._raw_diag_label.configure(
                 text="(independent of PT score fusion -- none loaded)")
@@ -896,6 +905,33 @@ class WorkbenchView(tk.Frame):
         meta = self.controller.get_trial_meta()
         return meta.get("participant_id", ""), meta.get("session_date", "")
 
+    def _current_trial_key(self, opti_root=None, rec_root=None) -> Optional[str]:
+        """Derive the pt_report_common.trial_key() for the currently-loaded
+        trial, for the Flag Trial Quality dialog (Task 4). Prefers the
+        OptiTrack path (the convention pt_report_common._parse_trial_path
+        is most proven against), falling back to any one of the loaded
+        IMU component paths under Recordings/. Returns None if neither is
+        available or parses -- the dialog disables saving in that case.
+        opti_root/rec_root default to pt_report_common.OPTI_ROOT/REC_ROOT;
+        overridable for tests."""
+        opti_root = opti_root or pt_report_common.OPTI_ROOT
+        rec_root = rec_root or pt_report_common.REC_ROOT
+        meta = self.controller.get_trial_meta()
+
+        parsed = None
+        optitrack_path = meta.get("optitrack_path")
+        if optitrack_path:
+            parsed = pt_report_common._parse_trial_path(optitrack_path, opti_root)
+        if parsed is None:
+            imu_paths = meta.get("imu_paths") or {}
+            anchor = imu_paths.get("accel") or meta.get("imu_path")
+            if anchor:
+                parsed = pt_report_common._parse_trial_path(anchor, rec_root)
+        if parsed is None:
+            return None
+        return pt_report_common.trial_key(
+            parsed["participant"], parsed["leg"], parsed["condition"], parsed["trial"])
+
     def _default_csv_filename(self, prefix: str) -> str:
         participant_id, session_date = self._meta_ids()
         parts = [prefix, participant_id or "session"] + ([session_date] if session_date else [])
@@ -1049,6 +1085,100 @@ class WorkbenchView(tk.Frame):
         button_row = tk.Frame(dialog)
         button_row.grid(row=5, column=0, columnspan=2, pady=8)
         tk.Button(button_row, text="Save", command=on_confirm).pack(side="left", padx=6)
+        tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+
+    def _on_flag_quality_clicked(self) -> None:
+        trial_key = self._current_trial_key()
+        if trial_key is None:
+            messagebox.showerror(
+                "Cannot Flag Trial",
+                "Could not determine this trial's identity (participant/leg/"
+                "condition/trial number) from its OptiTrack or IMU paths -- "
+                "cannot save a quality tag or exclusion for it.")
+            return
+
+        raw_diag = self._raw_diagnostics or {}
+        opti_trace = self._traces.get("optitrack")
+        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False}
+        if opti_trace is not None:
+            ref_t, ref_angle = opti_trace
+            try:
+                opti_signals = engine.compute_optitrack_quality_signals(ref_t, ref_angle)
+            except Exception:
+                pass   # supplementary signal only -- dialog still opens without it
+        suggestion = engine.suggest_quality_tag(raw_diag, opti_signals)
+
+        existing_tags = pt_report_common.load_quality_tags()
+        existing_tag = existing_tags.get(trial_key)
+        existing_excluded = trial_key in pt_report_common.load_excluded_trials()
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Flag Trial Quality")
+        dialog.transient(self)
+
+        hold_z = raw_diag.get("hold_gravity_z_frac")
+        hold_ok = raw_diag.get("hold_stillness_ok")
+        signals_text = (
+            f"Hold gravity on Z: {f'{hold_z * 100:.0f}%' if hold_z is not None else 'unavailable'}\n"
+            f"Hold stillness gate: {'n/a' if hold_ok is None else ('passed' if hold_ok else 'FAILED')}\n"
+            f"OptiTrack dropout: {opti_signals['optitrack_dropout_frac'] * 100:.0f}%\n"
+            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}"
+        )
+        tk.Label(dialog, text=signals_text, justify="left", anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+
+        tk.Label(dialog, text="Category:").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        _NEUTRAL = "No automated suggestion -- select category..."
+        category_options = [_NEUTRAL] + list(pt_report_common.QUALITY_TAG_CATEGORIES)
+        default_category = existing_tag["category"] if existing_tag else (
+            suggestion["category"] or _NEUTRAL)
+        category_var = tk.StringVar(value=default_category)
+        ttk.OptionMenu(dialog, category_var, default_category, *category_options).grid(
+            row=1, column=1, sticky="w", padx=8, pady=4)
+
+        tk.Label(dialog, text="Details:").grid(row=2, column=0, sticky="nw", padx=8, pady=4)
+        details_text = tk.Text(dialog, height=3, width=40, wrap="word")
+        details_text.insert(
+            "1.0", existing_tag["details"] if existing_tag else suggestion["details"])
+        details_text.grid(row=2, column=1, padx=8, pady=4)
+
+        exclude_var = tk.BooleanVar(value=existing_excluded)
+        tk.Checkbutton(dialog, text="Also exclude from all analysis",
+                      variable=exclude_var).grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+
+        status_var = tk.StringVar(value="")
+        tk.Label(dialog, textvariable=status_var, fg="#B45309").grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+
+        def on_save() -> None:
+            category = category_var.get()
+            if category == _NEUTRAL:
+                status_var.set("Select a category before saving.")
+                return
+            details = details_text.get("1.0", "end").strip()
+            try:
+                pt_report_common.save_quality_tag(trial_key, category, details)
+            except ValueError as e:
+                status_var.set(str(e))
+                return
+            if exclude_var.get():
+                pt_report_common.add_excluded_trial(trial_key, f"{category}: {details}")
+            else:
+                pt_report_common.clear_excluded_trial(trial_key)
+            dialog.destroy()
+            messagebox.showinfo("Flagged", f"Saved quality tag for {trial_key}.")
+
+        def on_clear() -> None:
+            pt_report_common.clear_quality_tag(trial_key)
+            pt_report_common.clear_excluded_trial(trial_key)
+            dialog.destroy()
+            messagebox.showinfo("Cleared", f"Cleared quality tag/exclusion for {trial_key}.")
+
+        button_row = tk.Frame(dialog)
+        button_row.grid(row=5, column=0, columnspan=2, pady=8)
+        tk.Button(button_row, text="Save", command=on_save).pack(side="left", padx=6)
+        tk.Button(button_row, text="Clear", command=on_clear).pack(side="left", padx=6)
         tk.Button(button_row, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
 
     def load_video(self, path: str) -> None:

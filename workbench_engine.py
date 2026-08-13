@@ -23,6 +23,7 @@ import analysis_pipeline
 import imu_calibration_config
 import imu_calibration_tuner
 import pendulastic_pt_score
+from pendulastic_imu_server import _is_stationary_window, GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES
 
 
 def _active_window_end(t: np.ndarray, angle: np.ndarray) -> int:
@@ -653,6 +654,15 @@ _MIN_FS_FOR_5HZ_CUTOFF_HZ = 20.0
 _ACCEL_LOWPASS_CUTOFF_HZ = 5.0
 _ACCEL_RELEASE_BASELINE_SEC = 0.6
 
+# Auto-suggestion thresholds (design spec
+# docs/superpowers/specs/2026-08-11-trial-quality-triage-design.md Section
+# 4) -- SEED VALUES, not validated against the real corpus. Tune these
+# empirically (same sweep-and-measure approach used for
+# ACCEL_CORRECTION_GYRO_MAX_RAD_S and _RELEASE_ANCHOR_MARGIN_SEC) before
+# trusting the suggestions in production.
+_HOLD_GRAVITY_Z_FRAC_WARN = 0.85
+_OPTITRACK_DROPOUT_FRAC_WARN = 0.30
+
 
 def _accel_release_time(anchor_path: str) -> Optional[float]:
     """Independent release-event estimate from raw accelerometer
@@ -688,14 +698,97 @@ def _accel_release_time(anchor_path: str) -> Optional[float]:
 
 
 def compute_raw_sensor_diagnostics(anchor_path: str) -> dict:
-    """Two supplementary, non-blocking cross-checks computed directly from
-    raw gyro/accel data (bypassing AHRS fusion entirely) -- see design
-    spec Sections 3-4. Never touches load_imu_trial's fused-angle
-    PT-score path."""
+    """Supplementary, non-blocking cross-checks computed directly from raw
+    gyro/accel data (bypassing AHRS fusion entirely) -- see design spec
+    Sections 3-4. Never touches load_imu_trial's fused-angle PT-score path.
+
+    hold_gravity_z_frac / hold_stillness_ok (2026-08-11 addition, trial-
+    quality-triage design spec Section 4): approximate the pre-release
+    calibration hold as the FIRST GYRO_BIAS_WINDOW_S seconds of the raw
+    log -- simpler than replay_trial's full calm/pending-departure state
+    machine (imu_calibration_tuner.py), which is appropriate here since
+    this is a diagnostic signal for a researcher to read, not a correction
+    fed back into fusion. Both are None when there are too few raw samples
+    in that window to compute a value -- None means "unknown", never a
+    silent signal that the hold was fine."""
+    paths = _derive_split_csv_siblings(anchor_path)
+    accel_samples = _read_one_split_csv(paths["accel"], "accel")
+    gyro_samples = _read_one_split_csv(paths["gyro"], "gyro")
+
+    hold_gravity_z_frac = None
+    hold_stillness_ok = None
+    if accel_samples and gyro_samples:
+        t0 = min(accel_samples[0]["t"], gyro_samples[0]["t"])
+        hold_accel = [(s["t"], np.asarray(s["v"], float)) for s in accel_samples
+                     if s["t"] - t0 < GYRO_BIAS_WINDOW_S]
+        hold_gyro = [(s["t"], np.asarray(s["v"], float)) for s in gyro_samples
+                    if s["t"] - t0 < GYRO_BIAS_WINDOW_S]
+        if len(hold_accel) >= GYRO_BIAS_MIN_SAMPLES:
+            mean_accel = np.mean([v for _, v in hold_accel], axis=0)
+            mag = float(np.linalg.norm(mean_accel))
+            if mag > 1e-9:
+                hold_gravity_z_frac = abs(float(mean_accel[2])) / mag
+        if len(hold_gyro) >= GYRO_BIAS_MIN_SAMPLES and len(hold_accel) >= GYRO_BIAS_MIN_SAMPLES:
+            now = max(hold_accel[-1][0], hold_gyro[-1][0])
+            hold_stillness_ok = _is_stationary_window(hold_gyro, hold_accel, now)
+
     return {
         "peak_gyro_velocity_dps": _peak_raw_gyro_velocity(anchor_path),
         "accel_release_time_sec": _accel_release_time(anchor_path),
+        "hold_gravity_z_frac": hold_gravity_z_frac,
+        "hold_stillness_ok": hold_stillness_ok,
     }
+
+
+def compute_optitrack_quality_signals(ref_t: np.ndarray, ref_angle: np.ndarray) -> dict:
+    """OptiTrack-side quality signals computed from ref_t/ref_angle, which
+    callers MUST pass as the exact arrays already loaded via
+    load_optitrack_trial() and already fed into compare_pair() for
+    scoring -- no separate reload, so these can't drift from what the
+    scorer sees (design spec Section 4)."""
+    ref_t = np.asarray(ref_t, dtype=float)
+    ref_angle = np.asarray(ref_angle, dtype=float)
+    n = len(ref_angle)
+    dropout_frac = (1.0 - float(np.sum(np.isfinite(ref_angle))) / n) if n else 1.0
+
+    pt_params = pendulastic_pt_score.compute_pt_params(ref_t, ref_angle)
+    area_ratio_warn = bool(pt_params["quality_warn"]) if pt_params is not None else False
+
+    return {
+        "optitrack_dropout_frac": dropout_frac,
+        "optitrack_area_ratio_warn": area_ratio_warn,
+    }
+
+
+def suggest_quality_tag(raw_diagnostics: dict, optitrack_signals: dict) -> dict:
+    """Pure suggestion rule combining compute_raw_sensor_diagnostics()'s
+    hold_* fields with compute_optitrack_quality_signals()'s output.
+    Checked in priority order: a tilted or unstable calibration hold wins
+    over an OptiTrack-side signal, since it's detected closer to the raw
+    source. Never pre-selects a category with confidence it doesn't have --
+    returns category=None when no threshold fires, so the caller (the Flag
+    Trial Quality dialog) shows an explicit neutral placeholder rather than
+    a silently-wrong pre-fill (design spec Section 4).
+    mounting_slip and release_contamination have no computable signal at
+    all and are never suggested here -- always manual-only."""
+    hold_z = raw_diagnostics.get("hold_gravity_z_frac")
+    hold_ok = raw_diagnostics.get("hold_stillness_ok")
+    if hold_z is not None and hold_z < _HOLD_GRAVITY_Z_FRAC_WARN:
+        return {"category": "calibration_hold",
+               "details": f"Hold-window gravity only {hold_z * 100:.0f}% on Z axis (tilted hold)."}
+    if hold_ok is False:
+        return {"category": "calibration_hold",
+               "details": "Calibration hold did not pass the stillness gate (handling/motion detected)."}
+
+    dropout = optitrack_signals.get("optitrack_dropout_frac", 0.0)
+    if dropout > _OPTITRACK_DROPOUT_FRAC_WARN:
+        return {"category": "marker_occlusion",
+               "details": f"OptiTrack marker dropout: {dropout * 100:.0f}% of samples missing."}
+    if optitrack_signals.get("optitrack_area_ratio_warn"):
+        return {"category": "marker_occlusion",
+               "details": "OptiTrack area_ratio exceeds the marker-based-angle reliability threshold."}
+
+    return {"category": None, "details": ""}
 
 
 def load_imu_trial(jsonl_path: str, config: Optional[dict] = None,

@@ -3056,6 +3056,12 @@ class App(tk.Tk):
                     # for a real trial. Stored separately for in-memory
                     # cross-check use only.
                     self._workbench_imu_reference = imu_reference
+
+                    try:
+                        self._workbench_raw_diagnostics = _wb_engine.compute_raw_sensor_diagnostics(
+                            components["accel"]["path"])
+                    except Exception:
+                        pass   # supplementary cross-check only -- never blocks the trial load
                 except Exception as e:
                     messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
         elif selection["imu_path"]:

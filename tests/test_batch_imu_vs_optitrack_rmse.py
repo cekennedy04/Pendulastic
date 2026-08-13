@@ -5,6 +5,7 @@ import pytest
 
 import batch_imu_vs_optitrack_rmse as batch
 import workbench_engine as engine
+import pt_report_common
 
 
 # ── Real-data regression: 2026-08-07 zero-capture-contamination fix ────────
@@ -32,6 +33,85 @@ RECORDINGS_PRESENT = os.path.isdir(batch.REC_ROOT) and os.path.isdir(batch.OPTI_
 skip_without_real_recordings = pytest.mark.skipif(
     not RECORDINGS_PRESENT,
     reason="Real Recordings_/OptiTrack_Recordings trees not present on this machine")
+
+
+def test_discover_trials_drops_excluded_trial(tmp_path, monkeypatch):
+    """A trial present in excluded_trials.json must not appear in
+    discover_trials()'s output at all."""
+    rec_root = tmp_path / "Recordings"
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    imu_dir = rec_root / "Participant_5" / "Left" / "pre"
+    imu_dir.mkdir(parents=True)
+    opti_dir = opti_root / "Participant_5" / "Left" / "pre"
+    opti_dir.mkdir(parents=True)
+    for suffix in ("_imu.csv", "_accel.csv", "_gyro.csv", "_mag.csv"):
+        (imu_dir / f"Trial_1{suffix}").write_text("x", encoding="utf-8")
+    (opti_dir / "trial_1_optitrack.csv").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(batch, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(batch, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(pt_report_common, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(pt_report_common, "OPTI_ROOT", str(opti_root))
+    key = pt_report_common.trial_key("5", "left", "pre", "1")
+    monkeypatch.setattr(pt_report_common, "EXCLUDED_TRIALS_PATH",
+                        str(tmp_path / "excluded_trials.json"))
+    pt_report_common.add_excluded_trial(key, "test exclusion")
+
+    trials = batch.discover_trials()
+    assert trials == []
+
+
+def test_discover_trials_keeps_non_excluded_trial_and_sets_trial_key(tmp_path, monkeypatch):
+    rec_root = tmp_path / "Recordings"
+    opti_root = tmp_path / "OptiTrack_Recordings"
+    imu_dir = rec_root / "Participant_5" / "Left" / "pre"
+    imu_dir.mkdir(parents=True)
+    opti_dir = opti_root / "Participant_5" / "Left" / "pre"
+    opti_dir.mkdir(parents=True)
+    for suffix in ("_imu.csv", "_accel.csv", "_gyro.csv", "_mag.csv"):
+        (imu_dir / f"Trial_1{suffix}").write_text("x", encoding="utf-8")
+    (opti_dir / "trial_1_optitrack.csv").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(batch, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(batch, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(pt_report_common, "REC_ROOT", str(rec_root))
+    monkeypatch.setattr(pt_report_common, "OPTI_ROOT", str(opti_root))
+    monkeypatch.setattr(pt_report_common, "EXCLUDED_TRIALS_PATH",
+                        str(tmp_path / "excluded_trials.json"))
+
+    trials = batch.discover_trials()
+    assert len(trials) == 1
+    assert trials[0]["trial_key"] == pt_report_common.trial_key("5", "left", "pre", "1")
+
+
+def test_compute_stratified_stats_all_trials_no_tags():
+    rows = [
+        {"status": "ok", "rmse_deg": 5.0, "trial_key": "a"},
+        {"status": "ok", "rmse_deg": 15.0, "trial_key": "b"},
+        {"status": "error", "rmse_deg": None, "trial_key": "c"},
+    ]
+    result = batch.compute_stratified_stats(rows, {}, goal_deg=10.0)
+    assert result["all"] == {"n": 2, "mean": 10.0, "median": 10.0, "n_under_goal": 1}
+    assert list(result.keys()) == ["all"]   # no tag categories present -> no extra breakdowns
+
+
+def test_compute_stratified_stats_breaks_down_by_tag_category():
+    rows = [
+        {"status": "ok", "rmse_deg": 5.0, "trial_key": "a"},
+        {"status": "ok", "rmse_deg": 25.0, "trial_key": "b"},   # tagged calibration_hold
+        {"status": "ok", "rmse_deg": 8.0, "trial_key": "c"},
+    ]
+    quality_tags = {"b": {"category": "calibration_hold", "details": "x", "timestamp": "t"}}
+    result = batch.compute_stratified_stats(rows, quality_tags, goal_deg=10.0)
+    assert result["all"] == {"n": 3, "mean": pytest.approx(38.0 / 3), "median": 8.0, "n_under_goal": 2}
+    assert result["excluding_calibration_hold"] == {
+        "n": 2, "mean": 6.5, "median": 6.5, "n_under_goal": 2}
+
+
+def test_compute_stratified_stats_returns_none_when_no_ok_rows():
+    rows = [{"status": "error", "rmse_deg": None, "trial_key": "a"}]
+    result = batch.compute_stratified_stats(rows, {}, goal_deg=10.0)
+    assert result["all"] is None
 
 
 def _score_real_trial(imu_path):

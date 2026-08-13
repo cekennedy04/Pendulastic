@@ -32,6 +32,53 @@ class _Ctrl:
         return {}
 
 
+class _CtrlWithMeta:
+    def __init__(self, meta):
+        self._meta = meta
+
+    def get_trial_meta(self):
+        return dict(self._meta)
+
+
+def test_current_trial_key_derives_from_optitrack_path(tmp_path):
+    from pendulastic_workbench import WorkbenchView
+    import pt_report_common
+
+    opti_path = tmp_path / "OptiTrack_Recordings" / "Participant_5" / "Left" / "pre" / "trial_1_optitrack.csv"
+    opti_path.parent.mkdir(parents=True)
+    opti_path.write_text("x", encoding="utf-8")
+
+    r = _get_root()
+    wv = WorkbenchView(r, _CtrlWithMeta({"optitrack_path": str(opti_path)}))
+    key = wv._current_trial_key(opti_root=str(tmp_path / "OptiTrack_Recordings"),
+                                rec_root=str(tmp_path / "Recordings"))
+    assert key == pt_report_common.trial_key("5", "left", "pre", "1")
+
+
+def test_current_trial_key_falls_back_to_imu_paths_when_no_optitrack(tmp_path):
+    from pendulastic_workbench import WorkbenchView
+    import pt_report_common
+
+    imu_dir = tmp_path / "Recordings" / "Participant_5" / "Left" / "pre"
+    imu_dir.mkdir(parents=True)
+    accel_path = imu_dir / "Trial_1_accel.csv"
+    accel_path.write_text("x", encoding="utf-8")
+
+    r = _get_root()
+    wv = WorkbenchView(r, _CtrlWithMeta(
+        {"optitrack_path": None, "imu_paths": {"accel": str(accel_path)}}))
+    key = wv._current_trial_key(opti_root=str(tmp_path / "OptiTrack_Recordings"),
+                                rec_root=str(tmp_path / "Recordings"))
+    assert key == pt_report_common.trial_key("5", "left", "pre", "1")
+
+
+def test_current_trial_key_returns_none_when_nothing_parses():
+    from pendulastic_workbench import WorkbenchView
+    r = _get_root()
+    wv = WorkbenchView(r, _CtrlWithMeta({}))
+    assert wv._current_trial_key() is None
+
+
 def _traces(*labels):
     t = np.linspace(0, 5, 100)
     return {label: (t, 180 - 40 * np.sin(t) + i) for i, label in enumerate(labels)}
