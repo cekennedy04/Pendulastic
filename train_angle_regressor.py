@@ -83,6 +83,14 @@ warnings.filterwarnings("ignore")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
+# On Windows, stdout/stderr default to the cp1252 codepage when not attached
+# to a real console (e.g. redirected to a file or piped), which cannot
+# encode characters like the arrow/checkmark used in this script's progress
+# output and crashes with UnicodeEncodeError partway through training.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -393,16 +401,19 @@ def build_loss_and_metrics(alpha_olc, median_shank_px):
             return tf.keras.losses.huber(y_true, y_pred, delta=huber_delta_norm)
 
     # Shank loss: penalise deviation from the per-dataset median (OLC)
-    # Target is median_shank_px, normalised to a fraction of image width (1920)
-    shank_target_norm = median_shank_px / 1920.0
-
     class ShankOLC(tf.keras.losses.Loss):
         def call(self, y_true, y_pred):
-            # y_true is the per-sample shank length (passed as label["shank"])
-            # We penalise the model's prediction deviating from the median
-            pred_shank = tf.squeeze(y_pred, axis=-1) * 1920.0   # denorm px
-            true_shank = y_true  # per-sample px length from COCO
-            return tf.reduce_mean(tf.square(pred_shank - true_shank))
+            # Squared error in normalised (fraction-of-image-width) space, not
+            # raw px^2 -- raw px^2 runs 1e4-1e5 vs the angle head's Huber loss
+            # at ~1e-2, so even with alpha_olc's 0.05 weight the shank task's
+            # gradient dominated the shared MobileNetV3 trunk and starved the
+            # angle head of signal (observed: shank_loss fell steadily while
+            # val_angle_rmse_deg plateaued at 25-27 deg, nowhere near the <3
+            # deg target). Normalising both losses to comparable scale lets
+            # alpha_olc actually control the OLC penalty's relative weight.
+            pred_norm = tf.squeeze(y_pred, axis=-1)
+            true_norm = y_true / 1920.0   # per-sample px length -> same scale as pred
+            return tf.reduce_mean(tf.square(pred_norm - true_norm))
 
     class MAEDeg(tf.keras.metrics.Metric):
         """Mean absolute error in degrees (for monitoring)."""
@@ -519,13 +530,11 @@ def train(args, train_samples, val_samples):
             mode                 = "min",
             verbose              = 1,
         ),
-        keras.callbacks.ReduceLROnPlateau(
-            monitor  = "val_angle_rmse_deg",
-            factor   = 0.5,
-            patience = max(2, args.patience // 2),
-            min_lr   = FINETUNE_LR_MIN * 0.1,
-            verbose  = 1,
-        ),
+        # No ReduceLROnPlateau here: the optimizer's learning rate is a
+        # CosineDecayRestarts schedule object, not a plain float, and Keras
+        # raises TypeError if a callback tries to imperatively overwrite a
+        # schedule-driven LR. The schedule's own warm restarts already serve
+        # the plateau-escape role ReduceLROnPlateau would otherwise play.
         keras.callbacks.ModelCheckpoint(
             filepath          = str(MODEL_DIR / "angle_regressor_ckpt.keras"),
             monitor           = "val_angle_rmse_deg",
@@ -558,7 +567,7 @@ def train(args, train_samples, val_samples):
 
 # ── Export ────────────────────────────────────────────────────────────────────
 
-def export_model(model, output_dir, tflite_path, skip_tflite):
+def export_model(model, output_dir, tflite_path, skip_tflite, representative_samples=None):
     import tensorflow as tf
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -569,12 +578,31 @@ def export_model(model, output_dir, tflite_path, skip_tflite):
         print("  Converting to INT8 TFLite ...")
         converter = tf.lite.TFLiteConverter.from_saved_model(str(output_dir))
         converter.optimizations    = [tf.lite.Optimize.DEFAULT]
-        converter.target_spec.supported_ops = [
-            tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
-            tf.lite.OpsSet.TFLITE_BUILTINS,
-        ]
         converter.inference_input_type  = tf.float32
         converter.inference_output_type = tf.float32
+
+        # Full-integer (TFLITE_BUILTINS_INT8) quantization requires a
+        # representative_dataset to calibrate activation ranges; without
+        # samples, fall back to weight-only dynamic-range quantization
+        # (still int8 weights, just no INT8 op-set requirement) rather than
+        # crashing.
+        if representative_samples:
+            rep_ds = build_dataset(representative_samples[:100], batch_size=1,
+                                   augment=False)
+
+            def representative_dataset():
+                for img, _ in rep_ds.take(100):
+                    yield [img]
+
+            converter.target_spec.supported_ops = [
+                tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
+                tf.lite.OpsSet.TFLITE_BUILTINS,
+            ]
+            converter.representative_dataset = representative_dataset
+        else:
+            print("  WARNING: no representative samples given -- falling back to "
+                 "dynamic-range (weight-only) quantization.")
+
         tflite_model = converter.convert()
         tflite_path.parent.mkdir(parents=True, exist_ok=True)
         tflite_path.write_bytes(tflite_model)
@@ -619,7 +647,8 @@ def main():
 
     model, history, best_rmse, median_shank = train(args, train_s, val_s)
 
-    export_model(model, OUTPUT_MODEL, OUTPUT_TFLITE, skip_tflite=args.no_tflite)
+    export_model(model, OUTPUT_MODEL, OUTPUT_TFLITE, skip_tflite=args.no_tflite,
+                representative_samples=val_s)
 
     # Save metrics
     metrics = {
