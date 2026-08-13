@@ -572,6 +572,16 @@ class AcquisitionPanel(tk.Frame):
         for chk in (chk_imu, chk_rgb):
             chk.pack(side="left", padx=8)
 
+        self._src_imu_browser = tk.BooleanVar(value=False)
+        chk_imu_browser = tk.Checkbutton(
+            chk_row, text="Phone IMU (browser)",
+            variable=self._src_imu_browser,
+            bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG"],
+            selectcolor=ws.PALETTE["SURFACE"],
+            activebackground=ws.PALETTE["PANEL"],
+            command=lambda: self.controller.on_imu_browser_toggled())
+        chk_imu_browser.pack(side="left", padx=8)
+
         # IMU pairing hint -- shown whenever "iPhone IMU" is checked, so the
         # operator doesn't have to go digging in the console log for the
         # ws:// address to enter into the Sensor Stream app. Static text
@@ -2822,6 +2832,14 @@ class App(tk.Tk):
         port = getattr(_pps, "PORT_STREAM_HTTPS", 8880)
         url = f"https://{primary_ip}:{port}/"
         self._acq.show_phone_pairing_panel(url)
+
+    def on_imu_browser_toggled(self) -> None:
+        if self._acq._src_imu_browser.get():
+            ip, port = _pps.start_imu_stream_server()
+            self._acq.show_phone_pairing_panel(f"https://{ip}:{port}/")
+        else:
+            _pps.stop_imu_stream_server()
+            self._acq.hide_phone_pairing_panel()
 
     def on_camera_disabled(self) -> None:
         if self._camera is not None:
