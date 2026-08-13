@@ -852,6 +852,7 @@ def test_fix_person_here_one_pose_auto_resolves_and_retracks(tmp_path, monkeypat
     dlg._frame_idx = 2
 
     dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
 
     assert captured["start_frame"] == 2
     assert captured["manual_seed"] is not None
@@ -898,6 +899,7 @@ def test_fix_person_here_two_poses_uses_person_picker_dialog(tmp_path, monkeypat
     dlg._frame_idx = 1
 
     dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
 
     assert dlg.angles == [0.0, 99.0, 99.0, 99.0, 99.0]
     dlg.destroy()
@@ -966,16 +968,21 @@ def test_fix_person_here_short_retrack_result_pads_not_leaves_stale(tmp_path, mo
                                collect_landmarks=False, manual_seed=None,
                                start_frame=0):
             progress_cb(1.0)
-            return ([170.0], [("hip", "knee", "ankle")], 30.0)  # short!
+            return ([170.0], [(None, None, (99.0, 99.0))], 30.0)  # short!
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
+    # (None, None, (-1.0, -1.0)) is a distinguishable-but-valid sentinel --
+    # a bare string here would crash the constructor's own _redraw() call,
+    # since _draw() unpacks hip/knee/ankle expecting None or a coordinate.
     dlg = AnnotatedVideoReviewDialog(
-        r, video_path, angles=[0.0] * 6, landmarks=["stale"] * 6,
+        r, video_path, angles=[0.0] * 6,
+        landmarks=[(None, None, (-1.0, -1.0))] * 6,
         fps=30.0, leg="right", engine=_ShortReturnEngine())
     dlg._frame_idx = 2
 
     dlg._on_fix_person_here()
+    r.update()  # flush the self.after(0, ...) callback _start_retrack scheduled
 
     assert dlg.angles[2] == 170.0
     assert math.isnan(dlg.angles[3])
