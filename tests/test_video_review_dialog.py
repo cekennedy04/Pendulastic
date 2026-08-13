@@ -139,7 +139,9 @@ def test_read_frame_returns_correct_frame_by_index(tmp_path):
 
     frame3 = dlg._read_frame(3)
     assert frame3 is not None
-    assert int(frame3[0, 0, 0]) == (3 * 20) % 256
+    # Tolerance, not exact equality: XVID is a lossy codec, so the decoded
+    # pixel value can drift a few units from what was written.
+    assert abs(int(frame3[0, 0, 0]) - (3 * 20) % 256) < 15
     dlg.destroy()
 
 
@@ -218,7 +220,7 @@ def test_trail_for_collects_ankle_positions_within_trail_len(tmp_path):
         if i % 4 == 0:
             landmarks.append(None)  # some frames have no detection
         else:
-            landmarks.append(("hip", "knee", (float(i), float(i))))
+            landmarks.append((None, None, (float(i), float(i))))
 
     dlg = AnnotatedVideoReviewDialog(
         r, video_path, angles=[0.0] * n, landmarks=landmarks,
@@ -242,7 +244,7 @@ def test_trail_for_near_start_of_video_does_not_go_negative(tmp_path):
     _write_test_video(video_path, 3)
     r = _get_root()
 
-    landmarks = [("h", "k", (0.0, 0.0)), ("h", "k", (1.0, 1.0)), None]
+    landmarks = [(None, None, (0.0, 0.0)), (None, None, (1.0, 1.0)), None]
     dlg = AnnotatedVideoReviewDialog(
         r, video_path, angles=[0.0] * 3, landmarks=landmarks,
         fps=30.0, leg="right", engine=_FakeEngine())

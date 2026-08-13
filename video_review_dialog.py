@@ -139,11 +139,6 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         lm = (self.landmarks[self._frame_idx]
               if self._frame_idx < len(self.landmarks) else None)
         hip, kne, ank = lm if lm is not None else (None, None, None)
-        # Guard against test/dummy data that uses non-coordinate values for hip/kne
-        if hip is not None and not isinstance(hip, (tuple, list)):
-            hip = None
-        if kne is not None and not isinstance(kne, (tuple, list)):
-            kne = None
         trail = self._trail_for(self._frame_idx)
         overlay = _draw(frame, hip, kne, ank, ang, trail, scale=1.0)
         h, w = overlay.shape[:2]
