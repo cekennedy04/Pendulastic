@@ -118,8 +118,14 @@ ANGLE_MAX       = 185.0     # OAC upper bound (degrees)
 
 HEAD_LR         = 1e-3      # Phase 1 learning rate (head only)
 HEAD_EPOCHS     = 5         # Phase 1 epochs
-FINETUNE_LR     = 1e-3      # Phase 2 initial LR (CosineDecayRestarts peak)
-FINETUNE_LR_MIN = 1e-4      # Phase 2 cosine minimum
+# Phase 2 fine-tunes unfrozen pretrained backbone layers, not a fresh head --
+# using HEAD_LR's magnitude here overwrote the pretrained MobileNetV3
+# features on the very first Phase 2 epoch: a run with this same value
+# jumped from Phase 1's 25.5 deg val RMSE to 32.4 deg at Phase 2 epoch 1 and
+# kept climbing every epoch after (35.0, 38.0, 39.5 deg) with no sign of
+# recovering. 10x lower is the standard fine-tuning-vs-head-training ratio.
+FINETUNE_LR     = 1e-4      # Phase 2 initial LR (CosineDecayRestarts peak)
+FINETUNE_LR_MIN = 1e-5      # Phase 2 cosine minimum
 UNFREEZE_LAYERS = 30        # Phase 2: unfreeze this many layers from the top
 MAX_EPOCHS      = 60        # Phase 2 maximum epochs
 PATIENCE        = 6         # EarlyStopping patience (epochs)
