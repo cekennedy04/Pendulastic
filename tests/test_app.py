@@ -348,7 +348,14 @@ def test_tick_shows_flex_axis_status_when_rate_is_healthy(monkeypatch):
 
 
 
-def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
+def test_compute_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
+    """_compute_imu_tuning is the pure computation extracted from the old
+    _run_imu_tuning (see the batch-recording-latency fix): it takes every
+    input explicitly and returns the resulting source_angles dict instead of
+    reading self._pending_review / scheduling self.after(...) itself. That
+    split is what lets the same grid-search logic run either inline (single
+    trial) or deferred, once per queued trial, from _batch_processing_worker
+    without racing on shared instance state."""
     import pendulastic_app as _m
     import imu_calibration_tuner as _tuner
     import numpy as np
@@ -365,7 +372,7 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
     })
     # replay_trial's real contract always emits a leading NaN (see its
     # docstring / test_replay_trial_first_tick_is_nan_rest_are_finite) --
-    # include one here so this test actually exercises _run_imu_tuning's
+    # include one here so this test actually exercises _compute_imu_tuning's
     # own finite-filtering rather than relying on an unrealistic all-finite
     # mock return value.
     monkeypatch.setattr(_tuner, "replay_trial", lambda raw, params: (
@@ -375,26 +382,17 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
     app = _m.App()
     try:
         meta = {"pid": "P2", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
-        result_holder = {}
-        def _capture(source_angles, m, **kw):
-            result_holder["source_angles"] = source_angles
-        app._transition_to_review = _capture
-
-        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
-        # _run_imu_tuning schedules the transition via self.after(0, ...) --
-        # exactly the real production path (see the Note below) -- so the
-        # Tk event loop must be pumped once before the callback has run.
-        app.update()
+        result = app._compute_imu_tuning(
+            str(raw_path), csv_path, csv_filename, meta, {"imu": [1.0, 2.0, 3.0]})
 
         # The leading NaN tick must be dropped, not saved/displayed --
         # DataManager.save_trial formats angles as f"{a:.3f}", so an
         # unfiltered NaN would write a literal "nan" into the trial CSV.
-        assert result_holder["source_angles"]["imu"] == [180.0, 179.0, 178.0]
+        assert result["imu"] == [180.0, 179.0, 178.0]
         with open(csv_path, encoding="utf-8") as f:
             content = f.read()
         assert "179.000" in content
@@ -405,7 +403,7 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
 
 
 
-def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
+def test_compute_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
     import pendulastic_app as _m
     import imu_calibration_tuner as _tuner
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
@@ -422,43 +420,34 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
     app = _m.App()
     try:
         meta = {"pid": "P3", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._pending_review = {"imu": [1.0, 2.0, 3.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
 
-        result_holder = {}
-        app._transition_to_review = lambda source_angles, m, **kw: result_holder.update(
-            source_angles=source_angles)
+        result = app._compute_imu_tuning(
+            str(raw_path), csv_path, csv_filename, meta, {"imu": [1.0, 2.0, 3.0]})
 
-        app._run_imu_tuning(str(raw_path), csv_path, csv_filename, meta)
-        app.update()
-
-        assert result_holder["source_angles"]["imu"] == [1.0, 2.0, 3.0]
+        assert result["imu"] == [1.0, 2.0, 3.0]
     finally:
         app.destroy()
 
 
 
 
-def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
+def test_compute_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
     import pendulastic_app as _m
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
         meta = {"pid": "P4", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._pending_review = {"imu": [1.0, 2.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0], meta, source="imu")
 
-        result_holder = {}
-        app._transition_to_review = lambda source_angles, m, **kw: result_holder.update(
-            source_angles=source_angles)
-
-        app._run_imu_tuning(str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta)
-        app.update()
-        assert result_holder["source_angles"]["imu"] == [1.0, 2.0]
+        result = app._compute_imu_tuning(
+            str(tmp_path / "does_not_exist.jsonl"), csv_path, csv_filename, meta,
+            {"imu": [1.0, 2.0]})
+        assert result["imu"] == [1.0, 2.0]
     finally:
         app.destroy()
 
@@ -542,174 +531,191 @@ def test_transition_to_review_no_confirmation_for_optitrack_only(monkeypatch):
         app.destroy()
 
 
-def test_transition_to_review_multi_trial_mode_skips_post_panel(monkeypatch):
+def test_on_stop_multi_trial_imu_defers_tuning_and_returns_to_idle(monkeypatch):
+    """Core regression test for the batch-recording-latency fix: in
+    multi-trial mode, on_stop() must NOT run the IMU auto-tune grid search
+    inline -- that used to lock btn_start (via enter_processing()) for
+    however long the 144-combination search took, blocking the next trial's
+    recording. It should save the raw data, stash what the deferred pass
+    needs on the session entry, and return to idle immediately so the next
+    trial can start right away."""
+    import types
     import pendulastic_app as _m
-    shown = []
-    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    monkeypatch.setattr(_m, "_tuner", object())   # only needs to be non-None
+    monkeypatch.setattr(_m, "_IMU_AVAIL", True)
+    fake_imu = types.SimpleNamespace(stop_raw_log=lambda: "raw_log.jsonl")
+    monkeypatch.setattr(_m, "_imu", fake_imu)
     app = _m.App()
     try:
         app._acq.pid_var.set("P1")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        entry = {
-            "trial_num": 1, "sources": ["imu"], "status": "processing",
-            "meta": meta, "source_angles": None, "fps": None,
-            "base_filename": None, "file_paths": [],
-        }
-        app._session_trials = [entry]
-        # _finish_trial_multi_mode() (reached via _transition_to_review()) only
-        # finalizes when App._pending_trial_entry is set -- the real on_stop()
-        # call path sets it when the placeholder is appended.
-        app._pending_trial_entry = entry
-        app._acq.pack(fill="both", expand=True)
+        app._active_sources = ["imu"]
+        app._rec_angles = {"imu": [1.0, 2.0]}
+        app._rec_timestamps = {}
+
+        app.on_stop()
         app.update()
-        app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
-        app.update()
-        assert shown == []
-        assert app._acq.winfo_ismapped()
-        assert not app._post.winfo_ismapped()
+
+        # Idle immediately -- no processing lock between trials.
         assert app._state == "idle"
+        assert str(app._acq.btn_start.cget("state")) == "normal"
+        assert int(app._acq.trial_var.get()) == 2
+
+        assert len(app._session_trials) == 1
+        entry = app._session_trials[0]
+        assert entry["status"] == "processing"   # queued, not yet tuned
+        assert entry["source_angles"] == {"imu": [1.0, 2.0]}
+        assert entry["pending_imu_tune"]["raw_log_path"] == "raw_log.jsonl"
     finally:
         app.destroy()
 
 
-def test_finish_trial_multi_mode_updates_entry_and_increments_trial():
-    from pendulastic_app import App
-    app = App()
+def test_on_stop_multi_trial_rgb_defers_tracking_and_returns_to_idle(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    app = _m.App()
     try:
+        app._acq.pid_var.set("P1")
         app._acq.trial_var.set("1")
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        entry = {
-            "trial_num": 1, "sources": ["imu"], "status": "processing",
-            "meta": meta, "source_angles": None, "fps": None,
-            "base_filename": None, "file_paths": [],
-        }
-        app._session_trials = [entry]
-        # _finish_trial_multi_mode() finalizes whichever entry on_stop()
-        # marked as pending -- it no longer looks the entry up by
-        # trial_num (see test_finish_trial_multi_mode_uses_pending_entry_
-        # not_trial_num_lookup for why).
-        app._pending_trial_entry = entry
-        app._finish_trial_multi_mode(
-            {"imu": [1.0, 2.0]}, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+        app._acq._multi_trial_var.set(True)
+        app._active_sources = ["rgb"]
+        app._video_path = "trial1.avi"
+        monkeypatch.setattr(app, "_stop_rgb_recording", lambda: None)
+
+        app.on_stop()
         app.update()
+
+        assert app._state == "idle"
+        assert str(app._acq.btn_start.cget("state")) == "normal"
+        entry = app._session_trials[0]
+        assert entry["status"] == "processing"
+        assert entry["pending_rgb_path"] == "trial1.avi"
+    finally:
+        app.destroy()
+
+
+def test_on_stop_multi_trial_finalizes_immediately_when_nothing_to_defer(monkeypatch):
+    """OptiTrack-only (or IMU-with-no-tuner) trials have no heavy pass to
+    defer, so they should still show up as "saved" right away, same as
+    before this fix -- only the RGB/IMU-tune cases get queued."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq.trial_var.set("1")
+        app._acq._multi_trial_var.set(True)
+        app._active_sources = ["optitrack"]
+
+        app.on_stop()
+        app.update()
+
         entry = app._session_trials[0]
         assert entry["status"] == "saved"
-        assert entry["source_angles"] == {"imu": [1.0, 2.0]}
-        assert entry["base_filename"] == "PID_P1_LEG_Right_MS_TRIAL_1.csv"
-        assert int(app._acq.trial_var.get()) == 2
-        assert app._pending_trial_entry is None
+        assert entry["source_angles"] == {"optitrack": []}
     finally:
         app.destroy()
 
 
-def test_finish_trial_multi_mode_uses_pending_entry_not_trial_num_lookup():
-    """Regression test: if the trial-number spinner is wound back to a
-    number already present in _session_trials (allowed -- the spinner is
-    user-editable between trials, and _session_trials is only cleared on
-    return to mode-select), _finish_trial_multi_mode() must finalize the
-    NEW recording via _pending_trial_entry, not the first (older, wrong)
-    entry a trial_num lookup would find."""
-    from pendulastic_app import App
-    app = App()
-    try:
-        app._acq.trial_var.set("1")
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        old_entry = {
-            "trial_num": 1, "sources": ["imu"], "status": "saved",
-            "meta": {"pid": "P0"}, "source_angles": {"imu": [999.0]},
-            "fps": 60.0, "base_filename": "OLD.csv", "file_paths": [],
-        }
-        new_entry = {
-            "trial_num": 1, "sources": ["rgb"], "status": "processing",
-            "meta": meta, "source_angles": None, "fps": None,
-            "base_filename": None, "file_paths": [],
-        }
-        app._session_trials = [old_entry, new_entry]
-        app._pending_trial_entry = new_entry
-        app._finish_trial_multi_mode(
-            {"rgb": [1.0, 2.0]}, meta, "NEW.csv")
-        app.update()
-        assert old_entry["status"] == "saved"
-        assert old_entry["source_angles"] == {"imu": [999.0]}
-        assert old_entry["base_filename"] == "OLD.csv"
-        assert new_entry["status"] == "saved"
-        assert new_entry["source_angles"] == {"rgb": [1.0, 2.0]}
-        assert new_entry["base_filename"] == "NEW.csv"
-        assert app._pending_trial_entry is None
-    finally:
-        app.destroy()
-
-
-def test_on_back_to_mode_select_clears_pending_trial_entry():
-    """If a background trial (RGB MediaPipe tracking / IMU tuning) is still
-    processing when the clinician clicks '<- Mode Select' -- enter_processing()
-    does not disable btn_back, so this is reachable -- on_back_to_mode_select()
-    must clear _pending_trial_entry too, not just _session_trials. Otherwise
-    the background thread's late-arriving _finish_trial_multi_mode() call
-    would still see a non-None pending entry and act on it."""
+def test_on_back_to_mode_select_starts_batch_processing_for_queued_trials(monkeypatch):
+    """on_back_to_mode_select() must not do the plain immediate-navigation
+    cleanup when trials are still queued (status == "processing") -- it
+    has to run the deferred batch pass first (see
+    test_batch_processing_worker_processes_each_queued_entry for the pass
+    itself). _run_batch_processing is stubbed here purely to observe that
+    it's invoked with the right entries, without spawning a real thread."""
     from pendulastic_app import App
     app = App()
     try:
         entry = {
-            "trial_num": 1, "sources": ["rgb"], "status": "processing",
-            "meta": {}, "source_angles": None, "fps": None,
-            "base_filename": None, "file_paths": [],
+            "trial_num": 1, "sources": ["imu"], "status": "processing",
+            "meta": {}, "source_angles": {}, "fps": 30.0,
+            "base_filename": "T1.csv", "file_paths": [],
+            "pending_imu_tune": {"raw_log_path": "r.jsonl", "csv_path": "c.csv",
+                                 "csv_filename": "fn.csv"},
         }
         app._session_trials = [entry]
-        app._pending_trial_entry = entry
+
+        calls = []
+        monkeypatch.setattr(app, "_run_batch_processing", lambda queued: calls.append(queued))
         app.on_back_to_mode_select()
-        app.update()
-        assert app._pending_trial_entry is None
+
+        assert calls == [[entry]]
+        assert app._session_trials == [entry]   # not cleared -- batch pass hasn't run
     finally:
         app.destroy()
 
 
-def test_finish_trial_multi_mode_noop_after_navigating_to_mode_select():
-    """Simulates a background trial (e.g. RGB MediaPipe tracking) finishing
-    AFTER the clinician has already navigated back to mode select. That
-    navigation clears _pending_trial_entry (see
-    test_on_back_to_mode_select_clears_pending_trial_entry), so when the
-    background thread's callback reaches _finish_trial_multi_mode(), it
-    must recognize there's nothing pending and do absolutely nothing --
-    no trial_var incrementing, no acquisition-panel trial-list refresh, no
-    self._state change away from "mode_select" -- since the user is looking
-    at the mode-select screen, not the acquisition panel."""
+def test_batch_processing_worker_processes_each_queued_entry_and_finishes(monkeypatch):
+    """_batch_processing_worker is the thread target _run_batch_processing
+    hands off to -- tested here by calling it directly on the main thread
+    (same convention as the single-trial _compute_imu_tuning/
+    _compute_rgb_processing tests), since driving it through a real
+    background thread means its self.after(...) calls race Tkinter's
+    single-threaded Tcl interpreter under a test harness that never enters
+    a real mainloop. Verifies both an IMU-tune and an RGB entry get routed
+    to the right compute function, finalized to "saved", and that leaving
+    the batch completes afterward."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        imu_calls = []
+        rgb_calls = []
+        monkeypatch.setattr(app, "_compute_imu_tuning",
+            lambda raw, csv, fn, meta, base: (imu_calls.append(meta) or {**base, "imu": [9.0]}))
+        monkeypatch.setattr(app, "_compute_rgb_processing",
+            lambda video, meta, base, progress=None: (rgb_calls.append(meta) or {**base, "rgb": [8.0]}))
+
+        meta1 = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta2 = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        entry_imu = {
+            "trial_num": 1, "sources": ["imu"], "status": "processing",
+            "meta": meta1, "source_angles": {"imu": [1.0]}, "fps": 30.0,
+            "base_filename": "T1.csv", "file_paths": [],
+            "pending_imu_tune": {"raw_log_path": "r.jsonl", "csv_path": "c.csv",
+                                 "csv_filename": "fn.csv"},
+        }
+        entry_rgb = {
+            "trial_num": 2, "sources": ["rgb"], "status": "processing",
+            "meta": meta2, "source_angles": {}, "fps": 30.0,
+            "base_filename": "T2.csv", "file_paths": [],
+            "pending_rgb_path": "video2.avi",
+        }
+        app._session_trials = [entry_imu, entry_rgb]
+
+        app._batch_processing_worker([entry_imu, entry_rgb])
+        app.update()   # pump the self.after(0, self._finish_batch_processing) callback
+
+        assert imu_calls == [meta1]
+        assert rgb_calls == [meta2]
+        assert entry_imu["status"] == "saved"
+        assert entry_imu["source_angles"]["imu"] == [9.0]
+        assert entry_rgb["status"] == "saved"
+        assert entry_rgb["source_angles"]["rgb"] == [8.0]
+        assert app._state == "mode_select"
+        assert app._session_trials == []
+    finally:
+        app.destroy()
+
+
+def test_on_back_to_mode_select_skips_processing_when_nothing_queued():
+    """No queued (status == "processing") entries -> plain, immediate
+    navigation, exactly as before this fix. Also the common case: single-
+    trial mode, where _session_trials is always empty."""
     from pendulastic_app import App
     app = App()
     try:
-        app._acq.trial_var.set("1")
-        entry = {
-            "trial_num": 1, "sources": ["rgb"], "status": "processing",
-            "meta": {}, "source_angles": None, "fps": None,
-            "base_filename": None, "file_paths": [],
-        }
-        app._session_trials = [entry]
-        app._pending_trial_entry = entry
+        app._session_trials = [{
+            "trial_num": 1, "sources": ["optitrack"], "status": "saved",
+            "meta": {}, "source_angles": {"optitrack": []}, "fps": 30.0,
+            "base_filename": "T1.csv", "file_paths": [],
+        }]
         app.on_back_to_mode_select()
         app.update()
         assert app._state == "mode_select"
-
-        increment_calls = []
-        app._acq.increment_trial = lambda: increment_calls.append(True)
-        set_list_calls = []
-        app._acq.set_multi_trial_list = lambda trials: set_list_calls.append(trials)
-        enter_idle_calls = []
-        app._acq.enter_idle = lambda: enter_idle_calls.append(True)
-
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        app._finish_trial_multi_mode({"rgb": [1.0, 2.0]}, meta, "NEW.csv")
-        app.update()
-
-        assert app._state == "mode_select"
-        assert increment_calls == []
-        assert set_list_calls == []
-        assert enter_idle_calls == []
-        assert int(app._acq.trial_var.get()) == 1
-        # The orphaned entry itself is left untouched too -- nothing should
-        # write into it once it's been discarded.
-        assert entry["status"] == "processing"
+        assert app._session_trials == []
     finally:
         app.destroy()
 
@@ -887,18 +893,25 @@ def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_pat
 
 
 def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
+    """_start_rgb_recording() runs from on_start()'s per-source dispatch
+    loop, before enter_recording() -- a blocking messagebox there used to
+    freeze the app mid-transition (see the "camera view keeps crashing"
+    regression). It must still surface the problem, just via the
+    non-blocking status line rather than a modal dialog."""
     import pendulastic_app as _m
     if not _m._CV2_AVAIL:
         return
     app = _m.App()
-    shown = []
+    blocked = []
     monkeypatch.setattr(_m.messagebox, "showerror",
-                        lambda title, msg: shown.append((title, msg)))
+                        lambda *a, **kw: blocked.append((a, kw)))
     try:
         assert app._camera.active is None
         meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._start_rgb_recording(meta)
-        assert shown, "must surface an error when no camera is active"
+        assert "no camera" in app._acq.status_var.get().lower(), \
+            "must surface an error when no camera is active"
+        assert not blocked, "must not use a blocking messagebox dialog"
         assert not hasattr(app, "_rgb_writer") or app._rgb_writer is None
     finally:
         app.destroy()
@@ -906,7 +919,7 @@ def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
 
 
 
-def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clears_video_path(monkeypatch):
+def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clears_video_path():
     """Regression: previously the early-return path left self._video_path
     pointing at a PREVIOUS trial's video file (or "" on the very first
     trial), and on_stop()'s per-source loop had no way to know RGB never
@@ -917,7 +930,6 @@ def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clear
     if not _m._CV2_AVAIL:
         return
     app = _m.App()
-    monkeypatch.setattr(_m.messagebox, "showerror", lambda *a, **kw: None)
     try:
         # Simulate a prior trial's video path still hanging around.
         app._video_path = "C:/data/P1_trial1_rgb.avi"
@@ -949,7 +961,6 @@ def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch)
     import pendulastic_app as _m
     app = _m.App()
     monkeypatch.setattr(_m, "_CV2_AVAIL", False)
-    monkeypatch.setattr(_m.messagebox, "showerror", lambda *a, **kw: None)
     try:
         app._video_path = "C:/data/P1_trial1_rgb.avi"
         app._active_sources = ["rgb"]
@@ -961,6 +972,49 @@ def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch)
         app.destroy()
 
 
+
+
+def test_on_start_with_rgb_default_checked_and_no_camera_does_not_block(monkeypatch, tmp_path):
+    """Regression: a Phone IMU (browser) trial left RGB checked (its
+    default -- checking the browser box never unchecks it) with no working
+    camera used to call a BLOCKING messagebox.showerror() from inside
+    on_start()'s per-source dispatch loop. That froze the app mid-transition
+    into recording, with the camera-preview window already open from the
+    countdown -- reading to the operator as the camera view "crashing".
+    on_start() must reach enter_recording() without any blocking dialog."""
+    import pendulastic_app as _m
+    if not _m._CV2_AVAIL:
+        return
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "pendulastic_phone_server.start_imu_stream_server",
+        lambda: ("192.168.1.50", 8881))
+    blocked = []
+    monkeypatch.setattr(_m.messagebox, "showerror",
+                        lambda *a, **kw: blocked.append((a, kw)))
+    app = _m.App()
+    try:
+        assert app._acq._src_rgb.get() is True   # left at its default
+        assert app._camera.active is None        # no working camera
+        app._acq.pid_var.set("P1")
+        app._acq._src_imu_browser.set(True)
+        app._acq._on_imu_browser_checkbox_toggled()
+
+        app.on_start()
+
+        assert app._state == "recording", \
+            "on_start() must reach enter_recording() even when RGB has no camera"
+        assert not blocked, \
+            "must not use a blocking messagebox dialog when RGB has no camera"
+        assert "rgb" not in app._active_sources
+        assert "no camera" in app._acq.status_var.get().lower(), \
+            "the RGB-skipped notice must survive as the visible status text, " \
+            "not get clobbered by enter_recording()'s 'RECORDING…' text"
+    finally:
+        app._imu_poll_stop.set()
+        if app._imu_poll_thread:
+            app._imu_poll_thread.join(timeout=1.0)
+        app.destroy()
 
 
 def test_on_camera_selected_ignored_while_recording(monkeypatch):
@@ -2280,13 +2334,11 @@ def test_trial_file_paths_optitrack_only(tmp_path, monkeypatch):
 
 
 def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch):
-    """Verifies the placeholder append that happens at the top of on_stop(),
-    in isolation from the finalize call at the bottom of on_stop(). With no
-    active sources, on_stop() has no async work to do and -- since Task 4 --
-    calls _transition_to_review() synchronously within the same on_stop()
-    call, which immediately finalizes the entry to "saved" in multi-trial
-    mode. _transition_to_review is stubbed out here so this test can keep
-    checking the append step on its own."""
+    """Verifies the placeholder append that happens at the top of on_stop().
+    With no active sources there's nothing to defer, so on_stop() finalizes
+    the entry to "saved" directly within the same call, without going
+    through the batch-end processing path at all (see
+    test_on_back_to_mode_select_skips_processing_when_nothing_queued)."""
     import pendulastic_app as _m
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
@@ -2295,14 +2347,13 @@ def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch)
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = []
-        monkeypatch.setattr(app, "_transition_to_review", lambda *a, **k: None)
         app.on_stop()
         app.update()
         assert len(app._session_trials) == 1
         entry = app._session_trials[0]
         assert entry["trial_num"] == 1
         assert entry["sources"] == []
-        assert entry["status"] == "processing"
+        assert entry["status"] == "saved"
     finally:
         app.destroy()
 

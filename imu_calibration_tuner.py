@@ -156,7 +156,7 @@ class _RoleState:
         pendulastic_imu_server._IMUDevice.calibrate_accel_bias since this
         tuner replays the same pipeline offline -- it's what actually
         produces the final saved/scored angle series after a live
-        recording ends (see pendulastic_app.py's _run_imu_tuning), so a
+        recording ends (see pendulastic_app.py's _compute_imu_tuning), so a
         mismatch here reproduces a live bug in every saved trial regardless
         of the live-server fix."""
         if not self.accel_hold_buf or len(self.accel_hold_buf) < 2:
@@ -195,7 +195,7 @@ def replay_trial(raw_samples: list, params: dict):
     (pendulastic_app.py) puts a non-finite angle onto its queue and resets
     the EMA "on NaN (pre-zero or disconnected)" under the same condition —
     a NaN-bearing angle series is normal, pre-existing behavior in this
-    codebase, not a defect. Callers (score_waveform, App._run_imu_tuning)
+    codebase, not a defect. Callers (score_waveform, App._compute_imu_tuning)
     must finite-filter before reducing (e.g. np.nanmedian, or
     arr[np.isfinite(arr)]) rather than assume every tick is a number.
     """
