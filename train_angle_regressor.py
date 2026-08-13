@@ -102,7 +102,9 @@ DATA_ROOT = ROOT / "training_data"
 ANN_DIR   = DATA_ROOT / "annotations"
 IMG_DIR   = DATA_ROOT / "images"
 CROP_DIR  = DATA_ROOT / "crops"
-MODEL_DIR = ROOT / "models"
+MODEL_DIR       = ROOT / "models"
+PHASE1_CKPT     = MODEL_DIR / "angle_regressor_phase1.keras"
+PHASE2_STATE    = MODEL_DIR / "angle_regressor_phase2_state.json"
 
 COCO_JSON     = ANN_DIR / "coco_keypoints.json"
 OUTPUT_MODEL  = MODEL_DIR / "angle_regressor"
@@ -160,6 +162,9 @@ def parse_args():
     p.add_argument("--no-tflite",     action="store_true",
                    help="Skip INT8 TFLite quantisation export")
     p.add_argument("--alpha-olc",     type=float, default=ALPHA_OLC)
+    p.add_argument("--resume",        action="store_true",
+                   help="Resume from models/angle_regressor_phase1.keras (skips Phase 1 "
+                        "if present) and the last Phase 2 checkpoint/epoch, if present")
     return p.parse_args()
 
 
@@ -490,19 +495,31 @@ def train(args, train_samples, val_samples):
     history_all = {}
 
     # ── Phase 1: train head only ──────────────────────────────────────────
-    print(f"\n[Phase 1]  Head only  lr={HEAD_LR}  epochs={args.head_epochs}")
-    model = build_model(unfreeze_layers=0)
-    model.compile(
-        optimizer = keras.optimizers.Adam(HEAD_LR),
-        loss      = loss_d,
-        loss_weights = weights,
-        metrics   = metrics_d,
-    )
-    h1 = model.fit(
-        train_ds, epochs=args.head_epochs,
-        validation_data=val_ds, verbose=1,
-    )
-    history_all["phase1"] = h1.history
+    # Environment-interrupted runs (killed background process, host sleep)
+    # were repeatedly losing the ~30min Phase 1 head-training pass on every
+    # restart even though it's deterministic-enough not to need redoing --
+    # --resume skips straight to Phase 2 setup when a completed Phase 1
+    # checkpoint is already on disk.
+    if args.resume and PHASE1_CKPT.exists():
+        print(f"\n[Phase 1]  Resuming: loading completed checkpoint {PHASE1_CKPT}")
+        model = keras.models.load_model(str(PHASE1_CKPT), compile=False)
+        history_all["phase1"] = {}
+    else:
+        print(f"\n[Phase 1]  Head only  lr={HEAD_LR}  epochs={args.head_epochs}")
+        model = build_model(unfreeze_layers=0)
+        model.compile(
+            optimizer = keras.optimizers.Adam(HEAD_LR),
+            loss      = loss_d,
+            loss_weights = weights,
+            metrics   = metrics_d,
+        )
+        h1 = model.fit(
+            train_ds, epochs=args.head_epochs,
+            validation_data=val_ds, verbose=1,
+        )
+        history_all["phase1"] = h1.history
+        model.save(str(PHASE1_CKPT))
+        print(f"  Saved Phase 1 checkpoint -> {PHASE1_CKPT}")
 
     # ── Phase 2: partial unfreeze + cosine decay + early stopping ─────────
     restart_every = max(10, args.max_epochs // 3)
@@ -518,8 +535,28 @@ def train(args, train_samples, val_samples):
           f"lr={FINETUNE_LR}→{FINETUNE_LR_MIN}  max_epochs={args.max_epochs}")
 
     model_p2 = build_model(unfreeze_layers=args.unfreeze)
-    # Transfer Phase 1 weights to Phase 2 model
-    model_p2.set_weights(model.get_weights())
+
+    # Resume mid-Phase-2 from the best-so-far checkpoint if one exists;
+    # otherwise start Phase 2 fresh from Phase 1's just-loaded/just-trained
+    # weights. Note: the Adam optimizer and CosineDecayRestarts schedule
+    # restart from scratch either way (their step state isn't persisted
+    # across process restarts) -- only the model weights and the epoch
+    # counter (for EarlyStopping/ModelCheckpoint bookkeeping and the
+    # progress printout) carry over.
+    initial_epoch = 0
+    resumed_best_rmse = float("inf")
+    resumed_best_epoch = 0
+    p2_ckpt = MODEL_DIR / "angle_regressor_ckpt.keras"
+    if args.resume and p2_ckpt.exists() and PHASE2_STATE.exists():
+        state = json.loads(PHASE2_STATE.read_text())
+        initial_epoch = state.get("last_completed_epoch", 0)
+        resumed_best_rmse = state.get("best_rmse", float("inf"))
+        resumed_best_epoch = state.get("best_epoch", 0)
+        print(f"  Resuming Phase 2 from checkpoint at epoch {initial_epoch} "
+             f"(best val RMSE so far: {resumed_best_rmse} at epoch {resumed_best_epoch})")
+        model_p2.set_weights(keras.models.load_model(str(p2_ckpt), compile=False).get_weights())
+    else:
+        model_p2.set_weights(model.get_weights())
 
     model_p2.compile(
         optimizer    = keras.optimizers.Adam(lr_schedule),
@@ -527,6 +564,27 @@ def train(args, train_samples, val_samples):
         loss_weights = weights,
         metrics      = metrics_d,
     )
+
+    class Phase2StateSaver(keras.callbacks.Callback):
+        """Persists (epoch, best-RMSE-so-far) to PHASE2_STATE after every
+        epoch, so a killed/restarted process can resume Phase 2 without
+        losing its place (see --resume above)."""
+        def __init__(self, initial_best=float("inf"), initial_best_epoch=0):
+            super().__init__()
+            self.best = initial_best
+            self.best_epoch = initial_best_epoch
+
+        def on_epoch_end(self, epoch, logs=None):
+            logs = logs or {}
+            val_rmse = logs.get("val_angle_rmse_deg")
+            if val_rmse is not None and val_rmse < self.best:
+                self.best = val_rmse
+                self.best_epoch = epoch + 1   # absolute epoch number (1-based)
+            PHASE2_STATE.write_text(json.dumps({
+                "last_completed_epoch": epoch + 1,
+                "best_rmse": self.best,
+                "best_epoch": self.best_epoch,
+            }))
 
     callbacks = [
         keras.callbacks.EarlyStopping(
@@ -542,26 +600,44 @@ def train(args, train_samples, val_samples):
         # schedule-driven LR. The schedule's own warm restarts already serve
         # the plateau-escape role ReduceLROnPlateau would otherwise play.
         keras.callbacks.ModelCheckpoint(
-            filepath          = str(MODEL_DIR / "angle_regressor_ckpt.keras"),
+            filepath          = str(p2_ckpt),
             monitor           = "val_angle_rmse_deg",
             save_best_only    = True,
             mode              = "min",
             verbose           = 0,
+            # Seeded from the resumed state so a resumed run -- whose fresh
+            # ModelCheckpoint instance would otherwise start comparing
+            # against +inf -- can't overwrite a better checkpoint from a
+            # prior (killed) process with a worse one from this run.
+            initial_value_threshold = resumed_best_rmse,
         ),
+        Phase2StateSaver(initial_best=resumed_best_rmse, initial_best_epoch=resumed_best_epoch),
     ]
 
     h2 = model_p2.fit(
         train_ds, epochs=args.max_epochs,
+        initial_epoch=initial_epoch,
         validation_data=val_ds,
         callbacks=callbacks,
         verbose=1,
     )
     history_all["phase2"] = h2.history
 
-    # Best val RMSE
+    # Best val RMSE -- across this run's epochs AND any prior (killed/
+    # restarted) run's epochs recorded in PHASE2_STATE, since a resumed
+    # run's own history only covers epochs it personally trained.
     val_rmse_hist = h2.history.get("val_angle_rmse_deg", [999.0])
-    best_rmse     = float(min(val_rmse_hist))
-    best_epoch    = int(np.argmin(val_rmse_hist)) + 1
+    this_run_best_rmse  = float(min(val_rmse_hist))
+    this_run_best_epoch = initial_epoch + int(np.argmin(val_rmse_hist)) + 1
+    if resumed_best_rmse < this_run_best_rmse:
+        best_rmse, best_epoch = resumed_best_rmse, resumed_best_epoch
+        # EarlyStopping's restore_best_weights only restored this run's own
+        # best epoch; the true best (from before this process started) is
+        # still on disk in p2_ckpt since ModelCheckpoint's threshold was
+        # seeded to never overwrite it with a worse epoch.
+        model_p2.set_weights(keras.models.load_model(str(p2_ckpt), compile=False).get_weights())
+    else:
+        best_rmse, best_epoch = this_run_best_rmse, this_run_best_epoch
     print(f"\n  Best val RMSE: {best_rmse:.2f}°  at epoch {best_epoch}")
     if best_rmse < 3.0:
         print("  ✓ TARGET ACHIEVED: RMSE < 3°")
