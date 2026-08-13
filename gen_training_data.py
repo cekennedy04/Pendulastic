@@ -35,7 +35,7 @@ frame to obtain accurate hip and knee positions from the best available model.
 Output
 ──────
   training_data/
-    images/           <trial_id>_frame_<NNNNNN>.jpg   (380×380 knee crops)
+    images/           <trial_id>_frame_<NNNNNN>.jpg   (560×560 knee crops)
     annotations/
       coco_keypoints.json   COCO keypoints + custom "knee_angle_deg" field
 """
@@ -77,7 +77,16 @@ OAC_MIN_DEG   = 80.0
 OAC_MAX_DEG   = 185.0
 MAX_SYNC_GAP  = 0.050   # seconds
 JPEG_QUALITY  = 90
-CROP_SIZE_PX  = 380     # knee-centred crop side length (~20 KB vs ~300 KB full frame)
+# 380px (190px half-width) only kept both the hip and ankle keypoints inside
+# the saved crop for 41.3% of frames in the first-generation dataset (median
+# thigh dist 194px, median shank dist 181px -- already past a 190px radius
+# for the *median* frame) -- the angle regressor trained on it topped out at
+# 25-28 deg RMSE, barely beating a naive constant-mean-angle predictor
+# (27.1 deg), because the network usually couldn't see one of the two
+# reference points that define the angle. 560px (280px half-width) covers
+# 99.9% of frames with both keypoints inside, per the corpus's own
+# thigh/shank pixel-distance distribution.
+CROP_SIZE_PX  = 560     # knee-centred crop side length (~20 KB vs ~300 KB full frame)
 MP_VIS_THRESH = 0.50    # min MediaPipe landmark visibility to trust its coordinate
 
 # MediaPipe Pose Landmarker uses BlazePose 33 landmarks (not COCO 17).
@@ -228,7 +237,7 @@ def process_trial(trial: dict, images: list, annotations: list,
                   img_id_start: int, ann_id_start: int,
                   landmarker) -> tuple:
     """
-    Extract labeled 380×380 knee crops from one trial.
+    Extract labeled 560×560 knee crops from one trial.
     Appends to images / annotations.  Returns (n_added, n_added).
 
     Coordinate sources (in priority order):
