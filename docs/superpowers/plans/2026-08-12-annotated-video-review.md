@@ -337,7 +337,12 @@ git commit -m "feat: add _splice_from helper for length-safe retrack splicing"
   `._frame_idx` (int, starts at 0). Method `._read_frame(fi: int) -> np.ndarray`
   reads (and caches) a frame by index. Method `._on_scale_change(value)` updates
   `._frame_idx` and redraws, and is a no-op while `._retrack_in_progress` is
-  True (Task 4 sets this flag; here it always starts `False`).
+  True (Task 4 sets this flag; here it always starts `False`). Method
+  `._trail_for(frame_idx: int) -> list` returns the ankle positions from the
+  last `TRAIL_LEN` frames up to and including `frame_idx` (skipping frames
+  with no landmark), for the `_draw()` trail argument — this module
+  re-exports `TRAIL_LEN` from `pendulastic_viewer` so callers/tests can
+  import it from `video_review_dialog` directly.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -490,6 +495,59 @@ def test_play_tick_does_not_advance_frame_while_retrack_in_progress(tmp_path):
     assert dlg._frame_idx == 2       # unchanged
     assert dlg._playing is True      # still "wants to play", just paused
     dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_trail_for_collects_ankle_positions_within_trail_len(tmp_path):
+    """Spec S3.1 says the dialog reuses TRAIL_LEN for the ankle-path trail
+    -- _trail_for must return the last TRAIL_LEN frames' ankle positions
+    (skipping None landmarks), in chronological order, looking back from
+    an arbitrary frame_idx (not a sequential accumulation, since
+    self.landmarks is already fully available at any frame)."""
+    from video_review_dialog import AnnotatedVideoReviewDialog, TRAIL_LEN
+    video_path = str(tmp_path / "review7.avi")
+    n = TRAIL_LEN + 5
+    _write_test_video(video_path, n)
+    r = _get_root()
+
+    landmarks = []
+    for i in range(n):
+        if i % 4 == 0:
+            landmarks.append(None)  # some frames have no detection
+        else:
+            landmarks.append(("hip", "knee", (float(i), float(i))))
+
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * n, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    fi = n - 1
+    trail = dlg._trail_for(fi)
+
+    assert len(trail) <= TRAIL_LEN
+    expected = [landmarks[i][2] for i in range(max(0, fi - TRAIL_LEN + 1), fi + 1)
+                if landmarks[i] is not None]
+    assert trail == expected
+    assert trail[-1] == (float(fi), float(fi))
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_trail_for_near_start_of_video_does_not_go_negative(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "review8.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+
+    landmarks = [("h", "k", (0.0, 0.0)), ("h", "k", (1.0, 1.0)), None]
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    trail = dlg._trail_for(1)
+
+    assert trail == [(0.0, 0.0), (1.0, 1.0)]
+    dlg.destroy()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -502,16 +560,13 @@ Expected: FAIL with `ImportError: cannot import name 'AnnotatedVideoReviewDialog
 Append to `video_review_dialog.py` (after `_splice_from`, keep the existing `from __future__ import annotations` at the top):
 
 ```python
-import os
-import threading
 import tkinter as tk
 from tkinter import ttk
 
 import cv2 as _cv2
-import numpy as np
 from PIL import Image, ImageTk
 
-from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click
+from pendulastic_viewer import _draw, TRAIL_LEN
 
 _MAX_DISPLAY_WIDTH = 960
 
@@ -594,6 +649,25 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         return frame
 
     # ------------------------------------------------------------------
+    # Trail
+    # ------------------------------------------------------------------
+    def _trail_for(self, frame_idx: int) -> list:
+        """Ankle positions from the last TRAIL_LEN frames up to and
+        including frame_idx, in chronological order, skipping frames with
+        no landmark. Computed by lookback (not sequential accumulation)
+        since self.landmarks is already fully available at any frame_idx --
+        spec S3.1 reuses TRAIL_LEN for this."""
+        start = max(0, frame_idx - TRAIL_LEN + 1)
+        trail = []
+        for i in range(start, frame_idx + 1):
+            if i >= len(self.landmarks):
+                break
+            lm = self.landmarks[i]
+            if lm is not None and lm[2] is not None:
+                trail.append(lm[2])
+        return trail
+
+    # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
     def _redraw(self) -> None:
@@ -605,7 +679,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         lm = (self.landmarks[self._frame_idx]
               if self._frame_idx < len(self.landmarks) else None)
         hip, kne, ank = lm if lm is not None else (None, None, None)
-        overlay = _draw(frame, hip, kne, ank, ang, [], scale=1.0)
+        trail = self._trail_for(self._frame_idx)
+        overlay = _draw(frame, hip, kne, ank, ang, trail, scale=1.0)
         h, w = overlay.shape[:2]
         if w > _MAX_DISPLAY_WIDTH:
             scale = _MAX_DISPLAY_WIDTH / w
@@ -667,7 +742,7 @@ literal widget-state toggle, which is simpler and equally effective).
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_video_review_dialog.py -v`
-Expected: PASS (13 tests: 7 from Task 2 + 6 new)
+Expected: PASS (15 tests: 7 from Task 2 + 8 new)
 
 - [ ] **Step 5: Commit**
 
@@ -685,7 +760,7 @@ git commit -m "feat: add AnnotatedVideoReviewDialog skeleton with scrub and play
 - Modify: `tests/test_video_review_dialog.py`
 
 **Interfaces:**
-- Consumes: `_splice_from` (Task 2), `resolve_person_click` (already imported in Task 3), `PersonPickerDialog` (lazily imported from `pendulastic_app` here — see Global Constraints), `self.engine.detect_people_at_frame` / `self.engine.run_offline_track(start_frame=...)` (Task 1).
+- Consumes: `_splice_from` (Task 2), `resolve_person_click` (from `pendulastic_viewer` — imported in this task, not Task 3, since Task 3 has no caller for it yet), `PersonPickerDialog` (lazily imported from `pendulastic_app` here — see Global Constraints), `self.engine.detect_people_at_frame` / `self.engine.run_offline_track(start_frame=...)` (Task 1).
 - Produces: `_on_fix_person_here()` fully implemented (replacing Task 3's `pass` stub); `_start_retrack(start_frame, seed)`; `_on_retrack_done(start_frame, new_angles, new_landmarks)`. After a successful retrack, `self.angles`/`self.landmarks` reflect the spliced result and `self._retrack_in_progress` is back to `False`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -934,8 +1009,16 @@ assertions like `dlg.angles == [...]` and `"no person" in dlg.status_var.get()` 
 
 - [ ] **Step 3: Write the implementation**
 
-In `video_review_dialog.py`, add `import threading` alongside the existing
-imports at the top (next to `import os`), then replace the Task 3 stub:
+In `video_review_dialog.py`, add `import threading` as the first import line
+(before `import tkinter as tk`), and add `resolve_person_click` to the
+existing `pendulastic_viewer` import line — both are unused until this task,
+so neither belongs in Task 3's import block:
+
+```python
+from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click
+```
+
+Then replace the Task 3 stub:
 
 ```python
     def _on_fix_person_here(self) -> None:
@@ -1009,7 +1092,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_video_review_dialog.py -v`
-Expected: PASS (19 tests: 13 from Tasks 2-3 + 6 new)
+Expected: PASS (21 tests: 15 from Tasks 2-3 + 6 new)
 
 - [ ] **Step 5: Commit**
 
