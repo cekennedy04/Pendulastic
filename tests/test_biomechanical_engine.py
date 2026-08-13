@@ -330,3 +330,94 @@ def test_run_offline_track_none_seed_unaffected(monkeypatch):
         "nonexistent.mp4", lambda p: None, leg="right")
     assert result == []
     assert isinstance(result, list)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_start_frame_seeks_and_returns_suffix_only(tmp_path, monkeypatch):
+    """start_frame=N seeks the video and returns only the N..end suffix,
+    with progress still reaching 1.0."""
+    import numpy as np
+
+    video_path = str(tmp_path / "test_start_frame.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"),
+        30.0, (320, 240))
+    for _ in range(10):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    kps = np.zeros((17, 2), dtype=np.float32)
+    kps[12] = [160, 60]
+    kps[14] = [160, 120]
+    kps[16] = [160, 200]
+
+    class FakeDetector:
+        def detect(self, frame):
+            return kps, None
+
+    class FakeTracker:
+        def __init__(self, side, fps): pass
+        def init(self, frame, hip, knee, ankle): pass
+        def step(self, frame):
+            return kps[12], kps[14], kps[16], 160.0
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    engine = BiomechanicalEngine("rgb")
+    progress = []
+    seed = (kps[12], kps[14], kps[16])
+    angles, landmarks, fps = engine.run_offline_track(
+        video_path, lambda p: progress.append(p), leg="right",
+        collect_landmarks=True, manual_seed=seed, start_frame=4)
+
+    assert len(angles) == 6          # 10 total frames - start_frame=4
+    assert len(landmarks) == 6
+    assert progress and progress[-1] == 1.0
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_start_frame_zero_matches_existing_behavior(tmp_path, monkeypatch):
+    """start_frame=0 (the default) must return the same length as before
+    this parameter existed -- a pure regression guard."""
+    import numpy as np
+
+    video_path = str(tmp_path / "test_start_frame_zero.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"),
+        30.0, (320, 240))
+    for _ in range(7):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    kps = np.zeros((17, 2), dtype=np.float32)
+    kps[12] = [160, 60]
+    kps[14] = [160, 120]
+    kps[16] = [160, 200]
+
+    class FakeDetector:
+        def detect(self, frame):
+            return kps, None
+
+    class FakeTracker:
+        def __init__(self, side, fps): pass
+        def init(self, frame, hip, knee, ankle): pass
+        def step(self, frame):
+            return kps[12], kps[14], kps[16], 160.0
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    engine = BiomechanicalEngine("rgb")
+    progress = []
+    angles = engine.run_offline_track(
+        video_path, lambda p: progress.append(p), leg="right")
+
+    assert len(angles) == 7
+    assert progress[-1] == 1.0
