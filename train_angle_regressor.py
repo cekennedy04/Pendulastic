@@ -614,30 +614,49 @@ def train(args, train_samples, val_samples):
         Phase2StateSaver(initial_best=resumed_best_rmse, initial_best_epoch=resumed_best_epoch),
     ]
 
-    h2 = model_p2.fit(
-        train_ds, epochs=args.max_epochs,
-        initial_epoch=initial_epoch,
-        validation_data=val_ds,
-        callbacks=callbacks,
-        verbose=1,
-    )
-    history_all["phase2"] = h2.history
+    # EarlyStopping's own patience counter isn't persisted across process
+    # restarts -- a fresh callback instance starts counting from 0 again on
+    # every resume, so on an environment that keeps interrupting long runs,
+    # patience effectively never fires and epochs keep burning past the
+    # point a single uninterrupted run would have stopped. Check the
+    # cross-run streak explicitly before deciding whether to train at all.
+    stalled_epochs = initial_epoch - resumed_best_epoch
+    already_converged = (args.resume and resumed_best_epoch > 0
+                         and stalled_epochs >= args.patience)
 
-    # Best val RMSE -- across this run's epochs AND any prior (killed/
-    # restarted) run's epochs recorded in PHASE2_STATE, since a resumed
-    # run's own history only covers epochs it personally trained.
-    val_rmse_hist = h2.history.get("val_angle_rmse_deg", [999.0])
-    this_run_best_rmse  = float(min(val_rmse_hist))
-    this_run_best_epoch = initial_epoch + int(np.argmin(val_rmse_hist)) + 1
-    if resumed_best_rmse < this_run_best_rmse:
-        best_rmse, best_epoch = resumed_best_rmse, resumed_best_epoch
-        # EarlyStopping's restore_best_weights only restored this run's own
-        # best epoch; the true best (from before this process started) is
-        # still on disk in p2_ckpt since ModelCheckpoint's threshold was
-        # seeded to never overwrite it with a worse epoch.
+    if already_converged:
+        print(f"\n  {stalled_epochs} epochs since the best (epoch {resumed_best_epoch}) "
+             f">= patience={args.patience} across restarts -- already converged, "
+             f"skipping further Phase 2 training.")
         model_p2.set_weights(keras.models.load_model(str(p2_ckpt), compile=False).get_weights())
+        history_all["phase2"] = {}
+        best_rmse, best_epoch = resumed_best_rmse, resumed_best_epoch
     else:
-        best_rmse, best_epoch = this_run_best_rmse, this_run_best_epoch
+        h2 = model_p2.fit(
+            train_ds, epochs=args.max_epochs,
+            initial_epoch=initial_epoch,
+            validation_data=val_ds,
+            callbacks=callbacks,
+            verbose=1,
+        )
+        history_all["phase2"] = h2.history
+
+        # Best val RMSE -- across this run's epochs AND any prior (killed/
+        # restarted) run's epochs recorded in PHASE2_STATE, since a resumed
+        # run's own history only covers epochs it personally trained.
+        val_rmse_hist = h2.history.get("val_angle_rmse_deg", [999.0])
+        this_run_best_rmse  = float(min(val_rmse_hist))
+        this_run_best_epoch = initial_epoch + int(np.argmin(val_rmse_hist)) + 1
+        if resumed_best_rmse < this_run_best_rmse:
+            best_rmse, best_epoch = resumed_best_rmse, resumed_best_epoch
+            # EarlyStopping's restore_best_weights only restored this run's own
+            # best epoch; the true best (from before this process started) is
+            # still on disk in p2_ckpt since ModelCheckpoint's threshold was
+            # seeded to never overwrite it with a worse epoch.
+            model_p2.set_weights(keras.models.load_model(str(p2_ckpt), compile=False).get_weights())
+        else:
+            best_rmse, best_epoch = this_run_best_rmse, this_run_best_epoch
+
     print(f"\n  Best val RMSE: {best_rmse:.2f}°  at epoch {best_epoch}")
     if best_rmse < 3.0:
         print("  ✓ TARGET ACHIEVED: RMSE < 3°")
