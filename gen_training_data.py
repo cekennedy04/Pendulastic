@@ -40,6 +40,7 @@ Output
       coco_keypoints.json   COCO keypoints + custom "knee_angle_deg" field
 """
 
+import argparse
 import re
 import sys
 import json
@@ -565,66 +566,17 @@ def process_trial(trial: dict, images: list, annotations: list,
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    if not MP_MODEL_PATH.exists():
-        print(f"ERROR: MediaPipe model not found: {MP_MODEL_PATH}")
-        print("Download pose_landmarker_full.task and place it in models/mediapipe/")
-        sys.exit(1)
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--resume", action="store_true",
+                   help="Skip trials already present in an existing "
+                        "annotations/coco_keypoints.json instead of regenerating "
+                        "the whole corpus from scratch")
+    return p.parse_args()
 
-    IMG_DIR.mkdir(parents=True, exist_ok=True)
-    ANN_DIR.mkdir(parents=True, exist_ok=True)
 
-    images: list      = []
-    annotations: list = []
-    img_id  = 1
-    ann_id  = 1
-
-    trials = list(discover_trials())
-    if not trials:
-        print("No trials found.  Check REC_ROOT and OPTI_ROOT:")
-        print(f"  {REC_ROOT}")
-        print(f"  {OPTI_ROOT}")
-        return
-
-    print(f"Discovered {len(trials)} trial(s).\n", flush=True)
-    print(f"MediaPipe model: {MP_MODEL_PATH.name}\n", flush=True)
-
-    # Initialise MediaPipe Pose Landmarker once for all trials
-    BaseOptions         = mp.tasks.BaseOptions
-    PoseLandmarker      = mp.tasks.vision.PoseLandmarker
-    PoseLandmarkerOpts  = mp.tasks.vision.PoseLandmarkerOptions
-    VisionRunningMode   = mp.tasks.vision.RunningMode
-
-    mp_options = PoseLandmarkerOpts(
-        base_options              = BaseOptions(model_asset_path=str(MP_MODEL_PATH)),
-        running_mode              = VisionRunningMode.IMAGE,
-        num_poses                 = 2,   # detect patient + assessor; pick patient below
-        min_pose_detection_confidence = 0.5,
-        min_pose_presence_confidence  = 0.5,
-        min_tracking_confidence       = 0.5,
-    )
-
-    per_participant: dict = {}
-
-    with PoseLandmarker.create_from_options(mp_options) as landmarker:
-        for trial in trials:
-            print(f"-- {trial['participant']}  Trial {trial['trial_n']} --", flush=True)
-            print(f"  video   : {trial['video'].name}", flush=True)
-            print(f"  opti    : {trial['opti_csv'].name}", flush=True)
-            print(f"  hpe_csv : {trial['hpe_csv'].name}", flush=True)
-
-            n_img, _ = process_trial(
-                trial, images, annotations, img_id, ann_id, landmarker
-            )
-            img_id += n_img
-            ann_id += n_img
-            print(f"  -> {n_img} frames written\n", flush=True)
-
-            p = trial["participant"]
-            per_participant[p] = per_participant.get(p, 0) + n_img
-
-    # ── Write COCO JSON ───────────────────────────────────────────────────
-    coco = {
+def _coco_dict(images, annotations):
+    return {
         "info": {
             "description": "Pendulastic clinical pendulum-test knee-angle dataset",
             "version":     "2.0",
@@ -648,9 +600,122 @@ def main():
         }],
     }
 
+
+def _write_coco(images, annotations, out_json):
+    """Atomic write so a killed process never leaves a truncated/corrupt
+    JSON that a later --resume load would choke on."""
+    tmp = out_json.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(_coco_dict(images, annotations), f)
+    tmp.replace(out_json)
+
+
+def main():
+    args = parse_args()
+
+    if not MP_MODEL_PATH.exists():
+        print(f"ERROR: MediaPipe model not found: {MP_MODEL_PATH}")
+        print("Download pose_landmarker_full.task and place it in models/mediapipe/")
+        sys.exit(1)
+
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    ANN_DIR.mkdir(parents=True, exist_ok=True)
     out_json = ANN_DIR / "coco_keypoints.json"
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(coco, f)
+
+    images: list      = []
+    annotations: list = []
+    img_id  = 1
+    ann_id  = 1
+    done_trial_ids: set = set()
+
+    # This is a multi-hour, single-process, no-fork-per-trial run over the
+    # whole video corpus with no other checkpoint -- on an environment that
+    # has repeatedly killed long-running background jobs this session
+    # (roughly every 10-50 min), a from-scratch restart would silently
+    # re-discard all prior progress since the JSON was previously only
+    # written once at the very end. --resume loads whatever was persisted
+    # (written incrementally below, after every trial) and skips trials
+    # already covered by it.
+    if args.resume and out_json.exists():
+        with open(out_json, encoding="utf-8") as f:
+            prior = json.load(f)
+        images      = prior.get("images", [])
+        annotations = prior.get("annotations", [])
+        img_id = max((im["id"] for im in images), default=0) + 1
+        ann_id = max((an["id"] for an in annotations), default=0) + 1
+        done_trial_ids = {
+            re.sub(r"_frame_\d+\.jpg$", "", im["file_name"])
+            for im in images
+        }
+        print(f"Resuming: {len(images)} frames already generated across "
+             f"{len(done_trial_ids)} trial(s).\n", flush=True)
+
+    trials = list(discover_trials())
+    if not trials:
+        print("No trials found.  Check REC_ROOT and OPTI_ROOT:")
+        print(f"  {REC_ROOT}")
+        print(f"  {OPTI_ROOT}")
+        return
+
+    if done_trial_ids:
+        remaining = []
+        for trial in trials:
+            trial_id = re.sub(r"[^\w\-]", "_",
+                              f"{trial['participant']}_T{trial['trial_n']}")
+            if trial_id not in done_trial_ids:
+                remaining.append(trial)
+        skipped = len(trials) - len(remaining)
+        if skipped:
+            print(f"Skipping {skipped} already-done trial(s).\n", flush=True)
+        trials = remaining
+
+    print(f"Discovered {len(trials)} trial(s) to process.\n", flush=True)
+    print(f"MediaPipe model: {MP_MODEL_PATH.name}\n", flush=True)
+
+    # Initialise MediaPipe Pose Landmarker once for all trials
+    BaseOptions         = mp.tasks.BaseOptions
+    PoseLandmarker      = mp.tasks.vision.PoseLandmarker
+    PoseLandmarkerOpts  = mp.tasks.vision.PoseLandmarkerOptions
+    VisionRunningMode   = mp.tasks.vision.RunningMode
+
+    mp_options = PoseLandmarkerOpts(
+        base_options              = BaseOptions(model_asset_path=str(MP_MODEL_PATH)),
+        running_mode              = VisionRunningMode.IMAGE,
+        num_poses                 = 2,   # detect patient + assessor; pick patient below
+        min_pose_detection_confidence = 0.5,
+        min_pose_presence_confidence  = 0.5,
+        min_tracking_confidence       = 0.5,
+    )
+
+    with PoseLandmarker.create_from_options(mp_options) as landmarker:
+        for trial in trials:
+            print(f"-- {trial['participant']}  Trial {trial['trial_n']} --", flush=True)
+            print(f"  video   : {trial['video'].name}", flush=True)
+            print(f"  opti    : {trial['opti_csv'].name}", flush=True)
+            print(f"  hpe_csv : {trial['hpe_csv'].name}", flush=True)
+
+            n_img, _ = process_trial(
+                trial, images, annotations, img_id, ann_id, landmarker
+            )
+            img_id += n_img
+            ann_id += n_img
+            print(f"  -> {n_img} frames written\n", flush=True)
+
+            # Checkpoint after every trial (a json.dump of the full
+            # in-memory list + atomic replace costs low-single-digit
+            # seconds against minutes of real MediaPipe inference per
+            # trial), so --resume never loses more than one trial's worth
+            # of work to an interrupted run.
+            _write_coco(images, annotations, out_json)
+
+    per_participant: dict = {}
+    for im in images:
+        m = re.match(r"(.+)_T\d+_frame_\d+\.jpg$", im["file_name"])
+        p = m.group(1) if m else "unknown"
+        per_participant[p] = per_participant.get(p, 0) + 1
+
+    # ── Write COCO JSON ───────────────────────────────────────────────────
+    _write_coco(images, annotations, out_json)
 
     print("=" * 60)
     print(f"Total frames  : {len(images):,}")
