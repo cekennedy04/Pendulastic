@@ -167,6 +167,100 @@ def test_stream_page_has_no_mediapipe_dependency():
     assert "mediapipe" not in pps._STREAM_PAGE.lower()
 
 
+def test_imu_page_is_well_formed_utf8_html():
+    from html.parser import HTMLParser
+    page = pps._IMU_PAGE.encode("utf-8").decode("utf-8")
+    assert page.strip().startswith("<!DOCTYPE html>")
+    HTMLParser().feed(page)   # raises on structurally broken markup
+
+
+def test_imu_page_requests_motion_permission_and_uses_gravity_inclusive_accel():
+    page = pps._IMU_PAGE
+    assert "DeviceMotionEvent.requestPermission" in page
+    assert "accelerationIncludingGravity" in page
+    assert "event.acceleration." not in page   # must not use the gravity-excluded property
+
+
+def test_imu_page_uses_wake_lock_and_reconnects():
+    page = pps._IMU_PAGE
+    assert "wakeLock" in page
+    assert "navigator.wakeLock.request" in page
+    assert "onclose" in page and "setTimeout" in page   # reconnect-with-backoff, mirrors camera page
+
+
+def test_imu_page_connects_to_same_origin_wss_imu_ws_path():
+    assert "wss://' + location.host + '/imu_ws'" in pps._IMU_PAGE
+
+
+def test_imu_page_maps_rotation_rate_axes_correctly():
+    """DeviceMotionEvent.rotationRate's axis names do not map 1:1 by
+    position -- beta is rotation around X, gamma around Y, alpha around Z
+    (spec Section 3.3). Pin the exact mapping so a future edit can't
+    silently swap it."""
+    assert "gyro:  {x: r.beta, y: r.gamma, z: r.alpha}" in pps._IMU_PAGE
+
+
+def test_forward_imu_batch_dispatches_accel_and_gyro(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append((path, json.loads(message), ip)))
+    monkeypatch.setattr(pps.time, "time", lambda: 1723456789.0)
+
+    batch = {"batch": [
+        {"ts": 1234.5,
+         "accel": {"x": 0.12, "y": 9.81, "z": 0.05},
+         "gyro":  {"x": 0.01, "y": -0.02, "z": 0.0}},
+    ]}
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+
+    assert n == 1
+    assert len(calls) == 2
+    accel_call = next(c for c in calls if c[0] == "/accelerometer")
+    gyro_call  = next(c for c in calls if c[0] == "/gyroscope")
+    assert accel_call[2] == "10.0.0.5"
+    assert accel_call[1]["x"] == 0.12
+    assert accel_call[1]["y"] == 9.81
+    assert accel_call[1]["z"] == 0.05
+    assert accel_call[1]["Timestamp"] == 1723456789000
+    assert gyro_call[1]["x"] == 0.01
+    assert gyro_call[1]["Timestamp"] == 1723456789000
+
+
+def test_forward_imu_batch_processes_multiple_samples_in_order(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append(path))
+    monkeypatch.setattr(pps.time, "time", lambda: 1000.0)
+
+    batch = {"batch": [
+        {"ts": 0, "accel": {"x": 0, "y": 0, "z": 0}, "gyro": {"x": 0, "y": 0, "z": 0}},
+        {"ts": 10, "accel": {"x": 1, "y": 1, "z": 1}, "gyro": {"x": 1, "y": 1, "z": 1}},
+    ]}
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+
+    assert n == 2
+    assert calls == ["/accelerometer", "/gyroscope", "/accelerometer", "/gyroscope"]
+
+
+def test_forward_imu_batch_missing_batch_key_returns_zero():
+    assert pps._forward_imu_batch({}, "10.0.0.5") == 0
+
+
+def test_forward_imu_batch_skips_sample_missing_accel_or_gyro(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append(path))
+    batch = {"batch": [{"ts": 0, "accel": {"x": 0, "y": 0, "z": 0}}]}   # no gyro
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+    assert n == 0
+    assert calls == []
+
+
+def test_forward_imu_batch_not_a_dict_returns_zero():
+    assert pps._forward_imu_batch("not a dict", "10.0.0.5") == 0
+    assert pps._forward_imu_batch(None, "10.0.0.5") == 0
+
+
 import json
 import ssl as _ssl
 import socket as _socket
@@ -322,3 +416,89 @@ def test_stream_server_new_connection_replaces_old_active_one(tmp_path):
         assert pps.stream_frame_queue.empty()
     finally:
         pps.stop_stream_server()
+
+
+def test_start_imu_stream_server_serves_the_page_over_https(tmp_path):
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        assert b"200" in data.split(b"\r\n", 1)[0]
+        assert b"Start Streaming" in data
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_imu_stream_server_websocket_batch_reaches_dispatch(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append((path, ip)))
+
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock = _connect_tls(port)
+        req = (
+            "GET /imu_ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock.sendall(req.encode())
+        resp = sock.recv(4096)
+        assert b"101" in resp.split(b"\r\n", 1)[0]
+
+        payload = json.dumps({"batch": [
+            {"ts": 0, "accel": {"x": 0.1, "y": 9.8, "z": 0.0},
+                      "gyro":  {"x": 0.0, "y": 0.0, "z": 0.0}},
+        ]}).encode()
+        mask_key = b"\x11\x22\x33\x44"
+        masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        plen = len(masked)
+        frame_hdr = bytes([0x81, 0x80 | plen]) if plen <= 125 else \
+            bytes([0x81, 0x80 | 126]) + _struct.pack(">H", plen)
+        sock.sendall(frame_hdr + mask_key + masked)
+
+        _time.sleep(0.3)
+        assert ("/accelerometer", "127.0.0.1") in calls
+        assert ("/gyroscope", "127.0.0.1") in calls
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_start_imu_stream_server_is_idempotent(tmp_path):
+    ip1, port1 = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    ip2, port2 = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        assert (ip1, port1) == (ip2, port2)
+    finally:
+        pps.stop_imu_stream_server()
+
+
+def test_imu_stream_server_new_connection_replaces_old_active_one(tmp_path):
+    ip, port = pps.start_imu_stream_server(cert_dir=str(tmp_path), port=0)
+    try:
+        sock1 = _connect_tls(port)
+        req = (
+            "GET /imu_ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        sock1.sendall(req.encode())
+        assert b"101" in sock1.recv(4096).split(b"\r\n", 1)[0]
+
+        sock2 = _connect_tls(port)
+        sock2.sendall(req.encode())
+        assert b"101" in sock2.recv(4096).split(b"\r\n", 1)[0]
+
+        sock1.settimeout(2.0)
+        # The first connection's generation is now stale -- its read loop
+        # must exit (socket closes) rather than staying open forever.
+        data = sock1.recv(4096)
+        assert data == b""
+    finally:
+        pps.stop_imu_stream_server()
