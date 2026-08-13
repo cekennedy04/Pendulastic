@@ -113,7 +113,9 @@ METRICS_JSON  = MODEL_DIR / "angle_regressor_metrics.json"
 
 # ── Hyperparameters (defaults; override via CLI) ──────────────────────────────
 
-CROP_SIZE_PX    = 380       # pixel crop around knee before resize
+CROP_SIZE_PX    = 560       # pixel crop around knee before resize -- must match
+                            # gen_training_data.py's CROP_SIZE_PX (images are
+                            # already saved pre-cropped at that size)
 NET_INPUT       = 224       # MobileNetV3 input side
 ANGLE_MIN       = 80.0      # OAC lower bound (degrees)
 ANGLE_MAX       = 185.0     # OAC upper bound (degrees)
