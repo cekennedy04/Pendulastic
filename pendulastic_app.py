@@ -762,6 +762,7 @@ class AcquisitionPanel(tk.Frame):
         self._lockable = [
             pid_entry, rb_left, rb_right, ms_combo, trial_spin,
             self.countdown_chk, self.multi_trial_chk, chk_opti, chk_rgb, chk_imu, chk_video,
+            chk_imu_browser,
             self._research_toggle_btn,
             self.btn_back, self.drop_cam, self.btn_rescan,
         ]
