@@ -1,11 +1,13 @@
 """
 pendulastic_workbench.py
 =========================
-Pendulastic Workbench: an interactive multi-modal (phone IMU / MediaPipe-
-family HPE video / OptiTrack) trial comparison tool. Follows
-pendulastic_app.py's plain-Tkinter panel-swap architecture.
+Panel library for the Multi-Modal Comparison workbench (phone IMU / MediaPipe-
+family HPE video / OptiTrack trial comparison): TrialLoadPanel, WorkbenchView,
+DashboardView. Hosted inside pendulastic_app.py's App (its "Multi-Modal
+Comparison" mode) -- this module has no standalone entry point.
 
-See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md.
+See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md and
+docs/superpowers/specs/2026-08-14-eliminate-standalone-workbench-design.md.
 """
 from __future__ import annotations
 
@@ -1357,159 +1359,10 @@ class DashboardView(tk.Frame):
         self._canvas.draw_idle()
 
 
-class App(tk.Tk):
-    """Owns panel switching between TrialLoadPanel and WorkbenchView,
-    matching pendulastic_app.py's App class pattern (pack/pack_forget
-    between pre-built panel instances)."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.title("Pendulastic Workbench")
-        self.geometry("1200x800")
-        self.resizable(True, True)
-        self.minsize(900, 600)
-        ws.apply_ttk_theme(self)
-        self.configure(bg=ws.PALETTE["BG"])
-
-        self._trial_meta: dict = {}
-        self._imu_reference: list = []
-        self._status_var = tk.StringVar(value="")
-
-        self._load_panel = TrialLoadPanel(self, controller=self)
-        self._workbench_view = WorkbenchView(self, controller=self)
-        self._dashboard_view = DashboardView(self, controller=self)
-        self._load_panel.pack(fill="both", expand=True)
-        tk.Label(self, textvariable=self._status_var, anchor="w",
-                bg=ws.PALETTE["PANEL"], fg=ws.PALETTE["FG3"],
-                font=ws.FONT_SMALL).pack(side="bottom", fill="x", padx=8, pady=2)
-
-    def get_trial_meta(self) -> dict:
-        return dict(self._trial_meta)
-
-    def on_back_to_mode_select(self) -> None:
-        """No-op in standalone mode -- there is no landing screen to return
-        to here; this only exists so TrialLoadPanel's back button has a
-        controller method to call regardless of which App hosts it."""
-        pass
-
-    def on_workbench_load_another(self) -> None:
-        self._workbench_view.pack_forget()
-        self._load_panel.pack(fill="both", expand=True)
-
-    def on_view_dashboard(self) -> None:
-        self._load_panel.pack_forget()
-        self._workbench_view.pack_forget()
-        self._dashboard_view.refresh_participants()
-        self._dashboard_view.pack(fill="both", expand=True)
-
-    def on_dashboard_back(self) -> None:
-        self._dashboard_view.pack_forget()
-        self._load_panel.pack(fill="both", expand=True)
-
-    def on_load_trial(self, selection: dict) -> None:
-        """Loads whichever of the three modalities were selected (design
-        spec Section 2: 2-of-3 is valid) and switches to WorkbenchView.
-        Video HPE model inference runs on a background thread since it's
-        the slow step (design spec Section 3); IMU/OptiTrack loading is
-        fast enough to run inline. IMU input is either a single JSONL raw
-        log or four independently-validated split-CSV components (design
-        spec 2026-08-04-sequential-csv-intake) -- TrialLoadPanel.get_selection()
-        distinguishes the two via selection["imu_format"]."""
-        traces = {}
-        imu_format = selection.get("imu_format", "jsonl")
-        self._trial_meta = {
-            "video_path": selection["video_path"],
-            "optitrack_path": selection["optitrack_path"],
-            "participant_id": selection["participant_id"],
-            "session_date": selection["session_date"],
-            "models": selection["models"],
-            "femur_length_cm": selection["femur_length_cm"],
-            "tibia_length_cm": selection["tibia_length_cm"],
-        }
-
-        ft_ratio = None
-        method_override = None
-        if selection["femur_length_cm"] and selection["tibia_length_cm"]:
-            # Both limb lengths supplied means the researcher wants the
-            # personalized-ratio Ockendon path validated -- force the
-            # method rather than silently no-op if the persisted config's
-            # method is "relative".
-            ft_ratio = selection["femur_length_cm"] / selection["tibia_length_cm"]
-            method_override = "ockendon_flipped"
-
-        if imu_format == "split_csv":
-            components = selection.get("imu_components", {})
-            if all(components.get(k, {}).get("ok") for k in ("accel", "gyro", "mag", "imu")):
-                try:
-                    t, angle, imu_reference = engine.load_imu_trial_from_components(
-                        components, ft_ratio=ft_ratio, method=method_override)
-                    traces["imu"] = (t, angle)
-                    self._trial_meta["imu_paths"] = {
-                        k: components.get(k, {}).get("path")
-                        for k in ("accel", "gyro", "mag", "imu")}
-                    # imu_reference (the full parsed raw-IMU row list) is
-                    # kept off self._trial_meta so it never flows into
-                    # export_session()'s output -- it can be megabytes for a
-                    # real trial. Stored separately for in-memory
-                    # cross-check use only.
-                    self._imu_reference = imu_reference
-                except Exception as e:
-                    messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
-        elif selection["imu_path"]:
-            self._trial_meta["imu_path"] = selection["imu_path"]
-            try:
-                t, angle = engine.load_imu_trial(
-                    selection["imu_path"], ft_ratio=ft_ratio, method=method_override)
-                traces["imu"] = (t, angle)
-            except Exception as e:
-                messagebox.showerror("IMU load error", f"{type(e).__name__}: {e}")
-
-        if selection["optitrack_path"]:
-            try:
-                t, angle, method = engine.load_optitrack_trial(selection["optitrack_path"])
-                traces["optitrack"] = (t, angle)
-                self._trial_meta["optitrack_method"] = method
-            except Exception as e:
-                messagebox.showerror("OptiTrack load error", f"{type(e).__name__}: {e}")
-
-        self._load_panel.pack_forget()
-        self._workbench_view.pack(fill="both", expand=True)
-        self._workbench_view.reset_for_new_trial()
-        self._workbench_view.set_traces(traces)
-
-        if selection["video_path"]:
-            self._workbench_view.load_video(selection["video_path"])
-            if selection["models"]:
-                self._load_video_models_async(selection["video_path"], selection["models"], traces)
-
-    def _load_video_models_async(self, video_path: str, models: list, traces: dict) -> None:
-        """Runs load_video_trial on a background thread (design spec
-        Section 3: full-video pose inference x N models is the slow step)
-        and surfaces progress via progress_cb -- Tkinter widgets may only
-        be touched from the main thread, so both the progress update and
-        the final traces update are marshalled through self.after(0, ...)."""
-        import threading
-
-        self._status_var.set(f"Running {len(models)} HPE model(s)... 0%")
-
-        def on_progress(fraction: float) -> None:
-            self.after(0, lambda: self._status_var.set(
-                f"Running {len(models)} HPE model(s)... {fraction * 100:.0f}%"))
-
-        def worker():
-            results = engine.load_video_trial(video_path, models, progress_cb=on_progress)
-            def apply():
-                for name, result in results.items():
-                    if isinstance(result, dict) and "error" in result:
-                        print(f"[warn] model {name!r} failed: {result['error']}")
-                        continue
-                    traces[name] = result
-                self._workbench_view.set_traces(traces)
-                self._status_var.set("")
-            self.after(0, apply)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-
 if __name__ == "__main__":
-    App().mainloop()
+    print(
+        "pendulastic_workbench.py no longer runs standalone -- its panels are "
+        "hosted inside pendulastic_app.py.\n"
+        "Run instead:  .venv\\Scripts\\python.exe pendulastic_app.py"
+    )
+    raise SystemExit(1)

@@ -566,85 +566,6 @@ def test_workbench_view_load_another_button_calls_controller():
     assert calls == ["load_another"]
 
 
-def test_standalone_app_back_to_mode_select_is_a_genuine_noop():
-    from pendulastic_workbench import App
-    app = App()
-    try:
-        app.update()
-        app._load_panel.pack_forget()
-        app._workbench_view.pack(fill="both", expand=True)
-        app.update()
-        app.on_back_to_mode_select()   # must not raise
-        app.update()
-        # Still showing whatever was showing before -- nothing changed.
-        assert app._workbench_view.winfo_ismapped()
-        assert not app._load_panel.winfo_ismapped()
-    finally:
-        app.destroy()
-
-
-def test_standalone_app_load_another_returns_to_load_panel():
-    from pendulastic_workbench import App
-    app = App()
-    try:
-        app.update()
-        app._load_panel.pack_forget()
-        app._workbench_view.pack(fill="both", expand=True)
-        app.update()
-        app.on_workbench_load_another()
-        app.update()
-        assert app._load_panel.winfo_ismapped()
-        assert not app._workbench_view.winfo_ismapped()
-    finally:
-        app.destroy()
-
-
-def test_on_load_trial_split_csv_binds_and_stores_imu_reference(tmp_path, monkeypatch):
-    from pendulastic_workbench import App
-    import pendulastic_workbench as _m
-    import numpy as np
-
-    fake_validations = {
-        "accel": {"ok": True, "rows": [], "path": "a.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
-        "gyro":  {"ok": True, "rows": [], "path": "g.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
-        "mag":   {"ok": True, "rows": [], "path": "m.csv", "error": None, "n_samples": 2, "fs_eff": 100.0},
-        "imu":   {"ok": True, "rows": [{"hip_pitch_deg": "180.0"}], "path": "i.csv",
-                  "error": None, "n_samples": 1, "fs_eff": 100.0},
-    }
-    fake_engine = type("FakeEngine", (), {
-        "load_imu_trial_from_components": staticmethod(
-            lambda validations, ft_ratio=None, method=None:
-                (np.array([0.0, 0.05]), np.array([180.0, 170.0]), validations["imu"]["rows"])),
-        # set_traces() now synchronously calls _recompute_release_lags() ->
-        # _recompute_metrics() -> get_metrics_snapshot(), which needs
-        # windowed_pt_params on whatever `engine` is monkeypatched to.
-        "windowed_pt_params": staticmethod(lambda t, y: {
-            "R2n": 0.0, "N": 0.0, "phi_max_ratio": 0.0, "omega_max_n": 0.0,
-            "f": 0.0, "area_ratio": 0.0, "omega_min_n": 0.0}),
-        "extrema_jitter": staticmethod(lambda t, y: {
-            "pk_i": np.array([], dtype=int), "tr_i": np.array([], dtype=int),
-            "cycle_times": np.array([])}),
-    })()
-    monkeypatch.setattr(_m, "engine", fake_engine)
-
-    app = App()
-    try:
-        app.update()
-        app.on_load_trial({
-            "imu_format": "split_csv", "imu_path": None, "imu_components": fake_validations,
-            "video_path": None, "optitrack_path": None,
-            "participant_id": "", "session_date": "",
-            "models": [], "femur_length_cm": None, "tibia_length_cm": None,
-        })
-        app.update()
-        assert "imu" in app._workbench_view._traces
-        assert app._trial_meta["imu_paths"] == {
-            "accel": "a.csv", "gyro": "g.csv", "mag": "m.csv", "imu": "i.csv"}
-        assert "imu_reference" not in app._trial_meta
-        assert app._imu_reference == [{"hip_pitch_deg": "180.0"}]
-    finally:
-        app.destroy()
-
 
 def test_workbench_view_per_trace_tree_populates_from_traces():
     from pendulastic_workbench import WorkbenchView
@@ -910,33 +831,6 @@ def test_dashboard_view_shows_skipped_session_status():
 
     assert "Skipped 1" in dv._status_var.get()
 
-
-def test_load_panel_view_dashboard_button_switches_to_dashboard_view():
-    from pendulastic_workbench import App
-    app = App()
-    try:
-        app.update()
-        app.on_view_dashboard()
-        app.update()
-        assert app._dashboard_view.winfo_ismapped()
-        assert not app._load_panel.winfo_ismapped()
-    finally:
-        app.destroy()
-
-
-def test_dashboard_back_returns_to_load_panel():
-    from pendulastic_workbench import App
-    app = App()
-    try:
-        app.update()
-        app.on_view_dashboard()
-        app.update()
-        app.on_dashboard_back()
-        app.update()
-        assert app._load_panel.winfo_ismapped()
-        assert not app._dashboard_view.winfo_ismapped()
-    finally:
-        app.destroy()
 
 
 def test_milestone_labels_no_longer_include_release_start():
