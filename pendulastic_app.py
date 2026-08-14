@@ -2729,13 +2729,22 @@ class App(tk.Tk):
         self._state = "recording"
         self._acq.enter_recording()
 
+        # OptiTrack is triggered last, regardless of its position in
+        # `sources`: motive_sync's remote-command handshake blocks for
+        # several hundred ms, and every other source should already be
+        # capturing before that delay is incurred -- matches master_app.py,
+        # which always starts the webcam + IMU log before calling
+        # motive_sync (see its start_recording()). Triggering it earlier
+        # (e.g. when "optitrack" precedes "rgb" in `sources`) pushes back
+        # RGB's actual capture start by the same amount, producing an
+        # IMU/RGB skew that master_app.py never has.
         for src in sources:
             if src == "imu":
                 self._start_imu_recording(meta)
             elif src == "rgb":
                 self._start_rgb_recording(meta)
-            elif src == "optitrack":
-                self._start_optitrack_recording(meta)
+        if "optitrack" in sources:
+            self._start_optitrack_recording(meta)
 
     def on_stop(self) -> None:
         # Clear the viewer window's "● REC" overlay immediately -- recording
@@ -3625,8 +3634,17 @@ class App(tk.Tk):
     def _start_optitrack_recording(self, meta: dict) -> None:
         if _MOTIVE_AVAIL:
             try:
+                # relpath must be set or motive_sync.mirror_relpath() warns
+                # and skips SetCurrentSession entirely, leaving Motive
+                # recording into whatever session it last had open instead
+                # of this participant's folder. Mirrors master_app.py's
+                # Participant_{pid}/{leg}/{characterization} layout so both
+                # apps' OptiTrack_Recordings trees stay compatible.
+                rel_path = os.path.join(
+                    f"Participant_{meta['pid']}", meta['leg'], meta['ms_status'])
                 msg = (f"START|id={meta['pid']}|leg={meta['leg']}|"
-                       f"trial={meta['trial']}")
+                       f"characterization={meta['ms_status']}|"
+                       f"trial={meta['trial']}|relpath={rel_path}")
                 _motive.start_local_motive(msg)
             except Exception as e:
                 messagebox.showwarning(
