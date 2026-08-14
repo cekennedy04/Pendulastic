@@ -3151,6 +3151,7 @@ class App(tk.Tk):
 
         self._workbench_load.pack_forget()
         self._workbench_view.pack(fill="both", expand=True)
+        self._workbench_view.reset_for_new_trial()
         self._workbench_view.set_traces(traces)
         self._workbench_view.set_raw_diagnostics(self._workbench_raw_diagnostics)
 
