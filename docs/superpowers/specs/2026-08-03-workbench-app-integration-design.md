@@ -3,6 +3,12 @@
 **Status:** Approved
 **Date:** 2026-08-03
 
+> **Superseded (2026-08-14):** the standalone `pendulastic_workbench.py` entry
+> point this spec deliberately kept (Section 5, "Navigation") has since been
+> removed — see
+> `docs/superpowers/specs/2026-08-14-eliminate-standalone-workbench-design.md`.
+> The panel-embedding design below (Sections 1-4) is otherwise still current.
+
 ---
 
 ## 1. Goal
