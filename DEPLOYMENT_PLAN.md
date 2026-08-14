@@ -115,7 +115,7 @@ tests/test_analyze_accel_drift.py (42 lines)
   - 3 unit tests for double-integration math
   - Validates zero-accel, constant-accel, and ZUPT correction
 
-integration_test_task10.py (200+ lines)
+integration_test_task10.py (113 lines)
   - 6 comprehensive integration tests
   - Validates both live and offline paths
   - Confirms no crashes or regressions

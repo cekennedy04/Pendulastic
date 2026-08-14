@@ -429,7 +429,7 @@ def test_load_hpe_model_curves_falls_back_to_raw_imu_replay(tmp_path, monkeypatc
 
     t, ang = _damped_sinusoid(n=300, fps=30.0)
     monkeypatch.setattr(pt, "_replay_raw_imu_fallback",
-                        lambda rec_dir_arg, trial_arg: (t.copy(), ang.copy()))
+                        lambda _rec_dir, _trial: (t.copy(), ang.copy()))
 
     curves = pt.load_hpe_model_curves("15_right_pre", "1", "1", t, ang, 180.0)
     assert len(curves) == 1

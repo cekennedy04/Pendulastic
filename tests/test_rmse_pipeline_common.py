@@ -684,7 +684,7 @@ def _landmark_cache_fixture(tmp_path, monkeypatch, impl_fp="impl1"):
     model.write_bytes(b"model-weights-A")
     calls = []
     monkeypatch.setattr(rpc.mediapipe_sweep, "extract_raw_landmarks",
-                        lambda vp, leg, mp_: (calls.append(1) or [{"t": 0.0}]))
+                        lambda vp, leg, _mp: (calls.append(1) or [{"t": 0.0}]))
     trial = {"trial_key": "k1", "leg": "left", "video_path": str(video)}
     return trial, video, model, calls
 
@@ -745,7 +745,7 @@ def test_extract_landmarks_cached_re_extracts_on_implementation_fingerprint_chan
 
 def test_score_mediapipe_candidate_returns_rmse(monkeypatch):
     trial = {"trial_key": "k1", "leg": "left", "video_path": "v.mp4", "optitrack_path": "o.csv"}
-    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, mp_: [{"t": 0.0}])
+    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, _mp: [{"t": 0.0}])
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
                         lambda path: (np.array([0.0]), np.array([1.0])))
     monkeypatch.setattr(rpc.mediapipe_sweep, "score_frames",
@@ -756,7 +756,7 @@ def test_score_mediapipe_candidate_returns_rmse(monkeypatch):
 
 def test_score_mediapipe_candidate_returns_none_when_unscoreable(monkeypatch):
     trial = {"trial_key": "k1", "leg": "left", "video_path": "v.mp4", "optitrack_path": "o.csv"}
-    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, mp_: [{"t": 0.0}])
+    monkeypatch.setattr(rpc, "extract_landmarks_cached", lambda t, mv, _mp: [{"t": 0.0}])
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
                         lambda path: (np.array([0.0]), np.array([1.0])))
     monkeypatch.setattr(rpc.mediapipe_sweep, "score_frames",
