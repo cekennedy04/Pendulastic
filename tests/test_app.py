@@ -2657,3 +2657,65 @@ def test_enter_live_mode_recovers_from_stuck_processing_state():
         assert app._acq.status_var.get() != "Tuning IMU calibration…"
     finally:
         app.destroy()
+
+
+def test_on_start_triggers_optitrack_last_regardless_of_source_order(monkeypatch):
+    """Regression for b4c5c73: on_start() used to dispatch sources in
+    get_metadata()'s list order (imu, optitrack, rgb), so the blocking
+    motive_sync handshake ran before RGB actually started recording,
+    producing a ~0.45s IMU/RGB skew that master_app.py never has -- it
+    always starts the webcam + IMU log before calling motive_sync.
+    OptiTrack must always fire last, regardless of get_metadata()'s
+    source order."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._acq.pid_var.set("P1")
+        app._acq._src_imu.set(True)
+        app._acq._src_rgb.set(True)
+        app._acq._src_optitrack.set(True)
+
+        call_order = []
+        monkeypatch.setattr(app, "_start_imu_recording",
+                             lambda meta: call_order.append("imu"))
+        monkeypatch.setattr(app, "_start_rgb_recording",
+                             lambda meta: call_order.append("rgb"))
+        monkeypatch.setattr(app, "_start_optitrack_recording",
+                             lambda meta: call_order.append("optitrack"))
+
+        app.on_start()
+
+        assert call_order[-1] == "optitrack", \
+            f"optitrack must be triggered last, got order {call_order}"
+        assert set(call_order) == {"imu", "rgb", "optitrack"}
+    finally:
+        app._imu_poll_stop.set()
+        if app._imu_poll_thread:
+            app._imu_poll_thread.join(timeout=1.0)
+        app.destroy()
+
+
+def test_start_optitrack_recording_sends_relpath_matching_master_app_layout(monkeypatch):
+    """Regression for b4c5c73: the START packet never included relpath, so
+    motive_sync.mirror_relpath() silently warned and skipped
+    SetCurrentSession, leaving any OptiTrack recording in whatever session
+    Motive last had open instead of this participant's folder. relpath must
+    match master_app.py's Participant_{pid}/{leg}/{characterization}
+    layout."""
+    import pendulastic_app as _m
+    if not _m._MOTIVE_AVAIL:
+        return
+    app = _m.App()
+    try:
+        sent = []
+        monkeypatch.setattr(_m._motive, "start_local_motive",
+                             lambda msg: sent.append(msg))
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+
+        app._start_optitrack_recording(meta)
+
+        assert len(sent) == 1, "must trigger motive_sync exactly once"
+        expected_relpath = os.path.join("Participant_P1", "Right", "MS")
+        assert f"relpath={expected_relpath}" in sent[0]
+    finally:
+        app.destroy()
