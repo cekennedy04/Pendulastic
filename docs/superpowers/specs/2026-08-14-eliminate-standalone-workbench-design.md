@@ -63,11 +63,12 @@ Workbench launch instructions — no changes needed there.
 
 | File | Nature of change |
 |---|---|
-| `pendulastic_workbench.py` | Delete the `App(tk.Tk)` class (lines 1360-1516 as of this writing) and its `if __name__ == "__main__": App().mainloop()` block. Replace with a `__main__` guard that prints a redirect message and exits (Section 4). Update the module docstring to describe the file as a panel library hosted by `pendulastic_app.py`, not a standalone app (Section 5). |
+| `pendulastic_workbench.py` | Delete the `App(tk.Tk)` class (lines 1360-1515 as of this writing) and its `if __name__ == "__main__": App().mainloop()` block. Replace with a `__main__` guard that prints a redirect message and exits (Section 4). Update the module docstring to describe the file as a panel library hosted by `pendulastic_app.py`, not a standalone app (Section 5). |
 | `tests/test_pendulastic_workbench.py` | Delete the 5 tests that instantiate the standalone `App`: `test_standalone_app_back_to_mode_select_is_a_genuine_noop`, `test_standalone_app_load_another_returns_to_load_panel`, `test_on_load_trial_split_csv_binds_and_stores_imu_reference`, `test_load_panel_view_dashboard_button_switches_to_dashboard_view`, `test_dashboard_back_returns_to_load_panel`. This is a forced consequence, not a coverage tradeoff — these tests `from pendulastic_workbench import App`, which no longer exists, so they'd fail on import regardless. `tests/test_app.py` already covers the equivalent behavior against the real (embedded) `App` (see Section 6). |
 | `docs/superpowers/specs/2026-08-03-workbench-app-integration-design.md` | Add a one-line "Superseded" note at the top pointing to this spec, so the historical record stays accurate without being rewritten. |
 | `pendulastic_app.py` | No change. Its guarded import of `TrialLoadPanel`/`WorkbenchView`/`DashboardView` and its own controller methods are already the canonical implementation. |
 | `workbench_engine.py`, `analysis_pipeline.py` | No change — this is a UI-hosting change only, same as the 2026-08-03 spec's own scope boundary. |
+| `workbench_style.py` | `_borrow_clam_elements`'s docstring (lines 74-77) and `apply_ttk_theme`'s docstring (lines 91-94) both name "the standalone App" / "`pendulastic_workbench.App` (standalone)" as a caller. No functional change needed — the `TclError`-swallowing idempotency guard doesn't care how many callers exist — but both mentions become stale once that class is gone and must be reworded (Section 5a). |
 
 ---
 
@@ -120,6 +121,44 @@ Comparison" mode) -- this module has no standalone entry point.
 See docs/superpowers/specs/2026-07-31-pendulastic-workbench-design.md and
 docs/superpowers/specs/2026-08-14-eliminate-standalone-workbench-design.md.
 """
+```
+
+---
+
+## 5a. `workbench_style.py` Comment Updates
+
+Two docstrings name the standalone App as a caller; both need rewording once it no longer exists.
+
+`_borrow_clam_elements` (line 77), current:
+
+```
+    element raises TclError, which is exactly the "already borrowed in this
+    interpreter" case (apply_ttk_theme may be called more than once per
+    process, e.g. by the standalone App and again by a test root)."""
+```
+
+New:
+
+```
+    element raises TclError, which is exactly the "already borrowed in this
+    interpreter" case (apply_ttk_theme may be called more than once per
+    process, e.g. by pendulastic_app.App and again by a test root)."""
+```
+
+`apply_ttk_theme` (lines 92-94), current:
+
+```
+    affected, so this is safe to call both from pendulastic_workbench.App
+    (standalone) and from pendulastic_app.App (which embeds TrialLoadPanel
+    and WorkbenchView alongside panels that must not change appearance).
+```
+
+New:
+
+```
+    affected, so this is safe to call from pendulastic_app.App (which embeds
+    TrialLoadPanel, WorkbenchView, and DashboardView alongside panels that
+    must not change appearance) as well as from test roots.
 ```
 
 ---
