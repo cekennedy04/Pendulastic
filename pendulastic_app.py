@@ -3242,18 +3242,28 @@ class App(tk.Tk):
                 self.after(0, lambda: self._acq.status_var.set(msg))
             set_status(f"Processing batch: trial {i} of {total}…")
             base = entry["source_angles"] or {}
-            if "pending_rgb_path" in entry:
-                def progress(pct):
-                    set_status(f"Processing batch: trial {i} of {total} "
-                               f"({int(pct * 100)}%)…")
-                result = self._compute_rgb_processing(
-                    entry["pending_rgb_path"], entry["meta"], base, progress)
-            elif "pending_imu_tune" in entry:
-                p = entry["pending_imu_tune"]
-                result = self._compute_imu_tuning(
-                    p["raw_log_path"], p["csv_path"], p["csv_filename"],
-                    entry["meta"], base)
-            else:
+            try:
+                if "pending_rgb_path" in entry:
+                    def progress(pct):
+                        set_status(f"Processing batch: trial {i} of {total} "
+                                   f"({int(pct * 100)}%)…")
+                    result = self._compute_rgb_processing(
+                        entry["pending_rgb_path"], entry["meta"], base, progress)
+                elif "pending_imu_tune" in entry:
+                    p = entry["pending_imu_tune"]
+                    result = self._compute_imu_tuning(
+                        p["raw_log_path"], p["csv_path"], p["csv_filename"],
+                        entry["meta"], base)
+                else:
+                    result = base
+            except Exception:
+                # One trial's MediaPipe/save_trial call raising must not kill
+                # the whole worker thread -- self.after(0, self._finish_batch_
+                # processing) below would never fire, leaving every remaining
+                # queued trial stuck at status="processing" and the form
+                # permanently locked. Fall back to this entry's originally
+                # -recorded series, matching _compute_imu_tuning's own
+                # never-raise contract.
                 result = base
             entry["source_angles"] = result
             entry["status"] = "saved"
@@ -3440,7 +3450,7 @@ class App(tk.Tk):
                 self.after(0, _err_video)
 
     def _start_rgb_recording(self, meta: dict) -> None:
-        # Note: this runs from on_start()'s per-source dispatch loop, BEFORE
+        # Note: this runs from on_start()'s per-source dispatch loop, AFTER
         # self._acq.enter_recording() -- a blocking messagebox here used to
         # freeze the whole app mid-transition into recording, with the
         # countdown's camera-preview window already open on top and no
