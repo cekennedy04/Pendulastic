@@ -82,7 +82,7 @@ def test_release_aligned_hpe_curve_rejects_release_index_too_early_for_a_reliabl
     import numpy as np
     t = np.linspace(0, 3, 90)
     ang = 140.0 + 20.0 * np.sin(t)
-    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, a_: 1)
+    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, _a: 1)
     result = common.release_aligned_hpe_curve(t, ang)
     assert result is None
 
@@ -93,7 +93,7 @@ def test_release_aligned_hpe_curve_keeps_working_when_release_index_has_enough_b
     import numpy as np
     t = np.linspace(0, 3, 90)
     ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
-    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, a_: 30)
+    monkeypatch.setattr(common.pt, "_detect_release", lambda t_, _a: 30)
     result = common.release_aligned_hpe_curve(t, ang)
     assert result is not None
 
@@ -381,7 +381,7 @@ def test_draw_row5_table_shows_per_source_paired_baselines(monkeypatch):
     def fake_pt7(params):
         return 0.25
 
-    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, a_: {"fake": True})
+    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, _a: {"fake": True})
     monkeypatch.setattr(common.pt, "compute_pt_score", fake_pt7)
     monkeypatch.setattr(common.pt, "pt_to_mas", lambda score: "1")
     monkeypatch.setattr(common.pt, "load_hpe_model_curves",
@@ -529,7 +529,7 @@ def test_draw_row5_table_columns_sized_to_content(monkeypatch):
     t = np.linspace(0, 3, 90)
     ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
 
-    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, a_: {"fake": True})
+    monkeypatch.setattr(common.pt, "compute_pt_params", lambda t_, _a: {"fake": True})
     monkeypatch.setattr(common.pt, "compute_pt_score", lambda params: 0.25)
     monkeypatch.setattr(common.pt, "pt_to_mas", lambda score: "1")
     monkeypatch.setattr(common.pt, "load_hpe_model_curves",

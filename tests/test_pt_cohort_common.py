@@ -468,7 +468,7 @@ def _stub_common(monkeypatch, qualifying, groups, trials):
     monkeypatch.setattr(pcc.common, "leg_trial_counts",
                         lambda pid: {leg: len(trials.get(pid, {}).get(leg, [])) for leg in pcc._LEGS})
     monkeypatch.setattr(pcc, "classify_participant",
-                        lambda pid, md, reg, exists: groups.get(pid, ("Unclassified", "no_entry")))
+                        lambda pid, md, _reg, exists: groups.get(pid, ("Unclassified", "no_entry")))
     monkeypatch.setattr(pcc.common, "collect_participant",
                         lambda pid: ({(leg, "cond"): trials.get(pid, {}).get(leg, []) for leg in pcc._LEGS}, []))
 
@@ -522,7 +522,7 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
     monkeypatch.setattr(pcc, "classify_participant",
-                        lambda pid, md, reg, exists: {"13": ("MS", "metadata"), "6": ("Control", "metadata")}[pid])
+                        lambda pid, md, _reg, exists: {"13": ("MS", "metadata"), "6": ("Control", "metadata")}[pid])
     monkeypatch.setattr(pcc.common, "leg_trial_counts",
                         lambda pid: {"13": {"left": 4, "right": 4}, "6": {"left": 4, "right": 4}}[pid])
     monkeypatch.setattr(pcc.common, "collect_participant", lambda pid: (

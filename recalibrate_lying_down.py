@@ -200,8 +200,6 @@ def print_loto_table(df: pd.DataFrame, label: str = "") -> None:
         print(f"  {row['trial']:<{W}} {int(row['n']):>5}  "
               f"{row['mae']:>9.2f}  {row['rmse']:>9.2f}")
     print(sep)
-    print(f"  {'Overall LOTO':>{W+5}}  "
-          f"{_rmse(np.zeros(len(df)), np.zeros(len(df))):.2f}  " if False else "", end="")
     mae_mean  = df["mae"].mean()
     rmse_mean = df["rmse"].mean()
     mae_sd    = df["mae"].std()
