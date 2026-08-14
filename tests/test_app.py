@@ -894,7 +894,7 @@ def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_pat
 
 def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
     """_start_rgb_recording() runs from on_start()'s per-source dispatch
-    loop, before enter_recording() -- a blocking messagebox there used to
+    loop, after enter_recording() -- a blocking messagebox there used to
     freeze the app mid-transition (see the "camera view keeps crashing"
     regression). It must still surface the problem, just via the
     non-blocking status line rather than a modal dialog."""
