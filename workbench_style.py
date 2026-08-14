@@ -74,7 +74,7 @@ def _borrow_clam_elements(style: ttk.Style) -> None:
     current theme under private names. Idempotent: re-creating an existing
     element raises TclError, which is exactly the "already borrowed in this
     interpreter" case (apply_ttk_theme may be called more than once per
-    process, e.g. by the standalone App and again by a test root)."""
+    process, e.g. by pendulastic_app.App and again by a test root)."""
     for name, source in _BORROWED_ELEMENTS:
         try:
             style.element_create(name, "from", "clam", source)
@@ -89,9 +89,9 @@ def apply_ttk_theme(root: tk.Misc) -> None:
     global to the root, so switching it to clam here would restyle every
     other ttk widget in whatever application is hosting the Workbench
     panels. Only widgets that pass one of the STYLE_* names above are
-    affected, so this is safe to call both from pendulastic_workbench.App
-    (standalone) and from pendulastic_app.App (which embeds TrialLoadPanel
-    and WorkbenchView alongside panels that must not change appearance).
+    affected, so this is safe to call from pendulastic_app.App (which embeds
+    TrialLoadPanel, WorkbenchView, and DashboardView alongside panels that
+    must not change appearance) as well as from test roots.
 
     Plain ttk widgets ignore bg=/fg= entirely -- they need explicit
     style.configure(...), the same mechanism pendulastic_viewer.py's
