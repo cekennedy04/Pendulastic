@@ -1584,6 +1584,53 @@ def test_on_load_trial_imu_only_switches_to_workbench_view(tmp_path, monkeypatch
         app.destroy()
 
 
+def test_on_load_trial_resets_workbench_view_before_set_traces(tmp_path, monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    monkeypatch.setattr(_m, "_WORKBENCH_AVAIL", True)
+    fake_engine = type("FakeEngine", (), {
+        "load_imu_trial": staticmethod(
+            lambda path, ft_ratio=None, method=None: (np.array([0.0, 0.05]), np.array([180.0, 170.0])))
+    })()
+    monkeypatch.setattr(_m, "_wb_engine", fake_engine)
+
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_workbench_mode()
+
+        # Regression: on_load_trial() used to skip reset_for_new_trial()
+        # entirely -- the standalone Workbench App (deleted 2026-08-14) was
+        # its only caller. reset_for_new_trial()'s own docstring requires
+        # it run before set_traces(), or a second "Load Different Trial"
+        # call carries the prior trial's release marks and lag-override
+        # text into the new one.
+        call_order = []
+        orig_reset = app._workbench_view.reset_for_new_trial
+        orig_set_traces = app._workbench_view.set_traces
+        monkeypatch.setattr(
+            app._workbench_view, "reset_for_new_trial",
+            lambda: (call_order.append("reset"), orig_reset())[-1])
+        monkeypatch.setattr(
+            app._workbench_view, "set_traces",
+            lambda traces: (call_order.append("set_traces"), orig_set_traces(traces))[-1])
+
+        app.on_load_trial({
+            "imu_path": str(tmp_path / "trial.jsonl"), "video_path": None,
+            "optitrack_path": None, "models": [],
+            "participant_id": "", "session_date": "2026-08-04",
+            "femur_length_cm": None, "tibia_length_cm": None,
+        })
+        app.update()
+
+        assert "reset" in call_order
+        assert "set_traces" in call_order
+        assert call_order.index("reset") < call_order.index("set_traces")
+    finally:
+        app.destroy()
+
+
 
 
 def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
