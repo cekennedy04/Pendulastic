@@ -143,12 +143,18 @@ ALPHA_OLC       = 0.05      # shank-length penalty weight
 
 HUBER_DELTA     = 5.0       # Huber loss delta (degrees)
 
-# Participants held out for validation (match gen_training_data.py)
+# Participants held out for validation. These leg/condition-qualified names
+# (e.g. "Participant_5_left_side") matched an older Recordings/ layout with
+# leg+condition baked into the top-level participant folder name. The
+# "simplified recording folder structure" reorg (2026-08-04) moved to
+# nested Participant_N/Left|Right/pre|post subfolders, so
+# gen_training_data.py's participant field (OPTI_ROOT-relative path's first
+# component) has been bare "Participant_N" ever since -- these never
+# matched post-reorg, silently leaving val_samples empty on every re-run of
+# gen_training_data.py until the 2026-08-14 corpus regeneration exposed it.
 VAL_PARTICIPANTS = {
-    "Participant_8_left_control",
-    "Participant_8_right_control",
-    "Participant_5_left_side",
-    "Participant_5_right_side",
+    "Participant_8",
+    "Participant_5",
 }
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
