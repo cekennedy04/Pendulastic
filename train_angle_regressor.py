@@ -102,9 +102,11 @@ DATA_ROOT = ROOT / "training_data"
 ANN_DIR   = DATA_ROOT / "annotations"
 IMG_DIR   = DATA_ROOT / "images"
 CROP_DIR  = DATA_ROOT / "crops"
-MODEL_DIR       = ROOT / "models"
-PHASE1_CKPT     = MODEL_DIR / "angle_regressor_phase1.keras"
-PHASE2_STATE    = MODEL_DIR / "angle_regressor_phase2_state.json"
+MODEL_DIR         = ROOT / "models"
+PHASE1_CKPT       = MODEL_DIR / "angle_regressor_phase1.keras"
+PHASE1_PARTIAL_CKPT = MODEL_DIR / "angle_regressor_phase1_partial.keras"
+PHASE1_STATE      = MODEL_DIR / "angle_regressor_phase1_state.json"
+PHASE2_STATE      = MODEL_DIR / "angle_regressor_phase2_state.json"
 
 COCO_JSON     = ANN_DIR / "coco_keypoints.json"
 OUTPUT_MODEL  = MODEL_DIR / "angle_regressor"
@@ -501,27 +503,59 @@ def train(args, train_samples, val_samples):
     # were repeatedly losing the ~30min Phase 1 head-training pass on every
     # restart even though it's deterministic-enough not to need redoing --
     # --resume skips straight to Phase 2 setup when a completed Phase 1
-    # checkpoint is already on disk.
+    # checkpoint is already on disk, and resumes mid-Phase-1 from the last
+    # checkpointed epoch (saved after every epoch below) if Phase 1 itself
+    # was interrupted before finishing.
     if args.resume and PHASE1_CKPT.exists():
         print(f"\n[Phase 1]  Resuming: loading completed checkpoint {PHASE1_CKPT}")
         model = keras.models.load_model(str(PHASE1_CKPT), compile=False)
         history_all["phase1"] = {}
     else:
-        print(f"\n[Phase 1]  Head only  lr={HEAD_LR}  epochs={args.head_epochs}")
+        p1_initial_epoch = 0
         model = build_model(unfreeze_layers=0)
+        if args.resume and PHASE1_PARTIAL_CKPT.exists() and PHASE1_STATE.exists():
+            p1_state = json.loads(PHASE1_STATE.read_text())
+            p1_initial_epoch = p1_state.get("last_completed_epoch", 0)
+            print(f"\n[Phase 1]  Resuming from epoch {p1_initial_epoch} "
+                 f"(of {args.head_epochs})  lr={HEAD_LR}")
+            model.set_weights(
+                keras.models.load_model(str(PHASE1_PARTIAL_CKPT), compile=False).get_weights())
+        else:
+            print(f"\n[Phase 1]  Head only  lr={HEAD_LR}  epochs={args.head_epochs}")
+
         model.compile(
             optimizer = keras.optimizers.Adam(HEAD_LR),
             loss      = loss_d,
             loss_weights = weights,
             metrics   = metrics_d,
         )
-        h1 = model.fit(
-            train_ds, epochs=args.head_epochs,
-            validation_data=val_ds, verbose=1,
-        )
-        history_all["phase1"] = h1.history
+
+        class Phase1Checkpointer(keras.callbacks.Callback):
+            """Saves weights + epoch number after every Phase 1 epoch so an
+            interrupted Phase 1 can resume mid-phase instead of restarting
+            from epoch 0 (see --resume above)."""
+            def on_epoch_end(self, epoch, logs=None):
+                self.model.save(str(PHASE1_PARTIAL_CKPT))
+                PHASE1_STATE.write_text(json.dumps({"last_completed_epoch": epoch + 1}))
+
+        if p1_initial_epoch >= args.head_epochs:
+            print(f"  Already completed all {args.head_epochs} Phase 1 epochs across "
+                 f"restarts -- skipping further Phase 1 training.")
+            h1_history = {}
+        else:
+            h1 = model.fit(
+                train_ds, epochs=args.head_epochs,
+                initial_epoch=p1_initial_epoch,
+                validation_data=val_ds, verbose=1,
+                callbacks=[Phase1Checkpointer()],
+            )
+            h1_history = h1.history
+        history_all["phase1"] = h1_history
         model.save(str(PHASE1_CKPT))
         print(f"  Saved Phase 1 checkpoint -> {PHASE1_CKPT}")
+        for f in (PHASE1_PARTIAL_CKPT, PHASE1_STATE):
+            if f.exists():
+                f.unlink()
 
     # ── Phase 2: partial unfreeze + cosine decay + early stopping ─────────
     restart_every = max(10, args.max_epochs // 3)
