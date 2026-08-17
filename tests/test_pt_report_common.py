@@ -1,6 +1,9 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import json
+import pytest
+
 import pt_report_common as common
 import run_pt_analysis
 
@@ -827,3 +830,94 @@ def test_duplicate_trial_keys_no_internal_discovery_call(monkeypatch):
         raise AssertionError("duplicate_trial_keys must not call discover_all_trials")
     monkeypatch.setattr(common, "discover_all_trials", boom)
     assert common.duplicate_trial_keys([{"trial_key": "k", "path": "/p"}]) == {}
+
+
+def test_set_trials_excluded_dedupes_duplicate_input_keys(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1", "k1"], True)
+
+    with open(reg_path) as f:
+        data = json.load(f)
+    assert data == {"k1": "excluded via Analysis panel"}
+
+
+def test_set_trials_excluded_true_then_false_round_trips(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1"], True)
+    assert "k1" in common.load_excluded_trials()
+
+    common.set_trials_excluded(["k1"], False)
+    assert "k1" not in common.load_excluded_trials()
+
+
+def test_set_trials_excluded_preserves_unrelated_entries(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"other_key": "pre-existing reason"}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1"], True)
+
+    data = common.load_excluded_trials()
+    assert data["other_key"] == "pre-existing reason"
+    assert data["k1"] == "excluded via Analysis panel"
+
+
+def test_set_trials_excluded_atomic_write_uses_same_directory(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    seen_dirs = []
+    real_mkstemp = common.tempfile.mkstemp
+
+    def spy_mkstemp(*args, **kwargs):
+        seen_dirs.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(common.tempfile, "mkstemp", spy_mkstemp)
+    common.set_trials_excluded(["k1"], True)
+    assert seen_dirs == [str(tmp_path)]
+
+
+def test_set_trials_excluded_cleans_up_temp_file_on_replace_failure(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    def failing_replace(*args, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(common.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert not reg_path.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_set_trials_excluded_raises_on_malformed_json(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text("{not valid json")
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes
+    # Read path (load_excluded_trials) still degrades to {} unchanged --
+    # the two paths intentionally diverge (spec Section 6).
+    assert common.load_excluded_trials() == {}
+
+
+def test_set_trials_excluded_raises_on_wrong_shape_json(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps(["not", "a", "dict"]))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes

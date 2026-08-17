@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 from datetime import datetime, timezone
 
@@ -338,6 +339,65 @@ def clear_excluded_trial(key):
     if key in excluded:
         del excluded[key]
         _atomic_write_json(EXCLUDED_TRIALS_PATH, excluded)
+
+
+class RegistryCorruptError(Exception):
+    """excluded_trials.json exists but isn't a valid {str: str} JSON object
+    -- raised by set_trials_excluded() to refuse writing through it. A write
+    path must never silently treat a corrupt/wrong-shape file as empty and
+    overwrite it, unlike load_excluded_trials()'s read-time behavior (which
+    intentionally does treat it as {}, since failing open at
+    report-generation time is worse than temporarily un-filtering)."""
+
+
+def _load_excluded_trials_strict() -> dict:
+    """Like load_excluded_trials(), but raises RegistryCorruptError instead
+    of silently returning {} when the file exists and is unparseable or the
+    wrong shape. A missing file is not corruption -> {}."""
+    if not os.path.exists(EXCLUDED_TRIALS_PATH):
+        return {}
+    try:
+        with open(EXCLUDED_TRIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise RegistryCorruptError(f"{EXCLUDED_TRIALS_PATH} is not valid JSON: {e}") from e
+    if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise RegistryCorruptError(
+            f"{EXCLUDED_TRIALS_PATH} must contain a JSON object of string "
+            f"keys to string values, got {type(data).__name__}")
+    return data
+
+
+def set_trials_excluded(keys: list, excluded: bool) -> None:
+    """The single entry point for the trial-exclusion UI (design spec
+    Section 3) -- batch-toggles trial_keys and writes excluded_trials.json
+    atomically. keys is deduplicated internally (a caller passing the same
+    key twice, e.g. from two colliding rows, must not double-toggle).
+    excluded=True sets a fixed placeholder reason; excluded=False removes
+    the key entirely (a falsy/blank value would still satisfy
+    `key in excluded`, corrupting the exclusion gate).
+
+    Raises RegistryCorruptError -- without touching the file at all -- if
+    the on-disk registry exists but fails to parse or isn't a {str: str}
+    dict; silently treating either as {} and saving would discard every
+    exclusion the file actually contained."""
+    registry = _load_excluded_trials_strict()
+    for key in dict.fromkeys(keys):   # dedupe, preserve first-seen order
+        if excluded:
+            registry[key] = "excluded via Analysis panel"
+        else:
+            registry.pop(key, None)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(EXCLUDED_TRIALS_PATH), prefix=".excluded_trials_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def trial_candidates(participant_id, include_archive=True):
