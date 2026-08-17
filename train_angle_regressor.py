@@ -301,7 +301,28 @@ def _crop(bgr, kx, ky, w, h, jitter_px=0, rot_deg=0.0):
 
 
 def _augment_image(img_f32):
-    """Brightness/contrast + Gaussian noise; label-invariant."""
+    """Horizontal flip + hue/saturation jitter + brightness/contrast +
+    Gaussian noise; all label-invariant since the targets (angle_deg,
+    shank_len) are scalars, not image coordinates -- flipping or
+    recoloring the crop never needs to touch the label.
+
+    Flip and hue/saturation jitter specifically target skin-tone/clothing-
+    color as a per-participant shortcut: a 2026-08-17 diagnostic (predict
+    on training participants vs 2 fully held-out participants) found
+    angle-prediction correlation dropping from 0.72 on train to 0.32 on
+    held-out val, with only brightness/contrast jitter available -- with
+    11 training participants and one fairly stable appearance per person,
+    the network had an easy, stable per-participant shortcut available in
+    every frame instead of learning a person-invariant geometric mapping.
+    """
+    if np.random.rand() < 0.5:
+        img_f32 = np.ascontiguousarray(img_f32[:, ::-1, :])
+
+    hsv = cv2.cvtColor(img_f32, cv2.COLOR_RGB2HSV)
+    hsv[..., 0] = (hsv[..., 0] + np.random.uniform(-20.0, 20.0)) % 360.0
+    hsv[..., 1] = np.clip(hsv[..., 1] * np.random.uniform(0.7, 1.3), 0.0, 1.0)
+    img_f32 = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
     alpha = float(np.random.uniform(0.7, 1.3))   # contrast
     beta  = float(np.random.uniform(-0.10, 0.10)) # brightness
     img_f32 = np.clip(img_f32 * alpha + beta, 0.0, 1.0)
