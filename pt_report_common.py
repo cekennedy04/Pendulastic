@@ -680,12 +680,19 @@ def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints
     return "\n".join(lines)
 
 
-def discover_all_trials(include_archive=True):
+def discover_all_trials(include_archive=True, *, include_excluded=False):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
-    records. Quarantined/invalid data (INVALID_ in the path) is excluded,
-    as is any trial listed in excluded_trials.json (non-viable recordings,
-    e.g. active muscle intervention during the swing)."""
+    records. Quarantined/invalid data (INVALID_ in the path) is always
+    excluded.
+
+    include_excluded=False (default): trials listed in excluded_trials.json
+    are dropped, and records carry no trial_key/excluded fields --
+    byte-for-byte the shape every existing caller has always gotten.
+    include_excluded=True: excluded trials are included too, and every
+    returned record additionally carries trial_key (str) and excluded
+    (bool) -- used by AnalysisPanel's trial-exclusion UI (design spec
+    docs/superpowers/specs/2026-08-07-trial-exclusion-ui-design.md Section 3)."""
     excluded = load_excluded_trials()
     records = []
     seen = set()
@@ -698,23 +705,41 @@ def discover_all_trials(include_archive=True):
             if real in seen:
                 continue
             seen.add(real)
-            rec = _parse_trial_path(csv_path, root)
+            try:
+                rec = _parse_trial_path(csv_path, root)
+            except OSError:
+                # _parse_trial_path() calls os.path.getmtime() uncaught --
+                # a deleted/inaccessible file must only drop this one
+                # record, not abort the whole discovery call.
+                continue
             if rec is None:
                 continue
             key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
-            if key in excluded:
+            is_excluded = key in excluded
+            if is_excluded and not include_excluded:
                 continue
+            if include_excluded:
+                rec = dict(rec, trial_key=key, excluded=is_excluded)
             records.append(rec)
     return records
 
 
-def list_participants(include_archive=True):
+def list_participants(include_archive=True, *, include_excluded=False):
     """{participant_id: {"legs": {...}, "n_trials": int, "conditions": [...]}}
-    sorted by participant id, for populating a UI picker."""
-    records = discover_all_trials(include_archive=include_archive)
+    sorted by participant id, for populating a UI picker.
+
+    include_excluded=False (default, unchanged for every existing caller): a
+    participant whose every trial is excluded doesn't appear at all.
+    include_excluded=True: such a participant still appears, with
+    n_trials == 0 (excluded trials aren't counted into legs/conditions/
+    n_trials either), so AnalysisPanel can flag and let the operator
+    re-select/undo them."""
+    records = discover_all_trials(include_archive=include_archive, include_excluded=include_excluded)
     by_pid = {}
     for r in records:
         entry = by_pid.setdefault(r["participant"], {"legs": set(), "conditions": set(), "n_trials": 0})
+        if r.get("excluded"):
+            continue
         entry["legs"].add(r["leg"])
         entry["conditions"].add(r["condition"])
         entry["n_trials"] += 1
