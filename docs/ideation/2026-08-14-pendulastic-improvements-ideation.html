@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pendulastic — Ideation: Features, Automation &amp; Cleanup</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --surface-2: #f0efec;
+    --border: #ddd9d2;
+    --text: #1c1b19;
+    --text-muted: #6b675f;
+    --accent: #8a5a2b;
+    --accent-soft: #f1e4d3;
+    --accent-text: #6e4620;
+    --warn: #a5450f;
+    --warn-soft: #fbe6dc;
+    --warn-text: #8a3a0d;
+    --ok: #2f6b3a;
+    --ok-soft: #e2f0e3;
+    --ok-text: #245a2d;
+    --info: #2f5f8a;
+    --info-soft: #e2edf5;
+    --info-text: #234a6b;
+    --code-bg: #efece5;
+    --shadow: 0 1px 2px rgba(20,18,14,0.06), 0 4px 14px rgba(20,18,14,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614;
+      --surface: #1f1e1b;
+      --surface-2: #26241f;
+      --border: #3a3730;
+      --text: #ece9e2;
+      --text-muted: #a8a296;
+      --accent: #d3a06a;
+      --accent-soft: #3a2e1c;
+      --accent-text: #e6bd8a;
+      --warn: #e08050;
+      --warn-soft: #3d2418;
+      --warn-text: #f0a67a;
+      --ok: #6fbf7f;
+      --ok-soft: #1e3020;
+      --ok-text: #8fd49c;
+      --info: #7bb0e0;
+      --info-soft: #1c2a38;
+      --info-text: #a3cdf0;
+      --code-bg: #26241f;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 18px rgba(0,0,0,0.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 16px;
+  }
+  .page {
+    max-width: 900px;
+    margin-inline: auto;
+    padding: 2.5rem 1.5rem 4rem;
+  }
+  header.doc-header {
+    margin-bottom: 2.5rem;
+  }
+  h1 {
+    font-size: 1.9rem;
+    line-height: 1.25;
+    margin: 0.3rem 0 0.6rem;
+    font-weight: 700;
+  }
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent-text);
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.2rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    margin-top: 0.6rem;
+  }
+  .meta-row dl { display: flex; gap: 0.35rem; margin: 0; }
+  .meta-row dt { font-weight: 600; color: var(--text); }
+  .meta-row dd { margin: 0; }
+  section { margin: 2.4rem 0; }
+  h2 {
+    font-size: 1.35rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1.1rem;
+  }
+  h3 { font-size: 1.12rem; margin: 0 0 0.3rem; }
+  p { max-width: 74ch; }
+  .prose-wide p { max-width: none; }
+  code, .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    padding: 0.12em 0.4em;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  .stats-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 1.4rem 0 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 1rem;
+    min-width: 120px;
+    box-shadow: var(--shadow);
+  }
+  .stat .num { font-size: 1.3rem; font-weight: 700; }
+  .stat .label { font-size: 0.76rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .axis-list {
+    display: grid;
+    gap: 0.6rem;
+  }
+  .axis-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.7rem 1rem;
+    display: flex;
+    gap: 0.7rem;
+    align-items: baseline;
+  }
+  .axis-num {
+    font-weight: 700;
+    color: var(--accent-text);
+    min-width: 1.4em;
+  }
+  .jumplist {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1.2rem;
+    margin-bottom: 1.4rem;
+  }
+  .jumplist p { margin: 0 0 0.4rem; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+  .jumplist ol { margin: 0; padding-left: 1.3rem; }
+  .jumplist a { color: var(--text); text-decoration: none; }
+  .jumplist a:hover { color: var(--accent-text); text-decoration: underline; }
+
+  article.idea-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem 1.6rem 1.7rem;
+    margin-bottom: 1.6rem;
+    box-shadow: var(--shadow);
+    scroll-margin-top: 1rem;
+  }
+  .idea-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.8rem;
+    margin-bottom: 0.6rem;
+  }
+  .idea-num {
+    flex-shrink: 0;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-weight: 800;
+    font-size: 0.95rem;
+    border-radius: 8px;
+    width: 2.1rem;
+    height: 2.1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .idea-title { font-size: 1.2rem; font-weight: 700; margin: 0; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.6rem 0 1rem; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 0.22rem 0.65rem;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .chip.axis { background: var(--info-soft); color: var(--info-text); border-color: transparent; }
+  .chip.conf-high { background: var(--ok-soft); color: var(--ok-text); border-color: transparent; }
+  .chip.conf-med { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+  .chip.conf-low { background: var(--warn-soft); color: var(--warn-text); border-color: transparent; }
+  .idea-body dl.fields {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.9rem;
+    margin: 0.9rem 0 0;
+  }
+  .idea-body dt {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+  }
+  .idea-body dd { margin: 0; max-width: 74ch; }
+  .basis-block {
+    background: var(--surface-2);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 0.7rem 0.9rem;
+  }
+  .downside-block {
+    background: var(--warn-soft);
+    border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    color: var(--warn-text);
+  }
+  .downside-block p { color: var(--text); max-width: none; margin: 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--surface-2); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+  tr:last-child td { border-bottom: none; }
+  .verdict-refuted { color: var(--warn-text); font-weight: 700; }
+  .verdict-cut { color: var(--text-muted); font-weight: 600; }
+
+  footer.composition-signal {
+    margin-top: 3rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  a { color: var(--info-text); }
+  ul.grounding-list, ul.grounding-list li { margin: 0.3rem 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="doc-header">
+  <div class="eyebrow">Ideation</div>
+  <h1>Pendulastic: Features, Automation &amp; Cleanup</h1>
+  <div class="meta-row">
+    <dl><dt>Date</dt><dd>2026-08-14</dd></dl>
+    <dl><dt>Focus</dt><dd>Open-ended — features, routines/automation, cleanups</dd></dl>
+    <dl><dt>Mode</dt><dd>repo-grounded</dd></dl>
+  </div>
+  <div class="stats-strip">
+    <div class="stat"><div class="num">47</div><div class="label">Raw ideas</div></div>
+    <div class="stat"><div class="num">15</div><div class="label">Clusters</div></div>
+    <div class="stat"><div class="num">3</div><div class="label">Refuted by verification</div></div>
+    <div class="stat"><div class="num">6</div><div class="label">Survivors</div></div>
+  </div>
+</header>
+
+<section id="grounding-context">
+  <h2>Grounding Context</h2>
+  <p><strong>Codebase context.</strong> <code>pendulastic_app.py</code> (~3,900 lines) is the sole
+  clinician-facing entry point (a standalone duplicate Workbench entry point was removed earlier
+  this session, after it was found to have silently drifted — <code>WorkbenchView.reset_for_new_trial()</code>
+  went uncalled for an unknown period). <code>src/pendulastic/</code> (~983 lines) is a real,
+  maintained-looking package that none of the production files import from. The repo root carries
+  95+ stray training/eval log and zip files. An active nightly hygiene automation
+  (<code>run_nightly_hygiene.ps1</code>, a Windows Scheduled Task) writes categorized cleanup
+  manifests to <code>docs/reports/</code> and never auto-applies. The 2026-08-13 report has open
+  <code>[Needs Review]</code> and <code>[Doc Drift Fix]</code> items unresolved across multiple
+  reports. <code>IMPACT_MEASUREMENT_REPORT.md</code> (2026-08-05) names concrete, still-outstanding
+  follow-up work: RMSE-improvement quantification, drift-magnitude correlation.</p>
+  <p><strong>Directly observed this session.</strong> Two independent test flakes were confirmed by
+  hand: a Tcl/Tk resource-exhaustion <code>TclError</code>
+  (<code>tests/test_app.py::test_on_source_changed_does_not_crash</code>) and a Windows
+  heap-corruption crash <code>0xc0000374</code>
+  (<code>tests/test_app.py::test_on_back_to_mode_select_resets_state</code>, in
+  <code>camera_utils.py</code>'s <code>_read_loop</code>/<code>_on_camera_status</code>) — both
+  reproduce only under long batch test runs and pass clean in isolation.</p>
+  <p><strong>External context (web research, value: high).</strong> No modern markerless-video
+  pendulum-test study specific to Multiple Sclerosis was found — a real positioning gap.
+  <a href="https://www.opencap.ai/" target="_blank" rel="noopener">OpenCap</a> and
+  <a href="https://github.com/perfanalytics/pose2sim" target="_blank" rel="noopener">Pose2Sim</a>
+  are open-source packaging/delivery precedents; Kinovea is the closest UX analog (lightweight
+  desktop tool, no IT overhead, large PT/sports-medicine adoption). DARI Motion holds an
+  <a href="https://ryortho.com/breaking/fda-clears-first-markerless-motion-analytic-system/" target="_blank" rel="noopener">FDA 510(k) clearance</a>
+  for markerless CV-only motion analysis — a real regulatory precedent for this device category.
+  A 2025 Parkinson's shoulder-girdle rigidity study fuses model-driven and data-driven features on
+  a structurally similar passive-oscillation task, correlating r=0.78 with UPDRS.</p>
+</section>
+
+<section id="topic-axes">
+  <h2>Topic Axes</h2>
+  <div class="axis-list">
+    <div class="axis-item"><span class="axis-num">1</span><span>Repo hygiene &amp; structure — cruft files, the unused <code>src/pendulastic</code> package, worktree sprawl, doc drift</span></div>
+    <div class="axis-item"><span class="axis-num">2</span><span>Test/CI reliability — the two flakes, no CI, hardware-test isolation</span></div>
+    <div class="axis-item"><span class="axis-num">3</span><span>Clinician-facing product features — trust, error visibility, session integrity</span></div>
+    <div class="axis-item"><span class="axis-num">4</span><span>Validation &amp; regulatory positioning — clinical evidence infrastructure, regulatory pathway awareness, data governance</span></div>
+    <div class="axis-item"><span class="axis-num">5</span><span>Scheduled automation/routines — beyond nightly hygiene: what else could run unattended</span></div>
+  </div>
+  <p style="margin-top:0.9rem; color:var(--text-muted); font-size:0.9rem;">Axis 4 produced the richest, most novel material this round (three of the six survivors) — largely
+  because it's where the web research landed. That's noted honestly rather than force-balanced.
+  <strong>Axis 5 (scheduled automation/routines) has zero survivors</strong> — its one candidate was
+  dropped after independent pushback from two second opinions; see the Rejection Summary.</p>
+</section>
+
+<section id="ranked-ideas">
+  <h2>Ranked Ideas</h2>
+
+  <div class="jumplist">
+    <p>Jump to</p>
+    <ol>
+      <li><a href="#idea-1">Give hardware-touching tests their own process</a></li>
+      <li><a href="#idea-2">One integrity channel instead of silent data loss</a></li>
+      <li><a href="#idea-3">Resolve <code>src/pendulastic</code>'s limbo, add drift tripwires</a></li>
+      <li><a href="#idea-4">One-off empirical RMSE comparison — automate later only if it earns it</a></li>
+      <li><a href="#idea-5">Three cheap regulatory-readiness moves, now</a></li>
+      <li><a href="#idea-6">Fuse CV + IMU instead of picking a winner</a></li>
+    </ol>
+  </div>
+
+  <article class="idea-card" id="idea-1">
+    <div class="idea-head">
+      <span class="idea-num">1</span>
+      <h3 class="idea-title">Give hardware-touching tests their own process — stop finding crashes by accident</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Test/CI reliability</span>
+      <span class="chip conf-high">Confidence: 85%</span>
+      <span class="chip">Complexity: Medium</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd>Add <code>@pytest.mark.gui</code>/<code>@pytest.mark.hardware</code> markers separating
+        Tk- and camera-touching tests from pure-logic tests; run the marked tier in process
+        isolation with real teardown between tests instead of accumulating state across a single
+        long-lived interpreter; add a nightly soak job (riding the same unattended-runner pattern
+        as the existing hygiene automation) that runs the marked tier repeatedly and keeps a
+        flake-frequency ledger. As a further-out stretch: treat live camera capture the same way
+        production audio workstations treat native plugin hosts — run it in a separate process so a
+        driver-level crash kills a restartable child, not a live recording session.</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> both flakes were independently confirmed and
+        reproduced this session — a Tcl/Tk <code>TclError</code> in
+        <code>tests/test_app.py::test_on_source_changed_does_not_crash</code> and a Windows
+        heap-corruption crash <code>0xc0000374</code> in
+        <code>tests/test_app.py::test_on_back_to_mode_select_resets_state</code>
+        (<code>camera_utils.py</code>'s <code>_read_loop</code>/<code>_on_camera_status</code>),
+        both passing clean in isolation and failing only under a long batch run. A verifier
+        independently confirmed no <code>.github/workflows/</code> or pytest marker config exists
+        in the repo. <code>reasoned:</code> a Windows heap corruption in a camera read loop is not
+        a test artifact — it's the exact code path that runs during a real acquisition, so this is
+        a patient-facing reliability risk wearing a "flaky test" costume.</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>Both known flakes were found by accident, mid-session, doing unrelated work — without
+        any isolation or soak mechanism, that's the only way this class of failure surfaces, which
+        means more are plausibly hiding the same way. Fixing the isolation boundary once removes an
+        entire category of future flakes instead of chasing each one as a one-off.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>Process-isolated test execution is slower to iterate on
+        locally and adds real infrastructure work. Out-of-process camera capture is a materially
+        bigger architecture change and should be scoped as a separate follow-on, not bundled into
+        the first pass — the marker + isolation + soak-ledger piece is the actionable near-term
+        slice.</p></dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="idea-card" id="idea-2">
+    <div class="idea-head">
+      <span class="idea-num">2</span>
+      <h3 class="idea-title">Replace scattered silent failures with one clinician-visible integrity channel</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Clinician-facing product features</span>
+      <span class="chip conf-high">Confidence: 80%</span>
+      <span class="chip">Complexity: Low–Medium</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd>At least three independent sites in the clinician-facing app silently swallow failures
+        with no signal to the user. Rather than patching each site with its own message box,
+        introduce one shared mechanism: a per-trial integrity record that every degraded path
+        appends to (a dropped sample, a failed render, a coerced value), surfaced as a small
+        non-blocking status indicator on the trial and serialized into whatever export the session
+        produces. A natural extension once this exists: stamp the code version and input hashes
+        into the same record, giving every exported result a lightweight provenance trail.</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> verified by the basis-verification pass —
+        <code>pendulastic_app.py:2333-2337</code> and <code>:2605-2609</code> both wrap matplotlib
+        figure cleanup in <code>except Exception: pass</code>; <code>workbench_engine.py:367-370</code>
+        silently drops malformed IMU sample lines via <code>except ValueError: continue</code>.
+        All three citations were independently re-verified and confirmed exact.</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>This is a clinical measurement tool — a clinician who reviews a trial with 140 silently
+        dropped samples currently sees the same thing as one with zero dropped samples. That's a
+        data-validity defect wearing a UI-polish costume, and it silently affects the very
+        ICC/Bland-Altman numbers the project's own validation work depends on.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>Requires touching several call sites across two files and
+        agreeing on one shared shape for "degradation event" before any of them can use it — the
+        design decision (what counts as reportable, how loud the indicator is) takes more thought
+        than the mechanical wiring.</p></dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="idea-card" id="idea-3">
+    <div class="idea-head">
+      <span class="idea-num">3</span>
+      <h3 class="idea-title">Resolve <code>src/pendulastic</code>'s limbo — then add a tripwire for the next silent drift</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Repo hygiene &amp; structure</span>
+      <span class="chip conf-med">Confidence: 75%</span>
+      <span class="chip">Complexity: Medium</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd><code>src/pendulastic/</code> is ~983 lines of real, apparently-maintained code that
+        none of the three production entry points import. Decide its fate on purpose instead of by
+        accident: either consolidate genuinely duplicated logic into it (a confirmed concrete
+        target — two near-identical <code>_show_figure</code> methods in
+        <code>pendulastic_app.py</code> share the exact same silent-exception pattern) so it becomes
+        the project's real, Tk-free, independently-testable scoring core, or delete it. Either way,
+        add a small comparator/lifecycle-hook test for the remaining near-duplicate pairs in the
+        codebase (e.g. <code>imu_calibration_tuner.py</code> vs
+        <code>pendulastic_imu_server.py</code>) so a future silent divergence fails a test instead
+        of surfacing months later.</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> confirmed via the verification pass — two
+        near-identical <code>_show_figure</code> methods exist at
+        <code>pendulastic_app.py:2327</code> and <code>:2598</code>, sharing duplicated
+        try/except-close/pack logic. <code>direct:</code> this exact failure class already bit the
+        project once this session — <code>WorkbenchView.reset_for_new_trial()</code> was silently
+        uncalled in the surviving <code>App</code> after a duplicate entry point was removed,
+        undetected until this session, with no test catching it.</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>An unused parallel package sitting next to the code it seems to duplicate is the same
+        risk that just cost real debugging time, in slow motion — someone edits one copy thinking
+        it's live, or copies logic between them and creates a second source of truth nobody notices
+        drift apart. A comparator test converts an unenforceable convention into a mechanical
+        check.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>The "promote to real library" direction is the more ambitious
+        of the two resolutions and carries real refactor risk if pursued fully — it's worth scoping
+        as its own bounded piece of work rather than deciding it in the same pass as writing the
+        comparator tests, which are cheap and low-risk regardless of which resolution wins.</p></dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="idea-card" id="idea-4">
+    <div class="idea-head">
+      <span class="idea-num">4</span>
+      <h3 class="idea-title">One-off empirical RMSE comparison — automate later only if it earns it</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Validation &amp; regulatory positioning</span>
+      <span class="chip conf-med">Confidence: 65%</span>
+      <span class="chip">Complexity: Medium</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd>Revised after a second independent review (Codex) pushed back on the original framing
+        of this idea, which proposed a nightly automated "golden-trial" job. That review is right:
+        <code>workbench_engine.py</code>'s <code>_read_jsonl_samples</code>/<code>_replay_samples</code>
+        are only replay primitives — they don't constitute a validation pipeline on their own.
+        Missing: a versioned golden cohort with matched OptiTrack reference, a defined pre-change
+        baseline, alignment + RMSE computation, and acceptance/failure criteria. Build that manual
+        (or CI-on-change) comparison first: a locked trial manifest, old-vs-new configuration,
+        paired per-trial RMSE, an aggregate effect with uncertainty, and explicit failure criteria.
+        Only promote it to a scheduled job later if it proves useful and stable on its own — and
+        never couple it to an unattended, elevated-permission automation harness (see the dropped
+        idea below).</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> confirmed via verification —
+        <code>_read_jsonl_samples</code> (<code>workbench_engine.py:360</code>) and
+        <code>_replay_samples</code> (<code>:374</code>) exist and do deterministic offline replay,
+        but are replay primitives only. <code>direct:</code> <code>IMPACT_MEASUREMENT_REPORT.md</code>
+        (2026-08-05) marks "RMSE Improvement Expectation: VALIDATED" but that is a design-analysis
+        validation only; its own Recommendations section still lists "Measure impact (first month):
+        Quantify average RMSE improvement across the Pendulastic family" as forward-looking,
+        unactioned work — still open as of 2026-08-16. <code>reasoned:</code> (Codex, verified
+        against the repo before opining) replaying a fixed corpus nightly has near-zero value unless
+        code/config actually changes — it is a regression test, not new clinical evidence, and
+        cannot manufacture post-deployment evidence on its own if no new labeled trials arrive.</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>The underlying gap is real and worth closing — the project's own report committed to an
+        empirical measurement that's now 11+ days overdue. But the fix is building the actual
+        comparison (which has genuine scientific value), not scheduling an automated job around
+        primitives that don't yet add up to one. Two independent reviewers (a ce-pov second opinion
+        and Codex, reading the code directly) converged on this same correction.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>Defining a real golden cohort, baseline, and acceptance
+        criteria is genuine work, not a quick wire-up — this is more effort than the original
+        "reuse existing replay code" framing implied, which is reflected in the lower confidence and
+        higher complexity versus the original version of this idea.</p></dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="idea-card" id="idea-5">
+    <div class="idea-head">
+      <span class="idea-num">5</span>
+      <h3 class="idea-title">Three cheap regulatory-readiness moves that get expensive after the first outside reviewer looks</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Validation &amp; regulatory positioning</span>
+      <span class="chip conf-med">Confidence: 75%</span>
+      <span class="chip">Complexity: Low (each) / Medium (as a bundle)</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd>Three distinct, individually cheap moves that share one underlying gap — this project
+        will eventually face outside scrutiny (publication, a future clinician user, possibly a
+        regulatory reviewer) and isn't yet ready for it in three specific, fixable ways.
+        <strong>(a) Participant governance:</strong> stand up a minimal consent/enrollment schema
+        and gate the validation pipeline on it, rather than a hardcoded, unjustified minimum-cohort
+        constant pointed at an empty registry. <strong>(b) Intended-use framing:</strong> the app
+        already emits a predicted clinical grade — decide the framing now (label it explicitly as a
+        research estimate, always show the underlying continuous score) rather than let the current
+        UI silently make that classification decision by default. <strong>(c) Reproducibility
+        contract:</strong> define one command that regenerates a result from pinned inputs, since
+        today nothing outside one Windows laptop can reproduce a single figure.</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> confirmed via verification —
+        <code>participant_groups.json</code> is literally <code>{}</code>;
+        <code>mas_validation.py:84</code> has <code>_MIN_N_FOR_CONFIDENCE = 5</code> with no
+        attached rationale. <code>direct:</code> <code>pt_to_mas()</code>
+        (<code>pendulastic_pt_score.py:231-234</code>) is a pure threshold lookup with no
+        uncertainty/disclaimer output — a repo-wide search for "research estimate," "not a
+        diagnos*," "investigational" found zero matches. <code>external:</code> DARI Motion's
+        existing FDA 510(k) for markerless CV-only motion analysis establishes this device category
+        does get regulated. <code>direct:</code> no <code>.github/workflows/</code> exists; the
+        nightly automation is hardcoded to one machine and path; README.md says "citation
+        forthcoming upon publication."</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>Every one of these three is a free decision today and an expensive retrofit later. The
+        window to add participant governance and reproducibility closes the moment the first
+        real publication cohort is collected; the intended-use framing is being set right now, by
+        default, through what the app happens to print on screen.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>None of these are hard engineering — the risk is treating
+        them as one big bundled project instead of three independent, quickly-shippable decisions.
+        Sequence them separately rather than waiting for a single "regulatory readiness" epic.</p></dd>
+      </div>
+    </dl>
+  </article>
+
+  <article class="idea-card" id="idea-6">
+    <div class="idea-head">
+      <span class="idea-num">6</span>
+      <h3 class="idea-title">Fuse video and IMU into one estimator instead of picking a winner</h3>
+    </div>
+    <div class="chip-row">
+      <span class="chip axis">Axis: Validation &amp; regulatory positioning (touches clinician features)</span>
+      <span class="chip conf-low">Confidence: 55%</span>
+      <span class="chip">Complexity: High</span>
+    </div>
+    <dl class="fields">
+      <div>
+        <dt>Description</dt>
+        <dd>The app currently picks exactly one modality to score a trial from, via a fixed
+        priority list — IMU and video are treated as competing sources where one wins, and the
+        rest of the multi-modality apparatus exists purely to prove they agree. Explore a hybrid
+        model-driven (damping ratio, decay rate) plus data-driven fusion that uses both as
+        complementary features of one estimator, following published precedent on a structurally
+        near-identical passive-oscillation measurement task.</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd class="basis-block"><code>direct:</code> confirmed via verification —
+        <code>_PT_SOURCE_PRIORITY = ["imu", "rgb", "optitrack", "hpe_upload", "video_file",
+        "upload_csv"]</code> at <code>pendulastic_app.py:1598</code>, a genuine single-pick
+        priority list, not a fusion. <code>external:</code> a 2025 Parkinson's shoulder-girdle
+        rigidity study fuses model-driven damping/decay features with a data-driven model on a
+        passive-oscillation task, correlating r=0.78 with UPDRS — the same underlying physics
+        (damped oscillation quantifying involuntary muscle tone) and the same clinical-scale
+        replacement goal.</dd>
+      </div>
+      <div>
+        <dt>Rationale</dt>
+        <dd>This is the boldest idea in the set, and it's the strongest candidate for actually
+        owning the "markerless pendulum test in MS" positioning gap the web research surfaced — no
+        modern study does this for MS specifically, and a genuinely fused measurement (not just a
+        video-only or IMU-only one validated against the other) would be a real scientific
+        contribution, not an engineering polish item.</dd>
+      </div>
+      <div>
+        <dt>Downsides</dt>
+        <dd class="downside-block"><p>This is a research question, not a build task — there's real
+        uncertainty about whether fusion actually outperforms the best single modality on this
+        specific measurement, and answering that needs an actual experiment with the existing
+        multi-modality dataset before any product commitment. Confidence is lower here than the
+        other six ideas for exactly that reason.</p></dd>
+      </div>
+    </dl>
+  </article>
+</section>
+
+<section id="rejection-summary">
+  <h2>Rejection Summary</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Idea</th><th>Reason Rejected</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Auto-wire the "never-invoked" PT annotation overlay</td>
+        <td><span class="verdict-refuted">Refuted by verification.</span> <code>draw_pt_annotations</code>
+        is already called at <code>pendulastic_app.py:1804-1805</code>, inside the block that fires
+        when PT params/score/MAS update. The feature already ships; there is no gap.</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>MAS entry at capture time (replace CSV backfill)</td>
+        <td><span class="verdict-refuted">Refuted by verification.</span> <code>MasEntryPanel</code>
+        already exists and is wired (<code>pendulastic_app.py:2362</code>, entry button at
+        <code>:1356-1357</code>, state switch <code>_enter_mas_entry_mode</code> at
+        <code>:3059-3069</code>). The 2026-08-07 design spec appears to have shipped, not stalled.</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Minimum Equipment List for trial dispatch</td>
+        <td><span class="verdict-refuted">Refuted by verification.</span> The motivating example
+        (OptiTrack checked on by default) was wrong — <code>pendulastic_app.py:566</code> shows
+        <code>_src_optitrack = tk.BooleanVar(value=False)</code>. The broader concept may still have
+        merit but needs a fresh basis before resurfacing.</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Unified session export bundle</td>
+        <td><span class="verdict-cut">Weak — one sub-claim unverified.</span> Export fragmentation
+        is plausible from context, but the specific claim that video export is gated to
+        HPE-tracked trials only was not independently confirmed. Cut for space in favor of
+        fully-verified survivors; worth a second look.</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Chain-of-custody provenance bundles</td>
+        <td><span class="verdict-cut">Folded into Idea 2.</span> Same underlying gap as the
+        integrity-channel idea — addressed as a natural extension once that mechanism exists and
+        also stamps code version / input hashes, rather than standing alone.</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>Accuracy-vs-modality product table (market positioning)</td>
+        <td><span class="verdict-cut">Weak — core premise unverified.</span> Grounded in a real
+        research gap (no MS-specific competitor), but the claim that existing data is already
+        sufficient for a rigorous per-configuration accuracy table was not checked. Actionable only
+        after that data-adequacy question is answered.</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>Generalize nightly hygiene into a shared "runbook platform" for future automations</td>
+        <td><span class="verdict-cut">Dropped after user discussion + two independent second
+        opinions (ce-pov and Codex, both reading <code>run_nightly_hygiene.ps1</code> directly).</span>
+        Premature abstraction — no second concrete automation exists yet to justify a shared
+        platform — and, independently, each additional unattended job running with
+        <code>bypassPermissions</code> and git-write access is a real expansion of automated
+        write-access surface, not just an abstraction-timing question. Codex noted the existing
+        job's "safety envelope" is policy text handed to an elevated process, not an OS-enforced
+        boundary — generalizing it would normalize expanding that, not contain it.</td>
+      </tr>
+      <tr>
+        <td>-</td>
+        <td>axis: Scheduled automation/routines</td>
+        <td><span class="verdict-cut">0 survivors — deliberate gap, not an oversight.</span> Row 7
+        above was this axis's only candidate.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="composition-signal">
+  Composed 2026-08-14 by ce-ideate from a user request in the current session ("Any features or
+  loops or routines or clean ups that we can perform for the Pendulastic project"), grounded
+  against the Pendulastic repository at
+  <a href="https://github.com/cekennedy04/Pendulastic" target="_blank" rel="noopener">github.com/cekennedy04/Pendulastic</a>.
+  Revised 2026-08-16 after user discussion and independent second opinions (ce-pov, Codex) on
+  ideas 4 and 5.
+</footer>
+
+</div>
+</body>
+</html>
