@@ -2205,13 +2205,20 @@ class AnalysisPanel(tk.Frame):
         self.status_var.set("Scanning for participants...")
         self.update_idletasks()
         try:
-            self._participants = _report.list_participants()
+            self._participants = _report.list_participants(include_excluded=True)
         except Exception as e:
             self.status_var.set(f"Scan failed: {e}")
             return
         self._participant_list.delete(0, "end")
         for pid, info in self._participants.items():
             legs = "/".join(sorted(info["legs"]))
+            # n_trials == 0 with include_excluded=True means every one of
+            # this participant's trials is excluded (Task 1) -- they'd
+            # otherwise vanish from this list with no way to re-select and
+            # undo it (design spec Section 4).
+            if info["n_trials"] == 0:
+                self._participant_list.insert("end", f"P{pid}  (all excluded)")
+                continue
             self._participant_list.insert(
                 "end", f"P{pid}  ({legs}, {info['n_trials']} trials, "
                        f"{len(info['conditions'])} condition(s))")

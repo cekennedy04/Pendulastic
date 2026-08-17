@@ -26,7 +26,7 @@ class _FakeReport:
             "2": {"legs": {"left"}, "n_trials": 2, "conditions": {"pre"}},
         }
 
-    def list_participants(self):
+    def list_participants(self, include_excluded=False):
         return dict(self.participants)
 
     def collect_participant(self, pid):
@@ -245,5 +245,44 @@ def test_generate_worker_error_reenables_button_and_shows_error(monkeypatch):
         assert len(errors) == 1
         assert "boom" in errors[0]
         assert "Failed" in p.status_var.get()
+    finally:
+        r.destroy()
+
+
+def test_refresh_participants_labels_fully_excluded_participant(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.participants["3"] = {"legs": set(), "conditions": set(), "n_trials": 0}
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack()
+        r.update()
+        p._refresh_participants()
+        labels = [p._participant_list.get(i) for i in range(p._participant_list.size())]
+        assert any("(all excluded)" in lbl and lbl.startswith("P3") for lbl in labels)
+        assert not any("(all excluded)" in lbl for lbl in labels if lbl.startswith("P1"))
+    finally:
+        r.destroy()
+
+
+def test_refresh_participants_calls_list_participants_with_include_excluded(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    calls = []
+    orig = fake.list_participants
+    fake.list_participants = lambda include_excluded=False: (
+        calls.append(include_excluded), orig(include_excluded))[1]
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack()
+        r.update()
+        p._refresh_participants()
+        assert calls == [True]
     finally:
         r.destroy()
