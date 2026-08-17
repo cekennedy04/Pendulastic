@@ -25,6 +25,14 @@ class _FakeReport:
             "1": {"legs": {"left", "right"}, "n_trials": 4, "conditions": {"pre", "post"}},
             "2": {"legs": {"left"}, "n_trials": 2, "conditions": {"pre"}},
         }
+        self.records = [
+            {"participant": "1", "leg": "left", "condition": "pre", "trial": "1",
+             "path": "/rec/P1_left_pre_trial_1.csv", "mtime": 0.0,
+             "trial_key": "1_left_pre_T1", "excluded": False},
+            {"participant": "1", "leg": "left", "condition": "pre", "trial": "2",
+             "path": "/rec/P1_left_pre_trial_2.csv", "mtime": 0.0,
+             "trial_key": "1_left_pre_T2", "excluded": False},
+        ]
 
     def list_participants(self, include_excluded=False):
         return dict(self.participants)
@@ -49,6 +57,25 @@ class _FakeReport:
     def make_rmse_figure(self, *args, **kwargs):
         self.calls.append(("rmse", args, kwargs))
         return "fake_rmse.png", self._fig()
+
+    def discover_all_trials(self, include_archive=True, include_excluded=False):
+        self.calls.append(("discover_all_trials", include_excluded))
+        if include_excluded:
+            return list(self.records)
+        return [r for r in self.records if not r["excluded"]]
+
+    def duplicate_trial_keys(self, records):
+        self.calls.append(("duplicate_trial_keys", len(records)))
+        by_key = {}
+        for r in records:
+            by_key.setdefault(r["trial_key"], []).append(r["path"])
+        return {k: v for k, v in by_key.items() if len(v) > 1}
+
+    def set_trials_excluded(self, keys, excluded):
+        self.calls.append(("set_trials_excluded", list(keys), excluded))
+        for r in self.records:
+            if r["trial_key"] in keys:
+                r["excluded"] = excluded
 
 
 def _wait_until_enabled(panel, root, timeout=5.0):
@@ -284,5 +311,177 @@ def test_refresh_participants_calls_list_participants_with_include_excluded(monk
         r.update()
         p._refresh_participants()
         assert calls == [True]
+    finally:
+        r.destroy()
+
+
+def test_table_hidden_and_figure_shown_by_default():
+    from pendulastic_app import AnalysisPanel
+    r = _root()
+    try:
+        p = AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        assert p._table_frame.winfo_manager() == ""
+        assert p._viewer_canvas.winfo_manager() == "grid"
+    finally:
+        r.destroy()
+
+
+def test_single_selection_switches_to_table_view(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while p._table_frame.winfo_manager() != "grid" and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        assert p._table_frame.winfo_manager() == "grid"
+        assert p._viewer_canvas.winfo_manager() == ""
+        assert p._viewer_vbar.winfo_manager() == ""
+        assert p._viewer_hbar.winfo_manager() == ""
+    finally:
+        r.destroy()
+
+
+def test_zero_or_multi_selection_reverts_to_figure_view(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0, 1)
+        p._on_participant_selection_changed()
+        r.update()
+        assert p._table_frame.winfo_manager() == ""
+        assert p._viewer_canvas.winfo_manager() == "grid"
+        assert p.btn_toggle_excluded.cget("state") == "disabled"
+    finally:
+        r.destroy()
+
+
+def test_table_populates_with_scored_trials(monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", True)
+    monkeypatch.setattr(_m, "load_optitrack",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 170.0])))
+    monkeypatch.setattr(_m, "compute_pt_params",
+                        lambda t, angle: {"N": 4.0, "phi_max_ratio": 0.63871, "area_ratio": 0.0497})
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        items = p._trial_table.get_children()
+        assert len(items) == 2
+        vals = p._trial_table.item(items[0], "values")
+        assert vals[4] == "4.0"       # N, 1 decimal
+        assert vals[5] == "0.639"     # phi_max_ratio, 3 decimals
+        assert vals[6] == "0.050"     # area_ratio, 3 decimals
+    finally:
+        r.destroy()
+
+
+def test_table_shows_na_for_failed_scoring(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", True)
+
+    def raising_load(path):
+        raise ValueError("bad csv")
+
+    monkeypatch.setattr(_m, "load_optitrack", raising_load)
+    monkeypatch.setattr(_m, "compute_pt_params", lambda t, angle: None)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        vals = p._trial_table.item(p._trial_table.get_children()[0], "values")
+        assert vals[4] == vals[5] == vals[6] == "N/A"
+    finally:
+        r.destroy()
+
+
+def test_table_marks_duplicate_trial_keys(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.records.append({
+        "participant": "1", "leg": "left", "condition": "pre", "trial": "1",
+        "path": "/rec_dup/P1_left_pre_trial_1.csv", "mtime": 0.0,
+        "trial_key": "1_left_pre_T1", "excluded": False,
+    })
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        warn_col_values = [p._trial_table.item(i, "values")[0] for i in p._trial_table.get_children()]
+        assert warn_col_values.count("⚠") == 2
+    finally:
+        r.destroy()
+
+
+def test_rapid_reselection_drops_stale_table_result(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+
+        # Simulate a superseded request: manually post a stale-id result
+        # directly onto the queue, then a current one, and confirm only the
+        # current one's rows land.
+        p._table_request_id = 5
+        stale_record = dict(fake.records[0], trial="99")
+        p._table_queue.put(("ok", (4, [(stale_record, None, None, None)], {}), None))
+        p._table_queue.put(("ok", (5, [(fake.records[0], None, None, None)], {}), None))
+        p.after(0, p._poll_table_queue)
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        vals = [p._trial_table.item(i, "values")[3] for i in p._trial_table.get_children()]
+        assert "99" not in vals
+        assert fake.records[0]["trial"] in vals
     finally:
         r.destroy()

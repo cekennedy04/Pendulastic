@@ -2084,6 +2084,17 @@ class AnalysisPanel(tk.Frame):
         self._current_canvas = None
         self._last_out_path: Optional[str] = None
         self._participants: dict = {}
+        # Trial-exclusion table state (design spec
+        # docs/superpowers/specs/2026-08-07-trial-exclusion-ui-design.md).
+        # A separate queue/request-id from the Generate flow above -- reusing
+        # _result_queue would let a stale table-load result be decoded as a
+        # figure result or vice versa.
+        self._table_queue: queue.Queue = queue.Queue()
+        self._table_request_id = 0
+        self._table_row_meta: dict = {}
+        self._table_dupes: dict = {}
+        self._table_polling = False   # True while a _poll_table_queue chain is active
+        self._busy = False
         self._build_widgets()
 
     # ------------------------------------------------------------------
@@ -2163,7 +2174,8 @@ class AnalysisPanel(tk.Frame):
                 fg=ws.PALETTE["FG2"], bg=ws.PALETTE["BG"],
                 wraplength=240, justify="left", anchor="w").pack(fill="x", pady=(12, 0))
 
-        # ── Right: scrollable figure viewer ─────────────────────────────
+        # ── Right: scrollable figure viewer / trial table (two view modes
+        # sharing the same grid cell) ────────────────────────────────────
         viewer_outer = tk.Frame(self, relief="sunken", bd=1, bg=ws.PALETTE["BG"])
         viewer_outer.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=6)
         viewer_outer.columnconfigure(0, weight=1)
@@ -2171,12 +2183,15 @@ class AnalysisPanel(tk.Frame):
 
         self._viewer_canvas = tk.Canvas(viewer_outer, bg=ws.PALETTE["SURFACE"],
                                         highlightthickness=0)
-        vbar = tk.Scrollbar(viewer_outer, orient="vertical", command=self._viewer_canvas.yview)
-        hbar = tk.Scrollbar(viewer_outer, orient="horizontal", command=self._viewer_canvas.xview)
-        self._viewer_canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        # Promoted to self (round-3 spec fix): grid_remove()ing only the
+        # canvas when switching to the table view would leave these two
+        # orphaned next to it if they stayed local variables.
+        self._viewer_vbar = tk.Scrollbar(viewer_outer, orient="vertical", command=self._viewer_canvas.yview)
+        self._viewer_hbar = tk.Scrollbar(viewer_outer, orient="horizontal", command=self._viewer_canvas.xview)
+        self._viewer_canvas.configure(yscrollcommand=self._viewer_vbar.set, xscrollcommand=self._viewer_hbar.set)
         self._viewer_canvas.grid(row=0, column=0, sticky="nsew")
-        vbar.grid(row=0, column=1, sticky="ns")
-        hbar.grid(row=1, column=0, sticky="ew")
+        self._viewer_vbar.grid(row=0, column=1, sticky="ns")
+        self._viewer_hbar.grid(row=1, column=0, sticky="ew")
 
         self._viewer_frame = tk.Frame(self._viewer_canvas, bg=ws.PALETTE["SURFACE"])
         self._viewer_window = self._viewer_canvas.create_window(
@@ -2190,6 +2205,197 @@ class AnalysisPanel(tk.Frame):
             font=("Segoe UI", 11), fg=ws.PALETTE["FG3"], bg=ws.PALETTE["SURFACE"],
             padx=40, pady=40)
         self._viewer_placeholder.pack()
+
+        # Trial table -- gridded into the same (row=0, col=0) cell as
+        # _viewer_canvas, shown only when exactly one participant is
+        # selected. Not grid()'d here; _switch_to_table_view() does that.
+        self._table_frame = tk.Frame(viewer_outer, bg=ws.PALETTE["SURFACE"])
+
+        table_top = tk.Frame(self._table_frame, bg=ws.PALETTE["SURFACE"])
+        table_top.pack(side="top", fill="x", padx=6, pady=(6, 2))
+        self.btn_toggle_excluded = ws.secondary_button(
+            table_top, "Toggle Excluded", self._on_toggle_excluded)
+        self.btn_toggle_excluded.config(state="disabled")
+        self.btn_toggle_excluded.pack(side="left")
+
+        table_wrap = tk.Frame(self._table_frame, bg=ws.PALETTE["SURFACE"])
+        table_wrap.pack(side="top", fill="both", expand=True, padx=6, pady=(0, 6))
+        table_wrap.columnconfigure(0, weight=1)
+        table_wrap.rowconfigure(0, weight=1)
+
+        cols = ("warn", "leg", "condition", "trial", "n", "phi_max_ratio", "area_ratio")
+        hdrs = ("⚠", "Leg", "Condition", "Trial #", "N", "phi_max_ratio", "area_ratio")
+        widths = (24, 60, 110, 60, 50, 100, 90)
+        self._trial_table = ttk.Treeview(
+            table_wrap, style=ws.STYLE_TREEVIEW, columns=cols, show="headings",
+            selectmode="extended")
+        for key, hdr, w in zip(cols, hdrs, widths):
+            self._trial_table.heading(key, text=hdr)
+            self._trial_table.column(key, width=w, anchor="center", stretch=False)
+        self._trial_table.column("condition", stretch=True)
+        self._trial_table.tag_configure("excluded", foreground=ws.PALETTE["FG3"])
+        self._trial_table.tag_configure("duplicate", foreground="#B45309")
+        table_sb = ttk.Scrollbar(table_wrap, orient="vertical", style=ws.STYLE_SCROLLBAR,
+                                 command=self._trial_table.yview)
+        self._trial_table.configure(yscrollcommand=table_sb.set)
+        self._trial_table.grid(row=0, column=0, sticky="nsew")
+        table_sb.grid(row=0, column=1, sticky="ns")
+
+        self._participant_list.bind("<<ListboxSelect>>", self._on_participant_selection_changed)
+
+    # ------------------------------------------------------------------
+    # Trial table: view-switch + selection handling
+    # ------------------------------------------------------------------
+    def _switch_to_table_view(self) -> None:
+        self._viewer_canvas.grid_remove()
+        self._viewer_vbar.grid_remove()
+        self._viewer_hbar.grid_remove()
+        self._table_frame.grid(row=0, column=0, sticky="nsew")
+
+    def _switch_to_figure_view(self) -> None:
+        self._table_frame.grid_remove()
+        self._viewer_canvas.grid()
+        self._viewer_vbar.grid()
+        self._viewer_hbar.grid()
+
+    def _on_participant_selection_changed(self, event=None) -> None:
+        # Bumped on every call, regardless of outcome (zero/multi selection,
+        # a busy-rejected change, or a valid single selection) -- a slow,
+        # still-in-flight job must never repopulate the table after the
+        # selection that started it no longer applies.
+        self._table_request_id += 1
+        request_id = self._table_request_id
+        if self._busy:
+            return
+        sel = self._participant_list.curselection()
+        if len(sel) != 1:
+            self._switch_to_figure_view()
+            self._trial_table.delete(*self._trial_table.get_children())
+            self._table_row_meta = {}
+            self.btn_toggle_excluded.config(state="disabled")
+            return
+        self._switch_to_table_view()
+        self._start_table_load(sel[0], request_id)
+
+    def _start_table_load(self, idx: int, request_id: int) -> None:
+        pid = list(self._participants.keys())[idx]
+        self._trial_table.delete(*self._trial_table.get_children())
+        self._table_row_meta = {}
+        self.btn_toggle_excluded.config(state="disabled")
+        self.status_var.set(f"Loading trials for P{pid}...")
+        threading.Thread(target=self._table_worker, args=(pid, request_id), daemon=True).start()
+        # Only start a new polling chain if none is active -- rapid
+        # re-selection would otherwise spawn one self.after(150, ...) chain
+        # per selection, none of which ever terminates on its own once a
+        # later chain wins the race to consume the matching result (each
+        # checks the queue independently; an already-empty chain would just
+        # keep rescheduling itself forever). One chain is enough: it always
+        # compares against the current self._table_request_id, not whichever
+        # request started it.
+        if not self._table_polling:
+            self._table_polling = True
+            self.after(150, self._poll_table_queue)
+
+    def _table_worker(self, pid: str, request_id: int) -> None:
+        try:
+            records = [r for r in _report.discover_all_trials(include_excluded=True)
+                       if r["participant"] == pid]
+            dupes = _report.duplicate_trial_keys(records)
+            rows = []
+            for r in records:
+                n = phi = area = None
+                if _PT_AVAIL:
+                    try:
+                        t, angle = load_optitrack(r["path"])
+                    except Exception:
+                        t = angle = None
+                    if t is not None:
+                        try:
+                            params = compute_pt_params(t, angle)
+                        except Exception:
+                            params = None
+                        if params:
+                            n = params.get("N")
+                            phi = params.get("phi_max_ratio")
+                            area = params.get("area_ratio")
+                rows.append((r, n, phi, area))
+            self._table_queue.put(("ok", (request_id, rows, dupes), None))
+        except Exception as e:
+            self._table_queue.put(("error", (request_id, str(e)), None))
+
+    @staticmethod
+    def _fmt_metric(value, decimals: int) -> str:
+        if value is None:
+            return "N/A"
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if not math.isfinite(f):
+            return "N/A"
+        return f"{f:.{decimals}f}"
+
+    def _poll_table_queue(self) -> None:
+        try:
+            status, payload, _ = self._table_queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll_table_queue)
+            return
+
+        request_id = payload[0]
+        if request_id != self._table_request_id:
+            # Superseded by a newer selection/reload -- discard, but keep
+            # the chain alive since the current request's result may still
+            # be sitting behind this one in the queue.
+            self.after(150, self._poll_table_queue)
+            return
+
+        self._table_polling = False   # this chain's job is done either way below
+
+        if status == "error":
+            self.status_var.set(f"Failed to load trials: {payload[1]}")
+            return
+
+        _, rows, dupes = payload
+        self._table_dupes = dupes
+        self.btn_toggle_excluded.config(state="normal" if rows else "disabled")
+
+        if not _PT_AVAIL:
+            for r, _n, _phi, _area in rows:
+                tags = ["excluded"] if r["excluded"] else []
+                warn = r["trial_key"] in dupes
+                if warn:
+                    tags.append("duplicate")
+                item = self._trial_table.insert(
+                    "", "end",
+                    values=("⚠" if warn else "", r["leg"], r["condition"], r["trial"],
+                            "N/A", "N/A", "N/A"),
+                    tags=tuple(tags))
+                self._table_row_meta[item] = r
+            self.status_var.set(f"{len(rows)} trial(s) loaded (scoring unavailable — "
+                                f"compute_pt_params/load_optitrack failed to import).")
+            return
+
+        for r, n, phi, area in rows:
+            tags = ["excluded"] if r["excluded"] else []
+            warn = r["trial_key"] in dupes
+            if warn:
+                tags.append("duplicate")
+            item = self._trial_table.insert(
+                "", "end",
+                values=("⚠" if warn else "", r["leg"], r["condition"], r["trial"],
+                        self._fmt_metric(n, 1), self._fmt_metric(phi, 3), self._fmt_metric(area, 3)),
+                tags=tuple(tags))
+            self._table_row_meta[item] = r
+        self.status_var.set(f"{len(rows)} trial(s) loaded.")
+
+    def _on_toggle_excluded(self) -> None:
+        # Stub only -- the button stays disabled in this task; the click
+        # handler (set_trials_excluded call + table/participant-list
+        # refresh) is wired up in Task 6. Needs to exist now because
+        # ws.secondary_button() above binds it as the button's command at
+        # construction time.
+        pass
 
     # ------------------------------------------------------------------
     # Lifecycle
