@@ -792,3 +792,38 @@ def test_list_participants_include_excluded_shows_zero_trial_participant(tmp_pat
 
     result = common.list_participants(include_archive=False, include_excluded=True)
     assert result == {"13": {"legs": set(), "conditions": set(), "n_trials": 0}}
+
+
+def test_duplicate_trial_keys_empty_for_common_case():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv"},
+        {"trial_key": "13_left_pre_T2", "path": "/a/trial_2.csv"},
+    ]
+    assert common.duplicate_trial_keys(records) == {}
+
+
+def test_duplicate_trial_keys_finds_collision():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv"},
+        {"trial_key": "13_left_pre_T1", "path": "/a_dup/trial_1.csv"},
+        {"trial_key": "13_left_pre_T2", "path": "/a/trial_2.csv"},
+    ]
+    assert common.duplicate_trial_keys(records) == {
+        "13_left_pre_T1": ["/a/trial_1.csv", "/a_dup/trial_1.csv"],
+    }
+
+
+def test_duplicate_trial_keys_catches_excluded_and_nonexcluded_collision():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv", "excluded": True},
+        {"trial_key": "13_left_pre_T1", "path": "/a_dup/trial_1.csv", "excluded": False},
+    ]
+    dupes = common.duplicate_trial_keys(records)
+    assert set(dupes["13_left_pre_T1"]) == {"/a/trial_1.csv", "/a_dup/trial_1.csv"}
+
+
+def test_duplicate_trial_keys_no_internal_discovery_call(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("duplicate_trial_keys must not call discover_all_trials")
+    monkeypatch.setattr(common, "discover_all_trials", boom)
+    assert common.duplicate_trial_keys([{"trial_key": "k", "path": "/p"}]) == {}

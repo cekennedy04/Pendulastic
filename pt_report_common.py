@@ -746,6 +746,20 @@ def list_participants(include_archive=True, *, include_excluded=False):
     return dict(sorted(by_pid.items(), key=lambda kv: int(kv[0])))
 
 
+def duplicate_trial_keys(records: list) -> dict:
+    """{trial_key: [path, ...]} for every trial_key shared by more than one
+    record in the given list. A pure function over an already-fetched
+    records list -- never calls discover_all_trials() itself, so the caller
+    must pass it the exact same list a table/report was already built from
+    (design spec Section 3): duplicate detection can't disagree with what's
+    on screen, and it works whether or not the caller filtered to a single
+    participant first."""
+    by_key = {}
+    for r in records:
+        by_key.setdefault(r["trial_key"], []).append(r["path"])
+    return {k: paths for k, paths in by_key.items() if len(paths) > 1}
+
+
 TRIAL_THRESHOLD = 4
 
 
