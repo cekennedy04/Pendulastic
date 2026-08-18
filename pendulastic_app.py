@@ -2094,6 +2094,8 @@ class AnalysisPanel(tk.Frame):
         self._table_row_meta: dict = {}
         self._table_dupes: dict = {}
         self._table_polling = False   # True while a _poll_table_queue chain is active
+        self._table_job_pending = False   # True while a worker's result for the
+                                           # current request_id is still expected
         self._busy = False
         self._build_widgets()
 
@@ -2273,6 +2275,11 @@ class AnalysisPanel(tk.Frame):
             self._trial_table.delete(*self._trial_table.get_children())
             self._table_row_meta = {}
             self.btn_toggle_excluded.config(state="disabled")
+            # No worker is being started for this (newly bumped) request_id --
+            # any in-flight worker from a PREVIOUS selection will still post
+            # its result eventually, but it'll be discarded as stale by
+            # request_id, so the polling chain has nothing left to wait for.
+            self._table_job_pending = False
             return
         self._switch_to_table_view()
         self._start_table_load(sel[0], request_id)
@@ -2283,6 +2290,7 @@ class AnalysisPanel(tk.Frame):
         self._table_row_meta = {}
         self.btn_toggle_excluded.config(state="disabled")
         self.status_var.set(f"Loading trials for P{pid}...")
+        self._table_job_pending = True
         threading.Thread(target=self._table_worker, args=(pid, request_id), daemon=True).start()
         # Only start a new polling chain if none is active -- rapid
         # re-selection would otherwise spawn one self.after(150, ...) chain
@@ -2302,6 +2310,7 @@ class AnalysisPanel(tk.Frame):
                        if r["participant"] == pid]
             dupes = _report.duplicate_trial_keys(records)
             rows = []
+            unscored = 0
             for r in records:
                 n = phi = area = None
                 if _PT_AVAIL:
@@ -2318,8 +2327,12 @@ class AnalysisPanel(tk.Frame):
                             n = params.get("N")
                             phi = params.get("phi_max_ratio")
                             area = params.get("area_ratio")
+                        else:
+                            unscored += 1
+                    else:
+                        unscored += 1
                 rows.append((r, n, phi, area))
-            self._table_queue.put(("ok", (request_id, rows, dupes), None))
+            self._table_queue.put(("ok", (request_id, rows, dupes, unscored), None))
         except Exception as e:
             self._table_queue.put(("error", (request_id, str(e)), None))
 
@@ -2339,6 +2352,16 @@ class AnalysisPanel(tk.Frame):
         try:
             status, payload, _ = self._table_queue.get_nowait()
         except queue.Empty:
+            if not self._table_job_pending:
+                # Nothing left to wait for: no worker is running for the
+                # current request_id (the operator moved to a zero/multi
+                # selection, or a load already completed), and the queue is
+                # drained. Stop rescheduling -- an idle panel must not poll
+                # every 150ms forever. _start_table_load()'s own guard
+                # restarts a fresh chain the next time a job is actually
+                # started.
+                self._table_polling = False
+                return
             self.after(150, self._poll_table_queue)
             return
 
@@ -2351,12 +2374,13 @@ class AnalysisPanel(tk.Frame):
             return
 
         self._table_polling = False   # this chain's job is done either way below
+        self._table_job_pending = False   # the result we were waiting for has arrived
 
         if status == "error":
             self.status_var.set(f"Failed to load trials: {payload[1]}")
             return
 
-        _, rows, dupes = payload
+        _, rows, dupes, unscored = payload
         self._table_dupes = dupes
         self.btn_toggle_excluded.config(state="normal" if rows else "disabled")
 
@@ -2370,20 +2394,30 @@ class AnalysisPanel(tk.Frame):
         # case, the two branches produced byte-identical rows; only the status
         # message differs, so only the status message branches here.
         for r, n, phi, area in rows:
-            tags = ["excluded"] if r["excluded"] else []
+            # "duplicate" listed before "excluded" so ttk's tag-priority
+            # resolution (first tag with a given option wins) gives a
+            # both-excluded-and-duplicate row the amber warning color, not
+            # the muted excluded grey -- the duplicate-key collision is the
+            # more actionable signal to notice at a glance.
+            tags = []
             warn = r["trial_key"] in dupes
             if warn:
                 tags.append("duplicate")
+            if r["excluded"]:
+                tags.append("excluded")
             item = self._trial_table.insert(
                 "", "end",
                 values=("⚠" if warn else "", r["leg"], r["condition"], r["trial"],
                         self._fmt_metric(n, 1), self._fmt_metric(phi, 3), self._fmt_metric(area, 3)),
                 tags=tuple(tags))
             self._table_row_meta[item] = r
-        self.status_var.set(
-            f"{len(rows)} trial(s) loaded." if _PT_AVAIL else
-            f"{len(rows)} trial(s) loaded (scoring unavailable — "
-            f"compute_pt_params/load_optitrack failed to import).")
+        if not _PT_AVAIL:
+            self.status_var.set(f"{len(rows)} trial(s) loaded (scoring unavailable — "
+                                f"compute_pt_params/load_optitrack failed to import).")
+        elif unscored:
+            self.status_var.set(f"{len(rows)} trial(s) loaded ({unscored} unscored).")
+        else:
+            self.status_var.set(f"{len(rows)} trial(s) loaded.")
 
     def _on_toggle_excluded(self) -> None:
         if self._busy:

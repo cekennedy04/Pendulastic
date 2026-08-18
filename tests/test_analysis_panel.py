@@ -481,8 +481,8 @@ def test_rapid_reselection_drops_stale_table_result(monkeypatch):
         # current one's rows land.
         p._table_request_id = 5
         stale_record = dict(fake.records[0], trial="99")
-        p._table_queue.put(("ok", (4, [(stale_record, None, None, None)], {}), None))
-        p._table_queue.put(("ok", (5, [(fake.records[0], None, None, None)], {}), None))
+        p._table_queue.put(("ok", (4, [(stale_record, None, None, None)], {}, 0), None))
+        p._table_queue.put(("ok", (5, [(fake.records[0], None, None, None)], {}, 0), None))
         p.after(0, p._poll_table_queue)
         deadline = time.time() + 5
         while not p._trial_table.get_children() and time.time() < deadline:
@@ -897,5 +897,111 @@ def test_generate_from_table_view_switches_back_to_figure_view(monkeypatch):
         assert p._viewer_canvas.winfo_manager() == "grid"
         assert p._current_canvas is not None
         assert p.btn_toggle_excluded.cget("state") == "disabled"
+    finally:
+        r.destroy()
+
+
+def test_idle_polling_chain_stops_after_zero_selection(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+
+        # Select one participant (starts a load + polling chain), then
+        # immediately deselect everything before the worker's result lands.
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        p._participant_list.selection_clear(0, "end")
+        p._on_participant_selection_changed()
+
+        deadline = time.time() + 5
+        while p._table_polling and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        assert p._table_polling is False, (
+            "polling chain must terminate once no participant is selected "
+            "and no worker result is still pending, not poll forever")
+    finally:
+        r.destroy()
+
+
+def test_table_status_reports_unscored_count(monkeypatch):
+    import pendulastic_app as _m
+    import numpy as np
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", True)
+
+    # fake.records has 2 trials; make the first one fail to load, the
+    # second score successfully -- expect "(1 unscored)" in the status.
+    calls = {"n": 0}
+
+    def flaky_load(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("bad csv")
+        return (np.array([0.0, 1.0]), np.array([180.0, 170.0]))
+
+    monkeypatch.setattr(_m, "load_optitrack", flaky_load)
+    monkeypatch.setattr(_m, "compute_pt_params",
+                        lambda t, angle: {"N": 4.0, "phi_max_ratio": 0.6, "area_ratio": 0.05})
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        assert "(1 unscored)" in p.status_var.get()
+    finally:
+        r.destroy()
+
+
+def test_fmt_metric_handles_nan_inf_and_bad_types():
+    from pendulastic_app import AnalysisPanel
+    assert AnalysisPanel._fmt_metric(float("nan"), 2) == "N/A"
+    assert AnalysisPanel._fmt_metric(float("inf"), 2) == "N/A"
+    assert AnalysisPanel._fmt_metric(float("-inf"), 2) == "N/A"
+    assert AnalysisPanel._fmt_metric("not-a-number", 2) == "N/A"
+    assert AnalysisPanel._fmt_metric(3.14159, 2) == "3.14"
+
+
+def test_duplicate_and_excluded_row_prioritizes_duplicate_color(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.records[0]["excluded"] = True
+    fake.records.append({
+        "participant": "1", "leg": "left", "condition": "pre", "trial": "1",
+        "path": "/rec_dup/P1_left_pre_trial_1.csv", "mtime": 0.0,
+        "trial_key": "1_left_pre_T1", "excluded": True,
+    })
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        dup_item = next(i for i in p._trial_table.get_children()
+                        if p._trial_table.item(i, "values")[0] == "⚠")
+        tags = p._trial_table.item(dup_item, "tags")
+        assert tags.index("duplicate") < tags.index("excluded"), (
+            "duplicate must be listed before excluded so its tag_configure "
+            "color (amber) takes priority over excluded's (grey)")
     finally:
         r.destroy()
