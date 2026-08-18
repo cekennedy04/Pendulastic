@@ -2610,6 +2610,8 @@ class AnalysisPanel(tk.Frame):
         self._end_busy()
         self.btn_generate.config(state="normal")
         self._last_out_path = out_path
+        self._switch_to_figure_view()
+        self.btn_toggle_excluded.config(state="disabled")
         self._show_figure(fig)
         self.status_var.set(f"Done. Saved to:\n{out_path}")
         self.btn_save.config(state="normal")

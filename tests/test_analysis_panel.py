@@ -647,3 +647,31 @@ def test_busy_flag_blocks_selection_change_during_generate(monkeypatch):
         assert p._busy is False
     finally:
         r.destroy()
+
+
+def test_generate_from_table_view_switches_back_to_figure_view(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        _select_and_wait_for_table(p, r)
+        assert p._table_frame.winfo_manager() == "grid"   # table view showing
+        p._figure_type.set("full_report")
+
+        p._on_generate()
+        _wait_until_enabled(p, r)
+
+        # Generate must switch the pane back to the figure view -- the table
+        # staying up would leave the just-generated figure invisible behind it.
+        assert p._table_frame.winfo_manager() == ""
+        assert p._viewer_canvas.winfo_manager() == "grid"
+        assert p._current_canvas is not None
+        assert p.btn_toggle_excluded.cget("state") == "disabled"
+    finally:
+        r.destroy()
