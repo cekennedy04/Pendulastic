@@ -1,6 +1,7 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import builtins
 import json
 import pytest
 
@@ -883,6 +884,11 @@ def test_set_trials_excluded_atomic_write_uses_same_directory(tmp_path, monkeypa
 
 def test_set_trials_excluded_cleans_up_temp_file_on_replace_failure(tmp_path, monkeypatch):
     reg_path = tmp_path / "excluded_trials.json"
+    # Pre-seed a real registry: the spec's requirement is that a failed
+    # os.replace leaves the ORIGINAL file's content untouched, which an
+    # empty directory can't demonstrate.
+    original_content = json.dumps({"other_key": "pre-existing reason"})
+    reg_path.write_text(original_content)
     monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
 
     def failing_replace(*args, **kwargs):
@@ -892,8 +898,9 @@ def test_set_trials_excluded_cleans_up_temp_file_on_replace_failure(tmp_path, mo
     with pytest.raises(OSError):
         common.set_trials_excluded(["k1"], True)
 
-    assert not reg_path.exists()
-    assert list(tmp_path.iterdir()) == []
+    assert reg_path.read_text() == original_content
+    # ...and no stray temp file was left behind next to it.
+    assert list(tmp_path.iterdir()) == [reg_path]
 
 
 def test_set_trials_excluded_raises_on_malformed_json(tmp_path, monkeypatch):
@@ -921,3 +928,40 @@ def test_set_trials_excluded_raises_on_wrong_shape_json(tmp_path, monkeypatch):
         common.set_trials_excluded(["k1"], True)
 
     assert reg_path.read_bytes() == original_bytes
+
+
+def test_set_trials_excluded_raises_on_non_string_value(tmp_path, monkeypatch):
+    """A dict-shaped registry whose values aren't strings is corrupt too --
+    the wrong-shape check must cover the {str: non-str} case, not just a
+    non-dict top level."""
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"k1": 123}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes
+
+
+def test_set_trials_excluded_propagates_oserror_not_registry_corrupt(tmp_path, monkeypatch):
+    """An unreadable (locked / permission-denied) registry is NOT corruption:
+    the OSError must propagate as-is so the UI reports the generic
+    "Failed to toggle exclusion" rather than telling the operator to
+    hand-repair a file that may be perfectly valid."""
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"k1": "a reason"}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    real_open = builtins.open
+
+    def denying_open(path, *args, **kwargs):
+        if str(path) == str(reg_path):
+            raise PermissionError("file is locked by another process")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", denying_open)
+
+    with pytest.raises(PermissionError):
+        common.set_trials_excluded(["k2"], True)

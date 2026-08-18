@@ -2360,22 +2360,15 @@ class AnalysisPanel(tk.Frame):
         self._table_dupes = dupes
         self.btn_toggle_excluded.config(state="normal" if rows else "disabled")
 
-        if not _PT_AVAIL:
-            for r, _n, _phi, _area in rows:
-                tags = ["excluded"] if r["excluded"] else []
-                warn = r["trial_key"] in dupes
-                if warn:
-                    tags.append("duplicate")
-                item = self._trial_table.insert(
-                    "", "end",
-                    values=("⚠" if warn else "", r["leg"], r["condition"], r["trial"],
-                            "N/A", "N/A", "N/A"),
-                    tags=tuple(tags))
-                self._table_row_meta[item] = r
-            self.status_var.set(f"{len(rows)} trial(s) loaded (scoring unavailable — "
-                                f"compute_pt_params/load_optitrack failed to import).")
-            return
-
+        # Deliberate deviation from spec §4's "one row of explanatory text
+        # instead of per-trial N/A spam" when _PT_AVAIL is False: the shipped
+        # behavior is the full per-trial row list (all metrics N/A, rows still
+        # selectable/toggleable), because the operator still needs to see and
+        # act on the trial list when scoring can't run -- exclusion decisions
+        # don't depend on the PT metrics being computable. Since
+        # _fmt_metric(None, d) already returns "N/A" for every metric in that
+        # case, the two branches produced byte-identical rows; only the status
+        # message differs, so only the status message branches here.
         for r, n, phi, area in rows:
             tags = ["excluded"] if r["excluded"] else []
             warn = r["trial_key"] in dupes
@@ -2387,7 +2380,10 @@ class AnalysisPanel(tk.Frame):
                         self._fmt_metric(n, 1), self._fmt_metric(phi, 3), self._fmt_metric(area, 3)),
                 tags=tuple(tags))
             self._table_row_meta[item] = r
-        self.status_var.set(f"{len(rows)} trial(s) loaded.")
+        self.status_var.set(
+            f"{len(rows)} trial(s) loaded." if _PT_AVAIL else
+            f"{len(rows)} trial(s) loaded (scoring unavailable — "
+            f"compute_pt_params/load_optitrack failed to import).")
 
     def _on_toggle_excluded(self) -> None:
         if self._busy:
@@ -2410,7 +2406,7 @@ class AnalysisPanel(tk.Frame):
         dupe_keys = [k for k in keys if k in self._table_dupes]
         if dupe_keys:
             lines = [f"{k} -> {len(self._table_dupes[k])} files: {', '.join(self._table_dupes[k])}"
-                    for k in dupe_keys]
+                     for k in dupe_keys]
             if not messagebox.askyesno(
                     "Duplicate Trial Keys",
                     "The following trial_key(s) map to more than one file. Toggling "
@@ -2421,37 +2417,59 @@ class AnalysisPanel(tk.Frame):
         self._busy = True
         self.btn_toggle_excluded.config(state="disabled")
         self.btn_generate.config(state="disabled")
+        # Same reason as _on_generate: the busy flag alone can't stop Tk from
+        # moving the selection highlight before the handler runs, so the
+        # listbox itself is locked for the whole write window. _end_busy()
+        # re-enables it on every exit path below.
+        self._participant_list.config(state="disabled")
         try:
             _report.set_trials_excluded(keys, new_excluded)
         except _report.RegistryCorruptError as e:
             self.status_var.set(
                 f"excluded_trials.json is corrupt: {e} — fix or restore it by hand before trying again.")
             self._end_busy()
-            self.btn_generate.config(state="normal")
             return
         except Exception as e:
             self.status_var.set(f"Failed to toggle exclusion: {e}")
             self._end_busy()
-            self.btn_generate.config(state="normal")
             return
 
-        for item in items:
-            rec = self._table_row_meta.get(item)
-            if rec is None:
-                continue
-            rec["excluded"] = new_excluded
-            tags = list(self._trial_table.item(item, "tags"))
-            if new_excluded and "excluded" not in tags:
-                tags.append("excluded")
-            elif not new_excluded and "excluded" in tags:
-                tags.remove("excluded")
-            self._trial_table.item(item, tags=tuple(tags))
-
-        self._busy = False
-        self.btn_generate.config(state="normal")
+        # Post-write. Both halves below are load-bearing, despite looking
+        # redundant:
+        #   1. The in-place row-tag update is exactly what the
+        #      RegistryCorruptError test proves did NOT happen when the write
+        #      raised -- rows must only change after a confirmed successful
+        #      save, so it can't be folded into the reload below.
+        #   2. The full _refresh_participants_preserving_selection() reload is
+        #      what catches UNSELECTED sibling rows that share a toggled
+        #      trial_key (a duplicate-key collision toggles every file under
+        #      that key, but only the selected rows are visited by the loop).
+        try:
+            for item in items:
+                rec = self._table_row_meta.get(item)
+                if rec is None:
+                    continue
+                rec["excluded"] = new_excluded
+                tags = list(self._trial_table.item(item, "tags"))
+                if new_excluded and "excluded" not in tags:
+                    tags.append("excluded")
+                elif not new_excluded and "excluded" in tags:
+                    tags.remove("excluded")
+                self._trial_table.item(item, tags=tuple(tags))
+        finally:
+            # The registry write already succeeded by this point; a raise here
+            # (e.g. a TclError on a torn-down widget) must not leave _busy set
+            # and every button disabled forever.
+            self._end_busy()
         self._refresh_participants_preserving_selection()
 
     def _refresh_participants_preserving_selection(self) -> None:
+        # INVARIANT: this relies on Tk's Listbox.delete()/.selection_set() NOT
+        # firing <<ListboxSelect>> on this build -- only user-driven selection
+        # changes generate that event. If that ever changed, the _refresh /
+        # selection_set below would re-enter _on_participant_selection_changed
+        # and double-load the table (two workers, two request-id bumps) on
+        # every toggle.
         sel = self._participant_list.curselection()
         selected_pid = list(self._participants.keys())[sel[0]] if len(sel) == 1 else None
         self._refresh_participants()
@@ -2482,7 +2500,6 @@ class AnalysisPanel(tk.Frame):
             return
         self._participant_list.delete(0, "end")
         for pid, info in self._participants.items():
-            legs = "/".join(sorted(info["legs"]))
             # n_trials == 0 with include_excluded=True means every one of
             # this participant's trials is excluded (Task 1) -- they'd
             # otherwise vanish from this list with no way to re-select and
@@ -2490,6 +2507,7 @@ class AnalysisPanel(tk.Frame):
             if info["n_trials"] == 0:
                 self._participant_list.insert("end", f"P{pid}  (all excluded)")
                 continue
+            legs = "/".join(sorted(info["legs"]))
             self._participant_list.insert(
                 "end", f"P{pid}  ({legs}, {info['n_trials']} trials, "
                        f"{len(info['conditions'])} condition(s))")
@@ -2528,6 +2546,13 @@ class AnalysisPanel(tk.Frame):
         self._busy = True
         self.btn_generate.config(state="disabled")
         self.btn_toggle_excluded.config(state="disabled")
+        # The _busy check in _on_participant_selection_changed only stops the
+        # handler from ACTING -- Tk has already moved the highlight by the time
+        # it runs. Disabling the listbox itself is what actually prevents the
+        # desync spec §4's busy lock exists for: an operator clicking another
+        # participant mid-Generate, seeing the highlight move, and then getting
+        # the PREVIOUS participant's figure against the new highlight.
+        self._participant_list.config(state="disabled")
         self.status_var.set("Working — scoring trials, this can take a bit...")
         methodologies = tuple(m for m, v in
                               (("mediapipe", self._use_mediapipe.get()), ("imu", self._use_imu.get()))
@@ -2537,9 +2562,19 @@ class AnalysisPanel(tk.Frame):
         self.after(150, self._poll_result)
 
     def _end_busy(self) -> None:
+        """The single place the busy lock is released. Re-enabling Generate
+        lives here (rather than at each call site) so no future call site can
+        forget it and leave the panel permanently frozen."""
         self._busy = False
+        self.btn_generate.config(state="normal")
+        # Re-enable the participant listbox: it is disabled for the whole busy
+        # window so Tk can't move the selection highlight underneath an
+        # in-flight Generate (see _on_generate).
+        self._participant_list.config(state="normal")
         sel = self._participant_list.curselection()
-        self.btn_toggle_excluded.config(state="normal" if len(sel) == 1 and self._trial_table.get_children() else "disabled")
+        self.btn_toggle_excluded.config(
+            state="normal" if len(sel) == 1 and self._trial_table.get_children()
+            else "disabled")
 
     def _generate_worker(self, ft: str, pids: list, methodologies: tuple) -> None:
         # Only the data collection (re-reading and re-scoring every trial CSV
@@ -2571,7 +2606,6 @@ class AnalysisPanel(tk.Frame):
 
         if status == "error":
             self._end_busy()
-            self.btn_generate.config(state="normal")
             self.status_var.set(f"Failed: {payload}")
             messagebox.showerror("Generation Failed", payload)
             return
@@ -2602,13 +2636,11 @@ class AnalysisPanel(tk.Frame):
                     save=True, return_fig=True)
         except Exception as e:
             self._end_busy()
-            self.btn_generate.config(state="normal")
             self.status_var.set(f"Failed: {e}")
             messagebox.showerror("Generation Failed", str(e))
             return
 
         self._end_busy()
-        self.btn_generate.config(state="normal")
         self._last_out_path = out_path
         self._switch_to_figure_view()
         self.btn_toggle_excluded.config(state="disabled")

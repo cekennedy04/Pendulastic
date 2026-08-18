@@ -276,6 +276,11 @@ def load_excluded_trials():
     return data if isinstance(data, dict) else {}
 
 
+# NOTE: excluded_trials.json's UI write path is set_trials_excluded() below
+# (mkstemp + fsync + corruption-safe RegistryCorruptError semantics). This
+# older helper still writes the same file for add_excluded_trial()/
+# clear_excluded_trial() but WITHOUT those semantics -- the two are not
+# equivalent, don't assume one can be swapped for the other.
 def _atomic_write_json(path, data):
     """Temp-file-then-os.replace atomic write, matching
     imu_calibration_config.save_config()'s existing pattern."""
@@ -353,13 +358,20 @@ class RegistryCorruptError(Exception):
 def _load_excluded_trials_strict() -> dict:
     """Like load_excluded_trials(), but raises RegistryCorruptError instead
     of silently returning {} when the file exists and is unparseable or the
-    wrong shape. A missing file is not corruption -> {}."""
+    wrong shape. A missing file is not corruption -> {}.
+
+    Only ValueError (a JSON parse failure, or the shape check below) is
+    corruption. An OSError -- permission denied, file locked by another
+    process -- is deliberately allowed to propagate as-is: the file may be
+    perfectly valid and merely unreadable right now, and the UI's generic
+    "Failed to toggle exclusion: ..." handler is the honest message for it,
+    not "excluded_trials.json is corrupt ... fix or restore it by hand"."""
     if not os.path.exists(EXCLUDED_TRIALS_PATH):
         return {}
     try:
         with open(EXCLUDED_TRIALS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError) as e:
+    except ValueError as e:
         raise RegistryCorruptError(f"{EXCLUDED_TRIALS_PATH} is not valid JSON: {e}") from e
     if not isinstance(data, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
@@ -394,6 +406,13 @@ def set_trials_excluded(keys: list, excluded: bool) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(registry, f, indent=2, sort_keys=True)
+            # Force the bytes to disk before the rename: this registry holds
+            # hand-curated clinical exclusion decisions with no other copy,
+            # so a crash/power loss between the rename and the OS flushing
+            # its page cache must not be able to leave an empty or truncated
+            # file where the old good one used to be.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
     finally:
         if os.path.exists(tmp_path):
