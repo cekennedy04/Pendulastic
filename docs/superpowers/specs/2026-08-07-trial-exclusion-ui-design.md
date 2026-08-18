@@ -149,6 +149,16 @@ failure classes isn't shown to the operator — see next paragraph). If `compute
 `load_optitrack` are unavailable at all (the existing `_PT_AVAIL` guard in this file is `False`),
 the whole table shows one row of explanatory text instead of per-trial `N/A` spam.
 
+> **Adjudicated deviation (final review, 2026-08-17) — this bullet is superseded by the shipped
+> behavior.** When `_PT_AVAIL` is `False`, the table shows the **full per-trial row list** with every
+> metric as `N/A`, rows still selectable and toggleable, and the explanation moved into the status
+> label ("N trial(s) loaded (scoring unavailable — compute_pt_params/load_optitrack failed to
+> import)."). Rationale: exclusion decisions don't depend on the PT metrics being computable — the
+> operator still needs to see and act on the trial list when scoring can't run, and a single
+> explanatory row would remove their only way to do so. Accepted as intentional; the implementation
+> is a single row-building loop that branches only on the status message, since `_fmt_metric(None, d)`
+> already yields `"N/A"` for every metric in this case.
+
 **Population (background thread, own queue):** the selection handler enqueues a table-load job on a
 **separate** `self._table_queue` (not `self._result_queue`, which stays Generate-only — reusing one
 queue was the concurrency bug round 1 caught, since a stale table-load result could otherwise be

@@ -1,6 +1,10 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import builtins
+import json
+import pytest
+
 import pt_report_common as common
 import run_pt_analysis
 
@@ -705,3 +709,259 @@ def test_main_builds_cohort_snapshot_once_before_participant_loop(monkeypatch):
     assert calls[0] == ("build_cohort_snapshot",)
     assert calls[1] == ("run_for_participant", "13", fake_snapshot)
     assert calls[2] == ("write_cohort_artifacts", fake_snapshot)
+
+
+def test_discover_all_trials_default_shape_unchanged(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+
+    records = common.discover_all_trials(include_archive=False)
+    assert len(records) == 1
+    assert "trial_key" not in records[0]
+    assert "excluded" not in records[0]
+
+
+def test_discover_all_trials_include_excluded_adds_fields_and_keeps_excluded(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    (rec_dir / "trial_2_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials",
+                        lambda: {"13_left_pre_T1": "active muscle intervention"})
+
+    records = common.discover_all_trials(include_archive=False, include_excluded=True)
+    assert len(records) == 2
+    by_trial = {r["trial"]: r for r in records}
+    assert by_trial["1"]["excluded"] is True
+    assert by_trial["1"]["trial_key"] == common.trial_key("13", "left", "pre", "1")
+    assert by_trial["2"]["excluded"] is False
+
+    # Default (include_excluded=False) still drops the excluded trial entirely.
+    records_default = common.discover_all_trials(include_archive=False)
+    assert len(records_default) == 1
+    assert records_default[0]["trial"] == "2"
+
+
+def test_discover_all_trials_skips_record_whose_getmtime_raises(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    good = rec_dir / "trial_1_optitrack.csv"
+    good.write_text("t,angle\n0,180\n")
+    bad = rec_dir / "trial_2_optitrack.csv"
+    bad.write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+
+    real_getmtime = os.path.getmtime
+
+    def flaky_getmtime(path):
+        if path == str(bad):
+            raise OSError("deleted mid-scan")
+        return real_getmtime(path)
+
+    monkeypatch.setattr(common.os.path, "getmtime", flaky_getmtime)
+
+    records = common.discover_all_trials(include_archive=False)
+    assert len(records) == 1
+    assert records[0]["trial"] == "1"
+
+
+def test_list_participants_default_hides_fully_excluded_participant(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials",
+                        lambda: {"13_left_pre_T1": "active muscle intervention"})
+
+    assert common.list_participants(include_archive=False) == {}
+
+
+def test_list_participants_include_excluded_shows_zero_trial_participant(tmp_path, monkeypatch):
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials",
+                        lambda: {"13_left_pre_T1": "active muscle intervention"})
+
+    result = common.list_participants(include_archive=False, include_excluded=True)
+    assert result == {"13": {"legs": set(), "conditions": set(), "n_trials": 0}}
+
+
+def test_duplicate_trial_keys_empty_for_common_case():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv"},
+        {"trial_key": "13_left_pre_T2", "path": "/a/trial_2.csv"},
+    ]
+    assert common.duplicate_trial_keys(records) == {}
+
+
+def test_duplicate_trial_keys_finds_collision():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv"},
+        {"trial_key": "13_left_pre_T1", "path": "/a_dup/trial_1.csv"},
+        {"trial_key": "13_left_pre_T2", "path": "/a/trial_2.csv"},
+    ]
+    assert common.duplicate_trial_keys(records) == {
+        "13_left_pre_T1": ["/a/trial_1.csv", "/a_dup/trial_1.csv"],
+    }
+
+
+def test_duplicate_trial_keys_catches_excluded_and_nonexcluded_collision():
+    records = [
+        {"trial_key": "13_left_pre_T1", "path": "/a/trial_1.csv", "excluded": True},
+        {"trial_key": "13_left_pre_T1", "path": "/a_dup/trial_1.csv", "excluded": False},
+    ]
+    dupes = common.duplicate_trial_keys(records)
+    assert set(dupes["13_left_pre_T1"]) == {"/a/trial_1.csv", "/a_dup/trial_1.csv"}
+
+
+def test_duplicate_trial_keys_no_internal_discovery_call(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("duplicate_trial_keys must not call discover_all_trials")
+    monkeypatch.setattr(common, "discover_all_trials", boom)
+    assert common.duplicate_trial_keys([{"trial_key": "k", "path": "/p"}]) == {}
+
+
+def test_set_trials_excluded_dedupes_duplicate_input_keys(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1", "k1"], True)
+
+    with open(reg_path) as f:
+        data = json.load(f)
+    assert data == {"k1": "excluded via Analysis panel"}
+
+
+def test_set_trials_excluded_true_then_false_round_trips(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1"], True)
+    assert "k1" in common.load_excluded_trials()
+
+    common.set_trials_excluded(["k1"], False)
+    assert "k1" not in common.load_excluded_trials()
+
+
+def test_set_trials_excluded_preserves_unrelated_entries(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"other_key": "pre-existing reason"}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    common.set_trials_excluded(["k1"], True)
+
+    data = common.load_excluded_trials()
+    assert data["other_key"] == "pre-existing reason"
+    assert data["k1"] == "excluded via Analysis panel"
+
+
+def test_set_trials_excluded_atomic_write_uses_same_directory(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    seen_dirs = []
+    real_mkstemp = common.tempfile.mkstemp
+
+    def spy_mkstemp(*args, **kwargs):
+        seen_dirs.append(kwargs.get("dir"))
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(common.tempfile, "mkstemp", spy_mkstemp)
+    common.set_trials_excluded(["k1"], True)
+    assert seen_dirs == [str(tmp_path)]
+
+
+def test_set_trials_excluded_cleans_up_temp_file_on_replace_failure(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    # Pre-seed a real registry: the spec's requirement is that a failed
+    # os.replace leaves the ORIGINAL file's content untouched, which an
+    # empty directory can't demonstrate.
+    original_content = json.dumps({"other_key": "pre-existing reason"})
+    reg_path.write_text(original_content)
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    def failing_replace(*args, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(common.os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_text() == original_content
+    # ...and no stray temp file was left behind next to it.
+    assert list(tmp_path.iterdir()) == [reg_path]
+
+
+def test_set_trials_excluded_raises_on_malformed_json(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text("{not valid json")
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes
+    # Read path (load_excluded_trials) still degrades to {} unchanged --
+    # the two paths intentionally diverge (spec Section 6).
+    assert common.load_excluded_trials() == {}
+
+
+def test_set_trials_excluded_raises_on_wrong_shape_json(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps(["not", "a", "dict"]))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes
+
+
+def test_set_trials_excluded_raises_on_non_string_value(tmp_path, monkeypatch):
+    """A dict-shaped registry whose values aren't strings is corrupt too --
+    the wrong-shape check must cover the {str: non-str} case, not just a
+    non-dict top level."""
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"k1": 123}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_bytes = reg_path.read_bytes()
+
+    with pytest.raises(common.RegistryCorruptError):
+        common.set_trials_excluded(["k1"], True)
+
+    assert reg_path.read_bytes() == original_bytes
+
+
+def test_set_trials_excluded_propagates_oserror_not_registry_corrupt(tmp_path, monkeypatch):
+    """An unreadable (locked / permission-denied) registry is NOT corruption:
+    the OSError must propagate as-is so the UI reports the generic
+    "Failed to toggle exclusion" rather than telling the operator to
+    hand-repair a file that may be perfectly valid."""
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"k1": "a reason"}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+
+    real_open = builtins.open
+
+    def denying_open(path, *args, **kwargs):
+        if str(path) == str(reg_path):
+            raise PermissionError("file is locked by another process")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", denying_open)
+
+    with pytest.raises(PermissionError):
+        common.set_trials_excluded(["k2"], True)

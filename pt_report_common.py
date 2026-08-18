@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 from datetime import datetime, timezone
 
@@ -275,6 +276,11 @@ def load_excluded_trials():
     return data if isinstance(data, dict) else {}
 
 
+# NOTE: excluded_trials.json's UI write path is set_trials_excluded() below
+# (mkstemp + fsync + corruption-safe RegistryCorruptError semantics). This
+# older helper still writes the same file for add_excluded_trial()/
+# clear_excluded_trial() but WITHOUT those semantics -- the two are not
+# equivalent, don't assume one can be swapped for the other.
 def _atomic_write_json(path, data):
     """Temp-file-then-os.replace atomic write, matching
     imu_calibration_config.save_config()'s existing pattern."""
@@ -338,6 +344,79 @@ def clear_excluded_trial(key):
     if key in excluded:
         del excluded[key]
         _atomic_write_json(EXCLUDED_TRIALS_PATH, excluded)
+
+
+class RegistryCorruptError(Exception):
+    """excluded_trials.json exists but isn't a valid {str: str} JSON object
+    -- raised by set_trials_excluded() to refuse writing through it. A write
+    path must never silently treat a corrupt/wrong-shape file as empty and
+    overwrite it, unlike load_excluded_trials()'s read-time behavior (which
+    intentionally does treat it as {}, since failing open at
+    report-generation time is worse than temporarily un-filtering)."""
+
+
+def _load_excluded_trials_strict() -> dict:
+    """Like load_excluded_trials(), but raises RegistryCorruptError instead
+    of silently returning {} when the file exists and is unparseable or the
+    wrong shape. A missing file is not corruption -> {}.
+
+    Only ValueError (a JSON parse failure, or the shape check below) is
+    corruption. An OSError -- permission denied, file locked by another
+    process -- is deliberately allowed to propagate as-is: the file may be
+    perfectly valid and merely unreadable right now, and the UI's generic
+    "Failed to toggle exclusion: ..." handler is the honest message for it,
+    not "excluded_trials.json is corrupt ... fix or restore it by hand"."""
+    if not os.path.exists(EXCLUDED_TRIALS_PATH):
+        return {}
+    try:
+        with open(EXCLUDED_TRIALS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except ValueError as e:
+        raise RegistryCorruptError(f"{EXCLUDED_TRIALS_PATH} is not valid JSON: {e}") from e
+    if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise RegistryCorruptError(
+            f"{EXCLUDED_TRIALS_PATH} must contain a JSON object of string "
+            f"keys to string values, got {type(data).__name__}")
+    return data
+
+
+def set_trials_excluded(keys: list, excluded: bool) -> None:
+    """The single entry point for the trial-exclusion UI (design spec
+    Section 3) -- batch-toggles trial_keys and writes excluded_trials.json
+    atomically. keys is deduplicated internally (a caller passing the same
+    key twice, e.g. from two colliding rows, must not double-toggle).
+    excluded=True sets a fixed placeholder reason; excluded=False removes
+    the key entirely (a falsy/blank value would still satisfy
+    `key in excluded`, corrupting the exclusion gate).
+
+    Raises RegistryCorruptError -- without touching the file at all -- if
+    the on-disk registry exists but fails to parse or isn't a {str: str}
+    dict; silently treating either as {} and saving would discard every
+    exclusion the file actually contained."""
+    registry = _load_excluded_trials_strict()
+    for key in dict.fromkeys(keys):   # dedupe, preserve first-seen order
+        if excluded:
+            registry[key] = "excluded via Analysis panel"
+        else:
+            registry.pop(key, None)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(EXCLUDED_TRIALS_PATH), prefix=".excluded_trials_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2, sort_keys=True)
+            # Force the bytes to disk before the rename: this registry holds
+            # hand-curated clinical exclusion decisions with no other copy,
+            # so a crash/power loss between the rename and the OS flushing
+            # its page cache must not be able to leave an empty or truncated
+            # file where the old good one used to be.
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def trial_candidates(participant_id, include_archive=True):
@@ -680,12 +759,19 @@ def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints
     return "\n".join(lines)
 
 
-def discover_all_trials(include_archive=True):
+def discover_all_trials(include_archive=True, *, include_excluded=False):
     """Every trial_*_optitrack.csv under the live repo (and, optionally, the
     known archive) parsed into {participant, leg, condition, trial, path}
-    records. Quarantined/invalid data (INVALID_ in the path) is excluded,
-    as is any trial listed in excluded_trials.json (non-viable recordings,
-    e.g. active muscle intervention during the swing)."""
+    records. Quarantined/invalid data (INVALID_ in the path) is always
+    excluded.
+
+    include_excluded=False (default): trials listed in excluded_trials.json
+    are dropped, and records carry no trial_key/excluded fields --
+    byte-for-byte the shape every existing caller has always gotten.
+    include_excluded=True: excluded trials are included too, and every
+    returned record additionally carries trial_key (str) and excluded
+    (bool) -- used by AnalysisPanel's trial-exclusion UI (design spec
+    docs/superpowers/specs/2026-08-07-trial-exclusion-ui-design.md Section 3)."""
     excluded = load_excluded_trials()
     records = []
     seen = set()
@@ -698,27 +784,59 @@ def discover_all_trials(include_archive=True):
             if real in seen:
                 continue
             seen.add(real)
-            rec = _parse_trial_path(csv_path, root)
+            try:
+                rec = _parse_trial_path(csv_path, root)
+            except OSError:
+                # _parse_trial_path() calls os.path.getmtime() uncaught --
+                # a deleted/inaccessible file must only drop this one
+                # record, not abort the whole discovery call.
+                continue
             if rec is None:
                 continue
             key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
-            if key in excluded:
+            is_excluded = key in excluded
+            if is_excluded and not include_excluded:
                 continue
+            if include_excluded:
+                rec = dict(rec, trial_key=key, excluded=is_excluded)
             records.append(rec)
     return records
 
 
-def list_participants(include_archive=True):
+def list_participants(include_archive=True, *, include_excluded=False):
     """{participant_id: {"legs": {...}, "n_trials": int, "conditions": [...]}}
-    sorted by participant id, for populating a UI picker."""
-    records = discover_all_trials(include_archive=include_archive)
+    sorted by participant id, for populating a UI picker.
+
+    include_excluded=False (default, unchanged for every existing caller): a
+    participant whose every trial is excluded doesn't appear at all.
+    include_excluded=True: such a participant still appears, with
+    n_trials == 0 (excluded trials aren't counted into legs/conditions/
+    n_trials either), so AnalysisPanel can flag and let the operator
+    re-select/undo them."""
+    records = discover_all_trials(include_archive=include_archive, include_excluded=include_excluded)
     by_pid = {}
     for r in records:
         entry = by_pid.setdefault(r["participant"], {"legs": set(), "conditions": set(), "n_trials": 0})
+        if r.get("excluded"):
+            continue
         entry["legs"].add(r["leg"])
         entry["conditions"].add(r["condition"])
         entry["n_trials"] += 1
     return dict(sorted(by_pid.items(), key=lambda kv: int(kv[0])))
+
+
+def duplicate_trial_keys(records: list) -> dict:
+    """{trial_key: [path, ...]} for every trial_key shared by more than one
+    record in the given list. A pure function over an already-fetched
+    records list -- never calls discover_all_trials() itself, so the caller
+    must pass it the exact same list a table/report was already built from
+    (design spec Section 3): duplicate detection can't disagree with what's
+    on screen, and it works whether or not the caller filtered to a single
+    participant first."""
+    by_key = {}
+    for r in records:
+        by_key.setdefault(r["trial_key"], []).append(r["path"])
+    return {k: paths for k, paths in by_key.items() if len(paths) > 1}
 
 
 TRIAL_THRESHOLD = 4
