@@ -2390,12 +2390,77 @@ class AnalysisPanel(tk.Frame):
         self.status_var.set(f"{len(rows)} trial(s) loaded.")
 
     def _on_toggle_excluded(self) -> None:
-        # Stub only -- the button stays disabled in this task; the click
-        # handler (set_trials_excluded call + table/participant-list
-        # refresh) is wired up in Task 6. Needs to exist now because
-        # ws.secondary_button() above binds it as the button's command at
-        # construction time.
-        pass
+        if self._busy:
+            return
+        items = self._trial_table.selection()
+        if not items:
+            return
+        records = [self._table_row_meta[i] for i in items if i in self._table_row_meta]
+        states = {r["excluded"] for r in records}
+        if len(states) > 1:
+            messagebox.showinfo(
+                "Mixed Selection",
+                "Selected rows are a mix of excluded and included trials. "
+                "Select rows that are all in the same current state before toggling.")
+            return
+        currently_excluded = states.pop()
+        new_excluded = not currently_excluded
+        keys = list(dict.fromkeys(r["trial_key"] for r in records))   # dedupe, preserve order
+
+        dupe_keys = [k for k in keys if k in self._table_dupes]
+        if dupe_keys:
+            lines = [f"{k} -> {len(self._table_dupes[k])} files: {', '.join(self._table_dupes[k])}"
+                    for k in dupe_keys]
+            if not messagebox.askyesno(
+                    "Duplicate Trial Keys",
+                    "The following trial_key(s) map to more than one file. Toggling "
+                    "affects every trial sharing that key.\n\n" + "\n".join(lines) +
+                    "\n\nContinue?"):
+                return
+
+        self._busy = True
+        self.btn_toggle_excluded.config(state="disabled")
+        self.btn_generate.config(state="disabled")
+        try:
+            _report.set_trials_excluded(keys, new_excluded)
+        except _report.RegistryCorruptError as e:
+            self.status_var.set(
+                f"excluded_trials.json is corrupt: {e} — fix or restore it by hand before trying again.")
+            self._end_busy()
+            self.btn_generate.config(state="normal")
+            return
+        except Exception as e:
+            self.status_var.set(f"Failed to toggle exclusion: {e}")
+            self._end_busy()
+            self.btn_generate.config(state="normal")
+            return
+
+        for item in items:
+            rec = self._table_row_meta.get(item)
+            if rec is None:
+                continue
+            rec["excluded"] = new_excluded
+            tags = list(self._trial_table.item(item, "tags"))
+            if new_excluded and "excluded" not in tags:
+                tags.append("excluded")
+            elif not new_excluded and "excluded" in tags:
+                tags.remove("excluded")
+            self._trial_table.item(item, tags=tuple(tags))
+
+        self._busy = False
+        self.btn_generate.config(state="normal")
+        self._refresh_participants_preserving_selection()
+
+    def _refresh_participants_preserving_selection(self) -> None:
+        sel = self._participant_list.curselection()
+        selected_pid = list(self._participants.keys())[sel[0]] if len(sel) == 1 else None
+        self._refresh_participants()
+        if selected_pid is not None and selected_pid in self._participants:
+            idx = list(self._participants.keys()).index(selected_pid)
+            self._participant_list.selection_set(idx)
+            self._table_request_id += 1
+            self.btn_toggle_excluded.config(state="disabled")
+            self._start_table_load(idx, self._table_request_id)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -2448,6 +2513,8 @@ class AnalysisPanel(tk.Frame):
         if not _REPORT_AVAIL:
             messagebox.showerror("Unavailable", "pt_report_common could not be imported.")
             return
+        if self._busy:
+            return
         selected = self._selected_pids()
         ft = self._figure_type.get()
         needed = 2 if ft == "comparison" else 1
@@ -2458,7 +2525,9 @@ class AnalysisPanel(tk.Frame):
                 f"{needed} participant(s) selected — {len(selected)} selected.")
             return
 
+        self._busy = True
         self.btn_generate.config(state="disabled")
+        self.btn_toggle_excluded.config(state="disabled")
         self.status_var.set("Working — scoring trials, this can take a bit...")
         methodologies = tuple(m for m, v in
                               (("mediapipe", self._use_mediapipe.get()), ("imu", self._use_imu.get()))
@@ -2466,6 +2535,11 @@ class AnalysisPanel(tk.Frame):
         threading.Thread(target=self._generate_worker, args=(ft, selected, methodologies),
                          daemon=True).start()
         self.after(150, self._poll_result)
+
+    def _end_busy(self) -> None:
+        self._busy = False
+        sel = self._participant_list.curselection()
+        self.btn_toggle_excluded.config(state="normal" if len(sel) == 1 and self._trial_table.get_children() else "disabled")
 
     def _generate_worker(self, ft: str, pids: list, methodologies: tuple) -> None:
         # Only the data collection (re-reading and re-scoring every trial CSV
@@ -2496,6 +2570,7 @@ class AnalysisPanel(tk.Frame):
             return
 
         if status == "error":
+            self._end_busy()
             self.btn_generate.config(state="normal")
             self.status_var.set(f"Failed: {payload}")
             messagebox.showerror("Generation Failed", payload)
@@ -2526,11 +2601,13 @@ class AnalysisPanel(tk.Frame):
                     f"P{pid}_rmse.png", methodologies=methodologies,
                     save=True, return_fig=True)
         except Exception as e:
+            self._end_busy()
             self.btn_generate.config(state="normal")
             self.status_var.set(f"Failed: {e}")
             messagebox.showerror("Generation Failed", str(e))
             return
 
+        self._end_busy()
         self.btn_generate.config(state="normal")
         self._last_out_path = out_path
         self._show_figure(fig)

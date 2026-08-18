@@ -5,6 +5,8 @@ import tkinter as tk
 
 from matplotlib.figure import Figure
 
+import pt_report_common as _real_report
+
 
 def _root():
     r = tk.Tk(); r.withdraw(); return r
@@ -76,6 +78,8 @@ class _FakeReport:
         for r in self.records:
             if r["trial_key"] in keys:
                 r["excluded"] = excluded
+
+    RegistryCorruptError = _real_report.RegistryCorruptError
 
 
 def _wait_until_enabled(panel, root, timeout=5.0):
@@ -483,5 +487,163 @@ def test_rapid_reselection_drops_stale_table_result(monkeypatch):
         vals = [p._trial_table.item(i, "values")[3] for i in p._trial_table.get_children()]
         assert "99" not in vals
         assert fake.records[0]["trial"] in vals
+    finally:
+        r.destroy()
+
+
+def _select_and_wait_for_table(p, r, idx=0):
+    p._participant_list.selection_set(idx)
+    p._on_participant_selection_changed()
+    deadline = time.time() + 5
+    while not p._trial_table.get_children() and time.time() < deadline:
+        r.update(); time.sleep(0.02)
+
+
+def test_toggle_excluded_calls_set_trials_excluded_with_deduped_keys(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.records.append({
+        "participant": "1", "leg": "left", "condition": "pre", "trial": "1",
+        "path": "/rec_dup/P1_left_pre_trial_1.csv", "mtime": 0.0,
+        "trial_key": "1_left_pre_T1", "excluded": False,
+    })
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    monkeypatch.setattr(_m.messagebox, "askyesno", lambda *a, **k: True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        _select_and_wait_for_table(p, r)
+        # Selects all 3 rows for this participant: the base fixture's
+        # "1_left_pre_T1"/"1_left_pre_T2" plus the appended row that
+        # collides with "1_left_pre_T1". "Deduped" means the colliding
+        # key is passed once (not twice), not that the unrelated
+        # "1_left_pre_T2" key is dropped from the selection.
+        p._trial_table.selection_set(*p._trial_table.get_children())
+
+        p._on_toggle_excluded()
+
+        set_calls = [c for c in fake.calls if c[0] == "set_trials_excluded"]
+        assert len(set_calls) == 1
+        assert set_calls[0][1] == ["1_left_pre_T1", "1_left_pre_T2"]
+        assert set_calls[0][2] is True
+    finally:
+        r.destroy()
+
+
+def test_toggle_excluded_rejects_mixed_state_selection(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.records[1]["excluded"] = True
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    infos = []
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda title, msg: infos.append(msg))
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        _select_and_wait_for_table(p, r)
+        p._trial_table.selection_set(*p._trial_table.get_children())  # one excluded, one not
+
+        p._on_toggle_excluded()
+
+        assert not [c for c in fake.calls if c[0] == "set_trials_excluded"]
+        assert len(infos) == 1
+        assert "same current state" in infos[0]
+    finally:
+        r.destroy()
+
+
+def test_toggle_excluded_registry_corrupt_leaves_rows_unchanged(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+
+    def raise_corrupt(keys, excluded):
+        raise fake.RegistryCorruptError("bad json")
+
+    fake.set_trials_excluded = raise_corrupt
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        _select_and_wait_for_table(p, r)
+        item = p._trial_table.get_children()[0]
+        p._trial_table.selection_set(item)
+        before_tags = p._trial_table.item(item, "tags")
+
+        p._on_toggle_excluded()
+
+        assert p._trial_table.item(item, "tags") == before_tags
+        assert "fix or restore" in p.status_var.get()
+        assert p.btn_toggle_excluded.cget("state") == "normal"
+    finally:
+        r.destroy()
+
+
+def test_toggle_excluded_success_updates_row_tags_and_keeps_selection(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        _select_and_wait_for_table(p, r)
+        item = p._trial_table.get_children()[0]
+        p._trial_table.selection_set(item)
+
+        p._on_toggle_excluded()
+        deadline = time.time() + 5
+        while p._participant_list.curselection() != (0,) and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+
+        # Participant stays selected (not cleared by the refresh) and the
+        # table reloads to reflect the just-saved state.
+        assert p._participant_list.curselection() == (0,)
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        reloaded_item = p._trial_table.get_children()[0]
+        assert "excluded" in p._trial_table.item(reloaded_item, "tags")
+    finally:
+        r.destroy()
+
+
+def test_busy_flag_blocks_selection_change_during_generate(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._figure_type.set("full_report")
+
+        p._on_generate()
+        assert p._busy is True
+
+        # A selection change fired mid-Generate must be ignored, not queued.
+        p._participant_list.selection_set(1)
+        p._on_participant_selection_changed()
+        assert p._table_frame.winfo_manager() == ""   # never switched to table view
+
+        _wait_until_enabled(p, r)
+        assert p._busy is False
     finally:
         r.destroy()
