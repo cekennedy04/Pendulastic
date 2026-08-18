@@ -2424,6 +2424,9 @@ class AnalysisPanel(tk.Frame):
             return
         items = self._trial_table.selection()
         if not items:
+            messagebox.showinfo(
+                "Select Trials",
+                "Select one or more trial rows in the table before toggling.")
             return
         records = [self._table_row_meta[i] for i in items if i in self._table_row_meta]
         states = {r["excluded"] for r in records}
@@ -2575,6 +2578,14 @@ class AnalysisPanel(tk.Frame):
                 "Select Participants",
                 f"{'Comparison' if needed == 2 else 'This figure type'} needs exactly "
                 f"{needed} participant(s) selected — {len(selected)} selected.")
+            return
+        fully_excluded = [pid for pid in selected if self._participants[pid]["n_trials"] == 0]
+        if fully_excluded:
+            messagebox.showinfo(
+                "No Data To Generate",
+                f"Participant(s) {', '.join(fully_excluded)} have every trial "
+                "excluded -- there's nothing to generate a figure from. "
+                "Re-select participant(s) with at least one included trial.")
             return
 
         self._busy = True

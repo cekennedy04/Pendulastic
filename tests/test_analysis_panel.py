@@ -1005,3 +1005,60 @@ def test_duplicate_and_excluded_row_prioritizes_duplicate_color(monkeypatch):
             "color (amber) takes priority over excluded's (grey)")
     finally:
         r.destroy()
+
+
+def test_generate_rejects_fully_excluded_participant(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    fake.participants["3"] = {"legs": set(), "conditions": set(), "n_trials": 0}
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    infos = []
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda title, msg: infos.append(msg))
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        # P3 is the last entry inserted (participants dict is insertion-order
+        # for "1", "2", then "3" added above) -- select it via curselection index.
+        idx = list(p._participants.keys()).index("3")
+        p._participant_list.selection_set(idx)
+        p._figure_type.set("full_report")
+
+        p._on_generate()
+
+        assert p._busy is False
+        assert len(infos) == 1
+        assert "3" in infos[0]
+        assert not fake.calls   # collect_participant never called
+    finally:
+        r.destroy()
+
+
+def test_toggle_excluded_with_nothing_selected_shows_feedback(monkeypatch):
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    monkeypatch.setattr(_m, "_PT_AVAIL", False)
+    infos = []
+    monkeypatch.setattr(_m.messagebox, "showinfo", lambda title, msg: infos.append(msg))
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack(); r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._on_participant_selection_changed()
+        deadline = time.time() + 5
+        while not p._trial_table.get_children() and time.time() < deadline:
+            r.update(); time.sleep(0.02)
+        # Deliberately do not select any row.
+
+        p._on_toggle_excluded()
+
+        assert len(infos) == 1
+        assert not [c for c in fake.calls if c[0] == "set_trials_excluded"]
+    finally:
+        r.destroy()
