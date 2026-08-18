@@ -965,3 +965,45 @@ def test_set_trials_excluded_propagates_oserror_not_registry_corrupt(tmp_path, m
 
     with pytest.raises(PermissionError):
         common.set_trials_excluded(["k2"], True)
+
+
+def test_set_trials_excluded_retries_once_on_replace_failure(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(32, "The process cannot access the file because it is being used by another process")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(common.os, "replace", flaky_replace)
+    monkeypatch.setattr(common.time, "sleep", lambda s: None)   # don't actually wait in tests
+
+    common.set_trials_excluded(["k1"], True)
+
+    assert calls["n"] == 2
+    assert "k1" in common.load_excluded_trials()
+    assert list(tmp_path.iterdir()) == [reg_path]   # temp file cleaned up
+
+
+def test_set_trials_excluded_raises_clear_message_after_two_failures(tmp_path, monkeypatch):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps({"other_key": "pre-existing reason"}))
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    original_content = reg_path.read_text()
+
+    def always_fails(src, dst):
+        raise OSError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(common.os, "replace", always_fails)
+    monkeypatch.setattr(common.time, "sleep", lambda s: None)
+
+    with pytest.raises(OSError) as exc_info:
+        common.set_trials_excluded(["k1"], True)
+
+    assert "retried once" in str(exc_info.value)
+    assert reg_path.read_text() == original_content
+    assert list(tmp_path.iterdir()) == [reg_path]   # temp file cleaned up, original untouched

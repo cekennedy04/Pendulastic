@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 
 from datetime import datetime, timezone
 
@@ -413,7 +414,24 @@ def set_trials_excluded(keys: list, excluded: bool) -> None:
             # file where the old good one used to be.
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
+        try:
+            os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
+        except OSError:
+            # On Windows, os.replace can transiently fail with a sharing
+            # violation (WinError 32) if another thread/process has
+            # EXCLUDED_TRIALS_PATH open for reading at this exact instant --
+            # e.g. AnalysisPanel's background trial-table worker calling
+            # load_excluded_trials() concurrently with this write. One short
+            # retry clears the overwhelming majority of these without
+            # surfacing a confusing raw WinError to the operator.
+            time.sleep(0.05)
+            try:
+                os.replace(tmp_path, EXCLUDED_TRIALS_PATH)
+            except OSError as e:
+                raise OSError(
+                    f"{e} (retried once and still failed -- another process "
+                    f"or thread may still have {EXCLUDED_TRIALS_PATH} open; "
+                    f"try again)") from e
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
