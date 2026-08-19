@@ -280,6 +280,33 @@ def test_append_mas_score_rejects_invalid_grade(tmp_path):
         "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date"]
 
 
+def test_append_mas_score_accepts_pending_mas_grade_sentinel(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    mv.append_mas_score(
+        {"participant": "15", "leg": "left", "condition": "pre",
+         "diagnosis": "", "mas_grade": mv.PENDING_MAS_GRADE,
+         "assessed_by": "", "assessed_date": "",
+         "mas_flexion": "1+", "mas_extension": "0"},
+        csv_path=str(csv_path))
+    rows = mv.load_mas_scores(str(csv_path))
+    assert rows[0]["mas_grade"] == "-1"
+    assert rows[0]["mas_flexion"] == "1+"
+
+
+def test_pending_mas_grade_is_skipped_not_ranked_by_pair_pt_and_mas():
+    # PENDING_MAS_GRADE must never reach MAS_RANK -- pair_pt_and_mas() already
+    # skips (with a _skip_reason) any mas_grade outside MAS_ORDER, so a
+    # pending row is automatically excluded from every downstream statistic
+    # with zero changes to that function.
+    assert mv.PENDING_MAS_GRADE not in mv.MAS_RANK
+    rows = [{"participant": "15", "leg": "left", "condition": "pre",
+             "mas_grade": mv.PENDING_MAS_GRADE}]
+    result = mv.pair_pt_and_mas(rows, pt_lookup=lambda p, l, c: 0.5)
+    assert len(result) == 1
+    assert "_skip_reason" in result[0]
+    assert "pt_score" not in result[0]
+
+
 def test_append_mas_score_round_trips_through_load_mas_scores(tmp_path):
     csv_path = tmp_path / "mas_scores.csv"
     csv_path.write_text(

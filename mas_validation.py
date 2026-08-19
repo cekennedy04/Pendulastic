@@ -60,6 +60,16 @@ FIGURE_PNG = os.path.join(OUT_DIR, "mas_validation_figure.png")
 MAS_ORDER = pt.MAS_ORDER
 MAS_RANK = pt.MAS_RANK
 
+# Sentinel for "overall grade not assessed yet" -- flexion/extension can be
+# recorded and the overall grade filled in later. Deliberately NOT added to
+# MAS_ORDER/MAS_RANK: append_mas_score() accepts it (see PENDING_MAS_GRADE
+# check below), but pair_pt_and_mas()/pair_pt_and_mas_by_direction()'s
+# _valid_grade() check only recognizes MAS_ORDER's real grades, so a pending
+# row is automatically skipped (with a _skip_reason) from every downstream
+# statistic and threshold-fit with zero changes to that code -- it can never
+# silently corrupt an ordinal computation the way adding it to MAS_RANK would.
+PENDING_MAS_GRADE = "-1"
+
 # Unlike condition/diagnosis/assessed_by (free text, never validated),
 # stronger_leg is a closed enum like mas_grade -- "" means not assessed.
 STRONGER_LEG_OPTIONS = ["", "left", "right", "equal"]
@@ -236,19 +246,22 @@ def load_mas_scores(csv_path):
 
 def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     """Appends one clinician MAS assessment to csv_path. Raises ValueError
-    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER, or if
-    row["stronger_leg"] is present and isn't one of STRONGER_LEG_OPTIONS, or
-    if row["mas_flexion"] or row["mas_extension"] are present and non-blank
-    but not one of MAS_ORDER. Reads the file's own current header rather than
-    assuming a fixed column set, so this stays correct even if mas_scores.csv's
-    schema drifts again the way it already has once (see module docstring).
+    (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER or
+    PENDING_MAS_GRADE, or if row["stronger_leg"] is present and isn't one of
+    STRONGER_LEG_OPTIONS, or if row["mas_flexion"] or row["mas_extension"] are
+    present and non-blank but not one of MAS_ORDER. Reads the file's own
+    current header rather than assuming a fixed column set, so this stays
+    correct even if mas_scores.csv's schema drifts again the way it already
+    has once (see module docstring).
 
     If csv_path doesn't exist yet it's created with the DEFAULT_MAS_FIELDS
     header -- mas_scores.csv is gitignored, so on a fresh checkout the very
     first save would otherwise die with FileNotFoundError."""
     grade = row.get("mas_grade", "")
-    if not _valid_grade(grade):
-        raise ValueError(f"invalid mas_grade {grade!r} (must be one of {MAS_ORDER})")
+    if not (_valid_grade(grade) or grade == PENDING_MAS_GRADE):
+        raise ValueError(
+            f"invalid mas_grade {grade!r} (must be one of {MAS_ORDER} or "
+            f"{PENDING_MAS_GRADE!r} for 'not yet assessed')")
     stronger_leg = row.get("stronger_leg", "")
     if not _valid_stronger_leg(stronger_leg):
         raise ValueError(
