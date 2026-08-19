@@ -6,7 +6,12 @@ the full design.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import tempfile
 import threading
+import time
 
 
 def _splice_from(old: list, start_idx: int, new: list, pad_value) -> list:
@@ -32,6 +37,190 @@ from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click
 
 _MAX_DISPLAY_WIDTH = 960
 
+CORRECTIONS_SCHEMA_VERSION = 1
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _video_fingerprint(video_path: str) -> dict:
+    """Identity fingerprint for a video file: a full-file SHA-256 content
+    hash, plus size, mtime, and MediaPipe-visible frame count. The hash is
+    the actual identity check -- size/mtime/frame_count alone can
+    coincidentally match a replacement video (same dimensions/duration,
+    re-saved at the same path), which would let that video silently inherit
+    another trial's corrections. Trial videos in this repo are ~15-20MB, so
+    hashing the whole file is fast (well under a second); reading in 1MB
+    chunks avoids loading the whole file into memory at once."""
+    size = os.path.getsize(video_path)
+    mtime = os.path.getmtime(video_path)
+    cap = _cv2.VideoCapture(video_path)
+    try:
+        frame_count = max(1, int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)))
+    finally:
+        cap.release()
+    hasher = hashlib.sha256()
+    with open(video_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return {"size": size, "mtime": mtime, "frame_count": frame_count,
+            "sha256": hasher.hexdigest()}
+
+
+def _corrections_path(video_path: str, leg: str) -> str:
+    """Per-leg sidecar path. The dialog tracks one leg per session, and a
+    clinician reviewing both legs of the same video is a routine workflow --
+    a single shared path would let saving the second leg's corrections
+    silently overwrite and destroy the first leg's already-saved
+    corrections. Keying the file itself by leg (not just a `leg` field
+    inside a shared doc) makes that collision structurally impossible."""
+    return f"{video_path}.corrections.{leg}.json"
+
+
+def _other_leg(leg: str):
+    """Returns the opposite leg for the two known values, or None for
+    anything else (defensive -- never guess for an unrecognized leg
+    string)."""
+    if leg == "left":
+        return "right"
+    if leg == "right":
+        return "left"
+    return None
+
+
+def _landmark_to_json(lm):
+    if lm is None:
+        return None
+    hip, knee, ankle = lm
+    def _pt(p):
+        return None if p is None else [p[0], p[1]]
+    return [_pt(hip), _pt(knee), _pt(ankle)]
+
+
+def _landmark_from_json(obj):
+    if obj is None:
+        return None
+    hip, knee, ankle = obj
+    def _pt(p):
+        if p is None:
+            return None
+        x, y = p
+        return (float(x), float(y))  # raises on a non-numeric coordinate
+    return (_pt(hip), _pt(knee), _pt(ankle))
+
+
+def _build_corrections_doc(fingerprint: dict, events: list, angles: list,
+                           landmarks: list, leg: str) -> dict:
+    return {
+        "schema_version": CORRECTIONS_SCHEMA_VERSION,
+        "video_fingerprint": dict(fingerprint),
+        "leg": leg,
+        "events": list(events),
+        "corrected_angles": list(angles),
+        "corrected_landmarks": [_landmark_to_json(lm) for lm in landmarks],
+    }
+
+
+def _save_corrections(video_path: str, fingerprint: dict, events: list,
+                      angles: list, landmarks: list, leg: str) -> None:
+    """Writes the corrections sidecar. IO/serialization errors propagate to
+    the caller -- this layer does not swallow them; only the dialog's button
+    handler (the UI layer) turns a failure into a status message.
+
+    Writes to a temp path and atomically os.replace()s it into place
+    (matching sweep_mediapipe_preprocessing.py's _save_cache pattern) so a
+    crash or failure mid-write can never leave a truncated/corrupt sidecar
+    in place of a previously-valid one -- the old file stays intact until
+    the new one is fully written and the swap is atomic.
+
+    Uses a uniquely-named temp file (tempfile.mkstemp, same directory as the
+    destination so os.replace stays on one filesystem) rather than a fixed
+    "<path>.tmp" name -- two writers saving the same video/leg at once (two
+    app instances pointed at the same file, observed as a real scenario in
+    this repo) would otherwise collide on that shared temp name. The temp
+    file is removed on any failure before the swap, so a failed save never
+    leaves stray partial files behind."""
+    doc = _build_corrections_doc(fingerprint, events, angles, landmarks, leg)
+    path = _corrections_path(video_path, leg)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(os.path.abspath(path)) or ".",
+        prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _load_corrections(video_path: str, leg: str):
+    """Reads and validates a corrections sidecar for video_path/leg. Returns
+    the parsed doc only when ALL of the following hold, otherwise returns
+    None: it exists at this leg's own path and parses as JSON; its
+    schema_version matches; its stored `leg` field also matches (defense in
+    depth against a sidecar file being manually copied/renamed across legs
+    -- the path is the primary separation, this is a second check); its
+    stored video_fingerprint (including content hash) matches the video's
+    CURRENT fingerprint; corrected_angles/corrected_landmarks are both
+    lists of equal length AND that length matches the video's actual
+    frame_count (not just each other -- two equal-but-wrong-length arrays
+    must not pass); every angle is float-convertible; and every landmark
+    coordinate is float-convertible. Never raises: a missing, malformed,
+    wrong-leg, stale, or structurally-corrupt sidecar must be treated as
+    "no saved corrections", not crash the dialog."""
+    path = _corrections_path(video_path, leg)
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        if doc.get("schema_version") != CORRECTIONS_SCHEMA_VERSION:
+            return None
+        if doc.get("leg") != leg:
+            return None
+        fingerprint = doc.get("video_fingerprint")
+        if fingerprint != _video_fingerprint(video_path):
+            return None
+        corrected_angles = doc.get("corrected_angles")
+        corrected_landmarks = doc.get("corrected_landmarks")
+        frame_count = fingerprint.get("frame_count")
+        if (not isinstance(corrected_angles, list)
+                or not isinstance(corrected_landmarks, list)
+                or len(corrected_angles) != len(corrected_landmarks)
+                or len(corrected_angles) != frame_count):
+            return None
+        for a in corrected_angles:
+            float(a)  # raises on a non-numeric angle
+        for lm in corrected_landmarks:
+            _landmark_from_json(lm)  # raises on a malformed/non-numeric entry
+        return doc
+    except Exception:
+        return None
+
+
+def _apply_exclusion(angles: list, landmarks: list, frame_idx_a: int,
+                     frame_idx_b: int):
+    """Returns (new_angles, new_landmarks, event) with frames
+    [min(a,b), max(a,b)] (inclusive, clamped to the array bounds) set to
+    NaN/None -- marking that span unscoreable. Works regardless of scrub
+    direction (a > b is fine, matching a clinician scrubbing backwards to
+    set the exclusion end). Never mutates the input lists, matching
+    _splice_from's existing "never mutates old/new" convention."""
+    n = len(angles)
+    start = max(0, min(frame_idx_a, frame_idx_b))
+    end = min(n - 1, max(frame_idx_a, frame_idx_b))
+    new_angles = list(angles)
+    new_landmarks = list(landmarks)
+    for i in range(start, end + 1):
+        new_angles[i] = float("nan")
+        new_landmarks[i] = None
+    event = {"type": "exclude_range", "start_frame": start,
+             "end_frame": end, "at": _now_iso()}
+    return new_angles, new_landmarks, event
+
 
 class AnnotatedVideoReviewDialog(tk.Toplevel):
     """Modal review dialog: scrubs/plays back precomputed MediaPipe angle +
@@ -50,6 +239,33 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self.leg = leg
         self.engine = engine
 
+        self._pending_exclude_start: int | None = None
+        self._events: list = []
+        self._pending_status: str | None = None
+        own_sidecar_exists = os.path.isfile(_corrections_path(video_path, leg))
+        loaded = _load_corrections(video_path, leg)
+        if loaded is not None:
+            self.angles = [float(a) for a in loaded.get("corrected_angles", [])]
+            self.landmarks = [_landmark_from_json(lm)
+                              for lm in loaded.get("corrected_landmarks", [])]
+            self._events = list(loaded.get("events", []))
+            self._pending_status = (
+                f"Loaded {len(self._events)} saved correction event(s).")
+        elif own_sidecar_exists:
+            # This leg has its own sidecar, but it failed validation (stale
+            # video, wrong schema, or structurally corrupt) -- not a
+            # cross-leg issue, since each leg now has its own path.
+            self._pending_status = (
+                "Saved corrections found but video has changed since -- "
+                "ignoring.")
+        else:
+            other_leg = _other_leg(leg)
+            if other_leg is not None and os.path.isfile(
+                    _corrections_path(video_path, other_leg)):
+                self._pending_status = (
+                    "Saved corrections exist for the other leg on this "
+                    "video -- not applied here.")
+
         self._cap = _cv2.VideoCapture(video_path)
         self.total_frames = max(
             1, int(self._cap.get(_cv2.CAP_PROP_FRAME_COUNT)))
@@ -59,6 +275,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._retrack_in_progress = False
 
         self._build_widgets()
+        if self._pending_status:
+            self.status_var.set(self._pending_status)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.transient(parent)
         self.grab_set()
@@ -87,6 +305,18 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_fix = tk.Button(
             button_row, text="Fix Person Here", command=self._on_fix_person_here)
         self._btn_fix.pack(side="left", padx=8)
+        self._btn_exclude_from = tk.Button(
+            button_row, text="Exclude From Here",
+            command=self._on_exclude_from_here)
+        self._btn_exclude_from.pack(side="left", padx=8)
+        self._btn_exclude_to = tk.Button(
+            button_row, text="Exclude To Here",
+            command=self._on_exclude_to_here)
+        self._btn_exclude_to.pack(side="left", padx=8)
+        self._btn_save = tk.Button(
+            button_row, text="Save Corrections",
+            command=self._on_save_corrections)
+        self._btn_save.pack(side="left", padx=8)
         self._btn_done = tk.Button(
             button_row, text="Done", command=self._on_close)
         self._btn_done.pack(side="right")
@@ -263,6 +493,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
                                     float("nan"))
         self.landmarks = _splice_from(self.landmarks, start_frame,
                                        new_landmarks, None)
+        self._events.append({"type": "retrack", "start_frame": start_frame,
+                             "at": _now_iso()})
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
         self.status_var.set(f"Retrack complete from frame {start_frame}.")
@@ -272,3 +504,44 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
         self.status_var.set(f"Retrack failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Corrections: frame-range exclusion + persistence
+    # ------------------------------------------------------------------
+    def _on_exclude_from_here(self) -> None:
+        if self._retrack_in_progress:
+            return
+        self._pending_exclude_start = self._frame_idx
+        self.status_var.set(
+            f"Exclusion start set at frame {self._frame_idx} -- scrub to "
+            "the end and click 'Exclude To Here'.")
+
+    def _on_exclude_to_here(self) -> None:
+        if self._retrack_in_progress:
+            return
+        if self._pending_exclude_start is None:
+            self.status_var.set(
+                "No exclusion start set -- click 'Exclude From Here' first.")
+            return
+        self.angles, self.landmarks, event = _apply_exclusion(
+            self.angles, self.landmarks, self._pending_exclude_start,
+            self._frame_idx)
+        self._events.append(event)
+        self._pending_exclude_start = None
+        self._redraw()
+        self.status_var.set(
+            f"Excluded frames {event['start_frame']}-{event['end_frame']}.")
+
+    def _on_save_corrections(self) -> None:
+        if self._retrack_in_progress:
+            return
+        try:
+            fingerprint = _video_fingerprint(self.video_path)
+            _save_corrections(self.video_path, fingerprint, self._events,
+                              self.angles, self.landmarks, self.leg)
+        except Exception as exc:
+            self.status_var.set(f"Save failed: {exc}")
+            return
+        self.status_var.set(
+            f"Saved {len(self._events)} correction event(s) to "
+            f"{_corrections_path(self.video_path, self.leg)}.")
