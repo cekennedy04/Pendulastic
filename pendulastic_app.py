@@ -2803,24 +2803,44 @@ class MasEntryPanel(tk.Frame):
                     values=list(_mas_validation.MAS_ORDER)).grid(
             row=5, column=1, sticky="w", **pad)
 
-        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
+        # Optional, direction-specific grades (design spec
+        # docs/superpowers/specs/2026-08-18-mas-flexion-extension-design.md)
+        # -- unlike MAS Grade above, these start blank and stay optional, so
+        # each combobox gets a leading blank choice meaning "not assessed."
+        tk.Label(form, text="MAS Flexion:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=6, column=0, sticky="e", **pad)
-        self.assessed_by_var = tk.StringVar()
-        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
+        self.mas_flexion_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self.mas_flexion_var, width=19,
+                    state="readonly",
+                    values=[""] + list(_mas_validation.MAS_ORDER)).grid(
             row=6, column=1, sticky="w", **pad)
 
-        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+        tk.Label(form, text="MAS Extension:", bg=ws.PALETTE["BG"],
                  fg=ws.PALETTE["FG"]).grid(row=7, column=0, sticky="e", **pad)
+        self.mas_extension_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self.mas_extension_var, width=19,
+                    state="readonly",
+                    values=[""] + list(_mas_validation.MAS_ORDER)).grid(
+            row=7, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed By:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=8, column=0, sticky="e", **pad)
+        self.assessed_by_var = tk.StringVar()
+        tk.Entry(form, textvariable=self.assessed_by_var, width=22).grid(
+            row=8, column=1, sticky="w", **pad)
+
+        tk.Label(form, text="Assessed Date:", bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG"]).grid(row=9, column=0, sticky="e", **pad)
         self.assessed_date_var = tk.StringVar(
             value=_datetime.date.today().isoformat())
         tk.Entry(form, textvariable=self.assessed_date_var, width=22).grid(
-            row=7, column=1, sticky="w", **pad)
+            row=9, column=1, sticky="w", **pad)
 
         tk.Label(form, text="Notes:", bg=ws.PALETTE["BG"],
-                 fg=ws.PALETTE["FG"]).grid(row=8, column=0, sticky="ne", **pad)
+                 fg=ws.PALETTE["FG"]).grid(row=10, column=0, sticky="ne", **pad)
         self.notes_text = tk.Text(form, height=3, width=22, wrap="word",
                                   bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG"])
-        self.notes_text.grid(row=8, column=1, sticky="w", **pad)
+        self.notes_text.grid(row=10, column=1, sticky="w", **pad)
 
         # Single feedback channel for the form: errors in amber, save
         # confirmations in green (see _set_feedback).
@@ -2915,6 +2935,8 @@ class MasEntryPanel(tk.Frame):
             "assessed_date": self.assessed_date_var.get().strip(),
             "stronger_leg": self.stronger_leg_var.get().strip().lower(),
             "notes": self.notes_text.get("1.0", "end").strip(),
+            "mas_flexion": self.mas_flexion_var.get().strip(),
+            "mas_extension": self.mas_extension_var.get().strip(),
         }
         try:
             _mas_validation.append_mas_score(row)
@@ -2934,6 +2956,8 @@ class MasEntryPanel(tk.Frame):
         # which typically holds across both legs' rows for the same session.
         self._set_feedback(f"Saved {participant} {row['leg']} / {mas_grade}.", ok=True)
         self.mas_grade_var.set("")
+        self.mas_flexion_var.set("")
+        self.mas_extension_var.set("")
         self.notes_text.delete("1.0", "end")
         self.refresh()
 

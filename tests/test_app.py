@@ -1991,6 +1991,8 @@ def test_mas_entry_panel_save_appends_and_refreshes(monkeypatch):
             "assessed_date": "2026-08-07",
             "stronger_leg": "",
             "notes": "",
+            "mas_flexion": "",
+            "mas_extension": "",
         }
         assert app._mas_entry._current_canvas is not None
     finally:
@@ -2764,5 +2766,83 @@ def test_start_optitrack_recording_sends_relpath_matching_master_app_layout(monk
         assert len(sent) == 1, "must trigger motive_sync exactly once"
         expected_relpath = os.path.join("Participant_P1", "Right", "MS")
         assert f"relpath={expected_relpath}" in sent[0]
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_mas_flexion_extension_default_blank():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        assert app._mas_entry.mas_flexion_var.get() == ""
+        assert app._mas_entry.mas_extension_var.get() == ""
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_includes_mas_flexion_and_extension(monkeypatch):
+    import pendulastic_app as _m
+    append_calls = []
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score",
+                        lambda row, **kw: append_calls.append(row))
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry.mas_flexion_var.set("1+")
+        app._mas_entry.mas_extension_var.set("2")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert len(append_calls) == 1
+        assert append_calls[0]["mas_flexion"] == "1+"
+        assert append_calls[0]["mas_extension"] == "2"
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_clears_mas_flexion_and_extension(monkeypatch):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score", lambda row, **kw: None)
+    monkeypatch.setattr(_m._mas_validation, "load_mas_scores", lambda path: [])
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        app._mas_entry.mas_flexion_var.set("1+")
+        app._mas_entry.mas_extension_var.set("2")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert app._mas_entry.mas_flexion_var.get() == ""
+        assert app._mas_entry.mas_extension_var.get() == ""
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_panel_save_shows_error_on_invalid_mas_flexion(monkeypatch):
+    import pendulastic_app as _m
+
+    def raise_invalid(row, **kw):
+        raise ValueError(f"invalid mas_flexion {row['mas_flexion']!r} (must be one of [])")
+    monkeypatch.setattr(_m._mas_validation, "append_mas_score", raise_invalid)
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._mas_entry.pid_var.set("20")
+        app._mas_entry.mas_grade_var.set("1")
+        # Both new fields are readonly ttk.Combobox widgets, so an operator
+        # can't type an invalid value through the UI -- this exercises the
+        # data-layer validation path directly via the StringVar, the same
+        # way test_mas_entry_panel_save_shows_error_on_invalid_grade already
+        # does for mas_grade_var.
+        app._mas_entry.mas_flexion_var.set("bogus")
+        app._mas_entry._on_save_clicked()
+        app.update()
+        assert "invalid mas_flexion" in app._mas_entry.error_var.get()
     finally:
         app.destroy()
