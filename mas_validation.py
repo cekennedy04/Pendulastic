@@ -72,14 +72,20 @@ STRONGER_LEG_OPTIONS = ["", "left", "right", "equal"]
 # is left alone deliberately.
 DEFAULT_MAS_FIELDS = ["participant", "leg", "condition", "diagnosis",
                       "mas_grade", "assessed_by", "assessed_date",
-                      "stronger_leg", "notes"]
+                      "stronger_leg", "notes", "mas_flexion", "mas_extension"]
 
-# append_mas_score() only ever widens mas_scores.csv's header for these two
+# append_mas_score() only ever widens mas_scores.csv's header for these
 # fields -- an explicit allowlist, not "any key in row the header lacks".
 # Widening on any unrecognized key would let a future typo'd dict key
 # permanently become a CSV column; an unrelated stray key still falls
 # through to the existing extrasaction="ignore" append behavior instead.
-WIDENABLE_MAS_FIELDS = ["stronger_leg", "notes"]
+# mas_flexion/mas_extension (design spec
+# docs/superpowers/specs/2026-08-18-mas-flexion-extension-design.md) are
+# optional, direction-specific companions to mas_grade -- appended at the
+# end of both lists, matching where widening always inserts new columns
+# (see the `widened = list(fieldnames) + new_fields` line below), so a
+# freshly-created file's column order matches a widened legacy file's.
+WIDENABLE_MAS_FIELDS = ["stronger_leg", "notes", "mas_flexion", "mas_extension"]
 
 _MIN_N_FOR_CONFIDENCE = 5
 _MIN_CLASS_N_FOR_ROC = 3
@@ -196,6 +202,14 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     if not _valid_stronger_leg(stronger_leg):
         raise ValueError(
             f"invalid stronger_leg {stronger_leg!r} (must be one of {STRONGER_LEG_OPTIONS})")
+    # mas_flexion/mas_extension are optional -- blank means "not assessed"
+    # and is always valid, distinct from an invalid non-blank value.
+    mas_flexion = row.get("mas_flexion", "")
+    if mas_flexion and not _valid_grade(mas_flexion):
+        raise ValueError(f"invalid mas_flexion {mas_flexion!r} (must be one of {MAS_ORDER})")
+    mas_extension = row.get("mas_extension", "")
+    if mas_extension and not _valid_grade(mas_extension):
+        raise ValueError(f"invalid mas_extension {mas_extension!r} (must be one of {MAS_ORDER})")
     if not os.path.exists(csv_path):
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=DEFAULT_MAS_FIELDS).writeheader()

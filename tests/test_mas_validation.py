@@ -31,7 +31,7 @@ def test_valid_grade_rejects_anything_else(grade):
 
 
 def test_default_mas_fields_includes_new_columns():
-    assert mv.DEFAULT_MAS_FIELDS[-2:] == ["stronger_leg", "notes"]
+    assert mv.DEFAULT_MAS_FIELDS[-4:] == ["stronger_leg", "notes", "mas_flexion", "mas_extension"]
 
 
 @pytest.mark.parametrize("value", ["", "left", "right", "equal"])
@@ -307,8 +307,9 @@ def test_append_mas_score_creates_file_with_header_if_missing(tmp_path):
         csv_path=str(csv_path))
     assert csv_path.exists()
     lines = csv_path.read_text().splitlines()
-    assert lines[0] == "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date,stronger_leg,notes"
-    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07,,"
+    assert lines[0] == ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+                        "assessed_date,stronger_leg,notes,mas_flexion,mas_extension")
+    assert lines[1] == "20,left,pre,multiple sclerosis,1+,VL,2026-08-07,,,,"
 
     rows = mv.load_mas_scores(str(csv_path))
     assert len(rows) == 1
@@ -542,7 +543,7 @@ def test_append_mas_score_widens_empty_file_ignores_unrecognized_keys(tmp_path):
     lines = csv_path.read_text().splitlines()
     assert lines[0] == ",".join(mv.DEFAULT_MAS_FIELDS)
     assert "stronger_le" not in lines[0].split(",")
-    assert len(lines[0].split(",")) == 9
+    assert len(lines[0].split(",")) == len(mv.DEFAULT_MAS_FIELDS)
 
 
 def test_append_mas_score_raises_on_blank_first_line_with_data_below(tmp_path):
@@ -564,3 +565,68 @@ def test_append_mas_score_raises_on_blank_first_line_with_data_below(tmp_path):
              "stronger_leg": "right", "notes": ""},
             csv_path=str(csv_path))
     assert csv_path.read_text() == original
+
+
+def test_append_mas_score_accepts_blank_mas_flexion_and_extension(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "2026-08-07"},
+        csv_path=str(csv_path))
+    rows = mv.load_mas_scores(str(csv_path))
+    assert rows[0]["mas_flexion"] == ""
+    assert rows[0]["mas_extension"] == ""
+
+
+def test_append_mas_score_accepts_valid_mas_flexion_and_extension(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1+",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "mas_flexion": "2", "mas_extension": "1"},
+        csv_path=str(csv_path))
+    rows = mv.load_mas_scores(str(csv_path))
+    assert rows[0]["mas_flexion"] == "2"
+    assert rows[0]["mas_extension"] == "1"
+
+
+def test_append_mas_score_rejects_invalid_mas_flexion(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    with pytest.raises(ValueError, match="invalid mas_flexion"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "pre",
+             "diagnosis": "", "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "mas_flexion": "5"},
+            csv_path=str(csv_path))
+    assert not csv_path.exists()
+
+
+def test_append_mas_score_rejects_invalid_mas_extension(tmp_path):
+    csv_path = tmp_path / "new.csv"
+    with pytest.raises(ValueError, match="invalid mas_extension"):
+        mv.append_mas_score(
+            {"participant": "20", "leg": "left", "condition": "pre",
+             "diagnosis": "", "mas_grade": "1", "assessed_by": "", "assessed_date": "",
+             "mas_extension": "banana"},
+            csv_path=str(csv_path))
+    assert not csv_path.exists()
+
+
+def test_append_mas_score_widens_header_for_mas_flexion_and_extension(tmp_path):
+    csv_path = tmp_path / "mas_scores.csv"
+    csv_path.write_text(
+        "participant,leg,condition,diagnosis,mas_grade,assessed_by,assessed_date\n"
+        "13,right,pre,multiple sclerosis,1,VL,2026-08-01\n")
+    mv.append_mas_score(
+        {"participant": "20", "leg": "left", "condition": "pre",
+         "diagnosis": "multiple sclerosis", "mas_grade": "1",
+         "assessed_by": "VL", "assessed_date": "2026-08-07",
+         "mas_flexion": "2", "mas_extension": "1+"},
+        csv_path=str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ("participant,leg,condition,diagnosis,mas_grade,assessed_by,"
+                        "assessed_date,mas_flexion,mas_extension")
+    assert lines[1] == "13,right,pre,multiple sclerosis,1,VL,2026-08-01,,"
+    assert lines[2] == "20,left,pre,multiple sclerosis,1,VL,2026-08-07,2,1+"
