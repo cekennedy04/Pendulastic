@@ -237,10 +237,11 @@ def load_mas_scores(csv_path):
 def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     """Appends one clinician MAS assessment to csv_path. Raises ValueError
     (no write attempted) if row["mas_grade"] isn't one of MAS_ORDER, or if
-    row["stronger_leg"] is present and isn't one of STRONGER_LEG_OPTIONS.
-    Reads the file's own current header rather than assuming a fixed column
-    set, so this stays correct even if mas_scores.csv's schema drifts again
-    the way it already has once (see module docstring).
+    row["stronger_leg"] is present and isn't one of STRONGER_LEG_OPTIONS, or
+    if row["mas_flexion"] or row["mas_extension"] are present and non-blank
+    but not one of MAS_ORDER. Reads the file's own current header rather than
+    assuming a fixed column set, so this stays correct even if mas_scores.csv's
+    schema drifts again the way it already has once (see module docstring).
 
     If csv_path doesn't exist yet it's created with the DEFAULT_MAS_FIELDS
     header -- mas_scores.csv is gitignored, so on a fresh checkout the very
@@ -286,7 +287,7 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
         # of guessing.
         raise ValueError(
             f"{csv_path}: header row is blank -- fix this file by hand "
-            f"before stronger_leg/notes can be added automatically")
+            f"before new columns can be added automatically")
 
     new_fields = [k for k in WIDENABLE_MAS_FIELDS
                  if k in row and k not in fieldnames]
@@ -299,7 +300,7 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
     if len(set(fieldnames)) != len(fieldnames):
         raise ValueError(
             f"{csv_path}: header has a duplicate column name -- fix this "
-            f"file by hand before stronger_leg/notes can be added automatically")
+            f"file by hand before new columns can be added automatically")
 
     with open(csv_path, newline="", encoding="utf-8") as f:
         existing_rows = list(csv.DictReader(f))
@@ -309,7 +310,7 @@ def append_mas_score(row: dict, csv_path=MAS_CSV) -> None:
             raise ValueError(
                 f"{csv_path}: row {i} has more fields than the header "
                 f"({len(fieldnames)} columns) -- fix this row by hand before "
-                f"stronger_leg/notes can be added automatically")
+                f"new columns can be added automatically")
 
     widened = list(fieldnames) + new_fields
     _atomic_write_mas_csv(csv_path, widened, existing_rows, row)
