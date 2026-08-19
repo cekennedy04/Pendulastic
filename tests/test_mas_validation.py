@@ -680,3 +680,99 @@ def test_pt_lookup_factory_rejects_invalid_direction():
 def test_pt_lookup_factory_direction_is_keyword_only():
     with pytest.raises(TypeError):
         mv._pt_lookup_factory("flexion")
+
+
+# ── pair_pt_and_mas_by_direction ────────────────────────────────────────────
+
+def test_pair_pt_and_mas_by_direction_blank_produces_no_entry():
+    rows = [{"participant": "13", "leg": "right", "condition": "pre",
+             "mas_grade": "2", "mas_flexion": "", "mas_extension": ""}]
+    flexion, extension = mv.pair_pt_and_mas_by_direction(
+        rows, pt_lookup_flexion=lambda p, l, c: 1.0, pt_lookup_extension=lambda p, l, c: 1.0)
+    assert flexion == []
+    assert extension == []
+
+
+def test_pair_pt_and_mas_by_direction_produces_canonical_pair_keys():
+    rows = [{"participant": "13", "leg": "right", "condition": "pre",
+             "mas_grade": "2", "mas_flexion": "1+", "mas_extension": "3"}]
+    flexion, extension = mv.pair_pt_and_mas_by_direction(
+        rows, pt_lookup_flexion=lambda p, l, c: 0.4, pt_lookup_extension=lambda p, l, c: 0.9)
+    assert len(flexion) == 1 and len(extension) == 1
+    assert flexion[0]["mas_grade"] == "1+"     # direction-specific value, shadows row's overall "2"
+    assert flexion[0]["pt_score"] == 0.4
+    assert flexion[0]["predicted_mas"] in mv.MAS_ORDER
+    assert flexion[0]["direction"] == "flexion"
+    assert extension[0]["mas_grade"] == "3"
+    assert extension[0]["direction"] == "extension"
+
+
+def test_pair_pt_and_mas_by_direction_invalid_grade_gets_skip_reason():
+    rows = [{"participant": "13", "leg": "right", "condition": "pre",
+             "mas_grade": "2", "mas_flexion": "5", "mas_extension": ""}]
+    flexion, extension = mv.pair_pt_and_mas_by_direction(
+        rows, pt_lookup_flexion=lambda p, l, c: 1.0, pt_lookup_extension=lambda p, l, c: 1.0)
+    assert len(flexion) == 1
+    assert "_skip_reason" in flexion[0]
+    assert "invalid mas_flexion" in flexion[0]["_skip_reason"]
+    assert extension == []
+
+
+def test_pair_pt_and_mas_by_direction_no_pt_match_gets_skip_reason_not_dropped():
+    rows = [{"participant": "13", "leg": "right", "condition": "pre",
+             "mas_grade": "2", "mas_flexion": "1", "mas_extension": ""}]
+    flexion, extension = mv.pair_pt_and_mas_by_direction(
+        rows, pt_lookup_flexion=lambda p, l, c: None, pt_lookup_extension=lambda p, l, c: None)
+    assert len(flexion) == 1
+    assert "_skip_reason" in flexion[0]
+    assert "no matching flexion trial data" in flexion[0]["_skip_reason"]
+
+
+def test_pair_pt_and_mas_by_direction_independent_sides():
+    rows = [{"participant": "13", "leg": "right", "condition": "pre",
+             "mas_grade": "2", "mas_flexion": "1", "mas_extension": ""}]
+    flexion, extension = mv.pair_pt_and_mas_by_direction(
+        rows, pt_lookup_flexion=lambda p, l, c: 0.5, pt_lookup_extension=lambda p, l, c: 0.5)
+    assert len(flexion) == 1 and "_skip_reason" not in flexion[0]
+    assert extension == []
+
+
+def test_direction_pairs_work_unmodified_with_compute_validation_stats():
+    rows = [
+        {"participant": "1", "leg": "right", "condition": "pre", "mas_grade": "2",
+         "mas_flexion": "0", "mas_extension": ""},
+        {"participant": "2", "leg": "right", "condition": "pre", "mas_grade": "2",
+         "mas_flexion": "1", "mas_extension": ""},
+    ]
+    pt_by_participant = {"1": 0.05, "2": 0.20}
+    flexion, _ = mv.pair_pt_and_mas_by_direction(
+        rows,
+        pt_lookup_flexion=lambda p, l, c: pt_by_participant[p],
+        pt_lookup_extension=lambda p, l, c: None)
+    valid = [p for p in flexion if "_skip_reason" not in p]
+    stats = mv.compute_validation_stats(valid)
+    assert stats["n"] == 2
+    assert stats["per_grade"]["0"]["n"] == 1
+    assert stats["per_grade"]["1"]["n"] == 1
+
+
+def test_direction_pairs_work_unmodified_with_fit_mas_thresholds():
+    import fit_mas_thresholds as fmt
+    pt_by_grade = {"0": 0.05, "1": 0.20, "1+": 0.35, "2": 0.50, "3": 0.70, "4": 0.90}
+    rows = []
+    pt_by_participant = {}
+    for i, grade in enumerate(list(pt_by_grade) * 3):
+        pid = str(i)
+        rows.append({"participant": pid, "leg": "right", "condition": "pre",
+                     "mas_grade": "2", "mas_flexion": grade, "mas_extension": ""})
+        pt_by_participant[pid] = pt_by_grade[grade]
+    flexion, _ = mv.pair_pt_and_mas_by_direction(
+        rows,
+        pt_lookup_flexion=lambda p, l, c: pt_by_participant[p],
+        pt_lookup_extension=lambda p, l, c: None)
+    valid = [p for p in flexion if "_skip_reason" not in p]
+    ok, report = fmt.check_sample_sufficiency(valid)
+    assert ok, report
+    thresholds, kappa = fmt.fit_thresholds(valid)
+    assert thresholds is not None
+    assert kappa == pytest.approx(1.0)

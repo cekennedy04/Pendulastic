@@ -132,6 +132,56 @@ def pair_pt_and_mas(mas_rows, pt_lookup):
     return out
 
 
+def pair_pt_and_mas_by_direction(mas_rows, pt_lookup_flexion, pt_lookup_extension):
+    """Exploratory counterpart to pair_pt_and_mas() (design spec
+    docs/superpowers/specs/2026-08-18-mas-flexion-extension-design.md
+    Section 3) -- pairs mas_flexion/mas_extension against direction-
+    filtered PT lookups instead of the single overall mas_grade. This is
+    an exploratory correlation, not a validated clinical equivalence (see
+    the spec's Section 2 caveat): spasticity_type classifies one passive
+    swing's motion asymmetry, not two separately-assessed muscle groups.
+
+    Returns (flexion_records, extension_records). For each side
+    independently: a blank value ("not assessed") produces no entry at
+    all. A non-blank invalid grade, or a valid grade with no matching
+    direction-specific trial data, produces dict(row, _skip_reason=...) --
+    same auditability convention pair_pt_and_mas() already uses, so
+    nothing is silently dropped. A valid grade with a PT match produces a
+    canonical pair record using the exact keys compute_validation_stats()
+    and fit_mas_thresholds.py already require -- mas_grade (set to the
+    direction-specific value), pt_score, predicted_mas -- plus every other
+    key already on row, plus direction ("flexion"/"extension", bookkeeping
+    only, ignored by those functions). This deliberately shadows row's own
+    overall mas_grade key in the copied record; the original overall grade
+    is untouched in mas_scores.csv and in row itself."""
+    def _pair_one_side(direction, mas_key, pt_lookup):
+        out = []
+        for row in mas_rows:
+            value = row.get(mas_key, "")
+            if not value:
+                continue
+            if not _valid_grade(value):
+                out.append(dict(row, _skip_reason=
+                    f"invalid {mas_key} {value!r} (must be one of {MAS_ORDER})"))
+                continue
+            pt_score = pt_lookup(row["participant"], row["leg"], row["condition"])
+            if pt_score is None:
+                out.append(dict(row, _skip_reason=
+                    f"no matching {direction} trial data for this participant/leg/condition"))
+                continue
+            paired = dict(row)
+            paired["mas_grade"] = value
+            paired["pt_score"] = pt_score
+            paired["predicted_mas"] = pt.pt_to_mas(pt_score)
+            paired["direction"] = direction
+            out.append(paired)
+        return out
+
+    flexion_records = _pair_one_side("flexion", "mas_flexion", pt_lookup_flexion)
+    extension_records = _pair_one_side("extension", "mas_extension", pt_lookup_extension)
+    return flexion_records, extension_records
+
+
 def compute_validation_stats(pairs):
     """pairs: already-valid paired records (no _skip_reason, has pt_score/
     predicted_mas). Returns n, preliminary, spearman_rho/p, weighted_kappa,
