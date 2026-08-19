@@ -291,7 +291,10 @@ def _tokenize_condition(text):
     return frozenset(t for t in re.split(r"[^a-z0-9]+", text.lower()) if t)
 
 
-def _pt_lookup_factory():
+_PT_LOOKUP_DIRECTIONS = (None, "flexion", "extension")
+
+
+def _pt_lookup_factory(*, direction=None):
     """pt_lookup(participant, leg, condition) -> float|None, backed by
     pt_report_common.collect_participant(), cached per participant so a
     mas_scores.csv with many rows for one participant only scans their
@@ -301,7 +304,19 @@ def _pt_lookup_factory():
     participant/leg via _tokenize_condition -- every trial whose condition
     tokenizes to the same set as the requested one is pooled into the mean
     PT score. Returns None if nothing matches (wrong leg, or no condition
-    with that token set recorded for this participant)."""
+    with that token set recorded for this participant).
+
+    direction=None (default): unchanged behavior, pools every matching
+    trial regardless of spasticity_type. direction="flexion"/"extension"
+    (design spec docs/superpowers/specs/2026-08-18-mas-flexion-extension-
+    design.md): additionally restricts the pooled trials to
+    r.get("spasticity_type") == direction before averaging -- a trial
+    record missing that key is treated as not matching, never raises. Any
+    other direction value raises ValueError immediately (fails loudly on a
+    typo rather than silently returning "no data" for every lookup)."""
+    if direction not in _PT_LOOKUP_DIRECTIONS:
+        raise ValueError(
+            f"invalid direction {direction!r} (must be one of {_PT_LOOKUP_DIRECTIONS})")
     cache = {}
 
     def lookup(participant, leg, condition):
@@ -311,6 +326,8 @@ def _pt_lookup_factory():
         trials = [r for (leg_key, cond_key), recs in cache[participant].items()
                  if leg_key == leg and _tokenize_condition(cond_key) == wanted
                  for r in recs]
+        if direction is not None:
+            trials = [r for r in trials if r.get("spasticity_type") == direction]
         if not trials:
             return None
         return float(np.mean([r["pt7"] for r in trials]))

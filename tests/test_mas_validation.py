@@ -630,3 +630,53 @@ def test_append_mas_score_widens_header_for_mas_flexion_and_extension(tmp_path):
                         "assessed_date,mas_flexion,mas_extension")
     assert lines[1] == "13,right,pre,multiple sclerosis,1,VL,2026-08-01,,"
     assert lines[2] == "20,left,pre,multiple sclerosis,1,VL,2026-08-07,2,1+"
+
+
+# ── _pt_lookup_factory direction filtering ──────────────────────────────────
+
+def test_pt_lookup_direction_none_matches_prior_behavior(monkeypatch):
+    fake_by_leg_tp = {("right", "pre"): [{"pt7": 1.0}, {"pt7": 2.0}]}
+    monkeypatch.setattr(mv.common, "collect_participant", lambda pid: (fake_by_leg_tp, []))
+    lookup = mv._pt_lookup_factory(direction=None)
+    assert lookup("13", "right", "pre") == pytest.approx(1.5)
+
+
+def test_pt_lookup_direction_filters_by_spasticity_type(monkeypatch):
+    fake_by_leg_tp = {("right", "pre"): [
+        {"pt7": 1.0, "spasticity_type": "flexion"},
+        {"pt7": 3.0, "spasticity_type": "extension"},
+        {"pt7": 5.0, "spasticity_type": "flexion"},
+        {"pt7": 100.0, "spasticity_type": "balanced"},
+    ]}
+    monkeypatch.setattr(mv.common, "collect_participant", lambda pid: (fake_by_leg_tp, []))
+    flexion_lookup = mv._pt_lookup_factory(direction="flexion")
+    extension_lookup = mv._pt_lookup_factory(direction="extension")
+    assert flexion_lookup("13", "right", "pre") == pytest.approx(3.0)      # mean(1.0, 5.0)
+    assert extension_lookup("13", "right", "pre") == pytest.approx(3.0)    # the one extension trial
+
+
+def test_pt_lookup_direction_ignores_trials_missing_spasticity_type(monkeypatch):
+    fake_by_leg_tp = {("right", "pre"): [
+        {"pt7": 1.0},   # no spasticity_type key at all -- must not raise
+        {"pt7": 9.0, "spasticity_type": "flexion"},
+    ]}
+    monkeypatch.setattr(mv.common, "collect_participant", lambda pid: (fake_by_leg_tp, []))
+    lookup = mv._pt_lookup_factory(direction="flexion")
+    assert lookup("13", "right", "pre") == pytest.approx(9.0)
+
+
+def test_pt_lookup_direction_returns_none_not_zero_when_no_direction_match(monkeypatch):
+    fake_by_leg_tp = {("right", "pre"): [{"pt7": 1.0, "spasticity_type": "extension"}]}
+    monkeypatch.setattr(mv.common, "collect_participant", lambda pid: (fake_by_leg_tp, []))
+    lookup = mv._pt_lookup_factory(direction="flexion")
+    assert lookup("13", "right", "pre") is None
+
+
+def test_pt_lookup_factory_rejects_invalid_direction():
+    with pytest.raises(ValueError, match="invalid direction"):
+        mv._pt_lookup_factory(direction="sideways")
+
+
+def test_pt_lookup_factory_direction_is_keyword_only():
+    with pytest.raises(TypeError):
+        mv._pt_lookup_factory("flexion")
