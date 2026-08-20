@@ -1852,3 +1852,137 @@ def test_clear_buttons_noop_during_retrack(tmp_path):
 
     assert len(dlg._events) == 1  # unchanged
     dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_requires_at_least_two_pins(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp0.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [{"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"}]
+
+    dlg._on_interpolate_pins()
+
+    assert "at least 2 pins" in dlg.status_var.get().lower()
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_rejected_when_anchor_frame_invalid(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp1.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None, None, None],
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 2, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+
+    dlg._on_interpolate_pins()
+
+    assert "invalid" in dlg.status_var.get().lower()
+    # No pin_interpolate event appended, no angles/landmarks changed.
+    assert not any(e["type"] == "pin_interpolate" for e in dlg._events)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_updates_angles_and_landmarks_and_logs_event(tmp_path):
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp2.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    # Frame 0's own landmark supplies the anchor: hip (0,1), knee (0,0).
+    # Pins at frame 0 -> ankle (1,0) and frame 10 -> ankle (0,1).
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+
+    dlg._on_interpolate_pins()
+
+    # Midpoint frame 5 should sit at the quarter-circle midpoint, angle
+    # recomputed from the FIXED anchor hip/knee (0,1)/(0,0), not frame 5's
+    # original landmark.
+    hip5, knee5, ankle5 = dlg.landmarks[5]
+    assert hip5 == (0.0, 1.0)
+    assert knee5 == (0.0, 0.0)
+    assert math.isclose(ankle5[0], math.cos(math.pi / 4), abs_tol=1e-6)
+    assert math.isclose(ankle5[1], math.sin(math.pi / 4), abs_tol=1e-6)
+    assert not math.isnan(dlg.angles[5])
+
+    interp_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(interp_events) == 1
+    ev = interp_events[0]
+    assert ev["anchor_frame"] == 0
+    assert ev["anchor_hip"] == [0.0, 1.0]
+    assert ev["anchor_knee"] == [0.0, 0.0]
+    assert math.isclose(ev["anchor_shank_len"], 1.0, abs_tol=1e-9)
+    assert ev["frame_range"] == [0, 10]
+    assert {p["frame"] for p in ev["pins"]} == {0, 10}
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_overwrites_previously_excluded_frames(tmp_path):
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp3.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    # Simulate frames 3-7 having been previously excluded (NaN/None).
+    for i in range(3, 8):
+        dlg.angles[i] = float("nan")
+        dlg.landmarks[i] = None
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+
+    dlg._on_interpolate_pins()
+
+    # Frame 5 (inside the previously-excluded range) must now be populated
+    # from the anchor, not left as None/NaN -- interpolation never read
+    # frame 5's own (destroyed) landmark data.
+    assert dlg.landmarks[5] is not None
+    assert not math.isnan(dlg.angles[5])
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_noop_during_retrack(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp4.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 2, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+    dlg._retrack_in_progress = True
+
+    dlg._on_interpolate_pins()
+
+    assert not any(e["type"] == "pin_interpolate" for e in dlg._events)
+    dlg.destroy()

@@ -35,6 +35,7 @@ import cv2 as _cv2
 from PIL import Image, ImageTk
 
 from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click, _MP_MODEL
+import mediapipe_preprocessing as mp_pre
 
 _MAX_DISPLAY_WIDTH = 960
 
@@ -405,6 +406,10 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_clear_all_pins = tk.Button(
             button_row, text="Clear All Pins", command=self._on_clear_all_pins)
         self._btn_clear_all_pins.pack(side="left", padx=8)
+        self._btn_interpolate = tk.Button(
+            button_row, text="Interpolate Pins",
+            command=self._on_interpolate_pins)
+        self._btn_interpolate.pack(side="left", padx=8)
         self._btn_exclude_from = tk.Button(
             button_row, text="Exclude From Here",
             command=self._on_exclude_from_here)
@@ -675,6 +680,48 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
                              "at": _now_iso()})
         self._redraw()
         self.status_var.set("Cleared all pins.")
+
+    def _on_interpolate_pins(self) -> None:
+        if self._retrack_in_progress:
+            return
+        pins = _current_pins_from_events(self._events)
+        if len(pins) < 2:
+            self.status_var.set("Need at least 2 pins to interpolate.")
+            return
+        pins_sorted = sorted(pins.items())
+        first_frame = pins_sorted[0][0]
+        anchor = _anchor_from_frame(self.landmarks, first_frame)
+        if anchor is None:
+            self.status_var.set(
+                "Cannot interpolate -- invalid hip/knee/ankle at the first "
+                "pin's frame.")
+            return
+        anchor_hip, anchor_knee, anchor_shank_len = anchor
+
+        result = mp_pre.interpolate_ankle_arc(
+            pins_sorted, anchor_knee, anchor_shank_len)
+        frames = sorted(result.keys())
+        for fi in frames:
+            ankle = result[fi]
+            ang = mp_pre.knee_angle_from_points(anchor_hip, anchor_knee, ankle)
+            self.angles[fi] = ang
+            self.landmarks[fi] = (anchor_hip, anchor_knee, ankle)
+
+        self._events.append({
+            "type": "pin_interpolate",
+            "pins": [{"frame": fi, "x": xy[0], "y": xy[1]}
+                    for fi, xy in pins_sorted],
+            "anchor_frame": first_frame,
+            "anchor_hip": [anchor_hip[0], anchor_hip[1]],
+            "anchor_knee": [anchor_knee[0], anchor_knee[1]],
+            "anchor_shank_len": anchor_shank_len,
+            "frame_range": [frames[0], frames[-1]],
+            "at": _now_iso(),
+        })
+        self._redraw()
+        self.status_var.set(
+            f"Interpolated frames {frames[0]}-{frames[-1]} from "
+            f"{len(pins)} pins.")
 
     def _on_exclude_from_here(self) -> None:
         if self._retrack_in_progress:
