@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -135,13 +136,23 @@ def _build_corrections_doc(fingerprint: dict, events: list, angles: list,
 
 
 def _backup_existing_sidecar(path: str) -> str | None:
-    """If a file already exists at path, renames it aside to a unique
+    """If a file already exists at path, copies it aside to a unique
     timestamp-suffixed backup name before the caller overwrites path, so no
     sidecar content -- valid, stale, or unparseable -- is ever silently
     destroyed. NOT gated on the existing file successfully parsing as JSON
     or matching the current schema -- an unparseable file is backed up the
     same as a valid one. Returns the backup path used, or None if no file
     existed at `path` to begin with.
+
+    Copies (shutil.copy2) rather than moves (os.replace) the original --
+    the original must stay at `path` until _save_corrections's own final
+    os.replace(tmp_path, path) atomically swaps it in. Moving it here would
+    leave NO file at `path` at all if that final swap later fails (e.g. a
+    Windows file lock), with the only surviving copy at this undiscoverable
+    backup filename -- see the design spec's atomicity requirement. Copying
+    means a failed final swap leaves the ORIGINAL untouched at `path`,
+    exactly as if this whole backup step never ran, while a copy of its
+    pre-save content still survives at the backup path regardless.
 
     _now_iso() has only second-level precision, so two backups requested
     within the same wall-clock second would collide on the timestamp
@@ -156,7 +167,7 @@ def _backup_existing_sidecar(path: str) -> str | None:
     while os.path.exists(candidate):
         candidate = f"{base}.{n}"
         n += 1
-    os.replace(path, candidate)
+    shutil.copy2(path, candidate)
     return candidate
 
 
@@ -199,6 +210,71 @@ def _save_corrections(video_path: str, fingerprint: dict, events: list,
         raise
 
 
+def _is_int(v) -> bool:
+    """True for a JSON-decoded int, excluding bool (a bool is technically
+    an int subclass in Python, but a frame index of `true`/`false` is a
+    malformed sidecar, not a valid frame 0/1)."""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_finite_number(v) -> bool:
+    """True for a JSON-decoded int/float that is finite (rejects bool,
+    strings, None, NaN/Infinity)."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
+def _is_finite_pair(v) -> bool:
+    """True for a 2-element list of finite numbers, e.g. a serialized
+    anchor_hip/anchor_knee point."""
+    return (isinstance(v, list) and len(v) == 2
+            and all(_is_finite_number(p) for p in v))
+
+
+def _validate_event(ev) -> bool:
+    """Returns True iff ev is a well-formed event: a dict with a known
+    "type" and every field that type requires, correctly typed. Used by
+    _load_corrections to reject a whole sidecar if ANY event is malformed --
+    _current_pins_from_events (called unconditionally from _redraw, which
+    __init__ calls) replays pin_set/pin_clear events with unguarded dict
+    subscripts (ev["x"], ev["y"], ev["frame"]), so a malformed event that
+    slips through here would crash the dialog on load, not just fail to
+    apply cleanly."""
+    if not isinstance(ev, dict):
+        return False
+    t = ev.get("type")
+    if t == "pin_set":
+        return (_is_int(ev.get("frame"))
+                and _is_finite_number(ev.get("x"))
+                and _is_finite_number(ev.get("y")))
+    if t == "pin_clear":
+        if "frame" not in ev:
+            return False
+        frame = ev["frame"]
+        return frame is None or _is_int(frame)
+    if t == "pin_interpolate":
+        pins = ev.get("pins")
+        if not isinstance(pins, list):
+            return False
+        for p in pins:
+            if not (isinstance(p, dict) and _is_int(p.get("frame"))
+                    and _is_finite_number(p.get("x"))
+                    and _is_finite_number(p.get("y"))):
+                return False
+        frame_range = ev.get("frame_range")
+        return (_is_int(ev.get("anchor_frame"))
+                and _is_finite_pair(ev.get("anchor_hip"))
+                and _is_finite_pair(ev.get("anchor_knee"))
+                and _is_finite_number(ev.get("anchor_shank_len"))
+                and isinstance(frame_range, list) and len(frame_range) == 2
+                and all(_is_int(x) for x in frame_range))
+    if t == "retrack":
+        return _is_int(ev.get("start_frame"))
+    if t == "exclude_range":
+        return _is_int(ev.get("start_frame")) and _is_int(ev.get("end_frame"))
+    return False  # unknown or missing type -- reject the whole sidecar
+
+
 def _load_corrections(video_path: str, leg: str):
     """Reads and validates a corrections sidecar for video_path/leg. Returns
     the parsed doc only when ALL of the following hold, otherwise returns
@@ -210,8 +286,10 @@ def _load_corrections(video_path: str, leg: str):
     CURRENT fingerprint; corrected_angles/corrected_landmarks are both
     lists of equal length AND that length matches the video's actual
     frame_count (not just each other -- two equal-but-wrong-length arrays
-    must not pass); every angle is float-convertible; and every landmark
-    coordinate is float-convertible. Never raises: a missing, malformed,
+    must not pass); every angle is float-convertible; every landmark
+    coordinate is float-convertible; and `events` is a list of
+    well-formed events per _validate_event (see that function for the
+    per-type field requirements). Never raises: a missing, malformed,
     wrong-leg, stale, or structurally-corrupt sidecar must be treated as
     "no saved corrections", not crash the dialog."""
     path = _corrections_path(video_path, leg)
@@ -237,6 +315,12 @@ def _load_corrections(video_path: str, leg: str):
             float(a)  # raises on a non-numeric angle
         for lm in corrected_landmarks:
             _landmark_from_json(lm)  # raises on a malformed/non-numeric entry
+        events = doc.get("events", [])
+        if not isinstance(events, list):
+            return None
+        for ev in events:
+            if not _validate_event(ev):
+                return None
         return doc
     except Exception:
         return None
@@ -288,10 +372,14 @@ def _current_pins_from_events(events: list) -> dict:
 def _anchor_from_frame(landmarks: list, frame_idx: int):
     """Returns (hip, knee, shank_len) from landmarks[frame_idx], or None if
     that frame is out of range, has no landmark, is missing hip/knee/ankle,
-    has a non-finite coordinate, or the resulting shank_len is degenerate
-    (~0, i.e. knee and ankle collapsed to the same point -- an arc with
-    zero radius is undefined). Used to derive the ONE fixed anchor an
-    "Interpolate Pins" run is computed around -- see
+    has a non-finite coordinate, the resulting shank_len is degenerate (~0,
+    i.e. knee and ankle collapsed to the same point -- an arc with zero
+    radius is undefined), or the hip-knee distance is degenerate (~0 -- the
+    SAME anchor hip/knee is reused for every frame in an "Interpolate Pins"
+    run, and mp_pre.knee_angle_from_points returns NaN for a degenerate
+    hip->knee vector, which would otherwise silently produce NaN for every
+    frame in the whole interpolated span). Used to derive the ONE fixed
+    anchor an "Interpolate Pins" run is computed around -- see
     docs/superpowers/specs/2026-08-20-pin-interpolation-correction-design.md
     §3.1."""
     if frame_idx < 0 or frame_idx >= len(landmarks):
@@ -307,6 +395,9 @@ def _anchor_from_frame(landmarks: list, frame_idx: int):
             return None
     shank_len = math.hypot(knee[0] - ankle[0], knee[1] - ankle[1])
     if shank_len < 1e-6:
+        return None
+    hip_knee_len = math.hypot(hip[0] - knee[0], hip[1] - knee[1])
+    if hip_knee_len < 1e-6:
         return None
     return hip, knee, shank_len
 
@@ -712,6 +803,16 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         result = mp_pre.interpolate_ankle_arc(
             pins_sorted, anchor_knee, anchor_shank_len)
         frames = sorted(result.keys())
+        if any(fi < 0 or fi >= len(self.angles) for fi in frames):
+            # Not reachable through the normal UI (pin placement already
+            # validates frame range in _place_pin) -- but reachable if a
+            # stale/malformed sidecar is loaded with out-of-range pin
+            # frames. Reject the whole interpolation rather than raising
+            # IndexError or writing a partial result.
+            self.status_var.set(
+                "Cannot interpolate -- pin frame range is out of bounds "
+                "for this trial.")
+            return
         for fi in frames:
             ankle = result[fi]
             ang = mp_pre.knee_angle_from_points(anchor_hip, anchor_knee, ankle)

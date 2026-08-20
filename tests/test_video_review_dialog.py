@@ -879,20 +879,64 @@ def test_save_corrections_atomic_write_preserves_original_on_failure(
         assert f.read() == original_content  # untouched, not truncated
 
 
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_save_corrections_final_replace_failure_leaves_original_at_path(
+        tmp_path, monkeypatch):
+    """Fix 3 regression: _backup_existing_sidecar now COPIES the existing
+    sidecar aside (rather than moving it) specifically so that if the
+    FINAL os.replace(tmp_path, path) swap itself fails (e.g. a Windows
+    file lock), the ORIGINAL sidecar is still sitting at `path` --
+    completely untouched -- rather than being recoverable only from an
+    undiscoverable `.bak.<timestamp>` filename."""
+    import video_review_dialog as vrd
+    from video_review_dialog import (
+        _video_fingerprint, _save_corrections, _corrections_path)
+    video_path = str(tmp_path / "finalfail.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "right",
+                      "test-tracker-v1")
+    path = _corrections_path(video_path, "right")
+    with open(path, encoding="utf-8") as f:
+        original_content = f.read()
+
+    def _boom(*a, **kw):
+        raise OSError("simulated locked file mid-swap")
+    monkeypatch.setattr(vrd.os, "replace", _boom)
+
+    with pytest.raises(OSError):
+        _save_corrections(video_path, fp, [], [9.0] * 3, [None] * 3, "right",
+                          "test-tracker-v2")
+
+    # The original file is still at `path`, byte-for-byte -- not just a
+    # backup copy sitting under a separate, undiscoverable filename.
+    assert os.path.isfile(path)
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == original_content
+
+
 def test_backup_existing_sidecar_no_file_returns_none(tmp_path):
     from video_review_dialog import _backup_existing_sidecar
     path = str(tmp_path / "nope.json")
     assert _backup_existing_sidecar(path) is None
 
 
-def test_backup_existing_sidecar_renames_aside(tmp_path):
+def test_backup_existing_sidecar_copies_aside(tmp_path):
+    # Copies (not moves) the existing file -- the original must remain at
+    # `path` so _save_corrections's own final os.replace(tmp_path, path)
+    # stays the sole atomic swap. See Fix 3 in the pin-interpolation final
+    # fix wave: moving here broke _save_corrections's atomicity, since a
+    # failed final replace would then leave NO file at `path` at all.
     from video_review_dialog import _backup_existing_sidecar
     path = str(tmp_path / "existing.json")
     with open(path, "w", encoding="utf-8") as f:
         f.write('{"original": true}')
     backup_path = _backup_existing_sidecar(path)
     assert backup_path is not None
-    assert not os.path.isfile(path)  # moved, not copied
+    assert os.path.isfile(path)  # copied, not moved -- original remains
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == '{"original": true}'
     with open(backup_path, encoding="utf-8") as f:
         assert f.read() == '{"original": true}'
 
@@ -1149,6 +1193,235 @@ def test_load_corrections_returns_none_on_malformed_landmark_entry(tmp_path):
     assert _load_corrections(video_path, "right") is None
 
 
+# ---------------------------------------------------------------------------
+# Event validation (Fix 1): _load_corrections must reject a sidecar with any
+# malformed event, not just malformed angles/landmarks -- otherwise
+# _current_pins_from_events's unguarded dict subscripts crash __init__.
+# ---------------------------------------------------------------------------
+
+def test_validate_event_accepts_well_formed_pin_set():
+    from video_review_dialog import _validate_event
+    assert _validate_event(
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t"})
+
+
+def test_validate_event_rejects_pin_set_missing_x():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({"type": "pin_set", "frame": 5, "y": 2.0})
+
+
+def test_validate_event_rejects_pin_set_non_numeric_y():
+    from video_review_dialog import _validate_event
+    assert not _validate_event(
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": "oops"})
+
+
+def test_validate_event_rejects_pin_set_non_finite_x():
+    from video_review_dialog import _validate_event
+    assert not _validate_event(
+        {"type": "pin_set", "frame": 5, "x": float("nan"), "y": 2.0})
+    assert not _validate_event(
+        {"type": "pin_set", "frame": 5, "x": float("inf"), "y": 2.0})
+
+
+def test_validate_event_rejects_pin_set_non_int_frame():
+    from video_review_dialog import _validate_event
+    assert not _validate_event(
+        {"type": "pin_set", "frame": 5.5, "x": 1.0, "y": 2.0})
+    assert not _validate_event(
+        {"type": "pin_set", "frame": "5", "x": 1.0, "y": 2.0})
+
+
+def test_validate_event_accepts_pin_clear_with_int_frame_or_none():
+    from video_review_dialog import _validate_event
+    assert _validate_event({"type": "pin_clear", "frame": 5, "at": "t"})
+    assert _validate_event({"type": "pin_clear", "frame": None, "at": "t"})
+
+
+def test_validate_event_rejects_pin_clear_missing_frame_key():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({"type": "pin_clear", "at": "t"})
+
+
+def test_validate_event_accepts_well_formed_retrack():
+    from video_review_dialog import _validate_event
+    assert _validate_event({"type": "retrack", "start_frame": 3, "at": "t"})
+
+
+def test_validate_event_rejects_retrack_missing_start_frame():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({"type": "retrack", "at": "t"})
+
+
+def test_validate_event_accepts_well_formed_exclude_range():
+    from video_review_dialog import _validate_event
+    assert _validate_event(
+        {"type": "exclude_range", "start_frame": 1, "end_frame": 3, "at": "t"})
+
+
+def test_validate_event_rejects_exclude_range_missing_end_frame():
+    from video_review_dialog import _validate_event
+    assert not _validate_event(
+        {"type": "exclude_range", "start_frame": 1, "at": "t"})
+
+
+def test_validate_event_accepts_well_formed_pin_interpolate():
+    from video_review_dialog import _validate_event
+    assert _validate_event({
+        "type": "pin_interpolate",
+        "pins": [{"frame": 0, "x": 1.0, "y": 0.0},
+                 {"frame": 10, "x": 0.0, "y": 1.0}],
+        "anchor_frame": 0,
+        "anchor_hip": [0.0, 1.0],
+        "anchor_knee": [0.0, 0.0],
+        "anchor_shank_len": 1.0,
+        "frame_range": [0, 10],
+        "at": "t",
+    })
+
+
+def test_validate_event_rejects_pin_interpolate_malformed_pins_entry():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({
+        "type": "pin_interpolate",
+        "pins": [{"frame": 0, "x": 1.0}],  # missing y
+        "anchor_frame": 0,
+        "anchor_hip": [0.0, 1.0],
+        "anchor_knee": [0.0, 0.0],
+        "anchor_shank_len": 1.0,
+        "frame_range": [0, 10],
+    })
+
+
+def test_validate_event_rejects_pin_interpolate_bad_anchor_hip():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({
+        "type": "pin_interpolate",
+        "pins": [{"frame": 0, "x": 1.0, "y": 0.0}],
+        "anchor_frame": 0,
+        "anchor_hip": [0.0],  # only one coordinate
+        "anchor_knee": [0.0, 0.0],
+        "anchor_shank_len": 1.0,
+        "frame_range": [0, 10],
+    })
+
+
+def test_validate_event_rejects_pin_interpolate_non_finite_shank_len():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({
+        "type": "pin_interpolate",
+        "pins": [{"frame": 0, "x": 1.0, "y": 0.0}],
+        "anchor_frame": 0,
+        "anchor_hip": [0.0, 1.0],
+        "anchor_knee": [0.0, 0.0],
+        "anchor_shank_len": float("nan"),
+        "frame_range": [0, 10],
+    })
+
+
+def test_validate_event_rejects_pin_interpolate_bad_frame_range():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({
+        "type": "pin_interpolate",
+        "pins": [{"frame": 0, "x": 1.0, "y": 0.0}],
+        "anchor_frame": 0,
+        "anchor_hip": [0.0, 1.0],
+        "anchor_knee": [0.0, 0.0],
+        "anchor_shank_len": 1.0,
+        "frame_range": [0],  # only one element
+    })
+
+
+def test_validate_event_rejects_unknown_type():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({"type": "some_future_event", "at": "t"})
+
+
+def test_validate_event_rejects_missing_type():
+    from video_review_dialog import _validate_event
+    assert not _validate_event({"frame": 5, "x": 1.0, "y": 2.0})
+
+
+def test_validate_event_rejects_non_dict():
+    from video_review_dialog import _validate_event
+    assert not _validate_event("not a dict")
+    assert not _validate_event(None)
+    assert not _validate_event([1, 2, 3])
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_load_corrections_returns_none_on_malformed_pin_set_event(tmp_path):
+    """This is the exact bug Fix 1 closes: a sidecar with a structurally
+    valid angles/landmarks section but a malformed pin_set event (missing
+    x/y) previously loaded "successfully" through _load_corrections, then
+    crashed AnnotatedVideoReviewDialog.__init__ with an unhandled KeyError
+    the first time _redraw() called _current_pins_from_events."""
+    from video_review_dialog import (
+        _video_fingerprint, _corrections_path, _load_corrections,
+        CORRECTIONS_SCHEMA_VERSION)
+    video_path = str(tmp_path / "badpinevent.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+    doc = {"schema_version": CORRECTIONS_SCHEMA_VERSION,
+           "video_fingerprint": fp, "leg": "right",
+           "events": [{"type": "pin_set", "frame": 0, "at": "t"}],  # no x/y
+           "corrected_angles": [0.0, 0.0, 0.0],
+           "corrected_landmarks": [None, None, None]}
+    with open(_corrections_path(video_path, "right"), "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+
+    assert _load_corrections(video_path, "right") is None
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_load_corrections_returns_none_on_events_not_a_list(tmp_path):
+    from video_review_dialog import (
+        _video_fingerprint, _corrections_path, _load_corrections,
+        CORRECTIONS_SCHEMA_VERSION)
+    video_path = str(tmp_path / "eventsnotlist.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+    doc = {"schema_version": CORRECTIONS_SCHEMA_VERSION,
+           "video_fingerprint": fp, "leg": "right",
+           "events": "not-a-list",
+           "corrected_angles": [0.0, 0.0, 0.0],
+           "corrected_landmarks": [None, None, None]}
+    with open(_corrections_path(video_path, "right"), "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+
+    assert _load_corrections(video_path, "right") is None
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_new_dialog_does_not_crash_loading_sidecar_with_malformed_pin_event(
+        tmp_path):
+    """Regression guard for the crash Fix 1 fixes, exercised at the level
+    the design doc describes: a real dialog construction, not just the
+    loader function in isolation."""
+    from video_review_dialog import AnnotatedVideoReviewDialog, _corrections_path, CORRECTIONS_SCHEMA_VERSION, _video_fingerprint
+    video_path = str(tmp_path / "dlgbadpin.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+    doc = {"schema_version": CORRECTIONS_SCHEMA_VERSION,
+           "video_fingerprint": fp, "leg": "right",
+           "events": [{"type": "pin_set", "frame": 0, "at": "t"}],  # no x/y
+           "corrected_angles": [0.0, 0.0, 0.0],
+           "corrected_landmarks": [None, None, None]}
+    with open(_corrections_path(video_path, "right"), "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+    r = _get_root()
+
+    # Must not raise -- the malformed sidecar is rejected wholesale by
+    # _load_corrections, so this dialog opens with fresh (unloaded) state.
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[9.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    assert dlg.angles == [9.0] * 3
+    assert dlg._events == []
+    dlg.destroy()
+
+
 def test_tracker_version_helper_includes_mp_model_basename():
     from video_review_dialog import _tracker_version
     import pendulastic_viewer as pv
@@ -1177,6 +1450,51 @@ def test_save_then_load_round_trip_preserves_tracker_version(tmp_path):
     loaded = _load_corrections(video_path, "left")
     assert loaded is not None
     assert loaded["tracker_version"] == tv
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_save_then_load_round_trip_preserves_v2_pin_events(tmp_path):
+    """Fix 5: the exact seam Fix 1 guards -- persistence x pin events
+    together -- had no coverage. Saves a sidecar with pin_set, pin_clear,
+    AND pin_interpolate events plus tracker_version, reloads it, and
+    confirms the doc loads (not None), _current_pins_from_events on the
+    reloaded events reconstructs the correct current pin set, and
+    tracker_version round-trips."""
+    from video_review_dialog import (
+        _video_fingerprint, _save_corrections, _load_corrections,
+        _tracker_version, _current_pins_from_events)
+    video_path = str(tmp_path / "v2roundtrip.avi")
+    _write_test_video(video_path, 11)
+    fp = _video_fingerprint(video_path)
+    tv = _tracker_version()
+
+    events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+        {"type": "pin_set", "frame": 5, "x": 3.0, "y": 3.0, "at": "t3"},
+        {"type": "pin_clear", "frame": 5, "at": "t4"},
+        {
+            "type": "pin_interpolate",
+            "pins": [{"frame": 0, "x": 1.0, "y": 0.0},
+                     {"frame": 10, "x": 0.0, "y": 1.0}],
+            "anchor_frame": 0,
+            "anchor_hip": [0.0, 1.0],
+            "anchor_knee": [0.0, 0.0],
+            "anchor_shank_len": 1.0,
+            "frame_range": [0, 10],
+            "at": "t5",
+        },
+    ]
+    angles = [0.0] * 11
+    landmarks = [None] * 11
+
+    _save_corrections(video_path, fp, events, angles, landmarks, "right", tv)
+    loaded = _load_corrections(video_path, "right")
+
+    assert loaded is not None
+    assert loaded["tracker_version"] == tv
+    reloaded_pins = _current_pins_from_events(loaded["events"])
+    assert reloaded_pins == {0: (1.0, 0.0), 10: (0.0, 1.0)}  # frame 5 cleared
 
 
 def test_apply_exclusion_sets_nan_and_none_in_range_forward():
@@ -1638,6 +1956,24 @@ def test_anchor_from_frame_degenerate_shank_len_returns_none():
     assert _anchor_from_frame(landmarks, 0) is None
 
 
+def test_anchor_from_frame_degenerate_hip_knee_returns_none():
+    # Fix 2: hip and knee collapsed to the same point is degenerate too --
+    # mp_pre.knee_angle_from_points returns NaN for a zero-length hip->knee
+    # vector, and since the SAME anchor hip/knee is reused for every frame
+    # in an "Interpolate Pins" run, a degenerate anchor here would silently
+    # NaN out the whole interpolated span.
+    from video_review_dialog import _anchor_from_frame
+    landmarks = [((0.0, 0.0), (0.0, 0.0), (1.0, 0.0))]
+    assert _anchor_from_frame(landmarks, 0) is None
+
+
+def test_anchor_from_frame_near_degenerate_hip_knee_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    # Within the 1e-6 degeneracy threshold, not exactly equal.
+    landmarks = [((1e-9, 1e-9), (0.0, 0.0), (1.0, 0.0))]
+    assert _anchor_from_frame(landmarks, 0) is None
+
+
 # ---------------------------------------------------------------------------
 # Pin Ankle button: click-to-place with coordinate conversion
 # ---------------------------------------------------------------------------
@@ -1985,6 +2321,34 @@ def test_interpolate_pins_noop_during_retrack(tmp_path):
     dlg._on_interpolate_pins()
 
     assert not any(e["type"] == "pin_interpolate" for e in dlg._events)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_rejects_out_of_bounds_frame_range(tmp_path):
+    # Fix 4: not reachable through the normal UI (pin placement already
+    # validates frame range in _place_pin) -- but reachable if a stale or
+    # malformed sidecar is loaded with an out-of-range pin frame. Must be
+    # rejected with a status message and no state change, not raise
+    # IndexError.
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interpoob.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 50, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+
+    dlg._on_interpolate_pins()  # must not raise IndexError
+
+    assert "out of bounds" in dlg.status_var.get().lower()
+    assert not any(e["type"] == "pin_interpolate" for e in dlg._events)
+    assert dlg.angles == [0.0, 0.0, 0.0]  # unchanged, no partial write
     dlg.destroy()
 
 
