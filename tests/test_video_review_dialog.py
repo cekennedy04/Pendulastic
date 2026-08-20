@@ -1986,3 +1986,69 @@ def test_interpolate_pins_noop_during_retrack(tmp_path):
 
     assert not any(e["type"] == "pin_interpolate" for e in dlg._events)
     dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_redraw_does_not_raise_with_a_pin_at_current_frame(tmp_path):
+    # Pixel-level overlay assertions are brittle; this asserts the pin-
+    # marker draw pass runs without error when the current frame has a
+    # pin, which is the meaningful regression to guard against.
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "marker0.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [{"type": "pin_set", "frame": 0, "x": 5.0, "y": 5.0, "at": "t1"}]
+    dlg._frame_idx = 0
+
+    dlg._redraw()  # must not raise
+
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_retrack_clears_pins_in_full_spliced_range_including_padded_tail(
+        tmp_path, monkeypatch):
+    # _splice_from pads through the END of self.angles regardless of how
+    # short new_angles is -- a pin at frame 5, well beyond a 2-frame
+    # retrack result starting at frame 2 in a 10-frame trial, must still
+    # be cleared, since _splice_from's NaN/None padding overwrites it too.
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+    video_path = str(tmp_path / "retrackpin.avi")
+    _write_test_video(video_path, 10)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 10, landmarks=[None] * 10,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 1, "x": 1.0, "y": 1.0, "at": "t1"},  # before start_frame
+        {"type": "pin_set", "frame": 5, "x": 5.0, "y": 5.0, "at": "t2"},  # in padded tail
+    ]
+
+    dlg._on_retrack_done(2, [170.0, 170.0], [None, None])  # short: only 2 frames
+
+    pins = _current_pins_from_events(dlg._events)
+    assert pins == {1: (1.0, 1.0)}  # untouched -- before start_frame
+    clear_events = [e for e in dlg._events
+                    if e["type"] == "pin_clear" and e.get("frame") == 5]
+    assert len(clear_events) == 1
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_retrack_with_no_overlapping_pins_logs_no_pin_clear_events(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "retrackpin2.avi")
+    _write_test_video(video_path, 10)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 10, landmarks=[None] * 10,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [{"type": "pin_set", "frame": 1, "x": 1.0, "y": 1.0, "at": "t1"}]
+
+    dlg._on_retrack_done(5, [170.0] * 5, [None] * 5)
+
+    assert not any(e["type"] == "pin_clear" for e in dlg._events)
+    dlg.destroy()

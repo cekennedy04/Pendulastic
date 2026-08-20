@@ -485,6 +485,12 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         else:
             scale = 1.0
         self._display_scale = scale
+        pins = _current_pins_from_events(self._events)
+        if self._frame_idx in pins:
+            px, py = pins[self._frame_idx]
+            dx = int(px * self._display_scale)
+            dy = int(py * self._display_scale)
+            _cv2.circle(overlay, (dx, dy), 6, (0, 255, 255), 2)
         rgb = _cv2.cvtColor(overlay, _cv2.COLOR_BGR2RGB)
         self._photo = ImageTk.PhotoImage(Image.fromarray(rgb))
         self._image_label.configure(image=self._photo)
@@ -604,6 +610,11 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
                                        new_landmarks, None)
         self._events.append({"type": "retrack", "start_frame": start_frame,
                              "at": _now_iso()})
+        pins = _current_pins_from_events(self._events)
+        for fi in sorted(pins):
+            if fi >= start_frame:
+                self._events.append({"type": "pin_clear", "frame": fi,
+                                     "at": _now_iso()})
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
         self._btn_pin.config(state="normal")
