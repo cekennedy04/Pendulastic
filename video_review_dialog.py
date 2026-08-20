@@ -568,6 +568,7 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
     def _start_retrack(self, start_frame: int, seed: tuple) -> None:
         self._retrack_in_progress = True
         self._btn_fix.config(state="disabled")
+        self._btn_pin.config(state="disabled")
         self.status_var.set(f"Retracking from frame {start_frame}...")
 
         def _run():
@@ -594,12 +595,14 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
                              "at": _now_iso()})
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
+        self._btn_pin.config(state="normal")
         self.status_var.set(f"Retrack complete from frame {start_frame}.")
         self._redraw()
 
     def _on_retrack_failed(self, exc: Exception) -> None:
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
+        self._btn_pin.config(state="normal")
         self.status_var.set(f"Retrack failed: {exc}")
 
     # ------------------------------------------------------------------
@@ -617,6 +620,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             self.status_var.set("Pin Ankle disarmed.")
 
     def _on_image_click(self, event) -> None:
+        if self._retrack_in_progress:
+            return
         if not self._pin_armed:
             return
         x = event.x / self._display_scale

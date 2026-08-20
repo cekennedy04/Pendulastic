@@ -1688,6 +1688,29 @@ def test_pin_ankle_toggle_noop_during_retrack(tmp_path):
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_image_click_noop_during_retrack(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+
+    class _FakeEvent:
+        x, y = 10, 10
+
+    video_path = str(tmp_path / "arm3.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._pin_armed = True
+    dlg._retrack_in_progress = True
+
+    dlg._on_image_click(_FakeEvent())
+
+    assert _current_pins_from_events(dlg._events) == {}
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_image_click_ignored_while_unarmed(tmp_path):
     from video_review_dialog import AnnotatedVideoReviewDialog
 
@@ -1752,4 +1775,5 @@ def test_image_click_rejected_at_frame_with_no_valid_knee(tmp_path):
 
     assert _current_pins_from_events(dlg._events) == {}
     assert "no valid tracked knee" in dlg.status_var.get().lower()
+    assert dlg._pin_armed is False
     dlg.destroy()
