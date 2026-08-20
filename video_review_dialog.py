@@ -132,6 +132,32 @@ def _build_corrections_doc(fingerprint: dict, events: list, angles: list,
     }
 
 
+def _backup_existing_sidecar(path: str) -> str | None:
+    """If a file already exists at path, renames it aside to a unique
+    timestamp-suffixed backup name before the caller overwrites path, so no
+    sidecar content -- valid, stale, or unparseable -- is ever silently
+    destroyed. NOT gated on the existing file successfully parsing as JSON
+    or matching the current schema -- an unparseable file is backed up the
+    same as a valid one. Returns the backup path used, or None if no file
+    existed at `path` to begin with.
+
+    _now_iso() has only second-level precision, so two backups requested
+    within the same wall-clock second would collide on the timestamp
+    suffix alone -- an incrementing counter is appended when needed
+    (`<path>.bak.<ts>`, then `<path>.bak.<ts>.2`, `.3`, ...) until an
+    unused name is found."""
+    if not os.path.isfile(path):
+        return None
+    base = f"{path}.bak.{_now_iso().replace(':', '-')}"
+    candidate = base
+    n = 2
+    while os.path.exists(candidate):
+        candidate = f"{base}.{n}"
+        n += 1
+    os.replace(path, candidate)
+    return candidate
+
+
 def _save_corrections(video_path: str, fingerprint: dict, events: list,
                       angles: list, landmarks: list, leg: str,
                       tracker_version: str) -> None:
@@ -161,6 +187,7 @@ def _save_corrections(video_path: str, fingerprint: dict, events: list,
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(doc, f)
+        _backup_existing_sidecar(path)
         os.replace(tmp_path, path)
     except Exception:
         try:

@@ -879,6 +879,83 @@ def test_save_corrections_atomic_write_preserves_original_on_failure(
         assert f.read() == original_content  # untouched, not truncated
 
 
+def test_backup_existing_sidecar_no_file_returns_none(tmp_path):
+    from video_review_dialog import _backup_existing_sidecar
+    path = str(tmp_path / "nope.json")
+    assert _backup_existing_sidecar(path) is None
+
+
+def test_backup_existing_sidecar_renames_aside(tmp_path):
+    from video_review_dialog import _backup_existing_sidecar
+    path = str(tmp_path / "existing.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{"original": true}')
+    backup_path = _backup_existing_sidecar(path)
+    assert backup_path is not None
+    assert not os.path.isfile(path)  # moved, not copied
+    with open(backup_path, encoding="utf-8") as f:
+        assert f.read() == '{"original": true}'
+
+
+def test_backup_existing_sidecar_handles_malformed_content(tmp_path):
+    # Not gated on being parseable JSON -- a garbage file must still be
+    # preserved, not silently destroyed.
+    from video_review_dialog import _backup_existing_sidecar
+    path = str(tmp_path / "garbage.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{not valid json at all")
+    backup_path = _backup_existing_sidecar(path)
+    assert backup_path is not None
+    with open(backup_path, encoding="utf-8") as f:
+        assert f.read() == "{not valid json at all"
+
+
+def test_backup_existing_sidecar_collision_retry(tmp_path, monkeypatch):
+    # Two backups requested with the SAME _now_iso() (simulating same-
+    # wall-clock-second saves) must not collide -- the second gets a
+    # ".2" suffix instead of overwriting the first backup.
+    import video_review_dialog as vrd
+    monkeypatch.setattr(vrd, "_now_iso", lambda: "2026-08-20T00-00-00Z")
+
+    path = str(tmp_path / "x.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("first")
+    b1 = vrd._backup_existing_sidecar(path)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("second")
+    b2 = vrd._backup_existing_sidecar(path)
+
+    assert b1 != b2
+    with open(b1, encoding="utf-8") as f:
+        assert f.read() == "first"
+    with open(b2, encoding="utf-8") as f:
+        assert f.read() == "second"
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_save_corrections_backs_up_stale_sidecar_before_overwrite(tmp_path):
+    from video_review_dialog import (
+        _video_fingerprint, _save_corrections, _corrections_path, _tracker_version)
+    video_path = str(tmp_path / "stale.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+    tv = _tracker_version()
+
+    _save_corrections(video_path, fp, [], [1.0] * 3, [None] * 3, "left", tv)
+    path = _corrections_path(video_path, "left")
+    with open(path, encoding="utf-8") as f:
+        first_save_content = f.read()
+
+    _save_corrections(video_path, fp, [], [2.0] * 3, [None] * 3, "left", tv)
+
+    backups = [p for p in os.listdir(str(tmp_path))
+               if p.startswith(os.path.basename(path) + ".bak.")]
+    assert len(backups) == 1
+    with open(os.path.join(str(tmp_path), backups[0]), encoding="utf-8") as f:
+        assert f.read() == first_save_content
+
+
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_load_corrections_returns_none_when_no_sidecar(tmp_path):
     from video_review_dialog import _load_corrections
