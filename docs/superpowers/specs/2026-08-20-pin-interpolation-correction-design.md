@@ -200,8 +200,15 @@ which contradicts the "never destroyed" claim) — using a **timestamp-suffixed*
 name, e.g. `<path>.bak.<UTC ISO 8601 timestamp with colons stripped, filesystem-safe>`,
 never a fixed name like `<path>.v{N}.bak` (round 3 finding: a fixed name still collides
 and silently clobbers an earlier backup on a second save that also finds a stale file).
-This is a few lines, not a real migration, and it means no sidecar content — parseable
-or not — is ever silently destroyed.
+**The existing `_now_iso()` helper this module already uses for event timestamps has
+only second-level precision** — two saves within the same wall-clock second would still
+collide on the timestamp suffix alone (round 4 finding). Rather than introducing a
+separate sub-second timestamp format solely for this, the backup path picks the first
+name that doesn't already exist by appending an incrementing counter after the
+timestamp when needed (`<path>.bak.<timestamp>`, then `<path>.bak.<timestamp>.2`,
+`.3`, ...) — a standard collision-retry, correct regardless of clock resolution. This
+is a few lines, not a real migration, and it means no sidecar content — parseable or
+not — is ever silently destroyed.
 
 New event types appended to the existing `events` list:
 - `{"type": "pin_set", "frame": int, "x": float, "y": float, "at": iso8601}`
@@ -285,9 +292,9 @@ function):
   v1 doc is rejected on load exactly as the existing version-mismatch test already
   covers; saving over an existing sidecar (v1, wrong-version, or unparseable/malformed
   JSON) always backs it up with a timestamp-suffixed name instead of destroying it
-  (§3.3's round 3 fix), verified byte-identical to the pre-save original; two saves in
-  quick succession that each find a stale file produce two distinct backup files, not
-  one overwriting the other.
+  (§3.3's round 3/4 fixes), verified byte-identical to the pre-save original; two saves
+  within the same wall-clock second that each find a stale file produce two distinct
+  backup files via the collision-retry counter, not one overwriting the other.
 - Retrack-pin interaction: a retrack whose returned data is *shorter* than the
   remaining suffix (padded by `_splice_from`) still clears every pin in
   `[start_frame, len(self.angles))`, including pins in the padded tail beyond the
