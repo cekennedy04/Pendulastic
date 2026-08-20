@@ -168,14 +168,16 @@ any other frame a retrack or interpolation touches.
 
 **Interaction with "Fix Person Here" / retrack:** a retrack overwrites the landmark
 data pins were validated against. `_on_retrack_done` (existing method) now also removes
-any pin whose frame falls within `[start_frame, start_frame + len(new_angles))` — the
-range it just overwrote — since that pin's original justification (a specific tracked
-knee position at that frame) no longer exists after the retrack. This appends one
-`pin_clear` event **per removed pin, with that pin's specific `frame`** — never
-`frame: null` (round 2 finding: v1 of this paragraph said `frame: null`, contradicting
-§3.3's exclusive reservation of that value for "Clear All Pins" and incorrectly wiping
-pins outside the retracked range too). A retrack that overlaps zero pins appends no
-`pin_clear` events at all.
+any pin whose frame falls within `[start_frame, len(self.angles))` — **the full
+remainder of the array, not `[start_frame, start_frame + len(new_angles))`** (round 3
+finding: `_splice_from`, which `_on_retrack_done` already calls, always fills the
+*entire* suffix from `start_frame` to the end of `self.angles`, padding with `nan`/
+`None` when the retrack returns fewer frames than that — so a short retrack still
+overwrites pinned frames beyond its own returned length, in the padded tail, not just
+within the returned data). Every removed pin appends one `pin_clear` event **with that
+pin's specific `frame`** — never `frame: null` (round 2 finding: v1 of this paragraph
+said `frame: null`, contradicting §3.3's exclusive reservation of that value for "Clear
+All Pins"). A retrack that overlaps zero pins appends no `pin_clear` events at all.
 
 ### 3.3 Schema v2
 
@@ -190,11 +192,16 @@ brainstorming discussion.
 **However** (round 2 finding): *ignoring* a v1 sidecar on load is one thing; a v2 save
 subsequently **overwriting that same file path** is a stronger, avoidable form of data
 loss — the old content isn't just ignored, it's destroyed. `_save_corrections` gets one
-small addition: if a file already exists at the destination path and its
-`schema_version` doesn't match `CORRECTIONS_SCHEMA_VERSION`, rename it aside (e.g.
-`<path>.v{old_version}.bak`, overwriting any previous `.bak` at that exact name) before
-writing the new file — a few lines, not a real migration, and it means no sidecar
-content is ever silently destroyed even under the "no migration" decision above.
+small addition: **unconditionally** back up any file that already exists at the
+destination path before writing the new one — not gated on successfully parsing its
+`schema_version` (round 3 finding: a version-conditional check leaves an unparseable/
+malformed existing file with no defined preservation path, still silently destroyed,
+which contradicts the "never destroyed" claim) — using a **timestamp-suffixed** backup
+name, e.g. `<path>.bak.<UTC ISO 8601 timestamp with colons stripped, filesystem-safe>`,
+never a fixed name like `<path>.v{N}.bak` (round 3 finding: a fixed name still collides
+and silently clobbers an earlier backup on a second save that also finds a stale file).
+This is a few lines, not a real migration, and it means no sidecar content — parseable
+or not — is ever silently destroyed.
 
 New event types appended to the existing `events` list:
 - `{"type": "pin_set", "frame": int, "x": float, "y": float, "at": iso8601}`
@@ -276,19 +283,32 @@ function):
 - Save/load round trip: a v2 doc with all three new event types and `tracker_version`
   saves and reloads correctly, including correct pin-set reconstruction after reload; a
   v1 doc is rejected on load exactly as the existing version-mismatch test already
-  covers; saving a v2 doc over an existing v1 (or otherwise version-mismatched) sidecar
-  renames the old file aside (`.v{N}.bak`) instead of destroying it (§3.3's round 2
-  addition) — verify the backup file's content is byte-identical to the pre-save
-  original.
+  covers; saving over an existing sidecar (v1, wrong-version, or unparseable/malformed
+  JSON) always backs it up with a timestamp-suffixed name instead of destroying it
+  (§3.3's round 3 fix), verified byte-identical to the pre-save original; two saves in
+  quick succession that each find a stale file produce two distinct backup files, not
+  one overwriting the other.
+- Retrack-pin interaction: a retrack whose returned data is *shorter* than the
+  remaining suffix (padded by `_splice_from`) still clears every pin in
+  `[start_frame, len(self.angles))`, including pins in the padded tail beyond the
+  retrack's own returned length (round 3 fix) — not just pins within the returned
+  data's length.
 
 **Known, accepted characteristic (not a bug to test against):** because pinned frames
 hold the clinician's exact click while in-between frames are projected onto the fixed
-arc, a pin whose click was off the true arc radius produces a small angle discontinuity
-at the frame immediately adjacent to that pin. `pendulastic_viewer.py`'s own Phase 1
-has the identical characteristic (it also force-restores exact pin values after
-interpolating) — this spec inherits it deliberately rather than introducing a new
-"snap pins onto the arc" behavior the viewer itself doesn't have (round 2 P2 finding,
-resolved by documenting rather than changing behavior).
+arc, a pin whose click sits off the anchor's true radius produces a small **ankle
+*position*** discontinuity at the frame immediately adjacent to that pin — the
+displayed dot's distance from the knee jumps slightly, since the interpolated
+neighbor's ankle is projected onto the fixed radius while the pin frame itself shows
+the raw click. This is **not** a knee-*angle* discontinuity (round 3 correction to the
+round 2 documentation, which claimed the latter): `interpolate_ankle_arc()`'s arc-angle
+(theta) at each pin's own frame is computed directly from that pin's own clicked
+position via `atan2`, so the resulting angle from `knee_angle_from_points()` already
+matches continuously at the boundary regardless of the radius mismatch — only the
+raw (x, y) position shown differs. `pendulastic_viewer.py`'s own Phase 1 has the
+identical position-level characteristic (it also force-restores exact pin positions
+after interpolating) — this spec inherits it deliberately rather than introducing a
+new "snap pins onto the arc" behavior the viewer itself doesn't have.
 
 ## 6. Out of scope
 
