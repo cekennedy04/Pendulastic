@@ -2273,6 +2273,131 @@ def test_interpolate_pins_updates_angles_and_landmarks_and_logs_event(tmp_path):
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_is_idempotent_over_an_unchanged_pin_set(tmp_path):
+    """Regression test for a final-review finding: re-running "Interpolate
+    Pins" over the SAME pin set must reproduce the exact same anchor, not
+    silently re-derive anchor_shank_len from self.landmarks[first_frame] --
+    which the first run already overwrote with the pin's raw click ankle,
+    not the originally-tracked one.
+
+    Frame 0's ORIGINAL tracked ankle is (1.0, 0.0) -- knee-to-ankle
+    distance 1.0. The clinician's pin click for frame 0 is (2.0, 0.0) --
+    deliberately off that tracked radius, so a naive re-derivation on the
+    second run would read back the run-1-written ankle (2.0, 0.0) and
+    compute shank_len=2.0 instead of the original 1.0."""
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp_idem.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 2.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+
+    dlg._on_interpolate_pins()
+    run1_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(run1_events) == 1
+    run1_shank_len = run1_events[0]["anchor_shank_len"]
+    run1_ankle5 = dlg.landmarks[5][2]
+
+    dlg._on_interpolate_pins()  # same pin set, run again
+    run2_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(run2_events) == 2
+    run2_shank_len = run2_events[1]["anchor_shank_len"]
+    run2_ankle5 = dlg.landmarks[5][2]
+
+    assert math.isclose(run1_shank_len, run2_shank_len, abs_tol=1e-9)
+    assert math.isclose(run2_ankle5[0], run1_ankle5[0], abs_tol=1e-9)
+    assert math.isclose(run2_ankle5[1], run1_ankle5[1], abs_tol=1e-9)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_anchor_cache_survives_unrelated_pin_changes(tmp_path):
+    """The per-frame anchor cache is keyed on the ANCHOR FRAME, not the
+    whole pin set -- moving or adding a DIFFERENT pin must not lose the
+    cached anchor for a frame that hasn't itself been retracked. This is
+    what makes the fix general (not just exact pin-set repeats): a
+    clinician tweaking one pin and re-running still gets a stable anchor
+    for frames they didn't touch."""
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp_cache_survives.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 2.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+    dlg._on_interpolate_pins()
+    run1_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    run1_shank_len = run1_events[0]["anchor_shank_len"]
+    assert math.isclose(run1_shank_len, 1.0, abs_tol=1e-9)  # tracked value
+
+    # Move the frame-10 pin (frame 0, the anchor frame, is untouched).
+    dlg._events.append(
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.5, "at": "t3"})
+    dlg._on_interpolate_pins()
+    run2_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(run2_events) == 2
+    # Cache hit on frame 0 -> still the ORIGINAL tracked shank_len (1.0),
+    # not re-derived from frame 0's now-overwritten ankle (which would
+    # give 2.0, the run-1 click position).
+    assert math.isclose(run2_events[1]["anchor_shank_len"], run1_shank_len,
+                        abs_tol=1e-9)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_anchor_cache_invalidated_by_retrack(tmp_path):
+    """A genuine retrack (or any mechanism that changes the anchor frame's
+    hip/knee) must invalidate the per-frame cache -- reusing a stale
+    cached shank_len after the underlying tracked data legitimately
+    changed would be worse than the bug this cache fixes."""
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp_cache_invalidated.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 2.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+    dlg._on_interpolate_pins()
+    run1_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert math.isclose(run1_events[0]["anchor_shank_len"], 1.0, abs_tol=1e-9)
+
+    # Simulate a retrack overwriting frame 0 with genuinely new tracked
+    # data: different hip/knee (moved patient/camera) and a knee-ankle
+    # distance of 5.0 this time.
+    dlg.landmarks[0] = ((10.0, 11.0), (10.0, 10.0), (15.0, 10.0))
+    dlg._events.append(
+        {"type": "pin_set", "frame": 0, "x": 15.0, "y": 10.0, "at": "t4"})
+
+    dlg._on_interpolate_pins()
+    run2_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(run2_events) == 2
+    # Cache MUST be invalidated: hip/knee at frame 0 no longer match what
+    # was cached, so this is a fresh derivation from the new tracked data
+    # (shank_len 5.0), not a stale reuse of run 1's cached 1.0.
+    assert math.isclose(run2_events[1]["anchor_shank_len"], 5.0, abs_tol=1e-9)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_interpolate_pins_overwrites_previously_excluded_frames(tmp_path):
     import math
     from video_review_dialog import AnnotatedVideoReviewDialog

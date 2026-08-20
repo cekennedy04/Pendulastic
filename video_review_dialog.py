@@ -422,6 +422,21 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._pending_exclude_start: int | None = None
         self._pin_armed: bool = False
         self._display_scale: float = 1.0
+        # Per-frame cache of anchors ever successfully derived by
+        # "Interpolate Pins": {frame_idx: (hip, knee, shank_len)} -- see
+        # _on_interpolate_pins. Once a frame has served as an interpolation
+        # anchor, that same frame's landmark gets overwritten with
+        # (anchor_hip, anchor_knee, <the pin's raw click ankle>) -- so a
+        # LATER run using that same frame as its anchor must not re-derive
+        # shank_len from self.landmarks[frame_idx] again, since its ankle
+        # is now the clinician's click position, not the originally-tracked
+        # one. hip/knee are preserved unchanged by every interpolation
+        # write, though, so a cache hit is valid exactly as long as the
+        # frame's CURRENT hip/knee still match what was cached -- if they
+        # don't, a retrack (or exclusion, landmark now None) has since
+        # touched that frame with genuinely new data, and the cache entry
+        # must be treated as stale.
+        self._anchor_cache: dict[int, tuple] = {}
         self._events: list = []
         self._pending_status: str | None = None
         own_sidecar_exists = os.path.isfile(_corrections_path(video_path, leg))
@@ -792,7 +807,28 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             return
         pins_sorted = sorted(pins.items())
         first_frame = pins_sorted[0][0]
-        anchor = _anchor_from_frame(self.landmarks, first_frame)
+
+        cached = self._anchor_cache.get(first_frame)
+        current_hip_knee = None
+        lm = (self.landmarks[first_frame]
+              if 0 <= first_frame < len(self.landmarks) else None)
+        if lm is not None:
+            current_hip_knee = (lm[0], lm[1])
+        if cached is not None and current_hip_knee == (cached[0], cached[1]):
+            # This frame has served as an anchor before, and its hip/knee
+            # are unchanged since -- every interpolation write preserves
+            # anchor_hip/anchor_knee exactly, so an unchanged hip/knee
+            # means no retrack (or exclusion) has touched this frame with
+            # genuinely new data since the cache was populated. Reuse the
+            # cached shank_len rather than re-deriving it from this frame's
+            # CURRENT ankle, which a prior interpolation run already
+            # overwrote with a pin's raw click position (not the
+            # originally-tracked ankle) -- see __init__'s cache comment.
+            anchor = cached
+        else:
+            anchor = _anchor_from_frame(self.landmarks, first_frame)
+            if anchor is not None:
+                self._anchor_cache[first_frame] = anchor
         if anchor is None:
             self.status_var.set(
                 "Cannot interpolate -- invalid hip/knee/ankle at the first "
