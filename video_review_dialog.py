@@ -33,15 +33,24 @@ from tkinter import ttk
 import cv2 as _cv2
 from PIL import Image, ImageTk
 
-from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click
+from pendulastic_viewer import _draw, TRAIL_LEN, resolve_person_click, _MP_MODEL
 
 _MAX_DISPLAY_WIDTH = 960
 
-CORRECTIONS_SCHEMA_VERSION = 1
+CORRECTIONS_SCHEMA_VERSION = 2
 
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _tracker_version() -> str:
+    """Minimum-viable provenance string for a corrections doc -- identifies
+    the tracking engine/config that produced corrected_angles/
+    corrected_landmarks. Not a full implementation-fingerprint hash (see
+    rmse_pipeline_common.py for that heavier mechanism, out of scope here)
+    -- a plain identifying string, honestly labeled as such."""
+    return f"_MPBatchTracker;model={os.path.basename(_MP_MODEL)}"
 
 
 def _video_fingerprint(video_path: str) -> dict:
@@ -111,11 +120,12 @@ def _landmark_from_json(obj):
 
 
 def _build_corrections_doc(fingerprint: dict, events: list, angles: list,
-                           landmarks: list, leg: str) -> dict:
+                           landmarks: list, leg: str, tracker_version: str) -> dict:
     return {
         "schema_version": CORRECTIONS_SCHEMA_VERSION,
         "video_fingerprint": dict(fingerprint),
         "leg": leg,
+        "tracker_version": tracker_version,
         "events": list(events),
         "corrected_angles": list(angles),
         "corrected_landmarks": [_landmark_to_json(lm) for lm in landmarks],
@@ -123,7 +133,8 @@ def _build_corrections_doc(fingerprint: dict, events: list, angles: list,
 
 
 def _save_corrections(video_path: str, fingerprint: dict, events: list,
-                      angles: list, landmarks: list, leg: str) -> None:
+                      angles: list, landmarks: list, leg: str,
+                      tracker_version: str) -> None:
     """Writes the corrections sidecar. IO/serialization errors propagate to
     the caller -- this layer does not swallow them; only the dialog's button
     handler (the UI layer) turns a failure into a status message.
@@ -141,7 +152,8 @@ def _save_corrections(video_path: str, fingerprint: dict, events: list,
     this repo) would otherwise collide on that shared temp name. The temp
     file is removed on any failure before the swap, so a failed save never
     leaves stray partial files behind."""
-    doc = _build_corrections_doc(fingerprint, events, angles, landmarks, leg)
+    doc = _build_corrections_doc(fingerprint, events, angles, landmarks, leg,
+                                 tracker_version)
     path = _corrections_path(video_path, leg)
     fd, tmp_path = tempfile.mkstemp(
         dir=os.path.dirname(os.path.abspath(path)) or ".",
@@ -538,7 +550,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         try:
             fingerprint = _video_fingerprint(self.video_path)
             _save_corrections(self.video_path, fingerprint, self._events,
-                              self.angles, self.landmarks, self.leg)
+                              self.angles, self.landmarks, self.leg,
+                              _tracker_version())
         except Exception as exc:
             self.status_var.set(f"Save failed: {exc}")
             return

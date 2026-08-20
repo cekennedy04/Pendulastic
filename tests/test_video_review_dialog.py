@@ -758,7 +758,8 @@ def test_build_corrections_doc_shape():
     angles = [1.0, float("nan")]
     landmarks = [None, ((1.0, 2.0), (3.0, 4.0), (5.0, 6.0))]
 
-    doc = _build_corrections_doc(fp, events, angles, landmarks, "left")
+    doc = _build_corrections_doc(fp, events, angles, landmarks, "left",
+                                 "test-tracker-v1")
 
     assert doc["schema_version"] == CORRECTIONS_SCHEMA_VERSION
     assert doc["video_fingerprint"] == fp
@@ -783,7 +784,8 @@ def test_save_then_load_corrections_round_trip(tmp_path):
     landmarks = [((0, 0), (0, 0), (0, 0)), None, None,
                  ((1, 1), (1, 1), (1, 1))]
 
-    _save_corrections(video_path, fp, events, angles, landmarks, "left")
+    _save_corrections(video_path, fp, events, angles, landmarks, "left",
+                      "test-tracker-v1")
     loaded = _load_corrections(video_path, "left")
 
     assert loaded is not None
@@ -807,7 +809,8 @@ def test_save_corrections_leaves_no_stray_tmp_file_on_success(tmp_path):
     _write_test_video(video_path, 3)
     fp = _video_fingerprint(video_path)
 
-    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left")
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left",
+                      "test-tracker-v1")
 
     leftovers = [p for p in os.listdir(str(tmp_path)) if p.endswith(".tmp")]
     assert leftovers == []
@@ -830,7 +833,8 @@ def test_save_corrections_leaves_no_stray_tmp_file_on_failure(
     monkeypatch.setattr(vrd.json, "dump", _boom)
 
     with pytest.raises(OSError):
-        _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left")
+        _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left",
+                          "test-tracker-v1")
 
     leftovers = [p for p in os.listdir(str(tmp_path)) if p.endswith(".tmp")]
     assert leftovers == []
@@ -856,7 +860,7 @@ def test_save_corrections_atomic_write_preserves_original_on_failure(
     # sidecar that must survive the next, failing, save attempt.
     _save_corrections(video_path, fp, [{"type": "retrack", "start_frame": 0,
                                         "at": "t1"}],
-                      [0.0] * 3, [None] * 3, "right")
+                      [0.0] * 3, [None] * 3, "right", "test-tracker-v1")
     path = _corrections_path(video_path, "right")
     with open(path, encoding="utf-8") as f:
         original_content = f.read()
@@ -869,7 +873,7 @@ def test_save_corrections_atomic_write_preserves_original_on_failure(
     with pytest.raises(OSError):
         _save_corrections(video_path, fp, [{"type": "retrack",
                                             "start_frame": 1, "at": "t2"}],
-                          [9.0] * 3, [None] * 3, "right")
+                          [9.0] * 3, [None] * 3, "right", "test-tracker-v2")
 
     with open(path, encoding="utf-8") as f:
         assert f.read() == original_content  # untouched, not truncated
@@ -919,7 +923,8 @@ def test_load_corrections_returns_none_on_fingerprint_mismatch(tmp_path):
     video_path = str(tmp_path / "changed.avi")
     _write_test_video(video_path, 3)
     fp = _video_fingerprint(video_path)
-    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "right")
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "right",
+                      "test-tracker-v1")
 
     # Simulate the video having changed since the sidecar was saved -- a
     # different frame count makes size and frame_count both differ.
@@ -943,7 +948,8 @@ def test_load_corrections_returns_none_on_sha256_mismatch_alone(tmp_path):
     video_path = str(tmp_path / "hashmismatch.avi")
     _write_test_video(video_path, 3)
     fp = _video_fingerprint(video_path)
-    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "right")
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "right",
+                      "test-tracker-v1")
 
     with open(_corrections_path(video_path, "right"), encoding="utf-8") as f:
         doc = json.load(f)
@@ -961,7 +967,8 @@ def test_load_corrections_returns_none_on_leg_mismatch(tmp_path):
     video_path = str(tmp_path / "legmismatch.avi")
     _write_test_video(video_path, 3)
     fp = _video_fingerprint(video_path)
-    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left")
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left",
+                      "test-tracker-v1")
 
     assert _load_corrections(video_path, "right") is None
     assert _load_corrections(video_path, "left") is not None
@@ -1063,6 +1070,36 @@ def test_load_corrections_returns_none_on_malformed_landmark_entry(tmp_path):
         json.dump(doc, f)
 
     assert _load_corrections(video_path, "right") is None
+
+
+def test_tracker_version_helper_includes_mp_model_basename():
+    from video_review_dialog import _tracker_version
+    import pendulastic_viewer as pv
+    tv = _tracker_version()
+    assert tv.startswith("_MPBatchTracker;model=")
+    assert os.path.basename(pv._MP_MODEL) in tv
+
+
+def test_build_corrections_doc_includes_tracker_version_and_schema_2():
+    from video_review_dialog import _build_corrections_doc, CORRECTIONS_SCHEMA_VERSION
+    doc = _build_corrections_doc({"size": 1}, [], [1.0], [None], "left", "tv-string")
+    assert doc["schema_version"] == 2
+    assert CORRECTIONS_SCHEMA_VERSION == 2
+    assert doc["tracker_version"] == "tv-string"
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_save_then_load_round_trip_preserves_tracker_version(tmp_path):
+    from video_review_dialog import (
+        _video_fingerprint, _save_corrections, _load_corrections, _tracker_version)
+    video_path = str(tmp_path / "tv.avi")
+    _write_test_video(video_path, 3)
+    fp = _video_fingerprint(video_path)
+    tv = _tracker_version()
+    _save_corrections(video_path, fp, [], [0.0] * 3, [None] * 3, "left", tv)
+    loaded = _load_corrections(video_path, "left")
+    assert loaded is not None
+    assert loaded["tracker_version"] == tv
 
 
 def test_apply_exclusion_sets_nan_and_none_in_range_forward():
