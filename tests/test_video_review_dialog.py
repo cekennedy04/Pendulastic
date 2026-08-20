@@ -2358,6 +2358,69 @@ def test_interpolate_pins_anchor_cache_survives_unrelated_pin_changes(tmp_path):
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_anchor_cache_invalidated_by_a_later_interpolate_run(
+        tmp_path):
+    """Regression for a second Codex-caught gap: _on_interpolate_pins's OWN
+    write loop can overwrite a DIFFERENT frame's landmark too (every frame
+    the interpolation spans, not just its own anchor frame) -- including a
+    frame that's a stale cache entry from an earlier, unrelated
+    interpolation run. If that earlier run's cached hip/knee coincides
+    with the later run's anchor_hip/anchor_knee (plausible -- hip/knee are
+    often stable across a trial), a THIRD run using that frame as its own
+    anchor must not false-hit on the now-stale cached shank_len."""
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp_cache_cross_run.avi")
+    _write_test_video(video_path, 21)
+    r = _get_root()
+    # Frame 10's tracked shank_len is 1.0; frame 0's is 2.0 -- distinct on
+    # purpose, so a stale-vs-fresh mixup at frame 10 is unambiguous.
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 21
+    landmarks[0] = ((0.0, 1.0), (0.0, 0.0), (2.0, 0.0))
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 21, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    # Run A: pins at 10/15, anchored at frame 10 (shank_len 1.0) -- caches
+    # self._anchor_cache[10].
+    dlg._events = [
+        {"type": "pin_set", "frame": 10, "x": 1.0, "y": 0.0, "at": "a1"},
+        {"type": "pin_set", "frame": 15, "x": 0.0, "y": 1.0, "at": "a2"},
+    ]
+    dlg._on_interpolate_pins()
+    dlg._events.append({"type": "pin_clear", "frame": None, "at": "clear1"})
+
+    # Run B: pins at 0/20, anchored at frame 0 (shank_len 2.0). This run's
+    # span (0..20) includes frame 10, overwriting its landmark with an
+    # ankle on the radius-2.0 circle -- frame 10's stale cache entry from
+    # Run A (radius 1.0) must be evicted by this write, not left dangling.
+    dlg._events.append(
+        {"type": "pin_set", "frame": 0, "x": 2.0, "y": 0.0, "at": "b1"})
+    dlg._events.append(
+        {"type": "pin_set", "frame": 20, "x": 0.0, "y": 2.0, "at": "b2"})
+    dlg._on_interpolate_pins()
+    dlg._events.append({"type": "pin_clear", "frame": None, "at": "clear2"})
+
+    # Run C: pins at 10/20, anchored at frame 10 again. Must derive FRESH
+    # from frame 10's post-Run-B landmark (shank_len ~2.0), not reuse Run
+    # A's stale cached value (1.0).
+    dlg._events.append(
+        {"type": "pin_set", "frame": 10, "x": 2.0, "y": 0.0, "at": "c1"})
+    dlg._events.append(
+        {"type": "pin_set", "frame": 20, "x": 0.0, "y": 2.0, "at": "c2"})
+    dlg._on_interpolate_pins()
+
+    interp_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(interp_events) == 3
+    run_c_shank_len = interp_events[2]["anchor_shank_len"]
+    assert math.isclose(run_c_shank_len, 2.0, abs_tol=1e-6), (
+        f"expected fresh shank_len ~2.0 from Run B's overwrite, got "
+        f"{run_c_shank_len} (1.0 would mean Run A's stale cache leaked "
+        "through)")
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_interpolate_pins_anchor_cache_invalidated_by_retrack_same_hip_knee(
         tmp_path):
     """Regression for a Codex-caught gap in the anchor cache: hip/knee

@@ -837,9 +837,11 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             # originally-tracked ankle) -- see __init__'s cache comment.
             anchor = cached
         else:
+            # Not cached here -- only cached once the interpolation this
+            # anchor is used for actually succeeds (see the write loop
+            # below), so a rejected (e.g. out-of-bounds) call never caches
+            # an anchor for a write that never happened.
             anchor = _anchor_from_frame(self.landmarks, first_frame)
-            if anchor is not None:
-                self._anchor_cache[first_frame] = anchor
         if anchor is None:
             self.status_var.set(
                 "Cannot interpolate -- invalid hip/knee/ankle at the first "
@@ -865,6 +867,22 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             ang = mp_pre.knee_angle_from_points(anchor_hip, anchor_knee, ankle)
             self.angles[fi] = ang
             self.landmarks[fi] = (anchor_hip, anchor_knee, ankle)
+
+        # This write can overwrite OTHER frames' landmarks too (every frame
+        # in `frames`, not just first_frame) -- including a frame that's a
+        # stale cache entry from an earlier, unrelated interpolation run.
+        # If that earlier run's cached hip/knee happens to coincide with
+        # THIS run's anchor_hip/anchor_knee (plausible -- hip/knee are
+        # often stable across nearby frames in a trial), a later lookup at
+        # that frame would false-hit on the stale cached shank_len even
+        # though its ankle just changed here. Evict every touched frame's
+        # cache entry, then set first_frame's to the anchor just used (a
+        # fresh derivation or a legitimate cache hit -- either way it's
+        # correct and current as of this write).
+        for fi in frames:
+            if fi != first_frame:
+                self._anchor_cache.pop(fi, None)
+        self._anchor_cache[first_frame] = anchor
 
         self._events.append({
             "type": "pin_interpolate",
