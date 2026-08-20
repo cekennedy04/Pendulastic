@@ -1777,3 +1777,78 @@ def test_image_click_rejected_at_frame_with_no_valid_knee(tmp_path):
     assert "no valid tracked knee" in dlg.status_var.get().lower()
     assert dlg._pin_armed is False
     dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_clear_pin_here_removes_pin_at_current_frame(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+    video_path = str(tmp_path / "clear0.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [{"type": "pin_set", "frame": 1, "x": 5.0, "y": 5.0, "at": "t1"}]
+    dlg._frame_idx = 1
+
+    dlg._on_clear_pin_here()
+
+    assert _current_pins_from_events(dlg._events) == {}
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_clear_pin_here_noop_when_no_pin_at_frame(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "clear1.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    dlg._on_clear_pin_here()
+
+    assert "no pin" in dlg.status_var.get().lower()
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_clear_all_pins_empties_via_null_frame_event(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+    video_path = str(tmp_path / "clear2.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 1.0, "at": "t1"},
+        {"type": "pin_set", "frame": 2, "x": 2.0, "y": 2.0, "at": "t2"},
+    ]
+
+    dlg._on_clear_all_pins()
+
+    assert _current_pins_from_events(dlg._events) == {}
+    assert dlg._events[-1] == {"type": "pin_clear", "frame": None,
+                                "at": dlg._events[-1]["at"]}
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_clear_buttons_noop_during_retrack(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "clear3.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [{"type": "pin_set", "frame": 0, "x": 1.0, "y": 1.0, "at": "t1"}]
+    dlg._retrack_in_progress = True
+
+    dlg._on_clear_pin_here()
+    dlg._on_clear_all_pins()
+
+    assert len(dlg._events) == 1  # unchanged
+    dlg.destroy()

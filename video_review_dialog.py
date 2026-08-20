@@ -399,6 +399,12 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_pin = tk.Button(
             button_row, text="Pin Ankle", command=self._on_pin_ankle_toggle)
         self._btn_pin.pack(side="left", padx=8)
+        self._btn_clear_pin = tk.Button(
+            button_row, text="Clear Pin Here", command=self._on_clear_pin_here)
+        self._btn_clear_pin.pack(side="left", padx=8)
+        self._btn_clear_all_pins = tk.Button(
+            button_row, text="Clear All Pins", command=self._on_clear_all_pins)
+        self._btn_clear_all_pins.pack(side="left", padx=8)
         self._btn_exclude_from = tk.Button(
             button_row, text="Exclude From Here",
             command=self._on_exclude_from_here)
@@ -645,6 +651,30 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
                              "x": float(x), "y": float(y), "at": _now_iso()})
         self._redraw()
         self.status_var.set(f"Pin placed at frame {frame_idx}.")
+
+    def _on_clear_pin_here(self) -> None:
+        if self._retrack_in_progress:
+            return
+        pins = _current_pins_from_events(self._events)
+        if self._frame_idx not in pins:
+            self.status_var.set("No pin at this frame.")
+            return
+        self._events.append({"type": "pin_clear", "frame": self._frame_idx,
+                             "at": _now_iso()})
+        self._redraw()
+        self.status_var.set(f"Cleared pin at frame {self._frame_idx}.")
+
+    def _on_clear_all_pins(self) -> None:
+        if self._retrack_in_progress:
+            return
+        pins = _current_pins_from_events(self._events)
+        if not pins:
+            self.status_var.set("No pins to clear.")
+            return
+        self._events.append({"type": "pin_clear", "frame": None,
+                             "at": _now_iso()})
+        self._redraw()
+        self.status_var.set("Cleared all pins.")
 
     def _on_exclude_from_here(self) -> None:
         if self._retrack_in_progress:
