@@ -261,6 +261,28 @@ def _apply_exclusion(angles: list, landmarks: list, frame_idx_a: int,
     return new_angles, new_landmarks, event
 
 
+def _current_pins_from_events(events: list) -> dict:
+    """Replays pin_set/pin_clear events in order to reconstruct the
+    currently-active pin set: {frame: (x, y)}. pin_clear with frame=None
+    empties the whole set (used only by "Clear All Pins"); with a specific
+    frame removes just that one pin. Every other event type (retrack,
+    exclude_range, pin_interpolate) is ignored -- this makes pin state
+    reconstructable from the same persisted event log without a redundant
+    top-level "current pins" field to keep in sync."""
+    pins: dict = {}
+    for ev in events:
+        t = ev.get("type")
+        if t == "pin_set":
+            pins[ev["frame"]] = (ev["x"], ev["y"])
+        elif t == "pin_clear":
+            fi = ev.get("frame")
+            if fi is None:
+                pins = {}
+            else:
+                pins.pop(fi, None)
+    return pins
+
+
 class AnnotatedVideoReviewDialog(tk.Toplevel):
     """Modal review dialog: scrubs/plays back precomputed MediaPipe angle +
     landmark data with a live skeleton overlay, and lets the user correct

@@ -1531,3 +1531,61 @@ def test_second_dialog_different_leg_does_not_cross_contaminate(tmp_path):
     assert math.isnan(dlg_right_reopened.angles[3])
     assert math.isnan(dlg_right_reopened.angles[4])
     dlg_right_reopened.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Pin state reconstruction from events
+# ---------------------------------------------------------------------------
+
+def test_current_pins_from_events_empty_events_no_pins():
+    from video_review_dialog import _current_pins_from_events
+    assert _current_pins_from_events([]) == {}
+
+
+def test_current_pins_from_events_accumulates_pin_set():
+    from video_review_dialog import _current_pins_from_events
+    events = [
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 3.0, "y": 4.0, "at": "t2"},
+    ]
+    assert _current_pins_from_events(events) == {5: (1.0, 2.0), 10: (3.0, 4.0)}
+
+
+def test_current_pins_from_events_later_pin_set_overwrites_earlier():
+    from video_review_dialog import _current_pins_from_events
+    events = [
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t1"},
+        {"type": "pin_set", "frame": 5, "x": 9.0, "y": 9.0, "at": "t2"},
+    ]
+    assert _current_pins_from_events(events) == {5: (9.0, 9.0)}
+
+
+def test_current_pins_from_events_specific_pin_clear_removes_one():
+    from video_review_dialog import _current_pins_from_events
+    events = [
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 3.0, "y": 4.0, "at": "t2"},
+        {"type": "pin_clear", "frame": 5, "at": "t3"},
+    ]
+    assert _current_pins_from_events(events) == {10: (3.0, 4.0)}
+
+
+def test_current_pins_from_events_null_frame_clears_all():
+    from video_review_dialog import _current_pins_from_events
+    events = [
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 3.0, "y": 4.0, "at": "t2"},
+        {"type": "pin_clear", "frame": None, "at": "t3"},
+        {"type": "pin_set", "frame": 20, "x": 5.0, "y": 6.0, "at": "t4"},
+    ]
+    assert _current_pins_from_events(events) == {20: (5.0, 6.0)}
+
+
+def test_current_pins_from_events_ignores_other_event_types():
+    from video_review_dialog import _current_pins_from_events
+    events = [
+        {"type": "pin_set", "frame": 5, "x": 1.0, "y": 2.0, "at": "t1"},
+        {"type": "retrack", "start_frame": 0, "at": "t2"},
+        {"type": "exclude_range", "start_frame": 0, "end_frame": 3, "at": "t3"},
+    ]
+    assert _current_pins_from_events(events) == {5: (1.0, 2.0)}
