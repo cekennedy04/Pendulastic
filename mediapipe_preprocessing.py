@@ -9,6 +9,7 @@ arrays, so this module is unit-testable with synthetic numpy data alone.
 from __future__ import annotations
 
 import cv2
+import math
 import numpy as np
 
 CROP_BASELINE_SEC = 3.0
@@ -55,6 +56,54 @@ def knee_angle_from_points(hip_px, knee_px, ankle_px):
         return float("nan")
     cos_a = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
     return float(np.degrees(np.arccos(cos_a)))
+
+
+def interpolate_ankle_arc(pins_sorted, anchor_knee, anchor_shank_len):
+    """pins_sorted: [(frame_idx, (x, y)), ...] of two or more exact
+    clinician-placed ankle positions, sorted by frame_idx. anchor_knee/
+    anchor_shank_len: ONE fixed arc center and radius for this whole
+    interpolation run, derived by the caller from the FIRST pin's own
+    tracked frame -- not per-frame, not per-segment-averaged. A single
+    fixed anchor is what makes this a genuine zero-drift circular arc,
+    matching pendulastic_viewer.py's actual algorithm (which fixes
+    knee0/shank_len for its whole tracking session).
+
+    Returns {frame_idx: (x, y)} interpolated ankle positions for every
+    frame spanning consecutive pin pairs (inclusive), computed by linear
+    interpolation of arc-angle around anchor_knee, with the same shorter-
+    arc ±180-degree unwrap guard pendulastic_viewer.py's Phase 1 uses.
+    Every PINNED frame's returned position is the clinician's exact
+    clicked (x, y), not the arc-projected value."""
+    kx, ky = anchor_knee
+
+    def _theta(ank):
+        return math.atan2(ank[1] - ky, ank[0] - kx)
+
+    def _pos(theta):
+        return (kx + math.cos(theta) * anchor_shank_len,
+                ky + math.sin(theta) * anchor_shank_len)
+
+    result = {}
+    for seg_i in range(len(pins_sorted) - 1):
+        fi_a, ank_a = pins_sorted[seg_i]
+        fi_b, ank_b = pins_sorted[seg_i + 1]
+        theta_a = _theta(ank_a)
+        theta_b = _theta(ank_b)
+        while theta_b - theta_a > math.pi:
+            theta_b -= 2 * math.pi
+        while theta_b - theta_a < -math.pi:
+            theta_b += 2 * math.pi
+        span = max(fi_b - fi_a, 1)
+        for fi in range(fi_a, fi_b + 1):
+            if fi == fi_a:
+                result[fi] = ank_a
+            elif fi == fi_b:
+                result[fi] = ank_b
+            else:
+                t = (fi - fi_a) / span
+                theta = theta_a + t * (theta_b - theta_a)
+                result[fi] = _pos(theta)
+    return result
 
 
 def _find_motion_bbox(frames):

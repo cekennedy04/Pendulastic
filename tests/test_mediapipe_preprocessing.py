@@ -83,6 +83,58 @@ def test_knee_angle_rotation_invariant_under_arbitrary_rotation():
     assert math.isclose(original, rotated, abs_tol=1e-6)
 
 
+def test_interpolate_ankle_arc_quarter_circle_midpoint():
+    # anchor knee at origin, radius 1. Pin A at frame 0 -> ankle (1, 0)
+    # (theta=0). Pin B at frame 10 -> ankle (0, 1) (theta=pi/2). Midpoint
+    # frame 5 should sit at theta=pi/4: (cos(pi/4), sin(pi/4)).
+    pins_sorted = [(0, (1.0, 0.0)), (10, (0.0, 1.0))]
+    result = mp_pre.interpolate_ankle_arc(pins_sorted, (0.0, 0.0), 1.0)
+    assert set(result.keys()) == set(range(0, 11))
+    mx, my = result[5]
+    assert math.isclose(mx, math.cos(math.pi / 4), abs_tol=1e-6)
+    assert math.isclose(my, math.sin(math.pi / 4), abs_tol=1e-6)
+
+
+def test_interpolate_ankle_arc_pinned_frames_return_exact_click():
+    # Pin B's click (0.3, 1.4) is NOT on the anchor's radius-1 circle --
+    # the function must still return it verbatim at frame 10, not a
+    # radius-1 projection of it.
+    pins_sorted = [(0, (1.0, 0.0)), (10, (0.3, 1.4))]
+    result = mp_pre.interpolate_ankle_arc(pins_sorted, (0.0, 0.0), 1.0)
+    assert result[0] == (1.0, 0.0)
+    assert result[10] == (0.3, 1.4)
+
+
+def test_interpolate_ankle_arc_takes_shorter_arc_across_wrap():
+    # Pin A at theta=170deg, Pin B at theta=-170deg (== 190deg). The
+    # shorter arc goes 170 -> 180 -> 190 (20deg), not 170 -> 0 -> -170
+    # (340deg the long way). Midpoint (frame 5 of 0..10) should land at
+    # exactly 180deg: (-1, 0).
+    theta_a = math.radians(170.0)
+    theta_b = math.radians(-170.0)
+    ank_a = (math.cos(theta_a), math.sin(theta_a))
+    ank_b = (math.cos(theta_b), math.sin(theta_b))
+    pins_sorted = [(0, ank_a), (10, ank_b)]
+    result = mp_pre.interpolate_ankle_arc(pins_sorted, (0.0, 0.0), 1.0)
+    mx, my = result[5]
+    assert math.isclose(mx, -1.0, abs_tol=1e-6)
+    assert math.isclose(my, 0.0, abs_tol=1e-6)
+
+
+def test_interpolate_ankle_arc_three_pins_same_anchor_per_segment():
+    # 3 pins, 2 segments. Both segments must interpolate around the SAME
+    # anchor_knee/anchor_shank_len passed in -- not a per-segment radius
+    # re-derived from each pin pair (which would make segment 2 sit on a
+    # different circle than segment 1).
+    pins_sorted = [(0, (1.0, 0.0)), (10, (0.0, 1.0)), (20, (-1.0, 0.0))]
+    result = mp_pre.interpolate_ankle_arc(pins_sorted, (0.0, 0.0), 1.0)
+    for fi in range(0, 21):
+        x, y = result[fi]
+        assert math.isclose(math.hypot(x, y), 1.0, abs_tol=1e-6), (
+            f"frame {fi} not on the anchor's radius-1 circle: ({x}, {y})")
+    assert set(result.keys()) == set(range(0, 21))
+
+
 def _solid_frame(h, w, value):
     return np.full((h, w, 3), value, dtype=np.uint8)
 
