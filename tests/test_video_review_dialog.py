@@ -2358,6 +2358,55 @@ def test_interpolate_pins_anchor_cache_survives_unrelated_pin_changes(tmp_path):
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_interpolate_pins_anchor_cache_invalidated_by_retrack_same_hip_knee(
+        tmp_path):
+    """Regression for a Codex-caught gap in the anchor cache: hip/knee
+    equality alone is NOT a sound proxy for "this frame wasn't retracked"
+    -- a retrack can converge to the identical hip/knee while still
+    producing a genuinely different ankle (and therefore a different
+    shank_len). _on_retrack_done must explicitly evict any cached anchor
+    at/after its start_frame, not rely on the hip/knee comparison in
+    _on_interpolate_pins to catch this case (it can't -- there is nothing
+    for it to compare against that would differ)."""
+    import math
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "interp_cache_retrack_same_hipknee.avi")
+    _write_test_video(video_path, 11)
+    r = _get_root()
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 11
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 11, landmarks=landmarks,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._events = [
+        {"type": "pin_set", "frame": 0, "x": 1.0, "y": 0.0, "at": "t1"},
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 1.0, "at": "t2"},
+    ]
+    dlg._on_interpolate_pins()
+    run1_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert math.isclose(run1_events[0]["anchor_shank_len"], 1.0, abs_tol=1e-9)
+
+    # Retrack from frame 0: SAME hip/knee as before, but a different ankle
+    # -- the true tracked shank_len is now 3.0, not 1.0. This also clears
+    # both pins (retrack overwrites the full remainder of the array).
+    new_landmarks = [((0.0, 1.0), (0.0, 0.0), (3.0, 0.0))] * 11
+    dlg._on_retrack_done(0, [0.0] * 11, new_landmarks)
+
+    # Re-place both pins fresh after the retrack.
+    dlg._events.append(
+        {"type": "pin_set", "frame": 0, "x": 3.0, "y": 0.0, "at": "t3"})
+    dlg._events.append(
+        {"type": "pin_set", "frame": 10, "x": 0.0, "y": 3.0, "at": "t4"})
+
+    dlg._on_interpolate_pins()
+    run2_events = [e for e in dlg._events if e["type"] == "pin_interpolate"]
+    assert len(run2_events) == 2
+    # Must be the FRESH, retracked shank_len (3.0), not the stale cached
+    # value from before the retrack (1.0).
+    assert math.isclose(run2_events[1]["anchor_shank_len"], 3.0, abs_tol=1e-9)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_interpolate_pins_anchor_cache_invalidated_by_retrack(tmp_path):
     """A genuine retrack (or any mechanism that changes the anchor frame's
     hip/knee) must invalidate the per-frame cache -- reusing a stale

@@ -721,6 +721,17 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
             if fi >= start_frame:
                 self._events.append({"type": "pin_clear", "frame": fi,
                                      "at": _now_iso()})
+        # Evict any cached anchor at/after start_frame: hip/knee equality
+        # alone is not a sound proxy for "this frame's tracked data is
+        # unchanged" -- a retrack can converge to the identical hip/knee
+        # while still producing a different ankle (hence a different
+        # shank_len), which an equality-only check would miss, silently
+        # reusing a now-stale cached radius. Tying eviction directly to
+        # the retrack event that just overwrote this range removes that
+        # false-hit risk entirely, rather than relying on comparison.
+        for fi in list(self._anchor_cache):
+            if fi >= start_frame:
+                del self._anchor_cache[fi]
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
         self._btn_pin.config(state="normal")
