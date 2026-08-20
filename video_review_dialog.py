@@ -328,6 +328,8 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self.engine = engine
 
         self._pending_exclude_start: int | None = None
+        self._pin_armed: bool = False
+        self._display_scale: float = 1.0
         self._events: list = []
         self._pending_status: str | None = None
         own_sidecar_exists = os.path.isfile(_corrections_path(video_path, leg))
@@ -376,6 +378,7 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
     def _build_widgets(self) -> None:
         self._image_label = tk.Label(self)
         self._image_label.pack()
+        self._image_label.bind("<Button-1>", self._on_image_click)
 
         controls = tk.Frame(self)
         controls.pack(fill="x", padx=8, pady=4)
@@ -393,6 +396,9 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._btn_fix = tk.Button(
             button_row, text="Fix Person Here", command=self._on_fix_person_here)
         self._btn_fix.pack(side="left", padx=8)
+        self._btn_pin = tk.Button(
+            button_row, text="Pin Ankle", command=self._on_pin_ankle_toggle)
+        self._btn_pin.pack(side="left", padx=8)
         self._btn_exclude_from = tk.Button(
             button_row, text="Exclude From Here",
             command=self._on_exclude_from_here)
@@ -465,6 +471,9 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         if w > _MAX_DISPLAY_WIDTH:
             scale = _MAX_DISPLAY_WIDTH / w
             overlay = _cv2.resize(overlay, (int(w * scale), int(h * scale)))
+        else:
+            scale = 1.0
+        self._display_scale = scale
         rgb = _cv2.cvtColor(overlay, _cv2.COLOR_BGR2RGB)
         self._photo = ImageTk.PhotoImage(Image.fromarray(rgb))
         self._image_label.configure(image=self._photo)
@@ -596,6 +605,42 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
     # ------------------------------------------------------------------
     # Corrections: frame-range exclusion + persistence
     # ------------------------------------------------------------------
+    def _on_pin_ankle_toggle(self) -> None:
+        if self._retrack_in_progress:
+            return
+        self._pin_armed = not self._pin_armed
+        self._btn_pin.config(relief="sunken" if self._pin_armed else "raised")
+        if self._pin_armed:
+            self.status_var.set(
+                "Pin Ankle armed -- click the video frame to place a pin.")
+        else:
+            self.status_var.set("Pin Ankle disarmed.")
+
+    def _on_image_click(self, event) -> None:
+        if not self._pin_armed:
+            return
+        x = event.x / self._display_scale
+        y = event.y / self._display_scale
+        self._place_pin(self._frame_idx, x, y)
+
+    def _place_pin(self, frame_idx: int, x: float, y: float) -> None:
+        self._pin_armed = False
+        self._btn_pin.config(relief="raised")
+        if frame_idx < 0 or frame_idx >= len(self.landmarks):
+            self.status_var.set("Cannot pin here -- frame out of range.")
+            return
+        lm = self.landmarks[frame_idx]
+        knee = lm[1] if lm is not None else None
+        if knee is None or not (math.isfinite(knee[0])
+                                and math.isfinite(knee[1])):
+            self.status_var.set(
+                "Cannot pin here -- no valid tracked knee at this frame.")
+            return
+        self._events.append({"type": "pin_set", "frame": frame_idx,
+                             "x": float(x), "y": float(y), "at": _now_iso()})
+        self._redraw()
+        self.status_var.set(f"Pin placed at frame {frame_idx}.")
+
     def _on_exclude_from_here(self) -> None:
         if self._retrack_in_progress:
             return

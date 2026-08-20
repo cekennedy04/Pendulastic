@@ -1636,3 +1636,120 @@ def test_anchor_from_frame_degenerate_shank_len_returns_none():
     # knee and ankle at the same point -- zero-radius arc is undefined.
     landmarks = [((0.0, 1.0), (0.0, 0.0), (0.0, 0.0))]
     assert _anchor_from_frame(landmarks, 0) is None
+
+
+# ---------------------------------------------------------------------------
+# Pin Ankle button: click-to-place with coordinate conversion
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_display_scale_is_one_when_frame_narrower_than_max_width(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "narrow.avi")
+    _write_test_video(video_path, 3, w=64, h=48)  # well under _MAX_DISPLAY_WIDTH
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    assert dlg._display_scale == 1.0
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_pin_ankle_toggle_arms_and_disarms(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "arm.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    assert dlg._pin_armed is False
+    dlg._on_pin_ankle_toggle()
+    assert dlg._pin_armed is True
+    dlg._on_pin_ankle_toggle()
+    assert dlg._pin_armed is False
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_pin_ankle_toggle_noop_during_retrack(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "arm2.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._retrack_in_progress = True
+    dlg._on_pin_ankle_toggle()
+    assert dlg._pin_armed is False
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_image_click_ignored_while_unarmed(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+
+    class _FakeEvent:
+        x, y = 10, 10
+
+    video_path = str(tmp_path / "click0.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._on_image_click(_FakeEvent())
+    from video_review_dialog import _current_pins_from_events
+    assert _current_pins_from_events(dlg._events) == {}
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_image_click_places_pin_converted_by_display_scale(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+
+    class _FakeEvent:
+        x, y = 20, 30
+
+    video_path = str(tmp_path / "click1.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3,
+        landmarks=[((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._display_scale = 0.5  # simulate a downscaled display
+    dlg._frame_idx = 1
+    dlg._pin_armed = True
+
+    dlg._on_image_click(_FakeEvent())
+
+    pins = _current_pins_from_events(dlg._events)
+    assert pins == {1: (40.0, 60.0)}  # 20/0.5, 30/0.5
+    assert dlg._pin_armed is False  # auto-disarms after one placement
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_image_click_rejected_at_frame_with_no_valid_knee(tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog, _current_pins_from_events
+
+    class _FakeEvent:
+        x, y = 10, 10
+
+    video_path = str(tmp_path / "click2.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+    dlg._pin_armed = True
+
+    dlg._on_image_click(_FakeEvent())
+
+    assert _current_pins_from_events(dlg._events) == {}
+    assert "no valid tracked knee" in dlg.status_var.get().lower()
+    dlg.destroy()
