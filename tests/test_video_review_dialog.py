@@ -1589,3 +1589,50 @@ def test_current_pins_from_events_ignores_other_event_types():
         {"type": "exclude_range", "start_frame": 0, "end_frame": 3, "at": "t3"},
     ]
     assert _current_pins_from_events(events) == {5: (1.0, 2.0)}
+
+
+# ---------------------------------------------------------------------------
+# Anchor derivation from frame landmarks
+# ---------------------------------------------------------------------------
+
+def test_anchor_from_frame_valid_returns_hip_knee_shank_len():
+    from video_review_dialog import _anchor_from_frame
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (1.0, 0.0))]
+    anchor = _anchor_from_frame(landmarks, 0)
+    assert anchor is not None
+    hip, knee, shank_len = anchor
+    assert hip == (0.0, 1.0)
+    assert knee == (0.0, 0.0)
+    assert math.isclose(shank_len, 1.0, abs_tol=1e-9)
+
+
+def test_anchor_from_frame_out_of_range_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    assert _anchor_from_frame([], 0) is None
+    assert _anchor_from_frame([((0, 1), (0, 0), (1, 0))], 5) is None
+    assert _anchor_from_frame([((0, 1), (0, 0), (1, 0))], -1) is None
+
+
+def test_anchor_from_frame_none_landmark_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    assert _anchor_from_frame([None], 0) is None
+
+
+def test_anchor_from_frame_missing_joint_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    assert _anchor_from_frame([(None, (0.0, 0.0), (1.0, 0.0))], 0) is None
+    assert _anchor_from_frame([((0.0, 1.0), None, (1.0, 0.0))], 0) is None
+    assert _anchor_from_frame([((0.0, 1.0), (0.0, 0.0), None)], 0) is None
+
+
+def test_anchor_from_frame_non_finite_coordinate_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (float("nan"), 0.0))]
+    assert _anchor_from_frame(landmarks, 0) is None
+
+
+def test_anchor_from_frame_degenerate_shank_len_returns_none():
+    from video_review_dialog import _anchor_from_frame
+    # knee and ankle at the same point -- zero-radius arc is undefined.
+    landmarks = [((0.0, 1.0), (0.0, 0.0), (0.0, 0.0))]
+    assert _anchor_from_frame(landmarks, 0) is None

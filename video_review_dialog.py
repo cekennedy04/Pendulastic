@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import threading
@@ -281,6 +282,32 @@ def _current_pins_from_events(events: list) -> dict:
             else:
                 pins.pop(fi, None)
     return pins
+
+
+def _anchor_from_frame(landmarks: list, frame_idx: int):
+    """Returns (hip, knee, shank_len) from landmarks[frame_idx], or None if
+    that frame is out of range, has no landmark, is missing hip/knee/ankle,
+    has a non-finite coordinate, or the resulting shank_len is degenerate
+    (~0, i.e. knee and ankle collapsed to the same point -- an arc with
+    zero radius is undefined). Used to derive the ONE fixed anchor an
+    "Interpolate Pins" run is computed around -- see
+    docs/superpowers/specs/2026-08-20-pin-interpolation-correction-design.md
+    §3.1."""
+    if frame_idx < 0 or frame_idx >= len(landmarks):
+        return None
+    lm = landmarks[frame_idx]
+    if lm is None:
+        return None
+    hip, knee, ankle = lm
+    if hip is None or knee is None or ankle is None:
+        return None
+    for p in (hip, knee, ankle):
+        if not (math.isfinite(p[0]) and math.isfinite(p[1])):
+            return None
+    shank_len = math.hypot(knee[0] - ankle[0], knee[1] - ankle[1])
+    if shank_len < 1e-6:
+        return None
+    return hip, knee, shank_len
 
 
 class AnnotatedVideoReviewDialog(tk.Toplevel):
