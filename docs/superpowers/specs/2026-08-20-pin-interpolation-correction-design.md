@@ -88,7 +88,23 @@ def interpolate_ankle_arc(pins_sorted: list[tuple[int, tuple[float, float]]],
 The caller (`AnnotatedVideoReviewDialog._on_interpolate_pins`, §3.2) derives
 `anchor_knee`/`anchor_shank_len` from `self.landmarks[first_pin_frame]` — the knee
 position and hip-knee-to-ankle distance at the frame of the *first* pin in the current
-sequence, re-validated for validity (§4) before use.
+sequence — **and also derives `anchor_hip` from that same frame**, used for every
+frame's angle recomputation in §3.2, not each frame's own varying hip. Round 2 Codex
+review finding: v1 of this section fixed only the knee/radius anchor but left angle
+recomputation using "that frame's existing hip," which (a) doesn't exist for a
+previously-excluded frame (`_apply_exclusion` nulls the whole landmark tuple, hip
+included, not just the ankle), defeating the exclusion-interaction claim below, and
+(b) isn't actually needed once hip is anchored too — `pendulastic_viewer.py`'s real
+algorithm fixes *both* `hip0` and `kne0` for its whole session, not knee alone. Fixing
+hip at the anchor too makes every written frame depend on exactly one source frame
+(the first pin's), never on the frame being overwritten — which is what actually makes
+the exclusion-interaction claim in §3.2 true, not just asserted.
+
+All three anchor values (`anchor_hip`, `anchor_knee`, `anchor_shank_len` — where
+`anchor_shank_len = |anchor_knee - anchor_ankle|`, so the first pin's frame's ankle is
+also read, not just its knee) are validated per §4 before use: hip, knee, AND ankle at
+the anchor frame must all be non-`None` with finite coordinates, and
+`anchor_shank_len` must be non-degenerate (not ≈0).
 
 ### 3.2 Dialog additions
 
@@ -104,18 +120,24 @@ Four new buttons alongside the existing "Fix Person Here" / exclude / save row:
   disarms the mode after one placement.
 - **"Clear Pin Here"** — removes the current frame's pin if one exists; no-op with a
   status message otherwise. Appends a `pin_clear` event (§3.3).
-- **"Interpolate Pins"** — requires 2+ pins to do anything. Derives the fixed anchor
-  from the first pin's frame (§3.1), re-validates it (§4), then calls
-  `interpolate_ankle_arc()` across all current pins. For every frame in the returned
-  result, recomputes the angle via `mp_pre.knee_angle_from_points()` using that frame's
-  own hip position (unaffected — only the ankle changes) and the interpolated/exact
-  ankle, and overwrites `self.angles[fi]`/`self.landmarks[fi]`'s ankle component for
-  every such frame — including ones inside a previously-excluded range (see below).
-  Appends one `pin_interpolate` audit event (§3.3) recording what was actually used and
-  produced, not just frame numbers (round 1 finding).
+- **"Interpolate Pins"** — requires 2+ pins to do anything. Derives `anchor_hip`/
+  `anchor_knee`/`anchor_shank_len` from the first pin's frame (§3.1), validates them
+  (§4), then calls `interpolate_ankle_arc()` across all current pins. For every frame
+  in the returned result, recomputes the angle via `mp_pre.knee_angle_from_points()`
+  using `anchor_hip` (fixed, not that frame's own hip — §3.1) and the interpolated/
+  exact ankle, and overwrites `self.angles[fi]`/`self.landmarks[fi]` (hip and knee
+  components also become `anchor_hip`/`anchor_knee` for that frame, consistent with a
+  single fixed reference frame) for every such frame — including ones inside a
+  previously-excluded range (see below), since nothing about this computation reads
+  that frame's own prior landmark data. Appends one `pin_interpolate` audit event
+  (§3.3) recording what was actually used and produced, not just frame numbers (round 1
+  finding).
 - **"Clear All Pins"** — (new; needed once pins are a first-class piece of state with
   their own clear semantics) removes every current pin; appends one `pin_clear` event
-  with `frame: null` meaning "all," rather than one event per pin.
+  with `frame: null` meaning "all." **Reserved exclusively for this button** — the
+  retrack-overlap auto-clear below uses per-pin events instead (round 2 finding: v1 of
+  this section had both cases using `frame: null`, which would incorrectly wipe pins
+  outside the retracked range too).
 
 Pinned frames get a distinct marker on the overlay. Rather than changing `_draw()`'s
 signature (shared with `pendulastic_viewer.py`'s own rendering and the video-export
@@ -132,23 +154,28 @@ redundant top-level field to keep in sync (round 1 finding: v1 had no way to
 reconstruct current pins after a clear).
 
 **Interaction with frame-range exclusion:** `_apply_exclusion()` is unchanged and stays
-destructive (sets angle to `NaN`, landmarks to `None`). Because §3.1's anchor now comes
-from exactly one frame (the first pin's), not every frame in the span, **pinning or
-interpolating no longer needs any previously-excluded frame's old data to work** — it
-only needs the *first pin's* frame to have a valid knee (§4). Running "Interpolate
-Pins" across a span that includes previously-excluded frames simply computes and writes
-new values there, the same as any other frame in the span — no "restore" semantics, no
-ambiguity about what un-excluding means (round 1 finding: v1's un-exclude story was
-incoherent given destructive exclusion). The dropped v1 idea — "placing a pin
-implicitly un-excludes nearby frames" — is not needed and is not implemented.
+destructive (sets angle to `NaN`, landmarks to `None`). Because §3.1's anchor (hip,
+knee, AND shank length — round 2 fix) is derived entirely from the first pin's frame,
+**no frame being written by "Interpolate Pins" is ever read from** — every frame in the
+span gets `(anchor_hip, anchor_knee, interpolated_or_exact_ankle)`, full stop, whether
+or not that frame currently holds `NaN`/`None` from a prior exclusion. This is what
+makes the "no un-exclude semantics needed" claim actually true (round 2 finding: v1's
+first pass still said interpolation reads "that frame's own hip," which contradicted
+this claim for any excluded frame). The dropped v1 idea — "placing a pin implicitly
+un-excludes nearby frames" — remains unneeded and unimplemented; nothing is being
+un-excluded, frames are simply overwritten with freshly-computed values, the same as
+any other frame a retrack or interpolation touches.
 
 **Interaction with "Fix Person Here" / retrack:** a retrack overwrites the landmark
 data pins were validated against. `_on_retrack_done` (existing method) now also removes
 any pin whose frame falls within `[start_frame, start_frame + len(new_angles))` — the
 range it just overwrote — since that pin's original justification (a specific tracked
-knee position at that frame) no longer exists after the retrack. This is a `pin_clear`
-audit event per removed pin, same as a manual clear (round 1 finding: pin-vs-retrack
-precedence was undefined).
+knee position at that frame) no longer exists after the retrack. This appends one
+`pin_clear` event **per removed pin, with that pin's specific `frame`** — never
+`frame: null` (round 2 finding: v1 of this paragraph said `frame: null`, contradicting
+§3.3's exclusive reservation of that value for "Clear All Pins" and incorrectly wiping
+pins outside the retracked range too). A retrack that overlaps zero pins appends no
+`pin_clear` events at all.
 
 ### 3.3 Schema v2
 
@@ -160,14 +187,26 @@ shipped hours before this spec, essentially no real clinical data exists under i
 "hours old" is an assumption, not a guarantee; the decision stands anyway per the
 brainstorming discussion.
 
+**However** (round 2 finding): *ignoring* a v1 sidecar on load is one thing; a v2 save
+subsequently **overwriting that same file path** is a stronger, avoidable form of data
+loss — the old content isn't just ignored, it's destroyed. `_save_corrections` gets one
+small addition: if a file already exists at the destination path and its
+`schema_version` doesn't match `CORRECTIONS_SCHEMA_VERSION`, rename it aside (e.g.
+`<path>.v{old_version}.bak`, overwriting any previous `.bak` at that exact name) before
+writing the new file — a few lines, not a real migration, and it means no sidecar
+content is ever silently destroyed even under the "no migration" decision above.
+
 New event types appended to the existing `events` list:
 - `{"type": "pin_set", "frame": int, "x": float, "y": float, "at": iso8601}`
 - `{"type": "pin_clear", "frame": int | null, "at": iso8601}` — `null` means "all pins,"
-  used by both "Clear All Pins" and the retrack-overlap auto-clear (§3.2).
+  emitted **only** by "Clear All Pins." The retrack-overlap auto-clear (§3.2) always
+  emits one of these per removed pin with that pin's specific `frame`, never `null`.
 - `{"type": "pin_interpolate", "pins": [{"frame": int, "x": float, "y": float}, ...],
-  "anchor_frame": int, "anchor_knee": [float, float], "anchor_shank_len": float,
-  "frame_range": [int, int], "at": iso8601}` — records the full input/output of the
-  run, not just which frames were pinned (round 1 finding).
+  "anchor_frame": int, "anchor_hip": [float, float], "anchor_knee": [float, float],
+  "anchor_shank_len": float, "frame_range": [int, int], "at": iso8601}` — records the
+  full input/output of the run, not just which frames were pinned (round 1 finding),
+  including `anchor_hip` now that it's part of what's actually used (round 2 fix,
+  §3.1).
 
 New top-level doc field, sibling to `schema_version`/`video_fingerprint`/`leg`:
 - `"tracker_version": str` — identifies the tracking engine/config that produced the
@@ -186,14 +225,17 @@ New top-level doc field, sibling to `schema_version`/`video_fingerprint`/`leg`:
 - **Interpolate with fewer than 2 pins:** status message, no state change.
 - **A pin frame beyond `len(self.angles)`:** guarded the same way `_on_fix_person_here`
   already guards an out-of-range `_frame_idx` — status message, no pin placed.
-- **Pin placement / interpolation-anchor validity:** before accepting a pin, or before
-  deriving the interpolation anchor from a pin's frame, validate that frame's `hip`/
-  `knee` are non-`None` and every coordinate is finite (`math.isfinite`). Any failure:
-  status message ("Cannot pin here — no valid tracked knee at this frame"), no state
-  change. This closes the round-1 finding that v1 only checked "is knee `None`," not
-  degenerate/non-finite values, and applied the check inconsistently between placement
-  and interpolation time.
-- **`anchor_shank_len` degenerate (≈0, i.e. hip/knee/ankle collapsed to one point):**
+- **Pin placement validity:** before accepting a pin, validate that frame's `knee` is
+  non-`None` with a finite coordinate (only the knee is needed to place a pin — the
+  clinician supplies the ankle via the click itself). Failure: status message ("Cannot
+  pin here — no valid tracked knee at this frame"), no state change.
+- **Interpolation-anchor validity:** before deriving `anchor_hip`/`anchor_knee`/
+  `anchor_shank_len` from the first pin's frame, validate that frame's `hip`, `knee`,
+  AND `ankle` are all non-`None` with finite coordinates (round 2 fix — the anchor now
+  needs all three, not just knee, since hip is fixed too and shank length is computed
+  from knee+ankle; see §3.1). Failure: status message, no state change, no partial
+  write.
+- **`anchor_shank_len` degenerate (≈0, i.e. anchor knee/ankle collapsed to one point):**
   same rejection path as above — cannot define an arc with zero radius.
 - **Retrack in progress:** all four new buttons guarded behind the existing
   `_retrack_in_progress` check, same pattern as "Exclude From/To Here" and "Save
@@ -223,16 +265,30 @@ function):
   `_MAX_DISPLAY_WIDTH` scale-down case, via the new `self._display_scale`); pin
   placement/clearing/clear-all; current-pin-set reconstruction from a mixed
   `pin_set`/`pin_clear` event sequence, including the `frame: null` clear-all case;
-  "Interpolate Pins" updating `self.angles`/`self.landmarks` correctly (including over
-  a previously-excluded span, with no un-exclude special-casing) and appending a
-  correctly-populated `pin_interpolate` event; pin placement/interpolation rejected at
-  an invalid (missing/degenerate/non-finite) knee frame; a retrack overlapping a
-  pinned frame auto-clears that pin and logs the `pin_clear` event; all four buttons
-  no-op during `_retrack_in_progress`.
+  "Interpolate Pins" updating `self.angles`/`self.landmarks` correctly **including
+  over a previously-excluded span** (asserting the written hip/knee/ankle come from the
+  anchor frame, not the excluded frame's now-`None` data) and appending a correctly-
+  populated `pin_interpolate` event; pin placement rejected at an invalid knee frame;
+  interpolation-anchor rejected when the first pin's hip/ankle (not just knee) is
+  missing/degenerate/non-finite; a retrack overlapping N pinned frames appends exactly
+  N per-pin `pin_clear` events (never `frame: null`) and leaves pins outside the
+  retracked range untouched; all four buttons no-op during `_retrack_in_progress`.
 - Save/load round trip: a v2 doc with all three new event types and `tracker_version`
   saves and reloads correctly, including correct pin-set reconstruction after reload; a
-  v1 doc is rejected exactly as the existing version-mismatch test already covers, no
-  new migration test needed per §3.3.
+  v1 doc is rejected on load exactly as the existing version-mismatch test already
+  covers; saving a v2 doc over an existing v1 (or otherwise version-mismatched) sidecar
+  renames the old file aside (`.v{N}.bak`) instead of destroying it (§3.3's round 2
+  addition) — verify the backup file's content is byte-identical to the pre-save
+  original.
+
+**Known, accepted characteristic (not a bug to test against):** because pinned frames
+hold the clinician's exact click while in-between frames are projected onto the fixed
+arc, a pin whose click was off the true arc radius produces a small angle discontinuity
+at the frame immediately adjacent to that pin. `pendulastic_viewer.py`'s own Phase 1
+has the identical characteristic (it also force-restores exact pin values after
+interpolating) — this spec inherits it deliberately rather than introducing a new
+"snap pins onto the arc" behavior the viewer itself doesn't have (round 2 P2 finding,
+resolved by documenting rather than changing behavior).
 
 ## 6. Out of scope
 
