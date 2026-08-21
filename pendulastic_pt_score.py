@@ -50,6 +50,43 @@ OUT_DIR   = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "PT_Scores")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Healthy reference values ───────────────────────────────────────────────────
+# PROVISIONAL (2026-08-21): recalibrated again after fixing two bugs in
+# compute_pt_params's N/A1/R2n peak/trough counting:
+#   1. Unbounded active-oscillation window -- counting ran over the ENTIRE
+#      post-release signal with no tail cutoff, so a long resting tail let
+#      sensor noise get miscounted as extra oscillation cycles (synthetic
+#      single-drop trial: N read 0.5 with a 3s tail vs 28.5 with a 30s tail
+#      from noise alone, no change to the real motion).
+#   2. find_peaks() used height=min_amp only, not prominence -- height alone
+#      only checks a candidate's ABSOLUTE phi value, not how much it rises
+#      above its local surroundings, so noise riding on a smooth declining
+#      trend (a genuinely non-oscillating "stable descending angle" trial --
+#      no rebound at all, not even the single-drop case above) still got
+#      counted as real peaks as long as the trend itself kept phi above
+#      min_amp. Synthetic monotonic 180->60deg descent: 144 height-only
+#      "peaks" vs 0 once prominence=min_amp is also required; a genuine ~1Hz
+#      decaying-cosine oscillation is unaffected (N=4, matching the true
+#      cycle count) since real oscillation peaks have real local prominence.
+# Bug 1 was baked into the n=4 control / n=3 MS cohort these medians were
+# ORIGINALLY calibrated from (the 2026-08-10 recalibration below), so N in
+# particular was itself inflated -- recomputing after bug 1's fix alone
+# moved the control-cohort median N from 5.5 to 3.5. Bug 2's fix changed
+# nothing further for this cohort (real trials' genuine oscillations already
+# had real prominence -- confirmed by recomputing again after bug 2's fix:
+# identical medians except f, which moved a negligible 0.9137->0.8982), so
+# only bug 1's recalibration is reflected below. Same n=4 control
+# (P2,8,9,12), n=3 MS (P11,13,14), pre/baseline trials only, both legs
+# pooled methodology as the 2026-08-10 pass -- see that recalibration's own
+# note below for the earlier history and the
+# n=7-total-participants power caveat, which still applies here.
+#
+# PT_HEALTHY_MAX/PT_BORDERLINE_MAX below were NOT recomputed against this
+# new HEALTHY_REF -- they're still the 2026-08-10 PT7-distribution
+# boundaries, now stale relative to the shifted PT7 scale this HEALTHY_REF
+# produces. Recalibrating those is a separate, bigger statistical call
+# (distribution boundaries, not a single per-parameter median) and needs
+# its own deliberate pass, not a silent side effect of this bug fix.
+#
 # PROVISIONAL (2026-08-10): recalibrated after fixing three compute_pt_params
 # bugs (release detection firing during a detrend artifact, whole-trial
 # detrend distorting swing amplitude, single-sample "tail median") that
@@ -65,18 +102,21 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # derivation.
 # One-directional penalties: only penalise deviations in the impaired direction.
 HEALTHY_REF = {
-    "R2n":           1.1019,  # control median n=4 (2026-08-10 recalibration)
-    "N":             5.5,     # control median n=4
-    "phi_max_ratio": 0.6387,  # control median n=4
-    "omega_max_n":   7.4494,  # control median n=4
-    "omega_min_n":   0.0012,  # control median n=4
-    "f":             0.9006,  # control median n=4
-    "area_ratio":    0.0497,  # control median n=4
+    "R2n":           1.0321,  # control median n=4 (2026-08-21 recalibration)
+    "N":             3.5,     # control median n=4 -- was 5.5 pre-fix (see note above)
+    "phi_max_ratio": 0.6386,  # control median n=4
+    "omega_max_n":   6.7684,  # control median n=4
+    "omega_min_n":   0.0010,  # control median n=4
+    "f":             0.9137,  # control median n=4
+    "area_ratio":    0.0768,  # control median n=4
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
 # PROVISIONAL (2026-08-10): control median PT=0.111, 75th-pct=0.150;
 # MS median PT=0.448; Mann-Whitney p=0.0001. Same n=7 caveat as HEALTHY_REF.
+# STALE as of the 2026-08-21 HEALTHY_REF recalibration above -- these
+# boundaries were fit against the pre-fix PT7 distribution and have not
+# been recomputed against the new one. Needs its own recalibration pass.
 PT_HEALTHY_MAX    = 0.150  # covers control 75th-pct; below this = healthy
 PT_BORDERLINE_MAX = 0.299  # midpoint of gap between populations
 
@@ -253,9 +293,12 @@ _N_SIMPLE    = len(_SIMPLE_KEYS)
 # separate thigh vs shank clusters ("duo" sessions with mixed-leg markers).
 AREA_RATIO_WARN = 0.55
 
-def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
+def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     """
-    Full 7-parameter Popovic (2018) PT score.
+    Per-parameter deviation contribution behind compute_pt_score's total --
+    same per-key penalty-direction logic, factored out so a caller can show
+    WHICH of the 7 parameters is driving a score instead of just the single
+    number (values sum to compute_pt_score(params, ref)).
 
     Penalty directions (impaired = deviated from healthy reference):
       N, R2n, phi_max_ratio, omega_max_n → penalise only if BELOW reference
@@ -265,11 +308,12 @@ def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
       f                                   → bidirectional; skip if uncomputable
     """
     _DENOM_FLOOR = 0.1
-    total = 0.0
+    breakdown = {}
     for k in _PARAM_KEYS:
         pij = params.get(k, 0.0)
         phj = ref.get(k, 0.0)
         if phj <= 0:
+            breakdown[k] = 0.0
             continue
         delta = pij - phj
         denom = _N_PARAMS * max(phj, _DENOM_FLOOR)
@@ -282,8 +326,15 @@ def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
                 dev = 0.0
             else:
                 dev = abs(delta) / denom
-        total += dev
-    return total
+        breakdown[k] = dev
+    return breakdown
+
+
+def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
+    """Full 7-parameter Popovic (2018) PT score -- see
+    compute_pt_score_breakdown for the per-key penalty-direction rationale
+    and a per-parameter view of what this total is made of."""
+    return sum(compute_pt_score_breakdown(params, ref).values())
 
 
 def compute_pt_score_simple(params: dict, ref: dict = HEALTHY_REF) -> float:
@@ -817,6 +868,53 @@ def _merge_close_extrema(idx_arr: np.ndarray, values: np.ndarray, min_sep: int) 
     return np.array(merged, dtype=int)
 
 
+# Matches imu_calibration_tuner.score_waveform's own Continuity-check window
+# cap -- a real pendulum swing settles well within this, so a stray extremum
+# past it is tail noise, not real oscillation.
+_ACTIVE_WINDOW_CAP_SEC = 4.0
+
+
+def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
+                                   pk_i: np.ndarray, tr_i: np.ndarray,
+                                   neutral: float, A0: float) -> float:
+    """End-of-active-window time bound for N/A1/R2n/phi_max_ratio/f's
+    peak-and-trough counting. Without this, a long resting tail after the
+    real swing settles lets sensor noise/tremor cross min_amp repeatedly and
+    gets miscounted as extra oscillation cycles -- confirmed on a synthetic
+    single-drop trial (180deg hold -> 106deg -> 60deg, no rebound): N read
+    0.5 with a 3s tail, 28.5 with a 30s tail, purely from tail noise with no
+    change to the real motion, and a single spurious tail trough could flip
+    A1 from 0deg to ~A0 (a fabricated "peak-to-peak first oscillation").
+
+    Same two-branch logic imu_calibration_tuner.score_waveform's own
+    Continuity check already uses on this exact class of problem:
+      - an oscillation was detected (pk_i/tr_i non-empty): window ends at
+        the last detected extremum, capped at _ACTIVE_WINDOW_CAP_SEC past
+        release. The cap matters even though pk_i/tr_i here are the
+        PRE-filter (possibly noise-contaminated) detections -- once any
+        extremum lands past the cap, the cap alone determines the window
+        regardless of how much later a noisier extremum might be.
+      - no oscillation at all (a genuine single drop with no rebound, the
+        severe-spasticity end of the spectrum -- find_peaks needs the
+        signal to go down AND back up to register any extremum, so this
+        case never finds one): find the first point after which the signal
+        is PERMANENTLY within tolerance of neutral, capped the same way.
+    """
+    extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
+    if len(extrema):
+        last_extremum_t = float(t_r[int(extrema.max())])
+        return t_r[0] + min(_ACTIVE_WINDOW_CAP_SEC, max(0.0, last_extremum_t - t_r[0]))
+    tol = max(2.0, 0.05 * A0)
+    near_neutral = np.abs(ang_r - neutral) <= tol
+    settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
+    for i in range(len(ang_r)):
+        if np.all(near_neutral[i:]):
+            settle_idx = i
+            break
+    settle_t = float(t_r[settle_idx])
+    return min(t_r[0] + _ACTIVE_WINDOW_CAP_SEC, settle_t)
+
+
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                       release_idx: Optional[int] = None,
                       detrend: bool = True) -> Optional[dict]:
@@ -935,10 +1033,30 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     first_n = max(5, int(0.20 * len(phi)))
     A0 = max(float(np.nanmax(phi_s[:first_n])), A0_raw)
 
-    # Re-detect peaks on phi with amplitude threshold
+    # Re-detect peaks on phi with amplitude threshold. prominence=min_amp
+    # (not just height=min_amp) is required: height alone only checks a
+    # candidate point's ABSOLUTE phi value, not how much it actually rises
+    # above its surrounding baseline -- on a smooth, non-oscillating decline
+    # (a real "stable descending angle" trial, e.g. a controlled lowering
+    # with no released swing), every point in roughly the first half of the
+    # descent still sits above min_amp purely from the overall downward
+    # trend, so ordinary sensor noise riding on top of that trend gets
+    # counted as dozens of "significant peaks" even though none of them are
+    # a genuine up-down oscillation. Confirmed: a synthetic monotonic
+    # 180deg->60deg descent (no rebound) found 144 height-only "peaks" vs 0
+    # once prominence is required; a genuine ~1Hz decaying-cosine synthetic
+    # oscillation is unaffected (N=5 either way, correctly matching 5 true
+    # cycles) since real oscillation peaks have real local prominence.
     min_amp  = max(1.0, 0.05 * A0)
-    pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist)
-    tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist)
+    pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+    tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+
+    # Bound to the active-oscillation window before counting anything --
+    # see _active_oscillation_window_end's own docstring for why an
+    # unbounded resting tail miscounts noise as real oscillation cycles.
+    window_end_t = _active_oscillation_window_end(t_r, ang_r, pk_i2, tr_i2, neutral, A0)
+    pk_i2 = pk_i2[t_r[pk_i2] <= window_end_t]
+    tr_i2 = tr_i2[t_r[tr_i2] <= window_end_t]
 
     # Merge sub-peaks closer than fps/6 apart — the spastic quadriceps catch
     # produces an abrupt deceleration that find_peaks misreads as two peaks.
