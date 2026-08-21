@@ -519,6 +519,7 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
                         lambda *a, **k: figure_calls.append(a), raising=False)
     monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: {"13", "6"})
+    monkeypatch.setattr(pcc, "all_classified_pids", lambda: {"MS": ["13"], "Control": ["6"]})
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
     monkeypatch.setattr(pcc, "classify_participant",
@@ -632,7 +633,7 @@ def test_write_cohort_artifacts_no_recollection_when_arm_empty(monkeypatch, tmp_
         "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
         "ms_n_participants": None, "ms_n_trials": None,
         "control_n_participants": None, "control_n_trials": None,
-        "stats_rows": None, "n_excluded_unclassified": 0,
+        "stats_rows": None, "n_excluded_unclassified": 0, "range_rows": [],
     }
     pcc.write_cohort_artifacts(snapshot)   # must not raise
 

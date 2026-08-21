@@ -31,6 +31,11 @@ FONT_SECTION = ("Segoe UI", 8, "bold")
 FONT_BODY = ("Segoe UI", 9)
 FONT_SMALL = ("Segoe UI", 7)
 
+FONT_TILE_TITLE = ("Segoe UI", 11, "bold")
+FONT_TILE_SUB = ("Segoe UI", 8)
+FONT_HERO_TITLE = ("Segoe UI", 14, "bold")
+FONT_HERO_SUB = ("Segoe UI", 9)
+
 
 # ttk style names owned by this module. Every one is prefixed "Workbench."
 # so that applying the theme only affects widgets that explicitly opt in via
@@ -201,3 +206,133 @@ def secondary_button(parent: tk.Misc, text: str, command) -> tk.Button:
                      activebackground=PALETTE["BTN_ACT"], activeforeground="#FFFFFF",
                      relief="flat", bd=0, padx=10, pady=4,
                      font=FONT_BODY, cursor="hand2")
+
+
+def _round_rect_points(x1: float, y1: float, x2: float, y2: float, r: float) -> list:
+    """Point list for create_polygon(..., smooth=True) tracing a rounded
+    rectangle. Smoothing interpolates a curve through each corner pair, so
+    listing the two points flanking a corner (rather than an arc) is enough
+    to read as rounded once Tk splines it."""
+    return [
+        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+    ]
+
+
+class Tile(tk.Canvas):
+    """A rounded, elevated action card: icon + title + subtitle, with hover
+    feedback and a click command. Plain ttk/tk buttons can't do rounded
+    corners or a true hover repaint, so this draws itself on a Canvas
+    instead — used for the ModeSelectView landing tiles."""
+
+    _ICON_SIZE = 9
+
+    def __init__(self, parent: tk.Misc, title: str, subtitle: str, command,
+                 icon: str = "record", width: int = 220, height: int = 96,
+                 primary: bool = False) -> None:
+        super().__init__(parent, width=width, height=height, bg=PALETTE["BG"],
+                          highlightthickness=0, cursor="hand2")
+        self._title = title
+        self._subtitle = subtitle
+        self._command = command
+        self._icon = icon
+        self._tw, self._th = width, height
+        self._primary = primary
+        self._hover = False
+        self._redraw()
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _palette(self):
+        if self._primary:
+            fill = "#1D4ED8" if self._hover else PALETTE["BTN_ACT"]
+            return dict(fill=fill, border=fill, title="#FFFFFF",
+                        sub="#EAF2FF", icon="#FFFFFF", border_w=2)
+        return dict(
+            fill=PALETTE["SURFACE"],
+            border=PALETTE["BTN_ACT"] if self._hover else PALETTE["BORDER"],
+            title=PALETTE["FG"], sub=PALETTE["FG3"], icon=PALETTE["BTN_ACT"],
+            border_w=2 if self._hover else 1,
+        )
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        c = self._palette()
+        pts = _round_rect_points(2, 2, self._tw - 2, self._th - 2, 14)
+        self.create_polygon(pts, smooth=True, fill=c["fill"],
+                             outline=c["border"], width=c["border_w"])
+        icon_cx = 34 if self._primary else 30
+        self._draw_icon(icon_cx, self._th / 2, c["icon"])
+        text_x = icon_cx + 26
+        title_font = FONT_HERO_TITLE if self._primary else FONT_TILE_TITLE
+        sub_font = FONT_HERO_SUB if self._primary else FONT_TILE_SUB
+        self.create_text(text_x, self._th / 2 - 11, text=self._title,
+                          anchor="w", fill=c["title"], font=title_font)
+        self.create_text(text_x, self._th / 2 + 13, text=self._subtitle,
+                          anchor="w", fill=c["sub"], font=sub_font,
+                          width=self._tw - text_x - 14)
+
+    def _draw_icon(self, cx: float, cy: float, color: str) -> None:
+        s = self._ICON_SIZE
+        kind = self._icon
+        if kind == "record":
+            self.create_oval(cx - s, cy - s, cx + s, cy + s, outline=color, width=2)
+            self.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=color, outline="")
+        elif kind == "upload":
+            self.create_line(cx, cy + s, cx, cy - s + 2, fill=color, width=2)
+            self.create_line(cx - 6, cy - s + 8, cx, cy - s + 2, cx + 6, cy - s + 8,
+                              fill=color, width=2, joinstyle="round", capstyle="round")
+            self.create_line(cx - s, cy + s + 3, cx + s, cy + s + 3, fill=color, width=2)
+        elif kind == "compare":
+            self.create_rectangle(cx - s, cy - 6, cx - 2, cy + 6, outline=color, width=2)
+            self.create_rectangle(cx + 2, cy - 6, cx + s, cy + 6, outline=color, width=2)
+            self.create_line(cx - 2, cy, cx + 2, cy, fill=color, width=2)
+        elif kind == "chart":
+            for bx, h in ((cx - 8, 8), (cx, 15), (cx + 8, 11)):
+                self.create_rectangle(bx - 3, cy + s - h, bx + 3, cy + s,
+                                       fill=color, outline="")
+        elif kind == "checklist":
+            self.create_rectangle(cx - s, cy - s, cx + s, cy + s, outline=color, width=2)
+            self.create_line(cx - 4, cy, cx - 1, cy + 4, cx + 5, cy - 5, fill=color,
+                              width=2, joinstyle="round", capstyle="round")
+
+    def _on_enter(self, _evt=None) -> None:
+        self._hover = True
+        self._redraw()
+
+    def _on_leave(self, _evt=None) -> None:
+        self._hover = False
+        self._redraw()
+
+    def _on_click(self, _evt=None) -> None:
+        if self._command:
+            self._command()
+
+
+def tile(parent: tk.Misc, title: str, subtitle: str, command, icon: str = "record",
+         width: int = 220, height: int = 96, primary: bool = False) -> Tile:
+    return Tile(parent, title, subtitle, command, icon=icon,
+                width=width, height=height, primary=primary)
+
+
+def brand_mark(parent: tk.Misc, size: int = 52) -> tk.Canvas:
+    """A small circular pendulum glyph — pivot dot, swing line, weighted
+    bob — as the app's monogram next to the wordmark on the landing screen."""
+    c = tk.Canvas(parent, width=size, height=size, bg=PALETTE["BG"],
+                  highlightthickness=0)
+    accent = PALETTE["BTN_ACT"]
+    pad = size * 0.08
+    c.create_oval(pad, pad, size - pad, size - pad, outline=accent, width=2.5)
+    cx, top = size / 2, pad + size * 0.14
+    bob_x, bob_y = cx + size * 0.2, size - pad - size * 0.2
+    c.create_line(cx, top, bob_x, bob_y, fill=accent, width=2.5,
+                  capstyle="round")
+    bob_r = size * 0.09
+    c.create_oval(bob_x - bob_r, bob_y - bob_r, bob_x + bob_r, bob_y + bob_r,
+                  fill=accent, outline="")
+    pivot_r = size * 0.045
+    c.create_oval(cx - pivot_r, top - pivot_r, cx + pivot_r, top + pivot_r,
+                  fill=accent, outline="")
+    return c

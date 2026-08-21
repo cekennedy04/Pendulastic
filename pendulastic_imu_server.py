@@ -626,6 +626,17 @@ _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as in
 
 _CONFIG = load_config()   # {beta, ema_alpha, flex_axis_capture, gravity_seed, ...}
 
+# Diagnostic-only: append a record of every zero()/auto-tare firing here,
+# independent of start_raw_log()/_recording (which only starts once a trial's
+# countdown finishes) so it also captures auto-tares that fire mid-countdown,
+# before the intended final hold. Investigates the alternating good/
+# catastrophic-RMSE trial pattern found 2026-08-17 (Participant_16 right leg:
+# Trials 1/3 ~13 deg RMSE, Trials 2/4 ~50 deg RMSE with a large constant
+# bias — the signature of a wrong zero-reference pose, not accumulating
+# in-trial drift).
+_ZERO_EVENT_LOG_PATH = os.path.join(os.path.dirname(__file__), "data",
+                                     "imu_zero_events.jsonl")
+
 _raw_lock:     threading.Lock          = threading.Lock()
 _raw_log_file                          = None    # open file handle, or None
 _raw_log_path: Optional[str]           = None
@@ -755,6 +766,36 @@ def is_stationary() -> bool:
         return all(d.is_stationary() for d in devices)
 
 
+def _log_zero_event(role: str, accel_hold_buf: list, gyro_hold_buf: list,
+                     accel_bias: np.ndarray) -> None:
+    """Append one diagnostic record of a zero()/auto-tare firing to
+    _ZERO_EVENT_LOG_PATH: which role calibrated, how many stillness-buffer
+    samples backed it, and the accel/gyro readings at that moment. See
+    _ZERO_EVENT_LOG_PATH's comment for why this exists. Best-effort only --
+    a logging failure must never block the actual zeroing it's attached to."""
+    try:
+        accel_vals = [v for _, v in accel_hold_buf]
+        gyro_vals = [v for _, v in gyro_hold_buf]
+        accel_mean = np.mean(accel_vals, axis=0) if accel_vals else np.zeros(3)
+        gyro_mean = np.mean(gyro_vals, axis=0) if gyro_vals else np.zeros(3)
+        record = {
+            "ts": time.time(),
+            "role": role,
+            "accel_hold_n": len(accel_vals),
+            "accel_hold_mean": accel_mean.tolist(),
+            "accel_hold_mag": float(np.linalg.norm(accel_mean)),
+            "gyro_hold_n": len(gyro_vals),
+            "gyro_hold_mean": gyro_mean.tolist(),
+            "gyro_hold_mag": float(np.linalg.norm(gyro_mean)),
+            "accel_bias": np.asarray(accel_bias, dtype=float).tolist(),
+        }
+        os.makedirs(os.path.dirname(_ZERO_EVENT_LOG_PATH), exist_ok=True)
+        with open(_ZERO_EVENT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
 def zero():
     """Capture the current pose as the 0° reference.
     Stores both Euler offsets (for relative_angles() backward compat) and
@@ -776,10 +817,14 @@ def zero():
             prox.calibrate_gyro_bias()
             prox.calibrate_accel_bias(prox._accel_hold_buf)
             _q_zero_prox = prox.get_quaternion()
+            _log_zero_event(ROLE_PROXIMAL, prox._accel_hold_buf,
+                             prox._gyro_hold_buf, prox.accel_bias)
         if dist is not None and dist.connected:
             dist.calibrate_gyro_bias()
             dist.calibrate_accel_bias(dist._accel_hold_buf)
             _q_zero_dist = dist.get_quaternion()
+            _log_zero_event(ROLE_DISTAL, dist._accel_hold_buf,
+                             dist._gyro_hold_buf, dist.accel_bias)
         elif _q_zero_dist is None:
             solo = next((d for d in (dist, prox)
                          if d is not None and d.connected), None)
@@ -787,6 +832,9 @@ def zero():
                 solo.calibrate_gyro_bias()
                 solo.calibrate_accel_bias(solo._accel_hold_buf)
                 _q_zero_dist = solo.get_quaternion()
+                solo_role = "solo:" + (ROLE_DISTAL if solo is dist else ROLE_PROXIMAL)
+                _log_zero_event(solo_role, solo._accel_hold_buf,
+                                 solo._gyro_hold_buf, solo.accel_bias)
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.
         _flex_axis        = None

@@ -55,6 +55,65 @@ def test_replay_trial_matches_hand_computed_rotation():
         f"expected ~{expected_final:.2f} deg, got {angle[-1]:.2f} deg")
 
 
+def test_replay_trial_defaults_to_no_magnetometer(monkeypatch):
+    """Backward compatibility: params without "use_mag" (the pre-existing
+    shape every other test/caller uses) must still call ahrs.update() with
+    mag=None, unchanged from before use_mag existed."""
+    samples = _solo_hold_then_burst_samples()
+    seen_mag = []
+    orig_update = tuner.MadgwickAHRS.update
+    def spy_update(self, gyro, accel, mag, dt):
+        seen_mag.append(mag)
+        return orig_update(self, gyro, accel, mag, dt)
+    monkeypatch.setattr(tuner.MadgwickAHRS, "update", spy_update)
+
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    tuner.replay_trial(samples, params)
+    assert seen_mag, "ahrs.update() was never called"
+    assert all(m is None for m in seen_mag)
+
+
+def test_replay_trial_use_mag_true_passes_real_magnetometer_data(monkeypatch):
+    """params["use_mag"]=True must thread the trial's own mag samples into
+    ahrs.update() instead of the default None -- the 2026-08-17 methodology
+    comparison's mechanism for measuring whether magnetometer fusion helps
+    or hurts real RMSE. Never set True in a persisted/live config."""
+    samples = []
+    t = 0.0
+    dt = 0.01
+    ts_ms = 0
+    mag_reading = [10.0, 5.0, 2.0]
+    for i in range(120):
+        samples.append({"t": t, "role": "distal", "sensor": "accel",
+                        "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                        "v": [0.0, 0.0, 0.0] if i < 100 else [0.0, 2.0, 0.0],
+                        "phone_ts_ms": ts_ms})
+        samples.append({"t": t, "role": "distal", "sensor": "mag",
+                        "v": mag_reading, "phone_ts_ms": ts_ms})
+        t += dt; ts_ms += 10
+
+    seen_mag = []
+    orig_update = tuner.MadgwickAHRS.update
+    def spy_update(self, gyro, accel, mag, dt):
+        seen_mag.append(mag)
+        return orig_update(self, gyro, accel, mag, dt)
+    monkeypatch.setattr(tuner.MadgwickAHRS, "update", spy_update)
+
+    params = {"beta": 0.041, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "use_mag": True}
+    tuner.replay_trial(samples, params)
+    assert seen_mag, "ahrs.update() was never called"
+    # First call(s) happen before any mag sample has arrived (mag starts
+    # None until the first "mag" sensor sample is processed) -- only assert
+    # on calls after mag data has actually landed.
+    post_mag_calls = [m for m in seen_mag if m is not None]
+    assert post_mag_calls, "use_mag=True never threaded real mag data through"
+    for m in post_mag_calls:
+        np.testing.assert_allclose(m, mag_reading)
+
+
 def _solo_hold_with_bias_then_burst_samples(bias):
     """Like _solo_hold_then_burst_samples, but every gyro sample -- hold,
     burst, and settle alike -- carries a constant additive bias, as a real

@@ -1,0 +1,369 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787167376.146248   36152 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787167383.815553   36152 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+53 video trial(s) overlapping the IMU-scored set
+
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+  [1/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+  [2/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+  [3/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+  [4/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+  [5/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+  [6/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+  [7/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+  [8/53] 13 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+  [9/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+  [10/53] 14 -> ok
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1787167400.368457   42176 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167400.406913   45100 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167400.588197   42176 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.
+W0000 00:00:1787167445.891531    5412 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167445.929463   45720 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+  [11/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+  [12/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+  [13/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+  [14/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+  [15/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+  [16/53] 14 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+  [17/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+  [18/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+  [19/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+  [20/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_1_optitrack.csv'W0000 00:00:1787167487.645059   36072 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167487.685655   22004 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167535.093208    9236 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167535.147894   19136 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167581.832432   45700 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167581.860196   34680 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167606.141407   42400 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167606.166987   45788 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_1_optitrack.csv'
+  [21/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_2_optitrack.csv'
+  [22/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_3_optitrack.csv'
+  [23/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post_1week\\trial_4_optitrack.csv'
+  [24/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+  [25/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+  [26/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+  [27/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+  [28/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+  [29/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+  [30/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_1_optitrack.csv'W0000 00:00:1787167615.245805    8224 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167615.282783    6220 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167628.191799   29188 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167628.211565    3376 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167643.327909   43328 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167643.353596   13188 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+
+  [31/53] 15 -> too few finite samples
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_2_optitrack.csv'
+  [32/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_3_optitrack.csv'
+  [33/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post_1week\\trial_4_optitrack.csv'
+  [34/53] 15 -> too few finite samples
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+  [35/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+  [36/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+  [37/53] 15 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+  [38/53] 16 -> too few finite samples
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+  [39/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+  [40/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+  [41/53] 16 -> too few finite samples
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'W0000 00:00:1787167667.294359   44448 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167667.326233   44448 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167691.599611   37308 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167691.636049   42672 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167726.956503   39880 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167727.008375   11248 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+E0000 00:00:1787167787.787765   42788 portable_clearcut_uploader.cc:90] Failed to send to clearcut: FAILED_PRECONDITION: Not valid for uploading until: 2026-08-19T19:44:46.937097756+00:00
+=== Source Location Trace: ===
+wireless/android/play/playlog/cplusplus/portable_clearcut_uploader.cc:180
+W0000 00:00:1787167788.964691   36052 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167789.008079   37124 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+  [42/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+  [43/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+  [44/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+  [45/53] 16 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+  [46/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+  [47/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+  [48/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+  [49/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+  [50/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+  [51/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'W0000 00:00:1787167827.263387   32908 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1787167827.316926   32908 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+  [52/53] 5 -> ok
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+  [53/53] 5 -> ok
+
+49 trials with computable PT parameters (of 53)
+
+=== MediaPipe vs OptiTrack: ICC(2,1) + Bland-Altman, per PT parameter ===
+param              ICC(2,1)     bias   LoA_lo   LoA_hi    n
+R2n                  -0.041   -0.441   -2.348    1.466   49
+N                     0.032   -2.296  -18.345   13.754   49
+phi_max_ratio        -0.008    0.110   -0.907    1.128   49
+omega_max_n          -0.036    6.747  -50.279   63.772   49
+f                    -0.115   -0.834   -3.039    1.372   49
+area_ratio            0.003   -0.420   -1.226    0.386   49
+omega_min_n          -0.018    3.686  -29.159   36.531   49

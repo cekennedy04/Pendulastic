@@ -34,6 +34,7 @@ OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "MS_vs_Control")
 COMPOSITION_CSV = os.path.join(OUT_DIR, "cohort_composition.csv")
 STATS_CSV = os.path.join(OUT_DIR, "ms_vs_control_stats.csv")
 FIGURE_PNG = os.path.join(OUT_DIR, "ms_vs_control_boxplots.png")
+RANGES_CSV = os.path.join(OUT_DIR, "normative_ranges.csv")
 
 _PARAM_KEYS = common._PARAM_KEYS  # R2n, N, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio
 _SCORE_KEYS = _PARAM_KEYS + ["pt7"]
@@ -239,6 +240,75 @@ def current_qualifying_participants():
     return qualifying
 
 
+def all_classified_pids():
+    """Every discoverable participant classified as MS or Control, with NO
+    trial-count gate -- unlike current_qualifying_participants(), which
+    requires TRIAL_THRESHOLD on both legs before a participant counts
+    toward the significance-test cohort. The normative min/max range
+    (compute_normative_ranges) wants every scored trial from every
+    diagnosed participant, since an envelope only gets more honest with
+    more data -- a participant one trial short of the report-comparison
+    threshold still has real swings worth including. Returns
+    {"MS": [pids], "Control": [pids]}."""
+    registry, registry_exists = load_registry()
+    result = {"MS": [], "Control": []}
+    for pid in common.list_participants().keys():
+        diagnosis = load_metadata_diagnosis(pid)
+        group, _source = classify_participant(pid, diagnosis, registry, registry_exists)
+        if group in result:
+            result[group].append(pid)
+    return result
+
+
+def compute_normative_ranges(ms_raw, control_raw):
+    """Strict min-max envelope per (leg, parameter) across every
+    individual scored trial -- not participant medians, since "high/low
+    swings seen in healthy" describes individual swings, not per-person
+    averages -- for both arms, plus whether the two envelopes overlap.
+    ms_raw/control_raw: {"left": [...], "right": [...]} raw trial dicts,
+    expected to come from the full all_classified_pids() set rather than
+    the threshold-gated qualifying set used by compute_cohort_stats."""
+    rows = []
+    for leg in _LEGS:
+        ms_trials = ms_raw.get(leg, [])
+        ctrl_trials = control_raw.get(leg, [])
+        ms_pids = {t["participant_id"] for t in ms_trials}
+        ctrl_pids = {t["participant_id"] for t in ctrl_trials}
+        for key in _SCORE_KEYS:
+            ms_vals = [t[key] for t in ms_trials]
+            ctrl_vals = [t[key] for t in ctrl_trials]
+            row = {
+                "leg": leg, "parameter": key,
+                "control_min": round(min(ctrl_vals), 4) if ctrl_vals else None,
+                "control_max": round(max(ctrl_vals), 4) if ctrl_vals else None,
+                "control_n_trials": len(ctrl_vals), "control_n_participants": len(ctrl_pids),
+                "ms_min": round(min(ms_vals), 4) if ms_vals else None,
+                "ms_max": round(max(ms_vals), 4) if ms_vals else None,
+                "ms_n_trials": len(ms_vals), "ms_n_participants": len(ms_pids),
+            }
+            if ctrl_vals and ms_vals:
+                row["overlap"] = not (row["control_max"] < row["ms_min"] or row["ms_max"] < row["control_min"])
+            else:
+                row["overlap"] = None
+            rows.append(row)
+    return rows
+
+
+def write_ranges_csv(rows, out_path=None):
+    out_path = out_path or RANGES_CSV
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["leg", "parameter", "control_min", "control_max", "control_n_trials",
+                   "control_n_participants", "ms_min", "ms_max", "ms_n_trials",
+                   "ms_n_participants", "overlap"])
+        for row in rows:
+            w.writerow([row["leg"], row["parameter"], row["control_min"], row["control_max"],
+                       row["control_n_trials"], row["control_n_participants"], row["ms_min"],
+                       row["ms_max"], row["ms_n_trials"], row["ms_n_participants"], row["overlap"]])
+    print(f"-> {out_path}")
+
+
 def _folder_hints_control(pid):
     """Best-effort cosmetic hint only -- NEVER used for classification.
     True if any trial path discovered for this participant has a
@@ -368,6 +438,13 @@ def _collect_arm_data(pids):
         for leg in _LEGS:
             trials = [r for (leg_key, _cond), recs in by_leg_tp.items()
                      if leg_key == leg for r in recs]
+            # Tag with the real participant id -- each trial record's own
+            # "pid" field is actually "<pid>_<leg>_<condition>" (set by
+            # score_trial from collect_participant's compound key), not
+            # the bare id, so anything counting distinct participants from
+            # raw trial dicts (compute_normative_ranges) needs this instead.
+            for t in trials:
+                t["participant_id"] = pid
             raw_trials[leg].extend(trials)
             summary = aggregate_participant_summary(trials)
             summaries_by_pid[(pid, leg)] = summary
@@ -409,8 +486,20 @@ def build_cohort_snapshot():
     leg_cohort_reference()) and the end-of-run cohort artifacts
     (write_cohort_artifacts()), so the two never rescan independently and
     diverge within one run_pt_analysis.py invocation. Takes no arguments
-    -- always recomputes the full qualifying set (design spec §6.1)."""
-    pids = current_qualifying_participants()
+    -- always recomputes the full qualifying set (design spec §6.1), broadened
+    per-arm below so a participant short on trials for one leg still counts."""
+    all_pids = all_classified_pids()
+    # The composition/stats/range participant pool is the union of the
+    # TRIAL_THRESHOLD-qualifying set (needed so Excluded/Unclassified
+    # participants keep showing up exactly as before) and every classified
+    # MS/Control participant regardless of trial count -- a median or a
+    # min/max envelope only gets more honest with more trials, unlike the
+    # per-participant full report (run_pt_analysis.py's own, separate
+    # TRIAL_THRESHOLD gate) which genuinely needs enough trials for a
+    # meaningful release-alignment figure. So pids 6/7/10 (Control, short
+    # one trial on one leg) and pid 4 (MS, same situation) now count
+    # toward both the composition banner and the stats/range comparison.
+    pids = current_qualifying_participants() | set(all_pids["MS"]) | set(all_pids["Control"])
     rows = build_composition_rows(pids)
     n_excluded_unclassified = sum(1 for r in rows if r["group"] in ("Excluded", "Unclassified"))
 
@@ -425,11 +514,16 @@ def build_cohort_snapshot():
             "ms_n_participants": None, "ms_n_trials": None,
             "control_n_participants": None, "control_n_trials": None,
             "stats_rows": None, "n_excluded_unclassified": n_excluded_unclassified,
+            "range_rows": [],
         }
 
     ms_summaries, ms_raw, ms_contrib, ms_by_pid = _collect_arm_data(ms_pids)
     control_summaries, control_raw, control_contrib, control_by_pid = _collect_arm_data(control_pids)
     stats_rows = compute_cohort_stats(ms_summaries, control_summaries)
+    # ms_pids/control_pids are already the broadened (threshold-free) set,
+    # so ms_raw/control_raw double as the range computation's input too --
+    # no separate collection pass needed.
+    range_rows = compute_normative_ranges(ms_raw, control_raw)
 
     return {
         "composition_rows": rows, "ms_pids": ms_pids, "control_pids": control_pids,
@@ -440,17 +534,21 @@ def build_cohort_snapshot():
         "control_n_participants": len(control_contrib),
         "control_n_trials": sum(len(v) for v in control_raw.values()),
         "stats_rows": stats_rows, "n_excluded_unclassified": n_excluded_unclassified,
+        "range_rows": range_rows,
     }
 
 
 def write_cohort_artifacts(snapshot):
-    """Writes cohort_composition.csv (always), and ms_vs_control_stats.csv
-    / ms_vs_control_boxplots.png (only when both arms are non-empty) from
-    an already-built snapshot -- zero rediscovery, zero recollection.
-    Renamed from today's run_cohort_comparison(), which now only writes
-    artifacts from a snapshot instead of recomputing one."""
+    """Writes cohort_composition.csv and normative_ranges.csv (always --
+    the range comes from all_classified_pids(), independent of the
+    threshold-gated qualifying set), and ms_vs_control_stats.csv /
+    ms_vs_control_boxplots.png (only when both arms have >=1 qualifying
+    participant) from an already-built snapshot -- zero rediscovery, zero
+    recollection. Renamed from today's run_cohort_comparison(), which now
+    only writes artifacts from a snapshot instead of recomputing one."""
     write_composition_csv(snapshot["composition_rows"])
     print_composition_banner(snapshot["composition_rows"])
+    write_ranges_csv(snapshot["range_rows"], RANGES_CSV)
 
     if not snapshot["ms_pids"] or not snapshot["control_pids"]:
         print(f"Cohort comparison skipped: {len(snapshot['ms_pids'])} MS / "
@@ -464,7 +562,8 @@ def write_cohort_artifacts(snapshot):
         snapshot["ms_n_participants"], snapshot["ms_n_trials"],
         snapshot["control_summaries"], snapshot["control_raw"],
         snapshot["control_n_participants"], snapshot["control_n_trials"],
-        snapshot["n_excluded_unclassified"], FIGURE_PNG, snapshot["stats_rows"])
+        snapshot["n_excluded_unclassified"], FIGURE_PNG, snapshot["stats_rows"],
+        snapshot["range_rows"])
 
 
 def run_cohort_comparison():
@@ -507,7 +606,8 @@ def leg_cohort_reference(snapshot, participant_id, leg):
 
 def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_trials,
                                   control_summaries, control_raw, control_n_participants,
-                                  control_n_trials, n_excluded_unclassified, out_path, stats_rows):
+                                  control_n_trials, n_excluded_unclassified, out_path, stats_rows,
+                                  range_rows=()):
     """Light/clinical style matching pt_report_common.py (white background,
     same color conventions) -- NOT the dark dashboard style of the older
     ms_vs_healthy_analysis.py, so every figure run_pt_analysis.py produces
@@ -524,12 +624,21 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
     subplot with its Mann-Whitney p / Cliff's delta (spec §7.3); also used
     to zone-shade the pt7 column the same way pt_report_common.py's
     make_report_figure does, since pt7 (unlike the raw params) has a
-    clinically meaningful healthy/borderline/impaired scale."""
+    clinically meaningful healthy/borderline/impaired scale.
+
+    range_rows: compute_normative_ranges() output (from the fuller
+    all_classified_pids() pool, not the ms_raw/control_raw drawn above) --
+    drawn as dashed min/max envelope lines on every column, since this is
+    where "what's the high/low swing seen in healthy" actually shows up
+    visually. Deliberately a different pid pool than the box/jitter layers
+    above, so the envelope can be more inclusive than the significance
+    tests without silently changing what the boxplots themselves show."""
     ms_color = common.COLORS["red"]
     control_color = common.COLORS["green"]
     n_cols = len(_SCORE_KEYS)
     pt7_col_idx = len(_SCORE_KEYS) - 1
     stats_by_leg_key = {(r["leg"], r["parameter"]): r for r in stats_rows}
+    range_by_leg_key = {(r["leg"], r["parameter"]): r for r in range_rows}
     fig, axes = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 8), facecolor="white")
     rng = np.random.RandomState(13)
 
@@ -541,6 +650,10 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
 
             ms_med = [s[key] for s in ms_summaries[leg]]
             ctrl_med = [s[key] for s in control_summaries[leg]]
+            range_row = range_by_leg_key.get((leg, key))
+            range_bounds = [v for v in (
+                (range_row or {}).get("control_min"), (range_row or {}).get("control_max"),
+                (range_row or {}).get("ms_min"), (range_row or {}).get("ms_max")) if v is not None]
 
             if col_idx == pt7_col_idx:
                 # Zone shading, same convention as pt_report_common.py's
@@ -548,7 +661,7 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
                 # only make sense for the 7-parameter composite score, not
                 # the raw individual params in the other columns.
                 zone_vals = (ms_med + ctrl_med + [t[key] for t in ms_raw[leg]]
-                            + [t[key] for t in control_raw[leg]])
+                            + [t[key] for t in control_raw[leg]] + range_bounds)
                 y_max = (max(zone_vals) if zone_vals else 1.6) * 1.15
                 for (lo, hi), zcolor in zip(zip(common.ZONE_EDGES[:-1], common.ZONE_EDGES[1:]),
                                            common.ZONE_COLORS):
@@ -576,6 +689,20 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
             if ctrl_med:
                 ax.scatter(1 + rng.uniform(-0.05, 0.05, len(ctrl_med)), ctrl_med, color=control_color,
                           s=40, alpha=0.9, zorder=4, edgecolors="#333333", linewidths=0.5)
+
+            # Normative min/max envelope (all_classified_pids() pool, see
+            # range_rows docstring above) -- dashed rather than a filled
+            # span so it reads as a boundary marker without fighting the
+            # pt7 column's zone shading or the box/jitter colors.
+            if range_row:
+                for bound in (range_row["control_min"], range_row["control_max"]):
+                    if bound is not None:
+                        ax.axhline(bound, color=control_color, linestyle="--", linewidth=1,
+                                   alpha=0.7, zorder=3)
+                for bound in (range_row["ms_min"], range_row["ms_max"]):
+                    if bound is not None:
+                        ax.axhline(bound, color=ms_color, linestyle="--", linewidth=1,
+                                   alpha=0.7, zorder=3)
 
             ax.set_xticks([0, 1])
             ax.set_xticklabels(["MS", "Control"], fontsize=8)

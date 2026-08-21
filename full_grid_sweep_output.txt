@@ -1,0 +1,432 @@
+Loading 53 trial(s)...
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Left\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_left_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13_right_post\\Session_post\\Position_1\\Height_Joint-Level\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_13\\Right\\week_1_post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Left\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_14\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\post\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Left\\pre\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\post\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_15\\Right\\pre\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Left\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_16\\Right\\control\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Left\\post_1month\\trial_5_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_1_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_2_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_3_optitrack.csv'
+[warn] parse_motive_csv: 'Thigh' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Shank' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Knee' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Ankle' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+[warn] parse_motive_csv: 'Pendulum_Tip' not found in 'C:\\Users\\cladi\\Pendulastic\\OptiTrack_Recordings\\Participant_5\\Right\\post_1month\\trial_4_optitrack.csv'
+53 trial(s) loaded in 107.8s
+
+Sweeping 144 param combo(s) [full]...
+
+  [1/144] mean= 16.36 median= 13.30 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (49.5s elapsed)
+  [2/144] mean=112.77 median=107.75 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (118.1s elapsed)
+  [3/144] mean= 29.61 median= 30.11 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (188.7s elapsed)
+  [4/144] mean= 16.86 median= 13.68 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (223.3s elapsed)
+  [5/144] mean=112.64 median=108.73 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (234.8s elapsed)
+  [6/144] mean= 28.97 median= 30.32 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (245.0s elapsed)
+  [7/144] mean= 15.61 median= 13.17 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (258.4s elapsed)
+  [8/144] mean=102.32 median= 96.26 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (273.6s elapsed)
+  [9/144] mean= 45.44 median= 45.12 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (318.7s elapsed)
+  [10/144] mean= 15.76 median= 13.07 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (434.7s elapsed)
+  [11/144] mean=103.06 median= 94.22 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (471.6s elapsed)
+  [12/144] mean= 43.23 median= 44.87 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (490.0s elapsed)
+  [13/144] mean= 15.04 median= 11.27 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (511.2s elapsed)
+  [14/144] mean=111.46 median=107.95 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (534.1s elapsed)
+  [15/144] mean= 31.76 median= 31.44 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (561.8s elapsed)
+  [16/144] mean= 15.08 median= 11.39 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (618.7s elapsed)
+  [17/144] mean=110.63 median=107.26 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (676.3s elapsed)
+  [18/144] mean= 31.78 median= 32.37 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (725.9s elapsed)
+  [19/144] mean= 14.99 median= 11.85 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (747.1s elapsed)
+  [20/144] mean=100.70 median= 94.82 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (763.7s elapsed)
+  [21/144] mean= 50.15 median= 49.00 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (780.2s elapsed)
+  [22/144] mean= 15.28 median= 11.88 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (794.0s elapsed)
+  [23/144] mean= 99.85 median= 93.54 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (804.0s elapsed)
+  [24/144] mean= 50.33 median= 49.00 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (814.3s elapsed)
+  [25/144] mean= 14.88 median= 10.97 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (824.4s elapsed)
+  [26/144] mean=111.27 median=108.50 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (838.3s elapsed)
+  [27/144] mean= 32.30 median= 32.19 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (852.6s elapsed)
+  [28/144] mean= 14.85 median= 11.11 n<5deg=2/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (873.4s elapsed)
+  [29/144] mean=110.45 median=107.84 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (898.5s elapsed)
+  [30/144] mean= 32.37 median= 32.87 n<5deg=1/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (935.8s elapsed)
+  [31/144] mean= 15.18 median= 11.79 n<5deg=3/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (973.4s elapsed)
+  [32/144] mean=100.20 median= 94.54 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (1007.3s elapsed)
+  [33/144] mean= 51.52 median= 49.93 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1034.5s elapsed)
+  [34/144] mean= 15.48 median= 11.83 n<5deg=3/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (1052.8s elapsed)
+  [35/144] mean= 99.49 median= 93.32 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (1065.2s elapsed)
+  [36/144] mean= 51.67 median= 49.96 n<5deg=0/53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1078.4s elapsed)
+  [37/144] mean= 16.75 median= 13.34 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (1093.3s elapsed)
+  [38/144] mean=113.16 median=107.77 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (1105.6s elapsed)
+  [39/144] mean= 28.83 median= 27.67 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1119.3s elapsed)
+  [40/144] mean= 17.13 median= 13.74 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (1132.1s elapsed)
+  [41/144] mean=111.86 median=107.71 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (1145.0s elapsed)
+  [42/144] mean= 28.75 median= 28.05 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1159.9s elapsed)
+  [43/144] mean= 15.77 median= 13.50 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (1174.4s elapsed)
+  [44/144] mean=103.23 median= 95.77 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (1188.9s elapsed)
+  [45/144] mean= 43.48 median= 45.96 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1209.0s elapsed)
+  [46/144] mean= 16.03 median= 13.51 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (1231.2s elapsed)
+  [47/144] mean=103.02 median= 94.46 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (1252.4s elapsed)
+  [48/144] mean= 39.66 median= 45.03 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1277.2s elapsed)
+  [49/144] mean= 15.03 median= 11.24 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (1297.4s elapsed)
+  [50/144] mean=111.88 median=110.41 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (1314.3s elapsed)
+  [51/144] mean= 31.49 median= 31.41 n<5deg=1/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1326.0s elapsed)
+  [52/144] mean= 15.32 median= 11.64 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (1336.3s elapsed)
+  [53/144] mean=109.95 median=107.37 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (1346.7s elapsed)
+  [54/144] mean= 31.79 median= 32.66 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1357.2s elapsed)
+  [55/144] mean= 15.09 median= 11.94 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (1366.8s elapsed)
+  [56/144] mean= 99.98 median= 93.81 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (1377.1s elapsed)
+  [57/144] mean= 50.32 median= 49.50 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1387.5s elapsed)
+  [58/144] mean= 15.45 median= 12.03 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (1399.2s elapsed)
+  [59/144] mean= 96.85 median= 91.55 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (1410.6s elapsed)
+  [60/144] mean= 49.35 median= 48.94 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1422.1s elapsed)
+  [61/144] mean= 14.84 median= 10.98 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (1432.5s elapsed)
+  [62/144] mean=111.70 median=110.11 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (1445.4s elapsed)
+  [63/144] mean= 31.97 median= 32.22 n<5deg=1/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1458.1s elapsed)
+  [64/144] mean= 15.17 median= 11.60 n<5deg=2/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (1473.2s elapsed)
+  [65/144] mean=109.74 median=107.73 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (1489.9s elapsed)
+  [66/144] mean= 32.49 median= 33.14 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1517.0s elapsed)
+  [67/144] mean= 15.31 median= 11.95 n<5deg=3/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (1537.2s elapsed)
+  [68/144] mean= 99.52 median= 93.72 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (1557.3s elapsed)
+  [69/144] mean= 51.60 median= 50.26 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1579.0s elapsed)
+  [70/144] mean= 15.76 median= 12.23 n<5deg=3/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (1595.5s elapsed)
+  [71/144] mean= 96.81 median= 91.56 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (1613.3s elapsed)
+  [72/144] mean= 50.77 median= 50.32 n<5deg=0/53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1630.9s elapsed)
+  [73/144] mean= 16.83 median= 13.99 n<5deg=1/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (1645.0s elapsed)
+  [74/144] mean=112.68 median=107.80 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (1658.9s elapsed)
+  [75/144] mean= 28.52 median= 27.91 n<5deg=1/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1669.7s elapsed)
+  [76/144] mean= 17.81 median= 14.77 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (1682.3s elapsed)
+  [77/144] mean=107.91 median=107.18 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (1691.8s elapsed)
+  [78/144] mean= 29.48 median= 28.90 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1701.8s elapsed)
+  [79/144] mean= 15.92 median= 13.50 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (1714.6s elapsed)
+  [80/144] mean=101.94 median= 96.30 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (1728.1s elapsed)
+  [81/144] mean= 42.89 median= 44.79 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (1751.0s elapsed)
+  [82/144] mean= 16.49 median= 14.39 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (1837.1s elapsed)
+  [83/144] mean= 94.54 median= 85.28 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (1915.8s elapsed)
+  [84/144] mean= 42.14 median= 46.12 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (1959.4s elapsed)
+  [85/144] mean= 15.18 median= 11.65 n<5deg=2/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (1990.6s elapsed)
+  [86/144] mean=111.08 median=107.26 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (2073.7s elapsed)
+  [87/144] mean= 31.40 median= 31.34 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2150.6s elapsed)
+  [88/144] mean= 16.00 median= 12.22 n<5deg=2/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (2165.0s elapsed)
+  [89/144] mean=105.88 median=105.75 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (2178.7s elapsed)
+  [90/144] mean= 32.71 median= 32.59 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2191.6s elapsed)
+  [91/144] mean= 14.99 median= 12.20 n<5deg=2/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (2202.5s elapsed)
+  [92/144] mean= 98.53 median= 94.17 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (2213.3s elapsed)
+  [93/144] mean= 49.59 median= 49.52 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2223.2s elapsed)
+  [94/144] mean= 16.42 median= 12.64 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (2239.1s elapsed)
+  [95/144] mean= 89.11 median= 84.94 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (2276.8s elapsed)
+  [96/144] mean= 50.64 median= 49.30 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2328.7s elapsed)
+  [97/144] mean= 15.01 median= 11.34 n<5deg=2/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (2381.9s elapsed)
+  [98/144] mean=110.93 median=107.38 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (2414.3s elapsed)
+  [99/144] mean= 31.88 median= 32.28 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2436.2s elapsed)
+  [100/144] mean= 15.83 median= 11.81 n<5deg=2/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (2449.8s elapsed)
+  [101/144] mean=106.06 median=105.77 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (2465.7s elapsed)
+  [102/144] mean= 33.06 median= 33.16 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2475.9s elapsed)
+  [103/144] mean= 15.26 median= 12.45 n<5deg=3/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (2488.7s elapsed)
+  [104/144] mean= 98.13 median= 93.90 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (2497.8s elapsed)
+  [105/144] mean= 50.92 median= 50.53 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2508.3s elapsed)
+  [106/144] mean= 16.75 median= 12.82 n<5deg=1/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (2519.1s elapsed)
+  [107/144] mean= 89.19 median= 85.40 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (2536.1s elapsed)
+  [108/144] mean= 51.89 median= 50.12 n<5deg=0/53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2568.6s elapsed)
+  [109/144] mean= 17.22 median= 14.10 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (2621.1s elapsed)
+  [110/144] mean=109.47 median=107.71 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (2707.0s elapsed)
+  [111/144] mean= 29.19 median= 27.93 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2750.5s elapsed)
+  [112/144] mean= 18.44 median= 16.22 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (2782.9s elapsed)
+  [113/144] mean=105.12 median=103.38 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (2811.9s elapsed)
+  [114/144] mean= 30.89 median= 30.54 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2837.8s elapsed)
+  [115/144] mean= 17.42 median= 15.82 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (2864.1s elapsed)
+  [116/144] mean= 96.40 median= 92.61 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (2887.9s elapsed)
+  [117/144] mean= 45.16 median= 47.35 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (2923.6s elapsed)
+  [118/144] mean= 20.76 median= 17.96 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (2953.0s elapsed)
+  [119/144] mean= 79.58 median= 71.58 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (2972.5s elapsed)
+  [120/144] mean= 48.75 median= 51.32 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.1, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (2990.7s elapsed)
+  [121/144] mean= 15.38 median= 11.66 n<5deg=2/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (3018.3s elapsed)
+  [122/144] mean=107.99 median=105.76 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (3028.3s elapsed)
+  [123/144] mean= 32.05 median= 31.41 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (3037.3s elapsed)
+  [124/144] mean= 16.42 median= 13.91 n<5deg=2/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (3044.7s elapsed)
+  [125/144] mean=102.33 median=102.86 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (3051.7s elapsed)
+  [126/144] mean= 33.41 median= 33.26 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (3059.6s elapsed)
+  [127/144] mean= 15.84 median= 14.05 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (3068.1s elapsed)
+  [128/144] mean= 92.97 median= 91.57 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (3074.5s elapsed)
+  [129/144] mean= 50.49 median= 50.36 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (3081.1s elapsed)
+  [130/144] mean= 18.88 median= 15.57 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (3088.4s elapsed)
+  [131/144] mean= 79.27 median= 73.13 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (3094.9s elapsed)
+  [132/144] mean= 53.73 median= 52.86 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (3101.4s elapsed)
+  [133/144] mean= 15.10 median= 11.68 n<5deg=2/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}  (3107.8s elapsed)
+  [134/144] mean=108.09 median=106.38 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon'}  (3115.8s elapsed)
+  [135/144] mean= 32.63 median= 32.34 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (3122.3s elapsed)
+  [136/144] mean= 16.31 median= 13.65 n<5deg=2/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}  (3129.2s elapsed)
+  [137/144] mean=102.39 median=102.78 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon'}  (3135.5s elapsed)
+  [138/144] mean= 33.91 median= 34.18 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (3143.8s elapsed)
+  [139/144] mean= 16.02 median= 14.15 n<5deg=1/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}  (3168.9s elapsed)
+  [140/144] mean= 92.82 median= 91.98 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon'}  (3196.8s elapsed)
+  [141/144] mean= 51.80 median= 50.79 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'ockendon_flipped'}  (3249.4s elapsed)
+  [142/144] mean= 19.03 median= 15.53 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'relative'}  (3276.9s elapsed)
+  [143/144] mean= 79.77 median= 74.54 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon'}  (3293.4s elapsed)
+  [144/144] mean= 54.74 median= 53.54 n<5deg=0/53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': False, 'method': 'ockendon_flipped'}  (3315.9s elapsed)
+
+=== Top 15 by mean RMSE ===
+   mean  median  n<5  n_ok  params
+  14.84   10.98    2    53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  14.85   11.11    2    53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}
+  14.88   10.97    2    53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  14.99   11.85    2    53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}
+  14.99   12.20    2    53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}
+  15.01   11.34    2    53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  15.03   11.24    2    53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  15.04   11.27    2    53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  15.08   11.39    2    53  {'beta': 0.02, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}
+  15.09   11.94    2    53  {'beta': 0.041, 'ema_alpha': 0.3, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}
+  15.10   11.68    2    53  {'beta': 0.15, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  15.17   11.60    2    53  {'beta': 0.041, 'ema_alpha': 0.5, 'flex_axis_capture': True, 'gravity_seed': False, 'method': 'relative'}
+  15.18   11.65    2    53  {'beta': 0.08, 'ema_alpha': 0.3, 'flex_axis_capture': True, 'gravity_seed': True, 'method': 'relative'}
+  15.18   11.79    3    53  {'beta': 0.02, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}
+  15.26   12.45    3    53  {'beta': 0.08, 'ema_alpha': 0.5, 'flex_axis_capture': False, 'gravity_seed': True, 'method': 'relative'}

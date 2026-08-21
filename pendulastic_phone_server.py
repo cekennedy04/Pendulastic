@@ -293,12 +293,30 @@ def _forward_imu_batch(batch, ip: str) -> int:
     Pro's own connection handler already calls, so every downstream
     consumer (AHRS fusion, calibration, recording) is unmodified.
 
-    Timestamps sent to _dispatch() are this server's own receipt-time in
-    epoch ms, NOT the browser's event.timeStamp -- _payload_ts()'s
-    seconds-vs-ms heuristic (anything under ~1e11 is treated as seconds and
-    multiplied by 1000) is built for epoch-scale Sensor-Stream-Pro
-    timestamps and would silently corrupt a browser's small,
-    page-load-relative event.timeStamp by 1000x.
+    Timestamps sent to _dispatch() are anchored to this server's own
+    receipt-time in epoch ms (NOT the browser's raw event.timeStamp --
+    _payload_ts()'s seconds-vs-ms heuristic, anything under ~1e11 is treated
+    as seconds and multiplied by 1000, is built for epoch-scale
+    Sensor-Stream-Pro timestamps and would silently corrupt a browser's
+    small, page-load-relative event.timeStamp by 1000x), but each sample's
+    offset FROM that anchor is taken from its own event.timeStamp delta.
+    event.timeStamp's absolute value is page-relative and unusable directly,
+    but consecutive readings are still real, evenly-spaced deltas -- using
+    only the delta (never the absolute value) gets true inter-sample timing
+    without ever feeding a page-relative number into _payload_ts().
+
+    This matters because a single fixed time.time() call per sample (the
+    previous approach) collapses every sample in a batch onto the same
+    millisecond whenever the server loop runs faster than 1ms/sample (the
+    common case) -- on_gyro()'s dt = (ts - last_ts) / 1000.0 then comes out
+    to 0.0, which fails its own (0.0, 0.5) sanity range and falls back to a
+    fixed, fabricated dt = 0.01s for nearly every sample, while the real
+    ~50ms gap between batches (see flushBuffer's 50ms interval in _IMU_PAGE)
+    comes through correctly -- feeding the Madgwick filter wildly uneven,
+    mostly-fabricated timing. Investigated 2026-08-17 as the likely cause of
+    the browser IMU path's "sensor hasn't settled to a stable reading" auto-
+    tare failures (the native Sensor Stream path sends real per-sample
+    timestamps directly and was never affected).
 
     Never raises -- malformed input yields 0 forwarded samples."""
     if not isinstance(batch, dict):
@@ -307,10 +325,14 @@ def _forward_imu_batch(batch, ip: str) -> int:
     if not isinstance(samples, list):
         return 0
 
+    dict_samples = [s for s in samples if isinstance(s, dict)]
+    numeric_browser_ts = [s["ts"] for s in dict_samples
+                          if isinstance(s.get("ts"), (int, float))]
+    anchor_browser_ts = numeric_browser_ts[-1] if numeric_browser_ts else None
+    recv_ts_ms = time.time() * 1000
+
     n = 0
-    for sample in samples:
-        if not isinstance(sample, dict):
-            continue
+    for sample in dict_samples:
         accel = sample.get("accel")
         gyro  = sample.get("gyro")
         if not isinstance(accel, dict) or not isinstance(gyro, dict):
@@ -321,7 +343,11 @@ def _forward_imu_batch(batch, ip: str) -> int:
         except (KeyError, TypeError, ValueError):
             continue
 
-        ts_ms = int(time.time() * 1000)
+        browser_ts = sample.get("ts")
+        if anchor_browser_ts is not None and isinstance(browser_ts, (int, float)):
+            ts_ms = int(recv_ts_ms + (browser_ts - anchor_browser_ts))
+        else:
+            ts_ms = int(recv_ts_ms)
         imu_server._dispatch("/accelerometer",
                              json.dumps({"Timestamp": ts_ms, "x": ax, "y": ay, "z": az}), ip)
         imu_server._dispatch("/gyroscope",

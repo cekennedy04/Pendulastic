@@ -374,14 +374,19 @@ def replay_trial(raw_samples: list, params: dict):
                                 if t >= bias_cutoff]
 
             if st.accel is not None:
-                # Magnetometer correction deliberately not used here either --
+                # Magnetometer correction deliberately not used by default --
                 # see pendulastic_imu_server._IMUDevice.on_gyro for why (a
                 # disturbed indoor magnetic reading actively steers toward a
                 # wrong heading, and yaw isn't clinically relevant to knee
                 # flexion). Kept in sync with the live server so a config
                 # this tuner scores/persists reflects what the live server
-                # will actually do with it.
-                st.ahrs.update(v - st.gyro_bias, st.accel, None, dt)
+                # will actually do with it. params["use_mag"] (default False)
+                # exists only for the 2026-08-17 methodology-comparison
+                # diagnostics (evaluate_*.py) to measure whether re-enabling
+                # it actually helps or hurts on real data -- never set True
+                # in a persisted/live config.
+                mag = st.mag if params.get("use_mag") else None
+                st.ahrs.update(v - st.gyro_bias, st.accel, mag, dt)
 
     while next_tick_i < n_ticks:
         tick_quats.append(_snapshot())
@@ -418,17 +423,22 @@ def replay_trial(raw_samples: list, params: dict):
         return swing
 
     def _beta_from_quats(quats: dict) -> float:
-        """Zero-referenced tibial (distal-segment) pitch, degrees -- the beta
-        Ockendon & Gilbert's model takes as input. Distal preferred over
-        proximal, matching _swing_from_quats' solo fallback preference; the
-        model only ever needs the single shank-mounted sensor."""
-        solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
-            ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
-        if solo_role is None or solo_role not in q_zero:
-            return float("nan")
-        _, pitch_cur, _ = _quat_to_euler_deg(quats[solo_role])
-        _, pitch_zero, _ = _quat_to_euler_deg(q_zero[solo_role])
-        return wrap180(pitch_cur - pitch_zero)
+        """Tibial inclination from the zero (release) pose, degrees -- the
+        beta Ockendon & Gilbert's model takes as input.
+
+        Reuses _swing_from_quats()'s quaternion-delta rotation-from-zero
+        magnitude (the same computation already validated for the
+        "relative" method) rather than differencing Euler-extracted pitch
+        angles directly. A prior version did the latter
+        (wrap180(pitch_cur - pitch_zero)); investigated 2026-08-17 after
+        real-data testing showed it produced catastrophic (100+ deg) RMSE
+        against OptiTrack ground truth, vs ~14-17 deg for "relative" over
+        the identical trials -- Euler-angle pitch extraction is unreliable
+        near +/-90 deg (asin's domain edge), which a real pendulum swing's
+        tibia passes through, while the quaternion-delta swing angle has no
+        such singularity. _swing_from_quats already prefers distal over
+        proximal with the same solo fallback this model needs."""
+        return _swing_from_quats(quats)
 
     t_arr = tick_times - t0
     method = params.get("method", "relative")

@@ -1,0 +1,9 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787169989.452209   44028 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1787169995.287338   44028 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+61 trials collected
+raw conditions seen: ['Height_Joint-Level', 'control', 'post', 'post_1month', 'post_1week', 'pre', 'week_1_post']
+
+Saved Model_Analysis_Outputs/paper_figures\fig4_metrics_by_group.png
+Saved Model_Analysis_Outputs/paper_figures\fig5_pre_post.png  (paired: ['15'], pre-only: ['14'], post-only: ['13', '5'])

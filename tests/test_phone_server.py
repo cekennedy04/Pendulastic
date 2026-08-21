@@ -242,6 +242,36 @@ def test_forward_imu_batch_processes_multiple_samples_in_order(monkeypatch):
     assert calls == ["/accelerometer", "/gyroscope", "/accelerometer", "/gyroscope"]
 
 
+def test_forward_imu_batch_preserves_real_intersample_spacing(monkeypatch):
+    """Regression test for the 2026-08-17 browser-IMU instability
+    investigation: previously every sample in a batch got Timestamp =
+    time.time() evaluated fresh per iteration, which collapses onto the
+    same millisecond in a tight loop and corrupts on_gyro()'s dt into a
+    fixed 0.01s fallback for nearly every sample. Each sample's forwarded
+    Timestamp must instead differ from its neighbours by its own real
+    event.timeStamp delta, anchored to one receipt-time call -- not by
+    however long the server's own processing loop happens to take."""
+    calls = []
+    monkeypatch.setattr(pps.imu_server, "_dispatch",
+                        lambda path, message, ip: calls.append(json.loads(message)))
+    monkeypatch.setattr(pps.time, "time", lambda: 1000.0)
+
+    # Three samples 20ms apart per the browser's own clock.
+    batch = {"batch": [
+        {"ts": 100.0, "accel": {"x": 0, "y": 0, "z": 0}, "gyro": {"x": 0, "y": 0, "z": 0}},
+        {"ts": 120.0, "accel": {"x": 0, "y": 0, "z": 0}, "gyro": {"x": 0, "y": 0, "z": 0}},
+        {"ts": 140.0, "accel": {"x": 0, "y": 0, "z": 0}, "gyro": {"x": 0, "y": 0, "z": 0}},
+    ]}
+    n = pps._forward_imu_batch(batch, "10.0.0.5")
+
+    assert n == 3
+    accel_ts = [c["Timestamp"] for c in calls if "Timestamp" in c][::2]  # accel calls only
+    assert accel_ts[1] - accel_ts[0] == 20
+    assert accel_ts[2] - accel_ts[1] == 20
+    # Anchored to the LAST sample's browser timestamp == server receipt time.
+    assert accel_ts[2] == 1000000
+
+
 def test_forward_imu_batch_missing_batch_key_returns_zero():
     assert pps._forward_imu_batch({}, "10.0.0.5") == 0
 

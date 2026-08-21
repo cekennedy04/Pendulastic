@@ -1308,55 +1308,51 @@ class ModeSelectView(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(0, weight=1)
         self._build_widgets()
 
     def _build_widgets(self) -> None:
         self.configure(bg=ws.PALETTE["BG"])
-        tk.Label(self, text="Pendulastic",
-                 font=("Segoe UI", 20, "bold"),
-                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).grid(
-            row=0, column=0, columnspan=2, pady=(60, 4))
-        tk.Label(self, text="Clinical Pendulum Test Platform",
-                 font=("Segoe UI", 11),
-                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG2"]).grid(
-            row=1, column=0, columnspan=2, pady=(0, 40))
 
-        # Live Recording is the routine clinical path -- the one primary
-        # (filled-accent) action on this screen.
-        live_btn = ws.primary_button(
-            self, "Live Recording Session\nIMU · RGB · OptiTrack",
-            self.controller._enter_live_mode)
-        live_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        live_btn.grid(row=2, column=0, padx=40, pady=16, sticky="n")
+        # A single centered content column: with weight=1 on both the row
+        # and column above, this frame stays centered as the window resizes
+        # instead of pinned to a fixed offset from the top-left.
+        content = tk.Frame(self, bg=ws.PALETTE["BG"])
+        content.grid(row=0, column=0)
 
-        upload_btn = ws.secondary_button(
-            self, "Upload & Analyze\nVideo or CSV file",
-            self.controller._enter_upload_mode)
-        upload_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        upload_btn.grid(row=2, column=1, padx=40, pady=16, sticky="n")
+        header = tk.Frame(content, bg=ws.PALETTE["BG"])
+        header.pack(pady=(0, 36))
+        ws.brand_mark(header, size=52).pack(side="left", padx=(0, 14))
+        title_col = tk.Frame(header, bg=ws.PALETTE["BG"])
+        title_col.pack(side="left")
+        tk.Label(title_col, text="Pendulastic", font=("Segoe UI", 22, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(anchor="w")
+        tk.Label(title_col, text="Clinical Pendulum Test Platform",
+                 font=("Segoe UI", 11), bg=ws.PALETTE["BG"],
+                 fg=ws.PALETTE["FG3"]).pack(anchor="w")
 
-        workbench_btn = ws.secondary_button(
-            self, "Multi-Modal Comparison\nIMU · OptiTrack · Video",
-            self.controller._enter_workbench_mode)
-        workbench_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        workbench_btn.grid(row=3, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
+        # Live Recording is the routine clinical path -- the one hero
+        # (large, filled-accent) tile on this screen.
+        ws.tile(content, "Live Recording Session", "IMU · RGB · OptiTrack",
+                self.controller._enter_live_mode, icon="record",
+                width=520, height=104, primary=True).pack(pady=(0, 18))
 
-        # 4th button (added after this plan was written -- see task-5 brief
-        # discrepancy note): styled as another secondary action, consistent
-        # with Upload & Analyze / Multi-Modal Comparison above.
-        analysis_btn = ws.secondary_button(
-            self, "Analysis & Reports\nCompare Participants",
-            self.controller._enter_analysis_mode)
-        analysis_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        analysis_btn.grid(row=4, column=0, columnspan=2, padx=40, pady=(0, 12), sticky="n")
-
-        mas_btn = ws.secondary_button(
-            self, "MAS Score Entry\nEnter & Validate",
-            self.controller._enter_mas_entry_mode)
-        mas_btn.config(font=("Segoe UI", 12, "bold"), width=24, height=4)
-        mas_btn.grid(row=5, column=0, columnspan=2, padx=40, pady=(0, 24), sticky="n")
+        grid = tk.Frame(content, bg=ws.PALETTE["BG"])
+        grid.pack()
+        secondary_actions = [
+            ("Upload & Analyze", "Video or CSV file",
+             self.controller._enter_upload_mode, "upload"),
+            ("Multi-Modal Comparison", "IMU · OptiTrack · Video",
+             self.controller._enter_workbench_mode, "compare"),
+            ("Analysis & Reports", "Compare participants",
+             self.controller._enter_analysis_mode, "chart"),
+            ("MAS Score Entry", "Enter & validate",
+             self.controller._enter_mas_entry_mode, "checklist"),
+        ]
+        for i, (title, subtitle, command, icon) in enumerate(secondary_actions):
+            row, col = divmod(i, 2)
+            ws.tile(grid, title, subtitle, command, icon=icon,
+                    width=248, height=92).grid(row=row, column=col, padx=8, pady=8)
 
 
 # ---------------------------------------------------------------------------

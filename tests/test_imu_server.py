@@ -1,5 +1,5 @@
 # tests/test_imu_server.py
-import os, sys, math, csv
+import os, sys, math, csv, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
@@ -1220,3 +1220,85 @@ def test_imudevice_on_accel_subtracts_bias():
 
     # self.accel should be [0.9, 0.0, 9.81] (bias-subtracted)
     np.testing.assert_allclose(dev.accel, [0.9, 0.0, 9.81], atol=1e-6)
+
+
+def test_log_zero_event_writes_expected_record(tmp_path, monkeypatch):
+    """_log_zero_event() must append one JSON line to _ZERO_EVENT_LOG_PATH
+    with the hold-buffer stats and resulting bias a post-hoc analysis needs
+    to tell a genuine-rest zero() firing from a mid-countdown transient one."""
+    log_path = tmp_path / "imu_zero_events.jsonl"
+    monkeypatch.setattr(imu, "_ZERO_EVENT_LOG_PATH", str(log_path))
+
+    now = __import__("time").time()
+    accel_hold_buf = [(now - 0.1 * i, np.array([0.0, 0.0, 1.0])) for i in range(5)]
+    gyro_hold_buf = [(now - 0.1 * i, np.array([0.01, -0.01, 0.0])) for i in range(5)]
+
+    imu._log_zero_event(imu.ROLE_PROXIMAL, accel_hold_buf, gyro_hold_buf,
+                         np.array([0.0, 0.0, 0.02]))
+
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["role"] == "proximal"
+    assert record["accel_hold_n"] == 5
+    np.testing.assert_allclose(record["accel_hold_mean"], [0.0, 0.0, 1.0], atol=1e-9)
+    assert abs(record["accel_hold_mag"] - 1.0) < 1e-9
+    assert record["gyro_hold_n"] == 5
+    np.testing.assert_allclose(record["gyro_hold_mean"], [0.01, -0.01, 0.0], atol=1e-9)
+    np.testing.assert_allclose(record["accel_bias"], [0.0, 0.0, 0.02], atol=1e-9)
+    assert isinstance(record["ts"], float)
+
+
+def test_log_zero_event_survives_oserror(tmp_path, monkeypatch):
+    """A logging failure (e.g. unwritable path) must never raise -- this is
+    a best-effort diagnostic attached to the real zeroing call and must not
+    be able to break calibration."""
+    monkeypatch.setattr(imu, "_ZERO_EVENT_LOG_PATH",
+                         str(tmp_path / "no_such_dir" / "sub" / "events.jsonl"))
+    monkeypatch.setattr(imu.os, "makedirs",
+                         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    imu._log_zero_event(imu.ROLE_PROXIMAL, [], [], np.zeros(3))  # must not raise
+
+
+def test_zero_logs_event_for_solo_proximal_device(tmp_path, monkeypatch):
+    """zero() on a single connected proximal-role device (this project's
+    actual real-world usage pattern -- no distal sensor) must log a zero
+    event on every call, so every trial's auto-tare firing is captured even
+    though start_raw_log() (which only starts once the countdown ends)
+    misses the countdown period entirely.
+
+    Also documents a pre-existing quirk this instrumentation surfaces: on
+    the session's very first zero() call, a solo device is calibrated
+    (and now logged) TWICE -- once via the `if prox...` branch, once via
+    the `elif _q_zero_dist is None` solo-fallback branch, since that
+    fallback only guards against re-firing on later calls, not the first
+    one. Harmless (recalibrates the same device from the same buffer to
+    the same result) but real -- from the second zero() call in a session
+    onward, only the `if prox...` branch fires and exactly one event is
+    logged per call."""
+    log_path = tmp_path / "imu_zero_events.jsonl"
+    monkeypatch.setattr(imu, "_ZERO_EVENT_LOG_PATH", str(log_path))
+    imu.reset_devices()
+    imu.clear_zero()
+    imu._devices["12.0.2.1"] = imu._IMUDevice("12.0.2.1")
+    imu._roles["12.0.2.1"]   = imu.ROLE_PROXIMAL
+    dev = imu._devices["12.0.2.1"]
+    dev.accel   = np.array([0.0, 0.0, 9.81])
+    dev.last_rx = __import__("time").time()
+    now = __import__("time").time()
+    for i in range(imu.GYRO_BIAS_MIN_SAMPLES + 5):
+        dev._accel_hold_buf.append((now - 0.01 * i, np.array([0.0, 0.0, 9.81])))
+        dev._gyro_hold_buf.append((now - 0.01 * i, np.zeros(3)))
+
+    imu.zero()   # first call this session: prox branch + solo-fallback branch both fire
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert [json.loads(l)["role"] for l in lines] == ["proximal", "solo:proximal"]
+
+    imu.zero()   # second call: only the prox branch fires
+    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[2])["role"] == "proximal"
+
+    imu.reset_devices()
+    imu.clear_zero()
