@@ -696,20 +696,22 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
 
         def _run():
             try:
-                new_angles, new_landmarks, _fps = self.engine.run_offline_track(
-                    self.video_path, lambda p: None, leg=self.leg,
-                    collect_landmarks=True, manual_seed=seed,
-                    start_frame=start_frame)
+                new_angles, new_landmarks, _fps, new_detected = \
+                    self.engine.run_offline_track(
+                        self.video_path, lambda p: None, leg=self.leg,
+                        collect_landmarks=True, manual_seed=seed,
+                        start_frame=start_frame)
             except Exception as exc:
                 self.after(0, lambda exc=exc: self._on_retrack_failed(exc))
                 return
             self.after(0, lambda: self._on_retrack_done(
-                start_frame, new_angles, new_landmarks))
+                start_frame, new_angles, new_landmarks, new_detected))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_retrack_done(self, start_frame: int, new_angles: list,
-                          new_landmarks: list) -> None:
+                          new_landmarks: list,
+                          new_detected: list | None = None) -> None:
         self.angles = _splice_from(self.angles, start_frame, new_angles,
                                     float("nan"))
         self.landmarks = _splice_from(self.landmarks, start_frame,
@@ -735,7 +737,29 @@ class AnnotatedVideoReviewDialog(tk.Toplevel):
         self._retrack_in_progress = False
         self._btn_fix.config(state="normal")
         self._btn_pin.config(state="normal")
-        self.status_var.set(f"Retrack complete from frame {start_frame}.")
+        # new_detected[i] is False wherever run_offline_track's tracker
+        # fell through to a frozen prior position instead of a genuine
+        # detection -- angles/landmarks stay populated either way (for
+        # curve continuity), so this is the only reliable signal that the
+        # retrack silently found nobody. Flag it plainly rather than
+        # reporting "complete" over frozen, untracked values.
+        if new_detected is not None and new_detected and not any(new_detected):
+            self.status_var.set(
+                f"Retrack from frame {start_frame}: NO PERSON DETECTED -- "
+                "values are frozen at the seed position, not tracked. Try "
+                "Fix Person Here on a frame where the patient is visible.")
+        elif new_detected is not None and new_detected:
+            n_det = sum(1 for d in new_detected if d)
+            if n_det < len(new_detected):
+                self.status_var.set(
+                    f"Retrack complete from frame {start_frame} -- person "
+                    f"detected in only {n_det}/{len(new_detected)} frames; "
+                    "some values may be frozen/unreliable.")
+            else:
+                self.status_var.set(
+                    f"Retrack complete from frame {start_frame}.")
+        else:
+            self.status_var.set(f"Retrack complete from frame {start_frame}.")
         self._redraw()
 
     def _on_retrack_failed(self, exc: Exception) -> None:

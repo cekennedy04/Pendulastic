@@ -106,9 +106,9 @@ def test_run_offline_track_returns_angle_per_frame(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
 def test_run_offline_track_collect_landmarks_returns_tuple(tmp_path, monkeypatch):
-    """collect_landmarks=True returns (angles, landmarks, fps), angles and
-    landmarks the same length, each landmark entry a 3-tuple or None, and
-    fps matching the source video's true frame rate."""
+    """collect_landmarks=True returns (angles, landmarks, fps, detected),
+    angles/landmarks/detected all the same length, each landmark entry a
+    3-tuple or None, and fps matching the source video's true frame rate."""
     import numpy as np
 
     video_path = str(tmp_path / "test2.avi")
@@ -141,14 +141,78 @@ def test_run_offline_track_collect_landmarks_returns_tuple(tmp_path, monkeypatch
     monkeypatch.setattr(_app, "_cv2", _cv2_test)
 
     engine = BiomechanicalEngine("rgb")
-    angles, landmarks, fps = engine.run_offline_track(
+    angles, landmarks, fps, detected = engine.run_offline_track(
         video_path, lambda p: None, leg="right", collect_landmarks=True)
 
     assert len(angles) == 5
     assert len(landmarks) == 5
+    assert len(detected) == 5
     for lm in landmarks:
         assert lm is None or len(lm) == 3
     assert abs(fps - 30.0) < 1.0
+    # FakeTracker has no last_detected attribute -- defaults to True so
+    # trackers that don't implement the flag keep behaving as before.
+    assert all(detected)
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_run_offline_track_detected_false_when_tracker_loses_person(tmp_path, monkeypatch):
+    """When the tracker's last_detected flips to False (no pose found this
+    frame -- e.g. _MPBatchTracker.step() fell through to a frozen prior
+    position), run_offline_track must report detected[i] == False for that
+    frame even though angles/landmarks stay populated (frozen value) for
+    curve continuity. This is the only reliable signal callers have for
+    "no person detected here" -- angles alone can't distinguish a real
+    track from a frozen one."""
+    import numpy as np
+
+    video_path = str(tmp_path / "lost_person.avi")
+    out = _cv2_test.VideoWriter(
+        video_path, _cv2_test.VideoWriter_fourcc(*"XVID"),
+        30.0, (320, 240))
+    for _ in range(4):
+        out.write(np.zeros((240, 320, 3), dtype=np.uint8))
+    out.release()
+
+    kps = np.zeros((17, 2), dtype=np.float32)
+    kps[12] = [160, 60]
+    kps[14] = [160, 120]
+    kps[16] = [160, 200]
+
+    class FakeDetector:
+        def detect(self, frame):
+            return kps, None
+
+    class FakeTracker:
+        """Simulates a real _MPBatchTracker that finds the person on frame 0
+        (last_detected True) but loses them on every frame after (frozen
+        angle, last_detected False) -- exactly the silent-freeze scenario
+        that used to produce an all-finite curve with no failure signal."""
+        def __init__(self, side, fps):
+            self.last_detected = True
+            self._n = 0
+        def init(self, frame, hip, knee, ankle):
+            pass
+        def step(self, frame):
+            self.last_detected = (self._n == 0)
+            self._n += 1
+            return kps[12], kps[14], kps[16], 160.0
+
+    monkeypatch.setattr(_app, "_PatientDetector", FakeDetector)
+    monkeypatch.setattr(_app, "_MPBatchTracker",  FakeTracker)
+    monkeypatch.setattr(_app, "_VIEWER_AVAIL", True)
+    monkeypatch.setattr(_app, "_CV2_AVAIL", True)
+    monkeypatch.setattr(_app, "_cv2", _cv2_test)
+
+    engine = BiomechanicalEngine("rgb")
+    angles, landmarks, fps, detected = engine.run_offline_track(
+        video_path, lambda p: None, leg="right", collect_landmarks=True)
+
+    assert len(detected) == 4
+    assert detected == [True, False, False, False]
+    # angles/landmarks stay populated (frozen) even on undetected frames --
+    # detected is the only signal distinguishing real tracking from frozen.
+    assert all(math.isfinite(a) for a in angles)
 
 
 def test_run_offline_track_default_returns_list_not_tuple(monkeypatch):
@@ -370,12 +434,13 @@ def test_run_offline_track_start_frame_seeks_and_returns_suffix_only(tmp_path, m
     engine = BiomechanicalEngine("rgb")
     progress = []
     seed = (kps[12], kps[14], kps[16])
-    angles, landmarks, fps = engine.run_offline_track(
+    angles, landmarks, fps, detected = engine.run_offline_track(
         video_path, lambda p: progress.append(p), leg="right",
         collect_landmarks=True, manual_seed=seed, start_frame=4)
 
     assert len(angles) == 6          # 10 total frames - start_frame=4
     assert len(landmarks) == 6
+    assert len(detected) == 6
     assert progress and progress[-1] == 1.0
 
 

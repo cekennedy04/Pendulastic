@@ -292,7 +292,7 @@ def test_on_upload_video_zero_people_uses_automatic_fallback(monkeypatch, tmp_pa
                                  collect_landmarks=False, manual_seed=None):
         captured["manual_seed"] = manual_seed
         progress_cb(1.0)
-        return ([170.0] * 5, [None] * 5, 30.0)
+        return ([170.0] * 5, [None] * 5, 30.0, [True] * 5)
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
 
@@ -349,7 +349,7 @@ def test_on_upload_video_one_person_computes_manual_seed(monkeypatch, tmp_path):
                                  collect_landmarks=False, manual_seed=None):
         captured["manual_seed"] = manual_seed
         progress_cb(1.0)
-        return ([170.0] * 5, [None] * 5, 30.0)
+        return ([170.0] * 5, [None] * 5, 30.0, [True] * 5)
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
 
@@ -399,7 +399,7 @@ def test_on_upload_video_two_people_cancelled_dialog_aborts_upload(monkeypatch, 
     called = {"run_offline_track": False}
     def _fake_run_offline_track(self, *a, **kw):
         called["run_offline_track"] = True
-        return ([], [], 30.0)
+        return ([], [], 30.0, [])
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
 
@@ -474,7 +474,7 @@ def test_on_upload_video_opens_review_dialog_and_uses_corrected_results(monkeypa
                                  collect_landmarks=False, manual_seed=None,
                                  start_frame=0):
         progress_cb(1.0)
-        return ([170.0] * 5, [None] * 5, 30.0)
+        return ([170.0] * 5, [None] * 5, 30.0, [True] * 5)
     monkeypatch.setattr(_app.BiomechanicalEngine, "run_offline_track",
                          _fake_run_offline_track)
 

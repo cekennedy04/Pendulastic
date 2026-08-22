@@ -1368,6 +1368,12 @@ class _MPBatchTracker:
         # Directional prior from user corrections — biases step() toward corrected direction
         self._corr_theta:  float = 0.0
         self._corr_weight: float = 0.0
+        # True if the most recent step() actually found and accepted a pose
+        # for the tracked person; False means step() fell through to the
+        # frozen hip/knee/ankle from a prior frame (no usable detection this
+        # frame) -- callers use this to flag "no person detected" instead of
+        # silently treating a frozen-but-finite angle as a real track.
+        self.last_detected: bool = True
 
     # _theta: ArcTracker-compat property computed from current ankle position
     @property
@@ -1495,9 +1501,11 @@ class _MPBatchTracker:
         barely moves the stored positions instead of injecting noisy detections.
         """
         poses = self._run_mp(frame_bgr)
+        self.last_detected = False
         if poses and self._PL is not None:
             lm, knee_d = self._pick_pose(poses, frame_bgr)
             if lm is not None and knee_d < max(40.0, self.radius * 0.40):
+                self.last_detected = True
                 PL = self._PL
                 hi = PL.LEFT_HIP.value   if self._side == "left" else PL.RIGHT_HIP.value
                 ki = PL.LEFT_KNEE.value  if self._side == "left" else PL.RIGHT_KNEE.value

@@ -110,7 +110,7 @@ class _FakeEngine:
     def detect_people_at_frame(self, video_path, frame_index=0):
         return (None, [])
     def run_offline_track(self, *a, **kw):
-        return ([], [], 30.0)
+        return ([], [], 30.0, [])
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
@@ -349,7 +349,7 @@ def test_fix_person_here_one_pose_auto_resolves_and_retracks(tmp_path, monkeypat
             captured["start_frame"] = start_frame
             progress_cb(1.0)
             n = 6 - start_frame
-            return ([170.0] * n, [None] * n, 30.0)
+            return ([170.0] * n, [None] * n, 30.0, [True] * n)
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -388,7 +388,7 @@ def test_fix_person_here_two_poses_uses_person_picker_dialog(tmp_path, monkeypat
                                start_frame=0):
             progress_cb(1.0)
             n = 5 - start_frame
-            return ([99.0] * n, [None] * n, 30.0)
+            return ([99.0] * n, [None] * n, 30.0, [True] * n)
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -431,7 +431,7 @@ def test_fix_person_here_cancelled_picker_dialog_does_not_retrack(tmp_path, monk
             return (fake_frame, fake_poses)
         def run_offline_track(self, *a, **kw):
             called["retrack"] = True
-            return ([], [], 30.0)
+            return ([], [], 30.0, [])
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -475,7 +475,7 @@ def test_fix_person_here_short_retrack_result_pads_not_leaves_stale(tmp_path, mo
                                collect_landmarks=False, manual_seed=None,
                                start_frame=0):
             progress_cb(1.0)
-            return ([170.0], [(None, None, (99.0, 99.0))], 30.0)  # short!
+            return ([170.0], [(None, None, (99.0, 99.0))], 30.0, [True])  # short!
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -565,7 +565,7 @@ class _CountingEngine:
 
     def run_offline_track(self, *a, **kw):
         self.retrack_calls += 1
-        return ([], [], 30.0)
+        return ([], [], 30.0, [])
 
 
 @pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
@@ -622,7 +622,7 @@ def test_fix_person_here_two_poses_regrabs_after_picker_confirmed(tmp_path, monk
                                start_frame=0):
             progress_cb(1.0)
             n = 5 - start_frame
-            return ([99.0] * n, [None] * n, 30.0)
+            return ([99.0] * n, [None] * n, 30.0, [True] * n)
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -1714,7 +1714,7 @@ def test_retrack_records_event_in_log(tmp_path, monkeypatch):
                                start_frame=0):
             progress_cb(1.0)
             n = 5 - start_frame
-            return ([170.0] * n, [None] * n, 30.0)
+            return ([170.0] * n, [None] * n, 30.0, [True] * n)
 
     monkeypatch.setattr(vrd.threading, "Thread", _SyncThread)
 
@@ -2652,4 +2652,80 @@ def test_retrack_with_no_overlapping_pins_logs_no_pin_clear_events(tmp_path):
     dlg._on_retrack_done(5, [170.0] * 5, [None] * 5)
 
     assert not any(e["type"] == "pin_clear" for e in dlg._events)
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_on_retrack_done_all_frames_undetected_reports_no_person_detected(
+        tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "retrack_status_none.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    dlg._on_retrack_done(0, [0.0] * 3, [None] * 3, [False, False, False])
+
+    status = dlg.status_var.get().lower()
+    assert "no person detected" in status
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_on_retrack_done_partial_detection_reports_frozen_unreliable_warning(
+        tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "retrack_status_partial.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    dlg._on_retrack_done(0, [0.0] * 3, [None] * 3, [True, False, True])
+
+    status = dlg.status_var.get().lower()
+    assert "frozen" in status or "unreliable" in status
+    assert "2/3" in dlg.status_var.get()
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_on_retrack_done_full_detection_reports_plain_complete_message(
+        tmp_path):
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "retrack_status_full.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    dlg._on_retrack_done(0, [0.0] * 3, [None] * 3, [True, True, True])
+
+    status = dlg.status_var.get().lower()
+    assert status == "retrack complete from frame 0."
+    dlg.destroy()
+
+
+@pytest.mark.skipif(not _CV2_OK, reason="cv2 not installed")
+def test_on_retrack_done_without_detection_info_reports_plain_complete_message(
+        tmp_path):
+    """new_detected defaults to None (caller didn't supply per-frame
+    detection info) -- must fall through to the same plain message as the
+    all-detected case, not the NO PERSON DETECTED or partial-warning text."""
+    from video_review_dialog import AnnotatedVideoReviewDialog
+    video_path = str(tmp_path / "retrack_status_default.avi")
+    _write_test_video(video_path, 3)
+    r = _get_root()
+    dlg = AnnotatedVideoReviewDialog(
+        r, video_path, angles=[0.0] * 3, landmarks=[None] * 3,
+        fps=30.0, leg="right", engine=_FakeEngine())
+
+    dlg._on_retrack_done(0, [0.0] * 3, [None] * 3)
+
+    status = dlg.status_var.get().lower()
+    assert status == "retrack complete from frame 0."
     dlg.destroy()

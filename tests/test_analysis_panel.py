@@ -46,6 +46,10 @@ class _FakeReport:
         self.calls.append(("collect", pid))
         return ({}, [("pre", "Pre", "#111111")])
 
+    def attach_rmse(self, by_leg_tp):
+        self.calls.append(("attach_rmse", by_leg_tp))
+        return by_leg_tp
+
     def _fig(self):
         fig = Figure(figsize=(1, 1))
         fig.add_subplot(111)
@@ -196,9 +200,55 @@ def test_generate_full_report_runs_off_main_thread_and_shows_figure(monkeypatch)
         assert p._last_out_path == "fake_report.png"
         assert p.btn_save.cget("state") == "normal"
         assert "Done" in p.status_var.get()
-        # collect_participant (the slow part) ran in _generate_worker;
-        # make_report_figure ran afterward, in _poll_result on the main thread.
-        assert [c[0] for c in fake.calls] == ["collect", "report"]
+        # collect_participant (the slow part) and attach_rmse both ran in
+        # _generate_worker; make_report_figure ran afterward, in
+        # _poll_result on the main thread. attach_rmse must run before
+        # make_report_figure -- Row 1 (HPE/IMU overlay), Row 4 (RMSE bars),
+        # and Row 5 (per-source paired PT7) all read fields only
+        # attach_rmse() sets, so skipping it (or calling it after) leaves
+        # those rows showing "No MediaPipe/IMU comparison data found" even
+        # when real MediaPipe/IMU data exists on disk.
+        assert [c[0] for c in fake.calls] == ["collect", "attach_rmse", "report"]
+    finally:
+        r.destroy()
+
+
+def test_generate_full_report_attach_rmse_mutates_same_dict_passed_to_report(monkeypatch):
+    """attach_rmse must run on the exact by_leg_tp dict that later reaches
+    make_report_figure, not a copy -- otherwise the mutations it makes
+    (setting mediapipe_rmse/mediapipe_curve/imu_rmse/imu_curve on each
+    trial record) would never be visible to the figure-drawing code."""
+    import pendulastic_app as _m
+    fake = _FakeReport()
+    seen_by_report = {}
+
+    def _tagging_attach_rmse(by_leg_tp):
+        by_leg_tp["_tag"] = "attached"
+        fake.calls.append(("attach_rmse", by_leg_tp))
+        return by_leg_tp
+    fake.attach_rmse = _tagging_attach_rmse
+
+    def _tagging_report(*args, **kwargs):
+        seen_by_report["by_leg_tp"] = args[1]
+        fake.calls.append(("report", args, kwargs))
+        return "fake_report.png", fake._fig()
+    fake.make_report_figure = _tagging_report
+
+    monkeypatch.setattr(_m, "_report", fake)
+    monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
+    r = _root()
+    try:
+        p = _m.AnalysisPanel(r, _Ctrl())
+        p.pack()
+        r.update()
+        p._refresh_participants()
+        p._participant_list.selection_set(0)
+        p._figure_type.set("full_report")
+
+        p._on_generate()
+        _wait_until_enabled(p, r)
+
+        assert seen_by_report.get("by_leg_tp", {}).get("_tag") == "attached"
     finally:
         r.destroy()
 

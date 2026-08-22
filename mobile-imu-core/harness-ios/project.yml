@@ -1,0 +1,22 @@
+# XcodeGen spec — generates a real .xcodeproj on a Mac with `xcodegen generate`.
+# Hand-writing a .pbxproj isn't practical without Xcode itself; this keeps the
+# project definition as reviewable text instead. See README.md.
+name: PendulasticHarness
+options:
+  bundleIdPrefix: com.pendulastic
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  PendulasticHarness:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Info.plist
+      properties:
+        NSMotionUsageDescription: "Records raw accelerometer/gyroscope/magnetometer data for a pendulum-test capture trial."
+        UILaunchScreen: {}
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.pendulastic.harness
+      SWIFT_VERSION: "5.0"
+      MARKETING_VERSION: "0.1-throwaway"

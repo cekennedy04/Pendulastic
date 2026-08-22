@@ -1,0 +1,11 @@
+[package]
+name = "mobile-imu-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# Will also need "staticlib"/"cdylib" once U3 adds UniFFI cross-compilation
+# (KTD2) — plain "lib" (rlib) is all U1/U2's pure-Rust testing needs today.
+crate-type = ["lib"]
+
+[dependencies]
