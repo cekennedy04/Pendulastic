@@ -253,6 +253,236 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
     assert abs(angles[0] - 170.0) < 0.01
 
 
+def test_run_csv_analysis_reads_time_sec_format(tmp_path, monkeypatch):
+    """_run_csv_analysis must also parse time_sec + knee_angle_deg columns --
+    the convention used by batch_mediapipe.py, analysis_pipeline.py,
+    optitrack_angle_from_markers.py, and every other CSV producer in this
+    codebase except DataManager.save_trial's own time_s."""
+    import csv as _csv_mod
+    from pendulastic_app import App, DataManager
+    p = tmp_path / "post_mediapipe.csv"
+    with open(p, "w", newline="", encoding="utf-8") as f:
+        w = _csv_mod.writer(f)
+        w.writerow(["frame", "time_sec", "leg", "knee_angle_deg"])
+        w.writerow([0, "0.0000", "right", "170.000"])
+        w.writerow([1, "0.0333", "right", "165.000"])
+        w.writerow([2, "0.0667", "right", "160.000"])
+
+    captured = {}
+
+    app = App()
+    try:
+        def fake_transition(source_angles, meta):
+            captured["source_angles"] = source_angles
+            captured["meta"] = meta
+        monkeypatch.setattr(app, "_transition_to_review", fake_transition)
+        monkeypatch.setattr(DataManager, "save_trial",
+                            lambda *a, **kw: None)
+
+        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        app._run_csv_analysis(str(p), meta)
+        app.update()
+    finally:
+        app.destroy()
+
+    assert "upload_csv" in captured.get("source_angles", {})
+    angles = captured["source_angles"]["upload_csv"]
+    assert len(angles) == 3
+    assert abs(angles[0] - 170.0) < 0.01
+
+
+class _SyncThread:
+    """Runs target() synchronously in start() -- makes the background HPE
+    thread deterministic for testing without a real thread."""
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
+def test_start_upload_analysis_video_zero_people_shows_error_and_aborts(
+        monkeypatch, tmp_path):
+    """No person found in the probe frame must show a clear error and never
+    start tracking -- this used to silently proceed to per-frame automatic
+    detection, which (if it also found nobody) produced an all-NaN trial
+    with no error message at all."""
+    import pendulastic_app as _m
+    from pendulastic_app import App, BiomechanicalEngine
+
+    video_path = str(tmp_path / "novideo.mp4")
+    app = App()
+    try:
+        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.set_file(video_path)
+
+        monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
+        monkeypatch.setattr(BiomechanicalEngine, "detect_people_at_frame",
+                            lambda self, path, frame_index=0: (None, []))
+        errors = []
+        monkeypatch.setattr(_m.messagebox, "showerror",
+                            lambda title, msg: errors.append(msg))
+        called = {"run_offline_track": False}
+        monkeypatch.setattr(
+            BiomechanicalEngine, "run_offline_track",
+            lambda *a, **kw: called.__setitem__("run_offline_track", True))
+
+        app._start_upload_analysis()
+        app.update()
+
+        assert called["run_offline_track"] is False
+        assert errors and "no person" in errors[0].lower()
+        assert app._state == "upload_meta"
+    finally:
+        app.destroy()
+
+
+def test_start_upload_analysis_video_tracks_shows_skeleton_and_saves(
+        monkeypatch, tmp_path):
+    """The 'Upload File' -> new-trial video path must match _on_upload_video's
+    behavior: collect landmarks, open the skeleton-overlay review dialog, and
+    only then save + transition to review."""
+    import numpy as np
+    import pendulastic_app as _m
+    from pendulastic_app import App, BiomechanicalEngine, DataManager
+
+    video_path = str(tmp_path / "walk.mp4")
+
+    class _LM:
+        def __init__(self, x, y, visibility=1.0):
+            self.x, self.y, self.visibility = x, y, visibility
+
+    def _make_pose(knee_x=0.5, ankle_vis=0.9):
+        lm = [_LM(0.5, 0.5) for _ in range(33)]
+        lm[23] = _LM(knee_x - 0.02, 0.30)
+        lm[25] = _LM(knee_x, 0.55)
+        lm[27] = _LM(knee_x, 0.85, ankle_vis)
+        lm[24] = _LM(knee_x - 0.02, 0.30)
+        lm[26] = _LM(knee_x, 0.55)
+        lm[28] = _LM(knee_x, 0.85, ankle_vis)
+        return lm
+
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    app = App()
+    try:
+        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.set_file(video_path)
+
+        monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
+        monkeypatch.setattr(_m.threading, "Thread", _SyncThread)
+        monkeypatch.setattr(
+            BiomechanicalEngine, "detect_people_at_frame",
+            lambda self, path, frame_index=0: (fake_frame, fake_poses))
+
+        captured = {}
+        def _fake_run_offline_track(self, path, progress_cb, leg="right",
+                                    collect_landmarks=False, manual_seed=None,
+                                    start_frame=0):
+            captured["manual_seed"] = manual_seed
+            captured["collect_landmarks"] = collect_landmarks
+            progress_cb(1.0)
+            return ([170.0] * 4, [None] * 4, 30.0, [True] * 4)
+        monkeypatch.setattr(BiomechanicalEngine, "run_offline_track",
+                            _fake_run_offline_track)
+        monkeypatch.setattr(DataManager, "save_trial",
+                            lambda *a, **kw: None)
+
+        dialog_opened = {}
+        class _StubReviewDialog:
+            def __init__(self, parent, path, angles, landmarks, fps, leg, engine):
+                dialog_opened["opened"] = True
+                self.angles = angles
+                self.landmarks = landmarks
+            def destroy(self): pass
+        monkeypatch.setattr(_m, "AnnotatedVideoReviewDialog", _StubReviewDialog)
+        monkeypatch.setattr(app, "wait_window", lambda dlg: None)
+
+        transitioned = {}
+        monkeypatch.setattr(
+            app, "_transition_to_review",
+            lambda source_angles, meta: transitioned.update(
+                source_angles=source_angles, meta=meta))
+
+        app._start_upload_analysis()
+        app.update()
+
+        assert captured["manual_seed"] is not None
+        assert captured["collect_landmarks"] is True
+        assert dialog_opened.get("opened") is True
+        assert "video_file" in transitioned.get("source_angles", {})
+        assert len(transitioned["source_angles"]["video_file"]) == 4
+    finally:
+        app.destroy()
+
+
+def test_start_upload_analysis_video_all_undetected_shows_error_not_saved(
+        monkeypatch, tmp_path):
+    """A probe frame CAN find a person while the full tracking run still
+    never detects them again (e.g. the patient is only briefly visible in
+    frame 0) -- run_offline_track's angles/landmarks stay populated with
+    frozen values either way, so only the `detected` flag catches this.
+    Must show an error and must NOT save a trial or transition to review."""
+    import numpy as np
+    import pendulastic_app as _m
+    from pendulastic_app import App, BiomechanicalEngine, DataManager
+
+    video_path = str(tmp_path / "brief.mp4")
+
+    class _LM:
+        def __init__(self, x, y, visibility=1.0):
+            self.x, self.y, self.visibility = x, y, visibility
+
+    def _make_pose(knee_x=0.5, ankle_vis=0.9):
+        lm = [_LM(0.5, 0.5) for _ in range(33)]
+        lm[23] = _LM(knee_x - 0.02, 0.30)
+        lm[25] = _LM(knee_x, 0.55)
+        lm[27] = _LM(knee_x, 0.85, ankle_vis)
+        lm[24] = _LM(knee_x - 0.02, 0.30)
+        lm[26] = _LM(knee_x, 0.55)
+        lm[28] = _LM(knee_x, 0.85, ankle_vis)
+        return lm
+
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    fake_poses = [_make_pose(0.5)]
+
+    app = App()
+    try:
+        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.set_file(video_path)
+
+        monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
+        monkeypatch.setattr(_m.threading, "Thread", _SyncThread)
+        monkeypatch.setattr(
+            BiomechanicalEngine, "detect_people_at_frame",
+            lambda self, path, frame_index=0: (fake_frame, fake_poses))
+        monkeypatch.setattr(
+            BiomechanicalEngine, "run_offline_track",
+            lambda self, path, progress_cb, leg="right",
+                   collect_landmarks=False, manual_seed=None, start_frame=0:
+                (progress_cb(1.0),
+                 ([170.0] * 4, [None] * 4, 30.0, [False] * 4))[1])
+
+        save_called = {"called": False}
+        monkeypatch.setattr(
+            DataManager, "save_trial",
+            lambda *a, **kw: save_called.__setitem__("called", True))
+        transitioned = {"called": False}
+        monkeypatch.setattr(
+            app, "_transition_to_review",
+            lambda *a, **kw: transitioned.__setitem__("called", True))
+
+        app._start_upload_analysis()
+        app.update()
+
+        assert save_called["called"] is False
+        assert transitioned["called"] is False
+        assert "no person" in app._upload_meta.status_var.get().lower()
+        assert app._state == "upload_meta"
+    finally:
+        app.destroy()
 
 
 def test_imu_poll_worker_uses_configured_ema_alpha(monkeypatch):
@@ -1869,6 +2099,7 @@ def test_mas_entry_panel_empty_state_placeholder(monkeypatch):
         app.update()
         app._enter_mas_entry_mode()
         app._mas_entry.refresh()
+        app._mas_entry._show_dashboard()
         app.update()
         assert app._mas_entry.canvas_placeholder.winfo_ismapped()
         assert app._mas_entry._current_canvas is None
@@ -1908,11 +2139,69 @@ def test_mas_entry_panel_refresh_renders_figure_when_data_present(monkeypatch):
         app.update()
         app._enter_mas_entry_mode()
         app._mas_entry.refresh()
+        app._mas_entry._show_dashboard()
         app.update()
         assert not app._mas_entry.canvas_placeholder.winfo_ismapped()
         assert app._mas_entry._current_canvas is not None
         assert len(app._mas_entry._last_valid) == 1
         assert app._mas_entry._last_stats is not None
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_dashboard_button_shows_dashboard_hides_form():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry._form_frame.winfo_ismapped()
+        assert not app._mas_entry._dashboard_frame.winfo_ismapped()
+
+        app._mas_entry._show_dashboard()
+        app.update()
+        assert not app._mas_entry._form_frame.winfo_ismapped()
+        assert app._mas_entry._dashboard_frame.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_mas_entry_dashboard_back_button_returns_to_form():
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry._show_dashboard()
+        app.update()
+
+        app._mas_entry._show_form()
+        app.update()
+        assert app._mas_entry._form_frame.winfo_ismapped()
+        assert not app._mas_entry._dashboard_frame.winfo_ismapped()
+    finally:
+        app.destroy()
+
+
+def test_enter_mas_entry_mode_always_resets_to_form_view():
+    """A clinician who left the dashboard open on a previous visit must not
+    land back on it silently -- re-entering MAS entry mode should always
+    start on the form, matching every other panel's fresh-entry behavior."""
+    from pendulastic_app import App
+    app = App()
+    try:
+        app.update()
+        app._enter_mas_entry_mode()
+        app._mas_entry._show_dashboard()
+        app.update()
+        app.on_back_to_mode_select()
+        app.update()
+
+        app._enter_mas_entry_mode()
+        app.update()
+        assert app._mas_entry._form_frame.winfo_ismapped()
+        assert not app._mas_entry._dashboard_frame.winfo_ismapped()
     finally:
         app.destroy()
 
@@ -2196,6 +2485,7 @@ def test_mas_entry_panel_refresh_handles_repeated_placeholder_and_figure_transit
     try:
         app.update()
         app._enter_mas_entry_mode()   # pack the panel, so winfo_ismapped is meaningful
+        app._mas_entry._show_dashboard()   # dashboard sub-frame must be visible too
         app.update()
         for expect_data in (False, True, False, True, False):
             rows[:] = [one_row] if expect_data else []

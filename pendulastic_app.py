@@ -257,10 +257,16 @@ class BiomechanicalEngine:
         COCO indices used: 11=L-hip, 12=R-hip, 13=L-knee, 14=R-knee,
                            15=L-ankle, 16=R-ankle
 
-        When collect_landmarks is True, returns (angles, landmarks, fps) where
-        landmarks[i] is (hip, knee, ankle) for frame i, or None if pose
-        tracking wasn't available for that frame -- len(landmarks) ==
-        len(angles) always -- and fps is the video's true source frame rate.
+        When collect_landmarks is True, returns (angles, landmarks, fps,
+        detected) where landmarks[i] is (hip, knee, ankle) for frame i, or
+        None if pose tracking wasn't available for that frame -- len(landmarks)
+        == len(angles) always -- and fps is the video's true source frame
+        rate. detected[i] is True only if a real pose was found and accepted
+        for the tracked person on frame i; False covers both "not yet
+        initialised" and "tracker.step() fell through to a frozen prior
+        position because nothing was detected this frame" -- angles/landmarks
+        stay populated (frozen value) either way for curve continuity, so
+        detected is the only reliable signal for "no person found here."
         When False (default), returns angles only, matching the original
         signature exactly.
 
@@ -279,11 +285,11 @@ class BiomechanicalEngine:
         from frame 0).
         """
         if not (_VIEWER_AVAIL and _CV2_AVAIL):
-            return ([], [], 30.0) if collect_landmarks else []
+            return ([], [], 30.0, []) if collect_landmarks else []
 
         cap = _cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return ([], [], 30.0) if collect_landmarks else []
+            return ([], [], 30.0, []) if collect_landmarks else []
 
         fps_v  = cap.get(_cv2.CAP_PROP_FPS) or 30.0
         total  = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -302,6 +308,7 @@ class BiomechanicalEngine:
         initialised  = False
         angles: list = []
         landmarks: list = []
+        detected: list = []
 
         try:
             while True:
@@ -328,14 +335,17 @@ class BiomechanicalEngine:
                         hip_p, knee_p, ank_p, angle = tracker.step(frame)
                         angles.append(float(angle) if angle is not None
                                       else float("nan"))
+                        detected.append(bool(getattr(tracker, "last_detected", True)))
                         if collect_landmarks:
                             landmarks.append((hip_p, knee_p, ank_p))
                     except Exception:
                         angles.append(float("nan"))
+                        detected.append(False)
                         if collect_landmarks:
                             landmarks.append(None)
                 else:
                     angles.append(float("nan"))
+                    detected.append(False)
                     if collect_landmarks:
                         landmarks.append(None)
 
@@ -344,7 +354,7 @@ class BiomechanicalEngine:
             cap.release()
 
         progress_cb(1.0)
-        return (angles, landmarks, fps_v) if collect_landmarks else angles
+        return (angles, landmarks, fps_v, detected) if collect_landmarks else angles
 
     def detect_people_at_frame(
         self, video_path: str, frame_index: int = 0,
@@ -1856,17 +1866,19 @@ class PostProcessingPanel(tk.Frame):
                 f"HPE processing: {int(p * 100)}%"))
 
         def _run() -> None:
-            angles, landmarks, video_fps = engine.run_offline_track(
+            angles, landmarks, video_fps, detected = engine.run_offline_track(
                 path, _progress, leg=leg.lower(), collect_landmarks=True,
                 manual_seed=manual_seed)
             self.after(0, lambda: self._add_hpe_overlay(
-                angles, landmarks, fps=video_fps, engine=engine))
+                angles, landmarks, fps=video_fps, engine=engine,
+                detected=detected))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _add_hpe_overlay(self, angles: list, landmarks: list | None = None,
-                          fps: float = 30.0, engine=None) -> None:
-        if not angles:
+                          fps: float = 30.0, engine=None,
+                          detected: list | None = None) -> None:
+        if not angles or (detected is not None and not any(detected)):
             self.status_var.set(
                 "HPE: no pose detected — check video or leg selection.")
             return
@@ -2626,7 +2638,18 @@ class AnalysisPanel(tk.Frame):
         # Tk widgets -- unsafe to do from a background thread.
         try:
             if ft == "full_report":
-                data = _report.collect_participant(pids[0])
+                by_leg_tp, tps = _report.collect_participant(pids[0])
+                # make_report_figure()'s Row 1 (HPE/IMU overlay), Row 4
+                # (RMSE bars), and Row 5 (per-source paired PT7) all read
+                # rec["mediapipe_curve"]/rec["mediapipe_rmse"] -- fields
+                # only attach_rmse() ever sets. It must run before
+                # make_report_figure() (make_rmse_figure calls it
+                # internally, but make_report_figure does not) -- otherwise
+                # those rows silently render empty even when real
+                # MediaPipe/IMU data exists (matches run_pt_analysis.py's
+                # own ordering for the same reason).
+                _report.attach_rmse(by_leg_tp)
+                data = (by_leg_tp, tps)
             elif ft == "comparison":
                 pid_a, pid_b = pids
                 data = (_report.collect_participant(pid_a), _report.collect_participant(pid_b))
@@ -2726,7 +2749,18 @@ class AnalysisPanel(tk.Frame):
 
 class MasEntryPanel(tk.Frame):
     """MAS score entry form + live PT-score-vs-MAS validation dashboard.
-    controller: App instance -- receives on_back_to_mode_select()."""
+    controller: App instance -- receives on_back_to_mode_select().
+
+    The form and the validation dashboard (the boxplot/heatmap/ROC figure,
+    plus Export) are two internally-toggled sub-frames of this one panel,
+    not two separate App-level modes -- "View Validation Dashboard" /
+    "← Back to Entry" swap _form_frame and _dashboard_frame's pack() state.
+    Kept as one panel (rather than a second App._enter_*_mode) so every
+    attribute an existing caller/test already reaches through
+    (canvas_frame, canvas_placeholder, export_btn, _current_canvas,
+    _last_valid, _last_stats, refresh(), _on_export_clicked()) stays at the
+    same app._mas_entry.<name> path it always has -- only which sub-frame
+    is visible changes, not where the dashboard's state lives."""
 
     def __init__(self, parent, controller) -> None:
         super().__init__(parent)
@@ -2734,11 +2768,18 @@ class MasEntryPanel(tk.Frame):
         self._build_widgets()
 
     def _build_widgets(self) -> None:
+        self.configure(bg=ws.PALETTE["BG"])
+        self._form_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
+        self._dashboard_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
+        self._build_form(self._form_frame)
+        self._build_dashboard(self._dashboard_frame)
+        self._form_frame.pack(fill="both", expand=True)
+
+    def _build_form(self, parent) -> None:
         import datetime as _datetime
         pad = {"padx": 12, "pady": 5}
-        self.configure(bg=ws.PALETTE["BG"])
 
-        hdr = tk.Frame(self, bg=ws.PALETTE["BG"])
+        hdr = tk.Frame(parent, bg=ws.PALETTE["BG"])
         hdr.pack(fill="x", padx=12, pady=(16, 4))
         ws.secondary_button(
             hdr, "← Mode Select", self.controller.on_back_to_mode_select
@@ -2747,9 +2788,9 @@ class MasEntryPanel(tk.Frame):
                  font=("Segoe UI", 13, "bold"),
                  bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=4)
 
-        form = tk.Frame(self, bg=ws.PALETTE["BG"])
+        form = tk.Frame(parent, bg=ws.PALETTE["BG"])
         form.pack(fill="x")
         form.columnconfigure(1, weight=1)
 
@@ -2841,13 +2882,13 @@ class MasEntryPanel(tk.Frame):
         # Single feedback channel for the form: errors in amber, save
         # confirmations in green (see _set_feedback).
         self.error_var = tk.StringVar(value="")
-        self.error_label = tk.Label(self, textvariable=self.error_var,
+        self.error_label = tk.Label(parent, textvariable=self.error_var,
                                     fg=_ERROR_FG, bg=ws.PALETTE["BG"])
         self.error_label.pack(fill="x", padx=12, pady=(0, 4))
 
-        ws.primary_button(self, "Save", self._on_save_clicked).pack(pady=(0, 8))
+        ws.primary_button(parent, "Save", self._on_save_clicked).pack(pady=(0, 8))
 
-        status_frame = tk.Frame(self, bg=ws.PALETTE["BG"])
+        status_frame = tk.Frame(parent, bg=ws.PALETTE["BG"])
         status_frame.pack(fill="x", padx=12, pady=(4, 8))
         self.status_text = tk.Text(status_frame, height=4, wrap="word",
                                    state="disabled", bg=ws.PALETTE["SURFACE"],
@@ -2857,14 +2898,29 @@ class MasEntryPanel(tk.Frame):
         self.status_text.pack(side="left", fill="x", expand=True)
         status_scroll.pack(side="right", fill="y")
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", padx=10, pady=4)
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=4)
+
+        self.dashboard_btn = ws.secondary_button(
+            parent, "View Validation Dashboard →", self._show_dashboard)
+        self.dashboard_btn.pack(pady=(4, 16))
+
+    def _build_dashboard(self, parent) -> None:
+        hdr = tk.Frame(parent, bg=ws.PALETTE["BG"])
+        hdr.pack(fill="x", padx=12, pady=(16, 4))
+        ws.secondary_button(hdr, "← Back to Entry", self._show_form).pack(
+            side="left", padx=(0, 8))
+        tk.Label(hdr, text="Pendulastic — MAS Validation Dashboard",
+                 font=("Segoe UI", 13, "bold"),
+                 bg=ws.PALETTE["BG"], fg=ws.PALETTE["FG"]).pack(side="left")
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", padx=10, pady=4)
 
         self._current_canvas = None
         self._current_fig = None
         self._last_valid: list = []
         self._last_stats = None
 
-        self.canvas_frame = tk.Frame(self, bg=ws.PALETTE["SURFACE"])
+        self.canvas_frame = tk.Frame(parent, bg=ws.PALETTE["SURFACE"])
         self.canvas_frame.pack(fill="both", expand=True, padx=12, pady=(0, 4))
         self.canvas_placeholder = tk.Label(
             self.canvas_frame,
@@ -2872,9 +2928,18 @@ class MasEntryPanel(tk.Frame):
             bg=ws.PALETTE["SURFACE"], fg=ws.PALETTE["FG2"])
         self.canvas_placeholder.pack(pady=40)
 
-        self.export_btn = ws.secondary_button(self, "Export", self._on_export_clicked)
+        self.export_btn = ws.secondary_button(parent, "Export", self._on_export_clicked)
         self.export_btn.config(state="disabled")
         self.export_btn.pack(pady=(0, 12))
+
+    def _show_dashboard(self) -> None:
+        self.refresh()
+        self._form_frame.pack_forget()
+        self._dashboard_frame.pack(fill="both", expand=True)
+
+    def _show_form(self) -> None:
+        self._dashboard_frame.pack_forget()
+        self._form_frame.pack(fill="both", expand=True)
 
     def refresh(self) -> None:
         try:
@@ -3455,6 +3520,7 @@ class App(tk.Tk):
         self._mode_select.pack_forget()
         self._mas_entry.pack(fill="both", expand=True)
         self._state = "mas_entry"
+        self._mas_entry._show_form()
         self._mas_entry.refresh()
 
     def get_trial_meta(self) -> dict:
@@ -3691,23 +3757,77 @@ class App(tk.Tk):
         if not path:
             messagebox.showerror("Metadata", "No file selected.")
             return
-        self._state = "upload_processing"
-        self._upload_meta.set_processing(True)
-        self._upload_meta.status_var.set("Processing...")
         ext = os.path.splitext(path)[1].lower()
         if ext in (".mp4", ".avi", ".mov", ".mkv"):
+            if not _VIEWER_AVAIL:
+                messagebox.showerror(
+                    "HPE Unavailable",
+                    "pendulastic_viewer not importable — cannot run MediaPipe.")
+                return
+            self._state = "upload_processing"
+            self._upload_meta.set_processing(True)
+            self._upload_meta.status_var.set("Detecting people…")
+            self.update_idletasks()
+            ok, manual_seed = self._detect_and_seed_video(
+                path, meta.get("leg", "right"))
+            if not ok:
+                self._upload_meta.status_var.set(
+                    "Upload cancelled — no patient selected.")
+                self._upload_meta.set_processing(False)
+                self._state = "upload_meta"
+                return
+
+            self._upload_meta.status_var.set("HPE processing: 0%")
             threading.Thread(
                 target=self._run_video_file_hpe,
                 args=(path, meta),
-                kwargs={"progress_target": self._upload_meta.status_var},
+                kwargs={"progress_target": self._upload_meta.status_var,
+                        "manual_seed": manual_seed},
                 daemon=True,
             ).start()
         else:
+            self._state = "upload_processing"
+            self._upload_meta.set_processing(True)
+            self._upload_meta.status_var.set("Processing...")
             threading.Thread(
                 target=self._run_csv_analysis,
                 args=(path, meta),
                 daemon=True,
             ).start()
+
+    def _detect_and_seed_video(self, path: str, leg: str) -> tuple:
+        """Probe the first frame of `path` for people and resolve a manual
+        tracking seed on the main thread -- opens PersonPickerDialog for 2+
+        candidates via wait_window(), so this must only be called from the
+        main thread, before any background tracking is started.
+
+        Returns (ok, manual_seed). ok is False when nobody was found (an
+        error dialog is shown) or the user cancelled the picker -- callers
+        must not proceed to tracking in that case. manual_seed may be None
+        even when ok is True (single candidate whose ankle wasn't resolved
+        cleanly) -- run_offline_track then falls back to its own per-frame
+        auto-detection, matching the pre-existing behavior for that case.
+        """
+        engine = BiomechanicalEngine("rgb")
+        frame, poses = engine.detect_people_at_frame(path)
+        if not poses:
+            messagebox.showerror(
+                "HPE Upload",
+                "No person detected in the video — check the recording or "
+                "try a different file.")
+            return False, None
+        if len(poses) == 1:
+            # Only one candidate -- resolve_person_click's nearest-pose
+            # search trivially picks it regardless of click position.
+            fh, fw = frame.shape[:2]
+            result = resolve_person_click(poses, (fw / 2, fh / 2), fw, fh, leg)
+            manual_seed = result if result is not None and result[2] is not None else None
+            return True, manual_seed
+        dialog = PersonPickerDialog(self, path, 0, frame, poses, leg)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return False, None
+        return True, dialog.result
 
     def _run_csv_analysis(self, path: str, meta: dict) -> None:
         import csv as _csv_mod
@@ -3721,7 +3841,8 @@ class App(tk.Tk):
                 for row in reader:
                     try:
                         t_key = next(
-                            (k for k in ("time_s", "t_rel") if k in row), None)
+                            (k for k in ("time_s", "time_sec", "t_rel")
+                             if k in row), None)
                         a_key = next(
                             (k for k in ("knee_angle_deg", "angle") if k in row),
                             None)
@@ -3805,15 +3926,31 @@ class App(tk.Tk):
         if not path:
             messagebox.showerror("Video File", "No video file selected.")
             return
+        if not _VIEWER_AVAIL:
+            messagebox.showerror(
+                "HPE Unavailable",
+                "pendulastic_viewer not importable — cannot run MediaPipe.")
+            return
+        self._acq.status_var.set("Detecting people…")
+        self.update_idletasks()
+        ok, manual_seed = self._detect_and_seed_video(
+            path, meta.get("leg", "right"))
+        if not ok:
+            self._acq.status_var.set(
+                "Video File cancelled — no patient selected.")
+            return
         self._state = "processing"
         self._acq.enter_processing()
         threading.Thread(
             target=self._run_video_file_hpe,
-            args=(path, meta), daemon=True,
+            args=(path, meta),
+            kwargs={"manual_seed": manual_seed},
+            daemon=True,
         ).start()
 
     def _run_video_file_hpe(self, path: str, meta: dict,
-                             progress_target: Optional[tk.StringVar] = None) -> None:
+                             progress_target: Optional[tk.StringVar] = None,
+                             manual_seed: tuple | None = None) -> None:
         target = progress_target or self._acq.status_var
         def progress(pct: float) -> None:
             self.after(0, lambda p=pct: target.set(
@@ -3822,22 +3959,80 @@ class App(tk.Tk):
         try:
             leg    = meta.get("leg", "right").lower()
             engine = BiomechanicalEngine("rgb")
-            angles = engine.run_offline_track(path, progress, leg=leg)
-
-            fn = DataManager.build_filename(
-                meta["pid"], meta["leg"], meta["ms_status"],
-                meta["trial"], source="video_file")
-            DataManager.save_trial(fn, angles, meta, fps=30.0, source="video_file")
-
-            source_angles = {"video_file": angles}
-            self.after(0, lambda: self._transition_to_review(source_angles, meta))
+            angles, landmarks, video_fps, detected = engine.run_offline_track(
+                path, progress, leg=leg, collect_landmarks=True,
+                manual_seed=manual_seed)
+            self.after(0, lambda: self._finish_video_file_hpe(
+                path, meta, angles, landmarks, video_fps, detected, engine,
+                progress_target))
         except Exception as exc:
-            if progress_target is not None:
-                def _err_video(msg=str(exc)):
-                    target.set(f"Error processing video: {msg}")
-                    self._upload_meta.set_processing(False)
-                    self._state = "upload_meta"
-                self.after(0, _err_video)
+            def _err_video(msg=str(exc)):
+                target.set(f"Error processing video: {msg}")
+                self._reset_video_file_processing_state(progress_target)
+            self.after(0, _err_video)
+
+    def _reset_video_file_processing_state(
+            self, progress_target: Optional[tk.StringVar]) -> None:
+        """progress_target is only passed for the upload_meta ("Upload
+        File" -> new trial) entry point; the video_file acquisition-source
+        entry point (_start_video_file_processing) passes None, so this
+        resets whichever screen actually kicked off the run instead of
+        leaving the app stuck mid-"processing" with no way back."""
+        if progress_target is not None:
+            self._upload_meta.set_processing(False)
+            self._state = "upload_meta"
+        else:
+            self._state = "idle"
+            self._acq.enter_idle()
+
+    def _finish_video_file_hpe(self, path: str, meta: dict, angles: list,
+                                landmarks: list, video_fps: float,
+                                detected: list, engine,
+                                progress_target: Optional[tk.StringVar]) -> None:
+        """Runs on the main thread (scheduled via self.after) so it's safe
+        to open AnnotatedVideoReviewDialog's wait_window() here.
+
+        detected[i] is only True where run_offline_track actually found and
+        accepted a pose for the tracked person that frame -- angles/landmarks
+        stay populated (frozen at the last known position) even when nobody
+        was detected, so `not any(detected)` is the only reliable "no person
+        anywhere in this video" signal; an empty-but-not-NaN angles list
+        would silently pass a naive `if not angles` check."""
+        target = progress_target or self._acq.status_var
+        if not angles or not any(detected):
+            target.set(
+                "Error: no person detected in video — check the recording "
+                "or leg selection.")
+            self._reset_video_file_processing_state(progress_target)
+            return
+
+        review_error = None
+        if landmarks and AnnotatedVideoReviewDialog is not None:
+            try:
+                dialog = AnnotatedVideoReviewDialog(
+                    self, path, angles, landmarks, video_fps or 30.0,
+                    meta.get("leg", "right"), engine)
+                self.wait_window(dialog)
+                angles = dialog.angles
+                landmarks = dialog.landmarks
+            except Exception as exc:
+                # Don't let a per-call dialog failure discard the tracking
+                # run that already completed -- fall through with the
+                # original angles/landmarks the run produced.
+                review_error = exc
+
+        fn = DataManager.build_filename(
+            meta["pid"], meta["leg"], meta["ms_status"],
+            meta["trial"], source="video_file")
+        DataManager.save_trial(fn, angles, meta, fps=video_fps or 30.0,
+                               source="video_file")
+
+        source_angles = {"video_file": angles}
+        self._transition_to_review(source_angles, meta)
+        if review_error is not None:
+            self._acq.status_var.set(
+                f"Video review unavailable: {review_error} -- showing "
+                "results without review.")
 
     def _start_rgb_recording(self, meta: dict) -> None:
         # Note: this runs from on_start()'s per-source dispatch loop, AFTER
