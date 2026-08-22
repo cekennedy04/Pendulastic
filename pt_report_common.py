@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import pendulastic_pt_score as pt
+import workbench_engine as we
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "PT_Scores")
@@ -582,18 +583,27 @@ def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_di
 
 
 def _row5_source_pt7(rec, curve_key):
-    """PT7 (7-param, same compute_pt_score used for OptiTrack everywhere
-    else in this module) computed directly from one source's own curve on
-    this trial record, or None if the curve is missing or fails to
-    score. curve_key is "mediapipe_curve" or "imu_curve" (set by
-    attach_rmse, Task 2)."""
+    """(PT7, params) computed directly from one source's own curve on this
+    trial record -- PT7 is the same compute_pt_score used for OptiTrack
+    everywhere else in this module; params is the raw 7-parameter dict
+    behind it, kept around so the caller can flag which parameter is
+    driving the score (see _draw_row5_table's top-contributor column)
+    instead of showing only the single number. (None, None) if the curve
+    is missing or fails to score. curve_key is "mediapipe_curve" or
+    "imu_curve" (set by attach_rmse, Task 2)."""
     curve = rec.get(curve_key)
     if curve is None:
-        return None
+        return None, None
     params = pt.compute_pt_params(curve["t"], curve["ang"])
     if params is None:
-        return None
-    return pt.compute_pt_score(params)
+        return None, None
+    return pt.compute_pt_score(params), params
+
+
+# A single parameter explaining at least this fraction of a source's total
+# PT7 deviation is called out by name in Row 5's "Top contributor" column --
+# below this, no one parameter dominates enough to be worth singling out.
+_TOP_CONTRIBUTOR_MIN_FRAC = 0.5
 
 
 def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
@@ -647,18 +657,40 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
                 if has_accepted:
                     n_passed_gate += 1
 
-            source_pt7s = [_row5_source_pt7(r, curve_key) for r in trials if r.get(curve_key) is not None]
+            scored = [_row5_source_pt7(r, curve_key) for r in trials if r.get(curve_key) is not None]
+            source_pt7s = [v for v, _p in scored]
+            source_params = [p for _v, p in scored if p is not None]
             n_scored = sum(1 for v in source_pt7s if v is not None)
             paired_opti = [r["pt7"] for r in trials if r.get(curve_key) is not None]
             opti_paired_mean = float(np.mean(paired_opti)) if paired_opti else None
             source_mean = float(np.mean([v for v in source_pt7s if v is not None])) if n_scored else None
             delta = (source_mean - opti_paired_mean) if (source_mean is not None and opti_paired_mean is not None) else None
 
+            # Which single parameter (averaged across this source's scored
+            # trials) is driving the PT7 total, if any one clearly does --
+            # see compute_pt_score_breakdown for the per-key penalty logic
+            # this reuses, and _TOP_CONTRIBUTOR_MIN_FRAC for the threshold.
+            # Only trials with every real PT7 key are used -- a params dict
+            # missing one (e.g. a test double standing in for
+            # compute_pt_params) is silently excluded rather than raising,
+            # matching this table's existing best-effort conventions.
+            top_contributor = None
+            full_params = [p for p in source_params if all(k in p for k in pt._PARAM_KEYS)]
+            if full_params:
+                mean_params = {k: float(np.mean([p[k] for p in full_params])) for k in pt._PARAM_KEYS}
+                breakdown = pt.compute_pt_score_breakdown(mean_params)
+                total_dev = sum(breakdown.values())
+                if total_dev > 1e-9:
+                    top_key, top_dev = max(breakdown.items(), key=lambda kv: kv[1])
+                    top_frac = top_dev / total_dev
+                    if top_frac >= _TOP_CONTRIBUTOR_MIN_FRAC:
+                        top_contributor = (top_key, top_frac, mean_params[top_key], pt.HEALTHY_REF.get(top_key))
+
             rows.append({
                 "timepoint": tp_label, "source": source_label,
                 "opti_paired_pt7": opti_paired_mean, "opti_paired_n": len(paired_opti),
                 "source_pt7": source_mean, "source_mas": pt.pt_to_mas(source_mean) if source_mean is not None else None,
-                "delta": delta,
+                "delta": delta, "top_contributor": top_contributor,
                 "n_candidate": n_candidate, "n_passed_gate": n_passed_gate,
                 "n_total": len(trials), "n_scored": n_scored,
             })
@@ -676,6 +708,12 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
 
     def _fmt_delta(v):
         return f"{v:+.3f}" if v is not None else "—"
+
+    def _fmt_top_contributor(tc):
+        if tc is None:
+            return "—"
+        key, frac, val, ref_val = tc
+        return f"⚠ {key} {val:.2f} (ref {ref_val:.2f}) {frac:.0%} of score"
 
     caveat = ("Algorithm agreement, not independent clinical scores — PT7 computed identically "
              "across sources but on curves with different sampling, smoothing, and cleaning "
@@ -695,6 +733,7 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
             f"{_fmt_pt7(r['opti_paired_pt7'])} (n={r['opti_paired_n']})",
             f"{_fmt_pt7(r['source_pt7'])}" + (f" [{r['source_mas']}]" if r["source_mas"] else ""),
             _fmt_delta(r["delta"]),
+            _fmt_top_contributor(r["top_contributor"]),
             f"{r['n_candidate']}/{r['n_total']} had candidate, "
             f"{r['n_passed_gate']}/{r['n_candidate'] or 1} passed gate, "
             f"{r['n_scored']}/{r['n_passed_gate'] or 1} scored",
@@ -702,7 +741,7 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
         ])
 
     col_labels = ["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
-                 "Δ", "Accounting", "Clinician MAS"]
+                 "Δ", "Top contributor", "Accounting", "Clinician MAS"]
     tbl = ax.table(cellText=table_rows, colLabels=col_labels, loc="center", cellLoc="center")
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(6.5)
@@ -1222,6 +1261,37 @@ _C_MEDIAPIPE = "#AA44FF"
 _C_IMU = "#FF9000"
 
 
+def _lag_align_candidate(rec, cand):
+    """Cross-correlation-align one HPE/IMU candidate curve to OptiTrack's
+    clock via workbench_engine.compare_pair -- the same validated technique
+    batch_imu_vs_optitrack_rmse.py uses for imu_vs_optitrack_rmse.csv.
+
+    pt.load_hpe_model_curves's own alignment is Y-baseline-shift only; it
+    assumes the model/IMU clock is already synchronized with OptiTrack's,
+    which real trials contradict (confirmed on Participant_16 Left/Control/
+    Trial_1: compare_pair finds lag=-0.717s and rmse=6.95 deg for the exact
+    same curve load_hpe_model_curves itself scores at rmse=49+ deg with no
+    lag correction at all -- and, since compute_pt_params's release
+    detection and oscillation-cycle counting run on whatever slice of the
+    curve the swing window lands on, that same un-corrected lag was
+    corrupting the PT7 score/predicted-MAS computed from the curve, not
+    just the RMSE bar).
+
+    Returns (t_aligned, rmse_deg) -- t_aligned is cand["t"] shifted by the
+    detected lag, rmse_deg is compare_pair's own lag-corrected value.
+    Falls back to cand["t"]/cand["rmse"] unchanged if alignment errors or
+    doesn't converge -- this is a correction layered on an already-best-
+    effort curve, so a failure here must never block the report the way a
+    failure in load_hpe_model_curves itself already doesn't."""
+    try:
+        result = we.compare_pair(rec["t_raw"], rec["angle_raw"], cand["t"], cand["ang"])
+    except Exception:
+        return cand["t"], cand.get("rmse")
+    if result.get("status") != "ok":
+        return cand["t"], cand.get("rmse")
+    return cand["t"] + result["lag_sec"], result["rmse_deg"]
+
+
 def attach_rmse(by_leg_tp):
     """Best-effort MediaPipe/IMU RMSE + curve lookup for every scored trial,
     via pt.load_hpe_model_curves's standard Recordings/Participant_{pid}/
@@ -1237,7 +1307,9 @@ def attach_rmse(by_leg_tp):
     last -- and that same candidate's rmse and t/ang curve are stored
     together, so a later consumer (the waveform overlay, the PT7 score,
     the RMSE bar) can never end up looking at mismatched candidates for
-    the same trial."""
+    the same trial. Each candidate is then lag-aligned (_lag_align_candidate)
+    before being stored, so every downstream consumer of mediapipe_curve/
+    imu_curve/mediapipe_rmse/imu_rmse sees the same corrected numbers."""
     for trials in by_leg_tp.values():
         for rec in trials:
             try:
@@ -1248,10 +1320,20 @@ def attach_rmse(by_leg_tp):
                 curves = []
             mediapipe_curve = next((c for c in curves if c["name"].startswith("mediapipe")), None)
             imu_curve = next((c for c in curves if c["name"] == "imu_viewer"), None)
-            rec["mediapipe_rmse"] = mediapipe_curve.get("rmse") if mediapipe_curve else None
-            rec["mediapipe_curve"] = {"t": mediapipe_curve["t"], "ang": mediapipe_curve["ang"]} if mediapipe_curve else None
-            rec["imu_rmse"] = imu_curve.get("rmse") if imu_curve else None
-            rec["imu_curve"] = {"t": imu_curve["t"], "ang": imu_curve["ang"]} if imu_curve else None
+            if mediapipe_curve:
+                t_aligned, rmse = _lag_align_candidate(rec, mediapipe_curve)
+                rec["mediapipe_rmse"] = rmse
+                rec["mediapipe_curve"] = {"t": t_aligned, "ang": mediapipe_curve["ang"]}
+            else:
+                rec["mediapipe_rmse"] = None
+                rec["mediapipe_curve"] = None
+            if imu_curve:
+                t_aligned, rmse = _lag_align_candidate(rec, imu_curve)
+                rec["imu_rmse"] = rmse
+                rec["imu_curve"] = {"t": t_aligned, "ang": imu_curve["ang"]}
+            else:
+                rec["imu_rmse"] = None
+                rec["imu_curve"] = None
     return by_leg_tp
 
 

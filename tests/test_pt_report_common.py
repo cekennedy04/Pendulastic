@@ -444,7 +444,7 @@ def test_draw_row5_table_truncates_clinician_mas_to_two_most_recent_with_more_no
     assert matches[("left", "pre")] == many_matches
 
     tbl = ax.tables[0]
-    clin_cell_text = tbl.get_celld()[(1, 6)].get_text().get_text()
+    clin_cell_text = tbl.get_celld()[(1, 7)].get_text().get_text()
     assert "+1 more" in clin_cell_text
     assert "1 (12/1/2026)" in clin_cell_text
     assert "1+ (8/6/2026)" in clin_cell_text
