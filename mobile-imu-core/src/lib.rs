@@ -19,4 +19,8 @@
 
 pub mod ahrs;
 pub mod calibration;
+pub mod goniometry;
+pub mod resample;
+pub mod scoring;
+pub mod signal;
 pub mod stillness;
