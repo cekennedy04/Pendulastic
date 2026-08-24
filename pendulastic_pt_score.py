@@ -127,24 +127,47 @@ HEALTHY_REF = {
 # values simply already sat near where the corrected pipeline puts them.
 #
 # ─────────────────────────────────────────────────────────────────────────
-# UNRESOLVED (2026-08-24): the control-vs-MS separation these boundaries
-# encode may be a cohort-selection artifact. Do not treat the p-value above
-# as evidence of a validated separation. Two independent findings:
+# UNRESOLVED (2026-08-24): do not treat the p-value above as evidence of a
+# validated separation. Two findings, the first about what these boundaries
+# are calibrated AGAINST and the second about the statistic itself:
 #
-#  (a) The separation does not survive the full cohort. Every participant
-#      under Recordings/ classifiable from metadata.json gives n=8 control
-#      (P2,6,7,8,9,10,12,16) and n=8 MS (P4,5,11,13,14,15,17,18 -- P17
-#      contributes no qualifying trials). Recomputed on that set: control
-#      n=57 p75=0.1537, MS n=49 median=0.1553, per-trial p=0.00084. The MS
-#      median lands ON TOP of the control 75th percentile, collapsing the
-#      borderline band to 0.0016 wide (0.1537 -> 0.1545) -- a degenerate,
-#      unusable calibration, which is why the n=7 values are kept here.
-#      Per-participant medians show why the n=7 arm separates and the full
-#      one does not: the documented MS arm is P11 0.1034, P13 0.4593,
-#      P14 0.9966, i.e. carried by P13/P14, while every MS participant it
-#      omits scores in control range (P4 0.1299, P5 0.1022, P15 0.0916,
-#      P18 0.0072 -- below every control but P16). Two controls also score
-#      high: P2 0.2470, P6 0.3758.
+#  (a) MS-vs-Control is the wrong grouping for a spasticity threshold, so
+#      the apparent "separation" (and its apparent collapse on the full
+#      cohort) is largely an artifact of the grouping, not of the score.
+#      PT7 measures spasticity SEVERITY; MS is a diagnosis, and this study's
+#      MS arm genuinely spans the full severity range including participants
+#      with no measurable spasticity at all (user-confirmed, and corroborated
+#      by mas_scores.csv: P5 is graded MAS 0 on both legs at every timepoint,
+#      P4's right leg MAS 0, P13 MAS 0 at 1-week-post, P15's left MAS 0). An
+#      MS participant with MAS 0 SHOULD score like a control -- their leg
+#      really does swing like one. So the fact that recomputing on the full
+#      metadata cohort (n=8 control, n=8 MS) drives the MS median onto the
+#      control p75 (0.1553 vs 0.1537, per-trial p=0.00084) is expected
+#      physiological overlap, NOT evidence of a broken score. The n=7 arm
+#      looked cleanly separated mainly because it happened to contain the
+#      two most-affected participants (P13 0.4593, P14 0.9966).
+#
+#      Grouped by clinician MAS grade instead -- the severity axis PT7
+#      actually targets -- the direction is right but the calibration looks
+#      off. Real (non-ASSUMED) grades, per participant-leg:
+#          MAS 0   n=10  median 0.2054   (P5 both, P4r, P13 both, P15l)
+#          MAS 1   n= 7  median 0.5060
+#          MAS 1+  n= 1         0.0532   (P4 left -- see below)
+#      Calibrating the same way against MAS 0 vs MAS>=1 would put
+#      PT_HEALTHY_MAX at ~0.36-0.45 rather than the 0.1492 committed here,
+#      i.e. the current threshold may be 2-3x too aggressive and flag
+#      mild-or-absent spasticity as impaired. Not adopted yet: n is small
+#      (18 participant-legs), the MAS 0 pool is 17/27 ASSUMED rather than
+#      clinician-assessed, and it is contaminated by P2's duo artifact
+#      (a MAS 0 row scoring 1.8084). mas_validation.py already treats
+#      PT-vs-MAS as the clinically meaningful validity claim and keeps it
+#      deliberately separate from device-vs-device agreement; these zone
+#      boundaries should probably be rebuilt on that axis.
+#
+#      One genuine anomaly worth clinical review regardless: P4's LEFT leg
+#      is graded MAS 1+, the most severe grade in the dataset, yet scores
+#      PT7 0.0532 -- the lowest of any graded leg. That one is a real
+#      score-vs-clinician contradiction, unlike the MAS 0 cases above.
 #
 #  (b) The headline p-value is an artifact of per-trial aggregation. Those
 #      30 control / 25 MS trials come from only 4 / 3 participants, so
@@ -157,11 +180,15 @@ HEALTHY_REF = {
 #      argues against this methodology on the same grounds.
 #
 # The per-trial aggregation is therefore load-bearing for the headline p and
-# should not be. Resolving this means determining whether the low-scoring MS
-# participants (P18, P15, P5, P11, P4) are data-quality artifacts or genuine
-# physiological overlap -- a clinical question, not an arithmetic one. Until
-# then these boundaries are a provisional working threshold, not a validated
-# clinical cutoff.
+# should not be. Taken together: (a) says these boundaries are calibrated
+# against the wrong axis (diagnosis rather than severity) and are likely set
+# too low as a result, and (b) says the statistic that appears to justify
+# them cannot bear that weight at this n. The next step is rebuilding them on
+# the MAS-grade axis once enough clinician-assessed grades exist -- mostly a
+# data-collection problem, not an analysis one (today: 18 graded
+# participant-legs, only 11 of them clinician-assessed rather than ASSUMED,
+# and 2 more still pending at mas_grade=-1). Until then these are a
+# provisional working threshold, not a validated clinical cutoff.
 # ─────────────────────────────────────────────────────────────────────────
 #
 # P2's pre_duo trials are EXCLUDED from the control pool (its pre_solo trials
