@@ -183,15 +183,49 @@ recording task waiting on lab availability. Phase 0 therefore splits in two.
 | **V0.6** | Record `mas_extension` (not just collapsed `mas_grade`) going forward, and switch the clinical-correlation target to it — the pendulum test is an extensor-spasticity probe (report §7.5). Protocol change, not code. | Updated intake form | ongoing |
 
 **The confound to state plainly.** Comparing a newly-recorded verified-mount arm
-against a historical ordinary-mount corpus is *not* a clean within-session A/B:
-different days, different participants, and the AHRS config was re-tuned between
-them (report §2). Two mitigations, in order of preference: (a) re-record a
-paired ordinary-mount arm in the same session for at least a subset of
-participants, which restores the within-session comparison for a few extra
-minutes per participant — **strongly preferred**; (b) failing that, re-run the
-historical corpus through the *current* config so at least the algorithm is held
-constant, and report the remaining participant/session confound as a stated
-limitation rather than letting it sit unnoticed in a delta.
+against the historical ordinary-mount corpus is *not* a clean A/B. The quantity
+under test is a per-trial zero offset that already varies substantially between
+participants and between sessions; if the two conditions differ in participant,
+day, operator, marker placement *and* AHRS config (the corpus predates the
+re-tune, report §2), a measured difference cannot be attributed to the mount.
+
+Two mitigations, in order of preference.
+
+**(a) Record a paired ordinary-mount arm — strongly preferred.** "Paired" means
+the same participant contributes trials to *both* conditions within the same
+session, so each person is compared against themselves and every listed
+confound cancels. It also buys real statistical power: at n≈5 participants an
+unpaired comparison of a subtle protocol effect is hopeless, whereas a paired
+test operates on each participant's own verified-minus-ordinary delta.
+
+Protocol, per participant per leg (≈10-15 extra minutes per participant):
+
+1. Mount ordinary → 5 trials → re-zero.
+2. Remount verified → 5 trials → re-zero.
+3. Remount ordinary → 5 trials.
+
+Two requirements, both easy to get wrong:
+
+- **The remount is the manipulation**, so each remount gets its own zeroing —
+  a shared zero across conditions measures nothing.
+- **Counterbalance the starting condition across participants** (half start
+  verified, half start ordinary). Repeated passive swinging changes the limb's
+  response over a session, so trial order is itself a variable; without
+  counterbalancing it is perfectly confounded with condition in an A-B design.
+  The A-B-A ordering above additionally lets a within-participant order effect
+  be estimated rather than assumed away.
+
+The ordinary arm must faithfully replicate the legacy protocol — same strap,
+same placement, same casual zeroing — or the comparison is against a straw man.
+The historical corpus still serves as a third reference point: if the fresh
+ordinary arm reproduces the historical ordinary numbers, that validates leaning
+on the corpus elsewhere; if it does not, that gap *is* session-to-session
+variability, i.e. direct evidence about the very bias under investigation.
+
+**(b) If pairing is impossible**, re-run the historical corpus through the
+*current* config so at least the algorithm is held constant, and report the
+remaining participant/session confound as a stated limitation rather than
+letting it sit unnoticed inside a delta.
 
 ### Gate G0 — IMU (blocking for Phase 1)
 
