@@ -24,7 +24,9 @@ extends: docs/plans/2026-08-21-001-feat-phone-imu-pendulum-app-plan.md
   plan owns *what has to be true before, during, and after building it* — the
   validation gates it depends on and the test infrastructure it currently
   assumes but does not have. It does not restate or change that plan's scope.
-- **Open blockers:** one decision needed from the project owner (§2, Decision D1).
+- **Open blockers:** none. Modality order is settled (IMU first, then RGB — §2 D1),
+  and an OptiTrack-validated participant corpus already exists, which makes most of
+  Gate G0 answerable retrospectively without new lab time (§3).
 
 ---
 
@@ -92,24 +94,33 @@ repeat externally. That is task **V0.1** below.
 
 ## 2. Decisions
 
-### D1. Which app is *the* mobile app? *(needs owner confirmation)*
+### D1. IMU first, then RGB. *(settled 2026-08-24, owner-directed)*
 
-**Recommendation: build the on-device IMU app; keep the RN app as a capture and
-review client, not a measurement instrument.**
+**The on-device IMU app is the mobile app. The RGB/markerless track follows it,
+rather than being abandoned or run in parallel.**
 
 Rationale, entirely from §1.2: IMU is the only modality with measurable
 agreement against ground truth, and its dominant error term is a *fixable
 calibration bias*, not a sensing ceiling. MediaPipe's agreement is
 "statistically indistinguishable from noise on every one of the 7 metrics" —
 building a clinical scoring app on it today would be shipping a number we know
-is wrong. The RGB track stays alive for what it is genuinely good at (video
-capture, clinician review, annotation) and re-enters the scoring path only if it
-clears **Gate G0-RGB** below.
+is wrong.
 
-Everything downstream in this plan is written against that recommendation. If
-the owner decides otherwise (e.g. RGB-first because it needs no strap), Phase 2
-swaps its target and Phase 0's RGB gate becomes blocking rather than optional —
-the phase structure holds either way.
+What "then RGB" means concretely, so it doesn't quietly become "never RGB":
+
+- The RN app (`mobile/`) is **not** frozen or deleted. It keeps its capture,
+  review, and annotation role throughout Phases 0–3, and carries a
+  non-dismissible "research capture only — not a clinical measurement" banner
+  until Gate G0-RGB passes.
+- Every RGB trial recorded during Phases 0–3 is a **free training/validation
+  sample for the camera track**, because the IMU sessions are co-recorded with
+  OptiTrack anyway. The RGB track's data problem gets solved as a side effect of
+  the IMU track's schedule — provided V0.2 lands first, so none of that video is
+  contaminated with fabricated keypoints.
+- RGB re-enters the scoring path in **Phase 4** (§9), gated on G0-RGB, reusing the
+  same test layers (§7) and the same gate structure. It inherits a working app
+  shell, a working export format, and a validated scoring core — which is exactly
+  why sequencing it second is cheaper than running it in parallel.
 
 ### D2. Validation gates block build work, not the reverse.
 
@@ -142,41 +153,76 @@ checked into `mobile-imu-core/tests/fixtures/`.
 Purpose: establish that a phone-mounted IMU, under a controlled protocol, can
 measure knee angle to a defensible accuracy — before any app is built on it.
 
-| ID | Task | Output | Owner effort |
+**An OptiTrack-validated participant corpus already exists** (~53 trials across 5
+IMU-validated participants, of which 49 are 3-modality matched and 40 survive the
+production scoring gates — report §1, §6, §7.0). That corpus is what produced
+every number in §1.2, and it changes this phase's shape considerably: the
+majority of Gate G0 is a *re-analysis* task that can start immediately, not a
+recording task waiting on lab availability. Phase 0 therefore splits in two.
+
+### 3A. Retrospective — runs today, no lab time, no new participants
+
+| ID | Task | Output |
+|---|---|---|
+| **V0.1** | Reconcile the accuracy numbers. One script, one table: manual-annotation RMSE, MediaPipe-automatic RMSE, IMU RMSE on the *same* trial set, using the **production** `compute_pt_params()` — not `workbench_engine.windowed_pt_params()`, which produced most of the existing figures and disagrees about which trials are even scoreable. | `docs/reports/YYYY-MM-DD-accuracy-reconciliation.md` |
+| **V0.2** | Remove the silent synthetic-keypoint fallback (`web/api/routers/ws_stream.py:143,157`). Opt-in behind `PENDULASTIC_SYNTHETIC_HPE=1`; when active, tag every payload `tracking_status: "synthetic"` and banner it in both clients. Absent the flag, a worker failure closes the socket with an error. **Blocks all further data collection**, IMU or RGB. | PR + regression test |
+| **V0.1b** | **Per-participant bias decomposition.** Report §3 established that a constant offset explains 67.6%/76.0% of RMSE corpus-wide. Re-run it *per participant and per session* rather than pooled: if the offset is stable within a participant but varies between them, it is a mounting/zeroing artifact and V0.3's protocol fix will work. If it varies trial-to-trial within one participant, it will not, and V0.3 needs redesigning before it is recorded. **This is the cheapest possible test of V0.3's core assumption, and it should run before V0.3 is scheduled.** | Report section + decision |
+| **V0.1c** | **Retrospective repeatability.** Compute within-session CV of the composite PT score across each participant's repeated trials on the existing corpus. Gives G0's repeatability criterion a real baseline instead of "not measured", using data already on disk. | Baseline table |
+| **V0.1d** | **Re-run the release-anchored re-zero** across the full corpus under the production pipeline (report §3 tried it and got RMSE roughly flat but trials-under-5° from 2→6). If that tripling holds under production scoring, it is a scoring-path change, not just a diagnostic — and it moves G0's hardest criterion. | Decision: adopt or reject |
+| **V0.4** | IMU-record the 7 existing video-only controls (report §8 priority 1 — zero new recruitment). Re-derive `HEALTHY_REF`; re-verify `PT_HEALTHY_MAX`/`PT_BORDERLINE_MAX`; run the control-sensitivity figure that has never once executed (report §7.2, Fig 9, blocked at n=1 control). | Updated constants + figure |
+
+> Note: `Recordings/`, `OptiTrack_Recordings/` and `data/` are gitignored and do
+> not exist in a fresh clone — 3A runs on the machine holding the corpus.
+
+### 3B. Prospective — the one thing retrospection cannot answer
+
+| ID | Task | Output | Effort |
 |---|---|---|---|
-| **V0.1** | Reconcile the accuracy numbers. One script that emits a single table: manual-annotation RMSE, MediaPipe-automatic RMSE, IMU RMSE, each vs OptiTrack on the *same* trial set, using the **production** `compute_pt_params()`. | `docs/reports/YYYY-MM-DD-accuracy-reconciliation.md` | 1 day |
-| **V0.2** | Remove the silent synthetic fallback. Make `_synthetic_keypoints` opt-in behind an explicit `PENDULASTIC_SYNTHETIC_HPE=1` env flag; when active, tag every payload `tracking_status: "synthetic"` and surface a banner in both clients. Absent the flag, a worker failure closes the socket with an error. | PR + test in `tests/` | 0.5 day |
-| **V0.3** | **Bias-controlled recording session.** The single highest-value experiment in the project (report §3, §8 priority 2). Same participant, same session, two arms: (a) verified rigid mount + strict zero-posture protocol, (b) ordinary mount. All co-recorded with OptiTrack. ≥20 trials per arm. | Report + decision on protocol | 1 session + 2 days analysis |
-| **V0.4** | IMU-record the 7 existing video-only controls (report §8 priority 1 — zero new recruitment). Re-derive `HEALTHY_REF`; re-verify `PT_HEALTHY_MAX` / `PT_BORDERLINE_MAX` against the production pipeline. | Updated constants + sensitivity figure (report Fig 9, which has never run) | 2–3 sessions |
-| **V0.5** | **Bench pendulum check.** Rigid pendulum, known length ⇒ known natural frequency; phone strapped to it; compare measured `f` and decay against the analytic solution and against OptiTrack. Repeat on every device model in the fleet (§6). | `docs/reports/…-bench-validation.md` | 1 day |
-| **V0.6** | Record `mas_extension` (not just collapsed `mas_grade`) going forward, and switch the clinical-correlation target to it (report §7.5). Protocol change, not code. | Updated intake form | ongoing |
+| **V0.3** | **Verified-mount arm.** The existing corpus *is* the ordinary-mount arm — it was recorded that way, and it is exactly the data that produced 14.84°. So this records only the other arm: rigid, verified, non-slipping mount with a strict zero-posture protocol, co-recorded with OptiTrack, ≥20 trials. Half the experiment is already done. | Report + protocol decision | 1 session |
+| **V0.5** | **Bench pendulum check.** Rigid pendulum of known length ⇒ known natural frequency; phone strapped to it; compare measured `f` and decay against the analytic solution and against OptiTrack. Run on every device model in the fleet (§6). Separates *sensor* error from *human-mounting* error, which no human-subject recording can do. | `docs/reports/…-bench-validation.md` | 1 day |
+| **V0.6** | Record `mas_extension` (not just collapsed `mas_grade`) going forward, and switch the clinical-correlation target to it — the pendulum test is an extensor-spasticity probe (report §7.5). Protocol change, not code. | Updated intake form | ongoing |
+
+**The confound to state plainly.** Comparing a newly-recorded verified-mount arm
+against a historical ordinary-mount corpus is *not* a clean within-session A/B:
+different days, different participants, and the AHRS config was re-tuned between
+them (report §2). Two mitigations, in order of preference: (a) re-record a
+paired ordinary-mount arm in the same session for at least a subset of
+participants, which restores the within-session comparison for a few extra
+minutes per participant — **strongly preferred**; (b) failing that, re-run the
+historical corpus through the *current* config so at least the algorithm is held
+constant, and report the remaining participant/session confound as a stated
+limitation rather than letting it sit unnoticed in a delta.
 
 ### Gate G0 — IMU (blocking for Phase 1)
 
-All must hold on the V0.3 verified-mount arm:
+| Criterion | Target | Today | Answerable from existing corpus? |
+|---|---|---|---|
+| Trajectory RMSE vs OptiTrack | ≤ 10.0° mean / 8.0° median | 14.84 / 10.98 | Baseline yes; **target needs V0.3** |
+| Bias-removed residual scatter | ≤ 8.0° mean | 9.71 | **Yes** — V0.1b |
+| Trials under the 5.0° clinical goal | ≥ 50% | 6 of 53 | Baseline yes; V0.1d may move it; target needs V0.3 |
+| ICC(2,1) ≥ 0.75 | on ≥ 4 of 7 parameters | max 0.458 | **Yes** — recomputable on the matched set |
+| Within-session score repeatability | CV ≤ 15% | not measured | **Yes** — V0.1c |
 
-- Trajectory RMSE vs OptiTrack: **mean ≤ 10.0°, median ≤ 8.0°** (today: 14.84 / 10.98).
-- Bias-removed residual scatter: **≤ 8.0° mean** (today: 9.71 — already close; this
-  confirms the bias hypothesis rather than testing it).
-- **≥ 50% of trials under 5.0°** RMSE (today: 6 of 53 after release-anchored re-zeroing).
-- ICC(2,1) ≥ 0.75 on at least **4 of the 7** PT parameters (today: max 0.458).
-- Test–retest: within-session repeatability of the composite PT score,
-  coefficient of variation **≤ 15%** across the 3-trial protocol (R11).
+Three of the five criteria can be evaluated this week. The two that cannot are
+precisely the two the verified-mount protocol is meant to move — which is the
+right division of labour: the retrospective work tells you whether V0.3 is worth
+booking before you book it.
 
-**If G0 fails:** the failure mode is informative, not fatal. Fail on absolute RMSE
-but pass on bias-removed residual ⇒ the problem is protocol/zeroing, iterate on
-V0.3's mount and re-run. Fail on both ⇒ stop and reconsider the modality before
-spending native-app effort.
+**If G0 fails:** the failure mode is informative, not fatal. Fail on absolute
+RMSE but pass on bias-removed residual ⇒ the problem is protocol/zeroing, iterate
+on V0.3's mount and re-run. Fail on both ⇒ stop and reconsider the modality
+before spending native-app effort. Fail V0.1b specifically (offset varies
+*within* a participant) ⇒ the bias is not a mounting artifact, V0.3 as designed
+will not fix it, and the sensor-vs-mount question moves to V0.5's bench rig
+before any more human sessions are booked.
 
-### Gate G0-RGB — optional, non-blocking
+### Gate G0-RGB — deferred to Phase 4, not cancelled
 
-The RGB track may re-enter the scoring path only if, on the same trial set,
-automatic MediaPipe RMSE ≤ 10° and its PT-parameter effect-size signs match
-OptiTrack's (report §6a found them *inverted* today). Until then the RN app
-carries a permanent, non-dismissible "research capture only — not a clinical
-measurement" banner.
-
----
+The RGB track re-enters the scoring path only if, on the same trial set,
+automatic MediaPipe RMSE ≤ 10° **and** its PT-parameter effect-size signs match
+OptiTrack's — they are *inverted* today (report §6a), which is a more serious
+failure than the RMSE number alone implies. Until then the RN app carries its
+"research capture only" banner. See §9.
 
 ## 4. Phase 1 — On-device shadow study (the existing plan's KTD3 gate, made concrete)
 
@@ -379,10 +425,45 @@ claim an Ashworth grade.
   policy (now answered by §6's audit).
 - `/design-consultation` for the visual system (KTD6, still deferred and still
   unstarted).
+- **Recruit across the full MAS severity range** (report §8 priority 3). The
+  current MS cohort tops out at MAS 1+ and contains *zero* trials at MAS ≥ 2, so
+  no claim about behaviour at moderate-to-severe spasticity is possible at any
+  sample size. This is the one gap neither the existing corpus nor a better
+  protocol can close — only recruitment can.
 
 ---
 
-## 9. Verification Contract
+## 9. Phase 4 — RGB re-entry (the "then RGB" half of D1)
+
+Runs after the IMU app ships. It inherits a validated scoring core, a working
+export format, a device fleet, and CI — which is the whole argument for
+sequencing it second rather than in parallel.
+
+- **R4.1 — Harvest the co-recorded video.** Every Phase 0–3 IMU session was
+  co-recorded with OptiTrack and, where the RN app was used, with video. That
+  corpus is the camera track's validation set, obtained for free — provided V0.2
+  landed first, so no frame of it is contaminated with synthetic keypoints.
+- **R4.2 — Attack the 36° directly.** V0.1's reconciliation will have already
+  separated annotation error from model error. Whichever term dominates decides
+  the work: annotation-dominated ⇒ labelling protocol and IK constraints;
+  model-dominated ⇒ model selection and preprocessing, where the repo already has
+  substantial sweep tooling (`sweep_mediapipe_preprocessing.py`,
+  `run_new_models_evaluate.py`, the 8-model benchmark).
+- **R4.3 — Fix the sign inversion before the RMSE.** Report §6a found IMU and
+  MediaPipe PT parameters pointing the *wrong direction* relative to OptiTrack on
+  nearly every metric. A camera pipeline that reads a severe leg as mild is worse
+  than one that is merely imprecise, and no amount of RMSE improvement addresses
+  it. This is the real G0-RGB blocker.
+- **R4.4 — Decide the deployment shape.** The RN app is a thin client today; an
+  on-device camera pipeline is a different architecture. Whether RGB ships as
+  on-device inference or keeps a backend is a decision for this phase, informed by
+  what the IMU app's on-device experience actually taught us.
+- **R4.5 — Then the same gates.** G0-RGB, then an RGB shadow study mirroring
+  Phase 1, then the same eight test layers. No new plan structure required.
+
+---
+
+## 10. Verification Contract
 
 | Scope | Command | Proves |
 |---|---|---|
@@ -393,7 +474,7 @@ claim an Ashworth grade.
 | iOS | `xcodebuild test` | L4/L5 |
 | Accuracy | `python evaluate_all_participants.py` + the V0.1 reconciliation script | G0 thresholds |
 
-## 10. Definition of Done
+## 11. Definition of Done
 
 - G0 and G1 both passed, each with a dated report in `docs/reports/` carrying the
   actual numbers against the thresholds in §3 and §4 — not a narrative summary.
@@ -407,22 +488,30 @@ claim an Ashworth grade.
 - Every claim in the README and the project brief matches a number in a dated
   report, including the 4.19° / 36.0° reconciliation.
 
-## 11. Risks
+## 12. Risks
 
 | Risk | Mitigation |
 |---|---|
-| **G0 fails** — the bias is not fixable by protocol | Fail-fast by design: it costs one recording session and two Rust modules, not two native app shells. The V0.5 bench check tells us whether the residual is sensor or mounting before we blame the wrong one. |
-| Participant supply gates the science, not the code | Phase 0's V0.4 needs zero new recruitment (7 controls already enrolled, video-only). Build work (Phase 2) proceeds in parallel with recruitment once G1 passes. |
+| **G0 fails** — the bias is not fixable by protocol | Fail-fast by design, and now cheaper still: §3A's retrospective work tests V0.3's core assumption on data already on disk, so a doomed protocol experiment is caught before it is booked. If it is booked and still fails, the cost is one session and two Rust modules, not two native app shells. V0.5's bench rig separates sensor error from mounting error so we don't blame the wrong one. |
+| Participant supply gates the science, not the code | §3A needs no recruitment at all (existing OptiTrack-validated corpus), and V0.4 needs none either (7 controls already enrolled, video-only). Only the MAS ≥ 2 severity gap (§8) genuinely requires new recruitment, and build work proceeds in parallel with it once G1 passes. |
 | Rust + UniFFI is new to this all-Python repo | Confined to a 745-line core with golden fixtures pinning it to a reference implementation that already works. |
 | Device fleet unavailable | §6's fleet is the floor; a two-device (one iOS, one Android) start is workable if the supported-device list is correspondingly narrow and stated. |
-| The RGB track quietly rots | Explicit: it keeps its banner, keeps its capture role, and re-enters scoring only via G0-RGB. It is not being deleted and it is not being trusted. |
+| The RGB track quietly rots — "then RGB" becomes "never RGB" | Phase 4 (§9) is a real phase with real tasks, not a footnote, and it is fed continuously: every IMU session in Phases 0–3 is co-recorded video, so the camera track's validation corpus grows on the IMU track's schedule. Its banner and capture role hold in the meantime. |
 
-## 12. Open questions for the owner
+## 13. Open questions for the owner
 
-1. **D1** — confirm the IMU-first recommendation, or redirect to RGB-first.
-2. Is OptiTrack lab time available for the V0.3 controlled session, and when?
-   It is the critical path for everything downstream.
-3. Which devices are actually in hand today (§6)? The fleet list is a
-   recommendation, not an inventory.
-4. Apple Developer / Firebase account ownership (P3) — who holds it, and is the
-   lead time started?
+*Resolved 2026-08-24:* modality order (**D1** — IMU first, then RGB) and ground-truth
+availability (**an OptiTrack-validated corpus already exists**, restructuring Phase 0
+into §3A retrospective and §3B prospective).
+
+Still open:
+
+1. Which devices are actually in hand today (§6)? The fleet list is a
+   recommendation, not an inventory — and V0.5's bench check needs to run on each
+   of them.
+2. Apple Developer / Firebase account ownership (P3) — who holds it, and is the
+   lead time started? This is the item most likely to block a build at the
+   moment the build is finally ready.
+3. For V0.3: can a paired ordinary-mount arm be recorded in the same session as
+   the verified-mount arm (§3B's mitigation (a))? It costs a few extra minutes
+   per participant and removes the historical-baseline confound entirely.
