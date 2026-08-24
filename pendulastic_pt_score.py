@@ -110,132 +110,110 @@ HEALTHY_REF = {
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
-# RECALIBRATED (2026-08-24) against the corrected scoring pipeline (the two
-# compute_pt_params counting fixes + the HEALTHY_REF recalibration above),
-# reusing commit 9893a01's documented cohort and methodology: n=4 control
-# (P2,8,9,12), n=3 MS (P11,13,14), pre/baseline trials only, both legs
-# pooled, per-trial (not per-participant) aggregation;
-#   PT_HEALTHY_MAX    = control 75th percentile
-#   PT_BORDERLINE_MAX = midpoint between PT_HEALTHY_MAX and the MS median
-# Result: control n=30 trials median=0.064 p75=0.1492; MS n=25 median=0.4427;
-# per-trial Mann-Whitney p=0.0000078. The boundaries barely moved
-# (0.150->0.1492, 0.299->0.2959, both under 1%) even though HEALTHY_REF
-# shifted substantially, because these are derived from the SEPARATION
-# between the two populations and the fixes moved both populations together.
-# For contrast, the same computation on the pre-fix pipeline gives
-# 0.2083/0.3763 -- so the fixes did move these; the previously-committed
-# values simply already sat near where the corrected pipeline puts them.
+# RECALIBRATED (2026-08-24) on the MAS-GRADE axis, replacing the MS-vs-Control
+# diagnosis axis every prior calibration used. That change of axis is the
+# substantive one here; the arithmetic is unchanged:
+#   PT_HEALTHY_MAX    = MAS-0 75th percentile
+#   PT_BORDERLINE_MAX = midpoint between PT_HEALTHY_MAX and the MAS>=1 median
+# Unit of observation is the participant-LEG (median of its baseline trials),
+# not the trial -- see the aggregation note at the end for why.
 #
-# ─────────────────────────────────────────────────────────────────────────
-# UNRESOLVED (2026-08-24): do not treat the p-value above as evidence of a
-# validated separation. Two findings, the first about what these boundaries
-# are calibrated AGAINST and the second about the statistic itself:
+# Why the axis changed: PT7 measures spasticity SEVERITY, MS is a DIAGNOSIS,
+# and this study's MS arm genuinely spans the full severity range including
+# participants with no measurable spasticity (user-confirmed; corroborated by
+# mas_scores.csv, where P5 is graded MAS 0 on both legs at every timepoint and
+# P13 reaches MAS 0 by 1-week-post). An MS participant graded MAS 0 SHOULD
+# score like a control -- their leg really does swing like one. Calibrating a
+# severity threshold against a diagnosis label therefore mislabels genuine
+# mild cases as calibration failures, and it was the reason the previous
+# cohort appeared to "separate" cleanly at n=7 (it happened to hold the two
+# most-affected participants, P13 and P14) yet appeared to collapse when
+# every metadata-classifiable participant was included.
 #
-#  (a) MS-vs-Control is the wrong grouping for a spasticity threshold, so
-#      the apparent "separation" (and its apparent collapse on the full
-#      cohort) is largely an artifact of the grouping, not of the score.
-#      PT7 measures spasticity SEVERITY; MS is a diagnosis, and this study's
-#      MS arm genuinely spans the full severity range including participants
-#      with no measurable spasticity at all (user-confirmed, and corroborated
-#      by mas_scores.csv: P5 is graded MAS 0 on both legs at every timepoint,
-#      P4's right leg MAS 0, P13 MAS 0 at 1-week-post, P15's left MAS 0). An
-#      MS participant with MAS 0 SHOULD score like a control -- their leg
-#      really does swing like one. So the fact that recomputing on the full
-#      metadata cohort (n=8 control, n=8 MS) drives the MS median onto the
-#      control p75 (0.1553 vs 0.1537, per-trial p=0.00084) is expected
-#      physiological overlap, NOT evidence of a broken score. The n=7 arm
-#      looked cleanly separated mainly because it happened to contain the
-#      two most-affected participants (P13 0.4593, P14 0.9966).
+# Result, MAS 0 vs MAS>=1 across participant-legs:
+#   MAS 0   n=23  median=0.0771  p75=0.1709
+#   MAS>=1  n= 6  median=0.5346
+#   Mann-Whitney p=0.00196
+# Stable under every reasonable variation tried: dropping the ASSUMED-0
+# controls gives 0.1573/0.3459 (p=0.008), and dropping the imputed legs too
+# gives 0.1573/0.3459 (p=0.067). PT_HEALTHY_MAX stays in 0.157-0.171 and
+# PT_BORDERLINE_MAX in 0.346-0.353 throughout.
 #
-#      Grouped by clinician MAS grade instead -- the severity axis PT7
-#      actually targets -- the direction is right but the calibration looks
-#      off. Real (non-ASSUMED) grades, per participant-leg:
-#          MAS 0   n=10  median 0.2054   (P5 both, P4r, P13 both, P15l)
-#          MAS 1   n= 7  median 0.5060
-#          MAS 1+  n= 1         0.0532   (P4 left -- see below)
-#      Calibrating the same way against MAS 0 vs MAS>=1 would put
-#      PT_HEALTHY_MAX at ~0.36-0.45 rather than the 0.1492 committed here,
-#      i.e. the current threshold may be 2-3x too aggressive and flag
-#      mild-or-absent spasticity as impaired. Not adopted yet: n is small
-#      (18 participant-legs), the MAS 0 pool is 17/27 ASSUMED rather than
-#      clinician-assessed, and it is contaminated by P2's duo artifact
-#      (a MAS 0 row scoring 1.8084). mas_validation.py already treats
-#      PT-vs-MAS as the clinically meaningful validity claim and keeps it
-#      deliberately separate from device-vs-device agreement; these zone
-#      boundaries should probably be rebuilt on that axis.
+# Versus the prior diagnosis-axis values (0.1492/0.2959, committed earlier
+# the same day): healthy max +15%, borderline max +19%. An earlier revision
+# of this note claimed the diagnosis-axis threshold might be "2-3x too
+# aggressive"; that was WRONG and is retracted -- it came from a looser
+# pairing that let post-treatment conditions and P2's duo artifact into the
+# MAS-0 pool. The real gap is ~15-19%.
 #
-#      One genuine anomaly worth clinical review regardless: P4's LEFT leg
-#      is graded MAS 1+, the most severe grade in the dataset, yet scores
-#      PT7 0.0532 -- the lowest of any graded leg. That one is a real
-#      score-vs-clinician contradiction, unlike the MAS 0 cases above.
+# THREE ASSUMPTIONS THIS CALIBRATION RESTS ON. None are measurements:
 #
-#  (b) The headline p-value is an artifact of per-trial aggregation. Those
-#      30 control / 25 MS trials come from only 4 / 3 participants, so
-#      treating them as independent observations inflates significance.
-#      Aggregating to per-participant medians first: documented cohort
-#      p=0.1143, full cohort p=0.1893 -- neither significant. And at 4 vs 3,
-#      PERFECT separation still only reaches two-sided p=0.0571 (2/C(7,3)),
-#      so this cohort CANNOT produce a significant participant-level result
-#      no matter what the data shows. generate_pt_score_critique.py already
-#      argues against this methodology on the same grounds.
+#  1. P4's left/right MAS grades were transposed, and mas_scores.csv has been
+#     corrected accordingly (left 1+ -> 0, right 0 -> 1+; see that file's own
+#     notes column, and the mas_scores.csv.bak-2026-08-24-pre-P4-swap backup,
+#     since that file is gitignored and has no version history). Operator
+#     judgment, supported by biomechanics rather than by re-checking the
+#     source clinical record: as recorded, P4's left leg scored healthy on
+#     all 7 PT params (N=3.5, R2n 1.01-1.17 against a 1.03 healthy ref,
+#     area_ratio 0.015-0.074) while carrying the dataset's most severe grade,
+#     and its right leg showed a damped spastic signature (N=1.0-1.5,
+#     R2n 0.744, area_ratio 0.52-0.54) while graded MAS 0. Correcting it
+#     improves separation ~17x (p 0.033 -> 0.002) and removes a degenerate
+#     inverted band (BORDERLINE_MAX below HEALTHY_MAX) that appeared under
+#     one imputation. NOTE the evidence cannot distinguish "MAS entry
+#     transposed" from "recordings transposed" -- they are observationally
+#     identical here, and only the former was acted on. Verify against the
+#     original clinical record before relying on P4 for anything else.
 #
-# The per-trial aggregation is therefore load-bearing for the headline p and
-# should not be. Taken together: (a) says these boundaries are calibrated
-# against the wrong axis (diagnosis rather than severity) and are likely set
-# too low as a result, and (b) says the statistic that appears to justify
-# them cannot bear that weight at this n. The next step is rebuilding them on
-# the MAS-grade axis once enough clinician-assessed grades exist -- mostly a
-# data-collection problem, not an analysis one (today: 18 graded
-# participant-legs, only 11 of them clinician-assessed rather than ASSUMED,
-# and 2 more still pending at mas_grade=-1). Until then these are a
-# provisional working threshold, not a validated clinical cutoff.
-# ─────────────────────────────────────────────────────────────────────────
+#  2. P11 and P18 (both legs each) have no MAS grade at all and are imputed
+#     MAS 0. The data supports 0 over 1: imputing 0 gives p=0.002-0.03 across
+#     configurations while imputing 1 gives p=0.07-0.86 and never reaches
+#     significance, because P18 scores 0.0051/0.0431 -- biomechanically
+#     unimpaired, so placing it in the spastic group destroys the grouping.
+#     Supporting, not proving: a genuinely-spastic leg could in principle
+#     score low. P17 is also ungraded (mas_grade=-1, pending) but has no
+#     scoreable trials, so it cannot affect this either way.
 #
-# P2's pre_duo trials are EXCLUDED from the control pool (its pre_solo trials
-# are kept). Duo sessions record both legs' markers together and are already
-# documented elsewhere in this file as unreliable for exactly this reason
+#  3. All 15 control legs are ASSUMED MAS 0, not clinician-assessed
+#     (assessed_by="ASSUMED" in mas_scores.csv). Reasonable for unaffected
+#     volunteers and near-definitional, but it is still an assumption, and it
+#     supplies 15 of the 23 MAS-0 observations. Excluding them moves
+#     PT_HEALTHY_MAX only 0.1709 -> 0.1573, so the calibration does not hinge
+#     on it.
+#
+# STILL PROVISIONAL, and the aggregation caveat that sank the previous
+# calibration applies here too, only less severely. 29 participant-legs from
+# 15 participants is small, and the MAS>=1 arm is just 6 legs from 4
+# participants (P4r, P13 both, P14 both, P15r). Legs within a participant are
+# not independent, so even the per-leg p=0.00196 is optimistic; a strict
+# per-participant test would have less power still. Treat these as a
+# provisional working threshold, NOT a validated clinical cutoff. The path to
+# a real one is more clinician-assessed grades, especially at MAS>=1 and from
+# participants not already represented -- a data-collection problem, not an
+# analysis one.
+#
+# P2's pre_duo trials are EXCLUDED throughout (its pre_solo trials are kept).
+# Duo sessions record both legs' markers together and are documented
+# elsewhere in this file as unreliable for exactly that reason
 # ("area_ratio inflated by marker mixing"); those four trials score PT7
-# 1.58-1.87, far outside any plausible control range, i.e. artifact rather
-# than physiology. Including them would raise PT_HEALTHY_MAX ~24% to 0.1852
-# and widen the healthy band on the strength of known-bad data.
+# 1.58-1.87, far outside any plausible unaffected range.
 #
-# Two caveats on this recalibration, both about reproducibility rather than
-# the arithmetic:
-#  1. The 2026-08-10 numbers below could only be PARTIALLY reproduced today:
-#     control p75 (0.1492 vs 0.150) and MS median (0.4427 vs 0.448) land
-#     close, but control median does not (0.064 vs 0.111). Recordings/ and
+# Data-hygiene trap for anyone editing the baseline filter: P16's condition
+# string is literally "control", meaning that participant's baseline session,
+# NOT a group label. A filter of the shape startswith("pre") or "baseline"
+# silently drops all 8 of its very-low trials (0.0068-0.0221) and biases the
+# MAS-0 distribution upward. This has already caught one reviewer.
+#
+# Prior calibrations, for reference:
+#   2026-08-24 (diagnosis axis, corrected pipeline): 0.1492 / 0.2959
+#   2026-08-10 (diagnosis axis, pre-fix pipeline):   0.150  / 0.299
+#     -- control median PT=0.111, 75th-pct=0.150, MS median PT=0.448.
+#     Those exact numbers are no longer reproducible: Recordings/ and
 #     OptiTrack_Recordings/ are gitignored live data that has changed since
-#     then (P13/P14 gained post-treatment sessions, P15-P18 were recorded),
-#     so an exact byte-for-byte reproduction is not possible from the repo
-#     at any code revision -- this is data drift, not a scoring discrepancy.
-#  2. participant_groups.json, the registry the 2026-08-10 note pointed at for
-#     cohort membership, no longer exists (scrubbed from git history, then
-#     removed from disk). This turns out not to matter: classify_participant()
-#     reads each participant's own metadata.json FIRST and only falls back to
-#     the registry, and 17 of the 18 dirs under Recordings/ classify from
-#     metadata alone (the exception, P001_msparticipant2, has no diagnosis
-#     field). The deleted registry held a single entry, {"5": "MS"}, which
-#     merely duplicated P5's own metadata.json. So cohort membership is
-#     recoverable from the recordings themselves, not dependent on a commit
-#     message.
-#
-# Still PROVISIONAL and low-powered: n=7 participants total, same caveat as
-# HEALTHY_REF. Note the earlier "replace with the full cohort once available"
-# advice is now known to be insufficient on its own -- the full cohort IS
-# available and produces the degenerate result described in (a) above, so
-# simply widening it does not fix the problem.
-#
-# Data-hygiene trap for anyone editing the baseline filter above: P16's
-# condition string is literally "control", meaning "this participant's
-# baseline session", NOT a group label. A filter of the shape
-# startswith("pre") or "baseline" silently drops all 8 of P16's trials --
-# every one of them very low (0.0068-0.0221) -- which quietly biases the
-# control distribution upward. This has already caught one reviewer.
-#
-# Prior (2026-08-10, pre-fix pipeline): control median PT=0.111,
-# 75th-pct=0.150; MS median PT=0.448; Mann-Whitney p=0.0001.
-PT_HEALTHY_MAX    = 0.1492  # control 75th-pct (n=30 trials); below this = healthy
-PT_BORDERLINE_MAX = 0.2959  # midpoint between PT_HEALTHY_MAX and the MS median
+#     (P13/P14 gained post-treatment sessions, P15-P18 were recorded), so
+#     this is data drift rather than a scoring discrepancy.
+PT_HEALTHY_MAX    = 0.1709  # MAS-0 75th-pct (n=23 legs); below this = healthy
+PT_BORDERLINE_MAX = 0.3528  # midpoint between PT_HEALTHY_MAX and the MAS>=1 median
 
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
