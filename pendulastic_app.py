@@ -4457,10 +4457,21 @@ class App(tk.Tk):
     # Teardown
     # ------------------------------------------------------------------
     def on_close(self) -> None:
-        self._imu_poll_stop.set()
-        if self._imu_poll_thread:
+        self.destroy()
+
+    def destroy(self) -> None:
+        """Full teardown. Lives here rather than in on_close() so that every
+        caller gets it -- on_close() only fires for WM_DELETE_WINDOW, and a
+        plain destroy() used to leak the IMU server thread and its port.
+        """
+        if getattr(self, "_teardown_done", False):
+            return
+        self._teardown_done = True
+        if getattr(self, "_imu_poll_stop", None) is not None:
+            self._imu_poll_stop.set()
+        if getattr(self, "_imu_poll_thread", None):
             self._imu_poll_thread.join(timeout=0.5)
-        if self._camera is not None:
+        if getattr(self, "_camera", None) is not None:
             writer = self._camera.detach_writer()
             if writer is not None:
                 try:
@@ -4473,7 +4484,18 @@ class App(tk.Tk):
                 _imu.stop()
             except Exception:
                 pass
-        self.destroy()
+        # Drop pending after() callbacks. _tick reschedules itself every 50ms,
+        # so without this a timer outlives the interpreter and Tk reports
+        # 'invalid command name "..._tick"' on the way out.
+        try:
+            for aid in self.tk.call("after", "info"):
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        super().destroy()
 
 
 # ---------------------------------------------------------------------------

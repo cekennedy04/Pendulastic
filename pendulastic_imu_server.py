@@ -654,6 +654,10 @@ _shutdown   = False                 # True only for a deliberate stop()
 _RETRY_MIN_S = 1.0
 _RETRY_MAX_S = 20.0
 
+# How long stop() waits for the supervisor to release the port. The backoff
+# sleep polls _shutdown every 0.1s, so a healthy thread exits well inside this.
+_STOP_JOIN_S = 2.0
+
 # ── Connection keepalive ─────────────────────────────────────────────────────
 # The app opens one socket per enabled sensor. A sensor that is switched on but
 # not producing (or one throttled to a slow interval) leaves its socket quiet,
@@ -1775,8 +1779,13 @@ def bind_error() -> Optional[str]:
 
 
 def stop():
-    """Deliberate shutdown: ends the supervisor rather than triggering a retry."""
-    global _shutdown
+    """Deliberate shutdown: ends the supervisor rather than triggering a retry.
+
+    Blocks until the port is actually released (or _STOP_JOIN_S elapses), so a
+    caller that starts a new server afterwards does not race the old one for
+    the port. Only ever called from app shutdown paths, never mid-recording.
+    """
+    global _shutdown, _thread
     _shutdown = True
     stop_recording()
     if _loop is not None and _stop_evt is not None:
@@ -1784,6 +1793,14 @@ def stop():
             _loop.call_soon_threadsafe(_stop_evt.set)
         except RuntimeError:
             pass
+    t = _thread
+    if t is not None and t.is_alive():
+        t.join(timeout=_STOP_JOIN_S)
+    # Clear the handle only on a confirmed exit. If the join timed out the
+    # thread still owns the port, and start()'s is_alive() guard is the only
+    # thing preventing a second server binding on top of it.
+    if t is not None and not t.is_alive():
+        _thread = None
 
 
 def reset_devices():
