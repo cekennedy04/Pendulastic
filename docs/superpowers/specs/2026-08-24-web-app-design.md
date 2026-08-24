@@ -1,7 +1,8 @@
 # Pendulastic IMU App — Web Platform Design Spec
 
 **Date:** 2026-08-24
-**Status:** Sections 1–4 settled; Sections 5–8 drafted, not yet reviewed
+**Status:** Sections 1–8 reviewed and settled (2026-08-24). Amends D2 of the
+validation plan — see §1.5.
 **Extends:** `docs/plans/2026-08-21-001-feat-phone-imu-pendulum-app-plan.md` (what the app is)
 **Extends:** `docs/plans/2026-08-24-001-plan-mobile-app-validation-build-test.md` (what must be true before building it)
 **Supersedes:** KTD2, KTD5, KTD8 of the 2026-08-21 plan (see §1)
@@ -83,14 +84,14 @@ delivery, with zero inter-sample `dt` outside `(0, 500) ms` and zero `dt == 0`,
 over a full trial. That is a number with a reason attached, and iOS Safari meets
 it with margin.
 
-### 1.5 Sequencing: a proposed amendment to D2
+### 1.5 Sequencing: an approved amendment to D2
 
 D2 states that validation gates block build work. That rule was priced for
 *native*: two app shells, a UniFFI layer, a five-device fleet, and store
 distribution — an expensive bet on an instrument that has not passed G0.
 
 A web app is one artifact built on a crate that already exists and is tested.
-**Proposal:** the web build proceeds **in parallel with Phase 0**, under a hard
+**Settled — amends D2:** the web build proceeds **in parallel with Phase 0**, under a hard
 rule that no clinical claim is made and no participant-facing use occurs until
 G0 passes. G0 keeps its authority over conclusions; it stops charging native
 prices for native caution.
@@ -196,6 +197,24 @@ This makes installation load-bearing, not cosmetic:
 **This is the single assumption in this spec that has not been verified.** It
 requires an installed PWA left untouched on a real iPhone for 8+ days, with data
 confirmed intact afterwards. Until that runs, treat durability as unproven.
+
+### 3.1a The durability stance: IndexedDB is a cache, export is the archive
+
+Because the exemption is a platform behaviour that Apple can change in any iOS
+release, the design does not depend on it being permanent:
+
+- **IndexedDB is treated as a volatile cache.** Losing it must cost a
+  convenience, never a record.
+- **The exported file is the archive of record.** Everything needed to
+  reconstruct a trial — raw stream, parameters, `algorithm_version` — is in it
+  (§3.4), so a wiped device is recoverable by re-import rather than lost.
+- **Sessions are export-gated.** A session cannot be closed or cleared until it
+  has been exported at least once. This is the concrete mechanism behind
+  Approach B, and it is what makes the two statements above true in practice
+  rather than in principle.
+
+The Home-Screen install gate above still applies; it reduces how often the
+fail-safe is needed, and it is not what the design rests on.
 
 ### 3.2 Stores
 
@@ -421,7 +440,7 @@ bases. Velocity is derived at read time.
 
 ---
 
-## 5. UI state machine *(draft)*
+## 5. UI state machine
 
 ```
 Idle ─► Positioning ─► Holding ─► Ready ─► Released ─► Settling
@@ -461,7 +480,7 @@ session completion on export (Approach B) is not yet specified.
 
 ---
 
-## 6. Test strategy *(draft)*
+## 6. Test strategy
 
 Remapping the validation plan's L1–L8 off native onto web:
 
@@ -484,7 +503,7 @@ captures reusable as regression fixtures.
 
 ---
 
-## 7. Build, CI, and distribution *(draft)*
+## 7. Build, CI, and distribution
 
 **Build.** `crate-type = ["cdylib", "rlib"]`, `wasm-bindgen`, target
 `wasm32-unknown-unknown`. The crate has an **empty `[dependencies]` table**, so
@@ -508,7 +527,7 @@ tracks in TODOS.md and does not resolve.
 
 ---
 
-## 8. What stays gated behind G0 *(draft)*
+## 8. What stays gated behind G0
 
 Per §1.5, the build proceeds in parallel with Phase 0 validation. What does
 **not** proceed:
@@ -535,7 +554,8 @@ will actually ship rather than a harness that will be discarded.
    argument rests on it. Highest priority.
 2. **Hold-drift threshold is uncalibrated** (§4.2). Needs shadow-study data.
 3. **Hosting and data governance** (§7) — unresolved, and inherited.
-4. **U10's export gating** (§5) — how a session refuses to close unexported.
+4. ~~U10's export gating~~ — **resolved** in §3.1a: a session cannot close
+   until exported once. What remains is the UI affordance in §5, not the rule.
 5. **Android/Chrome sample rate is unmeasured.** iOS is pinned at 60 Hz; Android
    varies by OEM, which is what the validation plan's fleet section was right to
    worry about even though its 90 Hz number was wrong.
