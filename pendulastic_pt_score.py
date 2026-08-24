@@ -80,12 +80,10 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # note below for the earlier history and the
 # n=7-total-participants power caveat, which still applies here.
 #
-# PT_HEALTHY_MAX/PT_BORDERLINE_MAX below were NOT recomputed against this
-# new HEALTHY_REF -- they're still the 2026-08-10 PT7-distribution
-# boundaries, now stale relative to the shifted PT7 scale this HEALTHY_REF
-# produces. Recalibrating those is a separate, bigger statistical call
-# (distribution boundaries, not a single per-parameter median) and needs
-# its own deliberate pass, not a silent side effect of this bug fix.
+# PT_HEALTHY_MAX/PT_BORDERLINE_MAX below have since been recomputed against
+# this new HEALTHY_REF in their own 2026-08-24 pass -- see their note. They
+# barely moved (both under 1%), because they measure the SEPARATION between
+# the control and MS populations and these fixes shifted both together.
 #
 # PROVISIONAL (2026-08-10): recalibrated after fixing three compute_pt_params
 # bugs (release detection firing during a detrend artifact, whole-trial
@@ -112,13 +110,105 @@ HEALTHY_REF = {
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
-# PROVISIONAL (2026-08-10): control median PT=0.111, 75th-pct=0.150;
-# MS median PT=0.448; Mann-Whitney p=0.0001. Same n=7 caveat as HEALTHY_REF.
-# STALE as of the 2026-08-21 HEALTHY_REF recalibration above -- these
-# boundaries were fit against the pre-fix PT7 distribution and have not
-# been recomputed against the new one. Needs its own recalibration pass.
-PT_HEALTHY_MAX    = 0.150  # covers control 75th-pct; below this = healthy
-PT_BORDERLINE_MAX = 0.299  # midpoint of gap between populations
+# RECALIBRATED (2026-08-24) against the corrected scoring pipeline (the two
+# compute_pt_params counting fixes + the HEALTHY_REF recalibration above),
+# reusing commit 9893a01's documented cohort and methodology: n=4 control
+# (P2,8,9,12), n=3 MS (P11,13,14), pre/baseline trials only, both legs
+# pooled, per-trial (not per-participant) aggregation;
+#   PT_HEALTHY_MAX    = control 75th percentile
+#   PT_BORDERLINE_MAX = midpoint between PT_HEALTHY_MAX and the MS median
+# Result: control n=30 trials median=0.064 p75=0.1492; MS n=25 median=0.4427;
+# per-trial Mann-Whitney p=0.0000078. The boundaries barely moved
+# (0.150->0.1492, 0.299->0.2959, both under 1%) even though HEALTHY_REF
+# shifted substantially, because these are derived from the SEPARATION
+# between the two populations and the fixes moved both populations together.
+# For contrast, the same computation on the pre-fix pipeline gives
+# 0.2083/0.3763 -- so the fixes did move these; the previously-committed
+# values simply already sat near where the corrected pipeline puts them.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# UNRESOLVED (2026-08-24): the control-vs-MS separation these boundaries
+# encode may be a cohort-selection artifact. Do not treat the p-value above
+# as evidence of a validated separation. Two independent findings:
+#
+#  (a) The separation does not survive the full cohort. Every participant
+#      under Recordings/ classifiable from metadata.json gives n=8 control
+#      (P2,6,7,8,9,10,12,16) and n=8 MS (P4,5,11,13,14,15,17,18 -- P17
+#      contributes no qualifying trials). Recomputed on that set: control
+#      n=57 p75=0.1537, MS n=49 median=0.1553, per-trial p=0.00084. The MS
+#      median lands ON TOP of the control 75th percentile, collapsing the
+#      borderline band to 0.0016 wide (0.1537 -> 0.1545) -- a degenerate,
+#      unusable calibration, which is why the n=7 values are kept here.
+#      Per-participant medians show why the n=7 arm separates and the full
+#      one does not: the documented MS arm is P11 0.1034, P13 0.4593,
+#      P14 0.9966, i.e. carried by P13/P14, while every MS participant it
+#      omits scores in control range (P4 0.1299, P5 0.1022, P15 0.0916,
+#      P18 0.0072 -- below every control but P16). Two controls also score
+#      high: P2 0.2470, P6 0.3758.
+#
+#  (b) The headline p-value is an artifact of per-trial aggregation. Those
+#      30 control / 25 MS trials come from only 4 / 3 participants, so
+#      treating them as independent observations inflates significance.
+#      Aggregating to per-participant medians first: documented cohort
+#      p=0.1143, full cohort p=0.1893 -- neither significant. And at 4 vs 3,
+#      PERFECT separation still only reaches two-sided p=0.0571 (2/C(7,3)),
+#      so this cohort CANNOT produce a significant participant-level result
+#      no matter what the data shows. generate_pt_score_critique.py already
+#      argues against this methodology on the same grounds.
+#
+# The per-trial aggregation is therefore load-bearing for the headline p and
+# should not be. Resolving this means determining whether the low-scoring MS
+# participants (P18, P15, P5, P11, P4) are data-quality artifacts or genuine
+# physiological overlap -- a clinical question, not an arithmetic one. Until
+# then these boundaries are a provisional working threshold, not a validated
+# clinical cutoff.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# P2's pre_duo trials are EXCLUDED from the control pool (its pre_solo trials
+# are kept). Duo sessions record both legs' markers together and are already
+# documented elsewhere in this file as unreliable for exactly this reason
+# ("area_ratio inflated by marker mixing"); those four trials score PT7
+# 1.58-1.87, far outside any plausible control range, i.e. artifact rather
+# than physiology. Including them would raise PT_HEALTHY_MAX ~24% to 0.1852
+# and widen the healthy band on the strength of known-bad data.
+#
+# Two caveats on this recalibration, both about reproducibility rather than
+# the arithmetic:
+#  1. The 2026-08-10 numbers below could only be PARTIALLY reproduced today:
+#     control p75 (0.1492 vs 0.150) and MS median (0.4427 vs 0.448) land
+#     close, but control median does not (0.064 vs 0.111). Recordings/ and
+#     OptiTrack_Recordings/ are gitignored live data that has changed since
+#     then (P13/P14 gained post-treatment sessions, P15-P18 were recorded),
+#     so an exact byte-for-byte reproduction is not possible from the repo
+#     at any code revision -- this is data drift, not a scoring discrepancy.
+#  2. participant_groups.json, the registry the 2026-08-10 note pointed at for
+#     cohort membership, no longer exists (scrubbed from git history, then
+#     removed from disk). This turns out not to matter: classify_participant()
+#     reads each participant's own metadata.json FIRST and only falls back to
+#     the registry, and 17 of the 18 dirs under Recordings/ classify from
+#     metadata alone (the exception, P001_msparticipant2, has no diagnosis
+#     field). The deleted registry held a single entry, {"5": "MS"}, which
+#     merely duplicated P5's own metadata.json. So cohort membership is
+#     recoverable from the recordings themselves, not dependent on a commit
+#     message.
+#
+# Still PROVISIONAL and low-powered: n=7 participants total, same caveat as
+# HEALTHY_REF. Note the earlier "replace with the full cohort once available"
+# advice is now known to be insufficient on its own -- the full cohort IS
+# available and produces the degenerate result described in (a) above, so
+# simply widening it does not fix the problem.
+#
+# Data-hygiene trap for anyone editing the baseline filter above: P16's
+# condition string is literally "control", meaning "this participant's
+# baseline session", NOT a group label. A filter of the shape
+# startswith("pre") or "baseline" silently drops all 8 of P16's trials --
+# every one of them very low (0.0068-0.0221) -- which quietly biases the
+# control distribution upward. This has already caught one reviewer.
+#
+# Prior (2026-08-10, pre-fix pipeline): control median PT=0.111,
+# 75th-pct=0.150; MS median PT=0.448; Mann-Whitney p=0.0001.
+PT_HEALTHY_MAX    = 0.1492  # control 75th-pct (n=30 trials); below this = healthy
+PT_BORDERLINE_MAX = 0.2959  # midpoint between PT_HEALTHY_MAX and the MS median
 
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
