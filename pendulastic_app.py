@@ -4487,10 +4487,18 @@ class App(tk.Tk):
         # Drop pending after() callbacks. _tick reschedules itself every 50ms,
         # so without this a timer outlives the interpreter and Tk reports
         # 'invalid command name "..._tick"' on the way out.
+        #
+        # Cancel through Tcl rather than after_cancel(): the latter also calls
+        # deletecommand(), which drops the Tcl command but only unregisters it
+        # from *this* widget's _tclCommands. A timer scheduled by a child (the
+        # webcam viewer, say) stays listed on that child, so destroying it a
+        # moment later re-deletes the same command and raises "can't delete Tcl
+        # command". Cancelling alone is enough -- the command goes away with
+        # its owning widget.
         try:
             for aid in self.tk.call("after", "info"):
                 try:
-                    self.after_cancel(aid)
+                    self.tk.call("after", "cancel", aid)
                 except Exception:
                     pass
         except Exception:
