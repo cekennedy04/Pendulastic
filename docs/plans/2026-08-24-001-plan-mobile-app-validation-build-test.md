@@ -321,6 +321,17 @@ TODO      U2 angle math + Popović scoring (production  │
   angle trace → expected 7 parameters)` JSON fixtures into
   `mobile-imu-core/tests/fixtures/`. Regenerating them is a reviewed diff, so an
   intentional algorithm change is visible and an accidental one is a failing test.
+  - **Audit any U2 tests written before these fixtures exist.** Hand-written
+    expectations pin the port to whatever reference their author had in mind, and
+    §1.3's two-implementation hazard makes that a coin flip: `workbench_engine.windowed_pt_params()`
+    is "a deliberate simplification" by its own docstring, while the production
+    `pendulastic_pt_score.compute_pt_params()` additionally does baseline-drift
+    detrending, stricter release detection, and tail-median neutral estimation —
+    and the two disagree on which trials are even scoreable (49 → 40). A suite of
+    green tests pinning the *simplified* function is the most expensive failure
+    available at this stage and the cheapest to catch before U3. The port must also
+    target the production scorer **post-**`a1ca2b5` (oscillation counting bounded to
+    the active swing window) and **post-**`05127ec` (lag-aligned source curves).
 - **P2. Device fleet + capability floor.** Named, procured, and sample-rate
   audited *before* U4/U5 (§6). Resolves the TODOS item "define a
   hardware-capability fallback policy" with data instead of a guess.
