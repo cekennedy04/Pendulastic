@@ -44,6 +44,16 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       const json = inner.finish_trajectory();
       return json === undefined ? undefined : JSON.parse(json);
     },
+    // The composite Popović PT score -- `{score, zone, breakdown}` -- derived
+    // at read time from the same underlying finish() computation, never
+    // persisted (mobile-imu-core/src/pt_score.rs's module doc: HEALTHY_REF is
+    // still being recalibrated). A separate wasm call for the same reason
+    // finishTrajectory is: it keeps `finish`'s pinned 20-key payload
+    // untouched.
+    finishPtScore: () => {
+      const json = inner.finish_pt_score();
+      return json === undefined ? undefined : JSON.parse(json);
+    },
   };
 }
 
@@ -95,14 +105,16 @@ export function createWorkerHandler() {
         if (!session) throw new Error('finish received before start');
         const params = session.finish();
         // `{type:'result', params}` is the existing, still-supported shape;
-        // `trajectory` rides alongside it. Both come from the same
-        // underlying finish() computation in the Rust core, so a scorable
-        // `params` implies a defined `trajectory` -- but the fallback to
+        // `trajectory` and `ptScore` ride alongside it. All three come from
+        // the same underlying finish() computation in the Rust core, so a
+        // scorable `params` implies both are defined -- but the fallback to
         // `null` keeps the message well-formed even if that ever stops
         // being true (structured-clone would otherwise just drop an
         // `undefined` property, which is harder to notice on the far end).
-        post(params ? { type: 'result', params, trajectory: session.finishTrajectory() ?? null }
-                     : { type: 'error', reason: 'unscorable' });
+        post(params
+          ? { type: 'result', params, trajectory: session.finishTrajectory() ?? null,
+              ptScore: session.finishPtScore() ?? null }
+          : { type: 'error', reason: 'unscorable' });
       }
     } catch (err) {
       post({ type: 'error', reason: err instanceof Error ? err.message : String(err) });

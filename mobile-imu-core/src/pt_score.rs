@@ -1,0 +1,428 @@
+//! Popović composite PT score, ported from
+//! `pendulastic_pt_score.compute_pt_score_breakdown` /
+//! `compute_pt_score` (committed version — see the module doc below for why
+//! that distinction matters right now).
+//!
+//! Deliberately **not** wired into `params_json.rs` or `TrialSession::finish`.
+//! `HEALTHY_REF` below has been recalibrated three times in one week (see the
+//! commit history of `pendulastic_pt_score.py`) and validation task V0.4 will
+//! move it again, so the composite must be derived at *read* time from the
+//! already-computed [`PtParams`], not baked into the persisted params payload.
+//!
+//! **Provisional, not a verdict.** This instrument has not passed its
+//! validation gate (trajectory RMSE 14.84° against a ≤10° target; LOPO AUC
+//! 0.21, below chance). A caller presenting this score to a clinician must
+//! keep that context attached — see `webapp/src/app.js`.
+//!
+//! Ported from the version of `pendulastic_pt_score.py` committed at the time
+//! of this port (`git show HEAD:pendulastic_pt_score.py`), NOT the working
+//! tree, which carries unrelated in-flight flex-axis-estimation changes. The
+//! two functions ported here (`compute_pt_score_breakdown`, `compute_pt_score`)
+//! and everything they depend on (`HEALTHY_REF`, `PT_HEALTHY_MAX`,
+//! `PT_BORDERLINE_MAX`, `_PARAM_KEYS`, `compute_pt_params`) are byte-identical
+//! between the working tree and `HEAD` as of this port — confirmed with `diff`
+//! against `git show HEAD:` — so the golden fixtures `gen_fixtures.py` emits
+//! (which necessarily import the working-tree module) are equivalent to
+//! pinning against the committed logic.
+
+use crate::params_json::fmt_f64;
+use crate::scoring::PtParams;
+
+/// `pendulastic_pt_score._N_PARAMS` — the 7 scored parameters.
+pub const N_PARAMS: usize = 7;
+
+/// `pendulastic_pt_score._DENOM_FLOOR`.
+const DENOM_FLOOR: f64 = 0.1;
+
+/// `pendulastic_pt_score.HEALTHY_REF`'s field set, so a caller can pass an
+/// alternate reference (e.g. in tests) without touching the default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HealthyRef {
+    pub r2n: f64,
+    pub n: f64,
+    pub phi_max_ratio: f64,
+    pub omega_max_n: f64,
+    pub omega_min_n: f64,
+    pub f: f64,
+    pub area_ratio: f64,
+}
+
+/// `pendulastic_pt_score.HEALTHY_REF` — control-cohort medians, 2026-08-21
+/// recalibration. See that module's own extensive provenance note; this is
+/// PROVISIONAL and expected to move again (validation task V0.4).
+pub const HEALTHY_REF: HealthyRef = HealthyRef {
+    r2n: 1.0321,
+    n: 3.5,
+    phi_max_ratio: 0.6386,
+    omega_max_n: 6.7684,
+    omega_min_n: 0.0010,
+    f: 0.9137,
+    area_ratio: 0.0768,
+};
+
+/// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
+/// Below this, a score reads as healthy.
+pub const PT_HEALTHY_MAX: f64 = 0.1709;
+
+/// `pendulastic_pt_score.PT_BORDERLINE_MAX` — midpoint between
+/// `PT_HEALTHY_MAX` and the MAS>=1 median. Above this, a score reads as
+/// impaired.
+pub const PT_BORDERLINE_MAX: f64 = 0.3528;
+
+/// Zone derived from [`PT_HEALTHY_MAX`]/[`PT_BORDERLINE_MAX`] — both
+/// PROVISIONAL working thresholds, not a validated clinical cutoff (see
+/// `pendulastic_pt_score.py`'s own note on the calibration cohort size).
+///
+/// `Unknown` covers a non-finite score (a degenerate trial can produce
+/// non-finite `PtParams` fields — see [`fmt_f64`]'s doc — and no zone claim
+/// can be made about a number that isn't one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtZone {
+    Healthy,
+    Borderline,
+    Impaired,
+    Unknown,
+}
+
+impl PtZone {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PtZone::Healthy => "healthy",
+            PtZone::Borderline => "borderline",
+            PtZone::Impaired => "impaired",
+            PtZone::Unknown => "unknown",
+        }
+    }
+}
+
+/// Classify a total score into a zone. Strict on both bounds — `score ==
+/// PT_HEALTHY_MAX` and `score == PT_BORDERLINE_MAX` both read as borderline —
+/// matching the reference's own "below this / above this" phrasing.
+pub fn pt_zone(score: f64) -> PtZone {
+    if !score.is_finite() {
+        PtZone::Unknown
+    } else if score < PT_HEALTHY_MAX {
+        PtZone::Healthy
+    } else if score > PT_BORDERLINE_MAX {
+        PtZone::Impaired
+    } else {
+        PtZone::Borderline
+    }
+}
+
+/// Per-parameter deviation contribution behind [`pt_score`]'s total —
+/// mirrors `pendulastic_pt_score.compute_pt_score_breakdown`'s dict, field
+/// for field (`R2n`->`r2n`, `N`->`n`; the other five match by name).
+///
+/// Penalty directions (impaired = deviated from healthy reference):
+///   `n`, `r2n`, `phi_max_ratio`, `omega_max_n` → penalise only if BELOW
+///   reference. `omega_min_n`, `area_ratio` → penalise only if ABOVE
+///   reference. `f` → bidirectional, skipped when uncomputable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PtScoreBreakdown {
+    pub r2n: f64,
+    pub n: f64,
+    pub phi_max_ratio: f64,
+    pub omega_max_n: f64,
+    pub omega_min_n: f64,
+    pub f: f64,
+    pub area_ratio: f64,
+}
+
+impl PtScoreBreakdown {
+    /// Sum of all seven contributions — `pendulastic_pt_score.compute_pt_score`
+    /// is exactly `sum(compute_pt_score_breakdown(...).values())`, so this
+    /// sums in the same `_PARAM_KEYS` order (`R2n, N, phi_max_ratio,
+    /// omega_max_n, omega_min_n, f, area_ratio`) rather than field-declaration
+    /// order that happens to differ, to match the reference bit-for-bit.
+    pub fn total(&self) -> f64 {
+        self.r2n + self.n + self.phi_max_ratio + self.omega_max_n + self.omega_min_n + self.f + self.area_ratio
+    }
+
+    /// `(key, contribution)` pairs ordered by DESCENDING contribution, so a
+    /// caller (the clinical UI) can show the largest driver first without
+    /// re-deriving the sort itself. Ties keep `_PARAM_KEYS` order (the array's
+    /// construction order below), because `sort_by` is stable.
+    pub fn ordered(&self) -> [(&'static str, f64); N_PARAMS] {
+        let mut pairs = [
+            ("r2n", self.r2n),
+            ("n", self.n),
+            ("phi_max_ratio", self.phi_max_ratio),
+            ("omega_max_n", self.omega_max_n),
+            ("omega_min_n", self.omega_min_n),
+            ("f", self.f),
+            ("area_ratio", self.area_ratio),
+        ];
+        // NaN can't be Ord; `partial_cmp` failing (only possible with a
+        // non-finite contribution) falls back to "equal" so the stable sort
+        // just leaves it where it was rather than panicking.
+        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        pairs
+    }
+}
+
+/// One-directional penalty: `max(0, -(pij - phj)) / denom` — penalise only if
+/// `pij` is below `phj`.
+fn dev_below(pij: f64, phj: f64, denom: f64) -> f64 {
+    (-(pij - phj)).max(0.0) / denom
+}
+
+/// One-directional penalty: `max(0, pij - phj) / denom` — penalise only if
+/// `pij` is above `phj`.
+fn dev_above(pij: f64, phj: f64, denom: f64) -> f64 {
+    (pij - phj).max(0.0) / denom
+}
+
+/// `pendulastic_pt_score.compute_pt_score_breakdown(params, ref)`.
+///
+/// `phj <= 0.0` (a reference value of zero or less) yields a `0.0`
+/// contribution for that key, matching the reference's `if phj <= 0: ...
+/// continue`.
+pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBreakdown {
+    let denom = |phj: f64| N_PARAMS as f64 * phj.max(DENOM_FLOOR);
+
+    let r2n = if healthy.r2n <= 0.0 { 0.0 } else { dev_below(params.r2n, healthy.r2n, denom(healthy.r2n)) };
+    let n = if healthy.n <= 0.0 { 0.0 } else { dev_below(params.n, healthy.n, denom(healthy.n)) };
+    let phi_max_ratio = if healthy.phi_max_ratio <= 0.0 {
+        0.0
+    } else {
+        dev_below(params.phi_max_ratio, healthy.phi_max_ratio, denom(healthy.phi_max_ratio))
+    };
+    let omega_max_n = if healthy.omega_max_n <= 0.0 {
+        0.0
+    } else {
+        dev_below(params.omega_max_n, healthy.omega_max_n, denom(healthy.omega_max_n))
+    };
+    let omega_min_n = if healthy.omega_min_n <= 0.0 {
+        0.0
+    } else {
+        dev_above(params.omega_min_n, healthy.omega_min_n, denom(healthy.omega_min_n))
+    };
+    let area_ratio = if healthy.area_ratio <= 0.0 {
+        0.0
+    } else {
+        dev_above(params.area_ratio, healthy.area_ratio, denom(healthy.area_ratio))
+    };
+    // f: bidirectional, but skipped (0.0) when uncomputable — `pij < 0.1` (the
+    // trial's own f, not the reference's) or `N < 2.0` — matching the
+    // reference's `if pij < 0.1 or params.get("N", 0.0) < 2.0`. Folded into
+    // one condition with the `phj <= 0` guard since both yield the same 0.0.
+    let f = if healthy.f <= 0.0 || params.f < 0.1 || params.n < 2.0 {
+        0.0
+    } else {
+        (params.f - healthy.f).abs() / denom(healthy.f)
+    };
+
+    PtScoreBreakdown { r2n, n, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio }
+}
+
+/// `pendulastic_pt_score.compute_pt_score(params, ref)` — the sum of
+/// [`pt_score_breakdown`]'s contributions. Lower is healthier; unbounded
+/// above; not a 0-1 scale.
+pub fn pt_score(params: &PtParams, healthy: &HealthyRef) -> f64 {
+    pt_score_breakdown(params, healthy).total()
+}
+
+/// JSON-safe rendering of the score/zone/breakdown for a single trial's
+/// [`PtParams`], scored against [`HEALTHY_REF`]. `NaN`/`inf` are not legal
+/// JSON tokens (RFC 8259) — same non-finite guard as
+/// `params_json::params_to_json`, applied here independently since a
+/// degenerate trial's `PtParams` fields (and therefore this score) can be
+/// non-finite even though `compute_pt_params` itself has no finiteness gate.
+///
+/// `breakdown` is emitted as an array of `{"key":...,"value":...}` objects,
+/// pre-sorted by descending contribution (`PtScoreBreakdown::ordered`), so the
+/// caller can render it directly without re-deriving the sort in JS.
+pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
+    let breakdown = pt_score_breakdown(params, healthy);
+    let total = breakdown.total();
+    let zone = pt_zone(total);
+
+    let mut items = String::new();
+    for (i, (key, value)) in breakdown.ordered().iter().enumerate() {
+        if i > 0 {
+            items.push(',');
+        }
+        items.push_str(&format!("{{\"key\":\"{key}\",\"value\":{}}}", fmt_f64(*value)));
+    }
+
+    format!(
+        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}]}}",
+        fmt_f64(total),
+        zone.as_str(),
+        items,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(overrides: impl FnOnce(&mut PtParams)) -> PtParams {
+        let mut p = PtParams {
+            r2n: 1.0321,
+            n: 3.5,
+            phi_max_ratio: 0.6386,
+            omega_max_n: 6.7684,
+            omega_min_n: 0.0010,
+            f: 0.9137,
+            area_ratio: 0.0768,
+            omega_peak_deg_s: 0.0,
+            a0_deg: 0.0,
+            a1_deg: 0.0,
+            first_trough_depth: 0.0,
+            neutral_deg: 0.0,
+            neutral_deg_raw: 0.0,
+            pre_release_deg: 0.0,
+            quality_warn: false,
+            phi_negated: false,
+            spasticity_type: crate::scoring::SpasticityType::Balanced,
+            p_plus: 0.0,
+            p_minus: 0.0,
+            p_total: 0.0,
+            phi: Vec::new(),
+            ang_r: Vec::new(),
+            t_r: Vec::new(),
+            omega_s: Vec::new(),
+            pk_i: Vec::new(),
+            tr_i: Vec::new(),
+        };
+        overrides(&mut p);
+        p
+    }
+
+    #[test]
+    fn exact_healthy_reference_scores_zero() {
+        let p = params(|_| {});
+        let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
+        assert_eq!(breakdown.total(), 0.0);
+        assert_eq!(pt_zone(breakdown.total()), PtZone::Healthy);
+    }
+
+    #[test]
+    fn below_reference_on_one_directional_key_is_penalised() {
+        let p = params(|p| p.r2n = 0.0);
+        let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
+        assert!(breakdown.r2n > 0.0);
+        assert_eq!(breakdown.n, 0.0);
+    }
+
+    #[test]
+    fn above_reference_on_one_directional_key_is_not_penalised() {
+        // r2n, n, phi_max_ratio, omega_max_n penalise only BELOW reference.
+        let p = params(|p| p.r2n = 10.0);
+        let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
+        assert_eq!(breakdown.r2n, 0.0);
+    }
+
+    #[test]
+    fn area_ratio_penalises_only_above_reference() {
+        let above = params(|p| p.area_ratio = 1.0);
+        let below = params(|p| p.area_ratio = 0.0);
+        assert!(pt_score_breakdown(&above, &HEALTHY_REF).area_ratio > 0.0);
+        assert_eq!(pt_score_breakdown(&below, &HEALTHY_REF).area_ratio, 0.0);
+    }
+
+    #[test]
+    fn f_is_skipped_when_uncomputable() {
+        let low_f = params(|p| {
+            p.f = 0.05; // < 0.1
+            p.n = 5.0;
+        });
+        assert_eq!(pt_score_breakdown(&low_f, &HEALTHY_REF).f, 0.0);
+
+        let low_n = params(|p| {
+            p.f = 2.0;
+            p.n = 1.0; // < 2.0
+        });
+        assert_eq!(pt_score_breakdown(&low_n, &HEALTHY_REF).f, 0.0);
+    }
+
+    #[test]
+    fn f_is_bidirectional_when_computable() {
+        let above = params(|p| {
+            p.f = 5.0;
+            p.n = 5.0;
+        });
+        let below = params(|p| {
+            p.f = 0.2;
+            p.n = 5.0;
+        });
+        assert!(pt_score_breakdown(&above, &HEALTHY_REF).f > 0.0);
+        assert!(pt_score_breakdown(&below, &HEALTHY_REF).f > 0.0);
+    }
+
+    #[test]
+    fn zero_or_negative_reference_yields_zero_contribution() {
+        let healthy = HealthyRef { r2n: 0.0, ..HEALTHY_REF };
+        let p = params(|p| p.r2n = -100.0);
+        assert_eq!(pt_score_breakdown(&p, &healthy).r2n, 0.0);
+    }
+
+    #[test]
+    fn ordered_is_sorted_descending_by_contribution() {
+        let p = params(|p| {
+            p.r2n = 0.0;      // large penalty (below reference)
+            p.area_ratio = 5.0; // large penalty (above reference)
+            p.n = 3.5;        // no penalty
+        });
+        let ordered = pt_score_breakdown(&p, &HEALTHY_REF).ordered();
+        for w in ordered.windows(2) {
+            assert!(w[0].1 >= w[1].1, "not sorted descending: {ordered:?}");
+        }
+    }
+
+    #[test]
+    fn zone_thresholds() {
+        assert_eq!(pt_zone(0.0), PtZone::Healthy);
+        assert_eq!(pt_zone(PT_HEALTHY_MAX - 1e-9), PtZone::Healthy);
+        assert_eq!(pt_zone(PT_HEALTHY_MAX), PtZone::Borderline);
+        assert_eq!(pt_zone((PT_HEALTHY_MAX + PT_BORDERLINE_MAX) / 2.0), PtZone::Borderline);
+        assert_eq!(pt_zone(PT_BORDERLINE_MAX), PtZone::Borderline);
+        assert_eq!(pt_zone(PT_BORDERLINE_MAX + 1e-9), PtZone::Impaired);
+        assert_eq!(pt_zone(f64::NAN), PtZone::Unknown);
+    }
+
+    #[test]
+    fn nan_on_a_one_directional_key_matches_the_references_max_semantics() {
+        // Both Python's `max(0.0, nan)` and Rust's `f64::max` return the
+        // non-NaN argument, so a NaN `pij` on a one-directional key is a 0.0
+        // contribution, not a propagated NaN. This is a faithfulness check,
+        // not a guard: the two languages already agree here.
+        let p = params(|p| p.r2n = f64::NAN);
+        assert_eq!(pt_score_breakdown(&p, &HEALTHY_REF).r2n, 0.0);
+    }
+
+    #[test]
+    fn non_finite_contribution_serialises_as_json_null_not_illegal_token() {
+        // `f` is the one key whose fast-path check (`pij < 0.1`) is itself
+        // false for NaN, so its NaN reaches `abs(delta)/denom` and actually
+        // propagates -- a real degenerate-trial path, not a hypothetical one.
+        let p = params(|p| {
+            p.f = f64::NAN;
+            p.n = 5.0; // clear the "uncomputable" fast path
+            p.area_ratio = f64::INFINITY; // an above-only key can also blow up
+        });
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(!json.contains("NaN"), "{json}");
+        assert!(!json.contains("inf"), "{json}");
+        assert!(json.contains("\"key\":\"f\",\"value\":null"), "{json}");
+        assert!(json.contains("\"key\":\"area_ratio\",\"value\":null"), "{json}");
+        // Total also becomes non-finite, and must serialise as null and
+        // report an "unknown" zone rather than a nonsensical claim.
+        assert!(json.contains("\"score\":null"), "{json}");
+        assert!(json.contains("\"zone\":\"unknown\""), "{json}");
+    }
+
+    #[test]
+    fn score_is_sum_of_breakdown_in_param_keys_order() {
+        let p = params(|p| {
+            p.r2n = 0.5;
+            p.area_ratio = 0.5;
+        });
+        let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
+        let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio + breakdown.omega_max_n
+            + breakdown.omega_min_n + breakdown.f + breakdown.area_ratio;
+        assert_eq!(pt_score(&p, &HEALTHY_REF), manual);
+    }
+}

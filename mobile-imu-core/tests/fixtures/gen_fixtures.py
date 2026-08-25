@@ -227,7 +227,12 @@ def main():
 
     # ---- compute_pt_params / score_waveform -------------------------------
     from imu_calibration_tuner import score_waveform
-    from pendulastic_pt_score import compute_pt_params
+    from pendulastic_pt_score import (
+        compute_pt_params,
+        compute_pt_score,
+        compute_pt_score_breakdown,
+        _PARAM_KEYS,
+    )
 
     def emit_trial(tag, t_sig, ang_sig, doc):
         parts.append(f64_slice(f"{tag}_T", t_sig, f"{doc} - time base."))
@@ -253,6 +258,22 @@ def main():
         sw = score_waveform(t_sig, ang_sig)
         parts.append(f"pub const {tag}_SW_PASSES: bool = {str(bool(sw['passes'])).lower()};\n\n")
         parts.append(f64_const(f"{tag}_SW_PENALTY", sw["penalty"], f"score_waveform({tag})['penalty']"))
+
+        # ---- PT score breakdown / total (task-7 dispatch) ------------------
+        # Pinned against HEALTHY_REF's default -- the caller under test never
+        # passes an alternate reference either.
+        breakdown = compute_pt_score_breakdown(p)
+        for k in _PARAM_KEYS:
+            parts.append(
+                f64_const(
+                    f"{tag}_PT_SCORE_{k.upper()}",
+                    breakdown[k],
+                    f"compute_pt_score_breakdown({tag})['{k}']",
+                )
+            )
+        parts.append(
+            f64_const(f"{tag}_PT_SCORE_TOTAL", compute_pt_score(p), f"compute_pt_score({tag})")
+        )
 
     emit_trial("TRIAL_SWING", t, ang, "Decaying-oscillation trial (the nominal case)")
 

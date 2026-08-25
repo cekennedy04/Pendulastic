@@ -21,6 +21,7 @@ pub mod ahrs;
 pub mod calibration;
 pub mod goniometry;
 pub mod params_json;
+pub mod pt_score;
 pub mod replay;
 pub mod resample;
 pub mod scoring;

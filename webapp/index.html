@@ -27,6 +27,19 @@
       <span class="legend-item"><span class="swatch swatch-trough"></span>&#9660; trough</span>
     </div>
   </div>
+  <div id="pt-score" hidden>
+    <p id="pt-score-disclaimer">
+      Provisional composite score &mdash; not a validated clinical measure
+      (research capture only, see banner above). <strong>Lower is
+      healthier.</strong> Unbounded above &mdash; not a 0&ndash;1 scale.
+    </p>
+    <div id="pt-score-summary">
+      <span id="pt-score-value">&mdash;</span>
+      <span id="pt-score-zone">&mdash;</span>
+    </div>
+    <p id="pt-score-breakdown-label">largest driver first</p>
+    <table id="pt-score-breakdown"></table>
+  </div>
   <table id="result" hidden></table>
   <script type="module" src="./src/app.js"></script>
 </body>

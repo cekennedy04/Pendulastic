@@ -75,6 +75,25 @@ test('a result event with no trajectory key omits it from the action rather than
   assert.ok(!('trajectory' in action), 'no trajectory key should appear when the event carried none');
 });
 
+test('a result event carrying a ptScore passes it through on the action', () => {
+  const ptScore = { score: 0.42, zone: 'borderline', breakdown: [{ key: 'area_ratio', value: 0.3 }] };
+  const { latched, action } = nextOutcome(false, { type: 'result', params: { f: 1 }, ptScore });
+  assert.equal(latched, false);
+  assert.deepEqual(action, { kind: 'result', params: { f: 1 }, ptScore });
+});
+
+test('a result event with no ptScore key omits it from the action rather than adding undefined', () => {
+  const { action } = nextOutcome(false, { type: 'result', params: { f: 1 } });
+  assert.ok(!('ptScore' in action), 'no ptScore key should appear when the event carried none');
+});
+
+test('a result event can carry both a trajectory and a ptScore together', () => {
+  const trajectory = { t: [0, 0.05], angle_deg: [null, 180], release_idx: 0, peak_idx: [], trough_idx: [], neutral_deg: 180 };
+  const ptScore = { score: 0.05, zone: 'healthy', breakdown: [] };
+  const { action } = nextOutcome(false, { type: 'result', params: { f: 1 }, trajectory, ptScore });
+  assert.deepEqual(action, { kind: 'result', params: { f: 1 }, trajectory, ptScore });
+});
+
 test('a real fault always wins over a subsequent bounced result', () => {
   const first = nextOutcome(false, { type: 'error', reason: 'worker crashed' });
   assert.equal(first.latched, true);

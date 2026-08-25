@@ -207,6 +207,51 @@ test('finish posts a trajectory alongside the existing {type:"result", params} s
   assert.equal(typeof traj.neutral_deg, 'number');
 });
 
+test('finish posts a composite PT score alongside the existing result shape', async () => {
+  // Same fixture/drive path as the trajectory test above -- this exercises
+  // `finishPtScore` (mobile-imu-core's finish_pt_score(), via worker.js's
+  // `session.finishPtScore`), which must ride alongside `params`/`trajectory`
+  // without disturbing either (task-7 dispatch: the composite must never be
+  // computed inside `finish()`'s own pinned 20-key payload).
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3, wasmSource } }, post);
+  for (const batch of fixture.batches) {
+    await handle({ type: 'batch', buf: Float64Array.from(batch).buffer }, post);
+  }
+  await handle({ type: 'finish' }, post);
+
+  const result = posted.find((m) => m.type === 'result');
+  assert.ok(result, 'the fixture must still be scorable');
+  assert.ok(result.params && typeof result.params === 'object',
+    'the pre-existing params shape must still be present');
+
+  const ptScore = result.ptScore;
+  assert.ok(ptScore, 'a ptScore must ride alongside params');
+  assert.equal(typeof ptScore.score, 'number');
+  assert.ok(Number.isFinite(ptScore.score), 'the fixture is a well-formed trial, so the score must be finite');
+  assert.ok(['healthy', 'borderline', 'impaired', 'unknown'].includes(ptScore.zone),
+    `zone must be one of the four documented values, got ${ptScore.zone}`);
+  assert.ok(Array.isArray(ptScore.breakdown) && ptScore.breakdown.length === 7,
+    'breakdown must list all 7 scored parameters');
+  for (const entry of ptScore.breakdown) {
+    assert.equal(typeof entry.key, 'string');
+    assert.equal(typeof entry.value, 'number');
+  }
+  // Ordered by descending contribution (Rust's PtScoreBreakdown::ordered).
+  for (let i = 1; i < ptScore.breakdown.length; i++) {
+    assert.ok(ptScore.breakdown[i - 1].value >= ptScore.breakdown[i].value,
+      `breakdown must be sorted by descending contribution: ${JSON.stringify(ptScore.breakdown)}`);
+  }
+  // Sum of the breakdown must equal the reported total (same identity
+  // pendulastic_pt_score.compute_pt_score itself relies on).
+  const sum = ptScore.breakdown.reduce((acc, { value }) => acc + value, 0);
+  assert.ok(Math.abs(sum - ptScore.score) < 1e-9,
+    `breakdown must sum to the reported score: sum=${sum}, score=${ptScore.score}`);
+});
+
 test('a malformed start cfg resolves to a real protocol message, not silence', async () => {
   const handle = createWorkerHandler();
   const posted = [];

@@ -6,6 +6,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::params_json;
+use crate::pt_score::{pt_score_to_json, HEALTHY_REF};
 use crate::replay::{RawSample, ReplayConfig, Sensor};
 use crate::session::{HoldState, TrialSession};
 use crate::trajectory_json;
@@ -80,5 +81,21 @@ impl WasmSession {
     pub fn finish_trajectory(&self) -> Option<String> {
         let (r, p) = self.inner.finish(None).ok()?;
         Some(trajectory_json::trajectory_to_json(&r, &p))
+    }
+
+    /// JSON of the composite Popović PT score: `{score, zone, breakdown}`,
+    /// scored against the current `HEALTHY_REF`. `undefined` when unscorable,
+    /// same contract as `finish`/`finish_trajectory`.
+    ///
+    /// Deliberately a separate call, computed at read time from `finish`'s
+    /// own `PtParams` rather than folded into `finish`'s JSON or persisted
+    /// anywhere: `HEALTHY_REF` is still being recalibrated (three times in
+    /// one week as of this writing, with validation task V0.4 still to come),
+    /// so a stored composite would go stale the next time it moves. This
+    /// score is PROVISIONAL — see `pt_score`'s module doc and the "research
+    /// capture only" banner the UI always shows alongside it.
+    pub fn finish_pt_score(&self) -> Option<String> {
+        let (_, p) = self.inner.finish(None).ok()?;
+        Some(pt_score_to_json(&p, &HEALTHY_REF))
     }
 }

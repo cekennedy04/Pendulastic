@@ -51,8 +51,10 @@ export function nextOutcome(latched, event) {
     // Only set when the caller actually passed one, so a test (or any
     // caller) that builds a bare `{type:'result', params}` event -- the
     // shape worker.js's `finish` message kept working -- gets back exactly
-    // `{kind:'result', params}`, with no stray `trajectory: undefined` key.
+    // `{kind:'result', params}`, with no stray `trajectory: undefined` /
+    // `ptScore: undefined` key.
     if ('trajectory' in event) action.trajectory = event.trajectory;
+    if ('ptScore' in event) action.ptScore = event.ptScore;
     return { latched: false, action };
   }
   if (event.reason === 'unscorable') {
@@ -276,6 +278,46 @@ if (typeof document !== 'undefined') {
     if (!el('waveform-wrap').hidden && lastTrajectory) drawWaveform(lastTrajectory);
   });
 
+  // Human-readable zone label. Every label carries "(provisional)" -- this
+  // instrument has not passed its validation gate (trajectory RMSE 14.84°
+  // against a <=10° target; leave-one-participant-out AUC 0.21, below chance)
+  // and the zone thresholds themselves are a working calibration on 29
+  // participant-legs, not a validated clinical cutoff (see
+  // mobile-imu-core/src/pt_score.rs). The word choice deliberately avoids
+  // anything that reads as a diagnosis.
+  const ZONE_LABEL = {
+    healthy: 'healthy range (provisional)',
+    borderline: 'borderline (provisional)',
+    impaired: 'impaired range (provisional)',
+    unknown: 'zone unknown',
+  };
+
+  // Renders the composite PT score panel: `ptScore` is
+  // `{score, zone, breakdown}` from mobile-imu-core's finish_pt_score()
+  // (worker.js's `finishPtScore`), or null/undefined when the trial produced
+  // no score -- hide the whole panel rather than show a blank or zero, which
+  // would misleadingly read as "scored healthy."
+  //
+  // `breakdown` arrives pre-sorted by descending contribution (Rust's
+  // `PtScoreBreakdown::ordered`), so the largest driver is simply first --
+  // no re-sorting here.
+  function renderPtScore(ptScore) {
+    const wrap = el('pt-score');
+    if (!ptScore || typeof ptScore.score !== 'number') {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+    el('pt-score-value').textContent = ptScore.score.toFixed(4);
+    const zoneEl = el('pt-score-zone');
+    const zone = typeof ptScore.zone === 'string' ? ptScore.zone : 'unknown';
+    zoneEl.textContent = ZONE_LABEL[zone] || ZONE_LABEL.unknown;
+    zoneEl.className = `zone-${zone}`;
+    el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
+      .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
+      .join('');
+  }
+
   function onState({ code, calm_s, drift_deg }) {
     const g = el('guide');
     g.className = CLASSES[code];
@@ -287,8 +329,8 @@ if (typeof document !== 'undefined') {
     el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
   }
 
-  function onResult(p, trajectory) {
-    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory });
+  function onResult(p, trajectory, ptScore) {
+    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory, ptScore });
     faulted = latched;
     // Nulled on every terminal outcome (result, error, and the Stop
     // handler below) so a fresh Start never reuses a finished session.
@@ -297,6 +339,7 @@ if (typeof document !== 'undefined') {
     el('guide').className = '';
     el('guide').textContent = 'scored';
     drawWaveform(action.trajectory);
+    renderPtScore(action.ptScore);
     el('result').hidden = false;
     el('result').innerHTML = PARAM_ORDER
       .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
@@ -338,6 +381,7 @@ if (typeof document !== 'undefined') {
     el('stop').hidden = false;
     el('result').hidden = true;
     el('waveform-wrap').hidden = true;
+    el('pt-score').hidden = true;
     lastTrajectory = null;
     el('calm').textContent = '—';
     el('drift').textContent = '—';

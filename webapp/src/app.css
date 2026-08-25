@@ -16,6 +16,10 @@
   --fired-bg: #1d4ed8;
   --unscorable-bg: #4b5563;
   --fault-bg: #9f1239;
+  --pt-healthy-bg: #0f7a37;
+  --pt-borderline-bg: #b45309;
+  --pt-impaired-bg: #9f1239;
+  --pt-unknown-bg: #4b5563;
 }
 
 * { box-sizing: border-box; }
@@ -96,7 +100,7 @@ body {
    it only escapes this because nothing here sets its `display`. Stating the
    rule once for all three means adding a `display` to any of them cannot
    quietly reintroduce the bug. */
-#start[hidden], #stop[hidden], #result[hidden], #waveform-wrap[hidden] { display: none; }
+#start[hidden], #stop[hidden], #result[hidden], #waveform-wrap[hidden], #pt-score[hidden] { display: none; }
 
 /* ---- State guide --------------------------------------------------------
    The single largest element on the page. Each state carries its own
@@ -265,6 +269,87 @@ body {
   font-weight: 700;
   color: var(--ink);
 }
+
+/* ---- Provisional PT score -------------------------------------------------
+   Derived at read time in the wasm core (mobile-imu-core/src/pt_score.rs),
+   never persisted -- HEALTHY_REF is still being recalibrated. Deliberately
+   visually distinct from the 20-parameter #result table below it (a summary
+   the operator reads first, not a replacement for the raw numbers), and
+   carries its own disclaimer text rather than relying on the page banner
+   alone: an unlabelled unbounded number reads as "lower is worse" by default,
+   which is backwards here. */
+#pt-score {
+  width: calc(100% - 32px);
+  margin: 8px 16px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f4f5f7;
+}
+
+#pt-score-disclaimer {
+  margin: 0 0 10px;
+  font-size: clamp(12px, 3.4vw, 14px);
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+#pt-score-disclaimer strong { color: var(--ink); }
+
+#pt-score-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+#pt-score-value {
+  font-weight: 800;
+  font-size: clamp(28px, 9vw, 40px);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+#pt-score-zone {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #fff;
+  background: var(--pt-unknown-bg);
+}
+
+#pt-score-zone.zone-healthy { background: var(--pt-healthy-bg); }
+#pt-score-zone.zone-borderline { background: var(--pt-borderline-bg); }
+#pt-score-zone.zone-impaired { background: var(--pt-impaired-bg); }
+#pt-score-zone.zone-unknown { background: var(--pt-unknown-bg); }
+
+#pt-score-breakdown-label {
+  margin: 12px 0 4px;
+  font-size: clamp(11px, 3vw, 13px);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#pt-score-breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+
+#pt-score-breakdown td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+#pt-score-breakdown td:first-child { color: var(--muted); font-weight: 600; }
+#pt-score-breakdown td:last-child { text-align: right; }
 
 /* ---- Result table -------------------------------------------------------
    All 20 scored parameters, unfiltered (task-6 requirement 4) -- several are
