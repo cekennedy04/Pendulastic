@@ -71,3 +71,21 @@ Any static file server over the repo's `webapp/` directory works; ES modules
 and `new Worker(..., {type:'module'})` both require HTTP, not `file://`. iOS
 requires HTTPS (or `localhost`) before `DeviceMotionEvent.requestPermission()`
 will resolve.
+
+## Testing on a real iPhone
+
+`DeviceMotionEvent.requestPermission()` is only granted in a secure context,
+so the page must be served over HTTPS — opening it from the filesystem or over
+plain http:// fails at the permission call, and fails unhelpfully.
+
+```
+miniconda3/python.exe webapp/dev_server.py
+```
+
+Prints a URL and a QR code for the machine's LAN address, using the same
+self-signed certificate helper as `pendulastic_phone_server.py`. Safari will
+show a certificate interstitial once per host: Show Details → visit this
+website → Visit Website.
+
+Requires `npm run build:wasm` to have been run first; the server checks and
+tells you if not.
