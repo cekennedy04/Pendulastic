@@ -21,6 +21,24 @@ fn spasticity_type_str(t: SpasticityType) -> &'static str {
     }
 }
 
+/// JSON-safe rendering of an `f64`. Rust's `Display` prints `NaN`, `inf` and
+/// `-inf` for non-finite values, none of which are legal JSON tokens (RFC
+/// 8259) — a browser's `JSON.parse` throws on them and the whole payload is
+/// lost. `compute_pt_params` has no finiteness gate of its own (that lives in
+/// `score_waveform`, which `TrialSession::finish` bypasses), so a non-finite
+/// scalar is a real, reachable case here, not a hypothetical one. Rather than
+/// reject a trial over one bad parameter — `f == 0.0` is already a documented
+/// legitimate value for "not enough cycles to measure", and the rest of the
+/// struct may be perfectly good — a non-finite value serialises as JSON
+/// `null` and every finite sibling field is left exactly as before.
+fn fmt_f64(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v}")
+    } else {
+        "null".to_string()
+    }
+}
+
 /// Serialise the scalar fields of `p` to a JSON object string.
 pub fn params_to_json(p: &PtParams) -> String {
     format!(
@@ -32,25 +50,25 @@ pub fn params_to_json(p: &PtParams) -> String {
             "\"phi_negated\":{},\"spasticity_type\":\"{}\",\"p_plus\":{},",
             "\"p_minus\":{},\"p_total\":{}}}"
         ),
-        p.r2n,
-        p.n,
-        p.phi_max_ratio,
-        p.omega_max_n,
-        p.omega_min_n,
-        p.f,
-        p.area_ratio,
-        p.omega_peak_deg_s,
-        p.a0_deg,
-        p.a1_deg,
-        p.first_trough_depth,
-        p.neutral_deg,
-        p.neutral_deg_raw,
-        p.pre_release_deg,
+        fmt_f64(p.r2n),
+        fmt_f64(p.n),
+        fmt_f64(p.phi_max_ratio),
+        fmt_f64(p.omega_max_n),
+        fmt_f64(p.omega_min_n),
+        fmt_f64(p.f),
+        fmt_f64(p.area_ratio),
+        fmt_f64(p.omega_peak_deg_s),
+        fmt_f64(p.a0_deg),
+        fmt_f64(p.a1_deg),
+        fmt_f64(p.first_trough_depth),
+        fmt_f64(p.neutral_deg),
+        fmt_f64(p.neutral_deg_raw),
+        fmt_f64(p.pre_release_deg),
         p.quality_warn,
         p.phi_negated,
         spasticity_type_str(p.spasticity_type),
-        p.p_plus,
-        p.p_minus,
-        p.p_total,
+        fmt_f64(p.p_plus),
+        fmt_f64(p.p_minus),
+        fmt_f64(p.p_total),
     )
 }
