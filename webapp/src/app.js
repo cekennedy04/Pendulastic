@@ -23,22 +23,36 @@ const PARAM_ORDER = [
   'spasticity_type', 'p_plus', 'p_minus', 'p_total',
 ];
 
-let session = null;
-
-function resetToIdle() {
-  el('start').hidden = false;
-  el('stop').hidden = true;
-}
-
-function onState({ code, calm_s, drift_deg }) {
-  const g = el('guide');
-  g.className = CLASSES[code];
-  g.textContent = code === 1 ? `HOLDING ${calm_s.toFixed(1)}s` : STATES[code];
-  // Both gates are surfaced separately: the corrective action for motion and
-  // for drift differ, so "it failed" is not enough for the clinician
-  // (task-6 dispatch, requirement 2).
-  el('calm').textContent = `${calm_s.toFixed(2)} s / 0.95 s`;
-  el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
+// Pure reducer over the onResult/onError message stream for ONE trial --
+// exported so the fault-latch behaviour below can be driven by plain
+// objects under `node --test` with no DOM, the same split `worker.js` uses
+// for `createWorkerHandler` and `capture.js` uses for `encodeSample`.
+//
+// Why a latch is needed at all: `onError`'s call to `session.stop()` posts
+// a second `{type:'finish'}` to the worker. `WasmSession::finish` is
+// idempotent, so that second `finish` succeeds and the worker replies with
+// a real `result` or `'unscorable'` one tick later. Read literally, that
+// reply would silently overwrite the fault just shown with what looks like
+// a completed trial -- exactly the failure mode the "not validated" banner
+// exists to prevent (fix-round-1 finding). `'unscorable'` is a legitimate
+// clinical outcome, not a fault, so it must never itself set the latch --
+// but once a genuine fault HAS latched, nothing after it for that trial
+// (a real result or an 'unscorable' bounce alike) may display.
+//
+// `latched`: whether a genuine fault has already been shown this trial.
+// `event`: `{type:'result', params}` or `{type:'error', reason}`.
+// Returns `{latched, action}`, where `action` is `null` (ignore -- a fault
+// already latched) or `{kind:'result'|'unscorable'|'fault', ...}` for the
+// caller to render.
+export function nextOutcome(latched, event) {
+  if (latched) return { latched: true, action: null };
+  if (event.type === 'result') {
+    return { latched: false, action: { kind: 'result', params: event.params } };
+  }
+  if (event.reason === 'unscorable') {
+    return { latched: false, action: { kind: 'unscorable' } };
+  }
+  return { latched: true, action: { kind: 'fault', reason: event.reason } };
 }
 
 // Renders a single scored value. quality_warn/phi_negated are booleans,
@@ -52,49 +66,90 @@ function formatValue(v) {
   return String(v);
 }
 
-function onResult(p) {
-  el('guide').className = '';
-  el('guide').textContent = 'scored';
-  el('result').hidden = false;
-  el('result').innerHTML = PARAM_ORDER
-    .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
-    .join('');
-  resetToIdle();
-}
+// Everything below touches the DOM, so it is guarded to run only in a real
+// browser: importing this module (e.g. from webapp/tests/app.test.js, to
+// reach the pure `nextOutcome` above) must not throw under `node --test`,
+// which has no `document`.
+if (typeof document !== 'undefined') {
+  let session = null;
+  // Set once a genuine fault has been displayed for the CURRENT trial;
+  // reset at the start of every new trial. See `nextOutcome` above.
+  let faulted = false;
 
-// The two onError cases read differently on purpose (task-6 dispatch,
-// requirement 3): 'unscorable' is an expected clinical outcome -- the trial
-// genuinely had no usable swing -- and should read as such, not as a fault.
-// Any other reason means something broke and is presented as an error.
-// Either way capture is no longer running: a fault can arrive while the
-// batch/flush loop is still live (e.g. the worker threw mid-trial), so stop
-// it rather than leaving devicemotion samples flowing into a dead worker.
-function onError(reason) {
-  session?.stop();
-  session = null;
-  const g = el('guide');
-  if (reason === 'unscorable') {
-    g.className = 'unscorable';
-    g.textContent = 'NOT SCORABLE\nno usable swing -- try again';
-  } else {
-    g.className = 'fault';
-    g.textContent = `ERROR\n${reason}`;
+  function resetToIdle() {
+    el('start').hidden = false;
+    el('stop').hidden = true;
   }
-  resetToIdle();
+
+  function onState({ code, calm_s, drift_deg }) {
+    const g = el('guide');
+    g.className = CLASSES[code];
+    g.textContent = code === 1 ? `HOLDING ${calm_s.toFixed(1)}s` : STATES[code];
+    // Both gates are surfaced separately: the corrective action for motion
+    // and for drift differ, so "it failed" is not enough for the clinician
+    // (task-6 dispatch, requirement 2).
+    el('calm').textContent = `${calm_s.toFixed(2)} s / 0.95 s`;
+    el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
+  }
+
+  function onResult(p) {
+    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p });
+    faulted = latched;
+    // Nulled on every terminal outcome (result, error, and the Stop
+    // handler below) so a fresh Start never reuses a finished session.
+    session = null;
+    if (!action) return; // a fault already latched this trial -- ignore the bounce
+    el('guide').className = '';
+    el('guide').textContent = 'scored';
+    el('result').hidden = false;
+    el('result').innerHTML = PARAM_ORDER
+      .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
+      .join('');
+    resetToIdle();
+  }
+
+  // The two onError cases read differently on purpose (task-6 dispatch,
+  // requirement 3): 'unscorable' is an expected clinical outcome -- the
+  // trial genuinely had no usable swing -- and should read as such, not as
+  // a fault. Any other reason means something broke and is presented as an
+  // error. Either way capture is no longer running: a fault can arrive
+  // while the batch/flush loop is still live (e.g. the worker threw
+  // mid-trial), so stop it rather than leaving devicemotion samples
+  // flowing into a dead worker. `session` is nulled synchronously below,
+  // before the `finish` this triggers can reply -- see `nextOutcome`'s doc
+  // for why that reply must still be caught by the latch, not relied on
+  // to arrive too late to matter.
+  function onError(reason) {
+    const { latched, action } = nextOutcome(faulted, { type: 'error', reason });
+    faulted = latched;
+    session?.stop();
+    session = null;
+    if (!action) return; // a fault already latched this trial -- ignore the bounce
+    const g = el('guide');
+    if (action.kind === 'unscorable') {
+      g.className = 'unscorable';
+      g.textContent = 'NOT SCORABLE\nno usable swing -- try again';
+    } else {
+      g.className = 'fault';
+      g.textContent = `ERROR\n${action.reason}`;
+    }
+    resetToIdle();
+  }
+
+  el('start').addEventListener('click', async () => {
+    faulted = false; // fresh trial: the previous trial's latch must not carry over
+    el('start').hidden = true;
+    el('stop').hidden = false;
+    el('result').hidden = true;
+    el('calm').textContent = '—';
+    el('drift').textContent = '—';
+    session = await startCapture({ onState, onResult, onError });
+  });
+
+  el('stop').addEventListener('click', () => {
+    session?.stop();
+    session = null;
+    el('stop').hidden = true;
+    el('start').hidden = false;
+  });
 }
-
-el('start').addEventListener('click', async () => {
-  el('start').hidden = true;
-  el('stop').hidden = false;
-  el('result').hidden = true;
-  el('calm').textContent = '—';
-  el('drift').textContent = '—';
-  session = await startCapture({ onState, onResult, onError });
-});
-
-el('stop').addEventListener('click', () => {
-  session?.stop();
-  session = null;
-  el('stop').hidden = true;
-  el('start').hidden = false;
-});
