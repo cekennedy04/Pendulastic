@@ -706,10 +706,6 @@ _shutdown   = False                 # True only for a deliberate stop()
 _RETRY_MIN_S = 1.0
 _RETRY_MAX_S = 20.0
 
-# How long stop() waits for the supervisor to release the port. The backoff
-# sleep polls _shutdown every 0.1s, so a healthy thread exits well inside this.
-_STOP_JOIN_S = 2.0
-
 # ── Connection keepalive ─────────────────────────────────────────────────────
 # The app opens one socket per enabled sensor. A sensor that is switched on but
 # not producing (or one throttled to a slow interval) leaves its socket quiet,
@@ -1865,14 +1861,7 @@ def start() -> bool:
     """Launch the WebSocket server in a background thread. Idempotent.
     Returns True once the port is bound; see bind_error() on failure."""
     global _thread, _bind_error, _shutdown
-    # Reuse a live supervisor ONLY if it is not already shutting down. After a
-    # stop() that could not join -- a phone still attached, so the handler tasks
-    # keep the thread alive past close() -- the old thread is alive but its
-    # listening socket is gone. Returning _running there reported a healthy
-    # server (running=True, bind_error=None) while every connection was
-    # refused: the UI showed IMU up, no phone could stream, and there was no
-    # error to act on. Fall through and start a fresh supervisor instead.
-    if _thread is not None and _thread.is_alive() and not _shutdown:
+    if _thread is not None and _thread.is_alive():
         return _running
     _bind_error = None
     _shutdown = False
@@ -1891,43 +1880,15 @@ def bind_error() -> Optional[str]:
 
 
 def stop():
-    """Deliberate shutdown: ends the supervisor rather than triggering a retry.
-
-    Waits for the supervisor to exit ONLY when that wait can succeed, so a
-    caller that starts a new server afterwards does not race the old one.
-    Called from app shutdown paths only (master_app, App.on_close), never
-    mid-recording.
-    """
-    global _shutdown, _thread, _running
+    """Deliberate shutdown: ends the supervisor rather than triggering a retry."""
+    global _shutdown
     _shutdown = True
-    # The listening socket is about to close, so stop claiming to be running.
-    # _thread_main only clears this in its finally, which does not run while a
-    # still-attached client keeps the handler tasks (and the thread) alive.
-    _running = False
     stop_recording()
     if _loop is not None and _stop_evt is not None:
         try:
             _loop.call_soon_threadsafe(_stop_evt.set)
         except RuntimeError:
             pass
-    t = _thread
-    # Skip the join while a phone is still attached. _serve_forever exits its
-    # `async with server` block, which calls close() then awaits wait_closed(),
-    # and on 3.12+ that waits for every handler task -- but close() does NOT
-    # close established connections. So with a client holding its socket the
-    # join can never succeed: measured 2.01s burned for an outcome identical to
-    # not waiting at all. The listening socket is released either way, so the
-    # port frees immediately and the next launch binds fine; the daemon thread
-    # then exits when the client drops or the process does.
-    with _lock:                      # every other _conn_active access is locked
-        idle = (_conn_active == 0)
-    if t is not None and t.is_alive() and idle:
-        t.join(timeout=_STOP_JOIN_S)
-    # Clear the handle only on a confirmed exit. Otherwise the thread is still
-    # running and start()'s is_alive() guard is the only thing preventing a
-    # second server being spawned on top of it.
-    if t is not None and not t.is_alive():
-        _thread = None
 
 
 def reset_devices():

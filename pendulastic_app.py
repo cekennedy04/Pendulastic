@@ -4457,12 +4457,30 @@ class App(tk.Tk):
     # Teardown
     # ------------------------------------------------------------------
     def on_close(self) -> None:
+        # Stopping the IMU server belongs HERE, not in destroy(), because the
+        # server is a module-level singleton shared by the whole process while
+        # every other resource below is per-App. destroy() runs ~120 times in a
+        # pytest process, and a stop()/start() cycle per App drives the server
+        # through a lifecycle its globals (_loop, _stop_evt, _ready_evt,
+        # _conn_active) are not scoped for: two supervisors can overlap and the
+        # older one's finally closes the NEWER one's event loop, after which
+        # every retry fails with "Event loop is closed" and the port never
+        # recovers. Starting once per process and never restarting is the
+        # regime this server is actually safe in. Generation-scoping those
+        # globals is the real fix and is tracked separately.
+        if _IMU_AVAIL:
+            try:
+                _imu.stop()
+            except Exception:
+                pass
         self.destroy()
 
     def destroy(self) -> None:
-        """Full teardown. Lives here rather than in on_close() so that every
-        caller gets it -- on_close() only fires for WM_DELETE_WINDOW, and a
-        plain destroy() used to leak the IMU server thread and its port.
+        """Per-App teardown, in destroy() rather than on_close() so that every
+        caller gets it -- on_close() only fires for WM_DELETE_WINDOW, so a
+        plain destroy() used to leave this App's poll thread, camera and
+        pending timers behind. Process-global resources are NOT torn down
+        here; see on_close().
         """
         if getattr(self, "_teardown_done", False):
             return
@@ -4490,11 +4508,6 @@ class App(tk.Tk):
                 # to shut down must not take the window down with it.
                 try:
                     self._camera.close()
-                except Exception:
-                    pass
-            if _IMU_AVAIL:
-                try:
-                    _imu.stop()
                 except Exception:
                     pass
         finally:
