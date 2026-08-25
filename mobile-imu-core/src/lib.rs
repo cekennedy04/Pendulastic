@@ -20,9 +20,13 @@
 pub mod ahrs;
 pub mod calibration;
 pub mod goniometry;
+pub mod params_json;
 pub mod replay;
 pub mod resample;
 pub mod scoring;
 pub mod session;
 pub mod signal;
 pub mod stillness;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
