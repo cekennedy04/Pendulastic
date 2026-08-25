@@ -97,7 +97,14 @@ omegaconf==2.3.1
 onnxruntime==1.27.0
 opencv-contrib-python==4.13.0.92
 opencv-python==4.13.0.92
-opensim==4.6
+# opensim==4.6 -- NOT installable from PyPI. pip freeze emits it because the
+# bindings were dropped into the venv by the OpenSim installer, but there is no
+# PyPI distribution. pip resolves every requirement before installing anything,
+# so leaving this line in makes `pip install -r requirements-lock.txt` fail
+# outright with "No matching distribution found" and install NOTHING -- which
+# defeats the entire point of this file. Install OpenSim separately, via the
+# OpenSim 4.6 installer's Python bindings or `conda install -c opensim-org
+# opensim`, and only if you need the OpenSim IK path.
 openvino==2026.2.1
 openvino-telemetry==2025.2.0
 opt_einsum==3.4.0

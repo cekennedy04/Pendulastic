@@ -1760,7 +1760,14 @@ def start() -> bool:
     """Launch the WebSocket server in a background thread. Idempotent.
     Returns True once the port is bound; see bind_error() on failure."""
     global _thread, _bind_error, _shutdown
-    if _thread is not None and _thread.is_alive():
+    # Reuse a live supervisor ONLY if it is not already shutting down. After a
+    # stop() that could not join -- a phone still attached, so the handler tasks
+    # keep the thread alive past close() -- the old thread is alive but its
+    # listening socket is gone. Returning _running there reported a healthy
+    # server (running=True, bind_error=None) while every connection was
+    # refused: the UI showed IMU up, no phone could stream, and there was no
+    # error to act on. Fall through and start a fresh supervisor instead.
+    if _thread is not None and _thread.is_alive() and not _shutdown:
         return _running
     _bind_error = None
     _shutdown = False
@@ -1786,8 +1793,12 @@ def stop():
     Called from app shutdown paths only (master_app, App.on_close), never
     mid-recording.
     """
-    global _shutdown, _thread
+    global _shutdown, _thread, _running
     _shutdown = True
+    # The listening socket is about to close, so stop claiming to be running.
+    # _thread_main only clears this in its finally, which does not run while a
+    # still-attached client keeps the handler tasks (and the thread) alive.
+    _running = False
     stop_recording()
     if _loop is not None and _stop_evt is not None:
         try:
@@ -1803,7 +1814,9 @@ def stop():
     # not waiting at all. The listening socket is released either way, so the
     # port frees immediately and the next launch binds fine; the daemon thread
     # then exits when the client drops or the process does.
-    if t is not None and t.is_alive() and _conn_active == 0:
+    with _lock:                      # every other _conn_active access is locked
+        idle = (_conn_active == 0)
+    if t is not None and t.is_alive() and idle:
         t.join(timeout=_STOP_JOIN_S)
     # Clear the handle only on a confirmed exit. Otherwise the thread is still
     # running and start()'s is_alive() guard is the only thing preventing a
