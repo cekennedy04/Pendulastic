@@ -3,6 +3,7 @@
 //! error paths that log cannot reach.
 
 use mobile_imu_core::calibration::FLEX_CAPTURE_THRESHOLD;
+use mobile_imu_core::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
 use mobile_imu_core::replay::{replay, Method, RawSample, ReplayConfig, Sensor, TrialError};
 use mobile_imu_core::stillness::ZERO_CAPTURE_GUARD_RAD_S;
 
@@ -69,11 +70,70 @@ fn a_log_too_short_to_score_is_rejected_before_release_detection() {
 
 #[test]
 fn the_method_selects_between_relative_and_ockendon() {
-    // Both must be reachable through the public config; pipeline_test pins
-    // their numeric output against Python.
-    let cfg = ReplayConfig { method: Method::Ockendon, ..ReplayConfig::default() };
-    assert_eq!(cfg.method, Method::Ockendon);
+    // The default must stay `Relative` -- that is the persisted live default,
+    // and silently changing it would re-scale every angle this app reports.
     assert_eq!(ReplayConfig::default().method, Method::Relative);
+
+    // Beyond that, the field has to actually reach the angle mapping. An
+    // earlier form of this test only asserted `cfg.method == Method::Ockendon`
+    // immediately after setting it, which is a tautology about struct literals
+    // and would still have passed if `replay` ignored `cfg.method` entirely.
+    // `ema_alpha = 1.0` makes `ema_smooth` an identity pass (`1*v + 0*prev`),
+    // leaving `tick_resample`'s zero-order hold -- which only ever SELECTS a
+    // raw sample, never averages two -- between the mapping and the output.
+    // That is what makes the exact per-tick check below legitimate: the
+    // default alpha of 0.3 mixes ticks, and since `ockendon_deg` is
+    // non-linear, smoothing then mapping and mapping then smoothing disagree
+    // by ~5e-8. Comparing under a loosened tolerance to paper over that would
+    // be checking a formula the code does not actually compute.
+    let base = ReplayConfig { ema_alpha: 1.0, ..ReplayConfig::default() };
+    let log = ramp_release_log(200);
+    let relative = replay(&log, &base).expect("the ramp must score");
+    let ockendon = replay(&log, &ReplayConfig { method: Method::Ockendon, ..base })
+        .expect("the ramp must score under Ockendon too");
+
+    // Method is applied AFTER release detection, so it must not move the
+    // release: same instant, same zero pose, different angle mapping.
+    assert_eq!(relative.release_idx, ockendon.release_idx);
+    assert_eq!(relative.release_quat, ockendon.release_quat);
+    assert_eq!(relative.angle_deg.len(), ockendon.angle_deg.len());
+
+    // Index 0 is NaN by TrialResult's contract; compare the rest, and require
+    // at least one finite sample so an all-NaN series cannot pass vacuously.
+    let mut compared = 0usize;
+    for (i, (&r, &o)) in relative
+        .angle_deg
+        .iter()
+        .zip(ockendon.angle_deg.iter())
+        .enumerate()
+        .skip(1)
+    {
+        if !r.is_finite() || !o.is_finite() {
+            continue;
+        }
+        compared += 1;
+        // `Relative` is exactly `180 - swing`, so the swing that produced this
+        // tick is recoverable from it -- which lets the Ockendon tick be
+        // checked against the reference formula rather than merely asserted
+        // to be "different".
+        let swing = 180.0 - r;
+        let expected = ockendon_deg(swing, OCKENDON_FT_RATIO);
+        assert!(
+            (o - expected).abs() < 1e-9,
+            "tick {i}: Ockendon angle {o} does not match ockendon_deg({swing}) = {expected}"
+        );
+    }
+    assert!(compared > 0, "no finite ticks to compare; the fixture scored nothing usable");
+
+    // And the two mappings must genuinely disagree on this log -- otherwise
+    // the check above would hold even if `Method` were dead.
+    let differs = relative
+        .angle_deg
+        .iter()
+        .zip(ockendon.angle_deg.iter())
+        .skip(1)
+        .any(|(&r, &o)| r.is_finite() && o.is_finite() && (r - o).abs() > 1e-6);
+    assert!(differs, "Relative and Ockendon produced identical angles; Method is not reaching replay()");
 }
 
 #[test]
