@@ -75,6 +75,29 @@ body {
   background: var(--fault-bg);
 }
 
+/* The `hidden` attribute is the ONLY show/hide mechanism app.js has, and the
+   `display: block` above silently defeats it. `[hidden] { display: none }`
+   lives in the UA stylesheet, and author-origin declarations beat UA-origin
+   ones outright -- specificity never even enters into it. So without this
+   rule `el('stop').hidden = true` is a no-op: both buttons stay on screen for
+   the whole trial, and tapping Start during a live capture starts a SECOND
+   capture. That orphans the first worker, its flush interval, its devicemotion
+   listener and its wake lock with no handle left to stop any of them; the
+   orphan then fights the live session for the guide display, and one error
+   from it calls stop() on the good trial.
+
+   Restating it at author origin is necessary but not sufficient on its own: a
+   bare `[hidden]` selector is (0,1,0) and would still lose to `#start` at
+   (1,0,0) within this same stylesheet. These selectors are (1,1,0), so they
+   win.
+
+   `#result` is included for the same invariant even though it is not broken
+   today: it is the third element app.js toggles, it carries author rules, and
+   it only escapes this because nothing here sets its `display`. Stating the
+   rule once for all three means adding a `display` to any of them cannot
+   quietly reintroduce the bug. */
+#start[hidden], #stop[hidden], #result[hidden] { display: none; }
+
 /* ---- State guide --------------------------------------------------------
    The single largest element on the page. Each state carries its own
    background color, its own icon glyph, AND its own text label -- three
