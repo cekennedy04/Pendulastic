@@ -54,6 +54,14 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       const json = inner.finish_pt_score();
       return json === undefined ? undefined : JSON.parse(json);
     },
+    // Newline-delimited JSON of the raw accel/gyro/mag log (mobile-imu-core's
+    // export_jsonl(), the contract `tests/test_web_export_contract.py` pins).
+    // Unlike `finish`/`finishTrajectory`/`finishPtScore`, this has no
+    // undefined-on-unscorable case: `TrialSession::finish` takes `&self`, so
+    // the raw log survives scoring and this is available whether or not the
+    // trial was scorable at all -- an operator debugging exactly the "why
+    // didn't this score" question needs the log most when scoring failed.
+    exportJsonl: () => inner.export_jsonl(),
   };
 }
 
@@ -115,6 +123,14 @@ export function createWorkerHandler() {
           ? { type: 'result', params, trajectory: session.finishTrajectory() ?? null,
               ptScore: session.finishPtScore() ?? null }
           : { type: 'error', reason: 'unscorable' });
+      } else if (m.type === 'export') {
+        // Deliberately does not `await starting`+require a result the way
+        // `finish` does: the raw log is what an operator needs to diagnose
+        // *why* a trial didn't score, so export must work on an unscorable
+        // trial too. It only requires that a session exists at all.
+        await starting;
+        if (!session) throw new Error('export received before start');
+        post({ type: 'exportResult', jsonl: session.exportJsonl() });
       }
     } catch (err) {
       post({ type: 'error', reason: err instanceof Error ? err.message : String(err) });

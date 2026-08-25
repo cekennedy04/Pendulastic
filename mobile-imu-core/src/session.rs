@@ -68,6 +68,14 @@ impl TrialSession {
         self.samples.len()
     }
 
+    /// The accumulated raw log, in push order. `export_jsonl::export_jsonl`
+    /// formats exactly this slice -- accel-before-gyro at each timestamp
+    /// holds here because `push` (below) is the only thing that ever
+    /// appends, and every caller pushes accel then gyro per sample.
+    pub fn samples(&self) -> &[RawSample] {
+        &self.samples
+    }
+
     pub fn push(&mut self, s: RawSample) {
         if s.sensor == Sensor::Gyro && self.state != HoldState::Released {
             self.advance_hold(s.v, s.t);

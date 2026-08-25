@@ -5,6 +5,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::export_jsonl;
 use crate::params_json;
 use crate::pt_score::{pt_score_to_json, HEALTHY_REF};
 use crate::replay::{RawSample, ReplayConfig, Sensor};
@@ -97,5 +98,19 @@ impl WasmSession {
     pub fn finish_pt_score(&self) -> Option<String> {
         let (_, p) = self.inner.finish(None).ok()?;
         Some(pt_score_to_json(&p, &HEALTHY_REF))
+    }
+
+    /// Newline-delimited JSON of the raw accel/gyro/mag log, in the exact
+    /// wire format `tests/test_web_export_contract.py` (repo root) pins as
+    /// the contract into `imu_calibration_tuner.replay_trial` -- this is
+    /// what lets a trial captured on the phone be replayed through the
+    /// Python reference on a laptop. Pure delegation to
+    /// `export_jsonl::export_jsonl`, per this module's own logic-free
+    /// contract: all the formatting behaviour lives there, where
+    /// `cargo test` can reach it. Available before AND after `finish` --
+    /// `TrialSession::finish` takes `&self`, so scoring never consumes the
+    /// raw log.
+    pub fn export_jsonl(&self) -> String {
+        export_jsonl::export_jsonl(self.inner.samples())
     }
 }

@@ -105,3 +105,7 @@ mobile-imu-core/target/
 # separators, and a rustc version/commit string -- so a committed copy can
 # only ever be one machine's bytes masquerading as canonical.
 webapp/src/wasm/
+
+# Raw IMU trials captured via the webapp's "Send to laptop" /upload route
+# (dev_server.py). Participant-adjacent data -- must never be committed.
+webapp/captures/

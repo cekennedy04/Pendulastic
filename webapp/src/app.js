@@ -87,6 +87,103 @@ if (typeof document !== 'undefined') {
   // trajectory at the new canvas size instead of leaving a stretched bitmap
   // on screen until the next trial.
   let lastTrajectory = null;
+  // The just-finished capture handle, kept alive for Export after `session`
+  // itself is nulled below (onResult/onError null `session` unconditionally
+  // -- that is what makes tapping Start immediately after a result safe).
+  // `exportSession.exportJsonl()` still works after that: it is the same
+  // object, its worker is never terminated, and `TrialSession::finish` takes
+  // `&self`, so the wasm session's raw log survives scoring either way.
+  let exportSession = null;
+
+  // Raw-log export, KTD4: turns a captured trial into a laptop-replayable
+  // file. This is the ONLY way an on-device trial can be diagnosed at all --
+  // every prior analysis of the peak-at-release / missed-oscillation /
+  // post-release-drift symptoms was done on simulated data because the real
+  // capture could not leave the phone.
+  function timestampedFilename() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `pendulastic-trial-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+      `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.jsonl`;
+  }
+
+  function downloadViaAnchor(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function showExportControls() {
+    el('export-actions').hidden = false;
+    // `showSaveFilePicker` does not exist in Safari; Web Share API Level 2
+    // (`navigator.share({files})`) is the iOS mechanism, so it is the only
+    // control offered unconditionally. `Send to laptop` only makes sense
+    // when this very page was served by the dev server -- a production
+    // deploy has no `/upload` endpoint to receive it.
+    el('send-to-laptop').hidden = location.port !== '8900';
+    el('export-status').textContent = '';
+  }
+
+  function hideExportControls() {
+    el('export-actions').hidden = true;
+    el('export-status').textContent = '';
+  }
+
+  el('export-btn').addEventListener('click', async () => {
+    if (!exportSession) return;
+    el('export-status').textContent = 'exporting…';
+    try {
+      const jsonl = await exportSession.exportJsonl();
+      const filename = timestampedFilename();
+      const blob = new Blob([jsonl], { type: 'application/x-ndjson' });
+
+      let shared = false;
+      if (typeof navigator.canShare === 'function') {
+        const file = new File([blob], filename, { type: 'application/x-ndjson' });
+        let shareable = false;
+        try { shareable = navigator.canShare({ files: [file] }); } catch { shareable = false; }
+        if (shareable) {
+          try {
+            await navigator.share({ files: [file] });
+            shared = true;
+          } catch (err) {
+            // A user-cancelled share sheet is not a failure -- respect the
+            // cancellation rather than surprising them with an immediate
+            // download anyway. Any other share failure falls through to the
+            // plain-anchor fallback below.
+            if (err && err.name === 'AbortError') shared = true;
+          }
+        }
+      }
+      if (!shared) downloadViaAnchor(blob, filename);
+      el('export-status').textContent = `exported ${filename}`;
+    } catch (err) {
+      el('export-status').textContent = `export failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+
+  el('send-to-laptop').addEventListener('click', async () => {
+    if (!exportSession) return;
+    el('export-status').textContent = 'sending…';
+    try {
+      const jsonl = await exportSession.exportJsonl();
+      const filename = timestampedFilename();
+      const res = await fetch(`/upload?filename=${encodeURIComponent(filename)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-ndjson' },
+        body: jsonl,
+      });
+      if (!res.ok) throw new Error(`server returned ${res.status}`);
+      el('export-status').textContent = `sent to laptop as ${filename}`;
+    } catch (err) {
+      el('export-status').textContent = `send failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
 
   function resetToIdle() {
     el('start').hidden = false;
@@ -332,6 +429,10 @@ if (typeof document !== 'undefined') {
   function onResult(p, trajectory, ptScore) {
     const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory, ptScore });
     faulted = latched;
+    // Captured before `session` is nulled below: the worker (and its wasm
+    // session's raw log) is never terminated, so Export keeps working after
+    // the active-capture handle is gone.
+    exportSession = session;
     // Nulled on every terminal outcome (result, error, and the Stop
     // handler below) so a fresh Start never reuses a finished session.
     session = null;
@@ -344,6 +445,7 @@ if (typeof document !== 'undefined') {
     el('result').innerHTML = PARAM_ORDER
       .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
       .join('');
+    showExportControls();
     resetToIdle();
   }
 
@@ -361,6 +463,10 @@ if (typeof document !== 'undefined') {
   function onError(reason) {
     const { latched, action } = nextOutcome(faulted, { type: 'error', reason });
     faulted = latched;
+    // Captured before `session.stop()`/nulling below, same reasoning as
+    // onResult -- the raw log is most valuable to export precisely when the
+    // trial did NOT score cleanly.
+    exportSession = session;
     session?.stop();
     session = null;
     if (!action) return; // a fault already latched this trial -- ignore the bounce
@@ -372,6 +478,7 @@ if (typeof document !== 'undefined') {
       g.className = 'fault';
       g.textContent = `ERROR\n${action.reason}`;
     }
+    showExportControls();
     resetToIdle();
   }
 
@@ -382,6 +489,8 @@ if (typeof document !== 'undefined') {
     el('result').hidden = true;
     el('waveform-wrap').hidden = true;
     el('pt-score').hidden = true;
+    hideExportControls();
+    exportSession = null; // the previous trial's export must not survive into a new one
     lastTrajectory = null;
     el('calm').textContent = '—';
     el('drift').textContent = '—';

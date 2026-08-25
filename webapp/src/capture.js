@@ -57,12 +57,26 @@ export async function startCapture({ onState, onResult, onError }) {
   let wakeLock = null;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* best effort */ }
 
+  // Resolvers for in-flight `exportJsonl()` calls, FIFO -- exactly one
+  // `export`/`exportResult` round trip is ever in flight per call site
+  // (app.js awaits each call before starting another), so a simple queue is
+  // enough to route each reply to its promise without a per-message id.
+  const exportWaiters = [];
+
   const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'state') onState(m);
     else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
-    else if (m.type === 'error') onError(m.reason);
+    else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
+    else if (m.type === 'error') {
+      // A failed `export` request also comes back as `{type:'error'}`
+      // (worker.js's generic catch) -- route it to the waiting promise
+      // instead of the trial fault-latch, which an export failure has
+      // nothing to do with.
+      if (exportWaiters.length > 0) exportWaiters.shift().reject(new Error(m.reason));
+      else onError(m.reason);
+    }
   };
   worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3 } });
 
@@ -97,6 +111,18 @@ export async function startCapture({ onState, onResult, onError }) {
       flush();
       worker.postMessage({ type: 'finish' });
       wakeLock?.release?.().catch(() => {});
+    },
+    // Raw-log export (KTD4): resolves with the newline-delimited JSON of the
+    // whole trial. Callable any time the worker's session is still alive --
+    // in particular after `finish`, since `TrialSession::finish` takes
+    // `&self` and never consumes the raw log -- which is what lets the
+    // result screen's Export control fire after the trial has already
+    // scored (or failed to).
+    exportJsonl() {
+      return new Promise((resolve, reject) => {
+        exportWaiters.push({ resolve, reject });
+        worker.postMessage({ type: 'export' });
+      });
     },
   };
 }

@@ -33,10 +33,14 @@ change genuinely needs `SharedArrayBuffer`, that is a spec decision first, and
 this server follows it rather than leading it.
 """
 import http.server
+import json
 import os
+import re
 import socketserver
 import ssl
 import sys
+from datetime import datetime
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -49,6 +53,10 @@ from pendulastic_phone_server import (  # noqa: E402
 
 PORT = 8900
 WASM_DIR = os.path.join(HERE, "src", "wasm")
+# KTD4 raw-log export: captured trials land here so they can be replayed
+# through the Python reference. Participant-adjacent data -- see .gitignore.
+CAPTURES_DIR = os.path.join(HERE, "captures")
+_SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.jsonl$")
 # The four files `npm run build:wasm` produces. Checked before binding a port,
 # because a missing artifact otherwise surfaces on the phone as a blank page
 # and a console error nobody is looking at.
@@ -56,6 +64,23 @@ REQUIRED_ARTIFACTS = (
     "mobile_imu_core.js",
     "mobile_imu_core_bg.wasm",
 )
+
+
+def _safe_capture_filename(requested):
+    """Sanitize the client-supplied filename for a capture upload.
+
+    The client (app.js) sends its own timestamped name, but this is a
+    network-facing endpoint accepting an arbitrary query string, so the name
+    is never trusted outright: `os.path.basename` strips any directory
+    component (blocking `../../etc/passwd`-style traversal), and the result
+    must match a plain `name.jsonl` shape or it is replaced outright with a
+    freshly generated timestamp -- never rejected with an error, since a
+    saved-but-oddly-named capture is far better than a lost one.
+    """
+    name = os.path.basename(requested or "")
+    if _SAFE_FILENAME_RE.match(name):
+        return name
+    return "pendulastic-trial-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".jsonl"
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -91,6 +116,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # One line per request, without the timestamp noise; the console is
         # the operator's instructions, not a log.
         sys.stderr.write(f"  {self.command} {self.path}\n")
+
+    def do_POST(self):
+        # The only POST route this server has. Everything else about this
+        # class stays GET/HEAD-only via SimpleHTTPRequestHandler's defaults.
+        parsed = urlparse(self.path)
+        if parsed.path != "/upload":
+            self.send_error(404, "Not found")
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self.send_error(400, "Empty body")
+            return
+        body = self.rfile.read(length)
+
+        requested = parse_qs(parsed.query).get("filename", [""])[0]
+        filename = _safe_capture_filename(requested)
+
+        os.makedirs(CAPTURES_DIR, exist_ok=True)
+        dest = os.path.join(CAPTURES_DIR, filename)
+        with open(dest, "wb") as f:
+            f.write(body)
+        # The point of this whole route: an operator watching this console
+        # needs to see the file landed and exactly where, without hunting
+        # through webapp/captures/ themselves.
+        print(f"  saved capture: {dest} ({len(body)} bytes)")
+
+        payload = json.dumps({"ok": True, "filename": filename}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
 
 class Server(socketserver.ThreadingTCPServer):
