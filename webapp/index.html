@@ -47,4 +47,13 @@
   </div>
   <table id="result" hidden></table>
   <script type="module" src="./src/app.js"></script>
+  <script>
+    // Module service workers need {type:'module'} -- sw.js imports build-id.js.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { type: 'module' })
+          .catch((e) => console.warn('service worker registration failed', e));
+      });
+    }
+  </script>
 </body>
