@@ -3175,6 +3175,46 @@ class App(tk.Tk):
             self._start_video_file_processing(meta)
             return   # video_file is standalone — no live recording
 
+        # Refuse a gyro stream the AHRS cannot integrate.
+        #
+        # MIN_USABLE_HZ was advisory until now -- surfaced only as the status
+        # label below -- and three live trials were captured at 1 Hz gyro with
+        # that warning on screen the entire time. A warning the operator can
+        # miss is not enforcement. Decimating only the gyro stream of 12
+        # OptiTrack ground-truth trials gives a median RMSE of 13.35 deg at
+        # 100 Hz and 63.76 deg at 1 Hz: below the bar the reported angle is
+        # not a measurement, so the trial must not be captured at all rather
+        # than saved and scored later as if it were real.
+        #
+        # Deliberately not blocking when nothing is connected or the rate is
+        # not yet measurable -- see slow_gyro_roles().
+        if "imu" in sources and _IMU_AVAIL:
+            try:
+                slow = _imu.slow_gyro_roles(_imu.get_state())
+            except Exception:
+                slow = []          # never let this check itself block a trial
+            if slow:
+                worst_role, worst_hz = slow[0]
+                messagebox.showerror(
+                    "Gyro rate too low to record",
+                    "\n\n".join([
+                        f"The {worst_role} phone is sending gyro at "
+                        f"{worst_hz:.0f} Hz; at least "
+                        f"{_imu.MIN_USABLE_HZ:.0f} Hz is needed to track "
+                        f"the swing.",
+                        "Set the sensor app's update interval to 10 ms, "
+                        "confirm the rate readout has recovered, then "
+                        "start again.",
+                        "Recorded at this rate the angle is not a "
+                        "measurement: a 1 Hz capture scores 63° RMSE "
+                        "against motion capture, against 13° at full "
+                        "rate.",
+                    ]))
+                self._acq.status_var.set(
+                    f"Not started — {worst_role} gyro at {worst_hz:.0f} Hz "
+                    f"(need {_imu.MIN_USABLE_HZ:.0f} Hz)")
+                return
+
         # enter_recording() runs BEFORE starting the individual sources so
         # that a non-blocking status message a source sets on failure (e.g.
         # _start_rgb_recording()'s "no camera" notice) is the last thing
@@ -4406,10 +4446,11 @@ class App(tk.Tk):
                 # Low gyro rate makes AHRS integration unreliable regardless of
                 # flex-axis state -- surface it first. Same threshold/message
                 # pattern already used in pendulastic_viewer.py.
-                slow = [d for d in (st["proximal"], st["distal"])
-                        if d["connected"] and 0 < d.get("hz", 0) < _imu.MIN_USABLE_HZ]
+                # Same judgement as the record-start gate, so the label can
+                # never say "fine" while the gate refuses (or the reverse).
+                slow = _imu.slow_gyro_roles(st)
                 if slow:
-                    hz = min(d["hz"] for d in slow)
+                    hz = slow[0][1]
                     self._acq.lbl_method_status.config(
                         text=f"⚠ gyro only {hz:.0f} Hz — set the app's update "
                              f"interval to 10 ms (≥{_imu.MIN_USABLE_HZ:.0f} Hz needed)",
@@ -4457,23 +4498,87 @@ class App(tk.Tk):
     # Teardown
     # ------------------------------------------------------------------
     def on_close(self) -> None:
-        self._imu_poll_stop.set()
-        if self._imu_poll_thread:
-            self._imu_poll_thread.join(timeout=0.5)
-        if self._camera is not None:
-            writer = self._camera.detach_writer()
-            if writer is not None:
-                try:
-                    writer.release()
-                except Exception:
-                    pass
-            self._camera.close()
+        # Stopping the IMU server belongs HERE, not in destroy(), because the
+        # server is a module-level singleton shared by the whole process while
+        # every other resource below is per-App. destroy() runs ~120 times in a
+        # pytest process, and a stop()/start() cycle per App drives the server
+        # through a lifecycle its globals (_loop, _stop_evt, _ready_evt,
+        # _conn_active) are not scoped for: two supervisors can overlap and the
+        # older one's finally closes the NEWER one's event loop, after which
+        # every retry fails with "Event loop is closed" and the port never
+        # recovers. Starting once per process and never restarting is the
+        # regime this server is actually safe in. Generation-scoping those
+        # globals is the real fix and is tracked separately.
         if _IMU_AVAIL:
             try:
                 _imu.stop()
             except Exception:
                 pass
         self.destroy()
+
+    def destroy(self) -> None:
+        """Per-App teardown, in destroy() rather than on_close() so that every
+        caller gets it -- on_close() only fires for WM_DELETE_WINDOW, so a
+        plain destroy() used to leave this App's poll thread, camera and
+        pending timers behind. Process-global resources are NOT torn down
+        here; see on_close().
+        """
+        if getattr(self, "_teardown_done", False):
+            return
+        self._teardown_done = True
+        # The body runs under try/finally. _teardown_done latches on the way
+        # in, so a step that raised partway through would otherwise leave the
+        # window alive with its timers still armed *and* the guard set: the
+        # next click on X returns at the check above and the window can never
+        # be closed at all. Timer cancellation and super().destroy() have to
+        # happen whatever the resource teardown did.
+        try:
+            if getattr(self, "_imu_poll_stop", None) is not None:
+                self._imu_poll_stop.set()
+            if getattr(self, "_imu_poll_thread", None):
+                self._imu_poll_thread.join(timeout=0.5)
+            if getattr(self, "_camera", None) is not None:
+                writer = self._camera.detach_writer()
+                if writer is not None:
+                    try:
+                        writer.release()
+                    except Exception:
+                        pass
+                # PhoneCameraSession.close() ends in stop_stream_server(),
+                # which talks to a socket and can raise. A camera that fails
+                # to shut down must not take the window down with it.
+                try:
+                    self._camera.close()
+                except Exception:
+                    pass
+        finally:
+            # Drop pending after() callbacks. _tick reschedules itself every
+            # 50ms, so without this a timer outlives the interpreter and Tk
+            # reports 'invalid command name "..._tick"' on the way out.
+            #
+            # Cancel through Tcl rather than after_cancel(): the latter also
+            # calls deletecommand(), which drops the Tcl command but only
+            # unregisters it from *this* widget's _tclCommands. A timer
+            # scheduled by a child (the webcam viewer, say) stays listed on
+            # that child, so destroying it a moment later re-deletes the same
+            # command and raises "can't delete Tcl command". Cancelling alone
+            # is enough -- the command goes away with its owning widget.
+            #
+            # splitlist() rather than iterating the raw result: `after info`
+            # is not guaranteed to come back as a tuple (with wantobjects=0
+            # Tcl hands back a plain string), and iterating a string yields
+            # single characters -- every cancel would then fail into the inner
+            # except and the timer bug would return with no diagnostic at all.
+            # CPython's own Misc.after_info does the same for this reason.
+            try:
+                for aid in self.tk.splitlist(self.tk.call("after", "info")):
+                    try:
+                        self.tk.call("after", "cancel", aid)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            super().destroy()
 
 
 # ---------------------------------------------------------------------------

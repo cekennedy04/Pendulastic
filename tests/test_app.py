@@ -3136,3 +3136,187 @@ def test_mas_entry_panel_save_shows_error_on_invalid_mas_flexion(monkeypatch):
         assert "invalid mas_flexion" in app._mas_entry.error_var.get()
     finally:
         app.destroy()
+
+# --- teardown regressions (PR #32 review) ----------------------------------
+
+
+def _is_destroyed(widget):
+    """True once the interpreter is gone.
+
+    After a successful teardown winfo_exists() cannot answer -- the Tcl
+    application it would ask no longer exists -- so the TclError is itself
+    the confirmation.
+    """
+    try:
+        return not widget.winfo_exists()
+    except tk.TclError:
+        return True
+
+
+def test_destroy_completes_when_camera_close_raises():
+    """A camera that fails to shut down must not strand the window.
+
+    destroy() latches _teardown_done on the way in, so before the try/finally
+    a raising _camera.close() left the window mapped with its timers still
+    armed AND the guard set -- the next click on X returned at the guard, so
+    the window could never be closed at all.
+    """
+    from pendulastic_app import App
+
+    class ExplodingCamera:
+        def detach_writer(self):
+            return None
+
+        def close(self):
+            raise RuntimeError("stop_stream_server() failed")
+
+    app = App()
+    app.update()
+    app._camera = ExplodingCamera()
+    app.destroy()          # must not raise
+    assert _is_destroyed(app), "window survived a failing camera teardown"
+
+
+class _StringAfterInfo:
+    """tk proxy returning `after info` as a plain string.
+
+    Tcl does this with wantobjects=0; iterating the raw result then yields
+    single characters and every cancel fails silently into the inner except.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.cancelled = []
+
+    def call(self, *a):
+        if a[:2] == ("after", "info"):
+            return " ".join(self._real.call(*a))
+        if a[:2] == ("after", "cancel"):
+            self.cancelled.append(a[2])
+        return self._real.call(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_destroy_cancels_timers_when_after_info_returns_a_string():
+    from pendulastic_app import App
+    app = App()
+    app.update()
+    aid = app.after(60_000, lambda: None)
+    proxy = _StringAfterInfo(app.tk)
+    app.tk = proxy
+    app.destroy()
+    # Not merely "something was cancelled": iterating the string by character
+    # still calls `after cancel a`, which Tcl accepts as a no-op script name
+    # rather than an error. The real timer id is what has to come back.
+    assert aid in proxy.cancelled, (
+        "timer %r was never cancelled -- the sweep saw %r"
+        % (aid, proxy.cancelled[:8]))
+
+
+def test_conftest_survives_a_missing_display():
+    """pytest_configure must not abort the session without a display.
+
+    An exception out of pytest_configure kills collection for the whole run,
+    taking down the ~30 pure-computation files that need no Tk at all.
+    """
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "conftest_under_test", os.path.join(here, "conftest.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def boom(*a, **k):
+        raise tk.TclError("couldn't connect to display")
+
+    real_tk, saved_root = tk.Tk, tk._default_root
+    os.environ["PENDULASTIC_SHOW_TEST_WINDOWS"] = "1"   # skip the global patch
+    tk.Tk = boom
+    try:
+        mod.pytest_configure(None)
+    finally:
+        tk.Tk = real_tk
+        tk._default_root = saved_root
+        os.environ.pop("PENDULASTIC_SHOW_TEST_WINDOWS", None)
+
+    assert mod._anchor is None
+    mod.pytest_unconfigure(None)      # must tolerate a None anchor
+
+# --- MIN_USABLE_HZ enforcement at record start ------------------------------
+
+
+def _arm_imu_browser(app, monkeypatch, tmp_path):
+    """Put the app in the state on_start() sees for a browser-IMU trial."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("pendulastic_phone_server.start_imu_stream_server",
+                        lambda: ("192.168.1.50", 8881))
+    app._acq.pid_var.set("P1")
+    app._acq._src_imu_browser.set(True)
+    app._acq._on_imu_browser_checkbox_toggled()
+
+
+def test_on_start_refuses_to_record_below_min_usable_hz(monkeypatch, tmp_path):
+    """A warning the operator can miss is not enforcement.
+
+    Three live trials were recorded at 1 Hz gyro while the app displayed its
+    low-rate warning the whole time. Decimated against OptiTrack ground truth,
+    1 Hz yields 63.76 deg median RMSE against 13.35 at full rate -- so the
+    trial cannot be scored and must not be captured in the first place.
+    """
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 1.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        shown = []
+        monkeypatch.setattr(_m.messagebox, "showerror",
+                            lambda *a, **kw: shown.append(a))
+        app.on_start()
+        assert app._state != "recording",             "recording started at 1 Hz gyro; the rate bar was not enforced"
+        assert shown, "the operator was given no reason the trial did not start"
+        blob = " ".join(str(x) for x in shown).lower()
+        assert "hz" in blob and "10 ms" in blob,             "the message must name the rate and the fix, not just fail"
+    finally:
+        app.destroy()
+
+
+def test_on_start_proceeds_when_gyro_rate_is_healthy(monkeypatch, tmp_path):
+    """The gate must not become a new way for a good trial to fail."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 100.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        monkeypatch.setattr(_m._imu, "start_raw_log", lambda p: None)
+        app.on_start()
+        assert app._state == "recording"
+    finally:
+        app.destroy()
+
+
+def test_on_start_not_blocked_when_no_rate_is_known_yet(monkeypatch, tmp_path):
+    """A device that just connected has no measurable interval (hz == 0.0).
+    Treating that as 'too slow' would refuse every trial for the first second
+    and make the gate worse than the problem."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 0.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        monkeypatch.setattr(_m._imu, "start_raw_log", lambda p: None)
+        app.on_start()
+        assert app._state == "recording"
+    finally:
+        app.destroy()

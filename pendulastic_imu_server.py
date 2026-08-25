@@ -61,6 +61,34 @@ except ValueError:
 # same approach is used by pendulastic_phone_server.py.
 _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+# Longest gap still treated as a real gyro sample interval. Beyond this the
+# gap is a reconnect or a clock jump rather than a sample rate, and dt falls
+# back to _NOMINAL_GYRO_DT_S. Deliberately generous: a slow stream must be
+# integrated at its true rate, not silently rescaled (see on_gyro).
+_MAX_GYRO_DT_S = 2.0
+
+# dt used only when the true interval is unknowable (first sample after a
+# connect, or a phone that sends no usable timestamp).
+_NOMINAL_GYRO_DT_S = 0.01
+
+# A gyro-bias estimate is applied per-axis only when the axis mean is at least
+# this many standard errors from zero. Measured on a trial where the phone lay
+# still for 20.5 s: the true bias is 0.00376 rad/s, but the mean of a 1 s hold
+# window carries a typical error of 0.0119 rad/s -- three times the quantity it
+# is trying to measure. Applying such an estimate injected 23 deg of yaw drift
+# where leaving the bias at zero gave 1.8 deg. Lengthening the window does not
+# rescue it (a 5 s window still errs by 0.005 rad/s), because the limit is
+# sensor noise (per-axis std ~0.05 rad/s), not window length. So the estimate
+# is used only where it is statistically real.
+#
+# 3.0 rather than 2.0: swept over every 1 s window of that still trial, a 2
+# sigma gate accepts 8.7% of axes on pure noise and 3 sigma accepts 0.3%. The
+# asymmetry justifies the stricter bar -- a false accept injects drift that
+# grows without bound in yaw, while a false reject merely leaves a small bias
+# uncorrected, and roll/pitch are anchored by gravity anyway. A genuinely
+# large bias clears 3 sigma comfortably.
+GYRO_BIAS_MIN_SNR = 3.0
+
 # Madgwick filter gain. Higher = trusts accel/mag more (faster drift correction,
 # noisier); lower = trusts gyro more. 0.041 is Madgwick's suggested MARG value.
 BETA = 0.041
@@ -123,7 +151,16 @@ GYRO_BIAS_MIN_SAMPLES = 5   # below this the mean is too noisy to trust; keep bi
 # separation between those clusters on the accel axis, well under a clean
 # 2x bar, so accel alone is a weak signal here.
 GYRO_STATIONARY_MAX_RAD_S = 0.9
-ACCEL_STATIONARY_MAX_MPS2 = 0.18
+# Named ACCEL_STATIONARY_MAX_MPS2 until 2026-08-25, which was wrong and
+# actively misleading: find_stationarity_thresholds.py derived 0.18 from real
+# recordings, and every one of the 71 OptiTrack-matched trials in that corpus
+# reports accel in g, not m/s^2. 0.18 is a FRACTION OF GRAVITY. It sits
+# between that corpus's p50 (0.075 g, holds) and p75 (0.330 g, swing); read as
+# m/s^2 it would mean 0.018 g, below the p25 of genuine holds, and would
+# reject most of them. The old name also led the 2026-08-04 plan to assert
+# "raw accel samples are in m/s^2" as a global constraint about a corpus that
+# contains no such recording.
+ACCEL_STATIONARY_MAX_G = 0.18
 
 ROLE_PROXIMAL = "proximal"   # torso (hip) or thigh (knee)
 ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
@@ -307,7 +344,8 @@ def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
                           accel_buf: list[tuple[float, np.ndarray]],
                           now: float) -> bool:
     """True iff both buffers span the full GYRO_BIAS_WINDOW_S and stay within
-    GYRO_STATIONARY_MAX_RAD_S / ACCEL_STATIONARY_MAX_MPS2 peak-to-peak range
+    GYRO_STATIONARY_MAX_RAD_S (rad/s) and ACCEL_STATIONARY_MAX_G
+    (a fraction of measured gravity) peak-to-peak range
     -- checked per-axis (max over x/y/z of that axis's own peak-to-peak),
     not on the combined vector magnitude. Magnitude alone would miss a
     signal that oscillates DIRECTION at roughly constant magnitude (e.g.
@@ -327,8 +365,24 @@ def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
         ranges = vals.max(axis=0) - vals.min(axis=0)   # per-axis peak-to-peak
         return float(np.max(ranges))
 
+    # Measure the accel spread as a FRACTION of the window's own gravity
+    # magnitude, so the verdict does not depend on which unit the phone
+    # reports in. The iOS build of Sensor Stream sends g and the Android build
+    # sends m/s^2 -- _parse_xyz and calibrate_accel_bias both already handle
+    # that; this gate did not, and compared the raw reading against a bar that
+    # was calibrated on g-unit recordings. An m/s^2 device was therefore
+    # judged against a threshold 9.81x tighter than the validated one.
+    #
+    # On a g-reporting phone g_mag is ~1.0, so this is arithmetically the old
+    # comparison: every trial in the validated corpus is unaffected.
+    accel_vals = np.array([v for _, v in accel_buf])
+    g_mag = float(np.linalg.norm(accel_vals.mean(axis=0)))
+    if g_mag < 1e-9:
+        return False        # no usable gravity reference: not a still hold
+    accel_spread = _max_axis_peak_to_peak(accel_buf) / g_mag
+
     return (_max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S
-            and _max_axis_peak_to_peak(accel_buf) < ACCEL_STATIONARY_MAX_MPS2)
+            and accel_spread < ACCEL_STATIONARY_MAX_G)
 
 
 class _IMUDevice:
@@ -452,7 +506,15 @@ class _IMUDevice:
         confirmed, so under normal operation the buffer is populated."""
         if len(self._gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
             vals = np.array([v for _, v in self._gyro_hold_buf])
-            self.gyro_bias = vals.mean(axis=0)
+            mean = vals.mean(axis=0)
+            # Keep only axes whose mean is distinguishable from the window's
+            # own noise. An axis that fails is left at zero rather than
+            # carrying a noise sample forward as a correction: subtracting
+            # noise is strictly worse than subtracting nothing, and the error
+            # accumulates without bound in yaw, which has no other anchor.
+            sem = vals.std(axis=0, ddof=1) / math.sqrt(len(vals))
+            resolvable = np.abs(mean) >= GYRO_BIAS_MIN_SNR * sem
+            self.gyro_bias = np.where(resolvable, mean, 0.0)
 
     def calibrate_accel_bias(self, accel_hold_buf: list[tuple[float, np.ndarray]]) -> None:
         """Estimate this device's accelerometer static bias from a
@@ -531,13 +593,24 @@ class _IMUDevice:
                                if t >= bias_cutoff]
         v_corr = np.asarray(v, float) - self.gyro_bias
 
-        # dt from the phone's own clock when plausible, else wall clock — the
-        # phone clock is steadier than network arrival jitter.
+        # dt from the phone's own clock when plausible — it is steadier than
+        # network arrival jitter. The upper bound only rejects a gap that
+        # cannot be a sample interval (a reconnect, or a clock jump); a real
+        # interval is used as measured, however long.
+        #
+        # This bound was 0.5 s, which silently substituted _NOMINAL_GYRO_DT_S
+        # for any stream slower than 2 Hz. Sensor Stream Pro delivers gyro at
+        # 1.0 Hz while accel runs at 100 Hz (measured on a live trial: 16 gyro
+        # samples in 15.9 s), so every single sample integrated 10 ms of
+        # rotation where 1000 ms had elapsed -- a 100x under-integration that
+        # pinned the reported angle at 4.9 deg through a ~90 deg physical
+        # rotation. Substituting a constant for a measurable quantity is the
+        # bug; the fallback now applies only when dt is genuinely unknown.
         dt = None
         if self.last_gyro_t is not None and ts:
             dt = (ts - self.last_gyro_t) / 1000.0
-        if dt is None or not (0.0 < dt < 0.5):
-            dt = 0.01
+        if dt is None or not (0.0 < dt <= _MAX_GYRO_DT_S):
+            dt = _NOMINAL_GYRO_DT_S
         self.last_gyro_t = ts
         if self.accel is not None:
             # Magnetometer correction deliberately not used: indoor magnetic
@@ -620,6 +693,11 @@ _roles:   dict[str, str]        = {}      # ip → ROLE_PROXIMAL | ROLE_DISTAL
 _offset   = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}   # zeroing calibration
 _q_zero_prox: Optional[np.ndarray] = None
 _q_zero_dist: Optional[np.ndarray] = None
+# Gravity direction (unit vector) in the single-phone zero frame, captured at
+# zero(). Lets swing_angle_deg() discard rotation about the vertical, which
+# the filter cannot observe. Taken from the measured hold rather than assumed
+# to be +Z, so it stays correct for a phone mounted at any angle.
+_g_zero_solo: Optional[np.ndarray] = None
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
@@ -766,6 +844,22 @@ def is_stationary() -> bool:
         return all(d.is_stationary() for d in devices)
 
 
+def _gravity_dir_from_hold(accel_hold_buf: list) -> Optional[np.ndarray]:
+    """Unit gravity direction in the sensor frame from a stillness window.
+
+    During a genuine hold the mean accel is gravity, so its direction is the
+    vertical expressed in that sensor's own frame. Unit-agnostic: normalising
+    discards the g vs m/s^2 scale difference between the iOS and Android
+    builds, so no unit detection is needed here."""
+    if not accel_hold_buf:
+        return None
+    mean = np.mean([v for _, v in accel_hold_buf], axis=0)
+    n = float(np.linalg.norm(mean))
+    if n < 1e-9:
+        return None
+    return np.asarray(mean, float) / n
+
+
 def _log_zero_event(role: str, accel_hold_buf: list, gyro_hold_buf: list,
                      accel_bias: np.ndarray) -> None:
     """Append one diagnostic record of a zero()/auto-tare firing to
@@ -806,6 +900,7 @@ def zero():
     the auto-tare countdown confirms a stable hold, which is precisely when
     that buffer is genuinely motionless."""
     global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
+    global _g_zero_solo
     with _lock:
         cur = _raw_relative()
         for k in ("roll", "pitch", "yaw"):
@@ -823,6 +918,7 @@ def zero():
             dist.calibrate_gyro_bias()
             dist.calibrate_accel_bias(dist._accel_hold_buf)
             _q_zero_dist = dist.get_quaternion()
+            _g_zero_solo = _gravity_dir_from_hold(dist._accel_hold_buf)
             _log_zero_event(ROLE_DISTAL, dist._accel_hold_buf,
                              dist._gyro_hold_buf, dist.accel_bias)
         elif _q_zero_dist is None:
@@ -832,6 +928,7 @@ def zero():
                 solo.calibrate_gyro_bias()
                 solo.calibrate_accel_bias(solo._accel_hold_buf)
                 _q_zero_dist = solo.get_quaternion()
+                _g_zero_solo = _gravity_dir_from_hold(solo._accel_hold_buf)
                 solo_role = "solo:" + (ROLE_DISTAL if solo is dist else ROLE_PROXIMAL)
                 _log_zero_event(solo_role, solo._accel_hold_buf,
                                  solo._gyro_hold_buf, solo.accel_bias)
@@ -843,11 +940,13 @@ def zero():
 
 def clear_zero():
     global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
+    global _g_zero_solo
     with _lock:
         for k in _offset:
             _offset[k] = 0.0
         _q_zero_prox = None
         _q_zero_dist = None
+        _g_zero_solo = None
         _flex_axis       = None
         _flex_axis_armed = False
 
@@ -877,6 +976,7 @@ def swing_angle_deg() -> float:
             q_rel_cur  = _qmul(_qconj(prox.get_quaternion()),
                                 dist.get_quaternion())
             q_delta = _qmul(_qconj(q_rel_zero), q_rel_cur)
+            solo_mode = False
         else:
             solo = next(
                 (d for d in (dist, prox) if d is not None and d.connected),
@@ -889,6 +989,7 @@ def swing_angle_deg() -> float:
             if q_zero is None:
                 return float("nan")
             q_delta = _qmul(_qconj(q_zero), solo.get_quaternion())
+            solo_mode = True
 
         if _flex_axis is not None:
             # Axis-projected angle: decomposes q_delta into axis-angle form and
@@ -902,8 +1003,38 @@ def swing_angle_deg() -> float:
                 return abs(math.degrees(theta * float(np.dot(u, _flex_axis))))
             return 0.0
 
+        if solo_mode and _g_zero_solo is not None:
+            # No flexion axis captured yet. Report rotation ACROSS gravity
+            # only, discarding rotation about it.
+            #
+            # Yaw is unobservable here: the magnetometer correction is
+            # deliberately disabled (see on_gyro) and gravity carries no
+            # heading information, so yaw free-integrates whatever gyro error
+            # remains, without bound. The old axis-agnostic distance counted
+            # that drift as knee flexion -- measured on a live trial, a phone
+            # lying still, whose gravity vector moved 0.19 deg, reported 86.9
+            # deg of flexion, and the drift decomposed as roll 0.01, pitch
+            # 0.11, yaw 22.83.
+            #
+            # Projecting the rotation axis perpendicular to the zero-frame
+            # vertical mirrors what the captured-axis path above already does,
+            # and leaves rotation across gravity -- the flexion we can
+            # actually observe -- untouched. It does assume flexion is not
+            # about the vertical, which is true for a pendulum test but is why
+            # the captured anatomical axis is still preferred when available.
+            q = q_delta if q_delta[0] >= 0.0 else -q_delta
+            sin_half = float(np.linalg.norm(q[1:]))
+            if sin_half <= 1e-9:
+                return 0.0
+            theta = 2.0 * math.acos(min(1.0, float(q[0])))
+            u = q[1:] / sin_half
+            u_across = u - float(np.dot(u, _g_zero_solo)) * _g_zero_solo
+            return abs(math.degrees(theta * float(np.linalg.norm(u_across))))
+
         # Fallback: total quaternion rotation distance (axis-agnostic).
-        # dot(q_zero, q_current) == q_delta[0] for unit quaternions.
+        # Reached for the two-phone case, where common-mode yaw drift largely
+        # cancels in the relative rotation, and when no gravity reference was
+        # captured. dot(q_zero, q_current) == q_delta[0] for unit quaternions.
         dot = max(-1.0, min(1.0, abs(float(q_delta[0]))))
         return 2.0 * math.degrees(math.acos(dot))
 
@@ -961,6 +1092,38 @@ def reset_sync():
     with _lock:
         for d in _devices.values():
             d.reset_sync()
+
+
+def slow_gyro_roles(state: dict) -> list:
+    """(role, hz) for every connected device whose gyro rate is below
+    MIN_USABLE_HZ, worst first. Empty when every connected device is usable.
+
+    One shared judgement of "too slow to integrate", so the live status label
+    and the record-start gate cannot drift apart.
+
+    A rate of 0.0 means not-yet-measurable -- gyro_hz needs two samples in its
+    trailing window, so a device that just connected reports 0.0. Treating
+    that as "too slow" would refuse every trial for its first second, which
+    would be a worse failure than the one this guards against. A disconnected
+    device is not this check's business either; its last reading is stale.
+
+    The bar itself: decimating only the gyro stream of 12 OptiTrack
+    ground-truth trials gives a median RMSE of 13.35 deg at 100 Hz, 14.04 at
+    25 Hz, 18.38 at 10 Hz, 19.98 at 2 Hz and 63.76 at 1 Hz. Degradation is
+    gradual until it collapses, and MIN_USABLE_HZ = 25 sits where the error is
+    still within about 1 deg of a full-rate capture.
+    """
+    out = []
+    for role in (ROLE_PROXIMAL, ROLE_DISTAL):
+        dev = state.get(role) or {}
+        try:
+            hz = float(dev.get("hz") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if dev.get("connected") and 0.0 < hz < MIN_USABLE_HZ:
+            out.append((role, hz))
+    out.sort(key=lambda pair: pair[1])
+    return out
 
 
 def get_state() -> dict:

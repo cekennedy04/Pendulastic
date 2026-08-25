@@ -929,11 +929,14 @@ def test_is_stationary_window_false_for_handling_gyro():
 
 def test_is_stationary_window_false_for_handling_accel():
     """A window with flat gyro but accel's z-axis swinging well past
-    ACCEL_STATIONARY_MAX_MPS2 -- e.g. the limb being lifted/repositioned
+    ACCEL_STATIONARY_MAX_G -- e.g. the limb being lifted/repositioned
     without much rotation -- must not count as stationary. Scaled relative
     to the actual threshold, same reasoning as the gyro case above."""
     now = 10.0
-    half_amp = imu.ACCEL_STATIONARY_MAX_MPS2 * 1.5
+    # Amplitude relative to the gravity magnitude this window is built around
+    # (9.81 below), because the threshold is a fraction of gravity, not an
+    # absolute reading -- see ACCEL_STATIONARY_MAX_G.
+    half_amp = imu.ACCEL_STATIONARY_MAX_G * 9.81 * 1.5 / 2.0
     gyro_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.01, -0.01, 0.0]))
                 for i in range(21)]
     accel_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05,
@@ -1302,3 +1305,237 @@ def test_zero_logs_event_for_solo_proximal_device(tmp_path, monkeypatch):
 
     imu.reset_devices()
     imu.clear_zero()
+
+# --- live-trial regressions (2026-08-25 hardware session) -------------------
+#
+# Three defects found from recorded trials in data/PID_test_LEG_Right_MS_*.
+# See each test for the measurement that motivated it.
+
+
+def _solo_device(monkeypatch, ident="10.0.0.9"):
+    """A single connected device registered as proximal, with module state
+    reset. Mirrors the real single-phone setup used for the pendulum test."""
+    import time as _time
+    dev = imu._IMUDevice(ident)
+    dev.last_rx = _time.time()
+    monkeypatch.setattr(imu, "_devices", {ident: dev})
+    monkeypatch.setattr(imu, "_roles", {ident: imu.ROLE_PROXIMAL})
+    monkeypatch.setattr(imu, "_q_zero_prox", None)
+    monkeypatch.setattr(imu, "_q_zero_dist", None)
+    monkeypatch.setattr(imu, "_flex_axis", None)
+    monkeypatch.setattr(imu, "_flex_axis_armed", False)
+    return dev
+
+
+def test_gyro_dt_uses_the_true_interval_not_the_10ms_fallback(monkeypatch):
+    """A slow gyro stream must integrate over its real interval.
+
+    Sensor Stream Pro delivered gyro at 1.0 Hz while accel ran at 100 Hz
+    (measured: TRIAL_1, 16 gyro samples in 15.9 s). The real dt of 1.0 s
+    failed the old `0.0 < dt < 0.5` window, so 0.01 s was substituted on
+    100% of samples -- a 100x under-integration that froze the reported
+    angle at 4.9 deg through a ~90 deg physical rotation.
+    """
+    dev = _solo_device(monkeypatch)
+    seen = []
+    real = dev.ahrs.update
+    monkeypatch.setattr(dev.ahrs, "update",
+                        lambda g, a, m_, dt: seen.append(dt) or real(g, a, m_, dt))
+    dev.on_accel(np.array([0.0, 0.0, 9.81]), 1000)
+    dev.on_gyro(np.array([0.0, 0.0, 0.1]), 1000)
+    dev.on_gyro(np.array([0.0, 0.0, 0.1]), 2000)      # exactly 1.0 s later
+    assert seen, "the AHRS was never updated"
+    assert seen[-1] == pytest.approx(1.0, abs=1e-6), (
+        "dt %r: a 1 s gyro interval was replaced by the 10 ms fallback" % seen[-1])
+
+
+def test_gyro_bias_rejected_when_indistinguishable_from_its_own_noise(monkeypatch):
+    """Do not apply a bias the hold window cannot actually resolve.
+
+    Measured on TRIAL_3, where the phone lay still for the full 20.5 s: the
+    true bias is 0.00376 rad/s, but the mean of a 1 s window carries a
+    typical error of 0.0119 rad/s -- 3x the quantity being estimated. The
+    app duly applied a bias whose error was 0.0145 rad/s, and subtracting
+    it injected 23 deg of yaw drift where leaving it at zero gave 1.8 deg.
+    """
+    dev = _solo_device(monkeypatch)
+    rng = np.random.default_rng(0)
+    # Sensor noise measured on that trial: per-axis std ~0.05 rad/s.
+    samples = rng.normal(0.0, 0.05, size=(60, 3))
+    dev._gyro_hold_buf = [(float(i), v) for i, v in enumerate(samples)]
+    dev.calibrate_gyro_bias()
+    assert np.allclose(dev.gyro_bias, 0.0), (
+        "applied bias %s estimated from pure noise" % dev.gyro_bias)
+
+
+def test_gyro_bias_still_applied_when_clearly_resolvable(monkeypatch):
+    """The guard above must not disable calibration on a device that has a
+    real, measurable bias -- only on estimates buried in their own noise."""
+    dev = _solo_device(monkeypatch)
+    rng = np.random.default_rng(1)
+    true_bias = np.array([0.08, -0.06, 0.05])          # ~4 deg/s, well resolvable
+    samples = true_bias + rng.normal(0.0, 0.05, size=(60, 3))
+    dev._gyro_hold_buf = [(float(i), v) for i, v in enumerate(samples)]
+    dev.calibrate_gyro_bias()
+    assert np.linalg.norm(dev.gyro_bias - true_bias) < 0.02, (
+        "a clearly resolvable bias %s was not applied (got %s)"
+        % (true_bias, dev.gyro_bias))
+
+
+def _settle_flat(dev, n=60):
+    """Drive a flat, motionless phone until the AHRS has locked onto gravity
+    along sensor +Z, then zero(). Returns the captured zero quaternion."""
+    for i in range(1, n + 1):
+        dev.on_accel(np.array([0.0, 0.0, 9.81]), 20 * i)
+        dev.on_gyro(np.zeros(3), 20 * i)
+    imu.zero()
+    return dev.get_quaternion()
+
+
+def _rotate_from_zero(dev, q_zero, axis, deg):
+    """Place the device at `deg` about `axis` of the ZERO frame.
+
+    Sensor +Z is the gravity direction at the zero pose (the phone is flat),
+    so axis=[0,0,1] is rotation about the vertical -- pure, unobservable yaw
+    -- and axis=[1,0,0] is rotation across gravity, i.e. real flexion.
+    """
+    th = math.radians(deg) / 2.0
+    u = np.asarray(axis, float)
+    u = u / np.linalg.norm(u)
+    q_rel = np.concatenate(([math.cos(th)], u * math.sin(th)))
+    dev.ahrs.q = imu._qmul(q_zero, q_rel)
+
+
+def test_solo_swing_angle_ignores_rotation_about_gravity(monkeypatch):
+    """Yaw is unobservable, so it must not be reported as knee flexion.
+
+    The magnetometer correction is deliberately disabled and gravity carries
+    no yaw information, so yaw free-integrates gyro error. With no flexion
+    axis captured, swing_angle_deg() fell back to total quaternion distance
+    -- which includes that yaw. Measured on TRIAL_3: a phone whose gravity
+    vector moved 0.19 deg reported 86.9 deg of knee flexion, and that drift
+    decomposed as d_roll 0.01, d_pitch 0.11, d_yaw 22.83.
+    """
+    dev = _solo_device(monkeypatch)
+    q_zero = _settle_flat(dev)
+    assert imu._flex_axis is None, "test intends the axis-agnostic fallback"
+    _rotate_from_zero(dev, q_zero, [0.0, 0.0, 1.0], 40.0)
+    swing = imu.swing_angle_deg()
+    assert swing == pytest.approx(0.0, abs=1.0), (
+        "reported %.2f deg of flexion for 40 deg purely about gravity" % swing)
+
+
+def test_solo_swing_angle_still_reports_rotation_across_gravity(monkeypatch):
+    """The projection must not blind the fallback to real flexion."""
+    dev = _solo_device(monkeypatch)
+    q_zero = _settle_flat(dev)
+    _rotate_from_zero(dev, q_zero, [1.0, 0.0, 0.0], 40.0)
+    swing = imu.swing_angle_deg()
+    assert swing == pytest.approx(40.0, abs=2.0), (
+        "flexion across gravity should survive the projection (got %.2f)" % swing)
+
+# --- MIN_USABLE_HZ enforcement ---------------------------------------------
+
+
+def test_slow_gyro_roles_flags_a_connected_device_below_the_minimum():
+    """Measured against OptiTrack on 12 ground-truth trials, decimating only
+    the gyro stream: median RMSE is 13.35 deg at 100 Hz, 14.04 at 25 Hz, and
+    63.76 at 1 Hz. Below MIN_USABLE_HZ the orientation is not a measurement,
+    so the rate has to be reportable as a single shared judgement rather than
+    re-derived at each call site."""
+    state = {
+        "proximal": {"connected": True, "hz": 1.0},
+        "distal":   {"connected": False, "hz": 0.0},
+    }
+    assert imu.slow_gyro_roles(state) == [("proximal", 1.0)]
+
+
+def test_slow_gyro_roles_ignores_unknown_rate_and_disconnected_devices():
+    """hz == 0.0 means 'not yet known' -- a device that just connected has no
+    interval to measure. Blocking on that would refuse every trial for the
+    first second. A disconnected device is not this check's business."""
+    state = {
+        "proximal": {"connected": True,  "hz": 0.0},    # just connected
+        "distal":   {"connected": False, "hz": 1.0},    # gone, stale reading
+    }
+    assert imu.slow_gyro_roles(state) == []
+
+
+def test_slow_gyro_roles_accepts_a_healthy_rate():
+    state = {
+        "proximal": {"connected": True, "hz": imu.MIN_USABLE_HZ},
+        "distal":   {"connected": True, "hz": 100.0},
+    }
+    assert imu.slow_gyro_roles(state) == []
+
+
+def test_slow_gyro_roles_reports_every_slow_device_worst_first():
+    state = {
+        "proximal": {"connected": True, "hz": 12.0},
+        "distal":   {"connected": True, "hz": 3.0},
+    }
+    assert imu.slow_gyro_roles(state) == [("distal", 3.0), ("proximal", 12.0)]
+
+# --- stillness gate must not depend on the accelerometer's unit ------------
+
+
+def _buf(vals, span=1.0):
+    """A trailing buffer spanning the full stillness window."""
+    n = len(vals)
+    return [(i * span / (n - 1), np.asarray(v, float)) for i, v in enumerate(vals)]
+
+
+def _accel_window(p2p_fraction_of_g, n=60):
+    """A window around gravity on Z whose worst per-axis peak-to-peak is
+    `p2p_fraction_of_g` times gravity. Built in m/s^2; the caller divides by
+    9.81 to get the same physical motion expressed in g."""
+    half = 9.81 * p2p_fraction_of_g / 2.0
+    z = np.linspace(9.81 - half, 9.81 + half, n)
+    return [[0.0, 0.0, float(v)] for v in z]
+
+
+def test_stillness_gate_gives_the_same_verdict_in_g_and_in_mps2():
+    """The iOS build of the sensor app reports accel in g and the Android
+    build in m/s^2 -- _parse_xyz and calibrate_accel_bias both already handle
+    that. _is_stationary_window did not: it compared the raw reading against a
+    threshold derived from g-unit recordings (all 71 OptiTrack-matched trials
+    in the corpus report g), so an m/s^2 device was judged against a bar
+    9.81x tighter than the validated one.
+
+    The invariant that matters is not which unit is "right" -- it is that the
+    same physical motion must produce the same verdict either way. This gate
+    decides when gyro-bias calibration may fire; two phones in the same clinic
+    disagreeing about what "still" means is the defect.
+    """
+    still_gyro = _buf([[0.0, 0.0, 0.0]] * 60)
+
+    # 0.05 g of spread: comfortably inside the 0.18 g bar, but 0.49 m/s^2 in
+    # absolute terms, which the raw comparison read as past a 0.18 "m/s^2"
+    # bar. This is exactly the band where the two unit readings disagreed, so
+    # an amplitude outside it would pass with or without the fix.
+    mps2 = _accel_window(0.05)
+    as_g = [[c / 9.81 for c in v] for v in mps2]      # same motion, in g
+
+    verdict_mps2 = imu._is_stationary_window(still_gyro, _buf(mps2), 1.0)
+    verdict_g    = imu._is_stationary_window(still_gyro, _buf(as_g), 1.0)
+
+    assert verdict_g == verdict_mps2, (
+        "same physical motion, different unit: m/s^2 -> %s but g -> %s"
+        % (verdict_mps2, verdict_g))
+    assert verdict_g is True, "0.05 g of spread is well inside the 0.18 g bar"
+
+    # Anchor the other end: real motion must fail in both units too.
+    big = _accel_window(0.50)
+    big_g = [[c / 9.81 for c in v] for v in big]
+    assert imu._is_stationary_window(still_gyro, _buf(big), 1.0) is False
+    assert imu._is_stationary_window(still_gyro, _buf(big_g), 1.0) is False
+
+
+def test_stillness_gate_still_accepts_a_genuinely_still_window_in_both_units():
+    """The unit fix must not make the gate so strict that a real hold fails."""
+    still_gyro = _buf([[0.0, 0.0, 0.0]] * 60)
+    still_mps2 = _accel_window(0.02)       # 0.02 g spread -- sensor noise only
+    still_g = [[c / 9.81 for c in v] for v in still_mps2]
+
+    assert imu._is_stationary_window(still_gyro, _buf(still_mps2), 1.0) is True
+    assert imu._is_stationary_window(still_gyro, _buf(still_g), 1.0) is True
