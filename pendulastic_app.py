@@ -187,6 +187,40 @@ class DataManager:
         suffix = f"_{source}" if source else ""
         return f"PID_{pid}_LEG_{leg_s}_{ms_s}_TRIAL_{trial}{suffix}.csv"
 
+    @staticmethod
+    def save_quality_flags(imu_csv_path: str, issues: list) -> "str | None":
+        """Write <trial>_quality.json beside a trial's CSV. Returns the path,
+        or None when there is nothing to report.
+
+        A sibling file on the trial's own base name, matching the existing
+        _imu_raw.jsonl convention, rather than an entry in
+        pt_report_common's trial_quality_tags.json. Those registries are keyed
+        by trial_key(), which is parsed out of the Recordings/ directory
+        layout: participant number, leg, condition. A trial recorded here
+        lands flat in data/ as PID_<free text>_LEG_<leg>_<cohort>_TRIAL_<n>,
+        has no participant number and no condition, and _parse_trial_path()
+        returns None for it. Nothing in this repo moves data/ into
+        Recordings/, so a key invented here would claim membership in a corpus
+        the trial is not part of. A sidecar needs no key and survives the
+        trial being renamed or filed later.
+
+        Absence means "no known problem": nothing is written for a clean
+        trial, so the presence of this file is itself the signal.
+        """
+        if not issues:
+            return None
+        import datetime as _dt          # module-local, matching this file
+        base = imu_csv_path[:-4] if imu_csv_path.endswith(".csv") else imu_csv_path
+        path = base + "_quality.json"
+        record = {
+            "schema": 1,
+            "written_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "issues": list(issues),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+        return path
+
     @classmethod
     def save_trial(
         cls,
@@ -3152,6 +3186,45 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Controller interface (called by AcquisitionPanel / PostProcessingPanel)
     # ------------------------------------------------------------------
+    def _reset_rate_tracking(self) -> None:
+        """Clear the per-trial gyro-rate tally. Called at the start of every
+        recording so one trial's degradation never lands on the next."""
+        self._rec_rate_samples = 0
+        self._rec_rate_below = 0
+        self._rec_min_gyro_hz = None
+
+    def _write_imu_quality_sidecar(self, imu_csv_path: str):
+        """Flag a trial whose gyro rate dipped below MIN_USABLE_HZ mid-capture.
+
+        on_start() refuses to BEGIN below the bar, but a stream that degrades
+        after the countdown would otherwise be saved indistinguishable from a
+        clean trial and scored later as if it were one. Decimated against
+        OptiTrack ground truth, a 1 Hz capture scores 63.76 deg RMSE against
+        13.35 at full rate, so this is not a cosmetic note.
+        """
+        # getattr: on_stop() is reachable without a matching on_start() (batch
+        # paths, and a partially-constructed App), same defensive shape
+        # destroy() uses for its teardown handles.
+        below = getattr(self, "_rec_rate_below", 0)
+        samples = getattr(self, "_rec_rate_samples", 0)
+        if not below or not _IMU_AVAIL:
+            return None
+        frac = (below / samples) if samples else 0.0
+        issue = {
+            "kind": "low_gyro_rate",
+            "min_hz": float(getattr(self, "_rec_min_gyro_hz", None) or 0.0),
+            "min_usable_hz": float(_imu.MIN_USABLE_HZ),
+            "fraction_below": round(frac, 4),
+            "samples": int(samples),
+            "detail": ("gyro rate fell below MIN_USABLE_HZ during capture; "
+                       "the reported angle is not a reliable measurement for "
+                       "the affected span"),
+        }
+        try:
+            return DataManager.save_quality_flags(imu_csv_path, [issue])
+        except OSError:
+            return None      # never let a diagnostic write fail the save
+
     def on_start(self) -> None:
         meta    = self._acq.get_metadata()
         sources = meta["sources"]
@@ -3167,6 +3240,7 @@ class App(tk.Tk):
 
         self._rec_angles     = {}
         self._rec_timestamps = {}
+        self._reset_rate_tracking()
         self._acq.clear_telemetry()
 
         # video_file is a fully standalone path — process it immediately and bypass
@@ -3292,6 +3366,7 @@ class App(tk.Tk):
                     source="imu")
                 imu_csv_path = DataManager.save_trial(fn_imu, angles_imu, meta,
                                        timestamps=ts_imu, source="imu")
+                self._write_imu_quality_sidecar(imu_csv_path)
                 source_angles["imu"] = angles_imu
                 if _IMU_AVAIL:
                     imu_raw_log_path = _imu.stop_raw_log()
@@ -3785,6 +3860,7 @@ class App(tk.Tk):
         self._active_sources  = []
         self._rec_angles      = {}
         self._rec_timestamps  = {}
+        self._reset_rate_tracking()
         self._session_trials  = []
         self._acq.set_multi_trial_list([])
 
@@ -4443,6 +4519,22 @@ class App(tk.Tk):
                 and self._state in ("idle", "recording")):
             try:
                 st = _imu.get_state()
+                if self._state == "recording":
+                    # Tally the rate for this trial only. on_start() gates the
+                    # opening rate; this catches a stream that degrades after
+                    # the countdown, which would otherwise be indistinguishable
+                    # from a clean capture once saved.
+                    self._rec_rate_samples += 1
+                    hz_now = max((d.get("hz", 0.0) or 0.0)
+                                 for d in (st["proximal"], st["distal"])
+                                 if d.get("connected")) if any(
+                        d.get("connected") for d in (st["proximal"], st["distal"])) else 0.0
+                    if hz_now > 0.0:
+                        if (self._rec_min_gyro_hz is None
+                                or hz_now < self._rec_min_gyro_hz):
+                            self._rec_min_gyro_hz = hz_now
+                    if _imu.slow_gyro_roles(st):
+                        self._rec_rate_below += 1
                 # Low gyro rate makes AHRS integration unreliable regardless of
                 # flex-axis state -- surface it first. Same threshold/message
                 # pattern already used in pendulastic_viewer.py.

@@ -1,6 +1,7 @@
 # tests/test_app.py
 import csv, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import pytest
 import tkinter as tk
 
 
@@ -3318,5 +3319,131 @@ def test_on_start_not_blocked_when_no_rate_is_known_yet(monkeypatch, tmp_path):
         monkeypatch.setattr(_m._imu, "start_raw_log", lambda p: None)
         app.on_start()
         assert app._state == "recording"
+    finally:
+        app.destroy()
+
+# --- mid-recording gyro-rate degradation ------------------------------------
+#
+# on_start() refuses to BEGIN below MIN_USABLE_HZ, but a stream that degrades
+# after the countdown would otherwise be saved and scored later as if it were
+# a clean trial. The flag travels with the trial's own files rather than the
+# quality registries in pt_report_common: those index Recordings/, and nothing
+# in this repo moves data/ into it, so a trial_key for an app recording would
+# claim membership in a corpus the trial is not in.
+
+
+def test_save_quality_flags_writes_a_sidecar_beside_the_trial_csv(tmp_path):
+    import pendulastic_app as _m
+    csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv")
+    open(csv_path, "w").close()
+    issues = [{"kind": "low_gyro_rate", "min_hz": 3.0}]
+    out = _m.DataManager.save_quality_flags(csv_path, issues)
+    assert out == str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_1_imu_quality.json")
+    import json
+    rec = json.load(open(out))
+    assert rec["issues"] == issues
+    assert rec["schema"] == 1
+
+
+def test_save_quality_flags_writes_nothing_when_there_are_no_issues(tmp_path):
+    """Absence of the sidecar has to mean 'no known problem'. Writing an empty
+    one for every clean trial would make the signal worthless."""
+    import pendulastic_app as _m
+    csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_2_imu.csv")
+    open(csv_path, "w").close()
+    assert _m.DataManager.save_quality_flags(csv_path, []) is None
+    assert not (tmp_path / "PID_P1_LEG_Right_MS_TRIAL_2_imu_quality.json").exists()
+
+
+def _tick_with_rate(app, monkeypatch, hz, n=3):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._imu, "get_state", lambda: {
+        "proximal": {"connected": True, "hz": hz},
+        "distal":   {"connected": False, "hz": 0.0},
+        "flex_axis_captured": True, "flex_axis_armed": False,
+    })
+    for _ in range(n):
+        app._tick()
+
+
+def test_tick_tracks_a_gyro_rate_dip_while_recording(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        _tick_with_rate(app, monkeypatch, 100.0, n=4)
+        _tick_with_rate(app, monkeypatch, 4.0, n=2)
+        assert app._rec_min_gyro_hz == pytest.approx(4.0)
+        assert app._rec_rate_below == 2
+        assert app._rec_rate_samples == 6
+    finally:
+        app.destroy()
+
+
+def test_tick_does_not_track_a_dip_when_the_rate_is_healthy(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        _tick_with_rate(app, monkeypatch, 100.0, n=5)
+        assert app._rec_rate_below == 0
+        assert app._rec_min_gyro_hz == pytest.approx(100.0)
+    finally:
+        app.destroy()
+
+
+def test_tick_does_not_track_the_rate_while_idle(monkeypatch):
+    """Only what happened during the trial belongs on the trial."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "idle"
+        app._reset_rate_tracking()
+        _tick_with_rate(app, monkeypatch, 2.0, n=4)
+        assert app._rec_rate_samples == 0
+        assert app._rec_rate_below == 0
+    finally:
+        app.destroy()
+
+
+def test_imu_quality_sidecar_records_the_observed_dip(monkeypatch, tmp_path):
+    import json
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._reset_rate_tracking()
+        app._rec_rate_samples = 100
+        app._rec_rate_below = 37
+        app._rec_min_gyro_hz = 3.5
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_3_imu.csv")
+        open(csv_path, "w").close()
+        out = app._write_imu_quality_sidecar(csv_path)
+        assert out, "a trial that dipped below the bar must be flagged"
+        rec = json.load(open(out))
+        issue = rec["issues"][0]
+        assert issue["kind"] == "low_gyro_rate"
+        assert issue["min_hz"] == pytest.approx(3.5)
+        assert issue["min_usable_hz"] == pytest.approx(_m._imu.MIN_USABLE_HZ)
+        assert issue["fraction_below"] == pytest.approx(0.37)
+    finally:
+        app.destroy()
+
+
+def test_imu_quality_sidecar_absent_for_a_clean_trial(monkeypatch, tmp_path):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._reset_rate_tracking()
+        app._rec_rate_samples = 100
+        app._rec_rate_below = 0
+        app._rec_min_gyro_hz = 100.0
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_4_imu.csv")
+        open(csv_path, "w").close()
+        assert app._write_imu_quality_sidecar(csv_path) is None
     finally:
         app.destroy()
