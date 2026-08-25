@@ -54,3 +54,36 @@
   - **Pros:** Cheap to decide once (e.g. show a disambiguating ID/date-added alongside name).
   - **Cons:** None significant — small UI decision.
   - **Depends on:** U8.
+
+## Web capture app debt (from the `webapp-core-capture` whole-branch review, 2026-08-25)
+
+These are rulings the branch made and lived with. They were recorded only under
+`.superpowers/`, which is gitignored and does not survive the merge, so they are
+restated here with enough context to act on without that scratch space.
+
+- **Hold-drift is coaching-only; it does not reach the score.**
+  - **What:** `session.rs`'s drift gate resets the live UI to `Moving`, but `TrialSession::finish` hands the log to `replay`, whose `ReleaseDetector` knows only the rate gate. A trial released after large accumulated drift therefore scores 20 parameters indistinguishable from a clean one.
+  - **Why:** The design spec's answer is `capture_quality: {low_confidence: 'hold_drift'}`, deferred to the persistence plan. Until that lands there is no in-app signal at all — the clinician sees a normal-looking result.
+  - **Depends on:** The `capture_quality` / persistence work (KTD11 + R14 + U13).
+
+- **The capture capability floor has no owner.**
+  - **What:** The spec binds ≥50 Hz, zero `dt == 0`, and zero `dt` outside `(0, 500) ms`, but nothing implements or measures any of it. `replay.rs` silently substitutes `dt = 0.01` for out-of-range intervals, and `capture.js` silently drops samples once its `CAP`-sized accumulator fills.
+  - **Why:** Both are the documented 2026-08-17 defect class: they produce a plausible, clean-looking wrong answer, and the direction of the error makes a spastic limb look healthier. Surfacing `clamped_dt` / `dropped_samples` counters in the `state` message would convert the silence into a number the UI (and later the export) can act on.
+  - **Depends on:** Nothing blocking — the counters are additive to the existing worker `state` message.
+
+- **Gate thresholds are duplicated as UI literals.**
+  - **What:** `app.js` renders `0.95 s` and `5.00°` as hardcoded text, `wasm.rs` returns a hardcoded `0.95`, and `MAX_HOLD_DRIFT_DEG` is documented as uncalibrated and expected to move once shadow-study data exists.
+  - **Why:** When the threshold changes, the clinician is shown a target that is not the one being enforced, and no test fails. The gate values should cross the wasm boundary once and be rendered from there.
+  - **Depends on:** The KTD3 shadow study, which is what will actually move `MAX_HOLD_DRIFT_DEG`.
+
+- **The retroactive-release scrub UI is blocked at the wasm boundary.**
+  - **What:** `wasm.rs` collapses `TrialError::InsufficientSamples` and `TrialError::ReleaseNeverDetected` into a single `undefined`.
+  - **Why:** The KTD9 release-override recovery only makes sense for `ReleaseNeverDetected` — a too-short log cannot be recovered by scrubbing. The scrub UI cannot be built until the two are distinguishable across the boundary.
+  - **Depends on:** Nothing blocking — a discriminated return from `finish()`, then the UI.
+
+- **`cargo clippy` in CI cannot fail.**
+  - **What:** `.github/workflows/ci.yml`'s rust job runs `cargo clippy --all-targets` with no `-D warnings`, so the step is decorative: it currently emits two warnings (`needless_range_loop` on `q_dot` at `src/ahrs.rs:232` and on `omega` at `src/session.rs:105`) and still passes.
+  - **Why:** A check that cannot fail is worse than no check, because the pipeline reads as enforcing a lint standard it does not enforce. Either arm it with `-D warnings` and fix those two, or drop the step.
+  - **Depends on:** Nothing.
+
+- ~~**Two tests assert nothing.**~~ **RESOLVED 2026-08-25** — `mobile-imu-core/tests/replay_test.rs`'s `the_method_selects_between_relative_and_ockendon` asserted a struct field equalled what it had just been set to; it now runs `replay` under both methods and pins the Ockendon angles against `ockendon_deg` itself (mutation-checked). `webapp/tests/worker.test.js`'s malformed-cfg test accepted either of two message types; it now pins the one outcome that actually occurs (undefined gains coerce to NaN and a normal opening `state` is posted). That NaN coercion is itself worth a decision — a session built with NaN gains is accepted silently — but it is now pinned rather than absorbed by an either/or.
