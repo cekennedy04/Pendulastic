@@ -162,6 +162,51 @@ test('finish posted while start is still initialising waits for it instead of er
     `an all-calm trial must finish as 'unscorable', not as a protocol fault (got ${posted[2].reason})`);
 });
 
+test('finish posts a trajectory alongside the existing {type:"result", params} shape', async () => {
+  // Same fixture and drive path as the "recorded swing" test above, but
+  // through createWorkerHandler's message protocol (not createSession
+  // directly), so this exercises the exact `result` message capture.js/
+  // app.js receive: `{type:'result', params, trajectory}`. Task-N dispatch:
+  // the existing shape must keep working, with trajectory riding alongside.
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3, wasmSource } }, post);
+  for (const batch of fixture.batches) {
+    await handle({ type: 'batch', buf: Float64Array.from(batch).buffer }, post);
+  }
+  await handle({ type: 'finish' }, post);
+
+  const result = posted.find((m) => m.type === 'result');
+  assert.ok(result, 'the fixture must still be scorable');
+  assert.ok(result.params && typeof result.params === 'object',
+    'the pre-existing params shape must still be present');
+
+  const traj = result.trajectory;
+  assert.ok(traj, 'a trajectory must ride alongside params');
+  assert.ok(Array.isArray(traj.t) && traj.t.length > 0, 't must be the full non-empty tick series');
+  assert.ok(Array.isArray(traj.angle_deg), 'angle_deg must be an array');
+  assert.equal(traj.t.length, traj.angle_deg.length, 't and angle_deg must be the same length');
+  // Tick 0 is NaN by contract (mobile-imu-core/src/resample.rs) -> JSON
+  // null -> parses back as null, never as the illegal `NaN` token.
+  assert.equal(traj.angle_deg[0], null, 'tick 0 must parse back as null, not NaN');
+  assert.ok(traj.t.every((v) => typeof v === 'number'), 'every tick time must be finite');
+
+  assert.equal(typeof traj.release_idx, 'number');
+  assert.ok(traj.release_idx >= 0 && traj.release_idx < traj.t.length,
+    'release_idx must index into the full tick series');
+  assert.ok(Array.isArray(traj.peak_idx));
+  assert.ok(Array.isArray(traj.trough_idx));
+  for (const i of [...traj.peak_idx, ...traj.trough_idx]) {
+    assert.ok(Number.isInteger(i) && i >= 0 && i < traj.t.length,
+      `extremum index ${i} must index into the full tick series`);
+    assert.ok(typeof traj.angle_deg[i] === 'number',
+      `extremum index ${i} must land on a finite angle_deg tick`);
+  }
+  assert.equal(typeof traj.neutral_deg, 'number');
+});
+
 test('a malformed start cfg resolves to a real protocol message, not silence', async () => {
   const handle = createWorkerHandler();
   const posted = [];

@@ -47,7 +47,13 @@ const PARAM_ORDER = [
 export function nextOutcome(latched, event) {
   if (latched) return { latched: true, action: null };
   if (event.type === 'result') {
-    return { latched: false, action: { kind: 'result', params: event.params } };
+    const action = { kind: 'result', params: event.params };
+    // Only set when the caller actually passed one, so a test (or any
+    // caller) that builds a bare `{type:'result', params}` event -- the
+    // shape worker.js's `finish` message kept working -- gets back exactly
+    // `{kind:'result', params}`, with no stray `trajectory: undefined` key.
+    if ('trajectory' in event) action.trajectory = event.trajectory;
+    return { latched: false, action };
   }
   if (event.reason === 'unscorable') {
     return { latched: false, action: { kind: 'unscorable' } };
@@ -75,11 +81,200 @@ if (typeof document !== 'undefined') {
   // Set once a genuine fault has been displayed for the CURRENT trial;
   // reset at the start of every new trial. See `nextOutcome` above.
   let faulted = false;
+  // Kept so a viewport resize/orientation change can redraw the last
+  // trajectory at the new canvas size instead of leaving a stretched bitmap
+  // on screen until the next trial.
+  let lastTrajectory = null;
 
   function resetToIdle() {
     el('start').hidden = false;
     el('stop').hidden = true;
   }
+
+  // Draws `trajectory` (mobile-imu-core's finish_trajectory() payload, via
+  // worker.js) onto the result canvas: the whole tick series -- pre-release
+  // hold included -- angle (deg) against time (s), with the release point,
+  // every accepted peak/trough, and the neutral line marked. This is the
+  // waveform design spec §5 called for and the app never built: without it,
+  // a scorer bug (e.g. finding a release but no return peak) is invisible --
+  // the result screen showed 20 numbers and nothing an operator could check
+  // them against.
+  //
+  // Plain canvas 2D, no charting library (binding constraint). Favours one
+  // large, high-contrast plot over a dense one: this is read at arm's length
+  // by someone who just performed the swing and wants to confirm the trace
+  // matches it, not study it.
+  function drawWaveform(trajectory) {
+    const wrap = el('waveform-wrap');
+    const canvas = el('waveform');
+    if (!trajectory || !trajectory.t || trajectory.t.length === 0) {
+      wrap.hidden = true;
+      return;
+    }
+    lastTrajectory = trajectory;
+    wrap.hidden = false;
+
+    const { t, angle_deg: ang, release_idx, peak_idx, trough_idx, neutral_deg } = trajectory;
+
+    // Size the backing bitmap to the element's CSS box at device pixel
+    // density -- otherwise the plot is blurry on any real phone screen.
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 300;
+    const cssH = canvas.clientHeight || 220;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const finiteAng = ang.filter((v) => typeof v === 'number' && Number.isFinite(v));
+    if (finiteAng.length === 0) return;
+    let yLo = Math.min(...finiteAng);
+    let yHi = Math.max(...finiteAng);
+    if (typeof neutral_deg === 'number') {
+      yLo = Math.min(yLo, neutral_deg);
+      yHi = Math.max(yHi, neutral_deg);
+    }
+    el('waveform-range').textContent =
+      `angle range shown: ${yLo.toFixed(1)}° – ${yHi.toFixed(1)}°`;
+    const pad = Math.max(2, (yHi - yLo) * 0.12) || 5;
+    yLo -= pad;
+    yHi += pad;
+
+    const tLo = t[0];
+    const tHi = t[t.length - 1];
+    const padL = 46, padR = 12, padT = 10, padB = 26;
+    const plotW = Math.max(1, cssW - padL - padR);
+    const plotH = Math.max(1, cssH - padT - padB);
+    const xOf = (tt) => padL + ((tt - tLo) / Math.max(1e-9, tHi - tLo)) * plotW;
+    const yOf = (a) => padT + (1 - (a - yLo) / Math.max(1e-9, yHi - yLo)) * plotH;
+
+    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.strokeStyle = '#5a6169';
+    ctx.fillStyle = '#101317';
+    ctx.lineWidth = 1;
+
+    // Axes.
+    ctx.beginPath();
+    ctx.moveTo(padL, padT);
+    ctx.lineTo(padL, padT + plotH);
+    ctx.lineTo(padL + plotW, padT + plotH);
+    ctx.stroke();
+
+    // Y ticks: low/mid/high of the range actually covered.
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (const a of [yLo + pad, (yLo + yHi) / 2, yHi - pad]) {
+      const y = yOf(a);
+      ctx.strokeStyle = '#e3e6ea';
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + plotW, y);
+      ctx.stroke();
+      ctx.fillStyle = '#5a6169';
+      ctx.fillText(`${a.toFixed(0)}°`, padL - 6, y);
+    }
+    // X ticks: whole seconds across the trial span.
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const span = Math.max(1e-9, tHi - tLo);
+    const step = Math.max(1, Math.ceil(span / 6));
+    for (let s = 0; s <= tHi; s += step) {
+      if (s < tLo) continue;
+      const x = xOf(s);
+      ctx.fillStyle = '#5a6169';
+      ctx.fillText(`${s}s`, x, padT + plotH + 4);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#5a6169';
+    ctx.fillText('deg', 4, padT + 10);
+
+    // Neutral line.
+    if (typeof neutral_deg === 'number' && Number.isFinite(neutral_deg)) {
+      const y = yOf(neutral_deg);
+      ctx.save();
+      ctx.strokeStyle = '#5a6169';
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(padL + plotW, y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Release marker: a vertical dashed line, so it reads even where the
+    // trace happens to cross the neutral line at the same instant.
+    if (Number.isInteger(release_idx) && t[release_idx] !== undefined) {
+      const x = xOf(t[release_idx]);
+      ctx.save();
+      ctx.strokeStyle = '#1d4ed8';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, padT);
+      ctx.lineTo(x, padT + plotH);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Angle trace. Breaks the line at every non-finite (null) sample --
+    // tick 0 always, and any mid-trial sensor dropout -- rather than
+    // interpolating through zero, which would draw a motion that never
+    // happened.
+    ctx.strokeStyle = '#101317';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    let drawing = false;
+    for (let i = 0; i < t.length; i++) {
+      const a = ang[i];
+      if (typeof a !== 'number' || !Number.isFinite(a)) {
+        drawing = false;
+        continue;
+      }
+      const x = xOf(t[i]);
+      const y = yOf(a);
+      if (!drawing) {
+        ctx.moveTo(x, y);
+        drawing = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+
+    // Accepted peaks/troughs -- what the scorer actually counted, distinct
+    // markers so they read as different even without color (upward triangle
+    // vs. downward triangle).
+    const marker = (idx, color, up) => {
+      for (const i of idx || []) {
+        const a = ang[i];
+        if (typeof a !== 'number' || !Number.isFinite(a)) continue;
+        const x = xOf(t[i]);
+        const y = yOf(a);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (up) {
+          ctx.moveTo(x, y - 7);
+          ctx.lineTo(x - 6, y + 5);
+          ctx.lineTo(x + 6, y + 5);
+        } else {
+          ctx.moveTo(x, y + 7);
+          ctx.lineTo(x - 6, y - 5);
+          ctx.lineTo(x + 6, y - 5);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    };
+    marker(peak_idx, '#0f7a37', true);
+    marker(trough_idx, '#7a0d0d', false);
+  }
+
+  window.addEventListener('resize', () => {
+    if (!el('waveform-wrap').hidden && lastTrajectory) drawWaveform(lastTrajectory);
+  });
 
   function onState({ code, calm_s, drift_deg }) {
     const g = el('guide');
@@ -92,8 +287,8 @@ if (typeof document !== 'undefined') {
     el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
   }
 
-  function onResult(p) {
-    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p });
+  function onResult(p, trajectory) {
+    const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory });
     faulted = latched;
     // Nulled on every terminal outcome (result, error, and the Stop
     // handler below) so a fresh Start never reuses a finished session.
@@ -101,6 +296,7 @@ if (typeof document !== 'undefined') {
     if (!action) return; // a fault already latched this trial -- ignore the bounce
     el('guide').className = '';
     el('guide').textContent = 'scored';
+    drawWaveform(action.trajectory);
     el('result').hidden = false;
     el('result').innerHTML = PARAM_ORDER
       .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
@@ -141,6 +337,8 @@ if (typeof document !== 'undefined') {
     el('start').hidden = true;
     el('stop').hidden = false;
     el('result').hidden = true;
+    el('waveform-wrap').hidden = true;
+    lastTrajectory = null;
     el('calm').textContent = '—';
     el('drift').textContent = '—';
     session = await startCapture({ onState, onResult, onError });

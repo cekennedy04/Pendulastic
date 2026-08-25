@@ -61,7 +61,7 @@ export async function startCapture({ onState, onResult, onError }) {
   worker.onmessage = (e) => {
     const m = e.data;
     if (m.type === 'state') onState(m);
-    else if (m.type === 'result') onResult(m.params);
+    else if (m.type === 'result') onResult(m.params, m.trajectory);
     else if (m.type === 'error') onError(m.reason);
   };
   worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3 } });

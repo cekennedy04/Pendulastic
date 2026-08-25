@@ -31,7 +31,7 @@ fn spasticity_type_str(t: SpasticityType) -> &'static str {
 /// legitimate value for "not enough cycles to measure", and the rest of the
 /// struct may be perfectly good — a non-finite value serialises as JSON
 /// `null` and every finite sibling field is left exactly as before.
-fn fmt_f64(v: f64) -> String {
+pub(crate) fn fmt_f64(v: f64) -> String {
     if v.is_finite() {
         format!("{v}")
     } else {

@@ -27,6 +27,7 @@ pub mod scoring;
 pub mod session;
 pub mod signal;
 pub mod stillness;
+pub mod trajectory_json;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

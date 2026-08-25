@@ -58,6 +58,23 @@ test('a real fault always wins over a subsequent unscorable bounce', () => {
   assert.equal(second.action, null, 'the fault must not be overwritten by the bounce');
 });
 
+test('a result event carrying a trajectory passes it through on the action', () => {
+  const trajectory = { t: [0, 0.05], angle_deg: [null, 180], release_idx: 0, peak_idx: [], trough_idx: [], neutral_deg: 180 };
+  const { latched, action } = nextOutcome(false, { type: 'result', params: { f: 1 }, trajectory });
+  assert.equal(latched, false);
+  assert.deepEqual(action, { kind: 'result', params: { f: 1 }, trajectory });
+});
+
+test('a result event with no trajectory key omits it from the action rather than adding undefined', () => {
+  // worker.js's message always carries a trajectory (falling back to null
+  // when finish_trajectory() itself returns nothing), but nextOutcome must
+  // not silently invent the key for any caller that omits it -- see the
+  // very first test in this file, which relies on exactly this shape.
+  const { action } = nextOutcome(false, { type: 'result', params: { f: 1 } });
+  assert.deepEqual(action, { kind: 'result', params: { f: 1 } });
+  assert.ok(!('trajectory' in action), 'no trajectory key should appear when the event carried none');
+});
+
 test('a real fault always wins over a subsequent bounced result', () => {
   const first = nextOutcome(false, { type: 'error', reason: 'worker crashed' });
   assert.equal(first.latched, true);

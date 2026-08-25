@@ -16,6 +16,17 @@
     </div>
   </dl>
   <button id="stop" hidden>Stop</button>
+  <div id="waveform-wrap" hidden>
+    <canvas id="waveform"></canvas>
+    <p id="waveform-range" class="waveform-caption"></p>
+    <div id="waveform-legend">
+      <span class="legend-item"><span class="swatch swatch-trace"></span>angle</span>
+      <span class="legend-item"><span class="swatch swatch-neutral"></span>neutral</span>
+      <span class="legend-item"><span class="swatch swatch-release"></span>release</span>
+      <span class="legend-item"><span class="swatch swatch-peak"></span>&#9650; peak</span>
+      <span class="legend-item"><span class="swatch swatch-trough"></span>&#9660; trough</span>
+    </div>
+  </div>
   <table id="result" hidden></table>
   <script type="module" src="./src/app.js"></script>
 </body>
