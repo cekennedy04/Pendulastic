@@ -15,7 +15,13 @@ import init, { WasmSession } from './wasm/mobile_imu_core.js';
 let ready = null;
 
 export async function createSession({ beta, emaAlpha, wasmSource }) {
-  ready ??= init(wasmSource);
+  // The positional `init(wasmSource)` form is deprecated by wasm-bindgen (it
+  // warns on every run) and is slated for removal; the object form is the
+  // supported spelling. `{module_or_path: undefined}` still takes the
+  // browser's default path -- the generated `__wbg_init` destructures the
+  // object first and then falls back to fetching `mobile_imu_core_bg.wasm`
+  // relative to the module -- so the no-argument browser call keeps working.
+  ready ??= init({ module_or_path: wasmSource });
   await ready;
   const inner = new WasmSession(beta, emaAlpha);
   return {
@@ -47,16 +53,36 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
 // on a response that will never come.
 export function createWorkerHandler() {
   let session = null;
+  // The promise created by the `start` branch, retained so later messages can
+  // wait on it. `start` is genuinely slow -- it fetches and instantiates a
+  // ~134 KB wasm module -- while `capture.js` begins its 50 ms flush interval
+  // the instant it has posted `start`. Without this, the first batch of every
+  // cold load lands while `start` is still suspended, hits the
+  // "before start" guard, and `app.js` latches that as a genuine fault: the
+  // clinician's first trial fails deterministically, not intermittently.
+  //
+  // `starting === null` therefore means something different from
+  // `session === null`, and the difference is exactly what must be preserved:
+  //   - no `start` was ever sent  -> `starting` is null, `await null` is a
+  //     no-op, `session` is still null, and the guard below fires. That is a
+  //     real protocol violation and must stay an error.
+  //   - `start` is still in flight -> `starting` is a pending promise, the
+  //     message waits for it, `session` is set by the time the guard runs,
+  //     and the batch is processed normally.
+  let starting = null;
   return async function handle(m, post) {
     try {
       if (m.type === 'start') {
-        session = await createSession(m.cfg);
+        starting = createSession(m.cfg);
+        session = await starting;
         post({ type: 'state', ...session.state() });
       } else if (m.type === 'batch') {
+        await starting;
         if (!session) throw new Error('batch received before start');
         session.pushBatch(new Float64Array(m.buf));
         post({ type: 'state', ...session.state() });
       } else if (m.type === 'finish') {
+        await starting;
         if (!session) throw new Error('finish received before start');
         const params = session.finish();
         post(params ? { type: 'result', params }
