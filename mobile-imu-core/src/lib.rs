@@ -23,5 +23,6 @@ pub mod goniometry;
 pub mod replay;
 pub mod resample;
 pub mod scoring;
+pub mod session;
 pub mod signal;
 pub mod stillness;
