@@ -1,0 +1,145 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo test --manifest-path mobile-imu-core/Cargo.toml
+      - run: cargo clippy --manifest-path mobile-imu-core/Cargo.toml --all-targets
+      # Proves the veneer compiles for the target that actually ships.
+      - run: cargo build --manifest-path mobile-imu-core/Cargo.toml
+              --release --target wasm32-unknown-unknown
+
+  export-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install numpy scipy pytest
+      # Guards a SILENT failure: a malformed export replays as an unscorable
+      # trial, or worse, as a plausible wrong one.
+      - run: pytest tests/test_web_export_contract.py -q
+
+  webapp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
+
+      # webapp/tests/worker.test.js loads the real wasm artifact under
+      # webapp/src/wasm/. Those files are committed, but this job must not
+      # silently depend on a stale checked-in binary -- build it from source
+      # first, the same way a developer would locally.
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --manifest-path mobile-imu-core/Cargo.toml
+              --release --target wasm32-unknown-unknown
+
+      # wasm-bindgen-cli must match the wasm-bindgen crate version resolved
+      # in Cargo.lock -- a mismatch produces spurious output differences and,
+      # worse, bindings the compiled .wasm doesn't actually agree with.
+      - name: Install pinned wasm-bindgen-cli
+        run: |
+          set -euo pipefail
+          WBG_VERSION=$(grep -A1 'name = "wasm-bindgen"' mobile-imu-core/Cargo.lock | grep '^version' | head -1 | cut -d '"' -f2)
+          echo "Resolved wasm-bindgen crate version: $WBG_VERSION"
+          curl --retry 3 --retry-delay 2 -fL -o wbg.tar.gz \
+            "https://github.com/rustwasm/wasm-bindgen/releases/download/${WBG_VERSION}/wasm-bindgen-${WBG_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar xzf wbg.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          cp "wasm-bindgen-${WBG_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.local/bin/wasm-bindgen"
+          chmod +x "$HOME/.local/bin/wasm-bindgen"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build wasm bindings from source
+        run: |
+          set -euo pipefail
+          wasm-bindgen --version
+          wasm-bindgen mobile-imu-core/target/wasm32-unknown-unknown/release/mobile_imu_core.wasm \
+            --out-dir webapp/src/wasm --target web
+
+      # webapp/package.json intentionally uses default "node --test"
+      # discovery (a bare "tests/" argument is misparsed as a CommonJS
+      # module specifier on Node 24 and throws before anything runs).
+      # Confirm default discovery still finds the full known-good count
+      # rather than silently running a subset.
+      - name: Run webapp tests and verify default discovery finds all 16
+        working-directory: webapp
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee /tmp/webapp-test-output.log
+          TESTS_COUNT=$(grep -oE '(ℹ|#) tests [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
+          PASS_COUNT=$(grep -oE '(ℹ|#) pass [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
+          echo "Discovered tests: ${TESTS_COUNT:-unknown}, passed: ${PASS_COUNT:-unknown}"
+          if [ "$TESTS_COUNT" != "16" ] || [ "$PASS_COUNT" != "16" ]; then
+            echo "::error::Default 'node --test' discovery found tests=${TESTS_COUNT:-?} pass=${PASS_COUNT:-?}, expected exactly 16 passing. Discovery is finding a different set of test files than the known-good baseline -- investigate, don't assume this is fine."
+            exit 1
+          fi
+
+  wasm-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --manifest-path mobile-imu-core/Cargo.toml
+              --release --target wasm32-unknown-unknown
+
+      - name: Install pinned wasm-bindgen-cli
+        run: |
+          set -euo pipefail
+          WBG_VERSION=$(grep -A1 'name = "wasm-bindgen"' mobile-imu-core/Cargo.lock | grep '^version' | head -1 | cut -d '"' -f2)
+          echo "Resolved wasm-bindgen crate version: $WBG_VERSION"
+          curl --retry 3 --retry-delay 2 -fL -o wbg.tar.gz \
+            "https://github.com/rustwasm/wasm-bindgen/releases/download/${WBG_VERSION}/wasm-bindgen-${WBG_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar xzf wbg.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          cp "wasm-bindgen-${WBG_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.local/bin/wasm-bindgen"
+          chmod +x "$HOME/.local/bin/wasm-bindgen"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # The single most valuable check in this pipeline: rebuild the wasm
+      # bindings from mobile-imu-core/src/ into a scratch directory (the
+      # committed copy under webapp/src/wasm/ is never touched here) and
+      # diff byte-for-byte against what's checked in. A Rust change that
+      # lands without a rebuild would otherwise leave the browser silently
+      # running different maths than `cargo test` verifies -- this turns
+      # that into a loud, mechanical failure instead.
+      - name: Rebuild wasm bindings and diff against committed artifacts
+        run: |
+          set -euo pipefail
+          wasm-bindgen --version
+          mkdir -p /tmp/wasm-fresh
+          wasm-bindgen mobile-imu-core/target/wasm32-unknown-unknown/release/mobile_imu_core.wasm \
+            --out-dir /tmp/wasm-fresh --target web
+
+          DRIFTED=0
+          for f in mobile_imu_core.js mobile_imu_core.d.ts mobile_imu_core_bg.wasm.d.ts mobile_imu_core_bg.wasm; do
+            if ! cmp -s "webapp/src/wasm/$f" "/tmp/wasm-fresh/$f"; then
+              echo "::error::DRIFT: webapp/src/wasm/$f does not match a fresh build from mobile-imu-core/src/."
+              DRIFTED=1
+            fi
+          done
+
+          if [ "$DRIFTED" != "0" ]; then
+            echo ""
+            echo "=============================================================="
+            echo "  webapp/src/wasm/ is out of date with mobile-imu-core/src/."
+            echo "  Rebuild and commit the regenerated bindings:"
+            echo ""
+            echo "    cargo build --manifest-path mobile-imu-core/Cargo.toml \\"
+            echo "      --release --target wasm32-unknown-unknown"
+            echo "    wasm-bindgen mobile-imu-core/target/wasm32-unknown-unknown/release/mobile_imu_core.wasm \\"
+            echo "      --out-dir webapp/src/wasm --target web"
+            echo "    git add webapp/src/wasm && git commit"
+            echo ""
+            echo "  wasm-bindgen-cli must match the wasm-bindgen version in"
+            echo "  mobile-imu-core/Cargo.lock (this job pins to it automatically)."
+            echo "=============================================================="
+            exit 1
+          fi
+
+          echo "No drift: webapp/src/wasm/ matches a fresh build from source."
