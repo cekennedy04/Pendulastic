@@ -4467,43 +4467,64 @@ class App(tk.Tk):
         if getattr(self, "_teardown_done", False):
             return
         self._teardown_done = True
-        if getattr(self, "_imu_poll_stop", None) is not None:
-            self._imu_poll_stop.set()
-        if getattr(self, "_imu_poll_thread", None):
-            self._imu_poll_thread.join(timeout=0.5)
-        if getattr(self, "_camera", None) is not None:
-            writer = self._camera.detach_writer()
-            if writer is not None:
+        # The body runs under try/finally. _teardown_done latches on the way
+        # in, so a step that raised partway through would otherwise leave the
+        # window alive with its timers still armed *and* the guard set: the
+        # next click on X returns at the check above and the window can never
+        # be closed at all. Timer cancellation and super().destroy() have to
+        # happen whatever the resource teardown did.
+        try:
+            if getattr(self, "_imu_poll_stop", None) is not None:
+                self._imu_poll_stop.set()
+            if getattr(self, "_imu_poll_thread", None):
+                self._imu_poll_thread.join(timeout=0.5)
+            if getattr(self, "_camera", None) is not None:
+                writer = self._camera.detach_writer()
+                if writer is not None:
+                    try:
+                        writer.release()
+                    except Exception:
+                        pass
+                # PhoneCameraSession.close() ends in stop_stream_server(),
+                # which talks to a socket and can raise. A camera that fails
+                # to shut down must not take the window down with it.
                 try:
-                    writer.release()
+                    self._camera.close()
                 except Exception:
                     pass
-            self._camera.close()
-        if _IMU_AVAIL:
+            if _IMU_AVAIL:
+                try:
+                    _imu.stop()
+                except Exception:
+                    pass
+        finally:
+            # Drop pending after() callbacks. _tick reschedules itself every
+            # 50ms, so without this a timer outlives the interpreter and Tk
+            # reports 'invalid command name "..._tick"' on the way out.
+            #
+            # Cancel through Tcl rather than after_cancel(): the latter also
+            # calls deletecommand(), which drops the Tcl command but only
+            # unregisters it from *this* widget's _tclCommands. A timer
+            # scheduled by a child (the webcam viewer, say) stays listed on
+            # that child, so destroying it a moment later re-deletes the same
+            # command and raises "can't delete Tcl command". Cancelling alone
+            # is enough -- the command goes away with its owning widget.
+            #
+            # splitlist() rather than iterating the raw result: `after info`
+            # is not guaranteed to come back as a tuple (with wantobjects=0
+            # Tcl hands back a plain string), and iterating a string yields
+            # single characters -- every cancel would then fail into the inner
+            # except and the timer bug would return with no diagnostic at all.
+            # CPython's own Misc.after_info does the same for this reason.
             try:
-                _imu.stop()
+                for aid in self.tk.splitlist(self.tk.call("after", "info")):
+                    try:
+                        self.tk.call("after", "cancel", aid)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        # Drop pending after() callbacks. _tick reschedules itself every 50ms,
-        # so without this a timer outlives the interpreter and Tk reports
-        # 'invalid command name "..._tick"' on the way out.
-        #
-        # Cancel through Tcl rather than after_cancel(): the latter also calls
-        # deletecommand(), which drops the Tcl command but only unregisters it
-        # from *this* widget's _tclCommands. A timer scheduled by a child (the
-        # webcam viewer, say) stays listed on that child, so destroying it a
-        # moment later re-deletes the same command and raises "can't delete Tcl
-        # command". Cancelling alone is enough -- the command goes away with
-        # its owning widget.
-        try:
-            for aid in self.tk.call("after", "info"):
-                try:
-                    self.tk.call("after", "cancel", aid)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        super().destroy()
+            super().destroy()
 
 
 # ---------------------------------------------------------------------------

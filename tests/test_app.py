@@ -3136,3 +3136,110 @@ def test_mas_entry_panel_save_shows_error_on_invalid_mas_flexion(monkeypatch):
         assert "invalid mas_flexion" in app._mas_entry.error_var.get()
     finally:
         app.destroy()
+
+# --- teardown regressions (PR #32 review) ----------------------------------
+
+
+def _is_destroyed(widget):
+    """True once the interpreter is gone.
+
+    After a successful teardown winfo_exists() cannot answer -- the Tcl
+    application it would ask no longer exists -- so the TclError is itself
+    the confirmation.
+    """
+    try:
+        return not widget.winfo_exists()
+    except tk.TclError:
+        return True
+
+
+def test_destroy_completes_when_camera_close_raises():
+    """A camera that fails to shut down must not strand the window.
+
+    destroy() latches _teardown_done on the way in, so before the try/finally
+    a raising _camera.close() left the window mapped with its timers still
+    armed AND the guard set -- the next click on X returned at the guard, so
+    the window could never be closed at all.
+    """
+    from pendulastic_app import App
+
+    class ExplodingCamera:
+        def detach_writer(self):
+            return None
+
+        def close(self):
+            raise RuntimeError("stop_stream_server() failed")
+
+    app = App()
+    app.update()
+    app._camera = ExplodingCamera()
+    app.destroy()          # must not raise
+    assert _is_destroyed(app), "window survived a failing camera teardown"
+
+
+class _StringAfterInfo:
+    """tk proxy returning `after info` as a plain string.
+
+    Tcl does this with wantobjects=0; iterating the raw result then yields
+    single characters and every cancel fails silently into the inner except.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self.cancelled = []
+
+    def call(self, *a):
+        if a[:2] == ("after", "info"):
+            return " ".join(self._real.call(*a))
+        if a[:2] == ("after", "cancel"):
+            self.cancelled.append(a[2])
+        return self._real.call(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_destroy_cancels_timers_when_after_info_returns_a_string():
+    from pendulastic_app import App
+    app = App()
+    app.update()
+    aid = app.after(60_000, lambda: None)
+    proxy = _StringAfterInfo(app.tk)
+    app.tk = proxy
+    app.destroy()
+    # Not merely "something was cancelled": iterating the string by character
+    # still calls `after cancel a`, which Tcl accepts as a no-op script name
+    # rather than an error. The real timer id is what has to come back.
+    assert aid in proxy.cancelled, (
+        "timer %r was never cancelled -- the sweep saw %r"
+        % (aid, proxy.cancelled[:8]))
+
+
+def test_conftest_survives_a_missing_display():
+    """pytest_configure must not abort the session without a display.
+
+    An exception out of pytest_configure kills collection for the whole run,
+    taking down the ~30 pure-computation files that need no Tk at all.
+    """
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "conftest_under_test", os.path.join(here, "conftest.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def boom(*a, **k):
+        raise tk.TclError("couldn't connect to display")
+
+    real_tk, saved_root = tk.Tk, tk._default_root
+    os.environ["PENDULASTIC_SHOW_TEST_WINDOWS"] = "1"   # skip the global patch
+    tk.Tk = boom
+    try:
+        mod.pytest_configure(None)
+    finally:
+        tk.Tk = real_tk
+        tk._default_root = saved_root
+        os.environ.pop("PENDULASTIC_SHOW_TEST_WINDOWS", None)
+
+    assert mod._anchor is None
+    mod.pytest_unconfigure(None)      # must tolerate a None anchor

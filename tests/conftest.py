@@ -64,8 +64,18 @@ def pytest_configure(config):
     global _anchor
     if not os.environ.get("PENDULASTIC_SHOW_TEST_WINDOWS"):
         _hide_new_windows()
-    _anchor = tkinter.Tk()
-    _anchor.withdraw()
+    try:
+        _anchor = tkinter.Tk()
+        _anchor.withdraw()
+    except Exception:
+        # No display: headless CI, WSL without an X server, a Tk-less build.
+        # This must not propagate. An exception out of pytest_configure aborts
+        # the whole session at collection time, so a missing display would take
+        # down the ~30 pure-computation files (test_pt_score, test_metrics,
+        # test_stats, test_reliability_stats, ...) that have no Tk dependency
+        # and pass headless today. Without an anchor the GUI tests fail on
+        # their own terms, which is the informative outcome; the rest still run.
+        _anchor = None
     # Do not let the anchor act as tkinter's default root. Anything created
     # without an explicit master -- PhotoImage above all -- would bind to the
     # anchor's interpreter while the widget using it lives in the App's, and
