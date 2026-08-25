@@ -1781,9 +1781,10 @@ def bind_error() -> Optional[str]:
 def stop():
     """Deliberate shutdown: ends the supervisor rather than triggering a retry.
 
-    Blocks until the port is actually released (or _STOP_JOIN_S elapses), so a
-    caller that starts a new server afterwards does not race the old one for
-    the port. Only ever called from app shutdown paths, never mid-recording.
+    Waits for the supervisor to exit ONLY when that wait can succeed, so a
+    caller that starts a new server afterwards does not race the old one.
+    Called from app shutdown paths only (master_app, App.on_close), never
+    mid-recording.
     """
     global _shutdown, _thread
     _shutdown = True
@@ -1794,11 +1795,19 @@ def stop():
         except RuntimeError:
             pass
     t = _thread
-    if t is not None and t.is_alive():
+    # Skip the join while a phone is still attached. _serve_forever exits its
+    # `async with server` block, which calls close() then awaits wait_closed(),
+    # and on 3.12+ that waits for every handler task -- but close() does NOT
+    # close established connections. So with a client holding its socket the
+    # join can never succeed: measured 2.01s burned for an outcome identical to
+    # not waiting at all. The listening socket is released either way, so the
+    # port frees immediately and the next launch binds fine; the daemon thread
+    # then exits when the client drops or the process does.
+    if t is not None and t.is_alive() and _conn_active == 0:
         t.join(timeout=_STOP_JOIN_S)
-    # Clear the handle only on a confirmed exit. If the join timed out the
-    # thread still owns the port, and start()'s is_alive() guard is the only
-    # thing preventing a second server binding on top of it.
+    # Clear the handle only on a confirmed exit. Otherwise the thread is still
+    # running and start()'s is_alive() guard is the only thing preventing a
+    # second server being spawned on top of it.
     if t is not None and not t.is_alive():
         _thread = None
 
