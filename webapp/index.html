@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pendulastic</title>
+<link rel="stylesheet" href="./src/app.css">
+<body>
+  <div id="banner">research capture only &mdash; not validated</div>
+  <button id="start">Start trial</button>
+  <div id="guide">tap Start</div>
+  <dl id="gates">
+    <div class="gate">
+      <dt>hold (motion)</dt><dd id="calm">&mdash;</dd>
+    </div>
+    <div class="gate">
+      <dt>drift (pose)</dt><dd id="drift">&mdash;</dd>
+    </div>
+  </dl>
+  <button id="stop" hidden>Stop</button>
+  <table id="result" hidden></table>
+  <script type="module" src="./src/app.js"></script>
+</body>

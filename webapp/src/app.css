@@ -1,0 +1,212 @@
+/* Plain CSS, no framework, no build step (task-6 binding constraint).
+   Read mid-procedure, one-handed, at arm's length: everything that matters
+   is large, high-contrast, and color- AND text-differentiated (never color
+   alone) so it survives outdoor glare and color-vision differences. */
+
+:root {
+  --ink: #101317;
+  --paper: #ffffff;
+  --muted: #5a6169;
+  --line: #d7dbe0;
+  --banner-bg: #7a0d0d;
+  --banner-fg: #ffffff;
+  --moving-bg: #6b7280;
+  --holding-bg: #b45309;
+  --ready-bg: #0f7a37;
+  --fired-bg: #1d4ed8;
+  --unscorable-bg: #4b5563;
+  --fault-bg: #9f1239;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Prevent iOS Safari from letting a long word or long number blow out
+     layout width on a narrow phone screen. */
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 0 0 max(16px, env(safe-area-inset-bottom)) 0;
+}
+
+/* ---- Mandatory validation banner --------------------------------------
+   Required unconditionally by spec §8 until G0 passes: no dismiss control,
+   no fade, no flag to hide it. Sits above everything, including the state
+   guide, so it cannot be scrolled or covered during a trial. */
+#banner {
+  background: var(--banner-bg);
+  color: var(--banner-fg);
+  font-weight: 700;
+  font-size: clamp(14px, 4.2vw, 18px);
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+#start, #stop {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 16px auto 0;
+  padding: 18px;
+  font-size: clamp(20px, 6vw, 26px);
+  font-weight: 700;
+  border: none;
+  border-radius: 14px;
+  color: #fff;
+  background: var(--fired-bg);
+  cursor: pointer;
+}
+
+#stop {
+  background: var(--fault-bg);
+}
+
+/* ---- State guide --------------------------------------------------------
+   The single largest element on the page. Each state carries its own
+   background color, its own icon glyph, AND its own text label -- three
+   independent cues -- because this is read at arm's length by someone whose
+   hands are occupied and cannot lean in to disambiguate a subtle shade. */
+#guide {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: pre-line;
+  margin: 16px;
+  padding: 24px 16px;
+  min-height: 34vh;
+  border-radius: 18px;
+  font-weight: 800;
+  font-size: clamp(24px, 9vw, 44px);
+  line-height: 1.25;
+  color: #fff;
+  background: var(--moving-bg);
+  transition: background-color 120ms ease-out;
+}
+
+#guide::before {
+  display: block;
+  font-size: 0.6em;
+  margin-bottom: 0.15em;
+}
+
+#guide.moving { background: var(--moving-bg); }
+#guide.moving::before { content: "●"; }
+
+#guide.holding { background: var(--holding-bg); }
+#guide.holding::before { content: "◐"; }
+
+/* READY must be impossible to mistake for any other state: it is the only
+   state that pulses, the only one with an exclamation glyph, and it uses
+   the single highest-contrast color on the page (a saturated green against
+   white text, distinct from Holding's amber and Moving's neutral gray even
+   under a washed-out outdoor screen). */
+#guide.ready {
+  background: var(--ready-bg);
+  outline: 6px solid #ffffff;
+  outline-offset: -10px;
+  animation: ready-pulse 900ms ease-in-out infinite;
+}
+#guide.ready::before { content: "▲ RELEASE NOW ▲"; font-size: 0.4em; letter-spacing: 0.08em; }
+
+@keyframes ready-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(15, 122, 55, 0.55); }
+  50% { box-shadow: 0 0 0 18px rgba(15, 122, 55, 0); }
+}
+
+#guide.fired { background: var(--fired-bg); }
+#guide.fired::before { content: "↓"; }
+
+/* An expected clinical outcome (no usable swing), not a fault -- deliberately
+   neutral, not alarming, distinct from both Moving's gray and the true
+   fault color below. */
+#guide.unscorable { background: var(--unscorable-bg); }
+#guide.unscorable::before { content: "—"; }
+
+/* Something broke, as opposed to a legitimate unscorable trial. Kept
+   visually distinct (a different hue and glyph) so the two are never read
+   as the same thing. */
+#guide.fault { background: var(--fault-bg); }
+#guide.fault::before { content: "⚠"; }
+
+@media (prefers-reduced-motion: reduce) {
+  #guide.ready { animation: none; }
+}
+
+/* ---- Hold gates ---------------------------------------------------------
+   Surfaced as two separate readouts, not one pass/fail: a hold can fail
+   because the limb is moving (rate) or because it is slowly drifting
+   (accumulated pose change), and those have different corrective actions. */
+#gates {
+  display: flex;
+  gap: 12px;
+  margin: 0 16px 16px;
+  padding: 0;
+}
+
+.gate {
+  flex: 1;
+  background: #f4f5f7;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: center;
+}
+
+#gates dt {
+  font-size: clamp(12px, 3.2vw, 14px);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 4px;
+}
+
+#gates dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(16px, 4.6vw, 20px);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* ---- Result table -------------------------------------------------------
+   All 20 scored parameters, unfiltered (task-6 requirement 4) -- several are
+   only meaningful read together, and no clinical prioritisation has been
+   established for this app. */
+#result {
+  width: calc(100% - 32px);
+  margin: 8px 16px 16px;
+  border-collapse: collapse;
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+
+#result td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+#result td:first-child {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+#result td:last-child {
+  text-align: right;
+}
