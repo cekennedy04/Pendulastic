@@ -210,16 +210,45 @@ class DataManager:
         if not issues:
             return None
         import datetime as _dt          # module-local, matching this file
-        base = imu_csv_path[:-4] if imu_csv_path.endswith(".csv") else imu_csv_path
-        path = base + "_quality.json"
+        path = DataManager._quality_path(imu_csv_path)
         record = {
             "schema": 1,
             "written_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "issues": list(issues),
         }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
+        # Write-then-replace. A failure part-way through json.dump would
+        # otherwise leave a truncated file that every reader hits
+        # JSONDecodeError on -- worse than no file at all, given that
+        # absence is the documented "no known problem" signal.
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         return path
+
+    @staticmethod
+    def _quality_path(imu_csv_path: str) -> str:
+        base = (imu_csv_path[:-4] if imu_csv_path.endswith(".csv")
+                else imu_csv_path)
+        return base + "_quality.json"
+
+    @staticmethod
+    def clear_quality_flags(imu_csv_path: str) -> None:
+        """Remove a trial's quality sidecar if one exists.
+
+        The counterpart to save_quality_flags(): a clean re-record has to
+        retract the flag its earlier take left behind."""
+        try:
+            os.remove(DataManager._quality_path(imu_csv_path))
+        except OSError:
+            pass
 
     @classmethod
     def save_trial(
@@ -3208,6 +3237,15 @@ class App(tk.Tk):
         below = getattr(self, "_rec_rate_below", 0)
         samples = getattr(self, "_rec_rate_samples", 0)
         if not below or not _IMU_AVAIL:
+            # Retract any flag an earlier take left. save_trial()
+            # overwrites the CSV at the same path when a trial number is
+            # re-recorded, so without this a stale sidecar from a bad take
+            # would sit beside good data forever. "Absence means no known
+            # problem" only holds if a clean trial actually clears it.
+            try:
+                DataManager.clear_quality_flags(imu_csv_path)
+            except Exception:
+                pass
             return None
         frac = (below / samples) if samples else 0.0
         issue = {
@@ -3222,8 +3260,13 @@ class App(tk.Tk):
         }
         try:
             return DataManager.save_quality_flags(imu_csv_path, [issue])
-        except OSError:
-            return None      # never let a diagnostic write fail the save
+        except Exception:
+            # Deliberately broad. This runs inside on_stop() before
+            # stop_raw_log() and before RGB/OptiTrack are stopped, so
+            # anything escaping here would leave the raw log open, skip
+            # the video stop, and strand _state out of idle -- a
+            # diagnostic note costing the trial it was describing.
+            return None
 
     def on_start(self) -> None:
         meta    = self._acq.get_metadata()
@@ -3240,6 +3283,7 @@ class App(tk.Tk):
 
         self._rec_angles     = {}
         self._rec_timestamps = {}
+        self._quality_flag_path = None
         self._reset_rate_tracking()
         self._acq.clear_telemetry()
 
@@ -3269,11 +3313,25 @@ class App(tk.Tk):
                 slow = []          # never let this check itself block a trial
             if slow:
                 worst_role, worst_hz = slow[0]
+                # Put the form back before saying anything.
+                # _start_countdown() locked every widget in _lockable --
+                # pid, trial number, the source checkboxes and BACK --
+                # and only enter_idle() / _cancel_countdown() undo that.
+                # Returning without it left the operator unable to change
+                # the trial number, unable to uncheck IMU to fall back to
+                # an RGB capture, and unable to leave the screen, with the
+                # countdown overlay still on the viewer. enter_idle() also
+                # rewrites status_var, so it has to run before the message
+                # below rather than after it.
+                self._state = "idle"
+                self._acq.enter_idle()
+                stalled = worst_hz <= 0.0
+                rate_txt = ("has stopped sending gyro data" if stalled
+                            else f"is sending gyro at {worst_hz:.3g} Hz")
                 messagebox.showerror(
                     "Gyro rate too low to record",
                     "\n\n".join([
-                        f"The {worst_role} phone is sending gyro at "
-                        f"{worst_hz:.0f} Hz; at least "
+                        f"The {worst_role} phone {rate_txt}; at least "
                         f"{_imu.MIN_USABLE_HZ:.0f} Hz is needed to track "
                         f"the swing.",
                         "Set the sensor app's update interval to 10 ms, "
@@ -3285,8 +3343,9 @@ class App(tk.Tk):
                         "rate.",
                     ]))
                 self._acq.status_var.set(
-                    f"Not started — {worst_role} gyro at {worst_hz:.0f} Hz "
-                    f"(need {_imu.MIN_USABLE_HZ:.0f} Hz)")
+                    f"Not started — {worst_role} gyro "
+                    + ("stopped" if stalled else f"at {worst_hz:.3g} Hz")
+                    + f" (need {_imu.MIN_USABLE_HZ:.0f} Hz)")
                 return
 
         # enter_recording() runs BEFORE starting the individual sources so
@@ -3366,7 +3425,8 @@ class App(tk.Tk):
                     source="imu")
                 imu_csv_path = DataManager.save_trial(fn_imu, angles_imu, meta,
                                        timestamps=ts_imu, source="imu")
-                self._write_imu_quality_sidecar(imu_csv_path)
+                self._quality_flag_path = self._write_imu_quality_sidecar(
+                    imu_csv_path)
                 source_angles["imu"] = angles_imu
                 if _IMU_AVAIL:
                     imu_raw_log_path = _imu.stop_raw_log()
@@ -3860,6 +3920,7 @@ class App(tk.Tk):
         self._active_sources  = []
         self._rec_angles      = {}
         self._rec_timestamps  = {}
+        self._quality_flag_path = None
         self._reset_rate_tracking()
         self._session_trials  = []
         self._acq.set_multi_trial_list([])
@@ -4480,11 +4541,32 @@ class App(tk.Tk):
             lines.append(f"  • RGB video: {base_fn.replace('.csv', '.avi')}")
         if not lines:
             return   # nothing this app wrote itself (e.g. an OptiTrack-only trial)
-        messagebox.showinfo(
-            "Recording Saved",
+
+        # A trial flagged for low gyro rate has to say so HERE. The
+        # sidecar records it for whoever analyses the data later, but the
+        # person who can actually do something about it -- re-record it,
+        # now, with the phone still on the leg -- is standing in front of
+        # this dialog. Saying nothing would repeat the failure this whole
+        # change exists to fix: a warning nobody sees.
+        flagged = getattr(self, "_quality_flag_path", None)
+        warn = ""
+        if flagged:
+            min_hz = getattr(self, "_rec_min_gyro_hz", None)
+            rate = ("the gyro stopped" if not min_hz
+                    else f"the gyro fell to {min_hz:.3g} Hz")
+            warn = (
+                f"\n\nWARNING - this trial is flagged as unreliable: "
+                f"{rate} during the recording, below the "
+                f"{_imu.MIN_USABLE_HZ:.0f} Hz needed to track the swing. "
+                f"The angle for that span is not a measurement. Consider "
+                f"re-recording this trial.\n"
+                f"  \u2022 flag written to: "
+                f"{os.path.basename(flagged)}")
+        (messagebox.showwarning if flagged else messagebox.showinfo)(
+            "Recording Saved" + (" - CHECK QUALITY" if flagged else ""),
             "Recording stopped and saved.\n\n"
             f"Folder:\n{DataManager.DATA_DIR}\n\n"
-            "Files:\n" + "\n".join(lines))
+            "Files:\n" + "\n".join(lines) + warn)
 
     @staticmethod
     def _fps_for(meta: dict) -> float:
@@ -4525,16 +4607,27 @@ class App(tk.Tk):
                     # the countdown, which would otherwise be indistinguishable
                     # from a clean capture once saved.
                     self._rec_rate_samples += 1
-                    hz_now = max((d.get("hz", 0.0) or 0.0)
-                                 for d in (st["proximal"], st["distal"])
-                                 if d.get("connected")) if any(
-                        d.get("connected") for d in (st["proximal"], st["distal"])) else 0.0
-                    if hz_now > 0.0:
-                        if (self._rec_min_gyro_hz is None
-                                or hz_now < self._rec_min_gyro_hz):
-                            self._rec_min_gyro_hz = hz_now
-                    if _imu.slow_gyro_roles(st):
+                    # Derive the recorded rate from the same judgement
+                    # that raises the flag. Taking the max across devices
+                    # wrote a self-contradictory record on a two-phone
+                    # capture: the shank degrading to 2 Hz while the thigh
+                    # held 100 Hz gave min_hz 100.0 beside min_usable_hz
+                    # 25.0, which reads like a false positive to whoever
+                    # triages it.
+                    offenders = _imu.slow_gyro_roles(st)
+                    if offenders:
                         self._rec_rate_below += 1
+                        hz_now = offenders[0][1]
+                    else:
+                        rates = [(d.get("hz", 0.0) or 0.0)
+                                 for d in (st["proximal"], st["distal"])
+                                 if d.get("connected")]
+                        rates = [r for r in rates if r > 0.0]
+                        hz_now = min(rates) if rates else None
+                    if hz_now is not None and (
+                            self._rec_min_gyro_hz is None
+                            or hz_now < self._rec_min_gyro_hz):
+                        self._rec_min_gyro_hz = hz_now
                 # Low gyro rate makes AHRS integration unreliable regardless of
                 # flex-axis state -- surface it first. Same threshold/message
                 # pattern already used in pendulastic_viewer.py.

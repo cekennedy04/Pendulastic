@@ -129,6 +129,14 @@ SYNC_MAX_JITTER_S = 0.150   # p10–p90 spread above which the link is too noisy
 # floor the fused angle is not trustworthy and the UI says so.
 MIN_USABLE_HZ = 25.0
 
+# A gyro stream that has produced nothing for this long is treated as stopped
+# rather than slow. gyro_times is appended to only inside on_gyro(), while
+# `connected` is kept true by _touch() from on_accel(), so a gyro that dies
+# while accel keeps flowing would otherwise leave gyro_hz reporting its last
+# measured rate forever. Matches STALE_AFTER_S: if a device has been silent
+# that long it is not usable either way.
+GYRO_STALL_S = 2.0
+
 # Gyroscope static-bias calibration. A stationary MEMS gyro still reports a
 # small (~1-2 deg/s) nonzero angular velocity; integrated across an ~10s
 # swing that alone accounts for tens of degrees of error, only partially
@@ -373,8 +381,13 @@ def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
     # was calibrated on g-unit recordings. An m/s^2 device was therefore
     # judged against a threshold 9.81x tighter than the validated one.
     #
-    # On a g-reporting phone g_mag is ~1.0, so this is arithmetically the old
-    # comparison: every trial in the validated corpus is unaffected.
+    # On a g-reporting phone g_mag is ~1.0, so this is very nearly the old
+    # comparison -- but not exactly it: real holds carry accel bias and
+    # calibration error, so a window reading 1.05 g loosens the effective
+    # bar to 0.189 and one reading 0.95 g tightens it to 0.171, and a
+    # borderline window could flip. Checked rather than assumed:
+    # re-running all 71 OptiTrack-matched trials scored 65/65
+    # identically, mean/median/p90/max unchanged to 0.01 deg.
     accel_vals = np.array([v for _, v in accel_buf])
     g_mag = float(np.linalg.norm(accel_vals.mean(axis=0)))
     if g_mag < 1e-9:
@@ -496,6 +509,21 @@ class _IMUDevice:
             return 0.0
         span = t[-1] - t[0]
         return (len(t) - 1) / span if span > 1e-6 else 0.0
+
+    @property
+    def gyro_stalled(self) -> bool:
+        """True once gyro samples have arrived and then stopped.
+
+        Distinguishes "measured, then stopped" from "never measured": a fresh
+        device has nothing to be stale about, and treating it as stalled would
+        refuse every trial at connect time. gyro_hz() alone cannot tell these
+        apart -- it reports the last rate it saw for as long as the trailing
+        window keeps its samples, and 0.0 once the window empties, which the
+        rate check deliberately reads as "not yet known".
+        """
+        if not self.gyro_times:
+            return False
+        return (time.time() - self.gyro_times[-1]) > GYRO_STALL_S
 
     def calibrate_gyro_bias(self):
         """Estimate this device's gyroscope static bias from the trailing
@@ -1101,7 +1129,10 @@ def slow_gyro_roles(state: dict) -> list:
     One shared judgement of "too slow to integrate", so the live status label
     and the record-start gate cannot drift apart.
 
-    A rate of 0.0 means not-yet-measurable -- gyro_hz needs two samples in its
+    A returned rate of 0.0 means the stream has stopped (see gyro_stalled),
+    not that it is merely slow.
+
+    An INPUT rate of 0.0 means not-yet-measurable -- gyro_hz needs two samples in its
     trailing window, so a device that just connected reports 0.0. Treating
     that as "too slow" would refuse every trial for its first second, which
     would be a worse failure than the one this guards against. A disconnected
@@ -1120,7 +1151,14 @@ def slow_gyro_roles(state: dict) -> list:
             hz = float(dev.get("hz") or 0.0)
         except (TypeError, ValueError):
             continue
-        if dev.get("connected") and 0.0 < hz < MIN_USABLE_HZ:
+        if not dev.get("connected"):
+            continue
+        if dev.get("gyro_stalled"):
+            # Reported as 0.0 so the caller can tell a stopped stream from a
+            # slow one and say so; a dead gyro is the worst case for the AHRS
+            # and used to pass this check entirely.
+            out.append((role, 0.0))
+        elif 0.0 < hz < MIN_USABLE_HZ:
             out.append((role, hz))
     out.sort(key=lambda pair: pair[1])
     return out
@@ -1139,11 +1177,13 @@ def get_state() -> dict:
             "proximal":  {"connected": bool(prox and prox.connected),
                           "ip": prox.ident if prox else "",
                           "packets": prox.n_packets if prox else 0,
-                          "hz": prox.gyro_hz if prox else 0.0},
+                          "hz": prox.gyro_hz if prox else 0.0,
+                          "gyro_stalled": bool(prox.gyro_stalled) if prox else False},
             "distal":    {"connected": bool(dist and dist.connected),
                           "ip": dist.ident if dist else "",
                           "packets": dist.n_packets if dist else 0,
-                          "hz": dist.gyro_hz if dist else 0.0},
+                          "hz": dist.gyro_hz if dist else 0.0,
+                          "gyro_stalled": bool(dist.gyro_stalled) if dist else False},
             "angles":    ang,
             "swing_angle_deg":    swing_angle_deg(),
             "flex_axis_armed":    _flex_axis_armed,

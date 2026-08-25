@@ -3447,3 +3447,227 @@ def test_imu_quality_sidecar_absent_for_a_clean_trial(monkeypatch, tmp_path):
         assert app._write_imu_quality_sidecar(csv_path) is None
     finally:
         app.destroy()
+
+# --- review follow-ups on the rate gate and the sidecar ---------------------
+
+
+def test_refused_start_leaves_the_form_usable(monkeypatch, tmp_path):
+    """Refusing to record must not strand the operator.
+
+    _start_countdown() calls _lock_form(True), and only enter_idle() /
+    _cancel_countdown() undo it. A gate that merely returns leaves every
+    lockable widget disabled -- pid, trial number, all four source
+    checkboxes and BACK -- with STOP disabled too. The clinician could not
+    change the trial number, could not uncheck IMU to fall back to an
+    RGB-only capture, and could not leave the screen.
+    """
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 1.0, "gyro_stalled": False},
+            "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+        })
+        monkeypatch.setattr(_m.messagebox, "showerror", lambda *a, **kw: None)
+        app._acq._lock_form(True)          # what the countdown leaves behind
+        app.on_start()
+        assert app._state != "recording"
+        # countdown_chk is excluded on purpose: _apply_countdown_lock()
+        # deliberately forces and disables it whenever an IMU source is
+        # selected, because an IMU trial has no calibration path other than
+        # the countdown. Everything else must come back.
+        locked = [w for w in app._acq._lockable
+                  if w is not app._acq.countdown_chk
+                  and str(w.cget("state")) == "disabled"]
+        assert not locked, (
+            "%d acquisition widgets still disabled after a refused start -- "
+            "the operator cannot change the trial, drop the IMU source, or "
+            "go back" % len(locked))
+    finally:
+        app.destroy()
+
+
+def test_refused_start_names_a_sub_hertz_rate_readably(monkeypatch, tmp_path):
+    """gyro_hz can legitimately be ~0.33 Hz. Rendered with .0f that reads as
+    "0 Hz", which an operator will diagnose as "not connected" -- and 0.0 is
+    exactly the value slow_gyro_roles reserves for "not yet measurable"."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 0.33, "gyro_stalled": False},
+            "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+        })
+        shown = []
+        monkeypatch.setattr(_m.messagebox, "showerror",
+                            lambda *a, **kw: shown.append(a))
+        app.on_start()
+        blob = " ".join(str(x) for x in shown)
+        assert "0 Hz" not in blob, "a 0.33 Hz stream must not render as 0 Hz"
+        assert "0.3" in blob
+    finally:
+        app.destroy()
+
+
+def test_refused_start_says_stopped_rather_than_a_rate_when_gyro_stalled(
+        monkeypatch, tmp_path):
+    """A dead gyro is not a slow gyro, and telling the operator "0 Hz" sends
+    them to the wrong fix."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 100.0, "gyro_stalled": True},
+            "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+        })
+        shown = []
+        monkeypatch.setattr(_m.messagebox, "showerror",
+                            lambda *a, **kw: shown.append(a))
+        app.on_start()
+        assert app._state != "recording"
+        blob = " ".join(str(x) for x in shown).lower()
+        assert "stopped" in blob
+    finally:
+        app.destroy()
+
+
+def test_sidecar_min_hz_reports_the_slow_device_not_the_fast_one(monkeypatch):
+    """Two-phone capture: the shank degrades while the thigh is fine. Taking
+    the max across devices wrote min_hz 100.0 next to min_usable_hz 25.0 --
+    a self-contradictory record that reads like a false positive."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 100.0, "gyro_stalled": False},
+            "distal":   {"connected": True, "hz": 2.0, "gyro_stalled": False},
+            "flex_axis_captured": True, "flex_axis_armed": False,
+        })
+        for _ in range(3):
+            app._tick()
+        assert app._rec_rate_below == 3
+        assert app._rec_min_gyro_hz == pytest.approx(2.0), \
+            "min_hz must describe the device that triggered the flag"
+    finally:
+        app.destroy()
+
+
+def test_a_clean_re_record_clears_a_stale_quality_sidecar(monkeypatch, tmp_path):
+    """Absence means no known problem -- which only holds if a clean trial
+    removes a previous flag. save_trial overwrites the CSV at the same path,
+    so re-recording a trial number after a bad take used to leave the old
+    sidecar sitting beside good data, flagged forever."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_5_imu.csv")
+        open(csv_path, "w").close()
+        side = tmp_path / "PID_P1_LEG_Right_MS_TRIAL_5_imu_quality.json"
+        side.write_text('{"schema": 1, "issues": []}')
+        app._reset_rate_tracking()
+        app._rec_rate_samples = 100
+        app._rec_rate_below = 0            # the re-take was clean
+        app._rec_min_gyro_hz = 100.0
+        assert app._write_imu_quality_sidecar(csv_path) is None
+        assert not side.exists(), "a clean re-record must clear the stale flag"
+    finally:
+        app.destroy()
+
+
+def test_sidecar_write_failure_never_escapes_on_stop(monkeypatch, tmp_path):
+    """A diagnostic write must not be able to cost the trial. It runs before
+    stop_raw_log() and before RGB/OptiTrack are stopped, so an exception
+    escaping it leaves the raw log open, skips the video stop, and wedges the
+    app out of idle."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._reset_rate_tracking()
+        app._rec_rate_samples = 10
+        app._rec_rate_below = 5
+        app._rec_min_gyro_hz = 2.0
+
+        def boom(*a, **kw):
+            raise TypeError("not JSON serializable")
+
+        monkeypatch.setattr(_m.DataManager, "save_quality_flags", boom)
+        assert app._write_imu_quality_sidecar(
+            str(tmp_path / "x_imu.csv")) is None
+    finally:
+        app.destroy()
+
+
+def test_save_quality_flags_writes_atomically(tmp_path, monkeypatch):
+    """A failure part-way through the dump must not leave a truncated file a
+    reader would hit JSONDecodeError on."""
+    import pendulastic_app as _m
+    csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_6_imu.csv")
+    open(csv_path, "w").close()
+    target = tmp_path / "PID_P1_LEG_Right_MS_TRIAL_6_imu_quality.json"
+
+    real_dump = _m.json.dump
+
+    def failing_dump(obj, fh, **kw):
+        fh.write('{"schema": 1, "iss')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_m.json, "dump", failing_dump)
+    try:
+        _m.DataManager.save_quality_flags(csv_path, [{"kind": "low_gyro_rate"}])
+    except OSError:
+        pass
+    monkeypatch.setattr(_m.json, "dump", real_dump)
+    assert not target.exists(), \
+        "a partial write left a truncated sidecar in place"
+
+def test_saved_confirmation_warns_when_the_trial_was_flagged(monkeypatch):
+    """The sidecar records the problem for whoever analyses the data later,
+    but the person who can still fix it -- by re-recording now, with the
+    phone still on the leg -- is standing in front of this dialog. A flag
+    nobody sees would repeat the exact failure this work exists to fix."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._quality_flag_path = "PID_P1_LEG_Right_MS_TRIAL_1_imu_quality.json"
+        app._rec_min_gyro_hz = 2.0
+        seen = {}
+        monkeypatch.setattr(_m.messagebox, "showwarning",
+                            lambda t, m: seen.update(title=t, msg=m))
+        monkeypatch.setattr(_m.messagebox, "showinfo",
+                            lambda t, m: seen.update(title="INFO", msg=m))
+        app._show_recording_saved_confirmation(
+            {"imu": [1.0]},
+            {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1},
+            "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+        assert seen.get("title") != "INFO", \
+            "a flagged trial must not be confirmed as a plain success"
+        assert "2 Hz" in seen["msg"]
+        assert "re-record" in seen["msg"].lower()
+    finally:
+        app.destroy()
+
+
+def test_saved_confirmation_stays_plain_for_a_clean_trial(monkeypatch):
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._quality_flag_path = None
+        seen = {}
+        monkeypatch.setattr(_m.messagebox, "showinfo",
+                            lambda t, m: seen.update(title=t, msg=m))
+        monkeypatch.setattr(_m.messagebox, "showwarning",
+                            lambda t, m: seen.update(title="WARN", msg=m))
+        app._show_recording_saved_confirmation(
+            {"imu": [1.0]},
+            {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2},
+            "PID_P1_LEG_Right_MS_TRIAL_2.csv")
+        assert seen.get("title") == "Recording Saved"
+        assert "WARNING" not in seen["msg"]
+    finally:
+        app.destroy()

@@ -1539,3 +1539,56 @@ def test_stillness_gate_still_accepts_a_genuinely_still_window_in_both_units():
 
     assert imu._is_stationary_window(still_gyro, _buf(still_mps2), 1.0) is True
     assert imu._is_stationary_window(still_gyro, _buf(still_g), 1.0) is True
+
+# --- review follow-ups: a stalled gyro must not read as healthy -------------
+
+
+def test_slow_gyro_roles_flags_a_stalled_gyro_stream():
+    """A gyro that stops entirely is the worst case for AHRS integration and
+    used to pass every check.
+
+    gyro_times is only appended to inside on_gyro(), and `connected` is kept
+    true by _touch() from on_accel(). So if the gyro stream dies while accel
+    keeps flowing -- a sensor toggled off in the phone app, or one of the
+    three per-sensor sockets dropping -- gyro_hz keeps returning the last
+    rate it measured, indefinitely.
+    """
+    state = {
+        "proximal": {"connected": True, "hz": 100.0, "gyro_stalled": True},
+        "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+    }
+    assert imu.slow_gyro_roles(state) == [("proximal", 0.0)]
+
+
+def test_slow_gyro_roles_leaves_a_live_stream_alone():
+    state = {
+        "proximal": {"connected": True, "hz": 100.0, "gyro_stalled": False},
+        "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+    }
+    assert imu.slow_gyro_roles(state) == []
+
+
+def test_gyro_stalled_becomes_true_after_the_stream_stops():
+    """gyro_hz alone cannot tell "never measured" from "measured, then
+    stopped" -- both would otherwise look like a healthy trailing window."""
+    import time as _t
+    dev = imu._IMUDevice("10.0.0.7")
+    now = _t.time()
+    dev.gyro_times = [now - 3.4, now - 3.3, now - 3.2, now - 3.1]
+    assert dev.gyro_stalled is True
+    dev.gyro_times = [now - 0.3, now - 0.2, now - 0.1]
+    assert dev.gyro_stalled is False
+
+
+def test_gyro_stalled_is_false_before_any_sample_arrives():
+    """A fresh device has nothing to be stale about; blocking here would
+    refuse every trial at connect time."""
+    dev = imu._IMUDevice("10.0.0.8")
+    assert dev.gyro_stalled is False
+
+
+def test_get_state_publishes_the_stall_flag():
+    """slow_gyro_roles reads it off the state dict, so it has to be there."""
+    st = imu.get_state()
+    for role in ("proximal", "distal"):
+        assert "gyro_stalled" in st[role]
