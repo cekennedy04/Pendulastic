@@ -97,3 +97,11 @@ mobile-imu-core/harness-android/local.properties
 mobile-imu-core/harness-ios/*.xcodeproj/
 mobile-imu-core/harness-ios/build/
 mobile-imu-core/target/
+
+# Generated wasm bindings for the web capture app. Built by
+# `npm run build:wasm` from webapp/ (and by CI before the webapp tests run);
+# never committed. The .wasm is not reproducible across machines -- it embeds
+# the building machine's cargo registry path, source paths with that OS's
+# separators, and a rustc version/commit string -- so a committed copy can
+# only ever be one machine's bytes masquerading as canonical.
+webapp/src/wasm/

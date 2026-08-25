@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "fixtures": "node tests/fixtures/make-fixture.mjs"
   }
 }
