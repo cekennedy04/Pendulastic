@@ -180,7 +180,7 @@ def _solo_handling_then_hold_then_burst_samples():
     scenario: 1.5s of examiner handling (gyro OSCILLATING DIRECTION on one
     axis, at 3x GYRO_STATIONARY_MAX_RAD_S -- comparable to the 12.7 deg/s
     case that motivated this fix -- with accel also swinging past
-    ACCEL_STATIONARY_MAX_MPS2, i.e. NOT genuinely still), then a genuine
+    ACCEL_STATIONARY_MAX_G, i.e. NOT genuinely still), then a genuine
     1.0s still hold, then the same scripted burst as
     _solo_hold_then_burst_samples(). The bias calibration must fire from the
     genuine hold, never from the handling window. Scaled relative to the
@@ -202,7 +202,9 @@ def _solo_handling_then_hold_then_burst_samples():
     ts_ms = 0
     gyro_amp = min(imu.GYRO_STATIONARY_MAX_RAD_S * 3.0,
                    imu._FLEX_CAPTURE_THRESHOLD * 0.7)
-    accel_half_amp = imu.ACCEL_STATIONARY_MAX_MPS2 * 1.5
+    # Relative to the 9.81 gravity these samples are built around: the
+    # threshold is a fraction of gravity (ACCEL_STATIONARY_MAX_G).
+    accel_half_amp = imu.ACCEL_STATIONARY_MAX_G * 9.81 * 1.5 / 2.0
 
     n_handling = 150
     for i in range(n_handling):

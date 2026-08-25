@@ -929,11 +929,14 @@ def test_is_stationary_window_false_for_handling_gyro():
 
 def test_is_stationary_window_false_for_handling_accel():
     """A window with flat gyro but accel's z-axis swinging well past
-    ACCEL_STATIONARY_MAX_MPS2 -- e.g. the limb being lifted/repositioned
+    ACCEL_STATIONARY_MAX_G -- e.g. the limb being lifted/repositioned
     without much rotation -- must not count as stationary. Scaled relative
     to the actual threshold, same reasoning as the gyro case above."""
     now = 10.0
-    half_amp = imu.ACCEL_STATIONARY_MAX_MPS2 * 1.5
+    # Amplitude relative to the gravity magnitude this window is built around
+    # (9.81 below), because the threshold is a fraction of gravity, not an
+    # absolute reading -- see ACCEL_STATIONARY_MAX_G.
+    half_amp = imu.ACCEL_STATIONARY_MAX_G * 9.81 * 1.5 / 2.0
     gyro_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05, np.array([0.01, -0.01, 0.0]))
                 for i in range(21)]
     accel_buf = [(now - imu.GYRO_BIAS_WINDOW_S + i * 0.05,
@@ -1472,3 +1475,67 @@ def test_slow_gyro_roles_reports_every_slow_device_worst_first():
         "distal":   {"connected": True, "hz": 3.0},
     }
     assert imu.slow_gyro_roles(state) == [("distal", 3.0), ("proximal", 12.0)]
+
+# --- stillness gate must not depend on the accelerometer's unit ------------
+
+
+def _buf(vals, span=1.0):
+    """A trailing buffer spanning the full stillness window."""
+    n = len(vals)
+    return [(i * span / (n - 1), np.asarray(v, float)) for i, v in enumerate(vals)]
+
+
+def _accel_window(p2p_fraction_of_g, n=60):
+    """A window around gravity on Z whose worst per-axis peak-to-peak is
+    `p2p_fraction_of_g` times gravity. Built in m/s^2; the caller divides by
+    9.81 to get the same physical motion expressed in g."""
+    half = 9.81 * p2p_fraction_of_g / 2.0
+    z = np.linspace(9.81 - half, 9.81 + half, n)
+    return [[0.0, 0.0, float(v)] for v in z]
+
+
+def test_stillness_gate_gives_the_same_verdict_in_g_and_in_mps2():
+    """The iOS build of the sensor app reports accel in g and the Android
+    build in m/s^2 -- _parse_xyz and calibrate_accel_bias both already handle
+    that. _is_stationary_window did not: it compared the raw reading against a
+    threshold derived from g-unit recordings (all 71 OptiTrack-matched trials
+    in the corpus report g), so an m/s^2 device was judged against a bar
+    9.81x tighter than the validated one.
+
+    The invariant that matters is not which unit is "right" -- it is that the
+    same physical motion must produce the same verdict either way. This gate
+    decides when gyro-bias calibration may fire; two phones in the same clinic
+    disagreeing about what "still" means is the defect.
+    """
+    still_gyro = _buf([[0.0, 0.0, 0.0]] * 60)
+
+    # 0.05 g of spread: comfortably inside the 0.18 g bar, but 0.49 m/s^2 in
+    # absolute terms, which the raw comparison read as past a 0.18 "m/s^2"
+    # bar. This is exactly the band where the two unit readings disagreed, so
+    # an amplitude outside it would pass with or without the fix.
+    mps2 = _accel_window(0.05)
+    as_g = [[c / 9.81 for c in v] for v in mps2]      # same motion, in g
+
+    verdict_mps2 = imu._is_stationary_window(still_gyro, _buf(mps2), 1.0)
+    verdict_g    = imu._is_stationary_window(still_gyro, _buf(as_g), 1.0)
+
+    assert verdict_g == verdict_mps2, (
+        "same physical motion, different unit: m/s^2 -> %s but g -> %s"
+        % (verdict_mps2, verdict_g))
+    assert verdict_g is True, "0.05 g of spread is well inside the 0.18 g bar"
+
+    # Anchor the other end: real motion must fail in both units too.
+    big = _accel_window(0.50)
+    big_g = [[c / 9.81 for c in v] for v in big]
+    assert imu._is_stationary_window(still_gyro, _buf(big), 1.0) is False
+    assert imu._is_stationary_window(still_gyro, _buf(big_g), 1.0) is False
+
+
+def test_stillness_gate_still_accepts_a_genuinely_still_window_in_both_units():
+    """The unit fix must not make the gate so strict that a real hold fails."""
+    still_gyro = _buf([[0.0, 0.0, 0.0]] * 60)
+    still_mps2 = _accel_window(0.02)       # 0.02 g spread -- sensor noise only
+    still_g = [[c / 9.81 for c in v] for v in still_mps2]
+
+    assert imu._is_stationary_window(still_gyro, _buf(still_mps2), 1.0) is True
+    assert imu._is_stationary_window(still_gyro, _buf(still_g), 1.0) is True

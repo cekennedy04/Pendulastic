@@ -151,7 +151,16 @@ GYRO_BIAS_MIN_SAMPLES = 5   # below this the mean is too noisy to trust; keep bi
 # separation between those clusters on the accel axis, well under a clean
 # 2x bar, so accel alone is a weak signal here.
 GYRO_STATIONARY_MAX_RAD_S = 0.9
-ACCEL_STATIONARY_MAX_MPS2 = 0.18
+# Named ACCEL_STATIONARY_MAX_MPS2 until 2026-08-25, which was wrong and
+# actively misleading: find_stationarity_thresholds.py derived 0.18 from real
+# recordings, and every one of the 71 OptiTrack-matched trials in that corpus
+# reports accel in g, not m/s^2. 0.18 is a FRACTION OF GRAVITY. It sits
+# between that corpus's p50 (0.075 g, holds) and p75 (0.330 g, swing); read as
+# m/s^2 it would mean 0.018 g, below the p25 of genuine holds, and would
+# reject most of them. The old name also led the 2026-08-04 plan to assert
+# "raw accel samples are in m/s^2" as a global constraint about a corpus that
+# contains no such recording.
+ACCEL_STATIONARY_MAX_G = 0.18
 
 ROLE_PROXIMAL = "proximal"   # torso (hip) or thigh (knee)
 ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
@@ -335,7 +344,8 @@ def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
                           accel_buf: list[tuple[float, np.ndarray]],
                           now: float) -> bool:
     """True iff both buffers span the full GYRO_BIAS_WINDOW_S and stay within
-    GYRO_STATIONARY_MAX_RAD_S / ACCEL_STATIONARY_MAX_MPS2 peak-to-peak range
+    GYRO_STATIONARY_MAX_RAD_S (rad/s) and ACCEL_STATIONARY_MAX_G
+    (a fraction of measured gravity) peak-to-peak range
     -- checked per-axis (max over x/y/z of that axis's own peak-to-peak),
     not on the combined vector magnitude. Magnitude alone would miss a
     signal that oscillates DIRECTION at roughly constant magnitude (e.g.
@@ -355,8 +365,24 @@ def _is_stationary_window(gyro_buf: list[tuple[float, np.ndarray]],
         ranges = vals.max(axis=0) - vals.min(axis=0)   # per-axis peak-to-peak
         return float(np.max(ranges))
 
+    # Measure the accel spread as a FRACTION of the window's own gravity
+    # magnitude, so the verdict does not depend on which unit the phone
+    # reports in. The iOS build of Sensor Stream sends g and the Android build
+    # sends m/s^2 -- _parse_xyz and calibrate_accel_bias both already handle
+    # that; this gate did not, and compared the raw reading against a bar that
+    # was calibrated on g-unit recordings. An m/s^2 device was therefore
+    # judged against a threshold 9.81x tighter than the validated one.
+    #
+    # On a g-reporting phone g_mag is ~1.0, so this is arithmetically the old
+    # comparison: every trial in the validated corpus is unaffected.
+    accel_vals = np.array([v for _, v in accel_buf])
+    g_mag = float(np.linalg.norm(accel_vals.mean(axis=0)))
+    if g_mag < 1e-9:
+        return False        # no usable gravity reference: not a still hold
+    accel_spread = _max_axis_peak_to_peak(accel_buf) / g_mag
+
     return (_max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S
-            and _max_axis_peak_to_peak(accel_buf) < ACCEL_STATIONARY_MAX_MPS2)
+            and accel_spread < ACCEL_STATIONARY_MAX_G)
 
 
 class _IMUDevice:
