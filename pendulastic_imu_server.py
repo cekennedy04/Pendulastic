@@ -76,10 +76,27 @@ _NOMINAL_GYRO_DT_S = 0.01
 # still for 20.5 s: the true bias is 0.00376 rad/s, but the mean of a 1 s hold
 # window carries a typical error of 0.0119 rad/s -- three times the quantity it
 # is trying to measure. Applying such an estimate injected 23 deg of yaw drift
-# where leaving the bias at zero gave 1.8 deg. Lengthening the window does not
-# rescue it (a 5 s window still errs by 0.005 rad/s), because the limit is
-# sensor noise (per-axis std ~0.05 rad/s), not window length. So the estimate
-# is used only where it is statistically real.
+# where leaving the bias at zero gave 1.8 deg. So the estimate is used only
+# where it is statistically real.
+#
+# An earlier version of this comment claimed lengthening the window "does not
+# rescue it, because the limit is sensor noise, not window length". That was
+# wrong, and it matters because it points away from the actual fix. The noise
+# is very nearly independent -- lag-1 autocorrelation measured at
+# [0.005, 0.006, 0.056] per axis -- so the estimator error does fall as
+# 1/sqrt(N), confirmed against the iid prediction over that same still trial:
+#
+#     window   N     measured err   iid prediction   ratio
+#         1s   58        0.01185         0.01185       1.00
+#         2s  117        0.00855         0.00834       1.03
+#         5s  294        0.00497         0.00526       0.95
+#         8s  470        0.00350         0.00416       0.84
+#
+# Extrapolating, roughly a 10 s hold would drive the error below the true bias
+# and make it genuinely resolvable. That is a real option, not a dead end --
+# but GYRO_BIAS_WINDOW_S also governs how long _is_stationary_window() demands
+# stillness before anything calibrates, so lengthening it is a protocol change
+# for the examiner, not a constant tweak, and it needs its own evidence.
 #
 # 3.0 rather than 2.0: swept over every 1 s window of that still trial, a 2
 # sigma gate accepts 8.7% of axes on pure noise and 3 sigma accepts 0.3%. The
@@ -136,6 +153,16 @@ MIN_USABLE_HZ = 25.0
 # measured rate forever. Matches STALE_AFTER_S: if a device has been silent
 # that long it is not usable either way.
 GYRO_STALL_S = 2.0
+
+# When the single-phone fallback is in use, a trial is worth flagging only if
+# a meaningful rotation happened AND most of it was discarded as being about
+# the vertical. Below PROJECTION_MIN_TOTAL_DEG nothing has really moved yet --
+# before the leg is released the total rotation is tiny and its axis is noise,
+# so flagging on it would mark every trial. PROJECTION_MIN_ACROSS = 0.5 means
+# "more than half the rotation was thrown away", which a seated pendulum
+# (axis horizontal, across ~1.0) never reaches.
+PROJECTION_MIN_TOTAL_DEG = 15.0
+PROJECTION_MIN_ACROSS = 0.5
 
 # Gyroscope static-bias calibration. A stationary MEMS gyro still reports a
 # small (~1-2 deg/s) nonzero angular velocity; integrated across an ~10s
@@ -726,6 +753,21 @@ _q_zero_dist: Optional[np.ndarray] = None
 # the filter cannot observe. Taken from the measured hold rather than assumed
 # to be +Z, so it stays correct for a phone mounted at any angle.
 _g_zero_solo: Optional[np.ndarray] = None
+
+# What the single-phone fallback last discarded. "across" is the fraction
+# of the rotation axis lying perpendicular to the zero-frame vertical: 1.0
+# means the whole rotation was measurable, 0.0 means all of it was about
+# gravity and none of it survived the projection.
+#
+# This exists because a single IMU with no heading reference cannot tell
+# yaw drift from genuine flexion about the vertical. Discarding rotation
+# about gravity is right for a seated pendulum test, where the
+# mediolateral knee axis is horizontal, and wrong for side-lying or any
+# posture that tips that axis upright -- there the projection suppresses
+# the measurement rather than the drift. The code cannot silently pick a
+# side, so it records how much it threw away and lets the caller decide
+# whether the trial is trustworthy.
+_projection = {"active": False, "across": 1.0, "total_deg": 0.0}
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
@@ -979,6 +1021,12 @@ def clear_zero():
         _flex_axis_armed = False
 
 
+def projection_state() -> dict:
+    """What the last swing_angle_deg() call discarded -- see _projection."""
+    with _lock:
+        return dict(_projection)
+
+
 def swing_angle_deg() -> float:
     """Knee flexion angle in degrees from the zeroed reference pose.
 
@@ -1020,6 +1068,9 @@ def swing_angle_deg() -> float:
             solo_mode = True
 
         if _flex_axis is not None:
+            # A real anatomical axis was captured, so nothing is being
+            # assumed and there is nothing to warn about.
+            _projection.update(active=False, across=1.0, total_deg=0.0)
             # Axis-projected angle: decomposes q_delta into axis-angle form and
             # returns only the component around the captured anatomical axis.
             # Ensure w ≥ 0 (canonical hemisphere) before decomposing.
@@ -1053,12 +1104,17 @@ def swing_angle_deg() -> float:
             q = q_delta if q_delta[0] >= 0.0 else -q_delta
             sin_half = float(np.linalg.norm(q[1:]))
             if sin_half <= 1e-9:
+                _projection.update(active=True, across=1.0, total_deg=0.0)
                 return 0.0
             theta = 2.0 * math.acos(min(1.0, float(q[0])))
             u = q[1:] / sin_half
             u_across = u - float(np.dot(u, _g_zero_solo)) * _g_zero_solo
-            return abs(math.degrees(theta * float(np.linalg.norm(u_across))))
+            across = float(np.linalg.norm(u_across))
+            _projection.update(active=True, across=across,
+                               total_deg=abs(math.degrees(theta)))
+            return abs(math.degrees(theta * across))
 
+        _projection.update(active=False, across=1.0, total_deg=0.0)
         # Fallback: total quaternion rotation distance (axis-agnostic).
         # Reached for the two-phone case, where common-mode yaw drift largely
         # cancels in the relative rotation, and when no gravity reference was
@@ -1187,6 +1243,7 @@ def get_state() -> dict:
             "angles":    ang,
             "swing_angle_deg":    swing_angle_deg(),
             "flex_axis_armed":    _flex_axis_armed,
+            "projection":         dict(_projection),
             "flex_axis_captured": _flex_axis is not None,
             "sync":      sync_status(),
             "conns":     _conn_active,

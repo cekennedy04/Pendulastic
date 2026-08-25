@@ -3221,6 +3221,8 @@ class App(tk.Tk):
         self._rec_rate_samples = 0
         self._rec_rate_below = 0
         self._rec_min_gyro_hz = None
+        self._rec_proj_worst_across = None
+        self._rec_proj_total_deg = 0.0
 
     def _write_imu_quality_sidecar(self, imu_csv_path: str):
         """Flag a trial whose gyro rate dipped below MIN_USABLE_HZ mid-capture.
@@ -3234,21 +3236,39 @@ class App(tk.Tk):
         # getattr: on_stop() is reachable without a matching on_start() (batch
         # paths, and a partially-constructed App), same defensive shape
         # destroy() uses for its teardown handles.
+        if not _IMU_AVAIL:
+            return None
+        issues = []
         below = getattr(self, "_rec_rate_below", 0)
         samples = getattr(self, "_rec_rate_samples", 0)
-        if not below or not _IMU_AVAIL:
-            # Retract any flag an earlier take left. save_trial()
-            # overwrites the CSV at the same path when a trial number is
-            # re-recorded, so without this a stale sidecar from a bad take
-            # would sit beside good data forever. "Absence means no known
-            # problem" only holds if a clean trial actually clears it.
-            try:
-                DataManager.clear_quality_flags(imu_csv_path)
-            except Exception:
-                pass
-            return None
+        across = getattr(self, "_rec_proj_worst_across", None)
+        if across is not None and across < _imu.PROJECTION_MIN_ACROSS:
+            total = getattr(self, "_rec_proj_total_deg", 0.0)
+            issues.append({
+                "kind": "rotation_about_vertical",
+                "across_gravity": round(across, 4),
+                "total_rotation_deg": round(total, 2),
+                "reported_deg": round(total * across, 2),
+                "detail": (
+                    "most of this trial's rotation was about the "
+                    "vertical, which a single phone cannot distinguish "
+                    "from yaw drift and which the angle calculation "
+                    "therefore discards. Either the limb barely moved, or "
+                    "the posture put the knee's flexion axis near "
+                    "vertical (side-lying) -- in which case the reported "
+                    "angle understates the real flexion. Capturing a "
+                    "flexion axis, by flexing once briskly after the "
+                    "tare, removes the ambiguity."),
+            })
+        if not below:
+            # No rate problem. Any projection issue still stands, and a
+            # fully clean trial retracts whatever an earlier take left --
+            # save_trial() overwrites the CSV at the same path when a
+            # trial number is re-recorded, so "absence means no known
+            # problem" only holds if a clean take actually clears it.
+            return self._flush_quality_issues(imu_csv_path, issues)
         frac = (below / samples) if samples else 0.0
-        issue = {
+        issues.append({
             "kind": "low_gyro_rate",
             "min_hz": float(getattr(self, "_rec_min_gyro_hz", None) or 0.0),
             "min_usable_hz": float(_imu.MIN_USABLE_HZ),
@@ -3257,9 +3277,19 @@ class App(tk.Tk):
             "detail": ("gyro rate fell below MIN_USABLE_HZ during capture; "
                        "the reported angle is not a reliable measurement for "
                        "the affected span"),
-        }
+        })
+        return self._flush_quality_issues(imu_csv_path, issues)
+
+    def _flush_quality_issues(self, imu_csv_path, issues):
+        """Write the collected issues, or retract a stale flag if clean."""
+        if not issues:
+            try:
+                DataManager.clear_quality_flags(imu_csv_path)
+            except Exception:
+                pass
+            return None
         try:
-            return DataManager.save_quality_flags(imu_csv_path, [issue])
+            return DataManager.save_quality_flags(imu_csv_path, issues)
         except Exception:
             # Deliberately broad. This runs inside on_stop() before
             # stop_raw_log() and before RGB/OptiTrack are stopped, so
@@ -4628,6 +4658,20 @@ class App(tk.Tk):
                             self._rec_min_gyro_hz is None
                             or hz_now < self._rec_min_gyro_hz):
                         self._rec_min_gyro_hz = hz_now
+
+                    # How much the yaw projection is discarding. Only
+                    # meaningful once something has actually rotated --
+                    # before release the axis of a 2 deg wobble is noise.
+                    proj = st.get("projection") or {}
+                    if (proj.get("active")
+                            and float(proj.get("total_deg", 0.0))
+                            >= _imu.PROJECTION_MIN_TOTAL_DEG):
+                        across = float(proj.get("across", 1.0))
+                        if (self._rec_proj_worst_across is None
+                                or across < self._rec_proj_worst_across):
+                            self._rec_proj_worst_across = across
+                            self._rec_proj_total_deg = float(
+                                proj.get("total_deg", 0.0))
                 # Low gyro rate makes AHRS integration unreliable regardless of
                 # flex-axis state -- surface it first. Same threshold/message
                 # pattern already used in pendulastic_viewer.py.

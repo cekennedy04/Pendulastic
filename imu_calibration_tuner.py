@@ -379,7 +379,10 @@ def replay_trial(raw_samples: list, params: dict):
                         # still for 20.5 s the true bias is 0.00376 rad/s while
                         # a 1 s window's mean errs by 0.0119 rad/s, so a
                         # "stationary" window still yields an estimate that is
-                        # mostly its own noise.
+                        # mostly its own noise. That is a property of the
+                        # WINDOW LENGTH, not a noise floor -- see
+                        # GYRO_BIAS_MIN_SNR's comment for the 1/sqrt(N)
+                        # measurement and what a longer hold would buy.
                         _vals = np.array([vv for _, vv in st.gyro_hold_buf])
                         _mean = _vals.mean(axis=0)
                         _sem = _vals.std(axis=0, ddof=1) / math.sqrt(len(_vals))

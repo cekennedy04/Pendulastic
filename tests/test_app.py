@@ -3671,3 +3671,77 @@ def test_saved_confirmation_stays_plain_for_a_clean_trial(monkeypatch):
         assert "WARNING" not in seen["msg"]
     finally:
         app.destroy()
+
+# --- flagging a trial the yaw projection mostly threw away ------------------
+
+
+def _tick_with_projection(app, monkeypatch, across, total_deg, n=3, hz=100.0):
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m._imu, "get_state", lambda: {
+        "proximal": {"connected": True, "hz": hz, "gyro_stalled": False},
+        "distal":   {"connected": False, "hz": 0.0, "gyro_stalled": False},
+        "flex_axis_captured": False, "flex_axis_armed": True,
+        "projection": {"active": True, "across": across, "total_deg": total_deg},
+    })
+    for _ in range(n):
+        app._tick()
+
+
+def test_trial_is_flagged_when_the_projection_discarded_most_of_the_motion(
+        monkeypatch, tmp_path):
+    """Side-lying, or any posture tipping the mediolateral knee axis upright,
+    makes genuine flexion a rotation about gravity -- which the solo fallback
+    discards. A single IMU with no heading reference cannot tell that from
+    yaw drift, so the trial has to be marked rather than silently reported as
+    near-zero flexion."""
+    import json
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        _tick_with_projection(app, monkeypatch, across=0.05, total_deg=40.0)
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_7_imu.csv")
+        open(csv_path, "w").close()
+        out = app._write_imu_quality_sidecar(csv_path)
+        assert out, "40 deg of motion reported as ~2 deg must not pass silently"
+        kinds = [i["kind"] for i in json.load(open(out))["issues"]]
+        assert "rotation_about_vertical" in kinds
+    finally:
+        app.destroy()
+
+
+def test_a_normal_seated_trial_is_not_flagged(monkeypatch, tmp_path):
+    """A seated pendulum swings about a horizontal axis, so the projection
+    discards essentially nothing and must not cry wolf."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        _tick_with_projection(app, monkeypatch, across=0.98, total_deg=60.0)
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_8_imu.csv")
+        open(csv_path, "w").close()
+        assert app._write_imu_quality_sidecar(csv_path) is None
+    finally:
+        app.destroy()
+
+
+def test_small_rotations_do_not_trigger_the_projection_flag(
+        monkeypatch, tmp_path):
+    """Before the leg is released the total rotation is tiny, and its axis is
+    meaningless noise. Flagging on that would mark every trial."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        app._active_sources = ["imu"]
+        app._state = "recording"
+        app._reset_rate_tracking()
+        _tick_with_projection(app, monkeypatch, across=0.02, total_deg=3.0)
+        csv_path = str(tmp_path / "PID_P1_LEG_Right_MS_TRIAL_9_imu.csv")
+        open(csv_path, "w").close()
+        assert app._write_imu_quality_sidecar(csv_path) is None
+    finally:
+        app.destroy()

@@ -1592,3 +1592,60 @@ def test_get_state_publishes_the_stall_flag():
     st = imu.get_state()
     for role in ("proximal", "distal"):
         assert "gyro_stalled" in st[role]
+
+# --- how much the yaw projection suppressed --------------------------------
+#
+# The solo fallback discards rotation about the vertical because yaw is
+# unobservable. That is right for a seated pendulum test, where the
+# mediolateral knee axis is horizontal. It is wrong for side-lying, or any
+# posture that tips that axis toward vertical: there, genuine flexion IS
+# rotation about gravity, and the projection suppresses the measurement
+# instead of the drift. A single IMU with no heading reference cannot tell
+# those two apart -- so the code cannot silently pick one. It can report how
+# much it threw away, and let the trial be flagged.
+
+
+def test_projection_reports_nothing_suppressed_for_flexion_across_gravity(
+        monkeypatch):
+    dev = _solo_device(monkeypatch)
+    q_zero = _settle_flat(dev)
+    _rotate_from_zero(dev, q_zero, [1.0, 0.0, 0.0], 40.0)
+    imu.swing_angle_deg()
+    st = imu.projection_state()
+    assert st["active"] is True
+    assert st["across"] == pytest.approx(1.0, abs=0.05), (
+        "a rotation perpendicular to gravity is fully measurable; nothing "
+        "should be discarded")
+    assert st["total_deg"] == pytest.approx(40.0, abs=1.0)
+
+
+def test_projection_reports_everything_suppressed_for_rotation_about_gravity(
+        monkeypatch):
+    dev = _solo_device(monkeypatch)
+    q_zero = _settle_flat(dev)
+    _rotate_from_zero(dev, q_zero, [0.0, 0.0, 1.0], 40.0)
+    swing = imu.swing_angle_deg()
+    st = imu.projection_state()
+    assert swing == pytest.approx(0.0, abs=1.0)
+    assert st["across"] == pytest.approx(0.0, abs=0.05), (
+        "40 deg about the vertical was discarded in full and the caller has "
+        "no way to know unless this says so")
+    assert st["total_deg"] == pytest.approx(40.0, abs=1.0)
+
+
+def test_projection_inactive_once_a_flexion_axis_is_captured(monkeypatch):
+    """With a real anatomical axis there is nothing to assume, so there is
+    nothing to warn about."""
+    dev = _solo_device(monkeypatch)
+    q_zero = _settle_flat(dev)
+    monkeypatch.setattr(imu, "_flex_axis", np.array([1.0, 0.0, 0.0]))
+    _rotate_from_zero(dev, q_zero, [1.0, 0.0, 0.0], 40.0)
+    imu.swing_angle_deg()
+    assert imu.projection_state()["active"] is False
+
+
+def test_get_state_publishes_the_projection_state():
+    st = imu.get_state()
+    assert "projection" in st
+    for k in ("active", "across", "total_deg"):
+        assert k in st["projection"]
