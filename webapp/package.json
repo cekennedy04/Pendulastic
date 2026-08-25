@@ -1,0 +1,9 @@
+{
+  "name": "pendulastic-webapp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "fixtures": "node tests/fixtures/make-fixture.mjs"
+  }
+}
