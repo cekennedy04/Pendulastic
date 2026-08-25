@@ -1430,3 +1430,45 @@ def test_solo_swing_angle_still_reports_rotation_across_gravity(monkeypatch):
     swing = imu.swing_angle_deg()
     assert swing == pytest.approx(40.0, abs=2.0), (
         "flexion across gravity should survive the projection (got %.2f)" % swing)
+
+# --- MIN_USABLE_HZ enforcement ---------------------------------------------
+
+
+def test_slow_gyro_roles_flags_a_connected_device_below_the_minimum():
+    """Measured against OptiTrack on 12 ground-truth trials, decimating only
+    the gyro stream: median RMSE is 13.35 deg at 100 Hz, 14.04 at 25 Hz, and
+    63.76 at 1 Hz. Below MIN_USABLE_HZ the orientation is not a measurement,
+    so the rate has to be reportable as a single shared judgement rather than
+    re-derived at each call site."""
+    state = {
+        "proximal": {"connected": True, "hz": 1.0},
+        "distal":   {"connected": False, "hz": 0.0},
+    }
+    assert imu.slow_gyro_roles(state) == [("proximal", 1.0)]
+
+
+def test_slow_gyro_roles_ignores_unknown_rate_and_disconnected_devices():
+    """hz == 0.0 means 'not yet known' -- a device that just connected has no
+    interval to measure. Blocking on that would refuse every trial for the
+    first second. A disconnected device is not this check's business."""
+    state = {
+        "proximal": {"connected": True,  "hz": 0.0},    # just connected
+        "distal":   {"connected": False, "hz": 1.0},    # gone, stale reading
+    }
+    assert imu.slow_gyro_roles(state) == []
+
+
+def test_slow_gyro_roles_accepts_a_healthy_rate():
+    state = {
+        "proximal": {"connected": True, "hz": imu.MIN_USABLE_HZ},
+        "distal":   {"connected": True, "hz": 100.0},
+    }
+    assert imu.slow_gyro_roles(state) == []
+
+
+def test_slow_gyro_roles_reports_every_slow_device_worst_first():
+    state = {
+        "proximal": {"connected": True, "hz": 12.0},
+        "distal":   {"connected": True, "hz": 3.0},
+    }
+    assert imu.slow_gyro_roles(state) == [("distal", 3.0), ("proximal", 12.0)]

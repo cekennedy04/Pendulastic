@@ -1068,6 +1068,38 @@ def reset_sync():
             d.reset_sync()
 
 
+def slow_gyro_roles(state: dict) -> list:
+    """(role, hz) for every connected device whose gyro rate is below
+    MIN_USABLE_HZ, worst first. Empty when every connected device is usable.
+
+    One shared judgement of "too slow to integrate", so the live status label
+    and the record-start gate cannot drift apart.
+
+    A rate of 0.0 means not-yet-measurable -- gyro_hz needs two samples in its
+    trailing window, so a device that just connected reports 0.0. Treating
+    that as "too slow" would refuse every trial for its first second, which
+    would be a worse failure than the one this guards against. A disconnected
+    device is not this check's business either; its last reading is stale.
+
+    The bar itself: decimating only the gyro stream of 12 OptiTrack
+    ground-truth trials gives a median RMSE of 13.35 deg at 100 Hz, 14.04 at
+    25 Hz, 18.38 at 10 Hz, 19.98 at 2 Hz and 63.76 at 1 Hz. Degradation is
+    gradual until it collapses, and MIN_USABLE_HZ = 25 sits where the error is
+    still within about 1 deg of a full-rate capture.
+    """
+    out = []
+    for role in (ROLE_PROXIMAL, ROLE_DISTAL):
+        dev = state.get(role) or {}
+        try:
+            hz = float(dev.get("hz") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if dev.get("connected") and 0.0 < hz < MIN_USABLE_HZ:
+            out.append((role, hz))
+    out.sort(key=lambda pair: pair[1])
+    return out
+
+
 def get_state() -> dict:
     """Snapshot for the UI: connection status per segment plus live angles."""
     with _lock:

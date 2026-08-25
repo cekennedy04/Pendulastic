@@ -3175,6 +3175,46 @@ class App(tk.Tk):
             self._start_video_file_processing(meta)
             return   # video_file is standalone — no live recording
 
+        # Refuse a gyro stream the AHRS cannot integrate.
+        #
+        # MIN_USABLE_HZ was advisory until now -- surfaced only as the status
+        # label below -- and three live trials were captured at 1 Hz gyro with
+        # that warning on screen the entire time. A warning the operator can
+        # miss is not enforcement. Decimating only the gyro stream of 12
+        # OptiTrack ground-truth trials gives a median RMSE of 13.35 deg at
+        # 100 Hz and 63.76 deg at 1 Hz: below the bar the reported angle is
+        # not a measurement, so the trial must not be captured at all rather
+        # than saved and scored later as if it were real.
+        #
+        # Deliberately not blocking when nothing is connected or the rate is
+        # not yet measurable -- see slow_gyro_roles().
+        if "imu" in sources and _IMU_AVAIL:
+            try:
+                slow = _imu.slow_gyro_roles(_imu.get_state())
+            except Exception:
+                slow = []          # never let this check itself block a trial
+            if slow:
+                worst_role, worst_hz = slow[0]
+                messagebox.showerror(
+                    "Gyro rate too low to record",
+                    "\n\n".join([
+                        f"The {worst_role} phone is sending gyro at "
+                        f"{worst_hz:.0f} Hz; at least "
+                        f"{_imu.MIN_USABLE_HZ:.0f} Hz is needed to track "
+                        f"the swing.",
+                        "Set the sensor app's update interval to 10 ms, "
+                        "confirm the rate readout has recovered, then "
+                        "start again.",
+                        "Recorded at this rate the angle is not a "
+                        "measurement: a 1 Hz capture scores 63° RMSE "
+                        "against motion capture, against 13° at full "
+                        "rate.",
+                    ]))
+                self._acq.status_var.set(
+                    f"Not started — {worst_role} gyro at {worst_hz:.0f} Hz "
+                    f"(need {_imu.MIN_USABLE_HZ:.0f} Hz)")
+                return
+
         # enter_recording() runs BEFORE starting the individual sources so
         # that a non-blocking status message a source sets on failure (e.g.
         # _start_rgb_recording()'s "no camera" notice) is the last thing
@@ -4406,10 +4446,11 @@ class App(tk.Tk):
                 # Low gyro rate makes AHRS integration unreliable regardless of
                 # flex-axis state -- surface it first. Same threshold/message
                 # pattern already used in pendulastic_viewer.py.
-                slow = [d for d in (st["proximal"], st["distal"])
-                        if d["connected"] and 0 < d.get("hz", 0) < _imu.MIN_USABLE_HZ]
+                # Same judgement as the record-start gate, so the label can
+                # never say "fine" while the gate refuses (or the reverse).
+                slow = _imu.slow_gyro_roles(st)
                 if slow:
-                    hz = min(d["hz"] for d in slow)
+                    hz = slow[0][1]
                     self._acq.lbl_method_status.config(
                         text=f"⚠ gyro only {hz:.0f} Hz — set the app's update "
                              f"interval to 10 ms (≥{_imu.MIN_USABLE_HZ:.0f} Hz needed)",

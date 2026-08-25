@@ -3243,3 +3243,80 @@ def test_conftest_survives_a_missing_display():
 
     assert mod._anchor is None
     mod.pytest_unconfigure(None)      # must tolerate a None anchor
+
+# --- MIN_USABLE_HZ enforcement at record start ------------------------------
+
+
+def _arm_imu_browser(app, monkeypatch, tmp_path):
+    """Put the app in the state on_start() sees for a browser-IMU trial."""
+    import pendulastic_app as _m
+    monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("pendulastic_phone_server.start_imu_stream_server",
+                        lambda: ("192.168.1.50", 8881))
+    app._acq.pid_var.set("P1")
+    app._acq._src_imu_browser.set(True)
+    app._acq._on_imu_browser_checkbox_toggled()
+
+
+def test_on_start_refuses_to_record_below_min_usable_hz(monkeypatch, tmp_path):
+    """A warning the operator can miss is not enforcement.
+
+    Three live trials were recorded at 1 Hz gyro while the app displayed its
+    low-rate warning the whole time. Decimated against OptiTrack ground truth,
+    1 Hz yields 63.76 deg median RMSE against 13.35 at full rate -- so the
+    trial cannot be scored and must not be captured in the first place.
+    """
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 1.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        shown = []
+        monkeypatch.setattr(_m.messagebox, "showerror",
+                            lambda *a, **kw: shown.append(a))
+        app.on_start()
+        assert app._state != "recording",             "recording started at 1 Hz gyro; the rate bar was not enforced"
+        assert shown, "the operator was given no reason the trial did not start"
+        blob = " ".join(str(x) for x in shown).lower()
+        assert "hz" in blob and "10 ms" in blob,             "the message must name the rate and the fix, not just fail"
+    finally:
+        app.destroy()
+
+
+def test_on_start_proceeds_when_gyro_rate_is_healthy(monkeypatch, tmp_path):
+    """The gate must not become a new way for a good trial to fail."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 100.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        monkeypatch.setattr(_m._imu, "start_raw_log", lambda p: None)
+        app.on_start()
+        assert app._state == "recording"
+    finally:
+        app.destroy()
+
+
+def test_on_start_not_blocked_when_no_rate_is_known_yet(monkeypatch, tmp_path):
+    """A device that just connected has no measurable interval (hz == 0.0).
+    Treating that as 'too slow' would refuse every trial for the first second
+    and make the gate worse than the problem."""
+    import pendulastic_app as _m
+    app = _m.App()
+    try:
+        _arm_imu_browser(app, monkeypatch, tmp_path)
+        monkeypatch.setattr(_m._imu, "get_state", lambda: {
+            "proximal": {"connected": True, "hz": 0.0},
+            "distal":   {"connected": False, "hz": 0.0},
+        })
+        monkeypatch.setattr(_m._imu, "start_raw_log", lambda p: None)
+        app.on_start()
+        assert app._state == "recording"
+    finally:
+        app.destroy()
