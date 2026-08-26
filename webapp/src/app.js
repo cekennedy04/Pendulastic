@@ -245,20 +245,51 @@ if (typeof document !== 'undefined') {
   // fresh resumeOrCreateSession() pass, which is also what makes "close"
   // work without ever mutating the closed session's own record.
   let sessionReadyPromise = null;
-  // True for the entire duration of a persistTrial() call (fix round 1).
-  // `persistTrial` awaits two separate IndexedDB writes before it clears
-  // exported_at; refreshExportLock() only ran at the very end, so for that
-  // whole window the session bar kept showing whatever state was true
-  // BEFORE this trial. If the session was already exported, Close stayed
-  // enabled and a tap during that window nulled `currentSession` out from
-  // under the in-flight persist -- `invalidateExport(null)` would then
-  // spread into `{}`, silently dropping `id`, and the session `put()` would
-  // fail with no key while the trial itself had already committed under the
-  // OLD (now-exported, filtered-out-on-resume) session id: a trial recorded
-  // after export, invisibly unreachable on the next load. This flag closes
-  // that window by making both buttons reflect "a write is in progress",
-  // not just the last-known stored state.
-  let persisting = false;
+  // A reference count, not a boolean, over "something is currently deciding
+  // to mutate session state" -- `onResult`, the export-session click
+  // handler, and the close-session click handler each increment it as their
+  // very first synchronous statement (before their own first `await`) and
+  // decrement it in a `finally`. Started life in fix round 1 as a boolean
+  // scoped only to persistTrial's own two writes; fix round 3 widened both
+  // what touches it and when, and made it a count rather than a flag --
+  // see below for why a plain boolean is not enough once more than one
+  // entry point can be "busy" at once.
+  //
+  // Round 1's placement -- setting a flag at the top of persistTrial, after
+  // its first `await ensureSessionReady()` -- left a gap open at the actual
+  // decision point: `onResult` chooses to persist a trial (starting the
+  // `capture.exportJsonl().then(persistTrial)` chain) BEFORE persistTrial
+  // itself ever runs a single line. In that gap, if the session was already
+  // exported, Close still read as enabled; a tap there nulled
+  // `currentSession` out from under the persist about to start, and
+  // `persistTrial` crashed reading `.id` off `null` before ever calling
+  // `makeTrialRecord` or `put()` -- the trial was gone, not merely orphaned
+  // (worse than round 1's own finding, which at least left the trial
+  // sitting in `STORES.trials`). Fixed by incrementing in `onResult` itself,
+  // synchronously, before the `exportJsonl()` chain starts -- see that
+  // decision point below.
+  //
+  // The same reasoning applies to export-session and close-session: each
+  // one decides to mutate `currentSession` (export-session via
+  // markExported+put, close-session by nulling it and re-initialising), so
+  // each now increments this as its own first synchronous statement.
+  //
+  // Why a COUNT: `onResult` can fire -- a trial can land -- at any moment,
+  // including while export-session or close-session is already mid-flight
+  // (nothing here blocks starting a new trial while the share sheet from a
+  // previous export is still open). A plain boolean shared by three
+  // independent entry points breaks the instant two of them overlap:
+  // whichever one finishes FIRST sets it back to `false` in its own
+  // `finally`, re-enabling both buttons while the OTHER one is still
+  // running -- reopening the exact button-reentrancy window this exists to
+  // close, just one layer up. A count fixes that: the buttons only
+  // re-enable once every in-flight entry point has decremented back to
+  // zero. (persistTrial running concurrently with an in-flight export is
+  // still safe on its own terms even before this -- round 2's
+  // canMarkExported re-verifies live state and would simply ask for a
+  // re-export -- but the button-reentrancy risk this section exists for is
+  // independent of that and needed the count regardless.)
+  let sessionBusyCount = 0;
 
   async function ensurePatient() {
     const patients = await getAll(db, STORES.patients);
@@ -297,10 +328,11 @@ if (typeof document !== 'undefined') {
   });
 
   function refreshExportLock() {
-    // While a trial is being persisted, both buttons are locked regardless
-    // of what `currentSession`/`currentTrialCount` currently say -- see
-    // `persisting`'s doc comment above for the race this closes.
-    if (persisting) {
+    // While ANY entry point is mid-mutation, both buttons are locked
+    // regardless of what `currentSession`/`currentTrialCount` currently say
+    // -- see `sessionBusyCount`'s doc comment above for the races this
+    // closes and why it is a count rather than a flag.
+    if (sessionBusyCount > 0) {
       el('export-session').disabled = true;
       el('close-session').disabled = true;
       return;
@@ -314,41 +346,54 @@ if (typeof document !== 'undefined') {
   // `trajectory` here is the plain object worker.js's `result` message
   // carries (the same one drawWaveform renders) -- see session-store.js's
   // updated doc comment on makeTrialRecord for its exact shape.
+  // Does NOT touch sessionBusyCount itself (fix round 3): the caller
+  // (onResult) increments once, synchronously, before the async chain that
+  // leads here even starts, and decrements exactly once via a `.finally()`
+  // on that WHOLE chain -- see onResult's doc comment below for why the
+  // increment/decrement live entirely on the caller's side rather than
+  // split between here and there. persistTrial is only ever invoked from
+  // that one call site.
   async function persistTrial(params, trajectory, rawJsonl) {
     await ensureSessionReady();
-    // Set before the first write and cleared in `finally` (fix round 1):
-    // a rejected write must not strand the session bar disabled forever,
-    // and refreshExportLock() must run on both transitions so the bar never
-    // shows stale state while a write is actually in flight.
-    persisting = true;
-    refreshExportLock();
-    try {
-      const record = makeTrialRecord({
-        sessionId: currentSession.id,
-        side: TRIAL_SIDE,
-        params,
-        trajectory,
-        rawJsonl,
-        algorithmVersion: BUILD_ID,
-      });
-      await put(db, STORES.trials, record);
-      currentTrialCount += 1;
-      // A newly recorded trial invalidates any earlier export: the session
-      // now holds data that has never left the device. See
-      // invalidateExport's doc comment above for why this one line is the
-      // whole point of the gate.
-      currentSession = invalidateExport(currentSession);
-      await put(db, STORES.sessions, currentSession);
-    } finally {
-      persisting = false;
-      refreshExportLock();
-    }
+    const record = makeTrialRecord({
+      sessionId: currentSession.id,
+      side: TRIAL_SIDE,
+      params,
+      trajectory,
+      rawJsonl,
+      algorithmVersion: BUILD_ID,
+    });
+    await put(db, STORES.trials, record);
+    currentTrialCount += 1;
+    // A newly recorded trial invalidates any earlier export: the session
+    // now holds data that has never left the device. See invalidateExport's
+    // doc comment above for why this one line is the whole point of the
+    // gate.
+    currentSession = invalidateExport(currentSession);
+    await put(db, STORES.sessions, currentSession);
   }
 
   el('export-session').addEventListener('click', async () => {
     el('session-status').textContent = '';
-    await ensureSessionReady();
+    // Incremented synchronously, before the first await (fix round 3): this
+    // handler decides to mutate `currentSession` (via markExported+put) the
+    // instant it is invoked, same reasoning as onResult below. Without this,
+    // Close could still read as enabled for the whole span this handler
+    // runs -- including the user-paced `await shareFiles(files)` -- and a
+    // tap there could null or swap `currentSession` out from under this
+    // handler's later reads of it. Round 2's canMarkExported already
+    // catches a trial-set or session-id mismatch by the time this handler
+    // reaches its CAS check, but a `currentSession` that had gone all the
+    // way to `null` by then (rather than just a different session) would
+    // throw on `currentSession.id` before the check even runs. Locking both
+    // buttons here prevents close-session's click from ever firing in the
+    // first place while this is in flight. A single try/finally is enough
+    // here (no nested async chain the way onResult has), so one increment
+    // paired with one decrement in `finally` cannot double-count.
+    sessionBusyCount++;
+    refreshExportLock();
     try {
+      await ensureSessionReady();
       const sessionIdAtExport = currentSession.id;
       const trials = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
       const patients = await getAll(db, STORES.patients);
@@ -368,47 +413,67 @@ if (typeof document !== 'undefined') {
       // Compare-and-swap (fix round 2): re-read as late as possible,
       // immediately before the decision, so the still-unavoidable final gap
       // (this read plus one put()) is as narrow as it can be made without an
-      // atomic transaction spanning both -- which db.js does not expose.
+      // atomic transaction spanning both. That gap is a KNOWN, ACCEPTED
+      // residual: closing it fully needs a single IndexedDB transaction that
+      // reads and conditionally writes atomically, which db.js does not
+      // expose, and reopening that reviewed module is out of scope here
+      // (fix round 2 dispatch). Left as documented, not silent.
       // See canMarkExported's doc comment for why this check exists at all.
       const trialsNow = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
       const liveSnapshot = { sessionId: currentSession.id, trialIds: trialsNow.map((t) => t.id) };
       if (!canMarkExported(exportedSnapshot, liveSnapshot)) {
         el('session-status').textContent =
           'A trial was recorded while exporting. This session has NOT been marked exported -- export again to include it.';
-        refreshExportLock();
         return;
       }
 
       currentSession = markExported(currentSession);
       await put(db, STORES.sessions, currentSession);
-      refreshExportLock();
       el('session-status').textContent = 'Session exported.';
     } catch (err) {
       el('session-status').textContent = `export failed: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      sessionBusyCount--;
+      refreshExportLock();
     }
   });
 
   el('close-session').addEventListener('click', async () => {
-    await ensureSessionReady();
-    if (!canCloseSession(currentSession)) return; // the button is disabled for this case; guard it anyway
-    // No IndexedDB write happens here, deliberately -- see
-    // resumeOrCreateSession's doc comment above for why. The session already
-    // carries the `exported_at` that makes it closable; "closing" is just
-    // forgetting it locally and forcing the next ensureSessionReady() to run
-    // resumeOrCreateSession() again, which skips any session with a set
-    // `exported_at` and creates a fresh one. This means an exported session
-    // that never had Close tapped on it is indistinguishable from one that
-    // did -- accepted for this task, called out explicitly rather than left
-    // implicit in the filter predicate.
-    currentSession = null;
-    currentTrialCount = 0;
-    sessionReadyPromise = null;
-    el('result').hidden = true;
-    el('waveform-wrap').hidden = true;
-    el('pt-score').hidden = true;
-    hideExportControls();
-    el('session-status').textContent = 'Session closed.';
-    await ensureSessionReady();
+    // Incremented synchronously, before the first await (fix round 3) -- same
+    // reasoning as export-session above: this handler decides to null out
+    // `currentSession` the instant it runs, and locking both buttons here
+    // means neither a new export-session click nor a second close-session
+    // click can start while this one -- including its own re-init at the
+    // end -- is still in flight. Single try/finally, no nested async chain,
+    // so one increment/one decrement cannot double-count here either.
+    sessionBusyCount++;
+    refreshExportLock();
+    try {
+      await ensureSessionReady();
+      if (!canCloseSession(currentSession)) return; // the button is disabled for this case; guard it anyway
+      // No IndexedDB write happens here, deliberately -- see
+      // resumeOrCreateSession's doc comment above for why. The session
+      // already carries the `exported_at` that makes it closable; "closing"
+      // is just forgetting it locally and forcing the next
+      // ensureSessionReady() to run resumeOrCreateSession() again, which
+      // skips any session with a set `exported_at` and creates a fresh one.
+      // This means an exported session that never had Close tapped on it is
+      // indistinguishable from one that did -- accepted for this task,
+      // called out explicitly rather than left implicit in the filter
+      // predicate.
+      currentSession = null;
+      currentTrialCount = 0;
+      sessionReadyPromise = null;
+      el('result').hidden = true;
+      el('waveform-wrap').hidden = true;
+      el('pt-score').hidden = true;
+      hideExportControls();
+      el('session-status').textContent = 'Session closed.';
+      await ensureSessionReady();
+    } finally {
+      sessionBusyCount--;
+      refreshExportLock();
+    }
   });
 
   let session = null;
@@ -788,11 +853,35 @@ if (typeof document !== 'undefined') {
     // local before any later trial's onResult can reassign `exportSession`.
     const capture = exportSession;
     if (capture) {
+      // Incremented HERE, synchronously, the instant this decides a trial is
+      // going to be persisted -- not inside persistTrial after its first
+      // await (fix round 3; that placement, from fix round 1, left exactly
+      // this gap open). onResult is sensor-driven, not a click, so it can
+      // fire at any moment regardless of what the session-bar buttons show;
+      // from this line until the chain below fully settles, both buttons
+      // must read as busy, or a Close tap in this window can null
+      // `currentSession` before persistTrial ever runs, crashing it on
+      // `currentSession.id` before the trial is written anywhere at all.
+      //
+      // The decrement lives in a single `.finally()` on the WHOLE chain
+      // (exportJsonl -> persistTrial), not split between persistTrial's own
+      // finally and a `.catch()` here: persistTrial no longer touches the
+      // count itself (see its doc comment) specifically so there is exactly
+      // one increment and exactly one decrement per trial, however the
+      // chain settles. Pairing an increment made here with a decrement that
+      // might fire from either of two different places, depending on WHERE
+      // the chain fails, is how a shared counter drifts.
+      sessionBusyCount++;
+      refreshExportLock();
       capture.exportJsonl()
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;
+        })
+        .finally(() => {
+          sessionBusyCount--;
+          refreshExportLock();
         });
     }
   }
