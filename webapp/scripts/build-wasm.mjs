@@ -21,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { computeShell } from './shell-list.mjs';
+import { computeShell, computeBuildId } from './shell-list.mjs';
 
 const repoRoot = new URL('../../', import.meta.url);
 const manifest = fileURLToPath(new URL('mobile-imu-core/Cargo.toml', repoRoot));
@@ -32,6 +32,7 @@ const wasmIn = fileURLToPath(
 const outDir = fileURLToPath(new URL('webapp/src/wasm', repoRoot));
 const wasmOut = fileURLToPath(new URL('webapp/src/wasm/mobile_imu_core_bg.wasm', repoRoot));
 const srcDir = fileURLToPath(new URL('webapp/src', repoRoot));
+const webappRoot = new URL('webapp/', repoRoot);
 const buildIdOut = fileURLToPath(new URL('webapp/src/build-id.js', repoRoot));
 
 function die(message) {
@@ -44,6 +45,34 @@ function die(message) {
 // produces JS bindings the compiled .wasm does not actually agree with.
 // Matched on the exact quoted name so `wasm-bindgen-backend` and friends,
 // which carry their own versions, cannot be picked up instead.
+// The crate version that produced the scoring params, per spec §3.2. Read
+// from Cargo.toml rather than hard-coded, so it cannot silently disagree with
+// the crate that was actually just built.
+function crateVersion() {
+  const text = readFileSync(manifest, 'utf8');
+  // Only the [package] section's own `version = ` line -- stop at the next
+  // section header so a dependency's version can never be picked up instead.
+  const pkg = text.split(/^\s*\[/m).find((s) => s.startsWith('package]'));
+  const m = pkg && pkg.match(/^\s*version\s*=\s*"([^"]+)"/m);
+  if (!m) die(`could not read the [package] version from ${manifest}`);
+  return m[1];
+}
+
+// The source revision that produced the wasm. Best-effort: a checkout with no
+// git (a release tarball, a vendored copy) still builds, it just cannot claim
+// a revision -- and says so rather than inventing one.
+function gitRevision() {
+  try {
+    return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      cwd: fileURLToPath(repoRoot),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || 'nogit';
+  } catch {
+    return 'nogit';
+  }
+}
+
 function pinnedVersion() {
   const lines = readFileSync(lockfile, 'utf8').split(/\r?\n/);
   const i = lines.findIndex((l) => l.trim() === 'name = "wasm-bindgen"');
@@ -96,27 +125,56 @@ run('wasm-bindgen', [wasmIn, '--out-dir', outDir, '--target', 'web']);
 
 console.log(`\nWrote bindings to ${outDir}`);
 
-// The offline-shell service worker (webapp/sw.js) needs a cache key that
-// changes exactly when the compiled maths changes, and a file list that
-// cannot go stale as later work adds modules under src/. Both are derived
-// here, right after the artifact they describe exists, rather than
-// hand-maintained -- a rebuilt wasm always produces a new key; an unchanged
-// one never does, and a new src/*.js file is picked up on the next build
-// with no separate list to remember to update.
-const buildId = createHash('sha256').update(readFileSync(wasmOut)).digest('hex').slice(0, 12);
-
 // The scan itself lives in shell-list.mjs, shared with
 // tests/sw-shell.test.js, so the generator and the test that checks its
 // output cannot drift apart.
 const shell = computeShell(srcDir);
 
+// ---------------------------------------------------------------------------
+// Two DIFFERENT identifiers are emitted below, and conflating them was a real
+// defect. They answer different questions and must change on different
+// triggers:
+//
+//   BUILD_ID          -- "is the offline shell on this phone current?"
+//   ALGORITHM_VERSION -- "which source revision scored this trial?"
+// ---------------------------------------------------------------------------
+
+// BUILD_ID: the service-worker cache key, folded over every file in SHELL --
+// the wasm among them, since it is a shell entry. See computeBuildId's doc
+// comment in shell-list.mjs for why a wasm-only hash meant a JS or CSS fix
+// could never reach an already-installed device.
+const buildId = computeBuildId(fileURLToPath(webappRoot), shell);
+
+// ALGORITHM_VERSION: what every exported trial record and manifest reports as
+// the thing that produced its `params` (spec §3.2), and what §3.5 keys
+// re-scoring off. This used to be BUILD_ID -- 12 hex chars of a wasm hash --
+// which is not a version and, per this file's own header, is not even
+// reproducible: the .wasm embeds the building machine's cargo registry path,
+// its path separators, and a rustc version string, so no two machines produce
+// identical bytes. Nobody but the machine that built it could resolve an
+// exported manifest's algorithm_version back to a source revision. In files
+// that ARE the archive of record, that is a traceability hole.
+//
+// `<crate version>+<git revision>.<wasm hash>` keeps it a single string while
+// making the first two components resolvable by anyone with the repo, and
+// leaving the third as the tiebreaker for two builds of the same revision.
+// Deliberately hashed over the WASM ALONE, not the shell: a CSS change must
+// not read as a change to the maths that scored a trial.
+const wasmHash = createHash('sha256').update(readFileSync(wasmOut)).digest('hex').slice(0, 12);
+const algorithmVersion = `${crateVersion()}+${gitRevision()}.${wasmHash}`;
+
 writeFileSync(
   buildIdOut,
   `// GENERATED by scripts/build-wasm.mjs -- do not edit.\n` +
-    `// BUILD_ID changes whenever the compiled wasm changes; SHELL is every file\n` +
-    `// the offline service worker (sw.js) must cache to run without a network.\n` +
+    `// BUILD_ID is the offline service worker's cache key: it changes whenever ANY\n` +
+    `// file in SHELL changes, because sw.js only repopulates its cache when this\n` +
+    `// file changes. SHELL is every file sw.js must cache to run without a network.\n` +
+    `// ALGORITHM_VERSION identifies the source revision that produced a trial's\n` +
+    `// params (spec 3.2) and tracks the wasm alone, NOT the shell.\n` +
     `export const BUILD_ID = '${buildId}';\n` +
+    `export const ALGORITHM_VERSION = '${algorithmVersion}';\n` +
     `export const SHELL = [\n${shell.map((f) => `  '${f}',`).join('\n')}\n];\n`,
 );
 console.log(`build id ${buildId}`);
+console.log(`algorithm version ${algorithmVersion}`);
 console.log(`shell: ${shell.length} files`);

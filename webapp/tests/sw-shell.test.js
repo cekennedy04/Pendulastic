@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeShell } from '../scripts/shell-list.mjs';
-import { SHELL } from '../src/build-id.js';
+import { computeShell, computeBuildId } from '../scripts/shell-list.mjs';
+import { SHELL, BUILD_ID, ALGORITHM_VERSION } from '../src/build-id.js';
 
 // sw.js's fetch handler is cache-first with network fallback, so a SHELL
 // that has drifted from the filesystem looks perfectly fine online -- the
@@ -38,4 +39,108 @@ test('every SHELL entry exists on disk', () => {
   // install silently and leaves the app broken offline.
   const missing = SHELL.filter((entry) => entry !== './' && !existsSync(path.join(webappRoot, entry)));
   assert.deepEqual(missing, []);
+});
+
+test('the offline shell includes the web app manifest', () => {
+  // manifest.json is what makes an iOS Home Screen clip launch standalone,
+  // which is the only way install-gate.js ever lets recording start. If it
+  // is not in the shell, an installed-and-offline device fetches nothing for
+  // it and falls back to a chromed launch -- gate up, app unusable, on
+  // exactly the install this branch exists to produce.
+  assert.ok(SHELL.includes('./manifest.json'), `manifest.json missing from SHELL: ${SHELL}`);
+});
+
+// computeBuildId is the service worker's cache key. sw.js only repopulates
+// its cache from `install`, `install` only fires when build-id.js changes,
+// and the fetch handler is cache-first with no revalidation. So the key MUST
+// move whenever any shell file's bytes move -- otherwise an installed phone
+// serves its old app.js forever and a shipped fix reaches nobody.
+//
+// Driven against a temp directory rather than the real webapp/: the real
+// shell contains the generated .wasm, whose bytes differ per build machine
+// (see scripts/build-wasm.mjs's header), so anything asserted about its hash
+// would be true only on the machine that last built it.
+
+function fixtureShell() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pendulastic-shell-'));
+  mkdirSync(path.join(dir, 'src'));
+  writeFileSync(path.join(dir, 'index.html'), '<!doctype html>');
+  writeFileSync(path.join(dir, 'src', 'app.js'), 'export const a = 1;');
+  writeFileSync(path.join(dir, 'src', 'app.css'), 'body { color: red; }');
+  // Present on disk but excluded from the hash -- the id is written into it.
+  writeFileSync(path.join(dir, 'src', 'build-id.js'), "export const BUILD_ID = 'old';");
+  const shell = ['./', './index.html', './src/app.css', './src/app.js', './src/build-id.js'];
+  return { dir, shell, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test('an unchanged shell produces the same build id (a rebuild must not churn the cache)', () => {
+  const { dir, shell, cleanup } = fixtureShell();
+  try {
+    assert.equal(computeBuildId(dir, shell), computeBuildId(dir, shell));
+  } finally { cleanup(); }
+});
+
+test('a JS-only change produces a NEW build id -- the whole of finding I2', () => {
+  // The regression this replaces: BUILD_ID hashed the wasm alone, so a fix to
+  // app.js left the cache key identical, build-id.js unchanged, the service
+  // worker's install event unfired, and the fix stranded on the build machine.
+  const { dir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell);
+    writeFileSync(path.join(dir, 'src', 'app.js'), 'export const a = 2;');
+    assert.notEqual(computeBuildId(dir, shell), before, 'a JS fix that does not move the cache key can never reach an installed device');
+  } finally { cleanup(); }
+});
+
+test('a CSS-only change produces a new build id too', () => {
+  const { dir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell);
+    writeFileSync(path.join(dir, 'src', 'app.css'), 'body { color: blue; }');
+    assert.notEqual(computeBuildId(dir, shell), before);
+  } finally { cleanup(); }
+});
+
+test('adding a file to the shell changes the build id', () => {
+  const { dir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell);
+    writeFileSync(path.join(dir, 'src', 'db.js'), 'export const b = 1;');
+    assert.notEqual(computeBuildId(dir, [...shell, './src/db.js']), before);
+  } finally { cleanup(); }
+});
+
+test('build-id.js\'s own contents are excluded, so the id cannot chase its own tail', () => {
+  // Hashing the file the id is written into would make each build depend on
+  // the previous build's id, minting a new cache key on every rebuild even
+  // with nothing changed.
+  const { dir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell);
+    writeFileSync(path.join(dir, 'src', 'build-id.js'), "export const BUILD_ID = 'totally different';");
+    assert.equal(computeBuildId(dir, shell), before);
+  } finally { cleanup(); }
+});
+
+test('BUILD_ID is a plain 12-hex cache key', () => {
+  assert.match(BUILD_ID, /^[0-9a-f]{12}$/);
+});
+
+// ALGORITHM_VERSION is what every persisted trial and every exported manifest
+// reports as the thing that produced its params (spec 3.2), and what 3.5 keys
+// re-scoring off. It used to be BUILD_ID: 12 hex characters of a wasm hash,
+// which is not a version and -- per build-wasm.mjs's own header, since the
+// .wasm embeds the building machine's cargo paths and rustc string -- is not
+// reproducible either. Nobody but the machine that built it could resolve an
+// exported manifest back to a source revision, in files that ARE the archive
+// of record.
+
+test('ALGORITHM_VERSION carries a resolvable crate version and source revision, not just an opaque hash', () => {
+  assert.match(
+    ALGORITHM_VERSION,
+    /^\d+\.\d+\.\d+\+([0-9a-f]{7,40}|nogit)\.[0-9a-f]{12}$/,
+    `expected <crate version>+<git revision>.<wasm hash>, got "${ALGORITHM_VERSION}"`,
+  );
+  assert.notEqual(ALGORITHM_VERSION, BUILD_ID, 'the algorithm version must not be the shell cache key');
+  assert.ok(!/^[0-9a-f]{12}$/.test(ALGORITHM_VERSION), 'a bare wasm hash is unresolvable by anyone but the machine that built it');
 });
