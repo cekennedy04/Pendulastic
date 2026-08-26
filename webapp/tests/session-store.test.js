@@ -30,6 +30,15 @@ test('markExported does not mutate the session it was given', () => {
   assert.equal(s.exported_at, null, 'markExported must return a new record, not mutate');
 });
 
+test('exporting at epoch zero still counts as exported', () => {
+  // Date.now() === 0 is a legitimate (if rare) instant. canCloseSession must
+  // treat "exported_at is present" as the gate, not "exported_at is truthy" --
+  // a truthiness check would make 0 indistinguishable from null and leave an
+  // actually-exported session permanently un-closable.
+  const s = { id: 's1', patient_id: 'p1', timestamp: 0, exported_at: null };
+  assert.equal(canCloseSession(markExported(s, 0)), true);
+});
+
 test('a trial keeps its raw log, which is the archive of record', () => {
   const r = makeTrialRecord({ sessionId: 's1', side: 'left', params, trajectory: new ArrayBuffer(8), rawJsonl: 'line\n', algorithmVersion: '0.1.0' });
   assert.equal(r.raw_jsonl, 'line\n');

@@ -46,7 +46,7 @@ export function makeSessionRecord({ patientId }) {
 }
 
 export function canCloseSession(session) {
-  return Boolean(session && session.exported_at);
+  return Boolean(session && session.exported_at != null);
 }
 
 export function markExported(session, at = Date.now()) {
