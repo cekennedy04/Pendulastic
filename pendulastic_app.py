@@ -105,14 +105,35 @@ try:
 except Exception:
     AnnotatedVideoReviewDialog = None
 
-_mp_pose = _mp_draw = _mp_styles = None
-try:
-    import mediapipe as _mp
-    _mp_pose   = _mp.solutions.pose
-    _mp_draw   = _mp.solutions.drawing_utils
-    _mp_styles = _mp.solutions.drawing_styles
-except Exception:
-    pass
+# Deferred for the same reason as pendulastic_viewer's probe: importing
+# mediapipe costs ~16 s, and an IMU-only trial never draws a pose. See
+# _mp_available() there.
+_mp = _mp_pose = _mp_draw = _mp_styles = None
+_MP_PROBED = False
+
+
+def _ensure_mediapipe() -> bool:
+    """Load mediapipe on first actual use. True once the module is usable.
+
+    Reports on _mp, the module itself, because that is what the Tasks API
+    call sites need; the solutions shortcuts are checked separately by the
+    one site that uses them. Returns early when _mp is already set, so a
+    test that injects a fake module is honoured rather than overridden.
+    """
+    global _mp, _mp_pose, _mp_draw, _mp_styles, _MP_PROBED
+    if _mp is not None:
+        return True
+    if not _MP_PROBED:
+        _MP_PROBED = True
+        try:
+            import mediapipe as _m
+            _mp        = _m
+            _mp_pose   = _m.solutions.pose
+            _mp_draw   = _m.solutions.drawing_utils
+            _mp_styles = _m.solutions.drawing_styles
+        except Exception:
+            pass
+    return _mp is not None
 
 try:
     from pendulastic_pt_score import (
@@ -457,6 +478,8 @@ class BiomechanicalEngine:
             return (None, [])
 
         try:
+            if not _ensure_mediapipe():
+                return (frame, [])
             V = _mp.tasks.vision
             opts = V.PoseLandmarkerOptions(
                 base_options=_mp.tasks.BaseOptions(model_asset_path=_MP_MODEL),
@@ -4281,7 +4304,7 @@ class App(tk.Tk):
                 break
 
         # Init lightweight pose estimator for live overlay (guarded)
-        if _mp_pose is not None:
+        if _ensure_mediapipe() and _mp_pose is not None:
             self._pose_estimator = _mp_pose.Pose(
                 model_complexity=0,
                 min_detection_confidence=0.5,

@@ -93,12 +93,30 @@ _MP_MODEL = next(
     ) if os.path.isfile(os.path.join(_MP_MODEL_DIR, n))),
     os.path.join(_MP_MODEL_DIR, "pose_landmarker_full.task"),  # default path even if missing
 )
-try:
-    import mediapipe as _mp_lib
-    _ = _mp_lib.tasks.vision.PoseLandmarker   # verify Tasks API is present
-    _MP_AVAIL = os.path.isfile(_MP_MODEL)
-except Exception:
-    _MP_AVAIL = False
+# Deferred deliberately. `import mediapipe` costs about 16 s inside the
+# process on this machine, and it was the whole reason importing this
+# module -- and pendulastic_app, which imports it -- took ~21 s. Every
+# launch paid that, including an IMU-only pendulum trial that never runs
+# pose tracking. This probe was the only thing pulling mediapipe in at
+# import time: every real use below is already a function-local import.
+_MP_AVAIL = None          # None = not yet probed
+
+
+def _mp_available() -> bool:
+    """True when MediaPipe's Tasks API and the pose model are both here.
+
+    Probes on first ask and caches the verdict, so the cost lands on the
+    first trial that actually needs pose tracking rather than on startup.
+    """
+    global _MP_AVAIL
+    if _MP_AVAIL is None:
+        try:
+            import mediapipe as _mp_lib
+            _ = _mp_lib.tasks.vision.PoseLandmarker   # Tasks API present?
+            _MP_AVAIL = os.path.isfile(_MP_MODEL)
+        except Exception:
+            _MP_AVAIL = False
+    return _MP_AVAIL
 
 # ── Calibration model (train_calibration.py output) ──────────────────────────
 # Corrects MediaPipe's systematic, angle-dependent bias against OptiTrack.
@@ -1977,7 +1995,7 @@ class PendulaticViewer(tk.Tk):
         self._skel_guide_tmp:    list = [None, None, None]
 
         # Tracking state — use MediaPipe when available, else LK optical flow
-        self.tracker  = _MPTracker() if _MP_AVAIL else _Tracker()
+        self.tracker  = _MPTracker() if _mp_available() else _Tracker()
         self.detector = _PatientDetector()
         self._angles: list = []
         self._trail:  list = []
@@ -4121,7 +4139,7 @@ class PendulaticViewer(tk.Tk):
                 ok, f0 = cap2.read()
                 if ok:
                     _side_p = getattr(self.tracker, '_side', 'right')
-                    t2 = _MPBatchTracker(_side_p, fps=self.fps) if _MP_AVAIL else _ArcTracker()
+                    t2 = _MPBatchTracker(_side_p, fps=self.fps) if _mp_available() else _ArcTracker()
                     t2.init(f0, hip0, kne0, ank_init)
                     if hasattr(self.tracker, '_anchor_xfrac') and self.tracker._anchor_xfrac is not None:
                         t2._anchor_xfrac = self.tracker._anchor_xfrac
@@ -6200,7 +6218,7 @@ class PendulaticViewer(tk.Tk):
             if not ok:
                 cap2.release(); return
             _side = getattr(self.tracker, '_side', 'right')
-            t2 = _MPBatchTracker(_side, fps=self.fps) if _MP_AVAIL else _ArcTracker()
+            t2 = _MPBatchTracker(_side, fps=self.fps) if _mp_available() else _ArcTracker()
             t2.init(f_init, hip0, kne0, ank0)
             # Person-identity gate: use live tracker's anchor x-fraction if available,
             # but always pin self.knee to the user-placed kne0 — if init() snapped
@@ -6244,7 +6262,7 @@ class PendulaticViewer(tk.Tk):
                 cap2.set(cv2.CAP_PROP_POS_FRAMES, live_start)
                 ok, f_rel = cap2.read()
                 if ok:
-                    t2 = _MPBatchTracker(_side, fps=self.fps) if _MP_AVAIL else _ArcTracker()
+                    t2 = _MPBatchTracker(_side, fps=self.fps) if _mp_available() else _ArcTracker()
                     t2.init(f_rel, hip0, kne0, ank0)
                     angles[live_start] = hold_ang
                     trail[live_start]  = ank0.copy()
@@ -6382,7 +6400,7 @@ class PendulaticViewer(tk.Tk):
             if ok:
                 _side_r  = getattr(self.tracker, '_side', 'right')
                 init_ank = _arc_pos(_arc_theta(last_ank))   # project to arc as start hint
-                if _MP_AVAIL:
+                if _mp_available():
                     t2 = _MPBatchTracker(_side_r, fps=self.fps)
                     t2.init(f0, hip0, kne0, init_ank)
                     # Seed correction prior so the tracker stays near the user's

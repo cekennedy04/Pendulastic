@@ -3745,3 +3745,46 @@ def test_small_rotations_do_not_trigger_the_projection_flag(
         assert app._write_imu_quality_sidecar(csv_path) is None
     finally:
         app.destroy()
+
+# --- startup cost -----------------------------------------------------------
+
+
+def _import_probe(module):
+    """Import `module` in a clean interpreter and report whether that pulled
+    mediapipe in with it. A subprocess because this test session has almost
+    certainly imported mediapipe already."""
+    import subprocess
+    import sys as _sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import sys\n"
+            "sys.argv = ['x']\n"
+            "import %s\n"
+            "print('MEDIAPIPE_LOADED', 'mediapipe' in sys.modules)\n" % module)
+    r = subprocess.run([_sys.executable, "-c", code],
+                       capture_output=True, text=True, cwd=root, timeout=300)
+    line = [l for l in r.stdout.splitlines() if l.startswith("MEDIAPIPE_LOADED")]
+    assert line, "probe produced no verdict:\nstdout=%s\nstderr=%s" % (
+        r.stdout[-800:], r.stderr[-800:])
+    return line[0].split()[1] == "True"
+
+
+def test_app_module_import_does_not_load_mediapipe():
+    """Measured on this machine: `import mediapipe` costs ~16 s inside the
+    process, and importing pendulastic_app took ~21 s almost entirely because
+    of it -- paid on every launch, including an IMU-only pendulum trial that
+    never runs pose tracking at all. The window took 21 s to appear.
+
+    Nothing needs mediapipe until a pose tracker is actually constructed, so
+    the module-level import is deferred. This asserts the invariant rather
+    than a wall-clock number, which would be flaky.
+    """
+    assert not _import_probe("pendulastic_app"), (
+        "importing pendulastic_app pulled mediapipe in; that is ~16 s added "
+        "to every launch for a dependency an IMU trial never touches")
+
+
+def test_viewer_module_import_does_not_load_mediapipe():
+    """pendulastic_app imports pendulastic_viewer, so deferring only the
+    app's own import would have changed nothing."""
+    assert not _import_probe("pendulastic_viewer"), (
+        "importing pendulastic_viewer pulled mediapipe in")
