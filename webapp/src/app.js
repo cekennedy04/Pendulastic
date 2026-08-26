@@ -3,8 +3,20 @@
 // no build step -- plain ES module loaded directly by the browser.
 import { startCapture } from './capture.js';
 import { installState, installInstructions } from './install-gate.js';
+import { openDb, put, getAll, STORES } from './db.js';
+import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported } from './session-store.js';
+import { buildExportFiles, shareFiles } from './export.js';
+import { BUILD_ID } from './build-id.js';
 
 const el = (id) => document.getElementById(id);
+
+// Participant management (unit U8) does not exist yet -- every trial is
+// attributed to a single fixed side and a single fixed on-device test
+// participant until a real picker replaces both (task-6 dispatch,
+// correction 2).
+const TRIAL_SIDE = 'left'; // U8 replaces this with a real side selector
+const FIXED_PATIENT_ID = 'fixed-test-participant';
+const FIXED_PATIENT_LABEL = 'TEST-PARTICIPANT'; // a literal we control, not free text -- see export.js's clinic_patient_id note
 
 // code 0..3 from onState, per capture.js's doc comment: 0 Moving, 1 Holding,
 // 2 Ready, 3 Released. Both arrays are indexed by that same code, matching
@@ -64,6 +76,76 @@ export function nextOutcome(latched, event) {
   return { latched: true, action: { kind: 'fault', reason: event.reason } };
 }
 
+// Pure: decides which session a fresh page load should continue recording
+// into, given every session already on file for this patient. `sessions` is
+// whatever `getAll(db, STORES.sessions, 'by_patient', patientId)` returns.
+//
+// An unexported session (`exported_at == null`) is still "open" -- a reload
+// mid-session (tab crash, accidental refresh, iOS evicting a backgrounded
+// tab) must resume it rather than starting a new one, or the trials already
+// recorded into it become invisible to the export flow even though they are
+// still sitting in IndexedDB under a session id nothing on screen references
+// any more. Exported-and-closed sessions are filtered out on purpose: once a
+// session's data has left the device, its slot is done, and closing it
+// (task-6 dispatch) simply forgets it so the next trial starts a new one --
+// see the close-session handler below, which relies on exactly this
+// filtering to "close" a session without ever touching its stored record.
+//
+// DESIGN DECISION, not an implementation detail: this filter is the ENTIRE
+// mechanism behind "Close session". Nothing is ever written to mark a
+// session closed -- `exported_at` already means "safe to leave behind," and
+// filtering on it does double duty as the close flag. The direct
+// consequence: an exported-but-never-explicitly-closed session (the operator
+// tapped Export but the tab was killed before they tapped Close) is
+// INDISTINGUISHABLE, on the next load, from one that was properly closed --
+// both are just "an exported session for this patient" and both get
+// filtered out identically. `close-session`'s click handler is therefore a
+// pure in-memory reset; it performs no IndexedDB write of its own. If a
+// future unit needs a real closed/not-closed distinction (e.g. to list past
+// sessions), this filter is not enough on its own and a dedicated
+// `closed_at` field should be added instead of overloading `exported_at`.
+//
+// If more than one open session exists (should not happen through this UI,
+// but a future participant picker or a manual DB edit could produce it), the
+// most recently created one wins -- an operator mid-visit wants the session
+// they were just working in, not an old abandoned one.
+export function resumeOrCreateSession(sessions, patientId) {
+  const open = (sessions || [])
+    .filter((s) => s.patient_id === patientId && s.exported_at == null)
+    .sort((a, b) => b.timestamp - a.timestamp)[0];
+  return open || makeSessionRecord({ patientId });
+}
+
+// Pure: what the export-lock UI should show for a given session and how
+// many trials it holds. Extracted from the DOM-binding `refreshExportLock`
+// below so the decision itself -- not just the two-line el().disabled
+// plumbing -- can be driven with plain objects under `node --test` (per
+// task-6 dispatch's testing note: this project has repeatedly found
+// untested browser-only decision logic to be where silent errors live).
+//
+// `trialCount` is folded in deliberately, beyond what `canCloseSession`
+// alone considers: a brand-new session with zero trials is technically
+// "not closable" by `canCloseSession` (its `exported_at` is null), but
+// warning an operator who hasn't recorded anything yet that they have
+// "unexported trials" is actively misleading. The warning should appear
+// only once there is something on the session that could actually be lost.
+export function sessionLockState(session, trialCount) {
+  if (!session || !trialCount) return { closable: false, warningVisible: false };
+  const closable = canCloseSession(session);
+  return { closable, warningVisible: !closable };
+}
+
+// Pure: the other half of the export gate, alongside session-store.js's
+// markExported. This is the single rule that makes the gate mean anything --
+// without it, a clinician exports once, records five more trials, and closes
+// the session believing all of it was archived, when only the first trial
+// ever left the device. `persistTrial` below calls this on every trial save;
+// it is pulled out on its own so that one-line invariant can be pinned by a
+// test independent of IndexedDB, the worker, or any other DOM-bound state.
+export function invalidateExport(session) {
+  return { ...session, exported_at: null };
+}
+
 // Renders a single scored value. quality_warn/phi_negated are booleans,
 // spasticity_type is a string, and any of the numeric fields may arrive as
 // JSON null -- a non-finite f64 serialises to null rather than dropping the
@@ -98,6 +180,146 @@ if (typeof document !== 'undefined') {
     el('install-gate').hidden = false;
     el('start').hidden = true;
   }
+
+  // ---- Local persistence + export lock (task-6) --------------------------
+  // A scored trial is worthless the moment it is forgotten, and IndexedDB is
+  // a volatile cache the platform may erase -- see db.js's and
+  // session-store.js's doc comments. Everything below makes each trial
+  // durable to that cache immediately, and refuses to let a session close
+  // until its data has actually left the device via export.js.
+  let db = null;
+  let currentSession = null;
+  // Kept in memory alongside `currentSession` purely so `sessionLockState`
+  // can tell "a fresh session with nothing recorded yet" apart from "a
+  // session with unexported data" without an extra IndexedDB round trip on
+  // every render (see that function's doc comment for why the distinction
+  // matters).
+  let currentTrialCount = 0;
+  // Memoises the one-time-per-session init below so every call site
+  // (persistTrial, the two session-bar buttons) can simply `await` it
+  // instead of racing each other to create a duplicate session record.
+  // Reset to null by the close-session handler so the NEXT await forces a
+  // fresh resumeOrCreateSession() pass, which is also what makes "close"
+  // work without ever mutating the closed session's own record.
+  let sessionReadyPromise = null;
+
+  async function ensurePatient() {
+    const patients = await getAll(db, STORES.patients);
+    const existing = patients.find((p) => p.id === FIXED_PATIENT_ID);
+    if (existing) return existing;
+    const patient = { id: FIXED_PATIENT_ID, clinic_patient_id: FIXED_PATIENT_LABEL, created_at: Date.now() };
+    await put(db, STORES.patients, patient);
+    return patient;
+  }
+
+  async function initSession() {
+    db ??= await openDb(indexedDB);
+    const patient = await ensurePatient();
+    const sessions = await getAll(db, STORES.sessions, 'by_patient', patient.id);
+    currentSession = resumeOrCreateSession(sessions, patient.id);
+    await put(db, STORES.sessions, currentSession); // no-op if resumed and already stored; creates it otherwise
+    const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
+    currentTrialCount = trials.length;
+    refreshExportLock();
+  }
+
+  function ensureSessionReady() {
+    sessionReadyPromise ??= initSession();
+    return sessionReadyPromise;
+  }
+
+  // Fired at load time rather than lazily on the first trial: initialising
+  // early means a slow first IndexedDB open does not add latency to the
+  // moment a trial finishes and needs to be saved, and a failure here (e.g.
+  // IndexedDB unavailable) is surfaced immediately rather than silently at
+  // the worst possible time.
+  ensureSessionReady().catch((err) => {
+    console.error('session init failed', err);
+    el('session-status').textContent =
+      `Could not open local storage: ${err instanceof Error ? err.message : String(err)}. Trials will not be saved.`;
+  });
+
+  function refreshExportLock() {
+    const { closable, warningVisible } = sessionLockState(currentSession, currentTrialCount);
+    el('close-session').disabled = !closable;
+    el('export-warning').hidden = !warningVisible;
+  }
+
+  // `trajectory` here is the plain `{t, angle_deg, release_idx, peak_idx,
+  // trough_idx, neutral_deg}` object worker.js's `result` message carries
+  // (the same one drawWaveform renders) -- NOT the ArrayBuffer session-store
+  // .js's doc comment describes. makeTrialRecord stores whatever it is
+  // given verbatim under `trajectory` with no shape check, so this is not a
+  // bug, but it is a real mismatch with that comment worth a future look
+  // once something actually reads a persisted trial's trajectory back
+  // (nothing does yet -- export.js never touches this field).
+  async function persistTrial(params, trajectory, rawJsonl) {
+    await ensureSessionReady();
+    const record = makeTrialRecord({
+      sessionId: currentSession.id,
+      side: TRIAL_SIDE,
+      params,
+      trajectory,
+      rawJsonl,
+      algorithmVersion: BUILD_ID,
+    });
+    await put(db, STORES.trials, record);
+    currentTrialCount += 1;
+    // A newly recorded trial invalidates any earlier export: the session now
+    // holds data that has never left the device. See invalidateExport's doc
+    // comment above for why this one line is the whole point of the gate.
+    currentSession = invalidateExport(currentSession);
+    await put(db, STORES.sessions, currentSession);
+    refreshExportLock();
+  }
+
+  el('export-session').addEventListener('click', async () => {
+    el('session-status').textContent = '';
+    await ensureSessionReady();
+    try {
+      const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
+      const patients = await getAll(db, STORES.patients);
+      const patient = patients.find((p) => p.id === currentSession.patient_id);
+      const files = buildExportFiles({ session: currentSession, patient, trials });
+      // Belt-and-suspenders with shareFiles' own guard (task-6 dispatch,
+      // correction 3): a session with no trials must never reach the share
+      // sheet, and must never be marked exported.
+      if (files.length === 0) {
+        el('session-status').textContent = 'Nothing to export yet -- record a trial first.';
+        return;
+      }
+      await shareFiles(files);
+      currentSession = markExported(currentSession);
+      await put(db, STORES.sessions, currentSession);
+      refreshExportLock();
+      el('session-status').textContent = 'Session exported.';
+    } catch (err) {
+      el('session-status').textContent = `export failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+
+  el('close-session').addEventListener('click', async () => {
+    await ensureSessionReady();
+    if (!canCloseSession(currentSession)) return; // the button is disabled for this case; guard it anyway
+    // No IndexedDB write happens here, deliberately -- see
+    // resumeOrCreateSession's doc comment above for why. The session already
+    // carries the `exported_at` that makes it closable; "closing" is just
+    // forgetting it locally and forcing the next ensureSessionReady() to run
+    // resumeOrCreateSession() again, which skips any session with a set
+    // `exported_at` and creates a fresh one. This means an exported session
+    // that never had Close tapped on it is indistinguishable from one that
+    // did -- accepted for this task, called out explicitly rather than left
+    // implicit in the filter predicate.
+    currentSession = null;
+    currentTrialCount = 0;
+    sessionReadyPromise = null;
+    el('result').hidden = true;
+    el('waveform-wrap').hidden = true;
+    el('pt-score').hidden = true;
+    hideExportControls();
+    el('session-status').textContent = 'Session closed.';
+    await ensureSessionReady();
+  });
 
   let session = null;
   // Set once a genuine fault has been displayed for the CURRENT trial;
@@ -467,6 +689,22 @@ if (typeof document !== 'undefined') {
       .join('');
     showExportControls();
     resetToIdle();
+
+    // Persist the scored trial (task-6): fire-and-forget from the render
+    // path's point of view -- the operator must not wait on an IndexedDB
+    // round trip to see their result -- but every failure is still surfaced
+    // rather than swallowed, since a trial that silently fails to save is
+    // exactly the durability gap this task closes. `capture` is pinned to a
+    // local before any later trial's onResult can reassign `exportSession`.
+    const capture = exportSession;
+    if (capture) {
+      capture.exportJsonl()
+        .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl))
+        .catch((err) => {
+          el('session-status').textContent =
+            `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;
+        });
+    }
   }
 
   // The two onError cases read differently on purpose (task-6 dispatch,

@@ -59,6 +59,12 @@
     <p id="export-status"></p>
   </div>
   <table id="result" hidden></table>
+  <div id="session-bar">
+    <button id="export-session">Export session</button>
+    <button id="close-session" disabled>Close session</button>
+    <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
+    <p id="session-status"></p>
+  </div>
   <script type="module" src="./src/app.js"></script>
   <script>
     // Module service workers need {type:'module'} -- sw.js imports build-id.js.
