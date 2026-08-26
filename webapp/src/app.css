@@ -46,7 +46,10 @@ body {
 /* ---- Mandatory validation banner --------------------------------------
    Required unconditionally by spec §8 until G0 passes: no dismiss control,
    no fade, no flag to hide it. Sits above everything, including the state
-   guide, so it cannot be scrolled or covered during a trial. */
+   guide AND the install gate below (task-2 dispatch, binding constraint:
+   the gate must not replace or hide this banner) -- z-index must stay
+   higher than #install-gate's or its full-viewport overlay paints over
+   this sticky bar despite `hidden` never being set on it. */
 #banner {
   background: var(--banner-bg);
   color: var(--banner-fg);
@@ -58,8 +61,28 @@ body {
   padding: 10px 12px;
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 200;
 }
+
+/* ---- Standalone-install gate --------------------------------------------
+   Blocks recording until the app is opened from the Home Screen icon, not a
+   browser tab (task-2 dispatch). Safari deletes all script-writable storage
+   after 7 days of inactivity with the site, and Apple documents an exemption
+   for Home Screen installs -- but that exemption is unverified platform
+   behaviour Apple could change, not a guarantee, which is why the copy above
+   says "reduces how often" rather than promising safety. Sits above #guide
+   in DOM order and above everything but the mandatory banner in z-index, so
+   it cannot be scrolled past or covered. */
+#install-gate {
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--paper); color: var(--ink);
+  padding: 24px; overflow-y: auto;
+  display: flex; flex-direction: column; justify-content: center;
+}
+#install-gate[hidden] { display: none; }
+#install-gate h1 { font-size: 22px; margin: 0 0 12px; }
+#install-gate p { font-size: 16px; line-height: 1.5; margin: 0 0 14px; }
+.install-note { color: var(--muted); font-size: 14px; }
 
 #start, #stop {
   display: block;

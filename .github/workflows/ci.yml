@@ -74,7 +74,7 @@ jobs:
       # module specifier on Node 24 and throws before anything runs).
       # Confirm default discovery still finds the full known-good count
       # rather than silently running a subset.
-      - name: Run webapp tests and verify default discovery finds all 27
+      - name: Run webapp tests and verify default discovery finds all 32
         working-directory: webapp
         run: |
           set -euo pipefail
@@ -82,7 +82,7 @@ jobs:
           TESTS_COUNT=$(grep -oE '(ℹ|#) tests [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
           PASS_COUNT=$(grep -oE '(ℹ|#) pass [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
           echo "Discovered tests: ${TESTS_COUNT:-unknown}, passed: ${PASS_COUNT:-unknown}"
-          if [ "$TESTS_COUNT" != "27" ] || [ "$PASS_COUNT" != "27" ]; then
-            echo "::error::Default 'node --test' discovery found tests=${TESTS_COUNT:-?} pass=${PASS_COUNT:-?}, expected exactly 27 passing. Discovery is finding a different set of test files than the known-good baseline -- investigate, don't assume this is fine."
+          if [ "$TESTS_COUNT" != "32" ] || [ "$PASS_COUNT" != "32" ]; then
+            echo "::error::Default 'node --test' discovery found tests=${TESTS_COUNT:-?} pass=${PASS_COUNT:-?}, expected exactly 32 passing. Discovery is finding a different set of test files than the known-good baseline -- investigate, don't assume this is fine."
             exit 1
           fi

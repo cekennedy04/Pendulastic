@@ -2,6 +2,7 @@
 // scored-result table onto startCapture's three callbacks. No DOM framework,
 // no build step -- plain ES module loaded directly by the browser.
 import { startCapture } from './capture.js';
+import { installState, installInstructions } from './install-gate.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -79,6 +80,25 @@ function formatValue(v) {
 // reach the pure `nextOutcome` above) must not throw under `node --test`,
 // which has no `document`.
 if (typeof document !== 'undefined') {
+  // Blocks recording until the app is opened from the Home Screen icon, not
+  // a browser tab (task-2 dispatch). See install-gate.js's doc comment for
+  // why both `matchMedia` and `navigator.standalone` are checked. This must
+  // run before any control below is wired -- Start is disabled synchronously
+  // rather than left clickable until some later check catches up.
+  const gateState = installState({
+    matchMedia: window.matchMedia.bind(window),
+    navigatorStandalone: window.navigator.standalone,
+    userAgent: navigator.userAgent,
+    hasServiceWorker: 'serviceWorker' in navigator,
+  });
+  if (gateState !== 'standalone') {
+    el('install-how').textContent = gateState === 'unsupported-browser'
+      ? 'This browser cannot run Pendulastic offline. Use Safari on iOS or Chrome on Android.'
+      : installInstructions(navigator.userAgent);
+    el('install-gate').hidden = false;
+    el('start').hidden = true;
+  }
+
   let session = null;
   // Set once a genuine fault has been displayed for the CURRENT trial;
   // reset at the start of every new trial. See `nextOutcome` above.
