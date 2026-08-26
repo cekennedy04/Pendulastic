@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported } from '../src/app.js';
+import {
+  nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported,
+  exportLockState, retainExportHandle,
+} from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
@@ -231,4 +234,123 @@ test('canMarkExported is false, not throwing, on a missing snapshot', () => {
   assert.equal(canMarkExported(null, live), false);
   assert.equal(canMarkExported(undefined, live), false);
   assert.equal(canMarkExported(live, null), false);
+});
+
+// retainExportHandle is fix C1 stated as a rule. The bug: onResult did an
+// unconditional `exportSession = session`, but Stop -- the normal and only
+// completion path -- nulls `session` synchronously, one task before the
+// worker's `result` reply arrives. So exportSession was overwritten with null
+// on every single trial, the persist chain's `if (capture)` guard never fired,
+// and NOTHING was ever written to IndexedDB: trial count stuck at 0, "Export
+// session" permanently reporting "Nothing to export yet", the raw-log export
+// silently a no-op, and -- worst -- an earlier export's `exported_at` left
+// standing, so Close remained enabled while a scored, unpersisted trial
+// existed. That last one is a data-loss path through the gate that exists to
+// prevent data loss.
+
+const handleA = { id: 'trial-just-finished' };
+const handleB = { id: 'trial-in-progress' };
+
+test('a terminal outcome arriving after Stop nulled the session keeps the handle Stop captured', () => {
+  // The exact C1 sequence: Stop captures the live handle, nulls `session`,
+  // then the worker's result lands with `session === null`.
+  const afterStop = retainExportHandle(null, handleA);
+  assert.equal(afterStop, handleA, 'Stop must capture the handle before nulling');
+  assert.equal(
+    retainExportHandle(afterStop, null),
+    handleA,
+    'the result reply arrives with session===null and must NOT erase what Stop captured -- this is the whole of C1',
+  );
+});
+
+test('a live session replaces whatever handle is held', () => {
+  // A fault raised mid-capture: `session` is still live, and is the trial the
+  // operator is looking at.
+  assert.equal(retainExportHandle(handleA, handleB), handleB);
+  assert.equal(retainExportHandle(null, handleB), handleB);
+});
+
+test('with nothing held and nothing live, there is still nothing to export', () => {
+  assert.equal(retainExportHandle(null, null), null);
+});
+
+test('a fault bouncing in after Stop does not erase the handle either', () => {
+  // onError also nulls `session`; its own retain call must be as safe as
+  // onResult's, since a fault can arrive after Stop just as a result can.
+  const held = retainExportHandle(null, handleA); // Stop
+  const afterFault = retainExportHandle(held, null); // onError, session already null
+  const afterBouncedResult = retainExportHandle(afterFault, null); // the idempotent finish reply
+  assert.equal(afterBouncedResult, handleA);
+});
+
+// exportLockState is the full session-bar decision, busy-lock included.
+// `busyCount` is a reference count three independent entry points share, and
+// a single missed decrement leaves it above zero forever -- at which point
+// BOTH buttons are dead and the session can never be exported. Since the
+// export files are the archive of record, "export unreachable" is the most
+// expensive UI state on this branch, so the busy rule is pinned here rather
+// than left implicit in el().disabled plumbing.
+
+const exportedSession = markExported({ id: 's1', patient_id: 'p1', timestamp: 0, exported_at: null }, 100);
+const openSession = { id: 's1', patient_id: 'p1', timestamp: 0, exported_at: null };
+
+test('while an entry point is mid-mutation, both session buttons are locked', () => {
+  const state = exportLockState({ busyCount: 1, session: exportedSession, trialCount: 3 });
+  assert.equal(state.exportDisabled, true);
+  assert.equal(state.closeDisabled, true, 'Close must not be tappable while something is already mutating session state');
+});
+
+test('a leaked busy count wedges export permanently -- the failure I1 exists to prevent', () => {
+  // Not a hypothetical: before I1's fix, `capture.exportJsonl()` on a handle
+  // from a denied permission prompt threw synchronously, past the .finally()
+  // that owns the decrement. This asserts the consequence, so the property is
+  // stated somewhere a reader can find it.
+  const stuck = exportLockState({ busyCount: 1, session: exportedSession, trialCount: 3 });
+  assert.equal(stuck.exportDisabled, true);
+  assert.equal(
+    exportLockState({ busyCount: 0, session: exportedSession, trialCount: 3 }).exportDisabled,
+    false,
+    'and it only clears when the count comes back to zero -- there is no other recovery but a reload',
+  );
+});
+
+test('a negative busy count is treated as locked, not silently normalised to idle', () => {
+  // A count below zero can only mean the increment/decrement pairing is
+  // broken. Erring toward locked surfaces that; erring toward idle hides it.
+  assert.equal(exportLockState({ busyCount: -1, session: exportedSession, trialCount: 3 }).exportDisabled, true);
+});
+
+test('idle with an exported session: export offered, close allowed, no warning', () => {
+  assert.deepEqual(
+    exportLockState({ busyCount: 0, session: exportedSession, trialCount: 3 }),
+    { exportDisabled: false, closeDisabled: false, warningVisible: false },
+  );
+});
+
+test('idle with unexported trials: export offered, close refused, warning shown', () => {
+  assert.deepEqual(
+    exportLockState({ busyCount: 0, session: openSession, trialCount: 3 }),
+    { exportDisabled: false, closeDisabled: true, warningVisible: true },
+  );
+});
+
+test('a fresh session with no trials warns about nothing', () => {
+  assert.deepEqual(
+    exportLockState({ busyCount: 0, session: openSession, trialCount: 0 }),
+    { exportDisabled: false, closeDisabled: true, warningVisible: false },
+  );
+});
+
+test('the unexported-trials warning is a fact about the session, not blanked while busy', () => {
+  // An export is not finished until markExported runs, so the session really
+  // does still hold unexported data mid-flight. Blanking the warning would
+  // also make it flicker off and back on around every trial save.
+  assert.equal(exportLockState({ busyCount: 1, session: openSession, trialCount: 3 }).warningVisible, true);
+});
+
+test('exportLockState with no arguments is inert rather than throwing', () => {
+  assert.deepEqual(
+    exportLockState(),
+    { exportDisabled: false, closeDisabled: true, warningVisible: false },
+  );
 });

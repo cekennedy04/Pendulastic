@@ -4,17 +4,31 @@
 import { startCapture } from './capture.js';
 import { installState, installInstructions } from './install-gate.js';
 import { openDb, put, getAll, STORES } from './db.js';
-import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported } from './session-store.js';
-import { buildExportFiles, shareFiles } from './export.js';
-import { BUILD_ID } from './build-id.js';
+import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
+import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
+import { ALGORITHM_VERSION } from './build-id.js';
 
 const el = (id) => document.getElementById(id);
 
 // Participant management (unit U8) does not exist yet -- every trial is
-// attributed to a single fixed side and a single fixed on-device test
-// participant until a real picker replaces both (task-6 dispatch,
-// correction 2).
-const TRIAL_SIDE = 'left'; // U8 replaces this with a real side selector
+// attributed to a single fixed on-device test participant until a real picker
+// replaces it (task-6 dispatch, correction 2).
+//
+// SPEC DEVIATION, deliberate: spec 3.2 types `side` as the union
+// `'left' | 'right'`, and this is `null`, which is neither. It was `'left'`.
+//
+// The reason: the exported manifest is the archive of record, and there is no
+// laterality anywhere in the JSONL to cross-check it against -- a phone strapped
+// to a shank reports the same axes either way. A hardcoded `'left'` therefore
+// does not mean "unknown, defaulted"; it asserts, as recorded clinical fact,
+// that every trial ever captured was a left leg. The soak-test protocol has
+// operators recording real participants NOW, so someone would later have to
+// reconstruct which leg was actually used from a file that confidently says
+// "left" and offers no way to tell it is lying. A fabricated clinical fact is
+// worse than an absent one: `null` makes the gap visible to whoever reads the
+// export, which is the only honest thing this can say until U8 lands a real
+// side selector and restores the spec's union.
+const TRIAL_SIDE = null; // U8 replaces this with a real side selector
 const FIXED_PATIENT_ID = 'fixed-test-participant';
 const FIXED_PATIENT_LABEL = 'TEST-PARTICIPANT'; // a literal we control, not free text -- see export.js's clinic_patient_id note
 
@@ -24,17 +38,18 @@ const FIXED_PATIENT_LABEL = 'TEST-PARTICIPANT'; // a literal we control, not fre
 const STATES = ['MOVING\nhold still', 'HOLDING', 'READY\nrelease now', 'RELEASED\nlet it settle'];
 const CLASSES = ['moving', 'holding', 'ready', 'fired'];
 
-// Every field name PtParams' JSON serialiser emits (mobile-imu-core's
-// params_json.rs), in that exact order, so the table always renders all 20
-// -- several are only meaningful read together, and no clinical
-// prioritisation has been established for this app (task-6 dispatch,
-// requirement 4).
-const PARAM_ORDER = [
-  'r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n', 'f', 'area_ratio',
-  'omega_peak_deg_s', 'a0_deg', 'a1_deg', 'first_trough_depth', 'neutral_deg',
-  'neutral_deg_raw', 'pre_release_deg', 'quality_warn', 'phi_negated',
-  'spasticity_type', 'p_plus', 'p_minus', 'p_total',
-];
+// The result table renders PARAM_FIELDS (imported from session-store.js) in
+// that module's order -- exactly the field names PtParams' JSON serialiser
+// emits (mobile-imu-core's params_json.rs), so the table always shows all 20.
+// Several are only meaningful read together, and no clinical prioritisation
+// has been established for this app (task-6 dispatch, requirement 4).
+//
+// This used to be a hand-maintained `PARAM_ORDER` copy of that same list,
+// pinned to nothing. session-store.js is already the single definition (it is
+// what makeTrialRecord persists and what export.js writes into the manifest),
+// and this module already imports from it, so a second copy could only ever
+// drift -- silently dropping a new param from the on-screen table while the
+// stored and exported records carried it.
 
 // Pure reducer over the onResult/onError message stream for ONE trial --
 // exported so the fault-latch behaviour below can be driven by plain
@@ -133,6 +148,60 @@ export function sessionLockState(session, trialCount) {
   if (!session || !trialCount) return { closable: false, warningVisible: false };
   const closable = canCloseSession(session);
   return { closable, warningVisible: !closable };
+}
+
+// Pure: the FULL session-bar UI state, busy-lock included. `sessionLockState`
+// above answers only "what does this session/trial-count imply"; this answers
+// "what should the two buttons actually be right now", which additionally
+// depends on whether any entry point is mid-mutation.
+//
+// Extracted from the DOM-binding `refreshExportLock` below because the busy
+// branch is a wedge hazard, not just a nicety: `busyCount` is a reference
+// count that three independent entry points increment and decrement, and a
+// single missed decrement (see onResult's chain below, and capture.js's
+// `neverStartedHandle`) leaves it permanently above zero -- at which point
+// BOTH buttons are disabled forever with no recovery short of a page reload,
+// and in particular the session can no longer be exported at all. The
+// exported files are the archive of record, so "export is unreachable" is the
+// most expensive UI state on this branch. Pinning it as a predicate is what
+// lets a test state that property directly rather than infer it from
+// el().disabled plumbing.
+//
+// A negative count is treated as busy rather than normalised to zero: it can
+// only mean the increment/decrement pairing is broken, and erring toward
+// "locked" surfaces the bug instead of silently unlocking on it.
+// The unexported-trials warning is deliberately NOT gated on busy: it states a
+// fact about the session ("it holds data that has never left the device"),
+// which an in-flight mutation does not change -- an export is not finished
+// until markExported runs. Blanking it while busy would make it flicker off
+// and back on around every trial save.
+export function exportLockState({ busyCount = 0, session = null, trialCount = 0 } = {}) {
+  const { closable, warningVisible } = sessionLockState(session, trialCount);
+  const busy = busyCount !== 0;
+  return { exportDisabled: busy, closeDisabled: busy || !closable, warningVisible };
+}
+
+// Pure: which capture handle the app should keep for export and persistence,
+// given the one it already holds and the one the live `session` slot holds at
+// the moment a terminal outcome (result or fault) arrives.
+//
+// This is the whole of fix C1, stated as a rule. The bug it replaces:
+// `onResult` did an UNCONDITIONAL `exportSession = session`. On the normal
+// completion path -- Start, hold, release, tap Stop -- the Stop handler runs
+// `session.stop(); session = null;` synchronously, and the worker's `result`
+// reply arrives a task later. So by the time `onResult` ran, `session` was
+// already `null`, `exportSession` was overwritten with `null`, and the
+// `if (capture)` guard below never fired. Nothing was ever persisted: no
+// trial reached IndexedDB, the trial count stayed at 0, "Export session"
+// always said "Nothing to export yet", the raw-log Export button silently did
+// nothing -- and worst, a session exported earlier kept its `exported_at`, so
+// Close stayed ENABLED while a scored, unpersisted trial existed. Since Stop
+// is the only completion path, that was every trial.
+//
+// The rule: a live handle replaces whatever is held; `null` never does. A
+// terminal outcome cannot un-know the trial that just finished.
+export function retainExportHandle(held, active) {
+  return active || held;
 }
 
 // Pure: the other half of the export gate, alongside session-store.js's
@@ -246,10 +315,14 @@ if (typeof document !== 'undefined') {
   // work without ever mutating the closed session's own record.
   let sessionReadyPromise = null;
   // A reference count, not a boolean, over "something is currently deciding
-  // to mutate session state" -- `onResult`, the export-session click
-  // handler, and the close-session click handler each increment it as their
-  // very first synchronous statement (before their own first `await`) and
-  // decrement it in a `finally`. Started life in fix round 1 as a boolean
+  // to mutate session state" -- `onResult`, the export-session click handler,
+  // and the close-session click handler each increment it before their own
+  // first `await` and decrement it in a `finally`. (Close-session and
+  // onResult increment as their very first synchronous statement;
+  // export-session clears `session-status` first, which touches no session
+  // state and cannot yield -- the property that matters is only that the
+  // increment happens before anything that can yield, not that it is
+  // literally line one.) Started life in fix round 1 as a boolean
   // scoped only to persistTrial's own two writes; fix round 3 widened both
   // what touches it and when, and made it a count rather than a flag --
   // see below for why a plain boolean is not enough once more than one
@@ -327,19 +400,20 @@ if (typeof document !== 'undefined') {
       `Could not open local storage: ${err instanceof Error ? err.message : String(err)}. Trials will not be saved.`;
   });
 
+  // Pure plumbing over `exportLockState` -- the decision itself (including
+  // "while ANY entry point is mid-mutation, both buttons are locked
+  // regardless of what currentSession/currentTrialCount say") lives up there
+  // where it can be tested without a DOM. See `sessionBusyCount`'s doc
+  // comment above for the races the busy branch closes and why it is a count
+  // rather than a flag.
   function refreshExportLock() {
-    // While ANY entry point is mid-mutation, both buttons are locked
-    // regardless of what `currentSession`/`currentTrialCount` currently say
-    // -- see `sessionBusyCount`'s doc comment above for the races this
-    // closes and why it is a count rather than a flag.
-    if (sessionBusyCount > 0) {
-      el('export-session').disabled = true;
-      el('close-session').disabled = true;
-      return;
-    }
-    el('export-session').disabled = false;
-    const { closable, warningVisible } = sessionLockState(currentSession, currentTrialCount);
-    el('close-session').disabled = !closable;
+    const { exportDisabled, closeDisabled, warningVisible } = exportLockState({
+      busyCount: sessionBusyCount,
+      session: currentSession,
+      trialCount: currentTrialCount,
+    });
+    el('export-session').disabled = exportDisabled;
+    el('close-session').disabled = closeDisabled;
     el('export-warning').hidden = !warningVisible;
   }
 
@@ -361,7 +435,12 @@ if (typeof document !== 'undefined') {
       params,
       trajectory,
       rawJsonl,
-      algorithmVersion: BUILD_ID,
+      // NOT BUILD_ID: that is the offline shell's cache key and now changes
+      // whenever any CSS/JS file changes, which has nothing to do with the
+      // maths that produced these params. ALGORITHM_VERSION tracks the wasm
+      // alone and is resolvable back to a source revision -- see
+      // scripts/build-wasm.mjs.
+      algorithmVersion: ALGORITHM_VERSION,
     });
     await put(db, STORES.trials, record);
     currentTrialCount += 1;
@@ -419,6 +498,21 @@ if (typeof document !== 'undefined') {
       // expose, and reopening that reviewed module is out of scope here
       // (fix round 2 dispatch). Left as documented, not silent.
       // See canMarkExported's doc comment for why this check exists at all.
+      //
+      // *** DO NOT INTRODUCE AN `await` BETWEEN THE RE-READ BELOW AND THE
+      // *** `put()` THAT MARKS THE SESSION EXPORTED.
+      //
+      // That absence is the ENTIRE reason the residual gap is safe, and it is
+      // invisible: once `getAll` resolves, everything from the CAS check to
+      // the `put()` runs in a single microtask continuation, so no other
+      // IndexedDB event -- in particular a persistTrial write landing from
+      // the sensor-driven onResult path -- can be delivered in between. Add
+      // one `await` anywhere in that span (a status render, a second lookup,
+      // an analytics call) and a trial CAN land after the check passes but
+      // before the write, marking a session exported whose newest trial never
+      // left the device. That is the exact failure canMarkExported exists to
+      // prevent, silently reopened, with no test that would catch it. If you
+      // genuinely need to await something here, do it BEFORE the re-read.
       const trialsNow = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
       const liveSnapshot = { sessionId: currentSession.id, trialIds: trialsNow.map((t) => t.id) };
       if (!canMarkExported(exportedSnapshot, liveSnapshot)) {
@@ -504,16 +598,11 @@ if (typeof document !== 'undefined') {
       `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.jsonl`;
   }
 
-  function downloadViaAnchor(blob, filename) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
+  // The raw-log download uses export.js's `downloadViaAnchor` rather than a
+  // local copy: this module had its own, correct except that it revoked the
+  // object URL in the same synchronous tick as the click. Two
+  // near-identical anchor helpers, one of them subtly wrong, is exactly how
+  // the bug in export.js's copy survived -- there is now one.
 
   function showExportControls() {
     el('export-actions').hidden = false;
@@ -557,7 +646,7 @@ if (typeof document !== 'undefined') {
           }
         }
       }
-      if (!shared) downloadViaAnchor(blob, filename);
+      if (!shared) downloadViaAnchor({ text: jsonl, name: filename, type: 'application/x-ndjson' });
       el('export-status').textContent = `exported ${filename}`;
     } catch (err) {
       el('export-status').textContent = `export failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -826,10 +915,14 @@ if (typeof document !== 'undefined') {
   function onResult(p, trajectory, ptScore) {
     const { latched, action } = nextOutcome(faulted, { type: 'result', params: p, trajectory, ptScore });
     faulted = latched;
-    // Captured before `session` is nulled below: the worker (and its wasm
-    // session's raw log) is never terminated, so Export keeps working after
-    // the active-capture handle is gone.
-    exportSession = session;
+    // RETAIN, never overwrite (fix C1). This was an unconditional
+    // `exportSession = session`, and on the normal completion path -- the
+    // only completion path -- `session` is ALREADY `null` by the time this
+    // runs, because the Stop handler nulled it synchronously one task
+    // earlier. That assignment therefore threw away the handle the Stop
+    // handler had just captured, and nothing was ever persisted. See
+    // `retainExportHandle` above for the full consequence list.
+    exportSession = retainExportHandle(exportSession, session);
     // Nulled on every terminal outcome (result, error, and the Stop
     // handler below) so a fresh Start never reuses a finished session.
     session = null;
@@ -839,7 +932,7 @@ if (typeof document !== 'undefined') {
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
     el('result').hidden = false;
-    el('result').innerHTML = PARAM_ORDER
+    el('result').innerHTML = PARAM_FIELDS
       .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
       .join('');
     showExportControls();
@@ -871,9 +964,28 @@ if (typeof document !== 'undefined') {
       // chain settles. Pairing an increment made here with a decrement that
       // might fire from either of two different places, depending on WHERE
       // the chain fails, is how a shared counter drifts.
+      //
+      // LEAK SAFETY (fix I1). Nothing between the `++` below and the
+      // `.finally()` that pairs with it may be able to throw synchronously.
+      // Before C1 was fixed this path was unreachable, so the hazard was
+      // latent; it is not any more. Two things enforce it:
+      //
+      //  - `capture.exportJsonl()` is invoked INSIDE the chain, via
+      //    `Promise.resolve().then(...)`, rather than being called directly
+      //    to start it. A handle whose `exportJsonl` is missing or throws
+      //    (capture.js's early-exit stubs, reachable by denying the motion
+      //    permission) would otherwise throw a TypeError before `.finally()`
+      //    was ever attached -- leaving the count permanently above zero,
+      //    both session buttons wedged, and the session impossible to export
+      //    at all short of a page reload. capture.js's `neverStartedHandle`
+      //    fixes that at the source; this keeps it fixed for any future
+      //    handle shape.
+      //  - `refreshExportLock()` is called AFTER the chain is constructed,
+      //    not before. The decrement is registered by then, so however that
+      //    DOM call behaves the count still comes back down.
       sessionBusyCount++;
-      refreshExportLock();
-      capture.exportJsonl()
+      Promise.resolve()
+        .then(() => capture.exportJsonl())
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl))
         .catch((err) => {
           el('session-status').textContent =
@@ -883,6 +995,7 @@ if (typeof document !== 'undefined') {
           sessionBusyCount--;
           refreshExportLock();
         });
+      refreshExportLock();
     }
   }
 
@@ -902,8 +1015,10 @@ if (typeof document !== 'undefined') {
     faulted = latched;
     // Captured before `session.stop()`/nulling below, same reasoning as
     // onResult -- the raw log is most valuable to export precisely when the
-    // trial did NOT score cleanly.
-    exportSession = session;
+    // trial did NOT score cleanly. Retained rather than assigned for the same
+    // reason as onResult: a fault can arrive AFTER the Stop handler already
+    // nulled `session`, and must not erase the handle Stop captured.
+    exportSession = retainExportHandle(exportSession, session);
     session?.stop();
     session = null;
     if (!action) return; // a fault already latched this trial -- ignore the bounce
@@ -931,10 +1046,26 @@ if (typeof document !== 'undefined') {
     lastTrajectory = null;
     el('calm').textContent = '—';
     el('drift').textContent = '—';
+    // Nulled BEFORE the await, not just reassigned after it: startCapture can
+    // reject or hang at the iOS permission prompt, and leaving the PREVIOUS
+    // trial's handle in `session` across that window means a Stop tap (or an
+    // onError) would capture and act on a finished trial's session as though
+    // it were the one just started.
+    session = null;
     session = await startCapture({ onState, onResult, onError });
   });
 
   el('stop').addEventListener('click', () => {
+    // THE fix for C1, and the half that actually recovers the handle.
+    //
+    // Stop is the normal -- and only -- way a trial completes: it posts
+    // `finish` to the worker, whose `result` reply arrives one task later and
+    // drives onResult. But this handler nulls `session` SYNCHRONOUSLY, so
+    // onResult ran with `session === null` and had nothing left to capture.
+    // Capturing here, before the nulling, is what gives onResult a handle to
+    // retain -- and `retainExportHandle` up there is what stops onResult's
+    // later `null` from undoing it. Neither half works alone.
+    exportSession = retainExportHandle(exportSession, session);
     session?.stop();
     session = null;
     el('stop').hidden = true;

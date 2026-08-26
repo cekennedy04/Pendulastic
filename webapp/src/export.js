@@ -68,7 +68,39 @@ export function buildExportFiles({ session, patient, trials }) {
   return files;
 }
 
-export async function shareFiles(files, { navigatorRef = navigator } = {}) {
+// Saves one file through a download anchor -- the only fallback that works in
+// Safari, where showSaveFilePicker does not exist.
+//
+// The three orderings below are load-bearing, not style. An anchor that is
+// never inserted into the document is ignored outright by some browsers, and
+// revoking the object URL in the same synchronous tick as the click can pull
+// the blob out from under a download that has been queued but not yet
+// started. Either failure is SILENT: `shareFiles` still returns 'downloaded',
+// the caller's compare-and-swap passes, and the session is marked exported
+// with nothing having left the device. These files are the archive of record
+// -- IndexedDB is a cache the platform may erase -- so a download that
+// no-ops is the worst single outcome on this path.
+//
+//   1. append BEFORE click   (an unattached anchor may be ignored)
+//   2. remove AFTER click    (never leave nodes behind in the document)
+//   3. revoke on a LATER TICK (never race the download the click started)
+//
+// `documentRef`/`urlRef` are injectable purely so the ordering above can be
+// pinned by a test under `node --test`, which has no DOM.
+export function downloadViaAnchor(file, { documentRef, urlRef } = {}) {
+  const doc = documentRef ?? globalThis.document;
+  const urls = urlRef ?? globalThis.URL;
+  const url = urls.createObjectURL(new Blob([file.text], { type: file.type }));
+  const a = doc.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  doc.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => urls.revokeObjectURL(url), 0);
+}
+
+export async function shareFiles(files, { navigatorRef = navigator, documentRef, urlRef } = {}) {
   // Safety-critical: task 6 gates session-close on export succeeding. A
   // no-op that returned 'downloaded' would let a session be marked exported
   // with no byte ever having left the device, defeating the durability
@@ -84,12 +116,8 @@ export async function shareFiles(files, { navigatorRef = navigator } = {}) {
     return 'shared';
   }
   // showSaveFilePicker does not exist in Safari; a download anchor is the
-  // only fallback that works there.
-  for (const f of files) {
-    const url = URL.createObjectURL(new Blob([f.text], { type: f.type }));
-    const a = document.createElement('a');
-    a.href = url; a.download = f.name; a.click();
-    URL.revokeObjectURL(url);
-  }
+  // only fallback that works there. See downloadViaAnchor above for why its
+  // append/click/remove/deferred-revoke ordering is safety-critical.
+  for (const f of files) downloadViaAnchor(f, { documentRef, urlRef });
   return 'downloaded';
 }
