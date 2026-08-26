@@ -175,6 +175,14 @@ test('invalidateExport clears exported_at without mutating the session it was gi
   assert.equal(exported.exported_at, 500, 'invalidateExport must return a new record, not mutate the one it was given');
 });
 
+test('invalidateExport rejects a null or undefined session rather than silently spreading it', () => {
+  // Fix round 1: `{...null}` is `{}`, which drops `id` and turns a
+  // programming error into a key-less IndexedDB put() that fails with a
+  // misleading error far from its actual cause. This must fail loudly here.
+  assert.throws(() => invalidateExport(null));
+  assert.throws(() => invalidateExport(undefined));
+});
+
 test('recording a trial after export re-locks the session end to end', () => {
   // The exact sequence persistTrial drives: export a session (closable),
   // then record one more trial (must become un-closable again).

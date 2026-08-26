@@ -142,7 +142,15 @@ export function sessionLockState(session, trialCount) {
 // ever left the device. `persistTrial` below calls this on every trial save;
 // it is pulled out on its own so that one-line invariant can be pinned by a
 // test independent of IndexedDB, the worker, or any other DOM-bound state.
+//
+// Rejects a null/undefined session explicitly rather than spreading it: a
+// review finding (fix round 1) traced a real data-loss path back to exactly
+// this -- `{...null}` silently produces `{}`, which drops `id` and turns a
+// programming error (calling this after `currentSession` was cleared out
+// from under an in-flight persist) into a key-less IndexedDB put() that
+// fails with a misleading error, rather than a loud, attributable one here.
 export function invalidateExport(session) {
+  if (!session) throw new Error('invalidateExport requires a session, got ' + String(session));
   return { ...session, exported_at: null };
 }
 
@@ -202,6 +210,20 @@ if (typeof document !== 'undefined') {
   // fresh resumeOrCreateSession() pass, which is also what makes "close"
   // work without ever mutating the closed session's own record.
   let sessionReadyPromise = null;
+  // True for the entire duration of a persistTrial() call (fix round 1).
+  // `persistTrial` awaits two separate IndexedDB writes before it clears
+  // exported_at; refreshExportLock() only ran at the very end, so for that
+  // whole window the session bar kept showing whatever state was true
+  // BEFORE this trial. If the session was already exported, Close stayed
+  // enabled and a tap during that window nulled `currentSession` out from
+  // under the in-flight persist -- `invalidateExport(null)` would then
+  // spread into `{}`, silently dropping `id`, and the session `put()` would
+  // fail with no key while the trial itself had already committed under the
+  // OLD (now-exported, filtered-out-on-resume) session id: a trial recorded
+  // after export, invisibly unreachable on the next load. This flag closes
+  // that window by making both buttons reflect "a write is in progress",
+  // not just the last-known stored state.
+  let persisting = false;
 
   async function ensurePatient() {
     const patients = await getAll(db, STORES.patients);
@@ -240,37 +262,52 @@ if (typeof document !== 'undefined') {
   });
 
   function refreshExportLock() {
+    // While a trial is being persisted, both buttons are locked regardless
+    // of what `currentSession`/`currentTrialCount` currently say -- see
+    // `persisting`'s doc comment above for the race this closes.
+    if (persisting) {
+      el('export-session').disabled = true;
+      el('close-session').disabled = true;
+      return;
+    }
+    el('export-session').disabled = false;
     const { closable, warningVisible } = sessionLockState(currentSession, currentTrialCount);
     el('close-session').disabled = !closable;
     el('export-warning').hidden = !warningVisible;
   }
 
-  // `trajectory` here is the plain `{t, angle_deg, release_idx, peak_idx,
-  // trough_idx, neutral_deg}` object worker.js's `result` message carries
-  // (the same one drawWaveform renders) -- NOT the ArrayBuffer session-store
-  // .js's doc comment describes. makeTrialRecord stores whatever it is
-  // given verbatim under `trajectory` with no shape check, so this is not a
-  // bug, but it is a real mismatch with that comment worth a future look
-  // once something actually reads a persisted trial's trajectory back
-  // (nothing does yet -- export.js never touches this field).
+  // `trajectory` here is the plain object worker.js's `result` message
+  // carries (the same one drawWaveform renders) -- see session-store.js's
+  // updated doc comment on makeTrialRecord for its exact shape.
   async function persistTrial(params, trajectory, rawJsonl) {
     await ensureSessionReady();
-    const record = makeTrialRecord({
-      sessionId: currentSession.id,
-      side: TRIAL_SIDE,
-      params,
-      trajectory,
-      rawJsonl,
-      algorithmVersion: BUILD_ID,
-    });
-    await put(db, STORES.trials, record);
-    currentTrialCount += 1;
-    // A newly recorded trial invalidates any earlier export: the session now
-    // holds data that has never left the device. See invalidateExport's doc
-    // comment above for why this one line is the whole point of the gate.
-    currentSession = invalidateExport(currentSession);
-    await put(db, STORES.sessions, currentSession);
+    // Set before the first write and cleared in `finally` (fix round 1):
+    // a rejected write must not strand the session bar disabled forever,
+    // and refreshExportLock() must run on both transitions so the bar never
+    // shows stale state while a write is actually in flight.
+    persisting = true;
     refreshExportLock();
+    try {
+      const record = makeTrialRecord({
+        sessionId: currentSession.id,
+        side: TRIAL_SIDE,
+        params,
+        trajectory,
+        rawJsonl,
+        algorithmVersion: BUILD_ID,
+      });
+      await put(db, STORES.trials, record);
+      currentTrialCount += 1;
+      // A newly recorded trial invalidates any earlier export: the session
+      // now holds data that has never left the device. See
+      // invalidateExport's doc comment above for why this one line is the
+      // whole point of the gate.
+      currentSession = invalidateExport(currentSession);
+      await put(db, STORES.sessions, currentSession);
+    } finally {
+      persisting = false;
+      refreshExportLock();
+    }
   }
 
   el('export-session').addEventListener('click', async () => {

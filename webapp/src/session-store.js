@@ -36,7 +36,15 @@ export function makeTrialRecord({
     release_idx: releaseIdx,
     release_override_idx: releaseOverrideIdx,
     params: kept,
-    trajectory,        // ArrayBuffer: [t, angle_deg] on 50ms ticks
+    // Plain object `{t, angle_deg, release_idx, peak_idx, trough_idx,
+    // neutral_deg}` from worker.js's `result` message -- not an ArrayBuffer
+    // (a prior version of this comment said otherwise; the shape below was
+    // always what app.js actually stores). `release_idx`/`peak_idx`/
+    // `trough_idx` are indices into the same `t`/`angle_deg` arrays, not a
+    // second time base -- drawWaveform needs them to mark the release point
+    // and accepted peaks/troughs, and stripping them here would force a
+    // future replay view to recompute them from scratch.
+    trajectory,
     raw_jsonl: rawJsonl,
   };
 }
