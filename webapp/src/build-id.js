@@ -10,6 +10,7 @@ export const SHELL = [
   './src/capture.js',
   './src/db.js',
   './src/install-gate.js',
+  './src/session-store.js',
   './src/worker.js',
   './src/build-id.js',
   './src/wasm/mobile_imu_core.js',
