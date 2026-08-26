@@ -2,9 +2,39 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Pendulastic</title>
+<!--
+  Both of these exist to make the Home Screen launch STANDALONE (no browser
+  chrome). install-gate.js blocks recording until it sees exactly that, so
+  without them the gate can never be passed on iOS: the clip opens chromed,
+  the modal stays up, and the app cannot record at all.
+
+  The same declaration is also what makes the clip a Home Screen *web app*
+  rather than a bookmark -- which is the form Apple documents the 7-day
+  storage-eviction exemption for, and therefore the premise the local
+  durability design rests on.
+
+  The manifest covers iOS 15.4+ and every other platform; the legacy meta tag
+  covers older iOS, which ignores the manifest's `display` entirely. Both are
+  kept: dropping either silently narrows which devices can record.
+-->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="./manifest.json">
 <link rel="stylesheet" href="./src/app.css">
 <body>
   <div id="banner">research capture only &mdash; not validated</div>
+  <div id="install-gate" hidden>
+    <h1>Install before recording</h1>
+    <p id="install-why">
+      Safari deletes a website's stored data after 7 days of inactivity.
+      Adding Pendulastic to your Home Screen is what keeps participant records
+      and captured trials from being erased between sessions.
+    </p>
+    <p id="install-how"></p>
+    <p class="install-note">
+      Exported files are the permanent record regardless — installing reduces
+      how often you need them, it is not what makes your data safe.
+    </p>
+  </div>
   <button id="start">Start trial</button>
   <div id="guide">tap Start</div>
   <dl id="gates">
@@ -46,5 +76,30 @@
     <p id="export-status"></p>
   </div>
   <table id="result" hidden></table>
+  <div id="session-bar">
+    <button id="export-session">Export session</button>
+    <button id="close-session" disabled>Close session</button>
+    <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
+    <p id="session-status"></p>
+  </div>
   <script type="module" src="./src/app.js"></script>
+  <script>
+    // Module service workers need {type:'module'} -- sw.js imports build-id.js.
+    //
+    // updateViaCache:'none' is not a micro-optimisation. The default,
+    // 'imports', lets the browser satisfy the update check for sw.js's
+    // IMPORTS out of the ordinary HTTP cache -- and sw.js's only import is
+    // build-id.js, the generated file carrying BUILD_ID (the cache key) and
+    // SHELL (the file list). Served stale, the update check compares the old
+    // build id against itself, concludes nothing changed, and the phone keeps
+    // its old shell forever. That is precisely the staleness this branch
+    // exists to prevent, so the shell's own version marker must never come
+    // from a cache.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { type: 'module', updateViaCache: 'none' })
+          .catch((e) => console.warn('service worker registration failed', e));
+      });
+    }
+  </script>
 </body>

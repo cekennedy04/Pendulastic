@@ -41,16 +41,37 @@ export function encodeSample(out, offset, event) {
   return out;
 }
 
+// The handle returned by startCapture's two early exits (no motion sensors,
+// permission denied). It must be SHAPE-COMPATIBLE with the real handle
+// below, not merely "something with a stop()".
+//
+// Why: app.js's onResult/onError keep the finished handle in `exportSession`
+// and later call `exportSession.exportJsonl()` inside a promise chain whose
+// `.finally()` decrements `sessionBusyCount`. A stub missing `exportJsonl`
+// throws a TypeError SYNCHRONOUSLY -- before any `.finally()` is attached --
+// so the count is incremented and never decremented, `refreshExportLock`
+// takes its busy branch forever, and both session buttons are wedged with no
+// recovery short of a reload. Returning a REJECTED PROMISE instead keeps the
+// failure on the async path every caller already handles.
+//
+// Reachable in practice: tap Start, deny the iOS motion permission prompt.
+export function neverStartedHandle(reason) {
+  return {
+    stop() {},
+    exportJsonl: () => Promise.reject(new Error(reason)),
+  };
+}
+
 export async function startCapture({ onState, onResult, onError }) {
   if (typeof DeviceMotionEvent === 'undefined') {
     onError('This browser does not expose motion sensors.');
-    return { stop() {} };
+    return neverStartedHandle('capture never started: this browser does not expose motion sensors');
   }
   if (typeof DeviceMotionEvent.requestPermission === 'function') {
     const granted = await DeviceMotionEvent.requestPermission();
     if (granted !== 'granted') {
       onError('Motion permission denied. Reload the tab and tap Start to retry.');
-      return { stop() {} };
+      return neverStartedHandle('capture never started: motion permission denied');
     }
   }
 
