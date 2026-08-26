@@ -87,3 +87,49 @@ restated here with enough context to act on without that scratch space.
   - **Depends on:** Nothing.
 
 - ~~**Two tests assert nothing.**~~ **RESOLVED 2026-08-25** — `mobile-imu-core/tests/replay_test.rs`'s `the_method_selects_between_relative_and_ockendon` asserted a struct field equalled what it had just been set to; it now runs `replay` under both methods and pins the Ockendon angles against `ockendon_deg` itself (mutation-checked). `webapp/tests/worker.test.js`'s malformed-cfg test accepted either of two message types; it now pins the one outcome that actually occurs (undefined gains coerce to NaN and a normal opening `state` is posted). That NaN coercion is itself worth a decision — a session built with NaN gains is accepted silently — but it is now pinned rather than absorbed by an either/or.
+
+## Local durability (Plan 2, `webapp-local-durability`) — open items, 2026-08-26
+
+Recorded from the plan's review ledger, which is gitignored and does not survive the merge.
+Ordered roughly by how much they matter.
+
+- **The Critical fix is unguarded.** Trial persistence was completely dead in the browser until
+  `786ad30` — `onResult` read a capture handle the Stop button had already nulled, so nothing
+  ever reached IndexedDB while the UI rendered normally. The fix is two coupled halves (Stop
+  captures before nulling; `onResult`/`onError` retain rather than assign). Neither works alone.
+  **Delete either half and all 104 tests still pass** — the DOM-guarded block in `app.js` has no
+  coverage of any kind. The pure `retainExportHandle` tests pin the rule, not the wiring.
+- **CI cannot catch a stale `BUILD_ID`.** CI runs `cargo build` + `wasm-bindgen` directly, never
+  `build-wasm.mjs`, so `BUILD_ID`'s *value* is unchecked (only its 12-hex shape). This already
+  bit once: `786ad30` shipped a `build-id.js` describing no real shell state, with
+  `ALGORITHM_VERSION` naming the commit *before* persistence worked. Fix: assert in CI that
+  `BUILD_ID` differs from the merge base whenever any `SHELL` file changed in the diff.
+- **`cache.addAll` uses the default HTTP cache.** `updateViaCache: 'none'` only covers `sw.js`
+  and its imports; the shell's own fetches can still come from a stale HTTP cache, which would
+  defeat the shell-wide key on a production host with a long `max-age`. Invisible today because
+  `dev_server.py` sends `no-store`. One line: `SHELL.map((u) => new Request(u, {cache: 'reload'}))`.
+- **Cross-trial contamination.** Tapping Start in the one-task window between Stop and the
+  worker's `result` reply attributes the previous trial's params to the new handle. Pre-existing.
+- **A Stop tap during the iOS permission prompt is a no-op**, leaving a capture running with the
+  Start button showing and no way to stop it.
+- **`TRIAL_SIDE` is `null` deliberately** (a fabricated laterality in the archive of record is
+  worse than an absent one — it violates spec §3.2's `'left' | 'right'` union on purpose). It is
+  not exported, so nothing would notice a silent revert to `'left'`. Unit U8 replaces it.
+- **Parked: the export CAS spans two IndexedDB transactions.** Safe only because no `await` sits
+  between the re-read and the `put()`; `app.js` carries a banner comment saying so. A real fix
+  needs an atomic read-then-write `db.js` does not expose.
+- **`capture_quality` is unconditionally `'clean'`** and exported as such — the manifest asserts a
+  quality judgement nothing evaluated. KTD11's gate is not in this plan.
+- **`release_quat` (spec §3.2, §4.3) is not in the trial record.** Recoverable by replaying
+  `raw_jsonl` with the stored `release_idx`, so redundancy loss rather than data loss.
+- **`navigator.storage.persist()` (spec §3.1) is never called.** Free on Chrome/Android.
+- **`gitRevision()` has no `-dirty` marker**, so a wasm built from uncommitted Rust stamps the
+  last clean SHA as the source of record.
+- Smaller: `persistTrial`'s two `put()`s are not in one transaction (fails safe); the busy-count
+  logic has no automated coverage; `getAll`'s `onerror` path and `sw.js`'s own handlers are
+  untested; `manifest.json` has no icons so Android may create a shortcut rather than a WebAPK
+  (iOS unaffected); closing a session writes nothing to storage, so an exported-but-never-closed
+  session is indistinguishable from a closed one and a reload mid-visit splits it into two records.
+
+**Unverified premise, unchanged:** the 7-day eviction exemption for Home-Screen PWAs has still
+never been tested. `webapp/docs/eviction-soak-test.md` is the protocol; its results table is empty.
