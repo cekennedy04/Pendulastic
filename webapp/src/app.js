@@ -154,6 +154,41 @@ export function invalidateExport(session) {
   return { ...session, exported_at: null };
 }
 
+// Pure: the compare-and-swap check behind marking a session exported (fix
+// round 2). `exported` is the snapshot taken when buildExportFiles ran --
+// `{sessionId, trialIds}`. `live` is a fresh snapshot taken again
+// immediately before the decision to call markExported: `live.sessionId` is
+// whatever the app's live currentSession.id is AT THAT LATER MOMENT, and
+// `live.trialIds` is a fresh read of `exported.sessionId`'s own trials (not
+// live.sessionId's -- see the export-session handler, which is careful to
+// re-query by the id captured at export time, not whatever session happens
+// to be current later).
+//
+// Why this exists at all: `shareFiles` hands control to the OS share sheet,
+// which is user-paced -- it can stay open for seconds to minutes, not the
+// couple of IndexedDB transactions round 1 dealt with. `onResult` is a
+// sensor-driven callback, not a click, so a trial can land via `persistTrial`
+// at any point during that whole window regardless of what the session-bar
+// buttons show -- disabling buttons (round 1's fix) cannot prevent this,
+// because nothing here is gated behind a button. Calling `markExported` on
+// a stale snapshot would mark data that never actually left the device as
+// safely archived -- worse than round 1's finding, which merely orphaned an
+// already-saved trial: this one unlocks Close on a session whose only copy
+// of new data is still sitting in storage the platform may evict.
+//
+// Both a changed trial set AND a swapped-out session fail the check, and
+// either failure means the same thing to the caller: don't mark exported,
+// tell the clinician to export again. Erring toward "export again" costs a
+// few seconds; erring the other way costs a trial.
+export function canMarkExported(exported, live) {
+  if (!exported || !live) return false;
+  if (exported.sessionId !== live.sessionId) return false;
+  if (exported.trialIds.length !== live.trialIds.length) return false;
+  const a = [...exported.trialIds].sort();
+  const b = [...live.trialIds].sort();
+  return a.every((id, i) => id === b[i]);
+}
+
 // Renders a single scored value. quality_warn/phi_negated are booleans,
 // spasticity_type is a string, and any of the numeric fields may arrive as
 // JSON null -- a non-finite f64 serialises to null rather than dropping the
@@ -314,7 +349,8 @@ if (typeof document !== 'undefined') {
     el('session-status').textContent = '';
     await ensureSessionReady();
     try {
-      const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
+      const sessionIdAtExport = currentSession.id;
+      const trials = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
       const patients = await getAll(db, STORES.patients);
       const patient = patients.find((p) => p.id === currentSession.patient_id);
       const files = buildExportFiles({ session: currentSession, patient, trials });
@@ -325,7 +361,24 @@ if (typeof document !== 'undefined') {
         el('session-status').textContent = 'Nothing to export yet -- record a trial first.';
         return;
       }
-      await shareFiles(files);
+      const exportedSnapshot = { sessionId: sessionIdAtExport, trialIds: trials.map((t) => t.id) };
+
+      await shareFiles(files); // user-paced -- the share sheet can stay open for a long time
+
+      // Compare-and-swap (fix round 2): re-read as late as possible,
+      // immediately before the decision, so the still-unavoidable final gap
+      // (this read plus one put()) is as narrow as it can be made without an
+      // atomic transaction spanning both -- which db.js does not expose.
+      // See canMarkExported's doc comment for why this check exists at all.
+      const trialsNow = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
+      const liveSnapshot = { sessionId: currentSession.id, trialIds: trialsNow.map((t) => t.id) };
+      if (!canMarkExported(exportedSnapshot, liveSnapshot)) {
+        el('session-status').textContent =
+          'A trial was recorded while exporting. This session has NOT been marked exported -- export again to include it.';
+        refreshExportLock();
+        return;
+      }
+
       currentSession = markExported(currentSession);
       await put(db, STORES.sessions, currentSession);
       refreshExportLock();

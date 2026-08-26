@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport } from '../src/app.js';
+import { nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
@@ -193,4 +193,42 @@ test('recording a trial after export re-locks the session end to end', () => {
   const afterNewTrial = invalidateExport(exported);
   assert.equal(canCloseSession(afterNewTrial), false, 'a session that gained data since its last export must not be closable');
   assert.deepEqual(sessionLockState(afterNewTrial, 1), { closable: false, warningVisible: true });
+});
+
+// canMarkExported is the compare-and-swap check behind marking a session
+// exported (fix round 2): shareFiles() hands control to a user-paced OS
+// share sheet, and a sensor-driven trial (onResult -> persistTrial) can land
+// during that window regardless of what the session-bar buttons show.
+// Marking exported on a stale snapshot would archive-by-claim data that
+// never left the device -- this predicate is what stops that.
+
+test('canMarkExported is true when nothing changed between export and the live check', () => {
+  const exported = { sessionId: 's1', trialIds: ['t1', 't2'] };
+  const live = { sessionId: 's1', trialIds: ['t1', 't2'] };
+  assert.equal(canMarkExported(exported, live), true);
+});
+
+test('canMarkExported is false when a trial landed during the export window', () => {
+  const exported = { sessionId: 's1', trialIds: ['t1'] };
+  const live = { sessionId: 's1', trialIds: ['t1', 't2'] };
+  assert.equal(canMarkExported(exported, live), false, 'a trial recorded mid-export must block marking the session exported');
+});
+
+test('canMarkExported is false when the session itself was swapped out underneath the export', () => {
+  const exported = { sessionId: 's1', trialIds: ['t1'] };
+  const live = { sessionId: 's2', trialIds: ['t1'] };
+  assert.equal(canMarkExported(exported, live), false, 'marking a different live session exported on an old snapshot is the same bug wearing a different hat');
+});
+
+test('canMarkExported does not depend on trial id ordering', () => {
+  const exported = { sessionId: 's1', trialIds: ['t2', 't1'] };
+  const live = { sessionId: 's1', trialIds: ['t1', 't2'] };
+  assert.equal(canMarkExported(exported, live), true);
+});
+
+test('canMarkExported is false, not throwing, on a missing snapshot', () => {
+  const live = { sessionId: 's1', trialIds: ['t1'] };
+  assert.equal(canMarkExported(null, live), false);
+  assert.equal(canMarkExported(undefined, live), false);
+  assert.equal(canMarkExported(live, null), false);
 });
