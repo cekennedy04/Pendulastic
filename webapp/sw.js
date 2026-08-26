@@ -25,7 +25,16 @@ import { BUILD_ID, SHELL } from './src/build-id.js';
 const CACHE = `pendulastic-${BUILD_ID}`;
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+  // { cache: 'reload' } forces each of these fetches past the browser's
+  // ordinary HTTP cache. Plain addAll(SHELL) fetches through it, which is
+  // invisible on dev_server.py (it sends `no-store`) but not on a real static
+  // host: a long max-age there lets the service worker populate ITS cache --
+  // the one BUILD_ID is supposed to key -- from stale HTTP-cached responses,
+  // defeating the whole build-keyed-cache design without ever touching
+  // BUILD_ID or SHELL.
+  e.waitUntil(
+    caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))),
+  );
 });
 
 self.addEventListener('activate', (e) => {

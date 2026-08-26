@@ -89,3 +89,61 @@ website → Visit Website.
 
 Requires `npm run build:wasm` to have been run first; the server checks and
 tells you if not.
+
+## Deploying to a static host
+
+`dev_server.py` is deliberately dev-only (see its module docstring), and its
+origin is the laptop's LAN IP — a DHCP lease that can move at any time. To
+Safari, a changed IP is a changed origin, which orphans everything scoped to
+the old one: the installed Home Screen app, the service worker and its
+offline cache, and the entire IndexedDB — every trial stored on the phone. A
+static host with a fixed hostname (Netlify, Cloudflare Pages, GitHub Pages,
+etc.) gives the app a stable, laptop-independent origin instead.
+
+```
+npm run build:dist
+```
+
+Builds `src/wasm/` from scratch (`build:wasm`, so the deployed wasm is always
+current — see above) and assembles `webapp/dist/`, the directory to upload.
+It contains exactly what the app needs at runtime — `index.html`, `sw.js`,
+`manifest.json`, every file `sw.js`'s offline shell lists, the compiled wasm
+pair, and a `_headers` file — and nothing else: no `tests/`, `scripts/`,
+`captures/` (participant-adjacent capture data), `dev_server.py`, `README.md`,
+or `docs/`.
+
+Deploy `webapp/dist/`'s contents with whatever CLI your host provides (e.g.
+`netlify deploy` or `wrangler pages deploy`), pointed at that directory. This
+is a **local build plus a manual upload, not a git-triggered build** — a
+host's own build step would need a Rust toolchain (`cargo` + `wasm-bindgen`)
+just to run `build:wasm`, which most static hosts don't offer and none of them
+need to if the build already happened locally.
+
+**A rebuild requires a redeploy.** The wasm is not committed (see above), so
+whatever is live on the host is exactly whatever `webapp/dist/` contained the
+last time someone ran the upload — there is no CI or git hook keeping it in
+sync with the repo. After any change under `mobile-imu-core/src/` or
+`webapp/src/`, `npm run build:dist` and re-upload, or the phone keeps scoring
+with old maths, or serving old JS, indefinitely.
+
+`_headers` (the Netlify/Cloudflare Pages format) pins two things a real host's
+defaults would otherwise get wrong: `sw.js` and `src/build-id.js` are served
+`Cache-Control: no-cache`, because they carry the cache key the whole offline
+design is keyed on — if the browser's HTTP cache serves either of them stale,
+an installed phone never notices a new build exists (see `sw.js`'s own
+comments); and `.wasm` is served as `application/wasm`, because Safari's
+`instantiateStreaming` rejects `application/octet-stream` with a content-type
+error that names neither the file nor the reason. **GitHub Pages ignores
+`_headers` entirely** — it has no equivalent header-configuration mechanism —
+so deploying there means either accepting the staleness/content-type risk
+above or fronting it with something that can add headers (e.g. Cloudflare in
+front of Pages). Netlify and Cloudflare Pages both honor `_headers` natively.
+
+**Changing the origin orphans everything.** Moving from `dev_server.py`'s LAN
+IP to a static host's hostname is itself an origin change, with the same
+consequence described above: the installed app, its service-worker cache, and
+every trial in IndexedDB are tied to the origin they were created under and do
+not carry over. Before switching an in-use phone from the dev server to a
+real host — or between two different static hosts — **export any trials you
+care about first** (the in-app export, not a copy of the database file), then
+reinstall against the new origin.
