@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildExportFiles } from '../src/export.js';
+import { buildExportFiles, shareFiles } from '../src/export.js';
 import { PARAM_FIELDS } from '../src/session-store.js';
 
 const params = Object.fromEntries(PARAM_FIELDS.map((k, i) => [k, i]));
@@ -54,4 +54,56 @@ test('an empty session produces no files rather than an empty archive', () => {
     trials: [],
   });
   assert.equal(files.length, 0);
+});
+
+test('a hostile clinic_patient_id cannot inject path separators, a leading dot, or non-ASCII into a filename', () => {
+  // clinic_patient_id is unconstrained free text: db.js keys patients by a
+  // UUID and never validates it, and there is no app.js form yet that could
+  // add its own constraint. This is the one place that turns it into a
+  // filename that reaches new File(...), an <a download> attribute, and an
+  // iOS share sheet.
+  const hostile = '.hidden/../é evil name';
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: hostile, created_at: 1 },
+    trials: [trial('t1', 'a\n'), trial('t2', 'b\n')],
+  });
+  const names = files.map((f) => f.name);
+  for (const n of names) {
+    assert.match(n, /^[A-Za-z0-9_-]+\.(jsonl|json)$/, `unsafe filename: ${n}`);
+  }
+  assert.equal(new Set(names).size, names.length, 'names must stay unique per trial');
+});
+
+test('a clinic_patient_id that sanitises away to nothing still produces a stable, non-empty filename stem', () => {
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: '.../ é', created_at: 1 },
+    trials: [trial('t1', 'a\n')],
+  });
+  const names = files.map((f) => f.name);
+  for (const n of names) {
+    assert.match(n, /^[A-Za-z0-9_-]+\.(jsonl|json)$/, `unsafe filename: ${n}`);
+  }
+});
+
+test('the manifest records each trial\'s own algorithm_version, not just the first trial\'s', () => {
+  const t1 = trial('t1', 'a\n');
+  const t2 = { ...trial('t2', 'b\n'), algorithm_version: '0.2.0' };
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [t1, t2],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
+  assert.equal(manifest.trials[0].algorithm_version, '0.1.0');
+  assert.equal(manifest.trials[1].algorithm_version, '0.2.0');
+});
+
+test('shareFiles rejects on an empty file list rather than reporting a successful no-op', async () => {
+  // Task 6 gates session-close on export succeeding. A no-op that returned
+  // 'downloaded' would let a session be marked exported with no byte ever
+  // having left the device -- this must fail loudly, not silently succeed.
+  await assert.rejects(() => shareFiles([]));
+  await assert.rejects(() => shareFiles(undefined));
 });
