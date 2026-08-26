@@ -104,7 +104,10 @@ Ordered roughly by how much they matter.
   bit once: `786ad30` shipped a `build-id.js` describing no real shell state, with
   `ALGORITHM_VERSION` naming the commit *before* persistence worked. Fix: assert in CI that
   `BUILD_ID` differs from the merge base whenever any `SHELL` file changed in the diff.
-- **`cache.addAll` uses the default HTTP cache.** `updateViaCache: 'none'` only covers `sw.js`
+- ~~**`cache.addAll` uses the default HTTP cache.**~~ **RESOLVED 2026-08-26** (`3b2b9c8`) --
+  `sw.js` now wraps each entry as `new Request(u, {cache: 'reload'})`. Caveat: that
+  change has NO test coverage and has not been exercised on a device (see below).
+  Original note: `updateViaCache: 'none'` only covers `sw.js`
   and its imports; the shell's own fetches can still come from a stale HTTP cache, which would
   defeat the shell-wide key on a production host with a long `max-age`. Invisible today because
   `dev_server.py` sends `no-store`. One line: `SHELL.map((u) => new Request(u, {cache: 'reload'}))`.
@@ -130,6 +133,13 @@ Ordered roughly by how much they matter.
   untested; `manifest.json` has no icons so Android may create a shortcut rather than a WebAPK
   (iOS unaffected); closing a session writes nothing to storage, so an exported-but-never-closed
   session is indistinguishable from a closed one and a reload mid-visit splits it into two records.
+
+- **`sw.js`'s install path has no test harness at all.** The `cache: 'reload'` fix in
+  `3b2b9c8` is the one behavioural change in that commit and nothing pins it; the same
+  is true of every other `sw.js` handler. A string-match test on the source would be
+  theatre, so this was deliberately left uncovered rather than papered over. Closing it
+  means a real service-worker harness (a fetch/caches stub the install handler can run
+  against), which is its own piece of work.
 
 **Unverified premise, unchanged:** the 7-day eviction exemption for Home-Screen PWAs has still
 never been tested. `webapp/docs/eviction-soak-test.md` is the protocol; its results table is empty.

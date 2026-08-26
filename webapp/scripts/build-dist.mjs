@@ -39,8 +39,11 @@ import { computeShell } from './shell-list.mjs';
 //   rejects a application/octet-stream response with a content-type error
 //   that names neither the file nor the reason, so this is cheap insurance
 //   against a confusing on-device failure. The exact known filename is
-//   listed explicitly (host-glob semantics for `*` across path separators
-//   vary), with a `/*.wasm` fallback for robustness if it's ever renamed.
+//   listed explicitly, because that exact path is not glob-dependent. The
+//   `/*.wasm` line below is only belt-and-braces: hosts read a trailing `*`
+//   as a splat, so it covers .wasm at the site ROOT, not a rename under
+//   src/wasm/. If the binary is ever renamed, update the exact path -- do
+//   not rely on the glob to catch it.
 //
 // GitHub Pages ignores this file entirely -- see webapp/README.md.
 const HEADERS = `/sw.js
@@ -63,7 +66,13 @@ const EXTRA = ['./sw.js'];
 // below so tests/dist-build.test.js can call this directly against a real
 // checkout without re-invoking the CLI plumbing.
 export function buildDist(rootDir, srcDir, distDir) {
-  if (existsSync(distDir)) rmSync(distDir, { recursive: true, force: true });
+  if (existsSync(distDir)) {
+    // maxRetries: Windows throws EPERM/EBUSY when an indexer or virus
+    // scanner still holds a handle on a file in the tree. Without it this is
+    // an intermittent hard failure, not a slow success -- and this now runs
+    // on the `npm test` path, where CI asserts an exact test count.
+    rmSync(distDir, { recursive: true, force: true, maxRetries: 3 });
+  }
   mkdirSync(distDir, { recursive: true });
 
   const shell = computeShell(srcDir);

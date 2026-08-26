@@ -109,3 +109,9 @@ webapp/src/wasm/
 # Raw IMU trials captured via the webapp's "Send to laptop" /upload route
 # (dev_server.py). Participant-adjacent data -- must never be committed.
 webapp/captures/
+
+# Built static-deploy output (npm run build:dist). Regenerable. Already
+# matched incidentally by the bare `dist/` under # Python, but named here so
+# moving or scoping that line cannot silently make a deploy artifact
+# committable.
+webapp/dist/
