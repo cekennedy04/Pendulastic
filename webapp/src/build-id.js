@@ -8,6 +8,7 @@ export const SHELL = [
   './src/app.css',
   './src/app.js',
   './src/capture.js',
+  './src/db.js',
   './src/install-gate.js',
   './src/worker.js',
   './src/build-id.js',
