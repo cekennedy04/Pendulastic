@@ -19,9 +19,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { computeShell } from './shell-list.mjs';
 
 const repoRoot = new URL('../../', import.meta.url);
 const manifest = fileURLToPath(new URL('mobile-imu-core/Cargo.toml', repoRoot));
@@ -105,43 +105,10 @@ console.log(`\nWrote bindings to ${outDir}`);
 // with no separate list to remember to update.
 const buildId = createHash('sha256').update(readFileSync(wasmOut)).digest('hex').slice(0, 12);
 
-// Walk webapp/src/ for .js/.css shell files. Two things are deliberately
-// excluded from the generic walk and appended explicitly instead:
-//  - wasm/: walking it would also sweep up the .d.ts files wasm-bindgen
-//    writes alongside its two runtime outputs, which the browser never
-//    fetches.
-//  - build-id.js itself: this script overwrites it below, so whether it
-//    already exists on disk depends on whether this is the first build ever
-//    run in this checkout. Listing it unconditionally keeps SHELL identical
-//    on a clean checkout and a rebuild.
-function collectShellFiles(dir, base, out) {
-  for (const entry of readdirSync(dir).sort()) {
-    const full = path.join(dir, entry);
-    const stat = statSync(full);
-    if (stat.isDirectory()) {
-      if (path.relative(base, full) === 'wasm') continue;
-      collectShellFiles(full, base, out);
-      continue;
-    }
-    if (path.relative(base, full) === 'build-id.js') continue;
-    if (entry.endsWith('.js') || entry.endsWith('.css')) {
-      const rel = path.relative(base, full).split(path.sep).join('/');
-      out.push(`./src/${rel}`);
-    }
-  }
-}
-
-const discovered = [];
-collectShellFiles(srcDir, srcDir, discovered);
-
-const shell = [
-  './',
-  './index.html',
-  ...discovered,
-  './src/build-id.js',
-  './src/wasm/mobile_imu_core.js',
-  './src/wasm/mobile_imu_core_bg.wasm',
-];
+// The scan itself lives in shell-list.mjs, shared with
+// tests/sw-shell.test.js, so the generator and the test that checks its
+// output cannot drift apart.
+const shell = computeShell(srcDir);
 
 writeFileSync(
   buildIdOut,

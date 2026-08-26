@@ -18,11 +18,16 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  // Delete every cache that is not this build's. This is what makes a rebuild
-  // actually reach the device rather than sitting behind a stale entry.
+  // Delete every *pendulastic-* cache that is not this build's. This is what
+  // makes a rebuild actually reach the device rather than sitting behind a
+  // stale entry. Scoped to our own prefix rather than every cache in the
+  // origin, so this stays harmless if something else ever uses the Cache API
+  // here.
   e.waitUntil(
     caches.keys().then((names) =>
-      Promise.all(names.filter((n) => n !== CACHE).map((n) => caches.delete(n))),
+      Promise.all(
+        names.filter((n) => n.startsWith('pendulastic-') && n !== CACHE).map((n) => caches.delete(n)),
+      ),
     ).then(() => self.clients.claim()),
   );
 });
