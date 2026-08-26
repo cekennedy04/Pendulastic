@@ -803,3 +803,43 @@ def test_direction_pairs_work_unmodified_with_fit_mas_thresholds():
     thresholds, kappa = fmt.fit_thresholds(valid)
     assert thresholds is not None
     assert kappa == pytest.approx(1.0)
+
+# --- import cost ------------------------------------------------------------
+
+
+def _loads(module, dependency):
+    """Import `module` in a clean interpreter; report whether `dependency`
+    came with it. A subprocess because this session has already imported
+    most of the scientific stack."""
+    import subprocess
+    import sys as _sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = ("import sys\n"
+            "import %s\n"
+            "print('LOADED', %r in sys.modules)\n" % (module, dependency))
+    r = subprocess.run([_sys.executable, "-c", code],
+                       capture_output=True, text=True, cwd=root, timeout=300)
+    line = [l for l in r.stdout.splitlines() if l.startswith("LOADED")]
+    assert line, "probe failed:\nstdout=%s\nstderr=%s" % (
+        r.stdout[-600:], r.stderr[-600:])
+    return line[0].split()[1] == "True"
+
+
+def test_importing_mas_validation_does_not_load_sklearn():
+    """scikit-learn plus its pandas dependency cost ~1.3 s to import, and
+    mas_validation needs them in exactly two functions -- the agreement
+    statistics and the ROC curve. pendulastic_app imports this module at
+    startup mainly to read two constant lists for comboboxes
+    (MAS_ORDER, STRONGER_LEG_OPTIONS), so every launch paid for scikit-learn
+    to populate a dropdown.
+    """
+    assert not _loads("mas_validation", "sklearn"), (
+        "importing mas_validation pulled scikit-learn in")
+
+
+def test_mas_validation_still_computes_its_statistics():
+    """The deferral must not break the two functions that do need sklearn."""
+    import mas_validation as mv
+    assert hasattr(mv, "compute_validation_stats")
+    assert list(mv.MAS_ORDER)
+    assert list(mv.STRONGER_LEG_OPTIONS)

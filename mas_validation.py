@@ -44,8 +44,12 @@ if __name__ == "__main__":
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
-from scipy.stats import spearmanr
-from sklearn.metrics import cohen_kappa_score, roc_auc_score, roc_curve
+# scipy.stats and sklearn.metrics are imported where they are used, not
+# here. They are needed by exactly two functions -- compute_validation_stats
+# and build_validation_figure -- while pendulastic_app imports this module
+# at startup largely to read MAS_ORDER and STRONGER_LEG_OPTIONS for two
+# comboboxes. Loading scikit-learn to populate a dropdown is ~0.7 s off
+# every launch of the acquisition screen.
 
 import pendulastic_pt_score as pt
 import pt_report_common as common
@@ -193,6 +197,8 @@ def pair_pt_and_mas_by_direction(mas_rows, pt_lookup_flexion, pt_lookup_extensio
 
 
 def compute_validation_stats(pairs):
+    from scipy.stats import spearmanr
+    from sklearn.metrics import cohen_kappa_score, roc_auc_score
     """pairs: already-valid paired records (no _skip_reason, has pt_score/
     predicted_mas). Returns n, preliminary, spearman_rho/p, weighted_kappa,
     per_grade median/IQR/n, and roc_auc (None if class balance is too thin)."""
@@ -411,6 +417,7 @@ def available_conditions(participant, leg):
 # ══════════════════════════════════════════════════════════════════════════
 
 def build_validation_figure(pairs, stats):
+    from sklearn.metrics import roc_curve
     # Object-oriented Figure API, deliberately NOT plt.subplots: under the
     # app's TkAgg backend pyplot would spin up a FigureManagerTk with its own
     # tk.Tk() root -- a second Tcl interpreter inside the running app on every

@@ -585,3 +585,38 @@ def test_load_hpe_model_curves_return_rejected_reports_did_not_track_swing(tmp_p
     assert len(rejected) == 1
     assert rejected[0]["name"] == "mediapipe"
     assert rejected[0]["reason"] == "did_not_track_swing"
+
+# --- peak separation --------------------------------------------------------
+
+
+def test_detected_extrema_cannot_be_closer_than_the_old_merge_threshold():
+    """Why the quadriceps-catch merge step was removed rather than kept.
+
+    _merge_close_extrema() existed to merge sub-peaks closer than fps/6 apart,
+    on the theory that a spastic quadriceps catch makes find_peaks report one
+    peak as two. It never ran: the same call already passes
+    distance=max(3, fps/3.5), and find_peaks guarantees its output is at least
+    that far apart. fps/3.5 exceeds fps/6 at every sample rate, so nothing was
+    ever close enough to merge, and there was no test covering it.
+
+    This pins the guarantee, so that lowering the distance parameter in future
+    -- which WOULD make sub-peak merging necessary again -- fails here loudly
+    instead of silently changing what gets counted as an oscillation.
+    """
+    import numpy as np
+    from scipy.signal import find_peaks
+
+    for fps in (20, 30, 50, 60, 100, 120, 200):
+        min_dist = max(3, int(fps / 3.5))
+        old_merge_sep = max(3, int(fps / 6))
+        assert min_dist >= old_merge_sep, (
+            "at %d fps find_peaks would allow extrema %d samples apart, "
+            "closer than the %d-sample merge threshold -- sub-peak merging "
+            "would be needed again" % (fps, min_dist, old_merge_sep))
+
+        # and empirically, on a signal deliberately full of sub-peaks
+        t = np.linspace(0, 4, int(fps * 4), endpoint=False)
+        noisy = np.sin(2 * np.pi * 1.5 * t) + 0.3 * np.sin(2 * np.pi * 18 * t)
+        idx, _ = find_peaks(noisy, distance=min_dist)
+        if len(idx) > 1:
+            assert int(np.min(np.diff(idx))) >= min_dist
