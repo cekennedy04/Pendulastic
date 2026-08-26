@@ -30,9 +30,15 @@ since the app has no screen that lists past sessions or trials.
 
 ## Protocol
 
-1. **Get the app onto the phone.** On the laptop, from the repo root, run
-   `npm run build:wasm` once if `webapp/src/wasm/` doesn't exist yet, then
-   start the dev server:
+1. **Get the app onto the phone.** On the laptop, if `webapp/src/wasm/`
+   doesn't exist yet, build it first — the script lives in `webapp/package.json`,
+   so this must run from inside `webapp/`, not the repo root:
+
+   ```
+   cd webapp && npm run build:wasm
+   ```
+
+   Then start the dev server, from the repo root:
 
    ```
    miniconda3/python.exe webapp/dev_server.py
