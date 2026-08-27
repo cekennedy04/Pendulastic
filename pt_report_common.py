@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import tempfile
+import textwrap
 import time
 
 from datetime import datetime, timezone
@@ -46,14 +47,27 @@ REC_ROOT = os.path.join(BASE_DIR, "Recordings")
 ARCHIVE_ROOT = (r"C:\Users\cladi\OneDrive\Desktop\Shirley Ryan\Pendulastic_7_28_Archive"
                 r"\Optitrack recordings")
 
-plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Helvetica']
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
 plt.rcParams['axes.edgecolor'] = '#cccccc'
 plt.rcParams['axes.linewidth'] = 0.8
 
 COLORS = {'red': '#d62728', 'green': '#2ca02c', 'purple': '#9467bd',
           'blue': '#1f77b4', 'orange': '#ff7f0e'}
 BG_GRID = '#f2f2f2'
+
+# Per-source line colours: OptiTrack red, MediaPipe green, IMU blue.
+# Used unconditionally for the RMSE bars (_draw_rmse_axes, where the colour
+# channel was never carrying anything else), but in Row 1's waveform panel
+# ONLY for single-timepoint participants -- with 2+ timepoints Row 1's colour
+# channel stays committed to encoding the timepoint, which is the only thing
+# distinguishing Pre from Post there once linestyle is spent on the source.
+C_OPTITRACK = COLORS['red']
+C_MEDIAPIPE = COLORS['green']
+C_IMU = COLORS['blue']
+
+# _hpe_overlay_series() source_label -> colour, for the Row 1 overlay loop.
+SOURCE_COLORS = {'MediaPipe': C_MEDIAPIPE, 'IMU': C_IMU}
 
 _PARAM_KEYS = pt._PARAM_KEYS  # R2n, N, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio
 PARAM_DISPLAY = ["R2n", "N", "phi_ratio", "w_max_n", "w_min_n", "f (Hz)", "Area"]
@@ -64,6 +78,24 @@ ZONE_EDGES = [0.0, 0.12, 0.44, 3.0]
 ZONE_COLORS = ['#d4edda', '#fff3cd', '#f8d7da']
 ZONE_LINE_COLORS = ['#28a745', '#ffc107']
 ZONE_LABELS = ['Healthy', 'Borderline', 'Impaired']
+
+
+def visible_zone_bands(y_max):
+    """(index, lo, hi) for each score band that is actually on screen.
+
+    Both the shaded spans and their labels used to clamp only `hi` to y_max.
+    For a band starting above the visible range -- P24's left leg tops out at
+    0.35, below the Impaired floor of 0.44 -- that gave lo > hi: an inverted,
+    invisible span, and a label whose midpoint sat past the top of the axes,
+    so "Impaired" was drawn floating outside the plot. A band that is not
+    shown gets neither a span nor a label.
+    """
+    bands = []
+    for i, (lo, hi) in enumerate(zip(ZONE_EDGES[:-1], ZONE_EDGES[1:])):
+        if lo >= y_max:
+            continue
+        bands.append((i, lo, min(hi, y_max)))
+    return bands
 
 
 def score_trial(pid, trial, t, angle):
@@ -713,7 +745,12 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
         if tc is None:
             return "—"
         key, frac, val, ref_val = tc
-        return f"⚠ {key} {val:.2f} (ref {ref_val:.2f}) {frac:.0%} of score"
+        # ASCII marker, not a warning-sign glyph: the report renders in a
+        # serif face and U+26A0 is absent from Times New Roman, so it came out
+        # as a tofu box in the source-agreement table. matplotlib's per-glyph
+        # fallback does not rescue it here (verified -- the missing-glyph
+        # warning still fires with DejaVu appended to font.serif).
+        return f"(!) {key} {val:.2f} (ref {ref_val:.2f}) {frac:.0%} of score"
 
     caveat = ("Algorithm agreement, not independent clinical scores — PT7 computed identically "
              "across sources but on curves with different sampling, smoothing, and cleaning "
@@ -742,18 +779,180 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
 
     col_labels = ["Timepoint", "Source", "OptiTrack (paired)", "Source PT7 [MAS]",
                  "Δ", "Top contributor", "Accounting", "Clinician MAS"]
-    tbl = ax.table(cellText=table_rows, colLabels=col_labels, loc="center", cellLoc="center")
+    _build_fitted_table(ax, col_labels, table_rows)
+    return matches_by_leg_condition
+
+
+# Candidate cell-wrap widths in characters, widest first; None means no
+# wrapping at all (the original single-line layout). The search stops at the
+# first width whose measured fit reaches _TABLE_TARGET_FONTSIZE, so a
+# participant whose strings are already short keeps the unwrapped table.
+_TABLE_WRAP_WIDTHS = (None, 24, 18, 14)
+_TABLE_PREFERRED_FONTSIZE = 6.5
+_TABLE_TARGET_FONTSIZE = 6.0
+
+
+def _wrap_cell(value, width):
+    """Wrap one cell's text to `width` characters, never splitting a token.
+
+    Keeping tokens intact matters here: the cells hold values like
+    "0.47 (ref 0.08)" and "4/4", which a mid-token break would render
+    ambiguous or plain wrong to read.
+    """
+    text = str(value)
+    if width is None or len(text) <= width:
+        return text
+    lines = textwrap.wrap(text, width=width, break_long_words=False,
+                         break_on_hyphens=False)
+    return "\n".join(lines) if lines else text
+
+
+def _build_fitted_table(ax, col_labels, table_rows):
+    """Draw the row-5 table at the largest legible font size.
+
+    Width alone is not a sufficient lever. With "Top contributor" and
+    "Accounting" each on a single long line, proportional column widths still
+    leave every cell about 1.7x too narrow, so the measured fit collapses to
+    ~3.8pt -- while the axes has obvious VERTICAL slack, because only two data
+    rows are dividing a tall box between them. Spend that slack instead: wrap
+    the long strings across lines, which cuts the width each column needs and
+    brings the fit back to the preferred size.
+
+    Returns the table, already sized.
+    """
+    best = None  # (fontsize, wrap_width)
+    for wrap_width in _TABLE_WRAP_WIDTHS:
+        tbl = _draw_table_at_wrap(ax, col_labels, table_rows, wrap_width)
+        fontsize = _fit_table_fontsize(ax, tbl, _TABLE_PREFERRED_FONTSIZE)
+        if fontsize >= _TABLE_TARGET_FONTSIZE:
+            tbl.set_fontsize(fontsize)
+            return tbl
+        if best is None or fontsize > best[0]:
+            best = (fontsize, wrap_width)
+        tbl.remove()
+
+    # No wrap width reached the target -- unusually long strings, or many
+    # timepoints squeezing the rows. Rebuild at whichever did best.
+    tbl = _draw_table_at_wrap(ax, col_labels, table_rows, best[1])
+    tbl.set_fontsize(_fit_table_fontsize(ax, tbl, _TABLE_PREFERRED_FONTSIZE))
+    return tbl
+
+
+def _draw_table_at_wrap(ax, col_labels, table_rows, wrap_width):
+    """One candidate layout: cells wrapped to `wrap_width`, columns normalised."""
+    labels = [_wrap_cell(v, wrap_width) for v in col_labels]
+    rows = [[_wrap_cell(v, wrap_width) for v in row] for row in table_rows]
+
+    # bbox instead of loc="center": centring left the table occupying only as
+    # much height as its rows needed, stranding a wide empty band between the
+    # caveat line and the table. The bbox makes the rows divide the axes, with
+    # the top 14% reserved for the caveat drawn above.
+    tbl = ax.table(cellText=rows, colLabels=labels, cellLoc="center",
+                  bbox=[0.0, 0.0, 1.0, 0.86])
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(6.5)
     # Equal-width columns (ax.table()'s default) overlap: "Accounting"'s long
     # status strings bleed into "Clinician MAS", and the numeric "Δ" values
     # (e.g. "+0.747") bleed into "Accounting" -- confirmed against real
     # participant data (2026-08-10 full-report-hpe-accuracy plan, Task 14
-    # manual verification). auto_set_column_width sizes each column to its
-    # own widest cell (including header) instead.
-    tbl.auto_set_column_width(col=list(range(len(col_labels))))
-    tbl.scale(1, 1.4)
-    return matches_by_leg_condition
+    # manual verification).
+    #
+    # auto_set_column_width sizes each column to its own widest cell, which
+    # fixes the overlap but lets the TOTAL exceed the axes: the table then
+    # runs past the figure edge and both end columns ("Timepoint",
+    # "Clinician MAS") are clipped, while tight_layout gives up entirely
+    # ("cannot make Axes width small enough") and the row spacing goes
+    # uneven with it. Size the columns in proportion to their widest cell
+    # but normalise them to sum to exactly 1, so the table always spans the
+    # axes and never overflows it, however long the accounting strings get.
+    #
+    # With wrapping in play a cell's width is set by its LONGEST LINE, not by
+    # its total length -- measure that, or a wrapped cell keeps reserving the
+    # width it no longer needs and the wrap buys nothing.
+    all_rows = [labels] + rows
+    char_widths = [max(max((len(ln) for ln in str(row[i]).split("\n")), default=0)
+                      for row in all_rows)
+                   for i in range(len(labels))]
+    total_chars = sum(char_widths) or 1
+    for (_row, col), cell in tbl.get_celld().items():
+        cell.set_width(char_widths[col] / total_chars)
+
+    return tbl
+
+
+def _fit_table_fontsize(ax, tbl, preferred, minimum=3.5, passes=4):
+    """Largest size <= `preferred` at which no cell's text overflows its cell.
+
+    Checks both dimensions: width, which is what a long single-line string
+    busts, and height, which is what a wrapped multi-line one busts.
+
+    Verifies rather than extrapolates. Solving `preferred / overflow_ratio`
+    in one shot assumes rendered text width is exactly linear in font size,
+    and it is not -- hinting and integer pixel rounding mean a 5% smaller
+    font is not reliably 5% narrower, which left marginal cells still
+    spilling by a pixel or two after the "fix". Shrink, redraw, and measure
+    again until nothing overflows.
+
+    Falls back to `preferred` if no renderer is available (a backend without
+    get_renderer): a table that is slightly too wide is a better failure than
+    a report that will not render at all.
+    """
+    figure = ax.get_figure()
+    size = preferred
+    for _ in range(passes):
+        # Measure AT the size being tested, not at whatever the cells were
+        # still carrying from the rcParams default.
+        tbl.set_fontsize(size)
+        try:
+            figure.canvas.draw()
+            renderer = figure.canvas.get_renderer()
+        except (AttributeError, ValueError):
+            tbl.set_fontsize(preferred)
+            return preferred
+
+        worst = _worst_cell_overflow(tbl, renderer)
+        if worst is None:              # could not measure -- see docstring
+            tbl.set_fontsize(preferred)
+            return preferred
+        if worst <= 1.0:
+            return size
+        if size <= minimum:
+            return minimum
+        # The 1.01 is headroom against landing exactly on the boundary and
+        # rounding back over it on the next redraw.
+        size = max(minimum, size / (worst * 1.01))
+
+    tbl.set_fontsize(size)
+    return size
+
+
+def _worst_cell_overflow(tbl, renderer):
+    """Largest text-to-cell ratio over every cell, or None if unmeasurable.
+
+    A value <= 1.0 means everything fits at the table's current font size.
+    """
+    worst = 1.0
+    for cell in tbl.get_celld().values():
+        text = cell.get_text()
+        if not text.get_text():
+            continue
+        try:
+            text_bbox = text.get_window_extent(renderer)
+            cell_bbox = cell.get_window_extent(renderer)
+        except (AttributeError, ValueError, RuntimeError):
+            return None
+
+        # Cell.PAD is a fraction of the cell width reserved on each side,
+        # and is applied horizontally only -- hence the separate, fixed
+        # vertical margin below.
+        usable_w = cell_bbox.width * (1.0 - 2.0 * getattr(cell, "PAD", 0.1))
+        if usable_w > 0 and text_bbox.width > usable_w:
+            worst = max(worst, text_bbox.width / usable_w)
+
+        usable_h = cell_bbox.height * 0.90
+        if usable_h > 0 and text_bbox.height > usable_h:
+            worst = max(worst, text_bbox.height / usable_h)
+
+    return worst
 
 
 def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints, cohort_snapshot):
@@ -778,12 +977,20 @@ def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints
                 continue
             leg_label = leg.capitalize()
             parts = [f"{leg_label} leg — this participant PT7 (n={len(own_trials)} trials): {own_pt7:.2f}"]
-            ms_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "MS" else ""
-            control_suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == "Control" else ""
-            ms_txt = f"{ref['ms_median']:.2f}" if ref["ms_median"] is not None else "n/a"
-            control_txt = f"{ref['control_median']:.2f}" if ref["control_median"] is not None else "n/a"
-            parts.append(f"MS arm median (n={ref['ms_n']} contributing participants{ms_suffix}): {ms_txt}")
-            parts.append(f"Control arm median (n={ref['control_n']}{control_suffix}): {control_txt}")
+            # One entry per arm, in the same MS / Stroke / Control order the
+            # cohort figure uses. Stroke is skipped only when that arm is
+            # genuinely empty, so a report generated before any stroke
+            # participant existed reads exactly as it did before.
+            for arm_key, arm_label in (("ms", "MS"), ("stroke", "Stroke"),
+                                       ("control", "Control")):
+                n = ref.get(f"{arm_key}_n") or 0
+                if arm_key == "stroke" and not n:
+                    continue
+                suffix = " (leave-one-out)" if ref["leave_one_out_arm"] == arm_label else ""
+                median = ref.get(f"{arm_key}_median")
+                txt = f"{median:.2f}" if median is not None else "n/a"
+                counted = " contributing participants" if arm_key == "ms" else ""
+                parts.append(f"{arm_label} arm median (n={n}{counted}{suffix}): {txt}")
             lines.append(" | ".join(parts))
 
     candidates = trial_candidates(participant_id)
@@ -986,6 +1193,12 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
     margin = 0.05 * (t_hi - t_lo) if t_hi > t_lo else 1.0
     shared_xlim = (t_lo - margin, t_hi + margin)
 
+    # Colour Row 1 by SOURCE (OptiTrack red / MediaPipe green / IMU blue) only
+    # when there's a single timepoint to plot. With 2+ timepoints the colour
+    # channel is already carrying the timepoint and linestyle is carrying the
+    # source, so recolouring by source would collapse Pre/Post into one look.
+    color_by_source = len(timepoints) == 1
+
     for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
 
         # ── Row 1: Waveforms ────────────────────────────────────────────────
@@ -997,10 +1210,13 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
             if entry is None:
                 continue
             t_plot, a_plot, rep = entry
-            ax.plot(t_plot, a_plot, color=color, linewidth=1.5,
+            opti_color = C_OPTITRACK if color_by_source else color
+            ax.plot(t_plot, a_plot, color=opti_color, linewidth=1.5,
                    label=f'{tp_label} (PT={rep["pt7"]:.2f}, T{rep["trial"]})')
             for source_label, linestyle, hpe_t, hpe_a in _hpe_overlay_series(rep):
-                ax.plot(hpe_t, hpe_a, color=color, linewidth=1.1, linestyle=linestyle,
+                src_color = (SOURCE_COLORS.get(source_label, color)
+                            if color_by_source else color)
+                ax.plot(hpe_t, hpe_a, color=src_color, linewidth=1.1, linestyle=linestyle,
                        alpha=0.85, label=f'{tp_label} {source_label}')
         ax.axvline(0, color='gray', linestyle='--', linewidth=0.8)
         ax.set_xlim(shared_xlim)
@@ -1038,8 +1254,8 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
         ax.set_facecolor('white')
         all_vals = [r["pt7"] for tp in timepoints for r in by_leg_tp.get((leg, tp[0]), [])]
         y_max = (max(all_vals) if all_vals else 1.6) * 1.15
-        for (lo, hi), zcolor in zip(zip(ZONE_EDGES[:-1], ZONE_EDGES[1:]), ZONE_COLORS):
-            ax.axhspan(lo, min(hi, y_max), facecolor=zcolor, alpha=0.4, zorder=0)
+        for _i, lo, hi in visible_zone_bands(y_max):
+            ax.axhspan(lo, hi, facecolor=ZONE_COLORS[_i], alpha=0.4, zorder=0)
         for edge, lcolor in zip(ZONE_EDGES[1:-1], ZONE_LINE_COLORS):
             ax.axhline(edge, color=lcolor, linestyle='--', linewidth=0.8)
 
@@ -1065,9 +1281,10 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
                    color='black', linewidth=1, zorder=3)
 
         zone_x = len(timepoints) - 0.75
-        for i, (lab, color) in enumerate(zip(ZONE_LABELS, ['#28a745', '#d39e00', '#dc3545'])):
-            lo, hi = ZONE_EDGES[i], min(ZONE_EDGES[i + 1], y_max)
-            ax.text(zone_x, (lo + hi) / 2, lab, color=color, fontsize=7, fontweight='bold')
+        label_colors = ['#28a745', '#d39e00', '#dc3545']
+        for i, lo, hi in visible_zone_bands(y_max):
+            ax.text(zone_x, (lo + hi) / 2, ZONE_LABELS[i], color=label_colors[i],
+                   fontsize=7, fontweight='bold')
 
         ax.set_title(f'{participant_label} {leg_label} – PT Score (7-param)', fontsize=10, fontweight='bold', pad=10)
         ax.set_xticks(x_pts)
@@ -1257,8 +1474,8 @@ def make_comparison_figure(label_a, data_a, tp_a, label_b, data_b, tp_b,
 # p13_leg_session_comparison.py
 # ══════════════════════════════════════════════════════════════════════════
 
-_C_MEDIAPIPE = "#AA44FF"
-_C_IMU = "#FF9000"
+_C_MEDIAPIPE = C_MEDIAPIPE
+_C_IMU = C_IMU
 
 
 def _lag_align_candidate(rec, cand):

@@ -1007,3 +1007,121 @@ def test_set_trials_excluded_raises_clear_message_after_two_failures(tmp_path, m
     assert "retried once" in str(exc_info.value)
     assert reg_path.read_text() == original_content
     assert list(tmp_path.iterdir()) == [reg_path]   # temp file cleaned up, original untouched
+
+
+# -- Full-report layout defects (2026-08-27) -------------------------------
+# P24's report had three: the row-5 table's text overflowed its cells (headers
+# clipped to "Timepoin"/"Clinician MA", long accounting strings running into
+# the next column), the left PT-score panel drew its "Impaired" band label
+# outside the axes, and the table left a wide empty band above itself.
+
+
+def _row5_axes(monkeypatch, clinician_matches=None):
+    """A row-5 table drawn on a figure the same width as the real report, so
+    the fitted font size is measured against realistic space."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves",
+                        lambda *a, **k: ([{"name": "mediapipe", "t": t, "ang": ang,
+                                           "rmse": 2.0}], []))
+    monkeypatch.setattr(common, "clinician_mas_matches",
+                        lambda pid, leg, cond: clinician_matches or [])
+    rec = {"pid": "24_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+           "neutral_deg_raw": 180.0, "mediapipe_curve": {"t": t, "ang": ang},
+           "imu_curve": None}
+    # The real report is a 5x2 grid on a 15x21 figure: one cell is 7.5 wide.
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    common._draw_row5_table(ax, "left", {("left", "pre"): [rec]},
+                            [("pre", "Pre", "#d62728")], "24")
+    return fig, ax
+
+
+def _overflowing_cells(fig, ax):
+    """Cells whose text is wider than the space the cell gives it."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    table = next(child for child in ax.get_children()
+                 if child.__class__.__name__ == "Table")
+    bad = []
+    for (row, col), cell in table.get_celld().items():
+        label = cell.get_text()
+        if not label.get_text():
+            continue
+        usable = cell.get_window_extent(renderer).width * (1 - 2 * getattr(cell, "PAD", 0.1))
+        if label.get_window_extent(renderer).width > usable:
+            bad.append((row, col, label.get_text()))
+    return bad
+
+
+def test_row5_table_text_fits_inside_its_cells(monkeypatch):
+    """The defect: a hardcoded 6.5pt overflowed, and matplotlib never shrinks
+    cell text to fit. Column widths are now measured, not counted in
+    characters, and the font size is solved from what is left."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        assert _overflowing_cells(fig, ax) == []
+    finally:
+        plt.close(fig)
+
+
+def test_row5_table_stays_legible_rather_than_shrinking_without_limit(monkeypatch):
+    """Fitting must not be allowed to solve the problem by disappearing."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        table = next(child for child in ax.get_children()
+                     if child.__class__.__name__ == "Table")
+        sizes = {cell.get_text().get_fontsize() for cell in table.get_celld().values()}
+        assert all(size >= 3.5 for size in sizes), sizes
+    finally:
+        plt.close(fig)
+
+
+def test_row5_table_fills_its_axes_instead_of_floating_in_the_middle(monkeypatch):
+    """loc='center' left a wide empty band between the caveat and the table."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        table = next(child for child in ax.get_children()
+                     if child.__class__.__name__ == "Table")
+        cells = [c.get_window_extent(renderer) for c in table.get_celld().values()]
+        table_height = max(c.y1 for c in cells) - min(c.y0 for c in cells)
+        axes_height = ax.get_window_extent(renderer).height
+        assert table_height / axes_height > 0.6, table_height / axes_height
+    finally:
+        plt.close(fig)
+
+
+def test_zone_bands_skip_a_band_above_the_visible_range():
+    """P24's left leg tops out at 0.35, below the Impaired floor of 0.44. Only
+    `hi` was clamped to y_max, so the midpoint landed past the top of the axes
+    and 'Impaired' was drawn floating outside the plot."""
+    bands = common.visible_zone_bands(0.35)
+
+    assert [common.ZONE_LABELS[i] for i, _lo, _hi in bands] == ["Healthy", "Borderline"]
+    assert all(lo < hi for _i, lo, hi in bands), bands
+    assert all(hi <= 0.35 for _i, _lo, hi in bands), bands
+
+
+def test_zone_bands_keep_every_band_when_all_are_visible():
+    bands = common.visible_zone_bands(3.0)
+
+    assert [i for i, _lo, _hi in bands] == [0, 1, 2]
+    assert bands[-1][2] == 3.0
+
+
+def test_zone_band_midpoints_stay_inside_the_axes():
+    """The label is drawn at the band midpoint, so that is what must be in
+    range -- clamping `hi` alone was not enough to guarantee it."""
+    for y_max in (0.05, 0.35, 0.5, 1.6, 3.0):
+        for _i, lo, hi in common.visible_zone_bands(y_max):
+            assert 0 <= (lo + hi) / 2 <= y_max, (y_max, lo, hi)
