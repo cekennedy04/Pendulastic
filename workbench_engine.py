@@ -820,8 +820,8 @@ def load_optitrack_trial(csv_path: str):
     rotation-quaternion method (bone-axis-grounded: the angle between the
     Thigh and Shank rigid bodies' actual local-X axes) and falling back to
     pendulastic_pt_score's more format-tolerant loader -- which itself
-    prefers marker-triplet PCA for modern Motive exports specifically to
-    avoid tracking-reset corruption in stored rigid-body quaternions --
+    prefers the labeled-marker path for modern Motive exports specifically
+    to avoid tracking-reset corruption in stored rigid-body quaternions --
     only if the strict rigid-body path raises. Returns (t, angle, method)
     where method is "rigid_body" or "marker_pca", used to badge which
     grounding produced the curve (design spec Section 3) so a researcher is
@@ -832,9 +832,15 @@ def load_optitrack_trial(csv_path: str):
     format files it could theoretically still resolve internally to a
     quaternion-based method. The two loaders are not cleanly separable
     without duplicating load_optitrack's CSV-parsing internals, so the
-    "marker_pca" tag here means "used the PCA-preferring fallback loader,"
-    matching its own documented preference, not a byte-for-byte guarantee
-    of which internal path it took."""
+    "marker_pca" tag here means "used the marker-preferring fallback
+    loader," matching its own documented preference, not a byte-for-byte
+    guarantee
+    of which internal path it took.
+
+    NB the "marker_pca" tag name is historical -- that path stopped using PCA
+    on 2026-08-26, when the segment axis became an anatomically-seeded Kabsch
+    fit (see _angle_from_labeled_markers). The string is kept as-is because it
+    is written into exported sessions; only the meaning below changed."""
     try:
         t, angle = analysis_pipeline._optitrack_knee_angle_series(csv_path)
         return t, angle, "rigid_body"
