@@ -723,6 +723,25 @@ def _kabsch_rotation(ref_centred: np.ndarray, cur_centred: np.ndarray) -> np.nda
     return vt.T @ np.diag([1.0, 1.0, d]) @ u.T
 
 
+def _kabsch_rotations(ref_centred: np.ndarray, cur_stack: np.ndarray) -> np.ndarray:
+    """Batched `_kabsch_rotation`: one (3, 3) reference against a stack of
+    (m, 3, 3) current shapes, returning (m, 3, 3) rotations.
+
+    Same math as the scalar version, done in one LAPACK call instead of m.
+    That matters because the coverage gate stopped rejecting trials on
+    2026-08-27, so this now runs on every frame of all 215 trials rather than
+    the 27% that used to pass — 6 permutations x ~1000 frames x 2 segments per
+    trial, which is minutes of wall-clock when looped in Python.
+    """
+    h = np.einsum("ji,mjk->mik", ref_centred, cur_stack)
+    u, _s, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(np.einsum("mij,mkj->mik", vt, u)))
+    eye = np.zeros((len(cur_stack), 3, 3))
+    eye[:, 0, 0] = eye[:, 1, 1] = 1.0
+    eye[:, 2, 2] = d
+    return np.einsum("mji,mjk,mlk->mil", vt, eye, u)
+
+
 def _angle_from_labeled_markers(
         df: pd.DataFrame,
         shank_triplets: list,
@@ -797,23 +816,23 @@ def _angle_from_labeled_markers(
         collinear = float(sv[1]) < MIN_CLUSTER_PLANAR_EXTENT_M
         ref_line = np.linalg.svd(ref_c, full_matrices=False)[2][0]
 
-        out = np.full((n, 3), np.nan)
-        prev = None                 # last accepted axis, for temporal continuity
-        prev_line = ref_line        # last accepted line, for the collinear branch
-        for i in range(n):
-            pts = mk[:, i, :]
-            if not np.isfinite(pts).all():
-                continue
-            cur_c = pts - pts.mean(axis=0)
+        # Everything that does not depend on the previous frame is computed
+        # for all frames at once; only the continuity choice below is
+        # inherently sequential. Same arithmetic, ~30x less Python.
+        tracked = np.isfinite(mk).all(axis=(0, 2))          # (n,)
+        idx = np.where(tracked)[0]
+        cur_all = np.transpose(mk[:, idx, :], (1, 0, 2))    # (nv, 3, 3)
+        cur_all = cur_all - cur_all.mean(axis=1, keepdims=True)
 
+        cand_axes = {}      # frame -> (m, 3) candidate axes, best first
+        cand_lines = {}     # frame -> (m, 3) matching line dirs, or None
+        if len(idx):
             if collinear:
                 # Only the line direction is observable. Its sign is not, so
-                # take it from the previous frame (or the reference at the start).
-                cur_line = np.linalg.svd(cur_c, full_matrices=False)[2][0]
-                anchor = prev_line
-                if np.dot(cur_line, anchor) < 0:
-                    cur_line = -cur_line
-                cand = [(_shortest_arc_rotation(ref_line, cur_line) @ seed, cur_line)]
+                # it is taken from the previous frame in the loop below.
+                lines = np.linalg.svd(cur_all, full_matrices=False)[2][:, 0, :]
+                for j, i in enumerate(idx):
+                    cand_lines[i] = lines[j]
             else:
                 # Motive permutes Marker1/2/3 between frames when it re-solves
                 # the cluster, and these plates are near-isoceles (85.0/85.6/
@@ -822,18 +841,49 @@ def _angle_from_labeled_markers(
                 # picking the lowest residual chose a mirrored correspondence on
                 # ~16% of frames and flipped the axis by ~130 deg. Keep every
                 # permutation that fits the shape and let continuity choose.
-                cand = []
-                for perm in _MARKER_PERMUTATIONS:
-                    try:
-                        rot = _kabsch_rotation(ref_c, cur_c[perm, :])
-                    except np.linalg.LinAlgError:
-                        continue
-                    resid = cur_c[perm, :] - (rot @ ref_c.T).T
-                    rmsd = float(np.sqrt(np.mean(np.sum(resid ** 2, axis=1))))
-                    # A cluster that no longer matches its own reference shape
-                    # is not this cluster — a stray marker got labeled in.
-                    if rmsd <= MAX_CLUSTER_RMSD_M:
-                        cand.append((rot @ seed, None))
+                perms = np.asarray(_MARKER_PERMUTATIONS)             # (6, 3)
+                stack = cur_all[:, perms, :].reshape(-1, 3, 3)       # (nv*6, 3, 3)
+                try:
+                    rots = _kabsch_rotations(ref_c, stack)
+                except np.linalg.LinAlgError:
+                    # One non-converging 3x3 SVD must not cost the whole
+                    # trial, so fall back per-candidate and drop only the
+                    # ones that genuinely fail (NaN rotations fail the
+                    # rmsd test below and are discarded like any bad fit).
+                    rots = np.full((len(stack), 3, 3), np.nan)
+                    for _j, _c in enumerate(stack):
+                        try:
+                            rots[_j] = _kabsch_rotation(ref_c, _c)
+                        except np.linalg.LinAlgError:
+                            pass
+                fitted = np.einsum("mij,kj->mki", rots, ref_c)       # (nv*6, 3, 3)
+                rmsd = np.sqrt(np.mean(np.sum((stack - fitted) ** 2, axis=2), axis=1))
+                axes = np.einsum("mij,j->mi", rots, seed)            # (nv*6, 3)
+                n_perm = len(perms)
+                axes = axes.reshape(len(idx), n_perm, 3)
+                # A cluster that no longer matches its own reference shape
+                # is not this cluster — a stray marker got labeled in.
+                keep = (rmsd.reshape(len(idx), n_perm) <= MAX_CLUSTER_RMSD_M)
+                for j, i in enumerate(idx):
+                    if keep[j].any():
+                        cand_axes[i] = axes[j][keep[j]]
+
+        out = np.full((n, 3), np.nan)
+        prev = None                 # last accepted axis, for temporal continuity
+        prev_line = ref_line        # last accepted line, for the collinear branch
+        for i in range(n):
+            if collinear:
+                cur_line = cand_lines.get(i)
+                if cur_line is None:
+                    continue
+                if np.dot(cur_line, prev_line) < 0:
+                    cur_line = -cur_line
+                cand = [(_shortest_arc_rotation(ref_line, cur_line) @ seed, cur_line)]
+            else:
+                axes_i = cand_axes.get(i)
+                if axes_i is None:
+                    continue
+                cand = [(a, None) for a in axes_i]
             if not cand:
                 continue
 
