@@ -487,9 +487,16 @@ def trial_candidates(participant_id, include_archive=True):
       "unparseable"  -- _parse_trial_path() returned None
       "invalid_path" -- "INVALID" in the path
       "excluded"     -- key present in load_excluded_trials(); reason set
-      "unreadable"   -- pt.load_optitrack() raised
+      "unreadable"   -- the CSV could not be parsed at all
       "unscoreable"  -- score_trial() returned None
       "scored"       -- record set to the scored trial dict
+
+    Every entry also carries "quality": a pt.TrialQuality for trials that
+    loaded, else None. Poor data quality does NOT change status -- a trial
+    with 57% optical coverage is still "scored", carrying warnings in
+    "quality".warnings and "reason". Only the operator excludes a trial, via
+    excluded_trials.json; see LOW_OPTICAL_COVERAGE for why this stopped being
+    an automatic gate on 2026-08-27.
     """
     excluded = load_excluded_trials()
     out = []
@@ -507,7 +514,8 @@ def trial_candidates(participant_id, include_archive=True):
                 if rec is not None and rec["participant"] != participant_id:
                     continue
                 out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
-                           "status": "invalid_path", "reason": None, "record": None})
+                           "status": "invalid_path", "reason": None,
+                           "quality": None, "record": None})
                 continue
 
             rec = _parse_trial_path(csv_path, root)
@@ -519,7 +527,8 @@ def trial_candidates(participant_id, include_archive=True):
                 # tally should treat this bucket as tree-wide, not
                 # per-participant, and say so in the UI copy.
                 out.append({"leg": None, "condition": None, "trial": None, "path": csv_path,
-                           "status": "unparseable", "reason": None, "record": None})
+                           "status": "unparseable", "reason": None,
+                           "quality": None, "record": None})
                 continue
             if rec["participant"] != participant_id:
                 continue
@@ -527,24 +536,29 @@ def trial_candidates(participant_id, include_archive=True):
             key = trial_key(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
             if key in excluded:
                 out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
-                           "path": csv_path, "status": "excluded", "reason": excluded[key], "record": None})
+                           "path": csv_path, "status": "excluded", "reason": excluded[key],
+                           "quality": None, "record": None})
                 continue
 
             try:
-                t, angle = pt.load_optitrack(csv_path)
-            except Exception:
+                t, angle, quality = pt.load_optitrack_detailed(csv_path)
+            except Exception as exc:
+                # "unreadable" now means the file genuinely could not be
+                # parsed -- NOT that its data looked poor. Low coverage and
+                # implausible curves come back as warnings on a returned
+                # trial, so the operator sees them and decides.
                 out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
-                           "path": csv_path, "status": "unreadable", "reason": None, "record": None})
+                           "path": csv_path, "status": "unreadable", "reason": str(exc),
+                           "quality": None, "record": None})
                 continue
 
             pid_key = f"{participant_id}_{rec['leg']}_{rec['condition']}"
             record = score_trial(pid_key, rec["trial"], t, angle)
-            if record is None:
-                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
-                           "path": csv_path, "status": "unscoreable", "reason": None, "record": None})
-            else:
-                out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
-                           "path": csv_path, "status": "scored", "reason": None, "record": record})
+            status = "unscoreable" if record is None else "scored"
+            out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
+                       "path": csv_path, "status": status,
+                       "reason": "; ".join(quality.warnings) or None,
+                       "quality": quality, "record": record})
     return out
 
 
@@ -1000,7 +1014,10 @@ def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints
             continue
         key = (c["leg"], c["condition"])
         by_leg_condition.setdefault(key, {"recorded": 0, "excluded": 0, "unreadable": 0,
-                                          "unscoreable": 0, "scored": 0})
+                                          "unscoreable": 0, "scored": 0, "flagged": 0})
+        q = c.get("quality")
+        if q is not None and q.warnings:
+            by_leg_condition[key]["flagged"] += 1
         if c["status"] in ("excluded",):
             by_leg_condition[key]["excluded"] += 1
         elif c["status"] == "unreadable":
@@ -1016,9 +1033,12 @@ def _build_caption_text(participant_label, participant_id, by_leg_tp, timepoints
     for (leg, cond), tally in sorted(by_leg_condition.items()):
         if (leg, cond) not in plotted_keys:
             continue
+        flagged = (f", {tally['flagged']} flagged for data quality"
+                   if tally["flagged"] else "")
         lines.append(f"{leg.capitalize()}/{cond}: {tally['recorded']} recorded, "
                      f"{tally['excluded']} excluded, {tally['unreadable']} unreadable, "
-                     f"{tally['unscoreable']} unscoreable, {tally['scored']} scored")
+                     f"{tally['unscoreable']} unscoreable, {tally['scored']} scored"
+                     f"{flagged}")
 
     return "\n".join(lines)
 

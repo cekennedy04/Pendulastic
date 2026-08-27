@@ -155,11 +155,14 @@ def test_trial_candidates_classifies_unreadable(tmp_path, monkeypatch):
     monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
     monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
-    monkeypatch.setattr(common.pt, "load_optitrack", lambda path: (_ for _ in ()).throw(ValueError("bad csv")))
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (_ for _ in ()).throw(ValueError("bad csv")))
 
     candidates = common.trial_candidates("13", include_archive=False)
     assert len(candidates) == 1
     assert candidates[0]["status"] == "unreadable"
+    # "unreadable" must mean the file could not be parsed, and must say why.
+    assert "bad csv" in candidates[0]["reason"]
 
 
 def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatch):
@@ -170,8 +173,9 @@ def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatc
     monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
     monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
-    monkeypatch.setattr(common.pt, "load_optitrack",
-                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0])))
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(coverage=1.0, warnings=())))
     monkeypatch.setattr(common, "score_trial", lambda pid, trial, t, angle: None)
 
     candidates = common.trial_candidates("13", include_archive=False)
@@ -183,6 +187,63 @@ def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatc
     candidates = common.trial_candidates("13", include_archive=False)
     assert candidates[0]["status"] == "scored"
     assert candidates[0]["record"]["pt7"] == 0.5
+    assert candidates[0]["quality"].coverage == 1.0
+    assert candidates[0]["reason"] is None, "a clean trial must carry no reason"
+
+
+def test_poor_quality_trial_is_scored_and_flagged_never_dropped(tmp_path, monkeypatch):
+    """The 2026-08-27 policy: the loader flags, the operator excludes.
+
+    A trial the cameras half-missed must still reach the report as "scored",
+    carrying its warnings, so the operator can see it and decide. Before this,
+    a coverage gate raised inside the loader and the trial silently became
+    "unreadable" -- which emptied P21's whole right leg out of the report."""
+    import numpy as np
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(
+                                          coverage=0.576,
+                                          warnings=("Optical coverage 57.6% is below 90%.",))))
+    monkeypatch.setattr(common, "score_trial",
+                        lambda pid, trial, t, angle: {"pid": pid, "trial": trial, "pt7": 0.5})
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "scored", "a poor trial must not be dropped"
+    assert candidates[0]["quality"].coverage == 0.576
+    assert "57.6%" in candidates[0]["reason"], "the operator must be told why"
+
+
+def test_only_excluded_trials_json_removes_a_trial(tmp_path, monkeypatch):
+    """The single exclusion mechanism. Nothing else may drop a trial."""
+    import numpy as np
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(coverage=0.1, warnings=("awful",))))
+    monkeypatch.setattr(common, "score_trial",
+                        lambda pid, trial, t, angle: {"pid": pid, "trial": trial, "pt7": 0.5})
+
+    # Terrible data, but nobody excluded it -> it still reaches the report.
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    assert common.trial_candidates("13", include_archive=False)[0]["status"] == "scored"
+
+    # Same trial, now named in excluded_trials.json -> and only now dropped.
+    key = common.trial_key("13", "left", "pre", 1)
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {key: "operator says so"})
+    got = common.trial_candidates("13", include_archive=False)[0]
+    assert got["status"] == "excluded"
+    assert got["reason"] == "operator says so"
 
 
 def test_trial_candidates_only_this_participant(tmp_path, monkeypatch):

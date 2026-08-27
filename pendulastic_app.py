@@ -117,12 +117,13 @@ except Exception:
 try:
     from pendulastic_pt_score import (
         compute_pt_params, compute_pt_score_simple, pt_to_mas,
-        HEALTHY_REF, load_optitrack, draw_pt_annotations,
+        HEALTHY_REF, load_optitrack, load_optitrack_detailed, draw_pt_annotations,
     )
     _PT_AVAIL = True
 except Exception:
     compute_pt_params = compute_pt_score_simple = pt_to_mas = None
     HEALTHY_REF = load_optitrack = draw_pt_annotations = None
+    load_optitrack_detailed = None
     _PT_AVAIL = False
 
 try:
@@ -2233,9 +2234,14 @@ class AnalysisPanel(tk.Frame):
         table_wrap.columnconfigure(0, weight=1)
         table_wrap.rowconfigure(0, weight=1)
 
-        cols = ("warn", "leg", "condition", "trial", "n", "phi_max_ratio", "area_ratio")
-        hdrs = ("⚠", "Leg", "Condition", "Trial #", "N", "phi_max_ratio", "area_ratio")
-        widths = (24, 60, 110, 60, 50, 100, 90)
+        # "Cov" is optical coverage: the fraction of frames in which the
+        # cameras actually saw every Shank and Thigh marker. Shown here
+        # because this panel is where trials get excluded, and since
+        # 2026-08-27 the loader no longer drops a poorly-tracked trial on
+        # its own -- it hands it over flagged and the operator decides.
+        cols = ("warn", "leg", "condition", "trial", "cov", "n", "phi_max_ratio", "area_ratio")
+        hdrs = ("⚠", "Leg", "Condition", "Trial #", "Cov", "N", "phi_max_ratio", "area_ratio")
+        widths = (24, 60, 110, 60, 55, 50, 100, 90)
         self._trial_table = ttk.Treeview(
             table_wrap, style=ws.STYLE_TREEVIEW, columns=cols, show="headings",
             selectmode="extended")
@@ -2320,10 +2326,11 @@ class AnalysisPanel(tk.Frame):
             rows = []
             unscored = 0
             for r in records:
-                n = phi = area = None
+                n = phi = area = cov = None
                 if _PT_AVAIL:
                     try:
-                        t, angle = load_optitrack(r["path"])
+                        t, angle, quality = load_optitrack_detailed(r["path"])
+                        cov = quality.coverage
                     except Exception:
                         t = angle = None
                     if t is not None:
@@ -2339,7 +2346,7 @@ class AnalysisPanel(tk.Frame):
                             unscored += 1
                     else:
                         unscored += 1
-                rows.append((r, n, phi, area))
+                rows.append((r, n, phi, area, cov))
             self._table_queue.put(("ok", (request_id, rows, dupes, unscored), None))
         except Exception as e:
             self._table_queue.put(("error", (request_id, str(e)), None))
@@ -2401,7 +2408,7 @@ class AnalysisPanel(tk.Frame):
         # _fmt_metric(None, d) already returns "N/A" for every metric in that
         # case, the two branches produced byte-identical rows; only the status
         # message differs, so only the status message branches here.
-        for r, n, phi, area in rows:
+        for r, n, phi, area, cov in rows:
             # "duplicate" listed before "excluded" so ttk's tag-priority
             # resolution (first tag with a given option wins) gives a
             # both-excluded-and-duplicate row the amber warning color, not
@@ -2416,6 +2423,7 @@ class AnalysisPanel(tk.Frame):
             item = self._trial_table.insert(
                 "", "end",
                 values=("⚠" if warn else "", r["leg"], r["condition"], r["trial"],
+                        "N/A" if cov is None else f"{cov * 100:.0f}%",
                         self._fmt_metric(n, 1), self._fmt_metric(phi, 3), self._fmt_metric(area, 3)),
                 tags=tuple(tags))
             self._table_row_meta[item] = r
