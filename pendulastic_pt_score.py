@@ -29,10 +29,11 @@ Outputs (Model_Analysis_Outputs/PT_Scores/):
 from __future__ import annotations
 
 import glob
+import itertools
 import math
 import os
 import re
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -526,46 +527,226 @@ def _find_unlabeled_cols(name_row: list, comp_row: Optional[list]) -> list:
         return [groups[nm][:3] for nm in order if len(groups[nm]) >= 3]
 
 
-def _find_labeled_marker_cols(name_row: list, comp_row: list, segment: str) -> list:
+def _find_labeled_marker_cols(name_row: list, comp_row: list, segment: str,
+                              type_row: Optional[list] = None) -> list:
     """
     Return [[x_col, y_col, z_col], ...] for each labeled marker of `segment`.
     Works with Motive 1.22 (new) format where comp_row uses "Position" labels
     and marker names may be quoted (e.g. '"Shank:Marker1"').
+
+    IMPORTANT -- solved vs measured markers. A Motive export lists each labeled
+    marker TWICE: once under type "Rigid Body Marker" (Motive's reprojection of
+    the marker from the solved rigid-body pose) and once under type "Marker"
+    (the actual 3-D measurement). The two are easy to confuse because they
+    share a name, but the reprojection is rigid BY CONSTRUCTION -- its
+    inter-marker distances have exactly 0.00 mm spread, versus 0.1-0.4 mm for
+    the measurement -- and it inherits every tracking failure of the rigid body
+    it was solved from. Preferring it silently defeats the whole point of the
+    marker path, which exists to sidestep rigid-body tracking resets.
+
+    So: when `type_row` is supplied we take the measured "Marker" block and
+    fall back to the solved block only if there is no measured one. Without a
+    `type_row` we keep the historical first-3-columns behaviour so existing
+    callers are unaffected.
     """
     seg_l = segment.lower()
-    n = max(len(name_row), len(comp_row) if comp_row else 0)
+    n = max(len(name_row), len(comp_row) if comp_row else 0,
+            len(type_row) if type_row else 0)
     names = (name_row + [""] * n)[:n]
     comps = (comp_row + [""] * n)[:n] if comp_row else [""] * n
+    types = (type_row + [""] * n)[:n] if type_row else [""] * n
 
-    # Collect Position columns grouped by marker name (preserving column order).
-    # New Motive 1.22 format uses "Position" (not "X"/"Y"/"Z") for all 3 axes.
-    groups: dict = {}
+    # Collect Position columns grouped by marker name, keeping solved and
+    # measured columns apart. New Motive 1.22 format uses "Position" (not
+    # "X"/"Y"/"Z") for all 3 axes.
+    measured: dict = {}
+    solved: dict = {}
     order: list = []
-    for i, (nm, cp) in enumerate(zip(names, comps)):
+    for i, (nm, cp, tp) in enumerate(zip(names, comps, types)):
         nm_l = nm.strip().strip('"').lower()
         cp_l = cp.strip().lower()
-        if nm_l.startswith(seg_l + ":marker") and cp_l in ("position", "x", "y", "z"):
-            key = nm.strip().strip('"')
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append(i)
+        if not (nm_l.startswith(seg_l + ":marker") and
+                cp_l in ("position", "x", "y", "z")):
+            continue
+        key = nm.strip().strip('"')
+        if key not in order:
+            order.append(key)
+        bucket = solved if tp.strip().lower() == "rigid body marker" else measured
+        bucket.setdefault(key, []).append(i)
 
     result = []
     for mname in order:
-        cols = groups[mname]
+        cols = measured.get(mname) or solved.get(mname) or []
         if len(cols) >= 3:
             result.append(cols[:3])   # first 3 = X, Y, Z in Motive export order
     return result
 
 
-def _angle_from_labeled_markers_pca(
+# Fraction of frames in which the cameras must actually have seen every Shank
+# and Thigh marker before a trial's optical curve is considered fully trusted.
+#
+# Set 2026-08-26. Sweeping all 215 trials in OptiTrack_Recordings found 157
+# (73%) below 90%, with dropout beginning ~0.5 s in — at pendulum release —
+# because the swinging shank leaves the camera volume. Those frames carry no
+# unlabeled detections either (~0 per frame), so the markers were genuinely
+# unseen rather than merely unlabeled, and no interpolation can recover them.
+#
+# This is a WARNING threshold, not a gate. Between 2026-08-26 and 2026-08-27 it
+# rejected the trial outright, which silently emptied whole participants out of
+# the reports (P21's right leg lost all 5 trials). Deciding a trial is bad is
+# the operator's call, made through excluded_trials.json; the loader's job is
+# to hand over an honest curve and say plainly what is wrong with it. The one
+# thing it must never do is fill the gap in — see _angle_from_labeled_markers.
+LOW_OPTICAL_COVERAGE = 0.90
+
+
+def _raw_column_coverage(df: pd.DataFrame, cols: list) -> float:
+    """Fraction of frames in which every column in `cols` was actually
+    recorded — measured BEFORE any ffill, which is the only point at which
+    the answer is still true."""
+    if len(df) == 0 or not cols:
+        return 0.0
+    arr = df.iloc[:, list(cols)].values.astype(float)
+    arr[np.abs(arr) > 1e5] = np.nan
+    return float(np.isfinite(arr).all(axis=1).mean())
+
+
+def _coverage_from_cols(df: pd.DataFrame, shank_triplets: list,
+                        thigh_triplets: list) -> float:
+    """Fraction of frames in which every Shank and Thigh marker was tracked."""
+    if len(df) == 0:
+        return 0.0
+    ok = np.ones(len(df), dtype=bool)
+    for cols in list(shank_triplets[:3]) + list(thigh_triplets[:3]):
+        arr = df.iloc[:, cols].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        ok &= np.isfinite(arr).all(axis=1)
+    return float(ok.mean())
+
+
+# Every way Motive could have permuted a 3-marker cluster's labels.
+_MARKER_PERMUTATIONS = [list(p) for p in itertools.permutations(range(3))]
+
+# Largest per-marker residual (metres) still considered the same rigid cluster
+# after the best-fitting permutation. The measured plates hold their shape to
+# 0.09-0.38 mm on this corpus, so 3 mm is loose enough for real noise and tight
+# enough to catch a stray marker mislabeled into the cluster.
+MAX_CLUSTER_RMSD_M = 0.003
+
+# Second singular value (metres) below which a 3-marker cluster counts as a
+# collinear bar rather than a triangle. Measured across this corpus the thigh
+# cluster spans ~79 mm along its line but only 0.8-2.7 mm across it, while a
+# real triangle spans 18-27 mm across. 0.010 m sits in the empty gap between
+# those two populations.
+MIN_CLUSTER_PLANAR_EXTENT_M = 0.010
+
+# Largest change in a segment's axis between consecutive frames that is still
+# physically possible. At this rig's 120 Hz, 30 deg per frame is 3600 deg/s —
+# far beyond any limb. Used to reject frames where marker relabeling would
+# otherwise teleport the axis.
+MAX_AXIS_STEP_DEG = 30.0
+
+
+def _shortest_arc_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation carrying unit vector `a` onto unit vector `b` by the shortest
+    arc — i.e. with no roll about the resulting axis.
+
+    Used for collinear marker clusters, where roll is unobservable and any
+    other choice would be inventing information.
+    """
+    a = a / max(float(np.linalg.norm(a)), 1e-12)
+    b = b / max(float(np.linalg.norm(b)), 1e-12)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = float(np.linalg.norm(v))
+    if s < 1e-12:
+        # Parallel, or exactly opposed: identity is right for the former; for
+        # the latter any perpendicular axis works, so pick a stable one.
+        if c > 0:
+            return np.eye(3)
+        axis = np.array([1.0, 0.0, 0.0])
+        if abs(a[0]) > 0.9:
+            axis = np.array([0.0, 1.0, 0.0])
+        axis = np.cross(a, axis); axis /= np.linalg.norm(axis)
+        k = np.array([[0.0, -axis[2], axis[1]],
+                      [axis[2], 0.0, -axis[0]],
+                      [-axis[1], axis[0], 0.0]])
+        return np.eye(3) + 2.0 * (k @ k)
+    k = np.array([[0.0, -v[2], v[1]],
+                  [v[2], 0.0, -v[0]],
+                  [-v[1], v[0], 0.0]])
+    return np.eye(3) + k + k @ k * ((1.0 - c) / (s * s))
+
+
+def _reference_shape(mk: np.ndarray, hold_idx: np.ndarray) -> np.ndarray:
+    """Centred reference shape (3, 3) for a marker cluster over `hold_idx`.
+
+    Averaging each marker's position across the hold sounds obvious and is
+    wrong: Motive permutes Marker1/2/3 between frames, so marker slot j holds
+    different physical markers at different times and the mean collapses the
+    cluster. Measured on P21 Left T3 that shrank the thigh triangle from its
+    true 64.8/64.9/129.7 mm to 56.0/56.1/112.1 mm — a 13% contraction that
+    poisoned every axis derived from it.
+
+    So: anchor on one frame, permutation-align the rest to it, then average.
+    """
+    anchor = mk[:, hold_idx[0], :]
+    anchor_c = anchor - anchor.mean(axis=0)
+    acc = [anchor_c]
+    for f in hold_idx[1:]:
+        cur_c = mk[:, f, :] - mk[:, f, :].mean(axis=0)
+        best, best_rmsd = None, np.inf
+        for perm in _MARKER_PERMUTATIONS:
+            cand = cur_c[perm, :]
+            try:
+                rot = _kabsch_rotation(cand, anchor_c)
+            except np.linalg.LinAlgError:
+                continue
+            resid = anchor_c - (rot @ cand.T).T
+            rmsd = float(np.sqrt(np.mean(np.sum(resid ** 2, axis=1))))
+            if rmsd < best_rmsd:
+                best_rmsd, best = rmsd, (rot @ cand.T).T
+        if best is not None and best_rmsd < MAX_CLUSTER_RMSD_M:
+            acc.append(best)
+    ref = np.mean(np.stack(acc), axis=0)
+    return ref - ref.mean(axis=0)
+
+
+def _kabsch_rotation(ref_centred: np.ndarray, cur_centred: np.ndarray) -> np.ndarray:
+    """Least-squares rotation carrying `ref_centred` onto `cur_centred`.
+
+    Both inputs are (k, 3) and already mean-centred. The det correction keeps
+    the result a proper rotation rather than a reflection.
+    """
+    u, _s, vt = np.linalg.svd(ref_centred.T @ cur_centred)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    return vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+
+
+def _angle_from_labeled_markers(
         df: pd.DataFrame,
         shank_triplets: list,
         thigh_triplets: list) -> np.ndarray:
     """
-    Knee angle from labeled Shank/Thigh marker positions via per-frame PCA.
-    More robust than stored quaternions for recordings with Motive tracking resets.
+    Knee angle from labeled Shank/Thigh marker positions.
+
+    Each 3-marker cluster is a rigid plate. We track its ORIENTATION with a
+    Kabsch fit against its own shape during the hold, and apply that rotation
+    to an anatomically-seeded axis — the thigh→shank centroid vector measured
+    during the hold, when the leg is extended and the two segments are close to
+    collinear.
+
+    Why not the cluster's own PC1 (what this function used to do): a marker
+    plate's longest extent is not the limb's long axis. Measured on P21 the
+    plates sit 17.6-24.3° (thigh) and 27.3-32.4° (shank) off the segment axis,
+    which put the hold baseline at 153-161° instead of 180°. Worse, on the
+    right leg the shank plate's PC1 fell on the far side of the thigh axis, so
+    flexion INCREASED the computed angle and the curve came out inverted. The
+    plate tells us how the segment has rotated; it does not tell us where the
+    segment points, so only the rotation is taken from it.
+
+    Frames where either cluster is incompletely tracked yield NaN — they are
+    NOT filled in. See the coverage gate in load_optitrack for why.
     Returns interior knee angle in degrees (180° = fully extended).
     """
     from scipy.ndimage import median_filter as _mf
@@ -577,69 +758,115 @@ def _angle_from_labeled_markers_pca(
         arr[np.abs(arr) > 1e5] = np.nan
         return arr
 
-    sm = [_get(c) for c in shank_triplets[:3]]
-    tm = [_get(c) for c in thigh_triplets[:3]]
+    sm = np.stack([_get(c) for c in shank_triplets[:3]])   # (3, n, 3)
+    tm = np.stack([_get(c) for c in thigh_triplets[:3]])
 
-    # Reference long-axis direction from centroid-to-centroid over first 60 frames
+    # Anatomical seed: centroid-to-centroid over the hold, when the leg is
+    # extended. Use only fully-tracked frames so occlusion cannot skew it.
     ref_n = min(60, n)
-    sc = np.nanmean(np.stack([m[:ref_n] for m in sm], axis=0), axis=(0, 1))
-    tc = np.nanmean(np.stack([m[:ref_n] for m in tm], axis=0), axis=(0, 1))
+    hold_ok = (np.isfinite(sm[:, :ref_n, :]).all(axis=(0, 2)) &
+               np.isfinite(tm[:, :ref_n, :]).all(axis=(0, 2)))
+    if hold_ok.sum() < 5:
+        raise ValueError("Fewer than 5 fully-tracked frames in the hold window "
+                         "— cannot establish an anatomical reference.")
+    hold_idx = np.where(hold_ok)[0]
+    sc = sm[:, hold_idx, :].mean(axis=(0, 1))
+    tc = tm[:, hold_idx, :].mean(axis=(0, 1))
     v_ts = sc - tc
     nrm = float(np.linalg.norm(v_ts))
     if nrm < 1e-6:
         raise ValueError("Shank and thigh centroids coincide — cannot determine reference direction.")
-    ref_shank =  v_ts / nrm   # toward ankle
-    ref_thigh = -v_ts / nrm   # toward hip
+    axis_shank = v_ts / nrm    # toward ankle
+    axis_thigh = -axis_shank   # toward hip
 
-    def _pca_dirs(markers, ref):
-        dirs = np.zeros((n, 3))
+    def _seg_axes(mk: np.ndarray, seed: np.ndarray) -> np.ndarray:
+        """Per-frame unit axis for one segment, NaN where it cannot be trusted.
+
+        Two regimes, because this rig uses two different marker geometries.
+        A cluster laid out as a TRIANGLE fixes all three rotational degrees of
+        freedom, so we take the full Kabsch rotation. A cluster laid out as a
+        collinear BAR — which is what the thigh is on almost every trial here,
+        out-of-line extent ~1.5 mm against a 79 mm span — cannot observe roll
+        about its own line at all; asking Kabsch for it yields an arbitrary
+        rotation. For a bar we track only what it does determine, its line
+        direction, and move the seed by the shortest arc carrying the
+        reference line onto the current one.
+        """
+        ref_c = _reference_shape(mk, hold_idx)
+        sv = np.linalg.svd(ref_c, compute_uv=False)
+        collinear = float(sv[1]) < MIN_CLUSTER_PLANAR_EXTENT_M
+        ref_line = np.linalg.svd(ref_c, full_matrices=False)[2][0]
+
+        out = np.full((n, 3), np.nan)
+        prev = None                 # last accepted axis, for temporal continuity
+        prev_line = ref_line        # last accepted line, for the collinear branch
         for i in range(n):
-            pts = np.array([m[i] for m in markers])
-            if np.any(np.isnan(pts)):
-                dirs[i] = np.nan
+            pts = mk[:, i, :]
+            if not np.isfinite(pts).all():
                 continue
-            c = pts.mean(axis=0)
-            try:
-                _, _, vt = np.linalg.svd(pts - c, full_matrices=False)
-                ax = vt[0]
-            except Exception:
-                dirs[i] = np.nan
+            cur_c = pts - pts.mean(axis=0)
+
+            if collinear:
+                # Only the line direction is observable. Its sign is not, so
+                # take it from the previous frame (or the reference at the start).
+                cur_line = np.linalg.svd(cur_c, full_matrices=False)[2][0]
+                anchor = prev_line
+                if np.dot(cur_line, anchor) < 0:
+                    cur_line = -cur_line
+                cand = [(_shortest_arc_rotation(ref_line, cur_line) @ seed, cur_line)]
+            else:
+                # Motive permutes Marker1/2/3 between frames when it re-solves
+                # the cluster, and these plates are near-isoceles (85.0/85.6/
+                # 159.2 mm on P21) — a 0.6 mm asymmetry against 0.3 mm of noise.
+                # Fit quality therefore CANNOT identify the right permutation:
+                # picking the lowest residual chose a mirrored correspondence on
+                # ~16% of frames and flipped the axis by ~130 deg. Keep every
+                # permutation that fits the shape and let continuity choose.
+                cand = []
+                for perm in _MARKER_PERMUTATIONS:
+                    try:
+                        rot = _kabsch_rotation(ref_c, cur_c[perm, :])
+                    except np.linalg.LinAlgError:
+                        continue
+                    resid = cur_c[perm, :] - (rot @ ref_c.T).T
+                    rmsd = float(np.sqrt(np.mean(np.sum(resid ** 2, axis=1))))
+                    # A cluster that no longer matches its own reference shape
+                    # is not this cluster — a stray marker got labeled in.
+                    if rmsd <= MAX_CLUSTER_RMSD_M:
+                        cand.append((rot @ seed, None))
+            if not cand:
                 continue
-            if np.dot(ax, ref) < 0:
-                ax = -ax
-            dirs[i] = ax
-        for i in range(1, n):
-            if np.any(np.isnan(dirs[i])):
-                dirs[i] = dirs[i - 1]
-                continue
-            if np.dot(dirs[i], dirs[i - 1]) < 0:
-                dirs[i] = -dirs[i]
-        for c in range(3):
-            dirs[:, c] = _mf(dirs[:, c], size=7)
-        dirs /= np.linalg.norm(dirs, axis=1, keepdims=True).clip(1e-9)
-        return dirs
 
-    thigh_dirs = _pca_dirs(tm, ref_thigh)
-    shank_dirs = _pca_dirs(sm, ref_shank)
+            if prev is None:
+                # Nothing to be continuous with yet. During the hold the leg is
+                # extended, so the seed itself is the best available anchor.
+                axis, line = min(cand, key=lambda c: -float(np.dot(c[0], seed)))
+            else:
+                axis, line = min(cand, key=lambda c: -float(np.dot(c[0], prev)))
+                # A limb cannot slew this fast: at 120 Hz, 30 deg between
+                # consecutive frames is 3600 deg/s. If nothing plausible is on
+                # offer the frame is untrustworthy, so drop it rather than
+                # accept a jump.
+                if float(np.dot(axis, prev)) < math.cos(math.radians(MAX_AXIS_STEP_DEG)):
+                    continue
+            out[i] = axis
+            prev = axis
+            if line is not None:
+                prev_line = line
+        return out
 
-    dot = np.clip(np.sum(thigh_dirs * shank_dirs, axis=1), -1.0, 1.0)
-    angles = np.degrees(np.arccos(dot))
+    shank_dirs = _seg_axes(sm, axis_shank)
+    thigh_dirs = _seg_axes(tm, axis_thigh)
 
-    # Set the pre-release period to 180° (fully extended convention).
-    # PCA-based angles can drift significantly during the hold period due to
-    # collinear marker geometry, so the baseline-deviation approach in
-    # _detect_release would fire too early without this override.
-    # The physical release is detected by a rapid angular velocity drop
-    # (>100°/s) which clearly separates the pendulum swing from any slow drift.
-    t_sec = df.iloc[:, 1].values.astype(float); t_sec -= t_sec[0]
-    dadt = np.gradient(angles, t_sec)
-    release_idx = 0
-    for i in range(5, n - 1):
-        if t_sec[i] > 1.0 and dadt[i] < -100.0:
-            release_idx = max(0, i - 2)
-            break
-    if release_idx > 5:
-        angles[:release_idx] = 180.0
+    ok = np.isfinite(shank_dirs).all(axis=1) & np.isfinite(thigh_dirs).all(axis=1)
+    angles = np.full(n, np.nan)
+    dot = np.sum(shank_dirs[ok] * thigh_dirs[ok], axis=1)
+    angles[ok] = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
+
+    # Smooth only across tracked frames; gaps stay NaN.
+    if ok.sum() >= 7:
+        smoothed = _mf(angles[ok], size=7)
+        angles[ok] = smoothed
 
     return angles
 
@@ -679,68 +906,152 @@ def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
     return angles
 
 
-def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (t_sec, angle_deg) from an OptiTrack CSV (any known format)."""
+def _curve_quality_warnings(angles: np.ndarray,
+                            hold_frames: int = 60) -> list:
+    """Describe everything wrong with a knee-angle curve. Never raises.
+
+    Each returned string is a complete, operator-readable sentence naming one
+    way this curve fails to describe a real pendulum test. An empty list means
+    the curve looks physically sound.
+
+    This used to be `_reject_implausible_curve`, which raised and so removed
+    the trial from every report. It reports instead: the operator decides what
+    is bad (via excluded_trials.json), and a curve they cannot see is one they
+    cannot judge. The checks themselves are unchanged and still earn their
+    keep as regression tripwires — "rises after release" is exactly the P21
+    signature that was fixed at source on 2026-08-26.
+    """
+    warnings: list = []
+    angles = np.asarray(angles, dtype=float)
+    finite = angles[np.isfinite(angles)]
+    if finite.size == 0:
+        return ["Knee angle curve is entirely NaN — the cameras never saw "
+                "both marker clusters in the same frame."]
+
+    span = float(np.max(finite) - np.min(finite))
+
+    if float(np.max(finite)) > 180.5:
+        warnings.append(
+            f"Knee angle reaches {np.max(finite):.1f}° — above full extension, "
+            "so the segment axes are mis-derived.")
+
+    # A curve with no excursion at all carries no pendulum in it — seen when
+    # the Shank and Thigh bodies were built from overlapping markers, which
+    # makes their relative angle constant by construction. Kept very tight
+    # (1°) on purpose: a genuinely rigid spastic limb swings little, and that
+    # is signal, not an error.
+    if span < 1.0:
+        warnings.append(
+            f"Knee angle never varies (range {span:.2f}°) — no pendulum swing "
+            "is present in this trial.")
+
+    hold = angles[:hold_frames]
+    hold = hold[np.isfinite(hold)]
+    post = angles[hold_frames:]
+    post = post[np.isfinite(post)]
+    if hold.size >= 5 and post.size >= 5:
+        baseline = float(np.median(hold))
+        if float(np.median(post)) > baseline + 5.0:
+            warnings.append(
+                f"Knee angle rises after release ({baseline:.1f}° → "
+                f"{np.median(post):.1f}°); the leg is released from extension, "
+                "so this curve is inverted.")
+    return warnings
+
+
+class TrialQuality(NamedTuple):
+    """What the loader knows about how trustworthy a trial's curve is.
+
+    `coverage` is the fraction of frames in which every Shank and Thigh marker
+    was actually tracked. `warnings` holds one sentence per detected problem
+    and is empty for a clean trial. Nothing here excludes a trial — it is the
+    evidence an operator uses to decide whether to.
+    """
+    coverage: float
+    warnings: tuple
+
+
+def _load_precomputed_angle(path: str):
+    """Format C: a CSV of already-computed angles (frame,time_sec,knee_angle_deg).
+
+    Motive exports these as a flexion angle (0° = fully extended, increasing
+    with flexion). Convert to the interior convention used everywhere else
+    (180° = fully extended, decreasing with flexion). Returns None if `path`
+    is not this format.
+    """
+    with open(path, encoding="utf-8-sig") as fh:
+        first = fh.readline().strip()
+    if not (first.lower().startswith("frame") and "knee_angle_deg" in first.lower()):
+        return None
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    t = df["time_sec"].values.astype(float); t -= t[0]
+    return t, 180.0 - df["knee_angle_deg"].values.astype(float)
+
+
+def _parse_optitrack_header(path: str):
+    """Parse a Motive CSV header once, for both load_optitrack and
+    optical_coverage.
+
+    Returns (df, name_row, comp_row, type_row, is_new), or None for an empty
+    file. `df` deliberately keeps Motive's blank cells as NaN — see the note in
+    load_optitrack about why filling them fabricates the swing.
+    """
     with open(path, encoding="utf-8-sig") as fh:
         raw = fh.readlines()
     if not raw:
-        raise ValueError("Empty file.")
+        return None
 
     first = raw[0].strip()
-
-    # ── Format C: pre-computed angles (frame,time_sec,knee_angle_deg) ─────────
-    # Motive exports this as a flexion angle (0° = fully extended, increases with flex).
-    # Convert to interior knee angle (180° = fully extended, decreases with flex) so all
-    # formats share the same coordinate system: 180° at start, ↓ = more flexion.
-    if first.lower().startswith("frame") and "knee_angle_deg" in first.lower():
-        df = pd.read_csv(path, encoding="utf-8-sig")
-        t  = df["time_sec"].values.astype(float); t -= t[0]
-        return t, 180.0 - df["knee_angle_deg"].values.astype(float)
-
-    # ── Parse header: detect format A (old) vs B (new Motive 1.22) ────────────
     is_new = first.lower().startswith("format version")
 
     name_row: Optional[list] = None
     comp_row: Optional[list] = None
+    type_row: Optional[list] = None
     data_start = 0
 
+    _TYPE_STRINGS = {"rigid body", "rigid body marker", "marker", ""}
+    _COMP_STRINGS = {"rotation", "position", "error per marker", "x", "y", "z", "w"}
+
     if is_new:
-        # Scan for "Frame,..." header row
+        # Scan for the "Frame,..." header row
         for i, line in enumerate(raw):
             cells = [c.strip() for c in line.split(",")]
             if cells[0].lower() == "frame":
                 data_start = i; break
-        # Name row: scan rows 1..data_start-1 for the one containing body/marker names.
-        # Type row has "Rigid Body"/"Marker"; name row has "Thigh","Shank","Unlabeled XXXX".
-        _TYPE_STRINGS = {"rigid body", "rigid body marker", "marker", ""}
-        _COMP_STRINGS = {"rotation", "position", "error per marker", "x", "y", "z", "w"}
+        # Name row: the one carrying body/marker names ("Thigh", "Shank",
+        # "Unlabeled XXXX") rather than types or components.
         for i in range(1, data_start):
             cells = [c.strip() for c in raw[i].split(",")]
             non_trivial = [c for c in cells[2:] if c.lower() not in _TYPE_STRINGS
                            and c.lower() not in _COMP_STRINGS
                            and not (len(c) > 20 and all(ch in '0123456789ABCDEFabcdef' for ch in c))]
             if len(non_trivial) >= 2:
-                name_row = [c.strip() for c in raw[i].split(",")]
+                name_row = cells
                 break
-        comp_row = None   # new format: use group-of-3 triplet method
+        # Type row: non-index cells are all Motive type keywords. Needed to
+        # tell a measured "Marker" from a solved "Rigid Body Marker".
+        for i in range(1, data_start):
+            cells = [c.strip() for c in raw[i].split(",")]
+            body = [c.lower() for c in cells[2:]]
+            if body and all(c in _TYPE_STRINGS for c in body) and any(body):
+                type_row = cells
+                break
     else:
         # Old format: look for "Name" / "Component" / "Frame" row tags
         for i, line in enumerate(raw):
             cells = [c.strip() for c in line.split(",")]
-            tag   = cells[0].lower()
-            if tag == "name":           name_row = cells
-            elif tag in ("component","comp"): comp_row = cells
-            elif tag == "frame":        data_start = i; break
+            tag = cells[0].lower()
+            if tag == "name":                  name_row = cells
+            elif tag in ("component", "comp"): comp_row = cells
+            elif tag == "frame":               data_start = i; break
 
     df = (pd.read_csv(path, skiprows=data_start, encoding="utf-8-sig")
-            .apply(pd.to_numeric, errors="coerce").ffill().bfill())
-    t = df.iloc[:, 1].values.astype(float); t -= t[0]
+            .apply(pd.to_numeric, errors="coerce"))
 
-    # ── Build component row for new format so _find_rb_quat_cols can work ─────
-    # In new (1.22) format the component row is one of the header rows; we
-    # identify it as the row whose cells are all in the standard Motive vocab.
-    _MOTIVE_COMPS = {"rotation","position","error per marker","marker quality",
-                     "x","y","z","w",""}
+    # Build a component row for the new format so _find_rb_quat_cols can work:
+    # it is the header row whose cells are all standard Motive component words.
+    _MOTIVE_COMPS = {"rotation", "position", "error per marker", "marker quality",
+                     "x", "y", "z", "w", ""}
     if is_new and comp_row is None and name_row is not None:
         for i in range(1, data_start):
             cells = [c.strip().lower() for c in raw[i].split(",")]
@@ -750,19 +1061,87 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
                 comp_row = [c.strip() for c in raw[i].split(",")]
                 break
 
-    # ── New Motive 1.22 format: labeled marker PCA path ───────────────────────
+    return df, name_row, comp_row, type_row, is_new
+
+
+def optical_coverage(path: str) -> float:
+    """Fraction of frames in `path` where every Shank/Thigh marker was tracked.
+
+    Returns 1.0 for formats that carry no labeled markers (nothing to gate on).
+    Use this to triage a corpus without paying for the full angle computation.
+    """
+    parsed = _parse_optitrack_header(path)
+    if parsed is None:
+        return 1.0
+    df, name_row, comp_row, type_row, is_new = parsed
+    if not (is_new and name_row is not None):
+        return 1.0
+    shank = _find_labeled_marker_cols(name_row, comp_row or [], "Shank",
+                                      type_row=type_row)
+    thigh = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh",
+                                      type_row=type_row)
+    if len(shank) < 3 or len(thigh) < 3:
+        return 1.0
+    return _coverage_from_cols(df, shank, thigh)
+
+
+def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQuality]:
+    """Return (t_sec, angle_deg, quality) from an OptiTrack CSV.
+
+    Never rejects a trial for being low quality. A trial whose markers were
+    unseen through the swing comes back with NaN across the gap and a
+    TrialQuality saying so — the gap is never filled in, because interpolating
+    it would fabricate the swing (that was the pre-2026-08-26 bug), but nor is
+    the trial withheld, because only the operator can decide it is bad.
+
+    Still raises for a file that cannot be READ at all — an empty file, an
+    unparseable header, too few marker columns. That is not a judgement about
+    data quality, it is the absence of data.
+    """
+    precomputed = _load_precomputed_angle(path)
+    if precomputed is not None:
+        t_pre, ang_pre = precomputed
+        return t_pre, ang_pre, TrialQuality(
+            coverage=float(np.isfinite(ang_pre).mean()) if len(ang_pre) else 0.0,
+            warnings=tuple(_curve_quality_warnings(ang_pre)))
+
+    parsed = _parse_optitrack_header(path)
+    if parsed is None:
+        raise ValueError("Empty file.")
+    df, name_row, comp_row, type_row, is_new = parsed
+    t = df.iloc[:, 1].values.astype(float); t -= t[0]
+
+    # ── New Motive 1.22 format: labeled marker path ───────────────────────────
     # Stored quaternions can be permanently corrupted by Motive tracking resets
     # (the rigid body re-acquires at the wrong orientation after losing track).
-    # Labeled marker positions are unaffected; PCA of the Shank/Thigh marker
-    # triangle gives smooth, accurate knee angles without this failure mode.
+    # The MEASURED labeled markers do not share that failure mode, so a Kabsch
+    # fit of the Shank/Thigh marker triangles gives a cleaner knee angle — but
+    # only over frames the cameras actually saw, hence the coverage gate.
     if is_new and name_row is not None:
-        _shank_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Shank")
-        _thigh_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh")
+        _shank_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Shank",
+                                               type_row=type_row)
+        _thigh_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh",
+                                               type_row=type_row)
         if len(_shank_mks) >= 3 and len(_thigh_mks) >= 3:
+            cov = _coverage_from_cols(df, _shank_mks, _thigh_mks)
             try:
-                return t, _angle_from_labeled_markers_pca(df, _shank_mks, _thigh_mks)
-            except Exception:
-                pass
+                angles = _angle_from_labeled_markers(df, _shank_mks, _thigh_mks)
+            except ValueError as exc:
+                # The cluster geometry itself defeated the fit (e.g. no fully
+                # tracked hold frames to seed the anatomical axis). There is no
+                # curve to hand back, but the trial is still not "excluded" —
+                # it is unreadable, which the caller reports as such.
+                raise ValueError(
+                    f"{exc} (optical coverage {cov*100:.1f}%)") from exc
+            warns = list(_curve_quality_warnings(angles))
+            if cov < LOW_OPTICAL_COVERAGE:
+                warns.insert(0,
+                    f"Optical coverage {cov*100:.1f}% is below "
+                    f"{LOW_OPTICAL_COVERAGE*100:.0f}% — the cameras did not see "
+                    f"the markers for {(1-cov)*100:.1f}% of this trial, so the "
+                    "gap is NaN rather than swing. Prefer the IMU curve.")
+            return t, angles, TrialQuality(coverage=float(cov),
+                                           warnings=tuple(warns))
 
     # ── Quaternion path ────────────────────────────────────────────────────────
     try:
@@ -775,8 +1154,14 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
         if thigh_cols is None:
             thigh_cols, shank_cols = [2,3,4,5], [9,10,11,12]
 
-        qd = np.column_stack([df.iloc[:, c].values for c in thigh_cols])
-        qp = np.column_stack([df.iloc[:, c].values for c in shank_cols])
+        # Legacy path: these quaternion routines have no NaN handling of their
+        # own, so they get an explicitly filled copy. Measure coverage FIRST —
+        # after the fill every frame looks tracked, and reporting that as
+        # coverage would tell the operator the opposite of the truth.
+        cov_q = _raw_column_coverage(df, list(thigh_cols) + list(shank_cols))
+        df_filled = df.ffill().bfill()
+        qd = np.column_stack([df_filled.iloc[:, c].values for c in thigh_cols])
+        qp = np.column_stack([df_filled.iloc[:, c].values for c in shank_cols])
 
         if not (_is_sentinel(qd) or _is_sentinel(qp)):
             # Normalise raw quaternions (in case Motive exported un-normalised)
@@ -834,7 +1219,15 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
             angle_q = np.degrees(r_knee.magnitude())
 
             # Interior-angle convention: 180° = fully extended, decreases with flexion
-            return t, 180.0 - angle_q
+            ang_q = 180.0 - angle_q
+            warns_q = list(_curve_quality_warnings(ang_q))
+            if cov_q < 1.0:
+                warns_q.insert(0,
+                    f"Rigid-body quaternions were recorded for only "
+                    f"{cov_q*100:.1f}% of frames; this legacy path fills the "
+                    "rest forward, so the gap is invented motion, not measured.")
+            return t, ang_q, TrialQuality(coverage=cov_q,
+                                          warnings=tuple(warns_q))
     except (IndexError, ValueError):
         pass
 
@@ -847,7 +1240,26 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
     trips = _find_unlabeled_cols(name_row, None if is_new else comp_row)
     if len(trips) < 4:
         raise ValueError(f"Need >=4 unlabeled marker triplets; found {len(trips)}.")
-    return t, _angle_from_markers(df, trips)
+    cov_fb = _raw_column_coverage(df, [c for trip in trips for c in trip])
+    ang_fb = _angle_from_markers(df.ffill().bfill(), trips)
+    warns_fb = list(_curve_quality_warnings(ang_fb))
+    if cov_fb < 1.0:
+        warns_fb.insert(0,
+            f"Unlabeled markers were recorded for only {cov_fb*100:.1f}% of "
+            "frames; this legacy path fills the rest forward, so the gap is "
+            "invented motion, not measured.")
+    return t, ang_fb, TrialQuality(coverage=cov_fb, warnings=tuple(warns_fb))
+
+
+def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (t_sec, angle_deg) from an OptiTrack CSV (any known format).
+
+    Thin wrapper over load_optitrack_detailed for the many callers that only
+    want the curve. Use the detailed form wherever the quality of the trial
+    should reach the operator — this one drops it on the floor.
+    """
+    t, angle, _quality = load_optitrack_detailed(path)
+    return t, angle
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1266,6 +1678,17 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
 _HPE_MODELS = ["mediapipe", "rtmpose", "mmpose", "fremocap"]
 
+# load_hpe_model_curves() swing-validity thresholds, in degrees.
+# MIN_EXCURSION_DEG: total angular travel below which a trial is treated as
+#   containing no real swing (dead recording / marker dropout). Well under the
+#   43-50 deg travelled by the most impaired real trials on file, and well over
+#   OptiTrack marker jitter.
+# MIN_OVERSHOOT_DEG: flexion past neutral below which the neutral-referenced
+#   amplitude thresholds degenerate, and the flexion axis is re-origined at the
+#   held/extended position instead. See the comments at the use site.
+MIN_EXCURSION_DEG = 10.0
+MIN_OVERSHOOT_DEG = 3.0
+
 def load_hpe_model_data(pid_str: str, pos: str, trial: str) -> Optional[dict]:
     """
     Load HPE model knee-angle CSVs from Model_Analysis_Outputs/Participant_N/.
@@ -1508,14 +1931,66 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
     # Swing detection: find the active flexion window (past neutral)
     opti_flex_valid = np.where(valid_mask, opti_flex, np.nan)
     opti_peak = float(np.nanmax(opti_flex_valid)) if valid_mask.any() else 0.0
-    if opti_peak < 3.0:
+
+    # Total angular travel, independent of where the limb comes to rest.
+    angle_valid = np.where(valid_mask, angle_raw, np.nan)
+    opti_excursion = (float(np.nanmax(angle_valid) - np.nanmin(angle_valid))
+                      if valid_mask.any() else 0.0)
+
+    # Validity check: did this trial contain a real swing at all? This used to
+    # test opti_peak < 3.0, i.e. flexion PAST NEUTRAL -- but a spastic limb
+    # arrests at its own resting angle, so its overshoot is ~0 by definition
+    # however far it actually travelled. That threw away five valid trials
+    # across P13/P14/P19 (43-50 deg excursion, PT7 1.42-1.77) while never once
+    # catching a dead recording: load_hpe_model_curves only ever runs on trials
+    # compute_pt_params already scored, so genuinely empty ones never reach it.
+    # Total excursion separates "leg never moved" from "leg moved but didn't
+    # overshoot", which flexion-past-neutral cannot.
+    if opti_excursion < MIN_EXCURSION_DEG:
         return _finish([], [])
+
+    # Every threshold below is a fraction of the reference amplitude, so with
+    # opti_peak ~0 the swing window would be empty and the tracking filter's
+    # bar would fall under a degree -- admitting anything, including a flat
+    # line. For those trials re-origin the flexion axis at the held/extended
+    # position so amplitudes are real again. Limbs that do overshoot keep
+    # flex_origin == neutral_deg and are byte-for-byte unchanged.
+    low_overshoot = opti_peak < MIN_OVERSHOOT_DEG
+    if low_overshoot:
+        flex_origin = float(np.nanmax(angle_valid))
+        opti_flex = flex_origin - angle_raw
+        opti_flex_valid = np.where(valid_mask, opti_flex, np.nan)
+        opti_peak = float(np.nanmax(opti_flex_valid))
+    else:
+        flex_origin = neutral_deg
+
     swing_thresh = max(3.0, opti_peak * 0.20)
     in_swing = (opti_flex_valid > swing_thresh)
     if not in_swing.any():
         return _finish([], [])
     sw_t = t_opti[in_swing]
     sw_lo, sw_hi = float(sw_t[0]) - 0.5, float(sw_t[-1]) + 0.5
+
+    # How much the reference actually VARIES inside the swing window. On a
+    # re-origined axis the absolute flexion value is dominated by the constant
+    # offset from full extension, so only variation distinguishes a curve that
+    # tracked the swing from one that sat still at the resting angle.
+    _opti_flex_sw = opti_flex_valid[in_swing]
+    opti_var = float(np.nanmax(_opti_flex_sw) - np.nanmin(_opti_flex_sw))
+
+    # OptiTrack's own level over the opening reference window, for baseline-
+    # aligning candidates against. A candidate's reference window and this one
+    # both sit in the pre-release hold, so they measure the SAME physical
+    # angle (leg extended) on two devices -- which is what makes them
+    # alignable. Aligning to neutral_deg instead, as this used to, mapped the
+    # candidate's HELD angle onto OptiTrack's RESTING angle and pushed every
+    # curve down by the hold-to-neutral gap (~39-45 deg on real trials).
+    # Taken as a high percentile of the whole trial rather than an opening
+    # window: interior angle is maximal at full extension, which IS the held
+    # position, so this finds the hold level even when a recording starts late
+    # or the leg is already moving in its first samples. The percentile rather
+    # than the outright max keeps a single marker-jitter spike from setting it.
+    opti_hold = float(np.nanpercentile(angle_valid, 98)) if valid_mask.any() else neutral_deg
 
     def _evaluate_candidate(model_name, t_m, ang_m):
         """Shared alignment/cleaning/swing-tracking-filter/RMSE pipeline for
@@ -1542,12 +2017,14 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
             return None, "insufficient_reference_window"
         model_neutral = float(np.nanmean(ang_m[:ref_n][ref_valid[:ref_n]]))
 
-        # Align HPE to OptiTrack interior-angle space.
-        # Both use interior angle (DECREASES with flex): simple baseline shift.
-        # hpe_flex = model_neutral - knee_angle_deg  (positive = more flex)
-        # aligned  = neutral_deg   - hpe_flex        (= knee_angle + (neutral_opti - model_neutral))
-        hpe_flex_raw = model_neutral - ang_m   # HPE flexion displacement (positive = flex)
-        aligned = neutral_deg - hpe_flex_raw
+        # Align HPE to OptiTrack interior-angle space by a simple baseline
+        # shift: both use interior angle (DECREASES with flex), and both
+        # reference windows sit in the same pre-release hold, so putting the
+        # candidate's hold level onto OptiTrack's hold level puts the two
+        # curves in a common frame. Any residual after this is real
+        # disagreement (amplitude/gain error, lag, tracking loss) rather than
+        # a bookkeeping offset -- which is the whole point of the RMSE.
+        aligned = ang_m + (opti_hold - model_neutral)
         lo_bound, hi_bound = 70.0, 210.0
 
         # Physical bounds clamp
@@ -1558,36 +2035,58 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         thresh = 15.0 if raw_pct > 70 else 25.0
         cleaned = _clean_hpe_angle(aligned, outlier_thresh=thresh, max_gap=3, sg_w=7)
 
-        # Model flexion-past-neutral in swing window
+        # Model flexion in swing window, measured from the SAME origin as
+        # opti_flex (neutral normally; the held/extended angle on minimal-
+        # overshoot trials) -- the peak ratio below compares the two directly,
+        # so a mismatched origin would make it meaningless.
         sw_mask = (t_m >= sw_lo) & (t_m <= sw_hi) & np.isfinite(cleaned)
         if sw_mask.sum() < 3:
             return None, "insufficient_swing_samples"
-        model_flex_sw = neutral_deg - cleaned[sw_mask]
+        model_flex_sw = flex_origin - cleaned[sw_mask]
         model_peak = float(np.nanmax(model_flex_sw)) if model_flex_sw.size else -np.inf
 
-        # Auto-correct inverted HPE: some models (or dual-leg sessions) produce an
-        # angle that moves in the OPPOSITE direction (extension when the knee flexes).
-        # Detect: if the standard direction gives a bad peak but the reflected direction
-        # gives a good peak, mirror the signal around the neutral line.
-        if model_peak < 0.30 * opti_peak:
-            alt_sw   = cleaned[sw_mask] - neutral_deg
-            alt_peak = float(np.nanmax(alt_sw)) if alt_sw.size else -np.inf
-            # Accept inversion if (a) reflected direction meets the ratio threshold, OR
-            # (b) original peak collapsed to near-zero but reflected gives a real swing.
-            # Case (b) handles P4-type failures where the model tracks extension not flexion
-            # and the ratio check fails because model_peak≈0 in both directions.
-            if alt_peak >= 0.30 * opti_peak or (model_peak < 5.0 and alt_peak > 5.0):
-                cleaned        = 2.0 * neutral_deg - cleaned   # reflect around neutral
-                model_flex_sw  = alt_sw
-                model_peak     = alt_peak
-            else:
-                return None, "did_not_track_swing"   # neither direction tracks the swing
+        # Orientation. Some models (or dual-leg sessions) report an angle that
+        # moves the OPPOSITE way -- extension where the knee flexes -- and must
+        # be mirrored. Decide that by correlation against the reference, not by
+        # which direction yields the larger peak: a correctly-oriented curve
+        # that merely UNDER-REPORTS amplitude also has a small flexion peak, so
+        # a peak-ratio test mirrors it and silently converts an amplitude error
+        # into a spurious inversion. (Real case: the phone IMU compresses the
+        # swing ~40%, and under the old hold-to-neutral alignment the peak test
+        # flipped every left-leg curve.)
+        # Test it by which SIDE of the hold the curve travels, not by
+        # correlation: the candidate carries an unknown lag against OptiTrack
+        # (0.7-2.5 s on real phone-IMU trials), and a phase-shifted sinusoid
+        # correlates negatively over a restricted swing window even when it
+        # tracks perfectly. Excursion direction is lag-invariant -- the leg is
+        # released from full extension, so a correctly-oriented interior-angle
+        # curve can only travel DOWN from its baseline.
+        _up = float(np.nanmax(cleaned) - opti_hold) if np.isfinite(cleaned).any() else 0.0
+        _down = float(opti_hold - np.nanmin(cleaned)) if np.isfinite(cleaned).any() else 0.0
+        if _up > _down:
+            cleaned = 2.0 * flex_origin - cleaned      # reflect around the origin
+            model_flex_sw = flex_origin - cleaned[sw_mask]
+            model_peak = (float(np.nanmax(model_flex_sw))
+                          if model_flex_sw.size else -np.inf)
 
-        if model_peak / opti_peak < 0.30:
-            return None, "did_not_track_swing"   # model didn't track the swing
+        # Did it track the swing? Compare how much the candidate VARIES across
+        # the window against how much the reference varies, rather than how far
+        # each reaches past neutral. Same reasoning as the validity check
+        # above: neutral sits near the bottom of a compressed curve's travel,
+        # so a flexion-past-neutral ratio punishes an amplitude error far out
+        # of proportion -- the phone IMU reproduces 61% of the true range but
+        # only 17% of the flexion past neutral, and the old form rejected it
+        # outright instead of reporting the disagreement. A curve that doesn't
+        # move still has model_var ~ 0 and is still rejected.
+        model_var = float(np.nanmax(model_flex_sw) - np.nanmin(model_flex_sw)) \
+            if model_flex_sw.size else np.nan
+        if not np.isfinite(model_var) or model_var < 0.30 * opti_var:
+            return None, "did_not_track_swing"
 
-        # RMSE in flexion space interpolated onto OptiTrack time grid
-        model_flex_full = neutral_deg - cleaned
+        # RMSE in flexion space interpolated onto OptiTrack time grid. The
+        # origin cancels in the opti_flex - model_flex difference, so RMSE is
+        # numerically identical either way -- it just has to match opti_flex.
+        model_flex_full = flex_origin - cleaned
         model_flex_interp = np.interp(t_opti, t_m, model_flex_full,
                                       left=np.nan, right=np.nan)
         ok = valid_mask & np.isfinite(model_flex_interp)

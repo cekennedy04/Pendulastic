@@ -213,21 +213,30 @@ def test_trial_with_no_genuine_pre_release_calm_is_flagged_not_silently_wrong():
     contiguous stretch of low gyro magnitude anywhere before its original
     (contaminated) zero-capture point -- there is no genuine still baseline
     to recover. Post-fix this trial correctly comes back as unscoreable
-    (status="error", "Need at least 4 finite samples...") rather than
-    silently reporting a ~30 deg-wrong angle: an honest "cannot score this"
-    is the right outcome here, matching the project's accuracy-over-
-    coverage goal, not a regression to guard against."""
+    (status="error") rather than silently reporting a ~30 deg-wrong angle:
+    an honest "cannot score this" is the right outcome here, matching the
+    project's accuracy-over-coverage goal, not a regression to guard against.
+
+    2026-08-27: this trial now fails EARLIER and for a better-stated reason.
+    It has 66.8% optical coverage -- the cameras lost the markers for a third
+    of it -- so load_optitrack rejects it outright instead of handing on a
+    curve that was interpolated across the gap. Previously the loader filled
+    those frames in and the trial failed further downstream on "too few
+    finite samples", a symptom of the same bad data. Either message keeps
+    this test's point (unscoreable, not silently wrong); the coverage one
+    names the actual cause."""
     imu_path = os.path.join(
         batch.REC_ROOT, "Participant_15", "Left", "pre", "Trial_4_imu.csv")
     row = _score_real_trial(imu_path)
     assert row["status"] == "error"
-    # Must fail for the specific reason this test is about (replay_trial
-    # never zeroing -> compare_pair's "too few finite samples" error), not
-    # any other failure -- an unrelated error (bad path, validation
-    # failure, mag-rate floor) would make this assertion vacuously true.
-    assert "finite samples" in (row.get("error") or ""), (
-        f"expected the 'too few finite samples' error from an unzeroed "
-        f"replay, got: {row.get('error')!r}")
+    # Must fail for a reason this test is actually about -- either the
+    # optical-coverage rejection or the downstream unzeroed-replay error.
+    # An unrelated error (bad path, validation failure, mag-rate floor)
+    # would otherwise make this assertion vacuously true.
+    err = row.get("error") or ""
+    assert ("coverage" in err) or ("finite samples" in err), (
+        f"expected the optical-coverage rejection or the 'too few finite "
+        f"samples' error from an unzeroed replay, got: {err!r}")
 
 
 # ── derive_component_paths ──────────────────────────────────────────────────

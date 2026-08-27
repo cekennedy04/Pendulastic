@@ -585,3 +585,151 @@ def test_load_hpe_model_curves_return_rejected_reports_did_not_track_swing(tmp_p
     assert len(rejected) == 1
     assert rejected[0]["name"] == "mediapipe"
     assert rejected[0]["reason"] == "did_not_track_swing"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# load_hpe_model_curves: minimal-overshoot (spastic) trials
+#
+# A spastic limb arrests at its own resting angle, so flexion-past-neutral
+# collapses to ~0 even on a full-amplitude swing. Real example driving these
+# tests -- Participant_19 Right/pre, a stroke participant's affected leg:
+# held at 180 deg, released, travels to ~132 deg, settles at ~135 deg. Total
+# excursion 44-48 deg, but overshoot past neutral only 0.3-2.8 deg. Five such
+# trials exist across the dataset (P13, P14, P19), all with PT7 >= 1.42.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _spastic_trial(n=300, fps=30.0, hold_deg=180.0, settle_deg=135.0, overshoot=2.5):
+    """Pendulum that drops a long way but arrests at its resting angle:
+    large total excursion, near-zero flexion past neutral."""
+    t = np.arange(n) / fps
+    ang = np.empty(n)
+    hold = int(fps)
+    for i in range(n):
+        if i < hold:
+            ang[i] = hold_deg
+        else:
+            ti = (i - hold) / fps
+            # Heavily damped: one shallow dip below the settle angle, then flat.
+            ang[i] = settle_deg - overshoot * math.exp(-3.0 * ti) * math.cos(2 * math.pi * 0.9 * ti)
+    return t, ang
+
+
+def _write_tracking_csv(path, t_m, ang_m):
+    import pandas as pd
+    pd.DataFrame({"time_sec": t_m, "knee_angle_deg": ang_m}).to_csv(path, index=False)
+
+
+def test_minimal_overshoot_trial_is_not_discarded(tmp_path):
+    """A spastic limb with ~45 deg of real travel but ~2.5 deg of flexion
+    past neutral must still be analysed. The old opti_peak < 3.0 gate threw
+    these away before any candidate was even enumerated, silently removing
+    source-agreement data from the most impaired limbs in the dataset."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _spastic_trial()
+    assert (ang.max() - ang.min()) > 40.0        # real movement
+    assert (135.0 - ang.min()) < 3.0             # but almost no overshoot
+
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang + 1.0)  # model tracks it closely
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 135.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"tracking candidate was discarded; rejected={rejected}"
+    assert accepted[0]["name"] == "mediapipe"
+    # NB: not asserting a small rmse here. load_hpe_model_curves aligns a
+    # candidate by shifting its first-0.5s reference window onto neutral_deg,
+    # but that window sits at the HELD angle (180) not the resting angle, so
+    # its internal rmse carries a constant hold-to-neutral offset. Pre-existing
+    # behaviour, unrelated to overshoot; pt_report_common._lag_align_candidate
+    # recomputes the reported RMSE via compare_pair. What matters here is that
+    # the candidate is no longer discarded before evaluation.
+    assert np.isfinite(accepted[0]["rmse"])
+
+
+def test_minimal_overshoot_trial_still_rejects_untracking_model(tmp_path):
+    """Admitting low-overshoot trials must not disable the quality filter:
+    a flat model curve over the same trial must still be rejected. Guards
+    against trading 'no RMSE bars' for 'meaningless RMSE bars'."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _spastic_trial()
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, np.full(len(t), 180.0))   # never moves
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 135.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted == []
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "did_not_track_swing"
+
+
+def test_trial_with_no_real_movement_is_still_discarded(tmp_path):
+    """The validity check must still reject genuinely dead recordings --
+    marker dropout, leg never released. Excursion, not overshoot, is what
+    separates those from a spastic limb."""
+    import pendulastic_pt_score as pt
+
+    t = np.arange(300) / 30.0
+    ang = 180.0 + 0.3 * np.sin(2 * np.pi * 0.9 * t)   # ~0.6 deg of jitter
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang)
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 180.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted == []
+    assert rejected == []
+
+
+def test_normal_overshoot_trial_behaviour_is_unchanged(tmp_path):
+    """Characterisation: a limb that DOES overshoot must keep the exact
+    neutral-referenced behaviour it had before minimal-overshoot support
+    was added, so no existing published RMSE number moves."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _damped_sinusoid()                  # 15 deg amplitude, ~30 deg overshoot
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang + 2.0)
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 180.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"rejected={rejected}"
+    assert accepted[0]["name"] == "mediapipe"
+    assert accepted[0]["rmse"] < 5.0
+
+
+def test_candidate_is_baseline_aligned_to_hold_not_to_neutral(tmp_path):
+    """A candidate that reproduces the OptiTrack curve exactly must come back
+    sitting ON that curve, not shifted down by the hold-to-neutral gap.
+
+    Regression test: alignment used to map the candidate's reference window
+    (the pre-release HOLD, ~180 deg) onto neutral_deg (the RESTING angle,
+    ~140 deg on real trials), displacing every curve by ~40 deg and inflating
+    its RMSE by the same amount."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _damped_sinusoid()          # holds at 180, settles near 165
+    neutral = 165.0                      # resting angle, 15 deg below the hold
+    assert abs(ang[:15].mean() - 180.0) < 0.5
+
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang)          # perfect tracker
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, neutral,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"rejected={rejected}"
+    cleaned = accepted[0]["ang"]
+    ok = np.isfinite(cleaned)
+    # A perfect tracker must land on the reference, within smoothing error.
+    assert abs(float(np.nanmean(cleaned[ok] - ang[ok]))) < 1.0
+    assert accepted[0]["rmse"] < 2.0
