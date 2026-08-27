@@ -136,3 +136,122 @@ def test_real_mas_csv_parses_and_finds_the_known_split_leg():
     assert by_leg.get(("4", "right")) == "1+"
     assert sg.classify_leg("4", "left", arm="MS", mas_by_leg=by_leg).level == sg.NON_SPASTIC
     assert sg.classify_leg("4", "right", arm="MS", mas_by_leg=by_leg).level == sg.SPASTIC
+
+
+# ── both legs are always enumerated ──────────────────────────────────────────
+
+def test_both_legs_are_returned_even_with_no_data_at_all():
+    """P7 left and both P16 legs were INVISIBLE while the leg list was built
+    from whatever data existed, which reads as full coverage when it is not.
+    Enumerate from LEGS, always."""
+    got = sg.classify_participant_legs("7", arm="Control", mas_by_leg={}, a0_by_leg={})
+    assert set(got) == {"left", "right"}
+
+
+def test_a_diagnosed_leg_with_no_data_is_unknown_not_absent():
+    got = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
+                                       a0_by_leg={"right": 42.7})
+    assert got["left"].level == sg.UNKNOWN
+    assert got["right"].level == sg.NON_SPASTIC
+
+
+def test_a0_by_leg_accepts_either_key_shape():
+    plain = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
+                                         a0_by_leg={"left": 27.0, "right": 21.5})
+    tupled = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
+                                          a0_by_leg={("21", "left"): 27.0,
+                                                     ("21", "right"): 21.5})
+    assert plain["left"].level == tupled["left"].level == sg.SPASTIC
+
+
+# ── participant-level rollup ─────────────────────────────────────────────────
+
+def test_participant_is_spastic_if_either_leg_is():
+    """Hemiparesis is unilateral. Requiring both legs would erase exactly the
+    participants this grouping exists to find."""
+    legs = sg.classify_participant_legs("4", arm="MS",
+                                        mas_by_leg={("4", "left"): "0",
+                                                    ("4", "right"): "1+"})
+    got = sg.participant_level(legs)
+    assert got.level == sg.SPASTIC
+    assert "right" in got.detail
+
+
+def test_participant_is_non_spastic_when_one_leg_is_known_and_clean():
+    """P22: left unassessable, right non-spastic. The PARTICIPANT is still
+    characterised -- and the note has to admit the left leg was not."""
+    legs = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
+                                        a0_by_leg={"right": 42.7})
+    got = sg.participant_level(legs)
+    assert got.level == sg.NON_SPASTIC
+    assert "left" in got.detail
+
+
+def test_participant_is_unknown_only_when_no_leg_could_be_labelled():
+    legs = sg.classify_participant_legs("99", arm="MS", mas_by_leg={}, a0_by_leg={})
+    assert sg.participant_level(legs).level == sg.UNKNOWN
+
+
+def test_control_participant_is_characterised_without_any_recordings():
+    """The whole point of the control-by-recruitment rule: P7 has no left-leg
+    data anywhere, and must still come out characterised."""
+    legs = sg.classify_participant_legs("7", arm="Control", mas_by_leg={}, a0_by_leg={})
+    assert sg.participant_level(legs).level == sg.NON_SPASTIC
+
+
+# ── MAS components fill in for a pending overall grade ───────────────────────
+
+def test_components_are_used_when_the_overall_grade_is_pending():
+    """P17: overall grade pending, right-leg flexion scored 1. That is real
+    clinical evidence and leaves the participant characterised instead of
+    unknown."""
+    lab = sg.classify_leg("17", "right", arm="MS", mas_by_leg={},
+                          mas_components={("17", "right"): ("1", "0")})
+    assert lab.level == sg.SPASTIC
+    assert lab.source == sg.SRC_CLINICAL_COMPONENT
+    assert "pending" in lab.detail
+
+
+def test_components_all_zero_are_non_spastic():
+    lab = sg.classify_leg("17", "left", arm="MS", mas_by_leg={},
+                          mas_components={("17", "left"): ("0", "0")})
+    assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CLINICAL_COMPONENT)
+
+
+def test_components_never_override_an_overall_grade():
+    """P15 left is graded 0 overall with flexion 1+. The clinician's summary
+    judgement stands; the components must not quietly flip it."""
+    lab = sg.classify_leg("15", "left", arm="MS",
+                          mas_by_leg={("15", "left"): "0"},
+                          mas_components={("15", "left"): ("1+", "0")})
+    assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CLINICAL)
+
+
+def test_components_outrank_the_a0_proxy():
+    lab = sg.classify_leg("17", "right", arm="MS", mas_by_leg={},
+                          mas_components={("17", "right"): ("1", "0")},
+                          a0_deg=70.0)
+    assert lab.source == sg.SRC_CLINICAL_COMPONENT
+
+
+def test_either_component_positive_means_spastic():
+    """Tone in extension only is still tone."""
+    assert sg.component_level(("0", "2")) == sg.SPASTIC
+    assert sg.component_level(("1+", "")) == sg.SPASTIC
+
+
+def test_blank_components_carry_no_verdict():
+    assert sg.component_level(("", "")) is None
+    assert sg.component_level(None) is None
+    assert sg.component_level((sg.PENDING_MAS_GRADE, "")) is None
+
+
+def test_load_mas_components_skips_rows_with_no_components(tmp_path):
+    p = tmp_path / "mas.csv"
+    p.write_text(
+        "participant,leg,condition,mas_grade,mas_flexion,mas_extension\n"
+        "17,right,pre,-1,1,0\n"
+        "13,left,pre,1,,\n",
+        encoding="utf-8")
+    got = sg.load_mas_components_by_leg(str(p))
+    assert got == {("17", "right"): ("1", "0")}, got
