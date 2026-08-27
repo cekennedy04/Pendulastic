@@ -73,6 +73,16 @@ const HEADERS = `/sw.js
 // service worker's shell paths are matched literally.
 const VERCEL_CONFIG = JSON.stringify({
   $schema: 'https://openapi.vercel.sh/vercel.json',
+  // dist/ is already built. Say so explicitly, because Vercel otherwise
+  // guesses -- and a project linked to this repo guesses PYTHON, since the
+  // repo around this directory is overwhelmingly .py. The first real deploy
+  // failed with "No python entrypoint found... app.py, index.py, server.py"
+  // while uploading nothing but html/js/wasm. These four keys override the
+  // dashboard's saved framework preset, so the guess cannot come back.
+  framework: null,
+  buildCommand: '',
+  installCommand: '',
+  outputDirectory: '.',
   headers: [
     { source: '/sw.js', headers: [{ key: 'Cache-Control', value: 'no-cache' }] },
     { source: '/src/build-id.js', headers: [{ key: 'Cache-Control', value: 'no-cache' }] },
