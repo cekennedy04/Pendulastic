@@ -114,6 +114,30 @@ def test_compute_stratified_stats_returns_none_when_no_ok_rows():
     assert result["all"] is None
 
 
+def _real_trial_path(pid, leg, condition, trial):
+    """Locate one real IMU trial without hardcoding the directory layout.
+
+    Recordings/ has been reorganized twice (a Participant_13_left_post wrapper
+    appeared, then gave way to the Leg/condition layout). Each time, tests that
+    spelled the path out failed on a missing file rather than on the thing they
+    measure, which is a slow and misleading way to learn the tree moved. Search
+    for the trial under the participant instead, and fail with a message that
+    says what was looked for.
+    """
+    root = os.path.join(batch.REC_ROOT, f"Participant_{pid}")
+    wanted = f"Trial_{trial}_imu.csv"
+    hits = [os.path.join(d, wanted)
+            for d, _sub, files in os.walk(root) if wanted in files]
+    seg = os.sep + leg.lower() + os.sep
+    hits = [h for h in hits if seg in h.lower()]
+    exact = [h for h in hits
+             if os.sep + condition.lower() + os.sep in h.lower()]
+    chosen = exact or hits
+    if not chosen:
+        pytest.skip(f"no Trial_{trial} for P{pid} {leg}/{condition} under {root}")
+    return sorted(chosen, key=len)[0]
+
+
 def _score_real_trial(imu_path):
     paths = batch.derive_component_paths(imu_path)
     opti_path = batch.find_optitrack_match(imu_path, batch.REC_ROOT, batch.OPTI_ROOT)
@@ -185,15 +209,15 @@ def test_contaminated_trial_no_longer_has_extreme_bias():
     this trial is well-scored; the corpus-level regression coverage lives
     in the mean/median printed by batch_imu_vs_optitrack_rmse.py's main().
 
-    Path note: Recordings/ was reorganized to nest this trial's legacy
-    folder under an extra Participant_13/ wrapper
-    (Recordings/Participant_13/Participant_13_left_post/...);
-    OptiTrack_Recordings/ never got that wrapper, so
-    find_optitrack_match() gained a same-participant de-wrapping fallback
-    to keep resolving it (see that function's own docstring)."""
-    imu_path = os.path.join(
-        batch.REC_ROOT, "Participant_13", "Participant_13_left_post", "Session_post",
-        "Position_1", "Height_Joint-Level", "Trial_4_imu.csv")
+    Path note: Recordings/ has been reorganized twice. The trial first moved
+    under an extra Participant_13/ wrapper
+    (Recordings/Participant_13/Participant_13_left_post/...), and has since
+    moved again to the Leg/condition layout every other participant uses
+    (Recordings/Participant_13/Left/post/...). This test kept pointing at the
+    intermediate wrapper path, which stopped existing, so it failed on a
+    missing file rather than on anything it is meant to measure. Derive the
+    path from the layout the repo actually uses now."""
+    imu_path = _real_trial_path("13", "Left", "post", 4)
     row = _score_real_trial(imu_path)
     assert row["status"] == "ok", row.get("error")
     # Measured value is 28.4 deg; 31.0 leaves headroom for benign numeric
