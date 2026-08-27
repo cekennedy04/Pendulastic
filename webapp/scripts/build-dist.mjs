@@ -46,6 +46,9 @@ import { computeShell } from './shell-list.mjs';
 //   not rely on the glob to catch it.
 //
 // GitHub Pages ignores this file entirely -- see webapp/README.md.
+// Vercel ignores it too, which is why VERCEL_CONFIG below exists: the two
+// files say the same thing in the two hosts' formats, and both are written
+// on every build so a rebuild cannot silently drop one.
 const HEADERS = `/sw.js
   Cache-Control: no-cache
 
@@ -58,6 +61,31 @@ const HEADERS = `/sw.js
 /*.wasm
   Content-Type: application/wasm
 `;
+
+// The same guarantees as HEADERS, in the only format Vercel reads. Vercel
+// does not support the `_headers` file at all -- it is a Netlify/Cloudflare
+// convention -- so without this the service worker and build-id.js are
+// served with Vercel's default caching and an installed phone never sees a
+// new build. That is the exact failure HEADERS exists to prevent, so the two
+// must be kept in step.
+//
+// `cleanUrls` is deliberately absent: it would rewrite /index.html and the
+// service worker's shell paths are matched literally.
+const VERCEL_CONFIG = JSON.stringify({
+  $schema: 'https://openapi.vercel.sh/vercel.json',
+  headers: [
+    { source: '/sw.js', headers: [{ key: 'Cache-Control', value: 'no-cache' }] },
+    { source: '/src/build-id.js', headers: [{ key: 'Cache-Control', value: 'no-cache' }] },
+    {
+      source: '/src/wasm/mobile_imu_core_bg.wasm',
+      headers: [{ key: 'Content-Type', value: 'application/wasm' }],
+    },
+    {
+      source: '/(.*).wasm',
+      headers: [{ key: 'Content-Type', value: 'application/wasm' }],
+    },
+  ],
+}, null, 2) + '\n';
 
 const EXTRA = ['./sw.js'];
 
@@ -88,6 +116,7 @@ export function buildDist(rootDir, srcDir, distDir) {
   }
 
   writeFileSync(path.join(distDir, '_headers'), HEADERS);
+  writeFileSync(path.join(distDir, 'vercel.json'), VERCEL_CONFIG);
 
   return { shell, files };
 }
@@ -102,5 +131,5 @@ if (isMain) {
   const distDir = fileURLToPath(new URL('webapp/dist', repoRoot));
   const { shell, files } = buildDist(rootDir, srcDir, distDir);
   console.log(`Built ${distDir}`);
-  console.log(`${files.length} files copied (${shell.length - 1} shell entries + sw.js), plus _headers`);
+  console.log(`${files.length} files copied (${shell.length - 1} shell entries + sw.js), plus _headers + vercel.json`);
 }

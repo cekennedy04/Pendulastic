@@ -90,14 +90,51 @@ test('_headers pins no-cache on the two files carrying the cache key, and applic
   );
 });
 
+// Vercel does not read _headers at all -- it is a Netlify/Cloudflare
+// convention -- so the same guarantees have to be restated in vercel.json.
+// Two files, one intent: if they ever disagree, a deploy silently loses the
+// no-cache on the service worker and installed phones stop seeing new builds.
+function vercelRules(config) {
+  return new Map(
+    config.headers.map((rule) => [
+      rule.source,
+      rule.headers.map((h) => h.key + ': ' + h.value),
+    ]),
+  );
+}
+
+test('vercel.json restates the same cache and content-type guarantees as _headers', () => {
+  const vercelPath = path.join(distDir, 'vercel.json');
+  assert.ok(existsSync(vercelPath), 'vercel.json missing from dist/');
+  const pinned = vercelRules(JSON.parse(readFileSync(vercelPath, 'utf8')));
+
+  assert.deepEqual(pinned.get('/sw.js'), ['Cache-Control: no-cache']);
+  assert.deepEqual(pinned.get('/src/build-id.js'), ['Cache-Control: no-cache']);
+  assert.deepEqual(
+    pinned.get('/src/wasm/mobile_imu_core_bg.wasm'),
+    ['Content-Type: application/wasm'],
+  );
+});
+
+test('the two host configs agree on every path they both name', () => {
+  const blocks = parseHeaderBlocks(readFileSync(path.join(distDir, '_headers'), 'utf8'));
+  const pinned = vercelRules(JSON.parse(readFileSync(path.join(distDir, 'vercel.json'), 'utf8')));
+
+  for (const [source, fromVercel] of pinned) {
+    const fromHeaders = blocks.get(source);
+    if (!fromHeaders) continue;   // glob forms differ between the two hosts
+    assert.deepEqual(fromVercel, fromHeaders, source + ' differs between _headers and vercel.json');
+  }
+});
+
 // An allowlist, not a denylist. The previous form collected basenames and
 // checked them against six literals ('captures', 'dev_server.py', ...), which
 // a participant capture copied under its own name would pass straight
 // through. dist/ is fully determined -- shell + sw.js + _headers -- so the
 // stronger and simpler assertion is that it contains exactly that and
 // nothing else.
-test('the built dist/ contains exactly the shell, sw.js and _headers -- nothing else', () => {
-  const expected = [...shellFiles, 'sw.js', '_headers'].sort();
+test('the built dist/ contains exactly the shell, sw.js and the two host configs -- nothing else', () => {
+  const expected = [...shellFiles, 'sw.js', '_headers', 'vercel.json'].sort();
   const actual = walkFiles(distDir, distDir).sort();
   assert.deepEqual(actual, expected);
 });
