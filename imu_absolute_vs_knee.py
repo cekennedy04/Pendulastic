@@ -189,6 +189,60 @@ def plate_sweep(points, tracked, t, window_s: float = DEFAULT_WINDOW_S) -> Optio
     return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
+class SampleShapeError(ValueError):
+    """Raised when a raw-sample sequence does not carry the expected keys.
+
+    Exists because the alternative is worse. A flex-axis comparison harness
+    written on 2026-08-28 pulled gyro vectors with `s.get("gyro")`, but raw
+    samples are keyed {"t", "role", "v", "sensor"} -- there is no "gyro" key.
+    Every lookup returned None, the vector list came out empty, the batch axis
+    came back None, and the "batch" mode silently degraded into the "off" mode.
+    It did not crash. It produced a clean-looking table in which batch and off
+    agreed to three decimal places, which reads as a finding rather than a bug.
+
+    Extracting a raw signal must therefore fail loudly when it extracts
+    nothing, because a silently empty extraction is indistinguishable from a
+    real measurement of no effect.
+    """
+
+
+def capture_role(samples: Sequence[dict], distal_role: str = "distal",
+                 proximal_role: str = "proximal") -> str:
+    """The role whose gyro drives flex-axis capture, mirroring replay_trial.
+
+    The distal sensor owns the axis; the proximal one owns it only when running
+    solo. Any harness comparing axis methods has to gate on the same role the
+    pipeline does, or it is measuring a different signal than the one it claims.
+    """
+    return distal_role if any(s.get("role") == distal_role for s in samples) \
+        else proximal_role
+
+
+def gyro_vectors(samples: Sequence[dict], role: Optional[str] = None) -> np.ndarray:
+    """(n, 3) array of raw gyro vectors for `role` (default: the capture role).
+
+    Raises SampleShapeError rather than returning an empty array, so a wrong
+    key or a role that is not present is a loud failure instead of a quiet
+    "no effect" result. See SampleShapeError.
+    """
+    if role is None:
+        role = capture_role(samples)
+    vecs = [s["v"] for s in samples
+            if s.get("sensor") == "gyro" and s.get("role") == role
+            and s.get("v") is not None]
+    if not vecs:
+        seen_sensors = sorted({str(s.get("sensor")) for s in samples})
+        seen_roles = sorted({str(s.get("role")) for s in samples})
+        raise SampleShapeError(
+            f"No gyro samples for role {role!r}. Samples carry "
+            f"sensors={seen_sensors} roles={seen_roles}; expected keys "
+            f'{{"t", "role", "v", "sensor"}}.')
+    arr = np.asarray(vecs, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise SampleShapeError(f"Gyro vectors have shape {arr.shape}, expected (n, 3).")
+    return arr
+
+
 def is_single_sensor(samples: Sequence[dict], distal_role: str = "distal") -> bool:
     """True when no sample carries the distal role.
 

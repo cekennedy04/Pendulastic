@@ -176,3 +176,50 @@ def test_measures_reject_malformed_input_instead_of_guessing():
     assert m.net_rotation_from_gyro(t, np.zeros((50, 3)), (0, 0, 1), 0.0, 0.1) == 0.0
     assert m.net_rotation_from_gyro(t, np.zeros((50, 2)), (0, 0, 1), 0.0, 0.1) is None
     assert m.net_rotation_from_gravity(t, np.zeros((50, 2)), 0.1, 0.2) is None
+
+
+# ── Regression: the harness bug that made "batch" silently equal "off" ────────
+
+_RAW = [{"t": 0.00, "role": "proximal", "sensor": "gyro", "v": [1.0, 0.0, 0.0]},
+        {"t": 0.01, "role": "proximal", "sensor": "accel", "v": [0.0, -1.0, 0.0]},
+        {"t": 0.02, "role": "proximal", "sensor": "gyro", "v": [2.0, 0.0, 0.0]}]
+
+
+def test_gyro_vectors_extracts_from_the_v_key():
+    got = m.gyro_vectors(_RAW)
+    assert got.shape == (2, 3)
+    assert got[1].tolist() == [2.0, 0.0, 0.0]
+
+
+def test_gyro_vectors_raises_instead_of_returning_empty():
+    """THE bug. Samples are keyed {"t","role","v","sensor"} -- there is no
+    "gyro" key. Reading one returned nothing for every sample, the batch axis
+    came back None, and the batch mode silently became the off mode: two rows
+    of a comparison table agreeing to three decimals, which reads as a result
+    rather than a defect. Extracting nothing must raise."""
+    with pytest.raises(m.SampleShapeError) as exc:
+        m.gyro_vectors(_RAW, role="distal")          # role that is not present
+    assert "distal" in str(exc.value)
+
+    no_gyro = [{"t": 0.0, "role": "proximal", "sensor": "accel", "v": [0, 0, 1]}]
+    with pytest.raises(m.SampleShapeError):
+        m.gyro_vectors(no_gyro)
+
+
+def test_gyro_vectors_reports_what_it_actually_saw():
+    """The error has to name the sensors and roles present, or the next person
+    debugs it by print statement the way this one was found."""
+    with pytest.raises(m.SampleShapeError) as exc:
+        m.gyro_vectors(_RAW, role="nonexistent")
+    msg = str(exc.value)
+    assert "accel" in msg and "gyro" in msg and "proximal" in msg
+
+
+def test_capture_role_matches_the_pipeline_gating():
+    """Distal owns the axis; proximal owns it only when solo. A harness that
+    gates differently is comparing a different signal than it claims to."""
+    solo = [{"role": "proximal", "sensor": "gyro", "v": [1, 0, 0]}]
+    paired = solo + [{"role": "distal", "sensor": "gyro", "v": [1, 0, 0]}]
+    assert m.capture_role(solo) == "proximal"
+    assert m.capture_role(paired) == "distal"
+    assert m.gyro_vectors(paired).shape == (1, 3)     # distal only, not both
