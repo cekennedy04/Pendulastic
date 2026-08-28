@@ -1323,6 +1323,117 @@ def _sg(sig: np.ndarray, w: int = 11, p: int = 3) -> np.ndarray:
     return savgol_filter(sig, w, p) if w >= p + 2 else sig.copy()
 
 
+# Drift estimation is anchored on the settled tail rather than the pre-release
+# hold -- see the long note at the call site in compute_pt_params for why the
+# hold cannot show the drift.
+_TAIL_FRAC = 0.25          # trailing share of the post-release curve to use
+_TAIL_MIN_SAMPLES = 15
+# A decaying oscillation looks LINEAR over less than one period, so a short
+# window cannot tell "still settling" from "drifting". A clean synthetic trial
+# (0.32 Hz, tail only 0.62 of a period) fitted at -4.13 deg/s with a residual
+# of just 2.17 deg, and correcting by it ate 29 deg of real swing: A0 45.6 ->
+# 16.8.
+#
+# The requirement is PERIODS, not seconds -- a fixed 3 s floor rejected most
+# real tails (which run 2-3 s) and gave back most of the correction's benefit,
+# while still being the wrong test for a slow pendulum. Measure each trial's own
+# dominant frequency and require the tail to span at least _TAIL_MIN_PERIODS of
+# it, so the bar scales with the oscillation being judged.
+_TAIL_MIN_SECONDS = 1.0
+_TAIL_MIN_PERIODS = 2.0
+_TAIL_MAX_RESIDUAL_DEG = 6.0   # still ringing above this -- not settled
+# Measured drift is 0.833 deg/s (median, 93 trials). 5 deg/s was permissive
+# enough to admit pendulum decay; 2 leaves headroom over anything real.
+_MAX_DRIFT_DEG_S = 2.0
+# A settled tail barely moves. If the fitted line carries the tail through more
+# than this share of the trial's own swing range, it is tracking motion.
+_TAIL_MAX_DISPLACEMENT_FRAC = 0.15
+
+
+def _dominant_frequency_hz(t: np.ndarray, ang: np.ndarray,
+                           rel_i: int) -> Optional[float]:
+    """Dominant oscillation frequency (Hz) of the post-release curve, or None.
+
+    Used only to ask whether a tail window is long enough for its slope to mean
+    anything. An FFT peak is enough for that -- this is not the reported `f`,
+    which is measured from detected peaks further down.
+    """
+    seg_t = np.asarray(t[rel_i:], dtype=float)
+    seg = np.asarray(ang[rel_i:], dtype=float)
+    ok = np.isfinite(seg_t) & np.isfinite(seg)
+    seg_t, seg = seg_t[ok], seg[ok]
+    if len(seg) < 16:
+        return None
+    dur = float(seg_t[-1] - seg_t[0])
+    if dur <= 0:
+        return None
+    dt = dur / (len(seg) - 1)
+    # Remove the linear trend so the FFT is not dominated by the settle itself.
+    trend = np.polyfit(seg_t, seg, 1)
+    seg = seg - (trend[0] * seg_t + trend[1])
+    spectrum = np.abs(np.fft.rfft(seg))
+    freqs = np.fft.rfftfreq(len(seg), d=dt)
+    if len(spectrum) < 3:
+        return None
+    peak = int(np.argmax(spectrum[1:])) + 1     # skip DC
+    f = float(freqs[peak])
+    return f if np.isfinite(f) and f > 1e-6 else None
+
+
+def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
+                              rel_i: int) -> Optional[float]:
+    """Sensor drift in deg/s, measured from the settled tail, or None.
+
+    A pendulum that has come to rest has zero slope, so any slope remaining in
+    the tail belongs to the sensor. Returns None -- meaning "do not correct" --
+    whenever the tail cannot be trusted to be at rest: too few samples, too
+    short a window, still oscillating, or a slope so large it must be real
+    motion rather than drift. None is the safe answer, because over-correcting
+    a trial that never settled would eat real swing.
+    """
+    n = len(t)
+    if rel_i is None or rel_i < 0 or n - rel_i < _TAIL_MIN_SAMPLES:
+        return None
+    start = int(rel_i + (1.0 - _TAIL_FRAC) * (n - rel_i))
+    t_tail = np.asarray(t[start:], dtype=float)
+    a_tail = np.asarray(ang[start:], dtype=float)
+    ok = np.isfinite(t_tail) & np.isfinite(a_tail)
+    t_tail, a_tail = t_tail[ok], a_tail[ok]
+    if len(t_tail) < _TAIL_MIN_SAMPLES:
+        return None
+    tail_dur = float(t_tail[-1] - t_tail[0])
+    if tail_dur < _TAIL_MIN_SECONDS:
+        return None
+
+    # Reject a tail too short to have seen the oscillation it must rule out.
+    f_est = _dominant_frequency_hz(t, ang, rel_i)
+    if f_est is None or tail_dur * f_est < _TAIL_MIN_PERIODS:
+        return None
+
+    slope, intercept = np.polyfit(t_tail, a_tail, 1)
+    slope = float(slope)
+    if not np.isfinite(slope) or abs(slope) > _MAX_DRIFT_DEG_S:
+        return None
+    # Settled means the tail is a straight line plus noise. If it still swings,
+    # the residual about that line is large and the slope is not drift.
+    residual = a_tail - (slope * t_tail + intercept)
+    if float(np.nanmax(residual) - np.nanmin(residual)) > _TAIL_MAX_RESIDUAL_DEG:
+        return None
+
+    # Final guard, and the one that catches slow decay the residual check
+    # cannot: a genuinely settled tail hardly moves. Compare how far the fitted
+    # line carries it against the trial's own swing range, so the test scales
+    # with the trial instead of assuming an absolute size.
+    post = np.asarray(ang[rel_i:], dtype=float)
+    post = post[np.isfinite(post)]
+    if len(post) >= 2:
+        swing_range = float(np.nanmax(post) - np.nanmin(post))
+        displacement = abs(slope) * float(t_tail[-1] - t_tail[0])
+        if swing_range > 1e-6 and displacement > _TAIL_MAX_DISPLACEMENT_FRAC * swing_range:
+            return None
+    return slope
+
+
 def _detect_release(t: np.ndarray, ang: np.ndarray,
                     baseline_sec: float = 0.6,
                     thresh_deg:   float = 5.0) -> int:
@@ -1531,11 +1642,38 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # negligible fraction of the fit window, but for a short hold they can
     # dominate it and bias the slope badly. Trim a small time margin off
     # the END of the baseline window so detection lag never enters the fit.
+    #
+    # ...but the baseline ALONE cannot see the drift that matters. The gyro
+    # bias is calibrated from that very hold window (pendulastic_imu_server
+    # .zero() recalibrates from the trailing hold buffer at the tare instant),
+    # so the baseline is flat BY CONSTRUCTION and the fit comes back at
+    # essentially zero. The drift develops afterwards. Measured over 93 IMU
+    # trials on 2026-08-28: pre-release baseline slope +0.193 deg/s, settled
+    # tail slope -0.833 deg/s, with |tail| > |baseline| in 84% of trials.
+    # Extrapolating the baseline slope therefore removed nothing, the IMU
+    # curve sank ~0.8 deg/s through the trial, `neutral` (the tail median)
+    # sank with it, and A0 = phi[0] = release - neutral came out inflated.
+    # Tail slope predicted the IMU/OptiTrack A0 ratio at rho=-0.641, p=8e-12;
+    # baseline slope only managed rho=+0.260.
+    #
+    # So estimate the drift from the SETTLED TAIL, which is the other region
+    # that is physically at rest: a pendulum that has stopped has zero slope,
+    # so whatever slope is there is the sensor's. This keeps the original
+    # protection -- the swing itself never enters the fit -- while looking at
+    # the region that can actually show the problem. OptiTrack tails measure
+    # +0.009 deg/s, so this is a no-op on optical curves and only bites where
+    # there is real drift.
     _MIN_BASELINE = 10
     _LAG_MARGIN_SEC = 0.05
     baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
-    if detrend and baseline_end >= _MIN_BASELINE:
-        slope, _ = np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)
+    slope = None
+    if detrend:
+        slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
+        if slope is None and baseline_end >= _MIN_BASELINE:
+            # Tail unusable (trial ended mid-swing, too short, still ringing).
+            # Fall back to the historical baseline fit rather than to nothing.
+            slope = float(np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)[0])
+    if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
         ang_c = ang_c_raw

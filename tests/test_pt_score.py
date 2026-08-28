@@ -733,3 +733,117 @@ def test_candidate_is_baseline_aligned_to_hold_not_to_neutral(tmp_path):
     # A perfect tracker must land on the reference, within smoothing error.
     assert abs(float(np.nanmean(cleaned[ok] - ang[ok]))) < 1.0
     assert accepted[0]["rmse"] < 2.0
+
+
+# ── settled-tail drift correction (2026-08-28) ─────────────────────────────
+# A0 = (angle at release) - (median of the settled tail). A sensor whose curve
+# sinks through the trial drags that tail median down and inflates A0 with no
+# error in the swing at all. The drift correction used to fit ONLY the
+# pre-release hold, which is where gyro bias was just calibrated and is flat by
+# construction, so it could not see the drift it existed to remove. Measured on
+# 93 IMU trials: baseline slope +0.193 deg/s vs settled tail -0.833 deg/s.
+
+def _damped_swing(sweep=50.0, fs=100.0, hold_s=2.0, swing_s=16.0,
+                  drift_deg_s=0.0, settle=180.0 - 50.0, drift_from_release=True):
+    """Held-then-released pendulum decaying to `settle`, plus optional linear
+    sensor drift. Angle convention: 180 = fully extended.
+
+    drift_from_release models what the real IMU does, and it is the whole
+    point. zero() recalibrates gyro bias from the hold buffer at the tare
+    instant, so the pre-release hold is FLAT and the drift accumulates
+    afterwards. Applying drift from t=0 instead would put the full slope inside
+    the pre-release baseline, where the old baseline-only fit removes it
+    perfectly -- a synthetic that the defect cannot reproduce on.
+    """
+    import numpy as np
+    n_hold = int(hold_s * fs)
+    n_swing = int(swing_s * fs)
+    t = np.arange(n_hold + n_swing) / fs
+    ang = np.empty(len(t))
+    ang[:n_hold] = 180.0
+    ts = np.arange(n_swing) / fs
+    ang[n_hold:] = settle + sweep * np.exp(-ts / 2.0) * np.cos(2 * np.pi * 0.9 * ts)
+    if drift_from_release:
+        ramp = np.concatenate([np.zeros(n_hold), ts])
+    else:
+        ramp = t - t[0]
+    return t, ang + drift_deg_s * ramp
+
+
+def test_settled_tail_slope_recovers_a_known_drift():
+    import pendulastic_pt_score as p
+    for true_slope in (-0.8, -0.3, 0.0, 0.5):
+        t, ang = _damped_swing(drift_deg_s=true_slope)
+        got = p._settled_tail_drift_slope(t, ang, rel_i=200)
+        assert got is not None, true_slope
+        assert got == pytest.approx(true_slope, abs=0.12), (true_slope, got)
+
+
+def test_settled_tail_slope_refuses_a_tail_that_is_still_swinging():
+    """Over-correcting an unsettled trial would eat real swing, so a ringing
+    tail must return None rather than a confident wrong number."""
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(swing_s=4.0)          # ends mid-oscillation
+    assert p._settled_tail_drift_slope(t, ang, rel_i=200) is None
+
+
+def test_settled_tail_slope_refuses_an_implausibly_large_slope():
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(drift_deg_s=40.0)
+    assert p._settled_tail_drift_slope(t, ang, rel_i=200) is None
+
+
+def test_settled_tail_slope_refuses_too_short_a_tail():
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(swing_s=12.0)
+    assert p._settled_tail_drift_slope(t, ang, rel_i=len(t) - 5) is None
+
+
+def test_drift_no_longer_inflates_A0():
+    """THE defect. The same swing, scored with and without sensor drift, must
+    give the same A0 -- the drift is in the sensor, not in the leg."""
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, clean = _damped_swing(drift_deg_s=0.0)
+    _t, drifting = _damped_swing(drift_deg_s=-0.8)
+
+    a_clean = p.compute_pt_params(t, clean)
+    a_drift = p.compute_pt_params(t, drifting)
+    assert a_clean and a_drift
+    assert a_drift["A0_deg"] == pytest.approx(a_clean["A0_deg"], rel=0.10), (
+        a_clean["A0_deg"], a_drift["A0_deg"])
+
+
+def test_a_flat_optical_curve_is_left_alone():
+    """OptiTrack tails measure +0.009 deg/s, so the correction must be a no-op
+    there. A fix that only helps the IMU by disturbing the reference is not a
+    fix."""
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(drift_deg_s=0.0)
+    with_detrend = p.compute_pt_params(t, ang, detrend=True)
+    without = p.compute_pt_params(t, ang, detrend=False)
+    assert with_detrend and without
+    assert with_detrend["A0_deg"] == pytest.approx(without["A0_deg"], rel=0.03)
+
+
+def test_pendulum_still_decaying_is_not_mistaken_for_drift():
+    """The guard that a first attempt at this fix got wrong.
+
+    A decaying oscillation is LINEAR over less than one period, so a short tail
+    fits a steep slope with a tiny residual and looks exactly like drift. On a
+    0.32 Hz synthetic whose tail covered 0.62 of a period the fit came back at
+    -4.13 deg/s with a residual of 2.17 deg, and correcting by it ate 29 deg of
+    real swing (A0 45.6 -> 16.8). The tail must span several periods before its
+    slope means anything.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+    t = np.linspace(0, 10, 400)
+    ang = np.where(t < 2.0, 180.0,
+                   130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
+    rel = p._detect_release(t, p._sg(ang, w=15, p=3))
+    assert p._settled_tail_drift_slope(t, ang, rel) is None
+    params = p.compute_pt_params(t, ang)
+    assert params["A0_deg"] == pytest.approx(45.6, rel=0.10), params["A0_deg"]
+    assert params["quality_warn"] is False
