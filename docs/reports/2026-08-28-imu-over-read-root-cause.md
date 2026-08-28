@@ -20,7 +20,7 @@ all:
    against. The existing correction fit its slope from the pre-release hold —
    the one window where gyro bias had just been calibrated, so it was flat by
    construction and the correction removed nothing. Fixing it took the corpus
-   from 54.9% to **36.0%** median error. See the update section below.
+   from 54.9% to **31.8%** median error, on 80% of trials. See below.
 2. **Single-sensor geometry (NOT fixed, and not fixable in analysis).** One
    phone measures a segment's rotation *in space*; the pipeline reports that as
    the knee angle, which holds only while the other segment is still. The thigh
@@ -140,12 +140,67 @@ that is physically at rest, where any slope belongs to the sensor. The swing
 still never enters the fit, which was the original and valid reason for not
 using a whole-trial least-squares detrend.
 
-Corpus effect, 100 paired trials:
+Corpus effect:
 
-| | median err | ratio IQR | median ratio | beyond 2x |
-|---|---|---|---|---|
-| before | 54.9% | 1.32-1.76 | 1.536 | 13/100 |
-| after | **36.0%** | **1.17-1.71** | **1.356** | **11/100** |
+| | median err | ratio IQR | median ratio | beyond 2x | coverage |
+|---|---|---|---|---|---|
+| before | 54.9% | 1.32-1.76 | 1.536 | 13/100 | 0% |
+| first guard (periods) | 36.0% | 1.17-1.71 | 1.356 | 11/100 | 32% |
+| **final** | **31.8%** | **1.15-1.49** | **1.303** | **4/99** | **80%** |
+
+### Getting from 32% coverage to 80%
+
+The first guard counted oscillation PERIODS in the tail. It rejected 56% of
+trials on its own, and it failed worst on the trials it should have passed: a
+heavily damped leg barely oscillates, so its dominant frequency comes out near
+0.1 Hz and the period requirement becomes unreachable — even though such a leg
+settles SOONEST and is the safest of all to correct.
+
+Test the property directly instead. **A tail that is still decaying flattens**:
+split it in half and the second half is less steep. Genuine drift is constant,
+so both halves fit the same slope. No frequency estimate, and it works on a leg
+that never oscillates.
+
+Tolerances were then swept against the corpus rather than chosen, because
+coverage is not the goal — accuracy is:
+
+| consistency frac / abs | coverage | median \|ratio-1\| | beyond 2x |
+|---|---|---|---|
+| correction off | 0% | 52.0% | 13 |
+| 0.60 / 0.35 | 67% | 34.7% | 5 |
+| **1.20 / 0.60** | **80%** | **33.7%** | **4** |
+| 1.50 / 0.80 | 82% | 34.2% | 4 |
+| 2.50 / 1.20 | 84% | 34.2% | 4 |
+
+1.20/0.60 corrects 80% of trials AND scores best. Past it coverage keeps rising
+while accuracy turns over, which is the signal that the extra trials are ones
+whose tails should not have been trusted.
+
+With the tolerances relaxed, the SLOPE CAP (4.0 deg/s) becomes the last guard
+rejecting the decaying-pendulum case. At a cap of 5 that synthetic is accepted
+and eats 29 deg of real swing. Pinned by
+`test_drift_cap_is_what_stops_the_decay_case_and_must_not_be_raised`.
+
+### Why the remaining 20% are not padded
+
+The obvious way to reach 100% is to assume a stable leg and extend the tail.
+Measured, it does the opposite of what it promises. Of the 19 trials the guard
+still rejects, **16 are still moving faster than 1 deg/s when the recording
+stops** — "assume the leg is stable" is precisely the false assumption. Their
+honest tail slope is **-1.059 deg/s**, STEEPER than the -0.761 median of the
+trials that are corrected: these drift the most.
+
+Appending 4 s of flat samples at the last observed value drives the fitted
+slope to **+0.000**. Padding does not estimate the drift, it erases it — it
+would switch the correction off on exactly the trials that need it most, while
+reporting 100% coverage. Pinned by
+`test_padding_a_short_tail_with_stable_data_erases_the_drift_it_should_find`.
+
+The information is missing from the recording. Closing this needs a longer
+recording, or a drift-free anchor the tail cannot provide — the accelerometer
+gives absolute inclination with no integration
+(`imu_absolute_vs_knee.net_rotation_from_gravity`), which would require
+plumbing raw accel into the scoring path.
 
 **Two guards this needed, one of which a first attempt got wrong.** A decaying
 oscillation is linear over less than one period, so a short tail fits a steep
@@ -156,10 +211,9 @@ residual of 2.17 deg, and applying it ate 29 degrees of real swing (A0 45.6 ->
 back most of the benefit. The requirement is PERIODS, not seconds, measured from
 each trial's own dominant frequency.
 
-The guard is deliberately conservative: **32%** of IMU trials are corrected
-(median applied slope -0.528 deg/s) and the rest fall back to the previous
-behaviour, so no trial is made worse. On OptiTrack it is a no-op by
-construction (+0.009 deg/s).
+**80%** of IMU trials are corrected (median applied slope -0.761 deg/s); the
+rest fall back to the previous behaviour, so no trial is made worse. On
+OptiTrack it is a no-op by construction (+0.009 deg/s).
 
 **This also explains why the thigh model failed per-trial.** Drift was the
 larger, uncorrelated term swamping it. With drift removed the geometry
@@ -198,10 +252,11 @@ Three gaps, all capture-side, none fixable in analysis:
 3. **Retire "the IMU pipeline is incoherent."** The 26x scatter was real and is
    fixed (commit `6a327d5`, flex-axis estimator); the drift-correction defect
    is fixed too. What remains is a geometry and protocol issue.
-4. **Widen the drift correction's coverage.** It currently applies to 32% of
-   IMU trials; the rest fail the settled-tail test and fall back. Trials that
-   end before the leg settles cannot be rescued in analysis, but a longer tail
-   window might admit more of them safely. Worth measuring before assuming.
+4. **Record for longer.** The drift correction now reaches 80% of trials. The
+   remaining 20% fail because the leg is still moving when the recording stops
+   (16 of 19 above 1 deg/s), and those trials drift MORE than average. This is
+   a capture fix, not an analysis one -- padding was measured and erases the
+   drift rather than estimating it.
 5. The 9% pipeline-over-gyro residual is the only IMU-side item left that is
    both real and fixable in code. It has not been chased.
 

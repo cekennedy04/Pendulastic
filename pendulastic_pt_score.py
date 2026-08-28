@@ -1407,17 +1407,42 @@ _TAIL_MIN_SAMPLES = 15
 # of just 2.17 deg, and correcting by it ate 29 deg of real swing: A0 45.6 ->
 # 16.8.
 #
-# The requirement is PERIODS, not seconds -- a fixed 3 s floor rejected most
-# real tails (which run 2-3 s) and gave back most of the correction's benefit,
-# while still being the wrong test for a slow pendulum. Measure each trial's own
-# dominant frequency and require the tail to span at least _TAIL_MIN_PERIODS of
-# it, so the bar scales with the oscillation being judged.
+# Counting PERIODS was the second attempt and was also wrong, for two reasons
+# measured over 93 trials: it rejected 56% of them on its own (the median tail
+# spans 1.955 periods, sitting right against a threshold of 2), and its
+# frequency estimate degrades on exactly the trials it should pass -- a heavily
+# damped leg barely oscillates, so its dominant frequency comes out near 0.1 Hz
+# and the period requirement becomes unreachable, even though such a leg settles
+# SOONEST and is the safest of all to correct.
+#
+# Test the property directly instead. A tail that is still decaying FLATTENS:
+# split it in half and the second half is markedly less steep. Genuine sensor
+# drift is constant, so both halves fit the same slope. That discriminates decay
+# from drift without estimating a frequency at all, and it works on a leg that
+# never oscillates.
 _TAIL_MIN_SECONDS = 1.0
-_TAIL_MIN_PERIODS = 2.0
+_TAIL_MIN_HALF_SAMPLES = 8      # per half, so each slope is worth fitting
+# Tolerances chosen by sweeping them against the corpus rather than by taste,
+# because coverage is not the goal -- accuracy is, and a setting that corrects
+# more trials while scoring them worse is a worse setting. Measured over 93
+# trials (coverage / median |ratio-1| / trials beyond 2x):
+#   0.60,0.35 -> 67% / 34.7% / 5      1.20,0.60 -> 80% / 33.7% / 4
+#   1.50,0.80 -> 82% / 34.2% / 4      2.50,1.20 -> 84% / 34.2% / 4
+# 1.20/0.60 is the optimum: it corrects 80% of trials AND scores best. Past it,
+# coverage keeps rising while accuracy turns over, which is the signal that the
+# extra trials are ones whose tails should not have been trusted.
+_SLOPE_CONSISTENCY_FRAC = 1.20  # halves may differ by this share of the slope
+_SLOPE_CONSISTENCY_ABS_DEG_S = 0.60   # ...or this much, whichever is larger
 _TAIL_MAX_RESIDUAL_DEG = 6.0   # still ringing above this -- not settled
-# Measured drift is 0.833 deg/s (median, 93 trials). 5 deg/s was permissive
-# enough to admit pendulum decay; 2 leaves headroom over anything real.
-_MAX_DRIFT_DEG_S = 2.0
+# Measured drift is 0.833 deg/s (median, 93 trials); p10 reaches -2.5, so a cap
+# of 2 was itself rejecting 9% of trials.
+#
+# Do not raise this above 4. With the consistency tolerances relaxed to their
+# measured optimum, THIS cap is the last thing rejecting the decaying-pendulum
+# case: the 0.32 Hz synthetic fits -4.13 deg/s, and at a cap of 5 it is accepted
+# and eats 29 deg of real swing (A0 45.6 -> 16.8). Verified both ways in
+# test_pendulum_still_decaying_is_not_mistaken_for_drift.
+_MAX_DRIFT_DEG_S = 4.0
 # A settled tail barely moves. If the fitted line carries the tail through more
 # than this share of the trial's own swing range, it is tracking motion.
 _TAIL_MAX_DISPLACEMENT_FRAC = 0.15
@@ -1478,14 +1503,41 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
     if tail_dur < _TAIL_MIN_SECONDS:
         return None
 
-    # Reject a tail too short to have seen the oscillation it must rule out.
-    f_est = _dominant_frequency_hz(t, ang, rel_i)
-    if f_est is None or tail_dur * f_est < _TAIL_MIN_PERIODS:
+    # Decay flattens; drift does not. Compare the two halves of the tail.
+    half = len(t_tail) // 2
+    if half < _TAIL_MIN_HALF_SAMPLES:
+        return None
+    s_first = float(np.polyfit(t_tail[:half], a_tail[:half], 1)[0])
+    s_second = float(np.polyfit(t_tail[half:], a_tail[half:], 1)[0])
+    if not (np.isfinite(s_first) and np.isfinite(s_second)):
         return None
 
     slope, intercept = np.polyfit(t_tail, a_tail, 1)
     slope = float(slope)
     if not np.isfinite(slope) or abs(slope) > _MAX_DRIFT_DEG_S:
+        return None
+
+    tolerance = max(_SLOPE_CONSISTENCY_ABS_DEG_S,
+                    _SLOPE_CONSISTENCY_FRAC * abs(slope))
+    if abs(s_first - s_second) > tolerance:
+        # Flattening, i.e. still settling -- not drift.
+        #
+        # Do NOT try to rescue these by padding the tail with an assumed-stable
+        # continuation. It was measured: of the 19 trials that reach here, 16
+        # are still moving faster than 1 deg/s when the recording stops, so
+        # "assume the leg is stable" is precisely the false assumption. Their
+        # honest tail slope is -1.059 deg/s (steeper than the -0.761 median of
+        # the trials we DO correct, i.e. these drift the most). Appending 4 s of
+        # flat samples at the last observed value drives the fitted slope to
+        # +0.000 -- it does not estimate the drift, it erases it, and it would
+        # silently switch the correction off on exactly the trials that need it
+        # most while appearing to extend coverage to 100%.
+        #
+        # The information is missing from the recording, and padding fabricates
+        # it in the same window that defines the score's reference level. Fixing
+        # these needs a longer recording, or a drift-free anchor the tail does
+        # not provide (the accelerometer gives absolute inclination with no
+        # integration -- see imu_absolute_vs_knee.net_rotation_from_gravity).
         return None
     # Settled means the tail is a straight line plus noise. If it still swings,
     # the residual about that line is large and the slope is not drift.

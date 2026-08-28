@@ -847,3 +847,67 @@ def test_pendulum_still_decaying_is_not_mistaken_for_drift():
     params = p.compute_pt_params(t, ang)
     assert params["A0_deg"] == pytest.approx(45.6, rel=0.10), params["A0_deg"]
     assert params["quality_warn"] is False
+
+
+def test_drift_cap_is_what_stops_the_decay_case_and_must_not_be_raised():
+    """Pins the interaction the tuning exposed.
+
+    The consistency tolerances were relaxed to their measured optimum (80%
+    coverage), and at that point the SLOPE CAP is the last guard rejecting a
+    still-decaying pendulum. Raising it to 5 lets the 0.32 Hz case through and
+    eats 29 deg of real swing. This test fails if someone raises the cap
+    without re-deriving the tolerances.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+    t = np.linspace(0, 10, 400)
+    ang = np.where(t < 2.0, 180.0,
+                   130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
+    rel = p._detect_release(t, p._sg(ang, w=15, p=3))
+    assert p._MAX_DRIFT_DEG_S <= 4.0, "raising this re-opens the 29 deg swing-eating bug"
+    assert p._settled_tail_drift_slope(t, ang, rel) is None
+
+    original = p._MAX_DRIFT_DEG_S
+    try:
+        p._MAX_DRIFT_DEG_S = 5.0
+        assert p._settled_tail_drift_slope(t, ang, rel) is not None, (
+            "if this no longer fires, the cap is not the guard doing the work "
+            "and the comment on _MAX_DRIFT_DEG_S is stale")
+    finally:
+        p._MAX_DRIFT_DEG_S = original
+
+
+def test_padding_a_short_tail_with_stable_data_erases_the_drift_it_should_find():
+    """Why the 'assume a stable leg and extend the tail' approach is not used.
+
+    Measured on the corpus: of the trials this guard rejects, 16 of 19 are still
+    moving faster than 1 deg/s when the recording stops, and their honest tail
+    slope (-1.059 deg/s) is STEEPER than the trials we do correct. Appending
+    flat samples at the last observed value does not estimate that drift, it
+    erases it -- driving the fit to ~0 and switching the correction off on the
+    trials that need it most, while appearing to reach 100% coverage.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+
+    # A trial whose sensor drifts and which is STILL sinking when it ends.
+    fs = 100.0
+    t = np.arange(int(9 * fs)) / fs
+    rel = int(2 * fs)
+    ang = np.full(len(t), 180.0)
+    ts = t[rel:] - t[rel]
+    ang[rel:] = 130.0 + 50.0 * np.exp(-ts / 3.0) * np.cos(2 * np.pi * 0.9 * ts) - 1.0 * ts
+
+    tail_slope = float(np.polyfit(t[-150:], ang[-150:], 1)[0])
+    assert tail_slope < -0.5, tail_slope        # genuinely still descending
+
+    dt = 1.0 / fs
+    pad_t = t[-1] + dt * np.arange(1, int(4.0 / dt) + 1)
+    padded_t = np.concatenate([t, pad_t])
+    padded_ang = np.concatenate([ang, np.full(len(pad_t), ang[-1])])
+
+    padded_slope = p._settled_tail_drift_slope(padded_t, padded_ang, rel)
+    # Padding either yields ~0 (the drift erased) or is rejected. Either way it
+    # never recovers the real slope, which is the entire point.
+    assert padded_slope is None or abs(padded_slope) < abs(tail_slope) / 2.0, (
+        tail_slope, padded_slope)
