@@ -742,6 +742,68 @@ def _kabsch_rotations(ref_centred: np.ndarray, cur_stack: np.ndarray) -> np.ndar
     return np.einsum("mji,mjk,mlk->mil", vt, eye, u)
 
 
+# A labeled marker whose position never changes across the whole take is not a
+# measurement. Motive can export the rigid-body marker block in the body's own
+# LOCAL frame, in which case every "position" is a constant offset from the body
+# origin. 1 mm of total span over a whole trial is far below real marker noise
+# (0.09-0.38 mm frame to frame, but metres of travel over a swing), so anything
+# under this is a constant, not a moving marker.
+MAX_STATIC_MARKER_SPAN_M = 0.001
+
+
+def _labeled_markers_are_local(df: pd.DataFrame, triplets: list) -> bool:
+    """True when the labeled marker block holds local offsets, not world points.
+
+    Seen on P2 and P4: Shank:Marker1 has span [0, 0, 0] over 893 frames while
+    the SAME take's unlabeled markers move through metres in world coordinates.
+    Both segments' local blocks are centred on their own body origin, so their
+    centroids coincide and the knee angle is undefined -- which is what the
+    loader used to report, as though the markers had been placed badly. They
+    had not; the export setting was wrong, and the real data is still in the
+    file under the unlabeled block.
+    """
+    for cols in triplets[:3]:
+        arr = df.iloc[:, cols].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        fin = arr[np.isfinite(arr).all(axis=1)]
+        if len(fin) < 2:
+            return False
+        if float(np.max(fin.max(axis=0) - fin.min(axis=0))) > MAX_STATIC_MARKER_SPAN_M:
+            return False
+    return True
+
+
+def _split_unlabeled_by_motion(df: pd.DataFrame, triplets: list):
+    """Split unlabeled world markers into (shank, thigh) triplets by how far
+    each travels.
+
+    In a pendulum test the thigh is held still and the shank swings, so total
+    excursion separates the two clusters by an order of magnitude -- measured on
+    P4 right, 8-28 mm for the thigh trio against 137-311 mm for the shank trio.
+    The three biggest movers are the shank; the three smallest are the thigh.
+
+    Returns (shank, thigh) or (None, None) when there are not two clean trios.
+    """
+    scored = []
+    for cols in triplets:
+        arr = df.iloc[:, cols].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        fin = arr[np.isfinite(arr).all(axis=1)]
+        if len(fin) < 2:
+            continue
+        scored.append((float(np.sum(fin.max(axis=0) - fin.min(axis=0))), cols))
+    if len(scored) < 6:
+        return None, None
+    scored.sort(key=lambda sc: sc[0])
+    thigh = [c for _s, c in scored[:3]]
+    shank = [c for _s, c in scored[-3:]]
+    # Refuse an ambiguous split rather than inventing a segmentation: the
+    # swinging trio must clearly out-travel the still one.
+    if scored[-3][0] < 3.0 * max(scored[2][0], 1e-6):
+        return None, None
+    return shank, thigh
+
+
 def _angle_from_labeled_markers(
         df: pd.DataFrame,
         shank_triplets: list,
@@ -1172,6 +1234,17 @@ def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQua
                                                type_row=type_row)
         _thigh_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh",
                                                type_row=type_row)
+        if (len(_shank_mks) >= 3 and len(_thigh_mks) >= 3
+                and _labeled_markers_are_local(df, _shank_mks)
+                and _labeled_markers_are_local(df, _thigh_mks)):
+            # The labeled block is local offsets. The world positions are still
+            # in this file under the unlabeled block, so use those instead of
+            # rejecting the trial.
+            _un = _find_unlabeled_cols(name_row, None if is_new else comp_row)
+            _s2, _t2 = _split_unlabeled_by_motion(df, _un)
+            if _s2 and _t2:
+                _shank_mks, _thigh_mks = _s2, _t2
+
         if len(_shank_mks) >= 3 and len(_thigh_mks) >= 3:
             cov = _coverage_from_cols(df, _shank_mks, _thigh_mks)
             try:

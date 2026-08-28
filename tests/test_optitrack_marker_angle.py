@@ -349,3 +349,83 @@ def test_raw_column_coverage_handles_empty_input():
     import pandas as pd
     assert pts._raw_column_coverage(pd.DataFrame(), [0]) == 0.0
     assert pts._raw_column_coverage(pd.DataFrame({"a": [1.0]}), []) == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Motive can export the rigid-body marker block in the body's LOCAL frame.
+# Those are constant offsets, not measurements. The world positions are still
+# in the file under the unlabeled block.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_static_labeled_markers_are_recognised_as_local_coordinates():
+    import pandas as pd
+    # Three markers that never move: a constant offset from a body origin.
+    df = pd.DataFrame({i: [v] * 50 for i, v in enumerate(
+        [-0.049, -0.007, 0.023, 0.051, 0.009, -0.024, -0.001, -0.002, 0.001])})
+    trips = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    assert pts._labeled_markers_are_local(df, trips)
+
+
+def test_real_moving_markers_are_not_mistaken_for_local_coordinates():
+    import pandas as pd
+    n = 50
+    swing = np.linspace(0.0, 0.30, n)          # 30 cm of travel
+    cols = {}
+    for m in range(3):
+        cols[m*3+0] = 0.4 + swing
+        cols[m*3+1] = 0.4 + swing * 0.5
+        cols[m*3+2] = 2.0 - swing
+    df = pd.DataFrame(cols)
+    trips = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    assert not pts._labeled_markers_are_local(df, trips)
+
+
+def test_unlabeled_markers_split_into_a_still_thigh_and_a_swinging_shank():
+    """In a pendulum test the thigh is held and the shank swings, so total
+    excursion separates them by an order of magnitude -- 8-28 mm against
+    137-311 mm on P4 right."""
+    import pandas as pd
+    n = 60
+    still = np.linspace(0.0, 0.01, n)          # 1 cm
+    moving = np.linspace(0.0, 0.30, n)         # 30 cm
+    cols, trips, c = {}, [], 0
+    for series in (still, still, still, moving, moving, moving):
+        idx = []
+        for axis in range(3):
+            cols[c] = 0.4 + series * (1 + axis * 0.1)
+            idx.append(c); c += 1
+        trips.append(idx)
+    df = pd.DataFrame(cols)
+    shank, thigh = pts._split_unlabeled_by_motion(df, trips)
+    assert shank is not None and thigh is not None
+    assert sorted(t[0] for t in thigh) == [0, 3, 6]      # the still trio
+    assert sorted(s[0] for s in shank) == [9, 12, 15]    # the swinging trio
+
+
+def test_split_refuses_when_the_two_clusters_are_not_separable():
+    """Six markers all moving alike carry no thigh/shank distinction. Refuse
+    rather than invent a segmentation."""
+    import pandas as pd
+    n = 60
+    same = np.linspace(0.0, 0.20, n)
+    cols, trips, c = {}, [], 0
+    for _ in range(6):
+        idx = []
+        for _axis in range(3):
+            cols[c] = 0.4 + same
+            idx.append(c); c += 1
+        trips.append(idx)
+    df = pd.DataFrame(cols)
+    assert pts._split_unlabeled_by_motion(df, trips) == (None, None)
+
+
+def test_split_refuses_with_fewer_than_six_markers():
+    import pandas as pd
+    n = 20
+    cols, trips, c = {}, [], 0
+    for _ in range(5):
+        idx = []
+        for _axis in range(3):
+            cols[c] = np.linspace(0, 0.1, n); idx.append(c); c += 1
+        trips.append(idx)
+    assert pts._split_unlabeled_by_motion(pd.DataFrame(cols), trips) == (None, None)
