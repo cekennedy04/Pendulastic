@@ -1,12 +1,37 @@
 """
 pt_cohort_common.py
 ====================
-MS-vs-Control cohort comparison, built on top of pt_report_common.py's
-7-parameter Popovic PT score so it stays numerically and visually
-consistent with every per-participant report run_pt_analysis.py produces --
-unlike the older, disconnected ms_vs_healthy_analysis.py (4-parameter
-score, static CSV, different visual style), which this supersedes for
-MS-vs-Control purposes without modifying it.
+Three-arm cohort comparison (MS / Stroke / Control), built on top of
+pt_report_common.py's 7-parameter Popovic PT score so it stays numerically
+and visually consistent with every per-participant report run_pt_analysis.py
+produces -- unlike the older, disconnected ms_vs_healthy_analysis.py
+(4-parameter score, static CSV, different visual style), which this
+supersedes without modifying it.
+
+Stroke became a full arm on 2026-08-26, replacing the original two-arm
+MS-vs-Control design: post-stroke participants are part of the study, so
+computing a single MS-vs-Control contrast (and excluding them outright, as
+this module did before) dropped them from the analysis entirely.
+
+NOT THE PRIMARY COMPARISON (2026-08-28)
+---------------------------------------
+Participants are grouped by SPASTICITY now, not by diagnosis. The primary
+stratification is generate_figures_by_spasticity.py; this module is retained
+as a secondary, reference view and its outputs are labelled as such.
+
+The reason is that diagnosis is a proxy for the thing the pendulum test
+actually responds to. MS and stroke each produce a wide range of spasticity, so
+a diagnosis arm mixes severities together and a difference between arms can be
+read either as an effect of the disease or as an accident of who happened to
+enrol. Grouping on the measured impairment removes that ambiguity. Spasticity
+grouping carries its own caveat -- some labels are derived from A0, which is
+also an outcome -- and generate_figures_by_spasticity.py documents how it
+handles the circularity.
+
+Kept rather than deleted because the diagnosis contrast is still the one
+clinical readers expect to see, and because MS-vs-Stroke is a genuine etiology
+question that spasticity grouping cannot answer by construction. Treat its
+output as supporting material, not as a headline result.
 
 See docs/superpowers/specs/2026-08-06-ms-vs-control-cohort-design.md for
 the full design. Called from run_pt_analysis.py's main(); not run
@@ -30,10 +55,10 @@ import matplotlib.pyplot as plt
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REGISTRY_JSON = os.path.join(BASE_DIR, "participant_groups.json")
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
-OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "MS_vs_Control")
+OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "Cohort_Comparison")
 COMPOSITION_CSV = os.path.join(OUT_DIR, "cohort_composition.csv")
-STATS_CSV = os.path.join(OUT_DIR, "ms_vs_control_stats.csv")
-FIGURE_PNG = os.path.join(OUT_DIR, "ms_vs_control_boxplots.png")
+STATS_CSV = os.path.join(OUT_DIR, "cohort_stats.csv")
+FIGURE_PNG = os.path.join(OUT_DIR, "cohort_boxplots.png")
 RANGES_CSV = os.path.join(OUT_DIR, "normative_ranges.csv")
 
 _PARAM_KEYS = common._PARAM_KEYS  # R2n, N, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio
@@ -49,9 +74,21 @@ _DIAGNOSIS_TO_ARM = {
     "ms": "MS",
     "unaffected control": "Control",
     "control": "Control",
-    "stroke": "Excluded",
+    "stroke": "Stroke",
     "other motor impairment": "Excluded",
 }
+
+# Comparison arms, in reporting order. Stroke became a full arm on
+# 2026-08-26: post-stroke participants are part of the study, and pooling them
+# into MS would hide any etiology-specific effect while pooling them into
+# "impaired" would hide both. "Excluded" remains for diagnoses that genuinely
+# aren't part of this comparison (currently only "other motor impairment").
+_ARMS = ("MS", "Stroke", "Control")
+
+# Pairwise contrasts run per (leg, parameter). Control is the reference for the
+# two clinical arms; MS vs Stroke is the etiology contrast.
+_CONTRASTS = (("MS", "Control"), ("Stroke", "Control"), ("MS", "Stroke"))
+_ARM_ABBR = {"MS": "MS", "Stroke": "Str", "Control": "Ctl"}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -136,47 +173,72 @@ def effect_label(d):
     return "large"
 
 
-def compute_cohort_stats(ms_summaries, control_summaries):
-    """ms_summaries/control_summaries: {"left": [...], "right": [...]},
-    each a list of per-participant summary dicts (aggregate_participant_
-    summary() output, already filtered of None -- see run_cohort_comparison).
-    Returns one row per (leg, parameter) covering every _SCORE_KEYS entry:
-    median/IQR per arm, Mann-Whitney p, Cliff's delta, effect label,
-    n_ms, n_control. Whenever either arm has fewer than 2 values for a
-    given leg/parameter, the significance-test fields are None/"n/a" --
-    never raised -- while the medians (even from n=1 or n=0) are still
-    reported."""
+def _holm_adjust(rows):
+    """Holm-Bonferroni across the contrasts sharing one (leg, parameter),
+    written back as `holm_p`. Three pairwise tests on the same values are
+    three chances to find a difference, so the raw p is optimistic; both are
+    reported rather than replacing one with the other. Contrasts that could
+    not be tested (an arm with <2 values) carry holm_p = None and are not
+    counted in the family size."""
+    testable = [r for r in rows if r.get("mann_whitney_p") is not None]
+    m = len(testable)
+    for r in rows:
+        r["holm_p"] = None
+    if not m:
+        return
+    running = 0.0
+    for i, r in enumerate(sorted(testable, key=lambda x: x["mann_whitney_p"])):
+        adj = min(1.0, (m - i) * r["mann_whitney_p"])
+        running = max(running, adj)          # enforce monotonicity
+        r["holm_p"] = round(running, 4)
+
+
+def _median_iqr(vals):
+    if not len(vals):
+        return None, None
+    q1, q3 = np.percentile(vals, [25, 75])
+    return round(float(np.median(vals)), 4), round(float(q3 - q1), 4)
+
+
+def compute_pairwise_stats(arm_summaries):
+    """Per-(leg, parameter) pairwise contrasts across the three arms.
+
+    arm_summaries: {"MS": {"left": [...], "right": [...]}, "Stroke": {...},
+    "Control": {...}} of per-participant summary dicts. Returns one row per
+    (leg, parameter, contrast) -- so 3x the rows of the two-arm version --
+    each carrying both arms' median/IQR/n, Mann-Whitney p, Holm-adjusted p,
+    Cliff's delta and its effect label. Untestable contrasts (either arm with
+    <2 values, which Stroke will hit for a while at n=4) report medians and
+    leave the test fields None/"n/a", never raising -- same contract as the
+    two-arm version it replaces."""
     rows = []
     for leg in _LEGS:
-        ms_leg = ms_summaries.get(leg, [])
-        ctrl_leg = control_summaries.get(leg, [])
         for key in _SCORE_KEYS:
-            ms_vals = np.array([s[key] for s in ms_leg], dtype=float)
-            ctrl_vals = np.array([s[key] for s in ctrl_leg], dtype=float)
-            row = {"leg": leg, "parameter": key,
-                  "n_ms": len(ms_vals), "n_control": len(ctrl_vals)}
-            if len(ms_vals):
-                q1, q3 = np.percentile(ms_vals, [25, 75])
-                row["ms_median"] = round(float(np.median(ms_vals)), 4)
-                row["ms_iqr"] = round(float(q3 - q1), 4)
-            else:
-                row["ms_median"] = row["ms_iqr"] = None
-            if len(ctrl_vals):
-                q1, q3 = np.percentile(ctrl_vals, [25, 75])
-                row["control_median"] = round(float(np.median(ctrl_vals)), 4)
-                row["control_iqr"] = round(float(q3 - q1), 4)
-            else:
-                row["control_median"] = row["control_iqr"] = None
-            if len(ms_vals) >= 2 and len(ctrl_vals) >= 2:
-                _, p = mann_whitney(ms_vals, ctrl_vals)
-                d = cliffs_delta(ms_vals, ctrl_vals)
-                row["mann_whitney_p"] = round(p, 4)
-                row["cliffs_delta"] = round(d, 4)
-                row["effect_size"] = effect_label(d)
-            else:
-                row["mann_whitney_p"] = row["cliffs_delta"] = None
-                row["effect_size"] = "n/a"
-            rows.append(row)
+            vals = {arm: np.array([s[key] for s in arm_summaries.get(arm, {}).get(leg, [])],
+                                  dtype=float)
+                    for arm in _ARMS}
+            group = []
+            for arm_a, arm_b in _CONTRASTS:
+                a, b = vals[arm_a], vals[arm_b]
+                a_med, a_iqr = _median_iqr(a)
+                b_med, b_iqr = _median_iqr(b)
+                row = {"leg": leg, "parameter": key,
+                      "arm_a": arm_a, "arm_b": arm_b,
+                      "n_a": len(a), "n_b": len(b),
+                      "a_median": a_med, "a_iqr": a_iqr,
+                      "b_median": b_med, "b_iqr": b_iqr}
+                if len(a) >= 2 and len(b) >= 2:
+                    _, p = mann_whitney(a, b)
+                    d = cliffs_delta(a, b)
+                    row["mann_whitney_p"] = round(p, 4)
+                    row["cliffs_delta"] = round(d, 4)
+                    row["effect_size"] = effect_label(d)
+                else:
+                    row["mann_whitney_p"] = row["cliffs_delta"] = None
+                    row["effect_size"] = "n/a"
+                group.append(row)
+            _holm_adjust(group)
+            rows.extend(group)
     return rows
 
 
@@ -248,10 +310,14 @@ def all_classified_pids():
     (compute_normative_ranges) wants every scored trial from every
     diagnosed participant, since an envelope only gets more honest with
     more data -- a participant one trial short of the report-comparison
-    threshold still has real swings worth including. Returns
-    {"MS": [pids], "Control": [pids]}."""
+    threshold still has real swings worth including. Returns one list per
+    arm in _ARMS, e.g. {"MS": [pids], "Stroke": [pids], "Control": [pids]}.
+
+    Keyed off _ARMS rather than a literal dict so that adding a fourth arm
+    cannot silently drop it here -- which is exactly what happened to Stroke
+    between 2026-08-26 (when it became a full arm) and 2026-08-27."""
     registry, registry_exists = load_registry()
-    result = {"MS": [], "Control": []}
+    result = {arm: [] for arm in _ARMS}
     for pid in common.list_participants().keys():
         diagnosis = load_metadata_diagnosis(pid)
         group, _source = classify_participant(pid, diagnosis, registry, registry_exists)
@@ -267,7 +333,7 @@ def compute_normative_ranges(ms_raw, control_raw):
     averages -- for both arms, plus whether the two envelopes overlap.
     ms_raw/control_raw: {"left": [...], "right": [...]} raw trial dicts,
     expected to come from the full all_classified_pids() set rather than
-    the threshold-gated qualifying set used by compute_cohort_stats."""
+    the threshold-gated qualifying set used by compute_pairwise_stats."""
     rows = []
     for leg in _LEGS:
         ms_trials = ms_raw.get(leg, [])
@@ -376,18 +442,20 @@ def write_composition_csv(rows, out_path=None):
 
 
 def print_composition_banner(rows):
-    by_group = {"MS": [], "Control": [], "Excluded": [], "Unclassified": []}
+    by_group = {"MS": [], "Stroke": [], "Control": [], "Excluded": [], "Unclassified": []}
     for row in rows:
-        by_group[row["group"]].append(row)
+        by_group.setdefault(row["group"], []).append(row)
 
-    print("=" * 20 + " MS vs Control cohort " + "=" * 20)
+    print("=" * 22 + " Cohort comparison " + "=" * 22)
+    print("Secondary view: grouped by DIAGNOSIS. The primary stratification is "
+          "by spasticity\n(generate_figures_by_spasticity.py). See this module's "
+          "docstring for why.")
     if rows and _recordings_root_missing_or_empty():
         print("Note: Recordings/ is empty or absent in this checkout -- metadata.json diagnoses "
              "are unavailable, classification is registry-only until real data is present.")
-    ms_txt = ", ".join(r["pid"] for r in by_group["MS"]) or "(none yet)"
-    print(f"MS:           {ms_txt}  (n={len(by_group['MS'])})")
-    ctrl_txt = ", ".join(r["pid"] for r in by_group["Control"]) or "(none yet)"
-    print(f"Control:      {ctrl_txt}  (n={len(by_group['Control'])})")
+    for arm in _ARMS:
+        txt = ", ".join(r["pid"] for r in by_group[arm]) or "(none yet)"
+        print(f"{arm + ':':<14}{txt}  (n={len(by_group[arm])})")
 
     excl_txt = ", ".join(f"{r['pid']} ({r['diagnosis']})" for r in by_group["Excluded"]) or "(none)"
     print(f"Excluded:     {excl_txt}  (n={len(by_group['Excluded'])})")
@@ -418,7 +486,7 @@ def _collect_arm_data(pids):
     summaries / raw_trials: {"left": [...], "right": [...]}. summaries holds
     one aggregate_participant_summary() dict per participant that had at
     least one scored trial for that leg (the statistical layer --
-    compute_cohort_stats and the figure's box/whiskers read only from
+    compute_pairwise_stats and the figure's box/whiskers read only from
     this). raw_trials holds every individual scored trial record (the
     figure's descriptive-layer background jitter only -- never used for
     a statistic). contributing_pids is the post-filter participant set,
@@ -454,22 +522,26 @@ def _collect_arm_data(pids):
     return summaries, raw_trials, contributing_pids, summaries_by_pid
 
 
-def write_stats_csv(stats_rows, out_path):
+def write_contrasts_csv(contrast_rows, out_path):
+    """Three-arm stats CSV: one row per (leg, parameter, contrast).
+
+    cliffs_delta is signed b-minus-a for whichever pair the row names, so the
+    header carries arm_a/arm_b rather than hardcoding "control_minus_ms" the
+    way the two-arm writer could."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        # Display-only rename: the dict key stays "cliffs_delta" internally
-        # (see cliffs_delta()'s docstring / compute_cohort_stats). This
-        # header records the sign convention -- positive means Control
-        # exceeds MS -- so a reader doesn't have to go read source to
-        # interpret a value like 0.83.
-        w.writerow(["leg", "parameter", "ms_n", "ms_median", "ms_iqr",
-                   "control_n", "control_median", "control_iqr",
-                   "mann_whitney_p", "cliffs_delta_control_minus_ms", "effect_size"])
-        for row in stats_rows:
-            w.writerow([row["leg"], row["parameter"], row["n_ms"], row["ms_median"], row["ms_iqr"],
-                       row["n_control"], row["control_median"], row["control_iqr"],
-                       row["mann_whitney_p"], row["cliffs_delta"], row["effect_size"]])
+        w.writerow(["leg", "parameter", "arm_a", "arm_b",
+                   "n_a", "a_median", "a_iqr",
+                   "n_b", "b_median", "b_iqr",
+                   "mann_whitney_p", "holm_p",
+                   "cliffs_delta_b_minus_a", "effect_size"])
+        for r in contrast_rows:
+            w.writerow([r["leg"], r["parameter"], r["arm_a"], r["arm_b"],
+                       r["n_a"], r["a_median"], r["a_iqr"],
+                       r["n_b"], r["b_median"], r["b_iqr"],
+                       r["mann_whitney_p"], r["holm_p"],
+                       r["cliffs_delta"], r["effect_size"]])
     print(f"-> {out_path}")
 
 
@@ -492,34 +564,53 @@ def build_cohort_snapshot():
     # The composition/stats/range participant pool is the union of the
     # TRIAL_THRESHOLD-qualifying set (needed so Excluded/Unclassified
     # participants keep showing up exactly as before) and every classified
-    # MS/Control participant regardless of trial count -- a median or a
+    # participant in ANY arm regardless of trial count -- a median or a
     # min/max envelope only gets more honest with more trials, unlike the
     # per-participant full report (run_pt_analysis.py's own, separate
     # TRIAL_THRESHOLD gate) which genuinely needs enough trials for a
     # meaningful release-alignment figure. So pids 6/7/10 (Control, short
     # one trial on one leg) and pid 4 (MS, same situation) now count
     # toward both the composition banner and the stats/range comparison.
-    pids = current_qualifying_participants() | set(all_pids["MS"]) | set(all_pids["Control"])
+    #
+    # Unions over _ARMS, not a hardcoded MS|Control pair: when Stroke became
+    # an arm this line still named only two, so a Stroke participant one
+    # trial short would have been dropped from the cohort comparison while
+    # an MS participant in the identical situation was kept.
+    pids = current_qualifying_participants()
+    for _arm in _ARMS:
+        pids = pids | set(all_pids[_arm])
     rows = build_composition_rows(pids)
     n_excluded_unclassified = sum(1 for r in rows if r["group"] in ("Excluded", "Unclassified"))
 
     ms_pids = [r["pid"] for r in rows if r["group"] == "MS"]
     control_pids = [r["pid"] for r in rows if r["group"] == "Control"]
+    stroke_pids = [r["pid"] for r in rows if r["group"] == "Stroke"]
 
     if not ms_pids or not control_pids:
         return {
             "composition_rows": rows, "ms_pids": ms_pids, "control_pids": control_pids,
-            "ms_summaries": None, "control_summaries": None,
-            "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
+            "stroke_pids": stroke_pids,
+            "ms_summaries": None, "control_summaries": None, "stroke_summaries": None,
+            "ms_raw": None, "control_raw": None, "stroke_raw": None,
+            "summaries_by_pid": {},
             "ms_n_participants": None, "ms_n_trials": None,
             "control_n_participants": None, "control_n_trials": None,
-            "stats_rows": None, "n_excluded_unclassified": n_excluded_unclassified,
+            "stroke_n_participants": None, "stroke_n_trials": None,
+            "contrast_rows": None,
+            "n_excluded_unclassified": n_excluded_unclassified,
             "range_rows": [],
         }
 
     ms_summaries, ms_raw, ms_contrib, ms_by_pid = _collect_arm_data(ms_pids)
     control_summaries, control_raw, control_contrib, control_by_pid = _collect_arm_data(control_pids)
-    stats_rows = compute_cohort_stats(ms_summaries, control_summaries)
+    # Stroke may legitimately be empty (no stroke participants recorded yet);
+    # _collect_arm_data on an empty pid list yields empty legs, which
+    # compute_pairwise_stats reports as untestable rather than treating as an
+    # error -- so the two clinical arms alone still gate the comparison above.
+    stroke_summaries, stroke_raw, stroke_contrib, stroke_by_pid = _collect_arm_data(stroke_pids)
+
+    contrast_rows = compute_pairwise_stats({
+        "MS": ms_summaries, "Stroke": stroke_summaries, "Control": control_summaries})
     # ms_pids/control_pids are already the broadened (threshold-free) set,
     # so ms_raw/control_raw double as the range computation's input too --
     # no separate collection pass needed.
@@ -527,13 +618,18 @@ def build_cohort_snapshot():
 
     return {
         "composition_rows": rows, "ms_pids": ms_pids, "control_pids": control_pids,
+        "stroke_pids": stroke_pids,
         "ms_summaries": ms_summaries, "control_summaries": control_summaries,
-        "ms_raw": ms_raw, "control_raw": control_raw,
-        "summaries_by_pid": {**ms_by_pid, **control_by_pid},
+        "stroke_summaries": stroke_summaries,
+        "ms_raw": ms_raw, "control_raw": control_raw, "stroke_raw": stroke_raw,
+        "summaries_by_pid": {**ms_by_pid, **control_by_pid, **stroke_by_pid},
         "ms_n_participants": len(ms_contrib), "ms_n_trials": sum(len(v) for v in ms_raw.values()),
         "control_n_participants": len(control_contrib),
         "control_n_trials": sum(len(v) for v in control_raw.values()),
-        "stats_rows": stats_rows, "n_excluded_unclassified": n_excluded_unclassified,
+        "stroke_n_participants": len(stroke_contrib),
+        "stroke_n_trials": sum(len(v) for v in stroke_raw.values()),
+        "contrast_rows": contrast_rows,
+        "n_excluded_unclassified": n_excluded_unclassified,
         "range_rows": range_rows,
     }
 
@@ -541,8 +637,8 @@ def build_cohort_snapshot():
 def write_cohort_artifacts(snapshot):
     """Writes cohort_composition.csv and normative_ranges.csv (always --
     the range comes from all_classified_pids(), independent of the
-    threshold-gated qualifying set), and ms_vs_control_stats.csv /
-    ms_vs_control_boxplots.png (only when both arms have >=1 qualifying
+    threshold-gated qualifying set), and cohort_stats.csv /
+    cohort_boxplots.png (only when both clinical-vs-control arms have >=1 qualifying
     participant) from an already-built snapshot -- zero rediscovery, zero
     recollection. Renamed from today's run_cohort_comparison(), which now
     only writes artifacts from a snapshot instead of recomputing one."""
@@ -556,14 +652,18 @@ def write_cohort_artifacts(snapshot):
              f"(need >=1 in each arm).")
         return
 
-    write_stats_csv(snapshot["stats_rows"], STATS_CSV)
+    write_contrasts_csv(snapshot["contrast_rows"], STATS_CSV)
     make_cohort_comparison_figure(
         snapshot["ms_summaries"], snapshot["ms_raw"],
         snapshot["ms_n_participants"], snapshot["ms_n_trials"],
         snapshot["control_summaries"], snapshot["control_raw"],
         snapshot["control_n_participants"], snapshot["control_n_trials"],
-        snapshot["n_excluded_unclassified"], FIGURE_PNG, snapshot["stats_rows"],
-        snapshot["range_rows"])
+        snapshot["n_excluded_unclassified"], FIGURE_PNG, snapshot["contrast_rows"],
+        snapshot["range_rows"],
+        stroke_summaries=snapshot.get("stroke_summaries"),
+        stroke_raw=snapshot.get("stroke_raw"),
+        stroke_n_participants=snapshot.get("stroke_n_participants"),
+        stroke_n_trials=snapshot.get("stroke_n_trials"))
 
 
 def run_cohort_comparison():
@@ -591,13 +691,22 @@ def leg_cohort_reference(snapshot, participant_id, leg):
                 if pid != exclude_pid and snapshot["summaries_by_pid"].get((pid, leg)) is not None]
         return (float(np.median(vals)) if vals else None), len(vals)
 
+    stroke_pids = snapshot.get("stroke_pids") or []
     is_ms = participant_id in snapshot["ms_pids"]
     is_control = participant_id in snapshot["control_pids"]
+    is_stroke = participant_id in stroke_pids
     ms_median, ms_n = _median_excluding(snapshot["ms_pids"], participant_id if is_ms else None)
     control_median, control_n = _median_excluding(snapshot["control_pids"], participant_id if is_control else None)
+    # Stroke joined as a full arm on 2026-08-26. Reported as None/0 rather
+    # than omitted when the arm is empty, so callers can render it uniformly
+    # without branching on whether any stroke participant exists yet.
+    stroke_median, stroke_n = _median_excluding(stroke_pids, participant_id if is_stroke else None)
     return {"ms_median": ms_median, "ms_n": ms_n,
            "control_median": control_median, "control_n": control_n,
-           "leave_one_out_arm": "MS" if is_ms else ("Control" if is_control else None)}
+           "stroke_median": stroke_median, "stroke_n": stroke_n,
+           "leave_one_out_arm": ("MS" if is_ms else
+                                 ("Stroke" if is_stroke else
+                                  ("Control" if is_control else None)))}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -606,8 +715,9 @@ def leg_cohort_reference(snapshot, participant_id, leg):
 
 def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_trials,
                                   control_summaries, control_raw, control_n_participants,
-                                  control_n_trials, n_excluded_unclassified, out_path, stats_rows,
-                                  range_rows=()):
+                                  control_n_trials, n_excluded_unclassified, out_path, contrast_rows,
+                                  range_rows=(), stroke_summaries=None, stroke_raw=None,
+                                  stroke_n_participants=None, stroke_n_trials=None):
     """Light/clinical style matching pt_report_common.py (white background,
     same color conventions) -- NOT the dark dashboard style of the older
     ms_vs_healthy_analysis.py, so every figure run_pt_analysis.py produces
@@ -615,12 +725,12 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
 
     Two point layers per box, deliberately: the box/whiskers are built
     from ms_summaries/control_summaries (one median per participant --
-    the statistical layer compute_cohort_stats also reads from, avoiding
+    the statistical layer compute_pairwise_stats also reads from, avoiding
     pseudoreplication). ms_raw/control_raw (every individual scored
     trial) are drawn underneath as lighter background jitter for
     descriptive transparency only -- never used for a statistic.
 
-    stats_rows: compute_cohort_stats() output, used to annotate each
+    contrast_rows: compute_pairwise_stats() output, used to annotate each
     subplot with its Mann-Whitney p / Cliff's delta (spec §7.3); also used
     to zone-shade the pt7 column the same way pt_report_common.py's
     make_report_figure does, since pt7 (unlike the raw params) has a
@@ -634,10 +744,16 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
     above, so the envelope can be more inclusive than the significance
     tests without silently changing what the boxplots themselves show."""
     ms_color = common.COLORS["red"]
+    stroke_color = common.COLORS["purple"]
     control_color = common.COLORS["green"]
+    # Stroke sits between MS and Control so the two clinical arms are adjacent
+    # and Control anchors the right-hand edge as the reference in every panel.
+    has_stroke = bool(stroke_summaries) and any(stroke_summaries.get(l) for l in _LEGS)
     n_cols = len(_SCORE_KEYS)
     pt7_col_idx = len(_SCORE_KEYS) - 1
-    stats_by_leg_key = {(r["leg"], r["parameter"]): r for r in stats_rows}
+    contrast_by_leg_key = {}
+    for r in contrast_rows:
+        contrast_by_leg_key.setdefault((r["leg"], r["parameter"]), []).append(r)
     range_by_leg_key = {(r["leg"], r["parameter"]): r for r in range_rows}
     fig, axes = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 8), facecolor="white")
     rng = np.random.RandomState(13)
@@ -650,6 +766,11 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
 
             ms_med = [s[key] for s in ms_summaries[leg]]
             ctrl_med = [s[key] for s in control_summaries[leg]]
+            stroke_med = ([s[key] for s in (stroke_summaries or {}).get(leg, [])]
+                          if has_stroke else [])
+            arm_series = ([(ms_med, ms_color, "MS")] +
+                          ([(stroke_med, stroke_color, "Stroke")] if has_stroke else []) +
+                          [(ctrl_med, control_color, "Control")])
             range_row = range_by_leg_key.get((leg, key))
             range_bounds = [v for v in (
                 (range_row or {}).get("control_min"), (range_row or {}).get("control_max"),
@@ -668,27 +789,28 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
                     ax.axhspan(lo, min(hi, y_max), facecolor=zcolor, alpha=0.4, zorder=0)
                 ax.set_ylim(0, y_max)
 
-            bp = ax.boxplot([ms_med, ctrl_med], positions=[0, 1], widths=0.4,
+            bp = ax.boxplot([v for v, _, _ in arm_series],
+                            positions=list(range(len(arm_series))), widths=0.4,
                             patch_artist=True, showfliers=False)
-            bp["boxes"][0].set_facecolor(ms_color)
-            bp["boxes"][0].set_alpha(0.5)
-            bp["boxes"][1].set_facecolor(control_color)
-            bp["boxes"][1].set_alpha(0.5)
+            # Colour every box from arm_series, so the box, its background
+            # jitter and its participant medians all sit at the same x and
+            # share one colour. Hardcoding indices 0/1 here (as this did while
+            # there were only two arms) silently painted Stroke with Control's
+            # colour and drew Control's jitter over Stroke's box.
+            for _bi, (_v, _c, _n) in enumerate(arm_series):
+                bp["boxes"][_bi].set_facecolor(_c)
+                bp["boxes"][_bi].set_alpha(0.5)
 
-            ms_raw_vals = [t[key] for t in ms_raw[leg]]
-            ctrl_raw_vals = [t[key] for t in control_raw[leg]]
-            if ms_raw_vals:
-                ax.scatter(rng.uniform(-0.08, 0.08, len(ms_raw_vals)), ms_raw_vals,
-                          color=ms_color, s=10, alpha=0.25, zorder=2)
-            if ctrl_raw_vals:
-                ax.scatter(1 + rng.uniform(-0.08, 0.08, len(ctrl_raw_vals)), ctrl_raw_vals,
-                          color=control_color, s=10, alpha=0.25, zorder=2)
-            if ms_med:
-                ax.scatter(rng.uniform(-0.05, 0.05, len(ms_med)), ms_med, color=ms_color,
-                          s=40, alpha=0.9, zorder=4, edgecolors="#333333", linewidths=0.5)
-            if ctrl_med:
-                ax.scatter(1 + rng.uniform(-0.05, 0.05, len(ctrl_med)), ctrl_med, color=control_color,
-                          s=40, alpha=0.9, zorder=4, edgecolors="#333333", linewidths=0.5)
+            raw_by_arm = {"MS": ms_raw, "Stroke": stroke_raw or {}, "Control": control_raw}
+            for _pos, (_med_vals, _c, _name) in enumerate(arm_series):
+                _raw_vals = [t[key] for t in raw_by_arm.get(_name, {}).get(leg, [])]
+                if _raw_vals:
+                    ax.scatter(_pos + rng.uniform(-0.08, 0.08, len(_raw_vals)), _raw_vals,
+                              color=_c, s=10, alpha=0.25, zorder=2)
+                if _med_vals:
+                    ax.scatter(_pos + rng.uniform(-0.05, 0.05, len(_med_vals)), _med_vals,
+                              color=_c, s=40, alpha=0.9, zorder=4,
+                              edgecolors="#333333", linewidths=0.5)
 
             # Normative min/max envelope (all_classified_pids() pool, see
             # range_rows docstring above) -- dashed rather than a filled
@@ -705,28 +827,54 @@ def make_cohort_comparison_figure(ms_summaries, ms_raw, ms_n_participants, ms_n_
                                    alpha=0.7, zorder=3)
 
             ax.set_xticks([0, 1])
-            ax.set_xticklabels(["MS", "Control"], fontsize=8)
+            ax.set_xticks(list(range(len(arm_series))))
+            ax.set_xticklabels([n for _, _, n in arm_series], fontsize=8)
             ax.set_title(key, fontsize=9, fontweight="bold")
             ax.tick_params(labelsize=7)
 
-            stat_row = stats_by_leg_key.get((leg, key))
-            if stat_row and stat_row.get("mann_whitney_p") is not None \
-                    and stat_row.get("cliffs_delta") is not None:
-                annotation = f"p={stat_row['mann_whitney_p']:.3f}, δ={stat_row['cliffs_delta']:+.2f}"
-            else:
-                annotation = "n/a (n<2)"
-            ax.text(0.5, 0.98, annotation, transform=ax.transAxes, fontsize=7,
-                    ha="center", va="top", color="#555555", zorder=5)
+            # One line per contrast. Annotating a three-box panel with only
+            # the MS-vs-Control p (what this did while the figure was two-arm)
+            # silently attributed one contrast's result to the whole panel.
+            # "*" marks a contrast still significant after Holm correction.
+            shown_arms = [n for _, _, n in arm_series]
+            panel_rows = [r for r in contrast_by_leg_key.get((leg, key), [])
+                          if r["arm_a"] in shown_arms and r["arm_b"] in shown_arms]
+            ann_lines = []
+            for r in panel_rows:
+                tag = f"{_ARM_ABBR[r['arm_a']]}-{_ARM_ABBR[r['arm_b']]}"
+                if r.get("mann_whitney_p") is None:
+                    ann_lines.append(f"{tag} n/a")
+                    continue
+                star = "*" if (r.get("holm_p") is not None and r["holm_p"] < 0.05) else ""
+                ann_lines.append(f"{tag} p={r['mann_whitney_p']:.3f}{star}")
+            annotation = "\n".join(ann_lines) if ann_lines else "n/a (n<2)"
+            ax.text(0.5, 0.985, annotation, transform=ax.transAxes, fontsize=6,
+                    ha="center", va="top", color="#555555", zorder=5, linespacing=1.35)
 
     for row_idx, leg_label in enumerate(("Left leg", "Right leg")):
         axes[row_idx, 0].set_ylabel(leg_label, fontsize=10, fontweight="bold")
 
     excl_txt = f" · {n_excluded_unclassified} excluded/unclassified" if n_excluded_unclassified else ""
+    arm_counts = [f"MS n={ms_n_participants} participants ({ms_n_trials} trials)"]
+    if has_stroke:
+        arm_counts.append(
+            f"Stroke n={stroke_n_participants} participants ({stroke_n_trials} trials)")
+    arm_counts.append(
+        f"Control n={control_n_participants} participants ({control_n_trials} trials)")
+    title_arms = " vs ".join(n for _, _, n in
+                             ([("", "", "MS")] +
+                              ([("", "", "Stroke")] if has_stroke else []) +
+                              [("", "", "Control")]))
+    # The secondary-view label belongs ON THE FIGURE, not only in the module
+    # docstring: whoever opens this PNG in six months will not have read the
+    # source, and a diagnosis-grouped result presented bare invites being taken
+    # for the headline. Spasticity grouping is the primary stratification.
     fig.suptitle(
-        "MS vs Control — Pendulum Test Parameters (7-parameter Popovic PT score)\n"
-        f"MS n={ms_n_participants} participants ({ms_n_trials} trials) · "
-        f"Control n={control_n_participants} participants ({control_n_trials} trials)"
-        f"{excl_txt} · see cohort_composition.csv",
+        f"{title_arms} — Pendulum Test Parameters (7-parameter Popovic PT score)\n"
+        + " · ".join(arm_counts)
+        + f"{excl_txt} · see cohort_composition.csv\n"
+        + "SECONDARY VIEW — grouped by diagnosis. Primary stratification is by "
+          "spasticity (figures_by_spasticity).",
         fontsize=11, y=1.02, color="#333333")
     plt.tight_layout()
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
