@@ -33,6 +33,20 @@ clinical readers expect to see, and because MS-vs-Stroke is a genuine etiology
 question that spasticity grouping cannot answer by construction. Treat its
 output as supporting material, not as a headline result.
 
+The two groupings are NOT near-duplicates of each other, and the reason is
+clinical: a diagnosis of MS does not imply spasticity. Measured on the current
+corpus (Model_Analysis_Outputs/Spasticity_Stratified/leg_labels.csv), 35 of 44
+legs are non-spastic against 8 spastic, and 21 of those non-spastic labels come
+from a CLINICAL MAS assessment rather than from any derived proxy -- diagnosed
+participants measured at MAS 0. Those legs belong beside the controls in a
+spasticity grouping and inside the MS arm in this one. So the MS arm here is a
+mixture that includes legs with no spasticity at all, not a "mildly impaired"
+arm; a null result in this module can mean the arms genuinely overlap on the
+measured impairment rather than that the pendulum test failed to separate them.
+generate_figures_by_spasticity.print_diagnosis_crosstab() prints the table that
+keeps this visible, and exists precisely so a silent revert to diagnosis
+grouping would show up as a diagonal.
+
 See docs/superpowers/specs/2026-08-06-ms-vs-control-cohort-design.md for
 the full design. Called from run_pt_analysis.py's main(); not run
 standalone.
