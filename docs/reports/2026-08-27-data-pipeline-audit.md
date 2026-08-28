@@ -20,8 +20,37 @@ check for files reveals the gap.
 
 | Participant | What exists | What is missing |
 |---|---|---|
-| **P7 left** | `Recordings/Participant_7/` holds only `Right/`. The 7_28 archive holds `Optitrack recordings/Participant_7_left_control/Position_1/Height_Joint-Level/` — an empty leaf. | Every left-leg OptiTrack trial. No IMU either. |
+| **P7 left** | `Recordings/Participant_7/` holds only `Right/`. The 7_28 archive holds `Optitrack recordings/Participant_7_left_control/Position_1/Height_Joint-Level/` — an empty leaf. | Every left-leg OptiTrack trial. No IMU, no video, no `.tak`. |
 | **P17 (both legs)** | `OptiTrack_Recordings/Participant_17/{Left,Right}/pre/` both exist and are empty. IMU data IS present for both legs. | Every OptiTrack trial. |
+
+### Recovery attempt, 2026-08-28
+
+The repo holds 146 raw Motive `.tak` takes, which can be re-exported. Coverage
+by participant: P5, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24.
+
+* **P7 — not recoverable.** No OptiTrack CSV, no `.tak`, no IMU, no video, and
+  the archive leaf is empty. Nothing exists in this repo or the 7_28 archive
+  for the left leg. Recovery would need capture-day media held elsewhere.
+  P7 is an unaffected control and is still characterised (non-spastic by
+  recruitment), so the loss costs parameters, not a label.
+* **P17 — RECOVERED via IMU.** No `.tak`, so the OptiTrack export cannot be
+  regenerated. But both legs have a complete IMU component set (accel, gyro,
+  mag, the raw `.jsonl`) plus video. PT parameters are now computed from IMU
+  for both legs and tagged `modality=imu`.
+* **P22 left — recoverable, needs Motive.** All four `.tak` takes are present
+  (`OptiTrack_Recordings/Participant_22/Left/pre/trial_1..4_optitrack.tak`).
+  Re-exporting them with full marker reconstruction (`ReconstructAndExportMarkers.py`)
+  is the path to a real optical curve. In the meantime its PT parameters are
+  recovered from IMU, but its spasticity label stays UNKNOWN — the IMU
+  amplitude has no calibrated threshold (§5).
+
+**IMU-recovered legs are never pooled into the statistical comparison.** They
+carry a `modality` tag and the grouped comparison is OptiTrack-only, because
+IMU A0 runs a median +20.4° above OptiTrack A0 on the same leg — pooling would
+put that offset straight into the between-group difference.
+
+Legs with no PT parameters from any modality: P2 both and P4 right (the duo-take
+artefact — Shank and Thigh built from overlapping markers), P7 left, P16 both.
 
 `Model_Analysis_Outputs/Figures/Fig_A_goniogram_Participant_7_left_control_T1..T4`
 exist as PNG/PDF, so P7 left was analysed at some point. The source data is no
@@ -112,7 +141,40 @@ labelled non-spastic. Components never override an overall grade that exists.
 Flagged here because it is a genuine contradiction in the source record, not a
 parsing artefact — worth confirming against the clinical notes.
 
-**P4 — a documented, unverified correction.** `mas_scores.csv` row 16 records a
+**P4 — a documented, unverified correction. Investigated 2026-08-28; still
+unresolved, but narrowed.**
+
+The two hypotheses — the GRADES were transposed, or the RECORDINGS were —
+predict identical data within this repo, so they cannot be separated by
+correlation. Four independent attempts to break the tie:
+
+| Approach | Result |
+|---|---|
+| Marker position in the capture volume (which side of the rig each leg sits on) | **No cohort convention.** No axis shows a consistent Left-vs-Right sign across participants; the rig is repositioned between sessions. P4 is not an outlier on any axis. |
+| The `leg` column in the MediaPipe CSVs | **Not independent.** It is written from `leg_side_locked`, which comes from the session config or an operator click — it echoes the folder label. |
+| MediaPipe anatomical landmarks (MP left vs right knee motion) | **Too noisy to use.** Motion ratios are only ~1.3x, and the two Right-folder trials disagree with each other (T1 → MP right, T2 → MP left). A supine side view defeats MediaPipe's left/right assignment. |
+| Video inspection | Footage is clear and both legs are visible, but a static frame cannot fix handedness without knowing the camera side and the subject's roll. |
+
+**What the video DID establish: the two legs were recorded four days apart, in
+separate sessions, and both are filed as `pre`.**
+
+| | Capture date | Trials |
+|---|---|---|
+| P4 **Right** | 2026-06-25, 10:24–10:26 | 1–5 (video), 1–4 (OptiTrack) |
+| P4 **Left** | 2026-06-29, 09:46–09:51 | 2, 3, 5 |
+
+Different clothing, different therapist attire, different room equipment in the
+two videos. So a transposition here would be a **session-level labelling error**,
+not a within-session mix-up — and the two legs are not a matched within-session
+pair for any paired comparison.
+
+The MAS row has `assessed_by=WD` and **no `assessed_date`**, so the grades cannot
+be tied to either session from the record. **To resolve: check the clinical notes
+for 2026-06-25 and 2026-06-29.** That is the only remaining discriminator.
+
+Original note follows.
+
+ `mas_scores.csv` row 16 records a
 2026-08-24 left/right transposition fix, applied "per operator judgment,
 supported by biomechanics" and explicitly **"NOT verified against source
 clinical records"**. The note itself says the finding is equally consistent

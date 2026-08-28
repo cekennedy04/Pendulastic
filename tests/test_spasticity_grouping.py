@@ -255,3 +255,38 @@ def test_load_mas_components_skips_rows_with_no_components(tmp_path):
         encoding="utf-8")
     got = sg.load_mas_components_by_leg(str(p))
     assert got == {("17", "right"): ("1", "0")}, got
+
+
+# ── diagnosis must not drive the label ───────────────────────────────────────
+
+def test_ms_participant_with_mas_zero_is_non_spastic():
+    """An MS diagnosis does not imply spasticity. 11 of this cohort's MS legs
+    have none, and they belong in the non-spastic group beside the controls --
+    grouping on the chart instead of on tone is the thing this module exists
+    to stop."""
+    lab = sg.classify_leg("5", "left", arm="MS", mas_by_leg={("5", "left"): "0"})
+    assert lab.level == sg.NON_SPASTIC
+
+
+def test_ms_participant_with_normal_amplitude_is_non_spastic():
+    """Same, via the derived path: no clinical MAS, healthy swing."""
+    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
+    assert lab.level == sg.NON_SPASTIC
+
+
+@pytest.mark.parametrize("arm", ["MS", "Stroke", "Excluded", "Unclassified", None])
+def test_only_control_gets_a_label_from_diagnosis_alone(arm):
+    """Control is the ONE diagnosis that supplies a label by itself, and only
+    because unaffected controls are non-spastic by recruitment. Every other
+    diagnosis with no MAS and no swing must come back UNKNOWN rather than
+    inheriting a level from its chart."""
+    lab = sg.classify_leg("x", "left", arm=arm, mas_by_leg={}, a0_deg=None)
+    assert lab.level == sg.UNKNOWN, f"{arm} leaked a label from diagnosis"
+
+
+def test_a_control_with_a_spastic_mas_is_not_forced_non_spastic():
+    """Recruitment is an assumption, and an assessment overrides it in both
+    directions."""
+    lab = sg.classify_leg("6", "right", arm="Control",
+                          mas_by_leg={("6", "right"): "2"})
+    assert lab.level == sg.SPASTIC
