@@ -59,6 +59,7 @@ import pt_cohort_common as pcc
 import pt_report_common as common
 import pendulastic_pt_score as pts
 import spasticity_grouping as sg
+import data_purpose as dp
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "Spasticity_Stratified")
@@ -126,7 +127,7 @@ def participant_roster():
     return sorted(ids, key=lambda x: int(x) if x.isdigit() else 10 ** 6)
 
 
-def label_every_leg():
+def label_every_leg(param_conditions):
     """{(pid, leg): SpasticityLabel} for BOTH legs of every real participant.
 
     Enumerated from the participant roster and LEGS, never from whatever data
@@ -134,23 +135,43 @@ def label_every_leg():
     of vanishing -- P7 left, P17 both, P22 left are the live cases.
     """
     registry, registry_exists = pcc.load_registry()
-    mas_by_leg = sg.load_mas_by_leg()
-    mas_components = sg.load_mas_components_by_leg()
+    mas_all = sg.load_mas_all_conditions()
+    comp_all = sg.load_mas_components_all_conditions()
     a0 = a0_by_leg_from_optitrack()
 
     out = {}
+    for (pid, leg), (condition, _vals) in sorted(param_conditions.items()):
+        arm, _src = pcc.classify_participant(
+            pid, pcc.load_metadata_diagnosis(pid), registry, registry_exists)
+        # The label and the parameters must come from the SAME session.
+        legs = sg.classify_participant_legs(
+            pid, arm=arm,
+            mas_by_leg=sg.for_condition(mas_all, condition),
+            mas_components=sg.for_condition(comp_all, condition),
+            a0_by_leg={lg: a0.get((pid, lg)) for lg in sg.LEGS})
+        out[(pid, leg)] = legs[leg]
+
+    # Legs with no parameters at all still need a label, from whichever
+    # condition has one, so they stay visible rather than vanishing.
     for pid in participant_roster():
         arm, _src = pcc.classify_participant(
             pid, pcc.load_metadata_diagnosis(pid), registry, registry_exists)
-        legs = sg.classify_participant_legs(
-            pid, arm=arm, mas_by_leg=mas_by_leg, mas_components=mas_components,
-            a0_by_leg={leg: a0.get((pid, leg)) for leg in sg.LEGS})
-        for leg, lab in legs.items():
-            out[(pid, leg)] = lab
+        for leg in sg.LEGS:
+            if (pid, leg) in out:
+                continue
+            conds = sorted({c for (p2, l2, c) in list(mas_all) + list(comp_all)
+                            if p2 == pid and l2 == leg}) or [""]
+            legs = sg.classify_participant_legs(
+                pid, arm=arm,
+                mas_by_leg=sg.for_condition(mas_all, conds[0]),
+                mas_components=sg.for_condition(comp_all, conds[0]),
+                a0_by_leg={lg: a0.get((pid, lg)) for lg in sg.LEGS})
+            out[(pid, leg)] = legs[leg]
     return out
 
 
 MODALITY = "_modality"
+CONDITION = "_condition"
 
 
 def _medians_of(records):
@@ -218,12 +239,19 @@ def leg_param_medians():
             by_leg_tp, _timepoints = common.collect_participant(pid)
         except Exception:
             by_leg_tp = {}
+        # The BASELINE condition, taken as the participant's chronologically
+        # first timepoint rather than by matching the name "pre". Condition
+        # names are not standardised -- P16's baseline is called "control" and
+        # P2's are "pre_duo"/"pre_solo" -- so a startswith("pre") filter
+        # silently dropped P16 entirely and read as "P16 has no data".
+        baseline = _timepoints[0][0] if _timepoints else None
         for (leg, condition), trials in by_leg_tp.items():
-            if not str(condition).lower().startswith("pre") or not trials:
+            if condition != baseline or not trials:
                 continue
             vals = _medians_of(trials)
             if vals:
                 vals[MODALITY] = "optitrack"
+                vals[CONDITION] = str(condition)
                 out[(pid, str(leg).lower())] = vals
 
         for leg in sg.LEGS:
@@ -232,6 +260,7 @@ def leg_param_medians():
             vals = imu_leg_params(pid, leg)
             if vals:
                 vals[MODALITY] = "imu"
+                vals[CONDITION] = "pre"
                 out[(pid, leg)] = vals
     return out
 
@@ -282,12 +311,15 @@ def write_leg_labels(labels, medians):
     with open(LEGS_CSV, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["participant", "leg", "spasticity", "source", "detail",
-                    "pt_data_modality"])
+                    "pt_data_modality", "imu_purpose", "n_tak", "condition"])
         for (pid, leg), lab in sorted(labels.items(),
                                       key=lambda kv: (int(kv[0][0]) if kv[0][0].isdigit()
                                                       else 999, kv[0][1])):
+            purpose = dp.classify(pid)
             w.writerow([pid, leg, lab.level, lab.source, lab.detail,
-                        (medians.get((pid, leg)) or {}).get(MODALITY, "none")])
+                        (medians.get((pid, leg)) or {}).get(MODALITY, "none"),
+                        purpose.imu_purpose, purpose.n_tak,
+                        (medians.get((pid, leg)) or {}).get(CONDITION, "")])
     print(f"-> {LEGS_CSV}")
 
 
@@ -387,7 +419,15 @@ def print_recovery_status(labels, medians):
         print("recovered via IMU (no usable OptiTrack; held out of the pooled "
               "stats because IMU A0 runs +20.4 deg high):")
         for pid, leg in imu:
-            print(f"   P{pid} {leg}")
+            purpose = dp.classify(pid)
+            note = "" if purpose.imu_purpose == dp.PURPOSE_RESULTS else                 "   [TRAINING ONLY -- no .tak for this participant]"
+            print(f"   P{pid} {leg}{note}")
+    training = dp.training_only_participants()
+    if training:
+        print("")
+        print(f"IMU/recording data marked TRAINING ONLY (no .tak, so the optical "
+              f"reference cannot be regenerated): "
+              f"{', '.join('P' + p for p in training)}")
     if missing:
         print("")
         print("no PT parameters from any modality:")
@@ -396,8 +436,9 @@ def print_recovery_status(labels, medians):
 
 
 def main():
-    labels = label_every_leg()
     medians = leg_param_medians()
+    param_conditions = {k: (v.get(CONDITION, ""), v) for k, v in medians.items()}
+    labels = label_every_leg(param_conditions)
     arms = arm_by_participant()
 
     counts = sg.summarise(labels)

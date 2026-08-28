@@ -149,6 +149,66 @@ def mas_level(grade: Optional[str]) -> Optional[str]:
     return NON_SPASTIC if g == "0" else SPASTIC
 
 
+def load_mas_all_conditions(path: str = None) -> dict:
+    """{(participant, leg, condition): grade} across every timepoint.
+
+    The per-condition form. A label and the PT parameters it is compared
+    against MUST come from the same session: P17 is graded 1 on the right at
+    `pre` and 0 at `post` after training, so pairing its pre grade with its
+    post swing would compare a spastic label against a recovered leg.
+    """
+    path = path or MAS_CSV
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if mas_level(row.get("mas_grade")) is None:
+                continue
+            pid = (row.get("participant") or "").strip()
+            leg = (row.get("leg") or "").strip().lower()
+            cond = (row.get("condition") or "").strip().lower()
+            if pid and leg:
+                out[(pid, leg, cond)] = (row.get("mas_grade") or "").strip()
+    return out
+
+
+def load_mas_components_all_conditions(path: str = None) -> dict:
+    """{(participant, leg, condition): (flexion, extension)} across timepoints."""
+    path = path or MAS_CSV
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            flex = (row.get("mas_flexion") or "").strip()
+            ext = (row.get("mas_extension") or "").strip()
+            if not flex and not ext:
+                continue
+            pid = (row.get("participant") or "").strip()
+            leg = (row.get("leg") or "").strip().lower()
+            cond = (row.get("condition") or "").strip().lower()
+            if pid and leg:
+                out[(pid, leg, cond)] = (flex, ext)
+    return out
+
+
+def for_condition(by_key: dict, condition: str) -> dict:
+    """Narrow a per-condition mapping to the {(pid, leg): value} shape that
+    classify_leg expects, matching `condition` by prefix.
+
+    Prefix, not equality, because a session's condition name is not
+    standardised: P2 records "pre_duo" and "pre_solo" against a MAS row keyed
+    "pre_duo"/"pre_solo", while other participants use a bare "pre".
+    """
+    cond = (condition or "").strip().lower()
+    out = {}
+    for (pid, leg, c), val in by_key.items():
+        if c == cond or (cond and cond.startswith(c)) or (c and c.startswith(cond)):
+            out[(pid, leg)] = val
+    return out
+
+
 def load_mas_by_leg(path: str = None, condition_prefix: str = "pre") -> dict:
     """{(participant, leg): grade} from mas_scores.csv for one timepoint.
 
