@@ -72,8 +72,14 @@ FIGURE_PNG = os.path.join(OUT_DIR, "spasticity_boxplots.png")
 # reports.
 PARAMS = list(pcc._PARAM_KEYS) + ["pt7", "A0_deg"]
 
-# Label sources that came from a clinician rather than from the swing.
-CLINICAL_SOURCES = (sg.SRC_CLINICAL, sg.SRC_CLINICAL_COMPONENT)
+# Label sources that represent an actual clinical EXAMINATION. Deliberately
+# excludes sg.SRC_MAS_ASSUMED: every ASSUMED row in this corpus is a control
+# entered as 0 because they are a control, which is the claim recruitment
+# already makes, not an examination. Counting those 17 legs as clinician-
+# labelled inflated the supposedly-clean subset with the very assumption the
+# subset exists to avoid. Also excludes SRC_MAS_OPERATOR (grades the operator
+# set after the fact, e.g. P17's, derived from the components).
+CLINICAL_SOURCES = sg.CLINICIAN_ASSESSED_SOURCES
 
 
 def a0_by_leg_from_optitrack():
@@ -137,6 +143,7 @@ def label_every_leg(param_conditions):
     registry, registry_exists = pcc.load_registry()
     mas_all = sg.load_mas_all_conditions()
     comp_all = sg.load_mas_components_all_conditions()
+    assessors_all = sg.load_mas_assessors()
     a0 = a0_by_leg_from_optitrack()
 
     out = {}
@@ -148,6 +155,7 @@ def label_every_leg(param_conditions):
             pid, arm=arm,
             mas_by_leg=sg.for_condition(mas_all, condition),
             mas_components=sg.for_condition(comp_all, condition),
+            mas_assessors=sg.for_condition(assessors_all, condition),
             a0_by_leg={lg: a0.get((pid, lg)) for lg in sg.LEGS})
         out[(pid, leg)] = legs[leg]
 
@@ -165,6 +173,7 @@ def label_every_leg(param_conditions):
                 pid, arm=arm,
                 mas_by_leg=sg.for_condition(mas_all, conds[0]),
                 mas_components=sg.for_condition(comp_all, conds[0]),
+                mas_assessors=sg.for_condition(assessors_all, conds[0]),
                 a0_by_leg={lg: a0.get((pid, lg)) for lg in sg.LEGS})
             out[(pid, leg)] = legs[leg]
     return out
@@ -448,6 +457,13 @@ def main():
     print(f"legs labelled: {len(labels)}  {counts}")
     print(f"label sources: {by_source}")
     print(f"legs with scored PT data: {len(medians)}")
+
+    stray = dp.unattributed_folders()
+    if stray:
+        print("")
+        print("folders NOT counted as participants (reported, never hidden):")
+        for root, name, n in stray:
+            print(f"   {root}/{name}  ({n} file(s))")
 
     print_diagnosis_crosstab(labels, arms)
     print_recovery_status(labels, medians)

@@ -17,8 +17,16 @@ is no way back to the source, so any IMU or video from that session can never
 be validated against a trustworthy optical reference. It can still teach a
 model; it cannot support a result.
 
-Two things this deliberately does NOT do
-----------------------------------------
+What this does NOT mean (operator clarification, 2026-08-28)
+------------------------------------------------------------
+**No participant is disqualified by this.** The label applies to the IMU stream
+only. A participant with RGB video and OptiTrack but no IMU at all is perfectly
+acceptable for results -- missing IMU is not a defect, it is a different
+modality mix. P2, P4 and P6-P12 stay in the analysis on their optical data;
+what is set aside is the use of their IMU as a validated measurement.
+
+Two further things this deliberately does NOT do
+------------------------------------------------
 It does not delete, move or hide anything. `excluded_trials.json` remains the
 only mechanism that removes a trial, and this module only labels. A caller that
 wants results-grade data asks for it; nothing disappears from a listing.
@@ -61,6 +69,11 @@ def _is_participant_id(pid: str) -> bool:
 RESULTS_OPTICAL_WITHOUT_TAK = True
 
 
+# Modalities a participant may legitimately have. An absent one is recorded,
+# never penalised: RGB + OptiTrack with no IMU is an acceptable complete set.
+ACCEPTABLE_WITHOUT_IMU = True
+
+
 class DataPurpose(NamedTuple):
     participant: str
     has_tak: bool
@@ -94,9 +107,17 @@ def participant_ids() -> list:
 def classify(pid: str) -> DataPurpose:
     n_tak = _count(OPTI_ROOT, pid, "*.tak")
     n_csv = _count(OPTI_ROOT, pid, "trial_*_optitrack.csv")
-    n_imu = _count(REC_ROOT, pid, "*_imu.csv") + _count(REC_ROOT, pid, "*.avi")
+    n_imu = _count(REC_ROOT, pid, "*_imu.csv")
+    n_rgb = _count(REC_ROOT, pid, "*.avi") + _count(REC_ROOT, pid, "*.mp4")
 
     has_tak = n_tak > 0
+    if n_imu == 0:
+        # Not a gap to flag. RGB + OptiTrack is an acceptable complete set, so
+        # there is no IMU stream to qualify one way or the other.
+        return DataPurpose(pid, has_tak, n_tak, n_csv > 0, False,
+                           PURPOSE_RESULTS, PURPOSE_RESULTS,
+                           f"no IMU recorded; {n_rgb} RGB file(s) and "
+                           f"{n_csv} optical trial(s) -- acceptable as-is")
     if has_tak:
         return DataPurpose(pid, True, n_tak, n_csv > 0, n_imu > 0,
                            PURPOSE_RESULTS, PURPOSE_RESULTS,
@@ -129,6 +150,32 @@ def reexportable_conditions(pid: str) -> dict:
         if len(rel) >= 2:
             out[(rel[0].lower(), rel[1].lower())] = out.get(
                 (rel[0].lower(), rel[1].lower()), 0) + 1
+    return out
+
+
+def unattributed_folders() -> list:
+    """Every Participant_* folder that is NOT recognised as a participant.
+
+    Returned so it can be REPORTED rather than silently skipped. Naming
+    conventions have drifted across the study -- Participant_P001_msparticipant2
+    is a legacy HPE-benchmark import with an old id scheme and no metadata --
+    and a folder that quietly fails the id test looks exactly like a folder that
+    was never there. Each entry is (root, folder, n_files) so the size of what
+    is being passed over is visible.
+    """
+    out = []
+    for root in (OPTI_ROOT, REC_ROOT):
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            full = os.path.join(root, name)
+            if not os.path.isdir(full) or not name.startswith("Participant_"):
+                continue
+            pid = name.replace("Participant_", "").strip()
+            if _is_participant_id(pid):
+                continue
+            n = sum(len(files) for _d, _s, files in os.walk(full))
+            out.append((os.path.basename(root), name, n))
     return out
 
 
@@ -182,11 +229,25 @@ def main():
             print(f"   P{pid:<4} {detail}")
 
     training = training_only_participants()
-    print(f"\ntraining-only IMU/recording data: {len(training)} participant(s): "
-          f"{', '.join('P' + p for p in training)}")
+    print(f"\nIMU stream set aside as training-only: {len(training)} "
+          f"participant(s): {', '.join('P' + p for p in training) or '(none)'}")
+    print("   These participants are NOT disqualified -- their optical and RGB "
+          "data stay results-grade, and a participant with no IMU at all is "
+          "an acceptable RGB+OptiTrack set.")
     of = [pid for pid, dp in rows.items() if dp.optical_purpose == PURPOSE_TRAINING]
-    print(f"training-only optical data:       {len(of)} participant(s): "
+    print(f"optical data set aside:               {len(of)} participant(s): "
           f"{', '.join('P' + p for p in of) or '(none)'}")
+
+    stray = unattributed_folders()
+    print("")
+    if stray:
+        print("folders NOT counted as participants (reported, never hidden -- "
+              "naming schemes have drifted, so a folder that quietly fails the "
+              "id test looks exactly like one that was never there):")
+        for root, name, n_files in stray:
+            print(f"   {root}/{name}  ({n_files} file(s))")
+    else:
+        print("every Participant_* folder was attributed to a participant.")
     print(f"\n-> {write_manifest()}")
 
 

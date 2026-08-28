@@ -108,6 +108,16 @@ UNKNOWN = "unknown"
 # to clinically-labelled legs, and so a derived label is never mistaken for an
 # assessed one.
 SRC_CLINICAL = "clinical-mas"
+# A grade with no assessor and an ASSUMED marker. Every one of these in this
+# corpus is a control recorded as 0 because they are an unaffected control --
+# the same claim recruitment already makes, not an examination. Kept apart from
+# SRC_CLINICAL so a "clinician-labelled only" analysis does not quietly include
+# 17 assumed legs.
+SRC_MAS_ASSUMED = "mas-assumed"
+# A grade entered by the operator rather than an examiner: derived from the
+# flexion/extension components after the fact, or reported second-hand. Real
+# information, weaker provenance than an examination.
+SRC_MAS_OPERATOR = "mas-operator-set"
 # Overall grade still pending, but the flexion/extension components were
 # scored. Kept distinct from SRC_CLINICAL so nobody reads a component-only
 # verdict as a completed assessment.
@@ -118,6 +128,13 @@ SRC_NONE = "no-data"
 
 # mas_validation.PENDING_MAS_GRADE -- "assessed_date set, grade not yet given".
 PENDING_MAS_GRADE = "-1"
+
+# assessed_by markers that are NOT an examiner's initials.
+ASSUMED_ASSESSOR = "assumed"
+
+# The sources that represent an actual clinical examination. Analyses wanting a
+# non-circular, non-assumed comparison should restrict to these.
+CLINICIAN_ASSESSED_SOURCES = (SRC_CLINICAL, SRC_CLINICAL_COMPONENT)
 
 # Peak swing amplitude (degrees) at or below which a leg with no clinical MAS
 # is called spastic. See the module docstring for the derivation and for what
@@ -147,6 +164,39 @@ def mas_level(grade: Optional[str]) -> Optional[str]:
     if not g or g == PENDING_MAS_GRADE:
         return None
     return NON_SPASTIC if g == "0" else SPASTIC
+
+
+def source_for_assessor(assessed_by, examined_source=SRC_CLINICAL):
+    """Which source a MAS grade earns, given who recorded it.
+
+    An examiner's initials mean it was examined. "ASSUMED" means nobody
+    examined it -- in this corpus always a control entered as 0. A blank means
+    the operator set it after the fact. All three are usable; only the first is
+    evidence of an examination, and conflating them silently inflates any
+    "clinician-labelled only" subset.
+    """
+    by = (assessed_by or "").strip()
+    if not by:
+        return SRC_MAS_OPERATOR
+    if by.lower() == ASSUMED_ASSESSOR:
+        return SRC_MAS_ASSUMED
+    return examined_source
+
+
+def load_mas_assessors(path: str = None) -> dict:
+    """{(participant, leg, condition): assessed_by} across every timepoint."""
+    path = path or MAS_CSV
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            pid = (row.get("participant") or "").strip()
+            leg = (row.get("leg") or "").strip().lower()
+            cond = (row.get("condition") or "").strip().lower()
+            if pid and leg:
+                out[(pid, leg, cond)] = (row.get("assessed_by") or "").strip()
+    return out
 
 
 def load_mas_all_conditions(path: str = None) -> dict:
@@ -193,6 +243,25 @@ def load_mas_components_all_conditions(path: str = None) -> dict:
     return out
 
 
+# The same timepoint has been written two ways as the naming convention
+# drifted. Left unmapped, P15's one-week follow-up never groups with P5's and
+# P13's, and a longitudinal comparison silently runs on half the data.
+CONDITION_ALIASES = {
+    "post_1week": "week_1_post",
+    "post_1month": "month_post",
+    "1 week post": "week_1_post",
+    "1 month post": "month_post",
+    "week1_post": "week_1_post",
+}
+
+
+def canonical_condition(condition) -> str:
+    """One spelling per timepoint. Unknown names pass through unchanged --
+    never silently folded into a neighbour."""
+    c = (condition or "").strip().lower().replace("-", "_")
+    return CONDITION_ALIASES.get(c, c)
+
+
 def for_condition(by_key: dict, condition: str) -> dict:
     """Narrow a per-condition mapping to the {(pid, leg): value} shape that
     classify_leg expects, matching `condition` by prefix.
@@ -201,9 +270,10 @@ def for_condition(by_key: dict, condition: str) -> dict:
     standardised: P2 records "pre_duo" and "pre_solo" against a MAS row keyed
     "pre_duo"/"pre_solo", while other participants use a bare "pre".
     """
-    cond = (condition or "").strip().lower()
+    cond = canonical_condition(condition)
     out = {}
-    for (pid, leg, c), val in by_key.items():
+    for (pid, leg, c_raw), val in by_key.items():
+        c = canonical_condition(c_raw)
         if c == cond or (cond and cond.startswith(c)) or (c and c.startswith(cond)):
             out[(pid, leg)] = val
     return out
@@ -282,6 +352,7 @@ def component_level(components) -> Optional[str]:
 def classify_leg(pid: str, leg: str, *, arm: Optional[str] = None,
                  mas_by_leg: Optional[dict] = None,
                  mas_components: Optional[dict] = None,
+                 mas_assessors: Optional[dict] = None,
                  a0_deg: Optional[float] = None) -> SpasticityLabel:
     """Label one (participant, leg) by spasticity, with its provenance.
 
@@ -301,7 +372,21 @@ def classify_leg(pid: str, leg: str, *, arm: Optional[str] = None,
     grade = mas_by_leg.get((pid, leg))
     level = mas_level(grade)
     if level is not None:
-        return SpasticityLabel(level, SRC_CLINICAL, f"MAS {grade}")
+        # mas_assessors is None means the caller is not tracking provenance at
+        # all, so nothing is claimed about it and the grade keeps the plain
+        # clinical source. A SUPPLIED mapping with a blank entry is different:
+        # that is a row whose assessed_by really is empty, i.e. operator-set.
+        if mas_assessors is None:
+            return SpasticityLabel(level, SRC_CLINICAL, f"MAS {grade}")
+        by = mas_assessors.get((pid, leg), "")
+        src = source_for_assessor(by, SRC_CLINICAL)
+        if src == SRC_CLINICAL:
+            who = f" assessed by {by}"
+        elif src == SRC_MAS_ASSUMED:
+            who = " (ASSUMED, not examined)"
+        else:
+            who = " (operator-set, no examiner recorded)"
+        return SpasticityLabel(level, src, f"MAS {grade}{who}")
 
     # Overall grade pending, components scored. Never overrides an overall
     # grade that exists: P15 left is graded 0 overall with flexion 1+, and the
@@ -310,9 +395,16 @@ def classify_leg(pid: str, leg: str, *, arm: Optional[str] = None,
     comp_level = component_level((mas_components or {}).get((pid, leg)))
     if comp_level is not None:
         flex, ext = (mas_components or {})[(pid, leg)]
-        return SpasticityLabel(comp_level, SRC_CLINICAL_COMPONENT,
-                               f"overall grade pending; flexion {flex or '-'}, "
-                               f"extension {ext or '-'}")
+        # Components scored by an examiner keep the component source; an
+        # ASSUMED or operator-entered row is demoted the same way an overall
+        # grade would be. As above, an absent mapping claims nothing.
+        by = "" if mas_assessors is None else mas_assessors.get((pid, leg), "")
+        src = (SRC_CLINICAL_COMPONENT if (mas_assessors is None or not by)
+               else source_for_assessor(by, SRC_CLINICAL_COMPONENT))
+        return SpasticityLabel(
+            comp_level, src,
+            f"overall grade pending; flexion {flex or '-'}, "
+            f"extension {ext or '-'}")
 
     if (arm or "").strip().lower() == "control":
         return SpasticityLabel(NON_SPASTIC, SRC_CONTROL,
@@ -353,6 +445,7 @@ LEGS = ("left", "right")
 def classify_participant_legs(pid: str, *, arm: Optional[str] = None,
                               mas_by_leg: Optional[dict] = None,
                               mas_components: Optional[dict] = None,
+                              mas_assessors: Optional[dict] = None,
                               a0_by_leg: Optional[dict] = None) -> dict:
     """{leg: SpasticityLabel} for BOTH legs of one participant, always.
 
@@ -364,6 +457,7 @@ def classify_participant_legs(pid: str, *, arm: Optional[str] = None,
     a0_by_leg = a0_by_leg or {}
     return {leg: classify_leg(pid, leg, arm=arm, mas_by_leg=mas_by_leg,
                               mas_components=mas_components,
+                              mas_assessors=mas_assessors,
                               a0_deg=a0_by_leg_value(a0_by_leg, leg))
             for leg in LEGS}
 

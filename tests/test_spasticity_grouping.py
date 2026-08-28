@@ -290,3 +290,75 @@ def test_a_control_with_a_spastic_mas_is_not_forced_non_spastic():
     lab = sg.classify_leg("6", "right", arm="Control",
                           mas_by_leg={("6", "right"): "2"})
     assert lab.level == sg.SPASTIC
+
+
+# ── clinician-assessed MAS is kept separate from assumed and operator-set ────
+
+def test_assessor_initials_mean_the_leg_was_examined():
+    lab = sg.classify_leg("13", "left", arm="MS",
+                          mas_by_leg={("13", "left"): "1"},
+                          mas_assessors={("13", "left"): "WD"})
+    assert lab.source == sg.SRC_CLINICAL
+    assert "WD" in lab.detail
+
+
+def test_assumed_grades_are_not_reported_as_clinical():
+    """All 17 ASSUMED rows in this corpus are controls entered as 0 -- the same
+    claim recruitment already makes, not an examination. Counting them as
+    clinician-labelled silently inflated the clean subset by 17 legs."""
+    lab = sg.classify_leg("8", "left", arm="Control",
+                          mas_by_leg={("8", "left"): "0"},
+                          mas_assessors={("8", "left"): "ASSUMED"})
+    assert lab.level == sg.NON_SPASTIC
+    assert lab.source == sg.SRC_MAS_ASSUMED
+    assert lab.source not in sg.CLINICIAN_ASSESSED_SOURCES
+    assert "ASSUMED" in lab.detail
+
+
+def test_operator_set_grades_are_not_reported_as_clinical():
+    """P17's pre grades were set by the operator from the components after the
+    fact. Real information, weaker provenance than an examination."""
+    lab = sg.classify_leg("17", "right", arm="MS",
+                          mas_by_leg={("17", "right"): "1"},
+                          mas_assessors={("17", "right"): ""})
+    assert lab.level == sg.SPASTIC
+    assert lab.source == sg.SRC_MAS_OPERATOR
+    assert lab.source not in sg.CLINICIAN_ASSESSED_SOURCES
+
+
+def test_absent_assessor_mapping_claims_nothing_either_way():
+    """A caller that does not track provenance must not have a claim invented
+    for it -- neither an examination nor an accusation of one missing."""
+    lab = sg.classify_leg("13", "left", arm="MS",
+                          mas_by_leg={("13", "left"): "1"})
+    assert lab.source == sg.SRC_CLINICAL
+
+
+def test_assumed_components_are_demoted_too():
+    lab = sg.classify_leg("9", "left", arm="Control", mas_by_leg={},
+                          mas_components={("9", "left"): ("0", "0")},
+                          mas_assessors={("9", "left"): "ASSUMED"})
+    assert lab.source == sg.SRC_MAS_ASSUMED
+
+
+def test_source_for_assessor_maps_each_tier():
+    assert sg.source_for_assessor("WD") == sg.SRC_CLINICAL
+    assert sg.source_for_assessor("VL") == sg.SRC_CLINICAL
+    assert sg.source_for_assessor("AN") == sg.SRC_CLINICAL
+    assert sg.source_for_assessor("ASSUMED") == sg.SRC_MAS_ASSUMED
+    assert sg.source_for_assessor("assumed") == sg.SRC_MAS_ASSUMED
+    assert sg.source_for_assessor("") == sg.SRC_MAS_OPERATOR
+    assert sg.source_for_assessor(None) == sg.SRC_MAS_OPERATOR
+
+
+def test_real_csv_separates_the_three_tiers():
+    """Against the actual mas_scores.csv: 18 examined, 17 assumed, 4 operator."""
+    assessors = sg.load_mas_assessors()
+    if not assessors:
+        pytest.skip("mas_scores.csv not present")
+    tiers = {}
+    for by in assessors.values():
+        src = sg.source_for_assessor(by)
+        tiers[src] = tiers.get(src, 0) + 1
+    assert tiers.get(sg.SRC_MAS_ASSUMED, 0) > 0, tiers
+    assert tiers.get(sg.SRC_CLINICAL, 0) > 0, tiers
