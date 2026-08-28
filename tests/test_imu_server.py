@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pytest
 import numpy as np
 import pendulastic_imu_server as imu
+import imu_flex_axis
 
 
 @pytest.fixture(autouse=True)
@@ -259,7 +260,16 @@ def test_zero_calibrates_gyro_bias_for_connected_device():
 
 
 def test_flex_axis_captured_on_first_motion_after_zero():
-    """After zero(), the first gyro burst above threshold must populate _flex_axis."""
+    """After zero(), the first gyro burst above threshold must populate
+    _flex_axis, and capture must disarm once the axis estimate settles.
+
+    Updated with the move off single-sample capture (see imu_flex_axis): the
+    axis is now accumulated across the opening of the swing, so the very
+    first qualifying sample yields a PROVISIONAL axis while capture stays
+    armed, and disarming happens once MIN_COMMIT_SAMPLES have been seen. The
+    previous version of this test asserted disarm after exactly one sample --
+    which pinned the defect this change removes, since one sample at release
+    onset lands 58-86 deg off the true swing axis on real trials."""
     imu.reset_devices()
     imu.clear_zero()
     # Register a distal device
@@ -277,10 +287,20 @@ def test_flex_axis_captured_on_first_motion_after_zero():
     omega = np.array([0.0, 1.0, 0.0])   # 1 rad/s around y-axis
     dev.on_gyro(omega, ts=1000)
     assert imu._flex_axis is not None, "_flex_axis must be captured after first motion"
-    assert not imu._flex_axis_armed, "_flex_axis_armed must be cleared after capture"
+    assert imu._flex_axis_armed, (
+        "capture must stay armed on a provisional axis until the estimate settles")
+
+    # Keep the burst going: once enough of the swing has been seen the axis
+    # commits and capture disarms.
+    for i in range(imu_flex_axis.MIN_COMMIT_SAMPLES):
+        dev.on_gyro(omega, ts=1001 + i)
+    assert not imu._flex_axis_armed, "_flex_axis_armed must clear once the axis commits"
     np.testing.assert_allclose(
         np.linalg.norm(imu._flex_axis), 1.0, atol=1e-6,
         err_msg="_flex_axis must be a unit vector")
+    np.testing.assert_allclose(
+        np.abs(imu._flex_axis), [0.0, 1.0, 0.0], atol=1e-6,
+        err_msg="a pure +Y burst must settle on the +Y axis")
     imu.reset_devices()
     imu.clear_zero()
 

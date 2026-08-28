@@ -24,6 +24,7 @@ from pendulastic_imu_server import (
 )
 from pendulastic_pt_score import compute_pt_params
 from imu_calibration_config import load_config, save_config
+from imu_flex_axis import FlexAxisEstimator
 
 # Matches pendulastic_app.py's _imu_poll_worker 50 ms (~20 Hz) poll cadence —
 # EMA's effective smoothing depends on both alpha and the sample interval it's
@@ -215,6 +216,7 @@ def replay_trial(raw_samples: list, params: dict):
 
     flex_axis: Optional[np.ndarray] = None
     flex_axis_armed = True
+    flex_est = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
     q_zero: dict = {}
     zero_captured = False
 
@@ -324,14 +326,32 @@ def replay_trial(raw_samples: list, params: dict):
             # on_gyro()'s is_distal/is_solo gate.
             is_distal = (role == ROLE_DISTAL)
             is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
-            if flex_axis_armed and st.pending_departure and (is_distal or is_solo):
+            # `or flex_est.n_samples` keeps a capture that has already begun
+            # accumulating through the rest of the swing: pending_departure is
+            # revoked by any calm sample, and |omega| passes through zero at
+            # every swing reversal, which would otherwise strand the estimator
+            # part-taught and leave the provisional single-sample axis in
+            # place. Entry still requires pending_departure, so the guard
+            # against capturing during handling is unchanged, as is when
+            # q_zero is taken (zero_captured latches independently).
+            if flex_axis_armed and (is_distal or is_solo) and \
+                    (st.pending_departure or flex_est.n_samples):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
                     if not zero_captured:
                         q_zero = _snapshot()
                         zero_captured = True
                     if params["flex_axis_capture"]:
-                        flex_axis = v / omega_mag
-                    flex_axis_armed = False
+                        # Accumulate across the opening of the swing rather
+                        # than capturing this one sample -- see imu_flex_axis.
+                        # Stays armed until the estimator commits, so the axis
+                        # keeps refining instead of freezing on the release
+                        # transient.
+                        flex_est.update(v, gravity=st.accel)
+                        flex_axis = flex_est.axis
+                        if flex_est.committed:
+                            flex_axis_armed = False
+                    else:
+                        flex_axis_armed = False
 
             # Gyro-bias calibration, gated on genuine raw-signal stillness --
             # low raw gyro variance AND stable raw accel magnitude over the

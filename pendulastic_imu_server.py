@@ -46,6 +46,7 @@ from typing import Optional
 import numpy as np
 
 from imu_calibration_config import load_config
+from imu_flex_axis import FlexAxisEstimator
 
 # Sensor Stream's default. Override with PENDULASTIC_IMU_PORT when two
 # Pendulastic apps must run side by side (e.g. master_app.py acquiring while
@@ -512,7 +513,7 @@ class _IMUDevice:
         return _is_stationary_window(self._gyro_hold_buf, self._accel_hold_buf, time.time())
 
     def on_gyro(self, v, ts):
-        global _flex_axis, _flex_axis_armed
+        global _flex_axis, _flex_axis_armed, _flex_axis_est
         now = time.time()
         _raw_log_write(_roles.get(self.ident), "gyro", v, ts)
         if _recording:
@@ -570,8 +571,15 @@ class _IMUDevice:
                 is_solo   = ((dist_dev is None or not dist_dev.connected) and
                              prox_dev is not None and prox_dev.ident == self.ident)
                 if is_distal or is_solo:
-                    _flex_axis       = v / omega_mag
-                    _flex_axis_armed = False
+                    # Accumulate the opening of the swing and commit its
+                    # principal axis, rather than freezing on this single
+                    # release-transient sample -- see imu_flex_axis. Stays
+                    # armed until the estimator commits. imu_calibration_tuner
+                    # .replay_trial drives the SAME estimator so live and
+                    # replay cannot diverge.
+                    _flex_axis_est.update(v, gravity=self.accel)
+                    _flex_axis       = _flex_axis_est.axis
+                    _flex_axis_armed = not _flex_axis_est.committed
         self._touch(ts, now)
 
     def on_orientation(self, azimuth, pitch, roll, ts):
@@ -623,6 +631,9 @@ _q_zero_dist: Optional[np.ndarray] = None
 _flex_axis: Optional[np.ndarray] = None   # unit gyro vec in zero-pose sensor frame
 _flex_axis_armed: bool = False            # True after zero(), awaiting first motion
 _FLEX_CAPTURE_THRESHOLD = 1.0             # rad/s — min |ω| to register as intentional
+# Accumulates the opening of the swing and commits its principal axis; rebuilt
+# on every zero()/clear_zero() so one trial's axis never leaks into the next.
+_flex_axis_est: FlexAxisEstimator = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
 
 _CONFIG = load_config()   # {beta, ema_alpha, flex_axis_capture, gravity_seed, ...}
 
@@ -805,7 +816,7 @@ def zero():
     bias from its trailing hold buffer — this is called at the exact instant
     the auto-tare countdown confirms a stable hold, which is precisely when
     that buffer is genuinely motionless."""
-    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
+    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed, _flex_axis_est
     with _lock:
         cur = _raw_relative()
         for k in ("roll", "pitch", "yaw"):
@@ -838,17 +849,19 @@ def zero():
         # Arm the flex-axis capture; the first gyro burst with |ω| above the
         # threshold will lock the anatomical flexion axis for this session.
         _flex_axis        = None
+        _flex_axis_est    = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
         _flex_axis_armed  = _CONFIG["flex_axis_capture"]
 
 
 def clear_zero():
-    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed
+    global _q_zero_prox, _q_zero_dist, _flex_axis, _flex_axis_armed, _flex_axis_est
     with _lock:
         for k in _offset:
             _offset[k] = 0.0
         _q_zero_prox = None
         _q_zero_dist = None
         _flex_axis       = None
+        _flex_axis_est   = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
         _flex_axis_armed = False
 
 
