@@ -350,6 +350,10 @@ body {
 #pt-score-zone.zone-borderline { background: var(--pt-borderline-bg); }
 #pt-score-zone.zone-impaired { background: var(--pt-impaired-bg); }
 #pt-score-zone.zone-unknown { background: var(--pt-unknown-bg); }
+/* Zone classification suppressed while HEALTHY_REF is recalibrated (see
+   app.js ZONE_CLASSIFICATION_CALIBRATED). Neutral on purpose: any of the
+   red/amber/green zone colours would read as a verdict. */
+#pt-score-zone.zone-uncalibrated { background: var(--pt-unknown-bg); }
 
 #pt-score-breakdown-label {
   margin: 12px 0 4px;

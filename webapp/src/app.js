@@ -249,6 +249,50 @@ export function invalidateExport(session) {
 // either failure means the same thing to the caller: don't mark exported,
 // tell the clinician to export again. Erring toward "export again" costs a
 // few seconds; erring the other way costs a trial.
+const ZONE_LABEL = {
+  healthy: 'healthy range (provisional)',
+  borderline: 'borderline (provisional)',
+  impaired: 'impaired range (provisional)',
+  unknown: 'zone unknown',
+};
+
+// Zone classification is SUPPRESSED (2026-08-28), and this is not caution
+// about a weak signal -- the reference the zones are measured against is
+// known to be wrong.
+//
+// HEALTHY_REF's "control median n=4" (pendulastic_pt_score.py) was computed
+// over P2, P8, P9, P12. Three of those four are compromised: P2's shank and
+// thigh marker centroids coincide (degenerate geometry the loader of the day
+// scored anyway), P8's optical coverage is 0.69 and the old loader filled the
+// dropout by ffill/bfill -- fabricating the swing that made it look healthy
+// -- and P9's left and right files are byte-identical. Only P12 is sound.
+// Measured consequence: the control cohort now scores WORSE than the MS
+// cohort (median 1.668 vs 0.626), and every one of five phone trials from a
+// healthy test participant was classified "impaired range".
+//
+// A wrong band is worse than no band: "impaired" reads as a finding, and a
+// "(provisional)" suffix does not undo that. The score and its breakdown are
+// still shown, because they are the raw measurement and remain useful for
+// debugging capture quality -- it is only the healthy/borderline/impaired
+// VERDICT that has no defensible basis right now.
+//
+// Re-enable by flipping this to true, once HEALTHY_REF and the two zone
+// thresholds are recalibrated against a defensible control set.
+const ZONE_CLASSIFICATION_CALIBRATED = false;
+
+const ZONE_UNCALIBRATED_LABEL = 'not classified — reference under recalibration';
+
+// The zone decision, split out from rendering so it is testable without a DOM
+// (same split as nextOutcome above). Returns what the badge should say and the
+// class it carries -- never the raw zone while uncalibrated.
+export function zoneDisplay(zone, calibrated = ZONE_CLASSIFICATION_CALIBRATED) {
+  if (!calibrated) {
+    return { text: ZONE_UNCALIBRATED_LABEL, className: 'zone-uncalibrated' };
+  }
+  const key = typeof zone === 'string' && zone in ZONE_LABEL ? zone : 'unknown';
+  return { text: ZONE_LABEL[key], className: `zone-${key}` };
+}
+
 export function canMarkExported(exported, live) {
   if (!exported || !live) return false;
   if (exported.sessionId !== live.sessionId) return false;
@@ -868,12 +912,6 @@ if (typeof document !== 'undefined') {
   // participant-legs, not a validated clinical cutoff (see
   // mobile-imu-core/src/pt_score.rs). The word choice deliberately avoids
   // anything that reads as a diagnosis.
-  const ZONE_LABEL = {
-    healthy: 'healthy range (provisional)',
-    borderline: 'borderline (provisional)',
-    impaired: 'impaired range (provisional)',
-    unknown: 'zone unknown',
-  };
 
   // Renders the composite PT score panel: `ptScore` is
   // `{score, zone, breakdown}` from mobile-imu-core's finish_pt_score()
@@ -894,8 +932,9 @@ if (typeof document !== 'undefined') {
     el('pt-score-value').textContent = ptScore.score.toFixed(4);
     const zoneEl = el('pt-score-zone');
     const zone = typeof ptScore.zone === 'string' ? ptScore.zone : 'unknown';
-    zoneEl.textContent = ZONE_LABEL[zone] || ZONE_LABEL.unknown;
-    zoneEl.className = `zone-${zone}`;
+    const badge = zoneDisplay(zone);
+    zoneEl.textContent = badge.text;
+    zoneEl.className = badge.className;
     el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
       .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
       .join('');

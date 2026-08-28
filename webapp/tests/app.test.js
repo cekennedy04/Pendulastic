@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported,
-  exportLockState, retainExportHandle,
+  exportLockState, retainExportHandle, zoneDisplay,
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 
@@ -353,4 +353,63 @@ test('exportLockState with no arguments is inert rather than throwing', () => {
     exportLockState(),
     { exportDisabled: false, closeDisabled: true, warningVisible: false },
   );
+});
+
+
+// -- Zone classification suppression (2026-08-28) --------------------------
+// HEALTHY_REF's "control median n=4" was computed over P2, P8, P9, P12, and
+// three of those four are compromised (P2 degenerate marker geometry, P8's
+// marker dropout filled by ffill/bfill so the swing was fabricated, P9's left
+// and right files byte-identical). Measured effect: the control cohort scores
+// WORSE than the MS cohort, and all five phone trials from a healthy test
+// participant came back "impaired range". No band is defensible until the
+// reference is recalibrated, and a wrong band reads as a finding.
+
+test('no zone is shown while the reference is uncalibrated', () => {
+  for (const zone of ['healthy', 'borderline', 'impaired', 'unknown']) {
+    const badge = zoneDisplay(zone, false);
+    assert.equal(badge.className, 'zone-uncalibrated');
+    assert.ok(/recalibration/i.test(badge.text), badge.text);
+  }
+});
+
+test('the impaired verdict cannot reach the badge while uncalibrated', () => {
+  // The specific harm: a healthy participant being told "impaired".
+  const badge = zoneDisplay('impaired', false);
+  assert.ok(!/impaired/i.test(badge.text), `leaked the verdict: ${badge.text}`);
+  assert.ok(!/healthy|borderline/i.test(badge.text), `leaked a verdict: ${badge.text}`);
+});
+
+test('the uncalibrated badge is styled neutrally, not as a zone', () => {
+  // Reusing zone-impaired's red would reintroduce the verdict visually even
+  // with neutral wording.
+  const badge = zoneDisplay('impaired', false);
+  assert.ok(!['zone-healthy', 'zone-borderline', 'zone-impaired'].includes(badge.className));
+});
+
+test('the app ships with classification OFF by default', () => {
+  // zoneDisplay's default argument is the module-level flag, so calling it
+  // with one argument is what the renderer actually does.
+  const badge = zoneDisplay('impaired');
+  assert.equal(badge.className, 'zone-uncalibrated');
+});
+
+test('zones render normally once the reference is recalibrated', () => {
+  // The suppression is a flag, not a deletion -- recalibration re-enables it.
+  assert.deepEqual(zoneDisplay('healthy', true),
+    { text: 'healthy range (provisional)', className: 'zone-healthy' });
+  assert.deepEqual(zoneDisplay('impaired', true),
+    { text: 'impaired range (provisional)', className: 'zone-impaired' });
+});
+
+test('an unrecognised zone falls back to unknown rather than throwing', () => {
+  const badge = zoneDisplay('nonsense', true);
+  assert.equal(badge.className, 'zone-unknown');
+  assert.equal(badge.text, 'zone unknown');
+});
+
+test('every re-enabled label still carries the provisional qualifier', () => {
+  for (const zone of ['healthy', 'borderline', 'impaired']) {
+    assert.ok(/provisional/.test(zoneDisplay(zone, true).text), zone);
+  }
 });
