@@ -1186,3 +1186,47 @@ def test_zone_band_midpoints_stay_inside_the_axes():
     for y_max in (0.05, 0.35, 0.5, 1.6, 3.0):
         for _i, lo, hi in common.visible_zone_bands(y_max):
             assert 0 <= (lo + hi) / 2 <= y_max, (y_max, lo, hi)
+
+
+def test_make_report_figure_sidecar_holds_both_legs_not_just_the_last(tmp_path, monkeypatch):
+    """write_clinician_mas_sidecar opens the same P<id>_clinician_mas.csv in
+    "w" mode every call, so calling it once per leg inside make_report_figure's
+    left/right loop lets Right's write truncate Left's. The sidecar is
+    documented as the complete, untruncated clinician-MAS record, so it must
+    carry every leg the report drew, not just the last one."""
+    import csv as _csv
+    import numpy as np
+
+    monkeypatch.setattr(common, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: [])
+    monkeypatch.setattr(
+        common, "clinician_mas_matches",
+        lambda pid, leg, cond: [{"participant": pid, "leg": leg, "condition": cond,
+                                 "diagnosis": "MS", "mas_grade": "0",
+                                 "assessed_by": "", "assessed_date": "2026-08-28"}])
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+
+    def _rec(pid):
+        return {"pid": pid, "trial": "1", "pt7": 0.3, "t_raw": t, "angle_raw": ang,
+                "neutral_deg_raw": 180.0, "R2n": 0.9, "N": 3.0, "phi_max_ratio": 0.5,
+                "omega_max_n": 1.0, "omega_min_n": 0.2, "f": 1.5, "area_ratio": 0.1,
+                "mediapipe_curve": None, "imu_curve": None,
+                "mediapipe_rmse": None, "imu_rmse": None}
+
+    by_leg_tp = {("left", "post"): [_rec("17_left_post")],
+                 ("right", "post"): [_rec("17_right_post")]}
+    timepoints = [("post", "Post", "#d62728")]
+
+    _, fig = common.make_report_figure("P17", by_leg_tp, timepoints,
+                                       "P17_full_report.png", "test caveat",
+                                       cohort_snapshot=None, save=False, return_fig=True)
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+    with open(tmp_path / "P17_clinician_mas.csv", newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    assert {r["leg"] for r in rows} == {"left", "right"}

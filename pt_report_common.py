@@ -1318,6 +1318,12 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
     # site (run_pt_analysis.py, p13_full_report.py, p5_full_report.py) uses,
     # so lstrip("P") recovers the raw participant id clinician_mas_matches/
     # write_clinician_mas_sidecar/trial_candidates expect.
+    # Accumulated across BOTH legs, then written once below -- keys are
+    # (leg, tp_key) so the two legs never collide. write_clinician_mas_sidecar
+    # opens the file in "w" mode, so calling it inside this loop made Right's
+    # write truncate Left's and the "complete record" sidecar only ever held
+    # the last leg.
+    matches_by_leg = {}
     for col_idx, (leg, leg_label) in enumerate((("left", "Left"), ("right", "Right"))):
         ax4 = axes[3, col_idx]
         _draw_rmse_axes(ax4, leg, by_leg_tp, timepoints)
@@ -1325,9 +1331,11 @@ def make_report_figure(participant_label, by_leg_tp, timepoints, out_filename, c
 
         ax5 = axes[4, col_idx]
         matches_used = _draw_row5_table(ax5, leg, by_leg_tp, timepoints, participant_label.lstrip("P"))
-        if matches_used:
-            write_clinician_mas_sidecar(participant_label.lstrip("P"), matches_used)
+        matches_by_leg.update(matches_used)
         ax5.set_title(f'{participant_label} {leg_label} – PT7/MAS Source Agreement', fontsize=10, fontweight='bold', pad=10)
+
+    if matches_by_leg:
+        write_clinician_mas_sidecar(participant_label.lstrip("P"), matches_by_leg)
 
     fig.suptitle(f"{participant_label} — Full Report (7-parameter Popovic PT score)\n{caveat_text}",
                 fontsize=10, y=0.998, color='#333333')
