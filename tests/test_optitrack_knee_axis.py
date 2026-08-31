@@ -1,6 +1,19 @@
+import math
+
 import numpy as np
 import pytest
 import optitrack_knee_axis as ka
+
+try:
+    from tests.test_optitrack_marker_angle import _rot
+except ImportError:
+    def _rot(axis, deg):
+        axis = np.asarray(axis, float); axis = axis / np.linalg.norm(axis)
+        th = math.radians(deg); c, s = math.cos(th), math.sin(th)
+        K = np.array([[0, -axis[2], axis[1]],
+                      [axis[2], 0, -axis[0]],
+                      [-axis[1], axis[0], 0]])
+        return np.eye(3) * c + s * K + (1 - c) * np.outer(axis, axis)
 
 
 def _tri(n=100):
@@ -61,3 +74,37 @@ def test_line_direction_is_nan_where_untracked():
     dirs = ka.segment_line_direction(mk)
     assert np.isnan(dirs[20:25]).all()
     assert np.isfinite(dirs[30]).all()
+
+
+def _rotating_triangle(n, axis, deg_per_frame, wobble_deg=0.0, wobble_hz=0.0, fps=120.0):
+    """Triangle rotating about `axis`, optionally wobbling about a perpendicular."""
+    from pendulastic_pt_score import _shortest_arc_rotation
+    base = np.array([[0.06, 0.0, 0.0], [-0.06, 0.0, 0.0], [0.0, 0.021, 0.0]])
+    axis = np.asarray(axis, float); axis = axis / np.linalg.norm(axis)
+    # Cross against a fixed reference degenerates when `axis` IS that
+    # reference (true for every hinge test here, which rotates about z).
+    # Pick whichever fixed axis is least parallel to `axis` instead.
+    ref_vec = [0.0, 0.0, 1.0] if abs(axis[2]) < 0.9 else [1.0, 0.0, 0.0]
+    perp = np.cross(axis, ref_vec)
+    perp = perp / np.linalg.norm(perp)
+    out = np.empty((3, n, 3))
+    for i in range(n):
+        R = _rot(axis, deg_per_frame * i)
+        if wobble_deg:
+            R = _rot(perp, wobble_deg * np.sin(2 * np.pi * wobble_hz * i / fps)) @ R
+        out[:, i, :] = base @ R.T
+    return out
+
+
+def test_hinge_axis_recovers_a_known_rotation_axis():
+    mk = _rotating_triangle(300, [0.0, 0.0, 1.0], 0.4)
+    axis, cond, _pc2 = ka.hinge_axis(mk)
+    assert abs(abs(float(np.dot(axis, [0, 0, 1]))) - 1.0) < 0.02, axis
+    assert cond > 0.95, cond
+
+
+def test_hinge_conditioning_falls_when_the_plate_tumbles():
+    """Rotation spread across axes is not a hinge, and conditioning must say so."""
+    mk = _rotating_triangle(300, [0.0, 0.0, 1.0], 0.4, wobble_deg=12.0, wobble_hz=2.0)
+    _axis, cond, _pc2 = ka.hinge_axis(mk)
+    assert cond < 0.95, cond

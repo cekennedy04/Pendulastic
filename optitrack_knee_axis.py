@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from pendulastic_pt_score import MIN_CLUSTER_PLANAR_EXTENT_M, _reference_shape
+from pendulastic_pt_score import (
+    MIN_CLUSTER_PLANAR_EXTENT_M,
+    _kabsch_rotations,
+    _reference_shape,
+)
 
 
 class GeometryError(ValueError):
@@ -80,3 +84,53 @@ def segment_line_direction(bar: np.ndarray) -> np.ndarray:
         out[i] = line
         prev = line
     return out
+
+
+def _rotation_increments(triangle: np.ndarray) -> np.ndarray:
+    """Frame-to-frame rotation vectors of a triangle cluster, (m, 3) radians.
+
+    For a hinge these all lie along the hinge, so their principal direction IS
+    the axis -- recovered without any pose assumption, which is the whole
+    point.
+    """
+    tracked = np.isfinite(triangle).all(axis=(0, 2))
+    idx = np.where(tracked)[0]
+    if len(idx) < 3:
+        return np.zeros((0, 3))
+    ref = _reference_shape(triangle, idx)
+    cur = np.transpose(triangle[:, idx, :], (1, 0, 2))
+    cur = cur - cur.mean(axis=1, keepdims=True)
+    try:
+        rots = _kabsch_rotations(ref, cur)
+    except np.linalg.LinAlgError:
+        return np.zeros((0, 3))
+    out = []
+    for a, b in zip(rots[:-1], rots[1:]):
+        r = b @ a.T
+        ang = float(np.arccos(np.clip((np.trace(r) - 1.0) / 2.0, -1.0, 1.0)))
+        v = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]])
+        nv = float(np.linalg.norm(v))
+        out.append(v / nv * ang if (nv > 1e-12 and ang > 1e-9) else np.zeros(3))
+    return np.asarray(out)
+
+
+def hinge_axis(triangle: np.ndarray):
+    """(axis, conditioning, pc2_series) from the plate's own rotation.
+
+    `conditioning` is the dominant eigenvalue's share of the total. 1.0 is a
+    perfect hinge; a tumbling plate tends toward 1/3. `pc2_series` is the
+    projection onto the SECOND axis, which the caller classifies as real
+    out-of-plane motion or as jitter.
+    """
+    rv = _rotation_increments(triangle)
+    if len(rv) < 8:
+        raise GeometryError(
+            f"Only {len(rv)} usable rotation increments: the cluster is not "
+            f"tracked long enough to estimate a hinge axis.")
+    w, V = np.linalg.eigh(rv.T @ rv)
+    order = np.argsort(w)[::-1]
+    w, V = w[order], V[:, order]
+    total = float(w.sum())
+    if not np.isfinite(total) or total <= 0:
+        raise GeometryError("Cluster shows no rotation; no hinge axis exists.")
+    return V[:, 0], float(w[0] / total), rv @ V[:, 1]
