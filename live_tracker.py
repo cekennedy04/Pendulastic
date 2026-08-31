@@ -19,6 +19,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+import capture_quality_guard as cqg
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 _MODEL = pathlib.Path(__file__).parent / "models" / "mediapipe" / "pose_landmarker_full.task"
 
@@ -54,6 +56,42 @@ def _draw_hud(frame: np.ndarray, status: str, color, extra: str = "") -> None:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.68, (230, 230, 230), 2, cv2.LINE_AA)
 
 
+def _draw_guard_panel(frame: np.ndarray, res, verdict: str) -> None:
+    """Bottom panel: the two numbers that decide whether this camera position
+    can produce a usable knee angle, plus what to do about it.
+
+    Landmark visibility alone is NOT enough to clear a setup -- P17's right
+    leg tracked landmarks happily while the camera looked along the thigh,
+    and every recorded angle came out ~53 deg wrong. These are the numbers
+    that would have caught it before recording.
+    """
+    h, w = frame.shape[:2]
+    n_lines = 1 + len(res.reasons) if res is not None else 1
+    panel_h = 34 + 26 * n_lines
+    bar = frame.copy()
+    cv2.rectangle(bar, (0, h - panel_h), (w, h), (18, 18, 20), -1)
+    cv2.addWeighted(bar, 0.55, frame, 0.45, 0, frame)
+
+    colors = {"GOOD": (30, 200, 70), "BAD": (0, 60, 240), "UNKNOWN": (150, 150, 150)}
+    col = colors.get(verdict, colors["UNKNOWN"])
+    cv2.putText(frame, f"PLACEMENT: {verdict}", (16, h - panel_h + 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.72, col, 2, cv2.LINE_AA)
+
+    if res is None:
+        return
+
+    metrics = (f"thigh {res.thigh_px:.0f}px (want >={cqg.MIN_THIGH_PX:.0f})   "
+               f"shank/thigh {res.ratio:.2f} (want "
+               f"{cqg.RATIO_LO:.2f}-{cqg.RATIO_HI:.2f})")
+    tw = cv2.getTextSize(metrics, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)[0][0]
+    cv2.putText(frame, metrics, (max(16, w - tw - 16), h - panel_h + 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (225, 225, 225), 2, cv2.LINE_AA)
+
+    for i, reason in enumerate(res.reasons):
+        cv2.putText(frame, reason, (16, h - panel_h + 52 + 26 * i),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (60, 190, 255), 2, cv2.LINE_AA)
+
+
 def run() -> None:
     if not _MODEL.exists():
         print(f"Model not found: {_MODEL}")
@@ -76,6 +114,7 @@ def run() -> None:
 
     VIS_THRESH = 0.60
     t0 = time.monotonic()
+    smoother = cqg.GuardSmoother()
 
     with mp.tasks.vision.PoseLandmarker.create_from_options(opts) as detector:
         while True:
@@ -92,6 +131,8 @@ def run() -> None:
             status = "ADJUST CAMERA — hip, knee, and ankle must be visible"
             s_color = (0, 60, 240)
             extra = ""
+            guard_res = None
+            verdict = smoother.verdict()
 
             if result.pose_landmarks:
                 lm = result.pose_landmarks[0]
@@ -112,18 +153,23 @@ def run() -> None:
                     ank  = _px(a_lm)
                     ang  = _knee_angle(hip, knee, ank)
 
-                    # Draw limb segments
-                    GREEN = (50, 220, 100)
+                    guard_res = cqg.evaluate_leg_geometry(hip, knee, ank)
+                    smoother.push(guard_res)
+                    verdict = smoother.verdict()
+
+                    # Limb turns red the moment the placement is unusable, so
+                    # the operator sees it on the subject, not just in a panel.
+                    LIMB = (50, 220, 100) if verdict == "GOOD" else (0, 60, 240)
                     for a, b in ((hip, knee), (knee, ank)):
                         cv2.line(frame,
                                  tuple(a.astype(int)), tuple(b.astype(int)),
-                                 GREEN, 3, cv2.LINE_AA)
+                                 LIMB, 3, cv2.LINE_AA)
                     # Draw joint circles
                     for pt in (hip, knee, ank):
                         cv2.circle(frame, tuple(pt.astype(int)),
                                    10, (255, 255, 255), -1, cv2.LINE_AA)
                         cv2.circle(frame, tuple(pt.astype(int)),
-                                   10, GREEN, 2, cv2.LINE_AA)
+                                   10, LIMB, 2, cv2.LINE_AA)
 
                     # Angle arc label beside knee
                     if math.isfinite(ang):
@@ -134,8 +180,15 @@ def run() -> None:
                                     cv2.FONT_HERSHEY_SIMPLEX, 1.1,
                                     (255, 255, 80), 2, cv2.LINE_AA)
 
-                    status  = f"FITTING OK ({side} leg)  — ready to record"
-                    s_color = (30, 200, 70)
+                    if verdict == "GOOD":
+                        status  = f"READY TO RECORD ({side} leg)"
+                        s_color = (30, 200, 70)
+                    else:
+                        # Landmarks are visible and the old HUD would have said
+                        # "ready" here. P17's right leg passed exactly this
+                        # check and every angle it recorded was ~53 deg wrong.
+                        status  = f"DO NOT RECORD ({side} leg) — fix camera placement"
+                        s_color = (0, 60, 240)
                     extra   = f"Knee: {ang:.0f}°" if math.isfinite(ang) else ""
 
                 else:
@@ -143,6 +196,7 @@ def run() -> None:
                     s_color = (0, 140, 255)
 
             _draw_hud(frame, status, s_color, extra)
+            _draw_guard_panel(frame, guard_res, verdict)
 
             cv2.imshow("Pendulastic — Live Calibration", frame)
             key = cv2.waitKey(1) & 0xFF
