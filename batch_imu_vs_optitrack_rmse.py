@@ -325,7 +325,8 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         return row
     row["optitrack_method"] = method
 
-    result = engine.compare_pair(ref_t, ref_angle, t, angle)
+    result = engine.compare_pair(ref_t, ref_angle, t, angle,
+                                 capture_skew_prior=True)
     if result["status"] != "ok":
         row["error"] = result.get("error")
         return row

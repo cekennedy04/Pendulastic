@@ -356,14 +356,17 @@ test('exportLockState with no arguments is inert rather than throwing', () => {
 });
 
 
-// -- Zone classification suppression (2026-08-28) --------------------------
-// HEALTHY_REF's "control median n=4" was computed over P2, P8, P9, P12, and
-// three of those four are compromised (P2 degenerate marker geometry, P8's
-// marker dropout filled by ffill/bfill so the swing was fabricated, P9's left
-// and right files byte-identical). Measured effect: the control cohort scores
-// WORSE than the MS cohort, and all five phone trials from a healthy test
-// participant came back "impaired range". No band is defensible until the
-// reference is recalibrated, and a wrong band reads as a finding.
+// -- Zone classification suppression --------------------------------------
+// The score and breakdown still render; the healthy/borderline/impaired
+// verdict does not. Two reasons, both current (an earlier justification --
+// that the control cohort scored worse than the MS cohort -- was true of the
+// tree on 2026-08-28 and was superseded by commits 9abe37c and a658c3f;
+// controls now score 0.155 against MS 0.475, the right way round):
+//   1. HEALTHY_REF does not reproduce from its stated provenance -- "control
+//      median n=4" over P2/P8/P9/P12 recomputes area_ratio 0.1390 against a
+//      stated 0.0768, and no deriving script exists in any commit.
+//   2. Leave-one-participant-out AUC is 0.21, below chance. A band is an
+//      individual classification; group separation does not license one.
 
 test('no zone is shown while the reference is uncalibrated', () => {
   for (const zone of ['healthy', 'borderline', 'impaired', 'unknown']) {

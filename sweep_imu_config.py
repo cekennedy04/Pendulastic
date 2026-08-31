@@ -89,7 +89,8 @@ def score_config(trials, params):
         t_m, ang_m = replay_trial(trial["samples"], params)
         if np.count_nonzero(np.isfinite(ang_m)) < 10:
             continue
-        result = engine.compare_pair(trial["opti_t"], trial["opti_ang"], t_m, ang_m)
+        result = engine.compare_pair(trial["opti_t"], trial["opti_ang"], t_m, ang_m,
+                                     capture_skew_prior=True)
         if result.get("status") == "ok":
             rmses.append(result["rmse_deg"])
     return rmses

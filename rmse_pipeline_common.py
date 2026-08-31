@@ -494,7 +494,8 @@ def score_imu_candidate(trial, params):
     if np.count_nonzero(np.isfinite(ang_m)) < 10:
         return None
     opti_t, opti_ang = pt_score.load_optitrack(trial["optitrack_path"])
-    result = engine.compare_pair(opti_t, opti_ang, t_m, ang_m)
+    result = engine.compare_pair(opti_t, opti_ang, t_m, ang_m,
+                                 capture_skew_prior=True)
     if result.get("status") != "ok":
         return None
     return result["rmse_deg"]

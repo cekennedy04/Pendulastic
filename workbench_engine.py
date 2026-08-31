@@ -80,6 +80,69 @@ def _active_window_end(t: np.ndarray, angle: np.ndarray) -> int:
 _RELEASE_ANCHOR_MARGIN_SEC = 0.6
 
 
+# Capture-side start/stop skew between a phone IMU log and its paired Motive
+# take (measured 2026-08-28 over the 94 real trials that have both).
+#
+# Both pendulastic_app.py and master_app.py start the IMU log first and only
+# then call motive_sync.start_local_motive(), whose NatNet handshake blocks
+# for LIVEMODE_SETTLE_DELAY + 2 * INTER_COMMAND_DELAY = 0.60s of hardcoded
+# sleeps -- plus up to 3 * RESPONSE_TIMEOUT of recvfrom waits -- before
+# StartRecording is even dispatched. Every OptiTrack take therefore begins
+# roughly 0.7s INTO its paired IMU recording, and the IMU trace has to be
+# shifted EARLIER by that much to line the two up.
+#
+# The skew is readable straight off the file metadata, without touching the
+# signals: the IMU log overruns its take at the front by the start skew and
+# undershoots at the back by the stop skew, so
+#     lag = -(imu_duration - optitrack_duration) + _STOP_SKEW_SEC
+# Across the corpus that predicts the cross-correlation's own lag with a
+# residual sd of 0.043s, against 0.122s for a single population constant.
+# The point is not the extra precision though -- it is that a duration
+# difference cannot alias, and cross-correlation can. A ~1 Hz decaying swing
+# correlates nearly as well a whole cycle off as it does at the truth, and
+# on real trials the free search does lose: Participant_19's four post
+# trials all settled on a near-zero peak and scored 10.3-11.5 deg where the
+# metadata-anchored alignment scores 2.6-4.7 deg.
+_STOP_SKEW_SEC = -0.192
+
+# Duration-difference band the handshake can actually explain. Outside it the
+# two recordings were stopped independently (the corpus holds real pairs
+# differing by 5s and 18s) and the difference says nothing about the start
+# skew, so the prior declines and the release-anchored search stays in charge.
+_CAPTURE_SKEW_PLAUSIBLE_DELTA_SEC = (0.15, 1.75)
+
+# Slack left for the cross-correlation to refine around the metadata prior.
+# Wide enough to absorb the prior's own 0.043s residual several times over,
+# far too narrow to reach the neighbouring swing cycle that causes the
+# aliasing in the first place.
+_CAPTURE_SKEW_REFINE_MARGIN_SEC = 0.15
+
+
+def capture_lag_prior(ref_t: np.ndarray, test_t: np.ndarray) -> Optional[float]:
+    """Start-skew estimate for a (OptiTrack ref, IMU test) pair, read from
+    the two recordings' durations alone -- no cross-correlation, no release
+    detection, nothing that can alias onto the wrong swing cycle.
+
+    Returns the shift to add to test_t so it lines up with ref_t (negative:
+    the IMU trace moves earlier), or None when the duration difference falls
+    outside _CAPTURE_SKEW_PLAUSIBLE_DELTA_SEC -- equal-length traces and
+    independently-stopped recordings both land there, and neither is
+    evidence of a handshake skew. Callers must treat None as "no prior",
+    not as zero. See _STOP_SKEW_SEC for the measurement behind it."""
+    ref_t = np.asarray(ref_t, dtype=float)
+    test_t = np.asarray(test_t, dtype=float)
+    ref_t = ref_t[np.isfinite(ref_t)]
+    test_t = test_t[np.isfinite(test_t)]
+    if len(ref_t) < 2 or len(test_t) < 2:
+        return None
+
+    duration_delta = float((test_t[-1] - test_t[0]) - (ref_t[-1] - ref_t[0]))
+    lo, hi = _CAPTURE_SKEW_PLAUSIBLE_DELTA_SEC
+    if not (lo <= duration_delta <= hi):
+        return None
+    return -duration_delta + _STOP_SKEW_SEC
+
+
 def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
     """Independently-detected release-point time for one signal (no ground
     truth / cross-signal information needed), or None if there aren't
@@ -97,8 +160,23 @@ def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
 
 
 def compare_pair(ref_t, ref_y, test_t, test_y,
-                 lag_override_sec: Optional[float] = None) -> dict:
+                 lag_override_sec: Optional[float] = None,
+                 capture_skew_prior: bool = False) -> dict:
     """Align test to ref and score RMSE/MAE/bias/LoA (design spec Section 4).
+
+    capture_skew_prior opts this comparison into the duration-derived
+    capture-skew prior (see capture_lag_prior). It is OFF by default and
+    must only be enabled when `test` is a phone-IMU trace: the prior reads
+    the start skew off the two RECORDING durations, which holds for the IMU
+    log (it predicts the lag with a residual sd of 0.043s across 94 real
+    trials) but NOT for video. Measured on 77 cached MediaPipe trials the
+    same prior has essentially no relationship to the true lag
+    (corr = +0.02, residual sd 0.48s) -- video files are trimmed and
+    re-encoded independently of the capture window, so their duration no
+    longer reports it -- and switching it on there made RMSE worse
+    (27.6 -> 31.7 deg median). Video paths get the tightened
+    analysis_pipeline.MAX_LAG_SEC plausibility bound instead, which is what
+    they actually needed.
 
     Both curves are:
       1. Filtered to finite (t, y) pairs only -- np.interp does not handle
@@ -147,6 +225,14 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     ref_release = _release_time(ref_t, ref_y)
     test_release = _release_time(test_t, test_y)
 
+    # Same reason, more sharply: the capture-skew prior is read off the two
+    # RECORDING durations, and _active_window_end() trims each trace's tail
+    # by a different amount. Measured after truncation the difference is an
+    # artefact of the two settling times, not the start skew -- it costs
+    # 3.5 deg of mean RMSE across the corpus. Measure it here, on the full
+    # finite-filtered traces, before either end gets cut off.
+    capture_prior = capture_lag_prior(ref_t, test_t) if capture_skew_prior else None
+
     ref_end = _active_window_end(ref_t, ref_y)
     test_end = _active_window_end(test_t, test_y)
     ref_t, ref_y = ref_t[:ref_end + 1], ref_y[:ref_end + 1]
@@ -171,15 +257,42 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
             "lag_sec": float(lag_override_sec),
         }
     else:
-        max_lag_sec = None
-        if ref_release is not None and test_release is not None:
-            max_lag_sec = abs(ref_release - test_release) + _RELEASE_ANCHOR_MARGIN_SEC
+        # synchronize_signals' bound is symmetric about ZERO, so it can only
+        # ever narrow the search around "no shift" -- it cannot centre it on
+        # a shift we already know is there. When the durations pin the
+        # capture skew, pre-apply it and let the correlation refine what's
+        # left, which puts the search window where it belongs.
+        prior = capture_prior
+        if prior is not None:
+            search_t = test_t + prior
+            max_lag_sec = _CAPTURE_SKEW_REFINE_MARGIN_SEC
+        else:
+            search_t = test_t
+            prior = 0.0
+            max_lag_sec = None
+            if ref_release is not None and test_release is not None:
+                # This bound exists to TIGHTEN the module-level one, but it
+                # was free to exceed it: it is only as good as the two
+                # release estimates, and on MediaPipe angle traces those
+                # are unreliable (release-anchored lag on 77 cached video
+                # trials: median +0.63s, sd 2.06s, worst +7.2s). A bad pair
+                # of estimates opened the window to several seconds --
+                # wider than the +/-5s default it was meant to narrow, and
+                # far past any skew motive_sync's handshake can produce, so
+                # 13 of those trials still aligned beyond |lag| > 1.5s.
+                # Clamp it: this may only ever narrow the search.
+                max_lag_sec = min(
+                    abs(ref_release - test_release) + _RELEASE_ANCHOR_MARGIN_SEC,
+                    analysis_pipeline.MAX_LAG_SEC)
         try:
             sync = analysis_pipeline.synchronize_signals(
-                ref_t, ref_y, test_t, test_y, resample_hz=resample_hz,
+                ref_t, ref_y, search_t, test_y, resample_hz=resample_hz,
                 max_lag_sec=max_lag_sec)
         except ValueError as e:
             return {"status": "error", "error": str(e)}
+        # Report the lag against the caller's own test_t, not the pre-shifted
+        # copy, so lag_sec stays directly usable as a lag_override_sec.
+        sync["lag_sec"] = prior + sync["lag_sec"]
 
     finite = np.isfinite(sync["ref"]) & np.isfinite(sync["test"])
     if finite.sum() < 2:

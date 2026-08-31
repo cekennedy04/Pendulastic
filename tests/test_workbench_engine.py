@@ -1125,3 +1125,129 @@ def test_release_marks_to_csv_rows_one_row_per_trace():
         "participant_id": "P5", "session_date": "2026-08-04",
         "label": "imu", "t_trace": 1.23, "source": "manual",
     }
+
+
+# ---------------------------------------------------------------------------
+# Capture-side start/stop skew (2026-08-28)
+# ---------------------------------------------------------------------------
+
+def test_capture_lag_prior_reads_the_skew_off_the_durations():
+    """The phone IMU log is started before motive_sync's NatNet handshake
+    lets Motive begin its take, so the IMU trace runs longer at the front
+    by that same skew. The prior must read that straight off the two
+    durations -- no cross-correlation, no release detection -- and return
+    the (negative) shift that moves the IMU trace back onto the take."""
+    ref_t = np.arange(0.0, 10.0, 1 / 120)          # OptiTrack, 10.0s
+    test_t = np.arange(0.0, 10.6, 1 / 20)          # IMU, 0.6s longer
+    prior = engine.capture_lag_prior(ref_t, test_t)
+    assert prior is not None
+    # dur_delta ~= +0.6 -> lag ~= -0.6 + _STOP_SKEW_SEC
+    assert abs(prior - (-0.6 + engine._STOP_SKEW_SEC)) < 0.05
+
+
+def test_capture_lag_prior_declines_when_durations_show_no_skew():
+    """Equal-length traces (synthetic signals, or any capture that did not
+    go through the motive_sync handshake) carry no metadata evidence of a
+    skew, so the prior must decline and leave the existing release-anchored
+    search in charge rather than inventing a shift."""
+    t = np.arange(0.0, 10.0, 1 / 60)
+    assert engine.capture_lag_prior(t, t) is None
+
+
+def test_capture_lag_prior_declines_on_implausible_duration_delta():
+    """A trace pair whose lengths differ by far more than the handshake
+    could explain (one recording stopped independently -- real cases in the
+    corpus differ by 5s and 18s) is not evidence of a start skew. The
+    prior must decline rather than propose an 18-second shift."""
+    ref_t = np.arange(0.0, 10.0, 1 / 120)
+    assert engine.capture_lag_prior(ref_t, np.arange(0.0, 28.0, 1 / 20)) is None
+    assert engine.capture_lag_prior(ref_t, np.arange(0.0, 4.0, 1 / 20)) is None
+
+
+def test_compare_pair_recovers_alignment_the_free_search_loses():
+    """Regression test for the 2026-08-28 fix. A ~1 Hz decaying pendulum
+    swing correlates almost as well a whole cycle off as it does at the
+    truth, so the release-anchored search can settle on the wrong peak and
+    score a well-tracked trial in double digits -- Participant_19's four
+    post trials all landed at a lag of -0.08 to -0.13s where the real skew
+    was -0.78s, scoring 10.3-11.5 deg instead of 2.6-4.7 deg. Reproduced
+    here deterministically: with the pre-fix +/-5s bound and no prior this
+    fixture aligned at +0.25s, a full cycle from the true -0.75s. The
+    durations pin the skew, so it must now land near the truth. (The
+    tightened MAX_LAG_SEC alone also rescues this clean synthetic -- on the
+    real corpus, where the traces are noisy, the prior is what does it.)"""
+    fs_ref, fs_test = 120.0, 20.0
+    start_skew = 0.75      # IMU log opens this far before Motive's take
+    stop_offset = 0.20     # ...and closes this far before it (STOP_FLUSH)
+    imu_duration = 9.0
+    opti_duration = imu_duration + stop_offset - start_skew
+
+    def swing(u):
+        """Leg held at the release angle, then let go at u=0."""
+        u = np.maximum(np.asarray(u, dtype=float), 0.0)
+        return 160.0 - 35.0 * np.exp(-0.5 * u) * np.cos(2 * np.pi * 1.0 * u)
+
+    # Each trace is timestamped from its own first sample, so the shared wall
+    # clock survives only in the durations -- exactly as it does on disk.
+    # Release sits at start_skew in the IMU's base and at 0.0 in Motive's.
+    test_t = np.linspace(0.0, imu_duration, int(round(imu_duration * fs_test)) + 1)
+    test_y = swing(test_t - start_skew)
+    ref_t = np.linspace(0.0, opti_duration, int(round(opti_duration * fs_ref)) + 1)
+    ref_y = swing(ref_t)
+
+    result = engine.compare_pair(ref_t, ref_y, test_t, test_y,
+                                 capture_skew_prior=True)
+    assert result["status"] == "ok"
+    # Two IMU samples at 20 Hz. The trace cannot localise a shift finer than
+    # that, and it still separates the truth from the cycle-off alias by an
+    # order of magnitude.
+    assert abs(result["lag_sec"] - (-start_skew)) < 0.1, (
+        f"expected the recovered lag near {-start_skew}s, got "
+        f"{result['lag_sec']}s -- the durations should have pinned it")
+    assert result["rmse_deg"] < 5.0
+
+    # And the alias it used to pick must still be visibly worse, so this
+    # test fails loudly if the prior ever stops being consulted.
+    aliased = engine.compare_pair(ref_t, ref_y, test_t, test_y,
+                                  lag_override_sec=0.25)
+    assert aliased["rmse_deg"] > 3 * result["rmse_deg"]
+
+
+def test_capture_skew_prior_is_not_consulted_unless_requested(monkeypatch):
+    """The prior is IMU-only: it reads the start skew off the two recording
+    durations, which holds for a phone IMU log but not for video, whose
+    files are trimmed and re-encoded independently of the capture window.
+    Measured on 77 cached MediaPipe trials it had no relationship to the
+    true lag (corr +0.02, residual sd 0.48s) and switching it on made RMSE
+    worse (27.6 -> 31.7 deg median). Asserting on the resulting lag is too
+    weak a check -- the tightened MAX_LAG_SEC bound already aligns a clean
+    synthetic correctly on its own -- so this asserts the contract itself:
+    the prior must not even be CONSULTED without an explicit opt-in."""
+    calls = []
+    real = engine.capture_lag_prior
+
+    def spy(ref_t, test_t):
+        calls.append(1)
+        return real(ref_t, test_t)
+
+    monkeypatch.setattr(engine, "capture_lag_prior", spy)
+
+    t = np.arange(0.0, 6.0, 1 / 60)
+    ref_y = 160.0 - 30.0 * np.exp(-0.5 * t) * np.cos(2 * np.pi * 1.0 * t)
+    test_t = np.arange(0.0, 6.5, 1 / 20)
+    test_y = 160.0 - 30.0 * np.exp(-0.5 * test_t) * np.cos(2 * np.pi * 1.0 * test_t)
+
+    engine.compare_pair(t, ref_y, test_t, test_y)
+    assert calls == [], (
+        "compare_pair consulted the capture-skew prior without being asked -- "
+        "that silently changes every video/HPE comparison too")
+
+    engine.compare_pair(t, ref_y, test_t, test_y, capture_skew_prior=True)
+    assert calls, "capture_skew_prior=True did not reach capture_lag_prior"
+
+
+def test_max_lag_sec_excludes_physically_unreachable_skew():
+    """The capture skew is bounded by motive_sync's handshake (~1.2s worst
+    case), so the lag search must not be free to roam multiple seconds. The
+    old +/-5s bound placed 22 of 77 real video trials at |lag| > 2.5s."""
+    assert analysis_pipeline.MAX_LAG_SEC <= 1.5

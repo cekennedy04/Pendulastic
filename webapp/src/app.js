@@ -256,28 +256,42 @@ const ZONE_LABEL = {
   unknown: 'zone unknown',
 };
 
-// Zone classification is SUPPRESSED (2026-08-28), and this is not caution
-// about a weak signal -- the reference the zones are measured against is
-// known to be wrong.
+// Zone classification is SUPPRESSED. The score and its breakdown are still
+// shown -- they are the raw measurement and remain useful for judging capture
+// quality -- but the healthy/borderline/impaired VERDICT is withheld, because
+// a per-trial verdict is exactly what this instrument cannot currently support.
 //
-// HEALTHY_REF's "control median n=4" (pendulastic_pt_score.py) was computed
-// over P2, P8, P9, P12. Three of those four are compromised: P2's shank and
-// thigh marker centroids coincide (degenerate geometry the loader of the day
-// scored anyway), P8's optical coverage is 0.69 and the old loader filled the
-// dropout by ffill/bfill -- fabricating the swing that made it look healthy
-// -- and P9's left and right files are byte-identical. Only P12 is sound.
-// Measured consequence: the control cohort now scores WORSE than the MS
-// cohort (median 1.668 vs 0.626), and every one of five phone trials from a
-// healthy test participant was classified "impaired range".
+// The reason, stated carefully, because an earlier version of this comment got
+// it wrong. It claimed the control cohort scored WORSE than the MS cohort
+// (1.668 vs 0.626) and blamed three compromised control participants. That was
+// true of the tree on 2026-08-28 and is NOT true now: commits 9abe37c
+// (recovering the P2 trials Motive had exported in local rigid-body
+// coordinates) and a658c3f (estimating drift from the settled tail) removed
+// the inversion. Recomputed at this commit the controls score 0.155 against
+// the MS cohort's 0.475 -- separated, and in the right direction. Anyone
+// re-checking the old figure will not reproduce it; it has been superseded,
+// not merely refined.
 //
-// A wrong band is worse than no band: "impaired" reads as a finding, and a
-// "(provisional)" suffix does not undo that. The score and its breakdown are
-// still shown, because they are the raw measurement and remain useful for
-// debugging capture quality -- it is only the healthy/borderline/impaired
-// VERDICT that has no defensible basis right now.
+// Two reasons survive, and they are enough on their own:
 //
-// Re-enable by flipping this to true, once HEALTHY_REF and the two zone
-// thresholds are recalibrated against a defensible control set.
+// 1. HEALTHY_REF cannot be reproduced from its stated provenance. It is
+//    annotated "control median n=4" over P2/P8/P9/P12; recomputing exactly
+//    that gives area_ratio 0.1390 against the stated 0.0768 (81% off),
+//    omega_min_n 31% off, N 14% off, phi_max_ratio 11% off -- only R2n and f
+//    land within 5%. No script deriving it exists in any commit. So nobody can
+//    say what population the bands actually encode.
+//
+// 2. Leave-one-participant-out AUC is 0.21 -- below chance (see
+//    mobile-imu-core/src/pt_score.rs). Group medians separating does NOT
+//    license classifying an individual trial, and a band is an individual
+//    classification. This is the decisive one: it would hold even if the
+//    reference were perfectly reproducible.
+//
+// A wrong band is worse than no band -- "impaired" reads as a finding, and a
+// "(provisional)" suffix does not undo that.
+//
+// Re-enable by flipping this to true, once HEALTHY_REF has a reproducible
+// derivation AND per-trial discrimination beats chance.
 const ZONE_CLASSIFICATION_CALIBRATED = false;
 
 const ZONE_UNCALIBRATED_LABEL = 'not classified — reference under recalibration';

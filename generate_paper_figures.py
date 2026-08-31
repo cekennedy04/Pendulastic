@@ -147,28 +147,63 @@ def figure2_metrics_by_mas(rows):
     print(f"Saved {out}")
 
 
-def figure3_trajectory_example():
-    trials = batch.discover_trials()
-    target = next((t for t in trials if "Participant_16" in t["imu"]
-                   and "Trial_1_imu.csv" in t["imu"] and t["optitrack_path"]), None)
-    if target is None:
-        print("No suitable trial found for Figure 3 -- skipping.")
-        return
+def _load_trajectory_pair(target):
+    """Load one trial's IMU and OptiTrack traces, or None if either side
+    won't load. OptiTrack loading genuinely raises on trials whose optical
+    coverage is too low to establish an anatomical reference, so this is a
+    normal outcome to skip past, not an error to abort the whole figure
+    run on."""
     validations = {
-        "accel": engine.validate_component_csv(target["accel"], "accel"),
-        "gyro": engine.validate_component_csv(target["gyro"], "gyro"),
-        "mag": engine.validate_component_csv(target["mag"], "mag"),
-        "imu": engine.validate_component_csv(target["imu"], "imu"),
+        kind: engine.validate_component_csv(target[kind], kind)
+        for kind in ("accel", "gyro", "mag", "imu")
     }
     if any(not v["ok"] for v in validations.values()):
-        print("Target trial's components invalid -- skipping Figure 3.")
+        return None
+    try:
+        t_imu, ang_imu, _ref = engine.load_imu_trial_from_components(
+            validations, method="relative")
+        t_opti, ang_opti, _m = engine.load_optitrack_trial(target["optitrack_path"])
+    except Exception as e:
+        print(f"  [skip] {target['participant']} {target['trial']}: "
+              f"{type(e).__name__}: {e}")
+        return None
+    if len(t_imu) < 10 or len(t_opti) < 10:
+        return None
+    return t_imu, ang_imu, t_opti, ang_opti
+
+
+def figure3_trajectory_example():
+    trials = [t for t in batch.discover_trials() if t["optitrack_path"]]
+    # Preferred example first, then any other trial, so one unloadable
+    # trial (P16/Trial_1 currently fails the optical-coverage check) no
+    # longer takes the whole figure down with it.
+    preferred = [t for t in trials if "Participant_16" in t["imu"]
+                 and "Trial_1_imu.csv" in t["imu"]]
+    loaded = None
+    for target in preferred + [t for t in trials if t not in preferred]:
+        loaded = _load_trajectory_pair(target)
+        if loaded is not None:
+            break
+    if loaded is None:
+        print("No loadable trial found for Figure 3 -- skipping.")
         return
-    t_imu, ang_imu, _ref = engine.load_imu_trial_from_components(validations, method="relative")
-    t_opti, ang_opti, _m = engine.load_optitrack_trial(target["optitrack_path"])
+    t_imu, ang_imu, t_opti, ang_opti = loaded
+
+    # Apply the capture skew before plotting (2026-08-28). This figure used
+    # to overlay the two raw time bases, so it drew the IMU trace sitting
+    # ~0.7s later than the reference -- the motive_sync handshake delay,
+    # not an IMU tracking error. Every RMSE in this paper is computed on
+    # aligned traces; the trajectory figure has to show the same alignment
+    # or it visually contradicts the numbers beside it.
+    cmp_result = engine.compare_pair(t_opti, ang_opti, t_imu, ang_imu,
+                                     capture_skew_prior=True)
+    lag = cmp_result.get("lag_sec", 0.0) if cmp_result.get("status") == "ok" else 0.0
+    t_imu = np.asarray(t_imu, dtype=float) + lag
 
     fig, ax = plt.subplots(figsize=(6, 4), dpi=200, facecolor="white")
     ax.plot(t_opti, ang_opti, color=BLUE, linewidth=1.8, label="OptiTrack (reference)", zorder=3)
-    ax.plot(t_imu, ang_imu, color=ORANGE, linewidth=1.6, label="IMU", zorder=2, alpha=0.9)
+    ax.plot(t_imu, ang_imu, color=ORANGE, linewidth=1.6,
+            label=f"IMU (capture skew {lag:+.2f} s corrected)", zorder=2, alpha=0.9)
     ax.set_xlabel("Time (s)", fontsize=9, color=INK)
     ax.set_ylabel("Knee angle (deg)", fontsize=9, color=INK)
     ax.set_title(f"Figure 3. Example trial trajectory\n({target['participant']}, {target['trial_key']})",
