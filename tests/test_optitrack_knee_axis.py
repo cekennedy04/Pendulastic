@@ -34,3 +34,30 @@ def test_classify_refuses_when_neither_cluster_is_a_triangle():
     with pytest.raises(ka.GeometryError) as exc:
         ka.classify_clusters(_bar(), _bar())
     assert "collinear" in str(exc.value).lower()
+
+
+def test_line_direction_is_sign_continuous_through_an_index_swap():
+    """SVD returns +/-v arbitrarily per frame, and Motive permutes marker
+    indices on re-solve. Without continuity the direction flips 180 deg and
+    the angle spikes. This is the transient that must NOT spike."""
+    n = 120
+    mk = np.zeros((3, n, 3))
+    for i in range(n):
+        mk[0, i] = [0.046, 0.0, 0.0]
+        mk[1, i] = [-0.046, 0.0, 0.0]
+        mk[2, i] = [0.0, 0.0012, 0.0]
+    mk[[0, 1], 60] = mk[[1, 0], 60]          # 1-frame index swap
+    dirs = ka.segment_line_direction(mk)
+    steps = np.degrees(np.arccos(np.clip(
+        np.sum(dirs[1:] * dirs[:-1], axis=1), -1, 1)))
+    assert np.nanmax(steps) < 5.0, f"direction flipped: max step {np.nanmax(steps)}"
+
+
+def test_line_direction_is_nan_where_untracked():
+    mk = np.zeros((3, 50, 3))
+    mk[0, :] = [0.046, 0.0, 0.0]; mk[1, :] = [-0.046, 0.0, 0.0]
+    mk[2, :] = [0.0, 0.0012, 0.0]
+    mk[:, 20:25] = np.nan
+    dirs = ka.segment_line_direction(mk)
+    assert np.isnan(dirs[20:25]).all()
+    assert np.isfinite(dirs[30]).all()

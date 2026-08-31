@@ -52,3 +52,31 @@ def classify_clusters(a: np.ndarray, b: np.ndarray):
     raise GeometryError(
         f"Both clusters are triangles ({ea*1000:.1f} mm and {eb*1000:.1f} mm "
         f"out of line): this rig geometry is unsupported.")
+
+
+def segment_line_direction(bar: np.ndarray) -> np.ndarray:
+    """Per-frame unit direction of a collinear cluster, sign-continuous.
+
+    A bar observes its LINE but not its sign: SVD returns +/-v arbitrarily,
+    and Motive permutes Marker1/2/3 when it re-solves the cluster. Continuity
+    is therefore mandatory, not defensive, and it is enforced here on the 3-D
+    vector before any scalar reduction -- unwrapping a scalar afterwards
+    cannot undo a 180 deg vector flip.
+    """
+    n = bar.shape[1]
+    out = np.full((n, 3), np.nan)
+    prev = None
+    for i in range(n):
+        pts = bar[:, i, :]
+        if not np.isfinite(pts).all():
+            continue
+        centred = pts - pts.mean(axis=0)
+        try:
+            line = np.linalg.svd(centred, full_matrices=False)[2][0]
+        except np.linalg.LinAlgError:
+            continue
+        if prev is not None and float(np.dot(line, prev)) < 0.0:
+            line = -line
+        out[i] = line
+        prev = line
+    return out
