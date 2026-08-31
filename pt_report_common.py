@@ -628,6 +628,33 @@ def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_di
     return out_path
 
 
+def _row5_source_mas(source_mean, source_params):
+    """MAS label for a source's mean PT7, or None when the swing cannot carry one.
+
+    PT7's parameters are all ratios normalised on the swing, so once the swing
+    collapses they renormalise on a tiny clean motion and a barely-moving leg
+    scores mild -- see pendulastic_pt_score's excursion-gate block. The report
+    is a clinician-facing surface, so it must not print a grade the score does
+    not support. On this corpus that suppresses exactly P9 left/right (A0 9.0
+    deg, previously shown as MAS 1), which are independently known to be a
+    duplicated-export rig defect.
+
+    Falls back to grading whenever excursion cannot be established at all --
+    a source with no A0 (e.g. a test double) keeps its previous behaviour
+    rather than silently losing its label.
+    """
+    if source_mean is None:
+        return None
+    a0s = [p["A0_deg"] for p in (source_params or [])
+           if isinstance(p, dict) and p.get("A0_deg") is not None
+           and np.isfinite(p["A0_deg"])]
+    if not a0s:
+        return pt.pt_to_mas(source_mean)
+    if float(np.mean(a0s)) < pt.MIN_INTERPRETABLE_A0_DEG:
+        return None
+    return pt.pt_to_mas(source_mean)
+
+
 def _row5_source_pt7(rec, curve_key):
     """(PT7, params) computed directly from one source's own curve on this
     trial record -- PT7 is the same compute_pt_score used for OptiTrack
@@ -735,7 +762,7 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
             rows.append({
                 "timepoint": tp_label, "source": source_label,
                 "opti_paired_pt7": opti_paired_mean, "opti_paired_n": len(paired_opti),
-                "source_pt7": source_mean, "source_mas": pt.pt_to_mas(source_mean) if source_mean is not None else None,
+                "source_pt7": source_mean, "source_mas": _row5_source_mas(source_mean, source_params),
                 "delta": delta, "top_contributor": top_contributor,
                 "n_candidate": n_candidate, "n_passed_gate": n_passed_gate,
                 "n_total": len(trials), "n_scored": n_scored,

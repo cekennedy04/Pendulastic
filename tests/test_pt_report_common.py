@@ -1230,3 +1230,28 @@ def test_make_report_figure_sidecar_holds_both_legs_not_just_the_last(tmp_path, 
         rows = list(_csv.DictReader(f))
 
     assert {r["leg"] for r in rows} == {"left", "right"}
+
+
+# ── excursion gate in the report (2026-08-30) ──────────────────────────────
+
+def test_row5_source_mas_suppresses_a_grade_for_a_collapsed_swing():
+    """A clinician-facing table must not print a MAS grade PT7 cannot support.
+
+    On this corpus that is P9 left/right at A0 9.0 deg, which used to render as
+    MAS 1 and are independently known to be a duplicated-export rig defect."""
+    params = [{"A0_deg": 9.0}, {"A0_deg": 9.2}]
+    assert common._row5_source_mas(0.278, params) is None
+
+
+def test_row5_source_mas_grades_a_normal_swing_as_before():
+    params = [{"A0_deg": 48.0}, {"A0_deg": 52.0}]
+    got = common._row5_source_mas(0.278, params)
+    assert got == common.pt.pt_to_mas(0.278)
+
+
+def test_row5_source_mas_falls_back_when_excursion_is_unknown():
+    """A source with no A0 at all (a test double, say) keeps its old label
+    rather than silently losing it -- absent evidence is not evidence."""
+    assert common._row5_source_mas(0.278, []) == common.pt.pt_to_mas(0.278)
+    assert common._row5_source_mas(0.278, [{"R2n": 1.0}]) == common.pt.pt_to_mas(0.278)
+    assert common._row5_source_mas(None, [{"A0_deg": 48.0}]) is None
