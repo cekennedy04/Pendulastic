@@ -937,6 +937,29 @@ def _angle_from_labeled_markers(
 
     # Anatomical seed: centroid-to-centroid over the hold, when the leg is
     # extended. Use only fully-tracked frames so occlusion cannot skew it.
+    #
+    # KNOWN BUG (2026-08-30, unfixed) -- this assumes the FIRST 60 frames are the
+    # extended hold, and because axis_thigh = -axis_shank the seed pose becomes
+    # exactly 180 deg by construction. When a trial instead starts AT REST or
+    # MID-MOTION the zero is anchored to a flexed pose and every later angle is
+    # wrong, while the baseline still reads a convincing 179.9.
+    #
+    # Confirmed on video: P8 Left trial_2 starts and ends with the leg hanging
+    # flexed, nobody holding it, yet reports head 179.9 / tail 179.6 / A0 8.5.
+    # P9 Left trial_3 starts mid-motion (seed window 2.0 mm/frame, not calm) and
+    # reports A0 = 418.1 deg at 97.3% coverage.
+    #
+    # Measured blast radius: 20/214 trials settle above 170 deg (a resting knee
+    # is not fully extended) against 3/214 for the pre-2026-08-27 code, and 6
+    # legs go degenerate (R2n exactly 0 or area_ratio >= 0.9) against 1 -- ALL
+    # SIX of them MAS-0, i.e. biased in the direction that erases group
+    # separation. Excluding them restores most of the MAS discrimination.
+    #
+    # DO NOT read a MAS-vs-PT comparison off this branch until this is fixed.
+    # tests/test_optitrack_marker_angle.py cannot catch it: _build_trial always
+    # starts with a held, extended leg. A fix needs synthetic trials that start
+    # at rest and mid-motion. Seeding from the calm window of maximum
+    # thigh->shank centroid separation was tried and does NOT discriminate.
     ref_n = min(60, n)
     hold_ok = (np.isfinite(sm[:, :ref_n, :]).all(axis=(0, 2)) &
                np.isfinite(tm[:, :ref_n, :]).all(axis=(0, 2)))
