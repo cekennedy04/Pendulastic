@@ -650,7 +650,16 @@ def _row5_source_mas(source_mean, source_params):
            and np.isfinite(p["A0_deg"])]
     if not a0s:
         return pt.pt_to_mas(source_mean)
-    if float(np.mean(a0s)) < pt.MIN_INTERPRETABLE_A0_DEG:
+    # Delegate to the reference predicate rather than restating its bound. This
+    # used to compare against MIN_INTERPRETABLE_A0_DEG only, and
+    # pendulastic_pt_score's own note says why a floor is not enough: "A
+    # one-sided gate only guards one failure direction." The seed-window bug
+    # produced A0 = 418.1 deg on P9 Left/Right trial_3 at 97.3% coverage, and
+    # that was being graded MAS "4" -- the worst grade on the scale, off a
+    # number that cannot be an interior knee angle at all, since those live in
+    # [0, 180]. Calling excursion_ok means the ceiling cannot go missing again,
+    # and a future change to either bound reaches this call site for free.
+    if not pt.excursion_ok({"A0_deg": float(np.mean(a0s))}):
         return None
     return pt.pt_to_mas(source_mean)
 

@@ -116,12 +116,13 @@ except Exception:
 
 try:
     from pendulastic_pt_score import (
-        compute_pt_params, compute_pt_score_simple, pt_to_mas,
+        compute_pt_params, compute_pt_score_simple, pt_to_mas, excursion_ok,
         HEALTHY_REF, load_optitrack, load_optitrack_detailed, draw_pt_annotations,
     )
     _PT_AVAIL = True
 except Exception:
     compute_pt_params = compute_pt_score_simple = pt_to_mas = None
+    excursion_ok = None
     HEALTHY_REF = load_optitrack = draw_pt_annotations = None
     load_optitrack_detailed = None
     _PT_AVAIL = False
@@ -1796,7 +1797,13 @@ class PostProcessingPanel(tk.Frame):
             if p is None:
                 continue
             score = compute_pt_score_simple(p)
-            mas   = pt_to_mas(score)
+            # Refuse the grade when the swing cannot support one. Without this
+            # the live view printed a MAS off any params that computed at all --
+            # including A0 = 418.1 deg from the seed-window bug, which is not a
+            # possible interior knee angle (they live in [0, 180]) and was being
+            # shown as MAS "4". The SCORE stays visible either way, matching
+            # mas_estimate's contract of returning pt7 alongside mas=None.
+            mas = pt_to_mas(score) if (excursion_ok is None or excursion_ok(p)) else None
             self._metrics_frame.config(
                 text=f"Popović PT Metrics (source: {src.upper()})")
             self.a1_var.set(f"{p['A1_deg']:.1f}")
@@ -1804,7 +1811,8 @@ class PostProcessingPanel(tk.Frame):
             self.n_var.set(f"{p['N']:.1f}")
             self.f_var.set(f"{p['f']:.2f}")
             self.r2n_var.set(f"{p['R2n']:.3f}")
-            self.mas_var.set(str(mas))
+            self.mas_var.set(str(mas) if mas is not None
+                             else f"not interpretable (A0 {p['A0_deg']:.1f} deg)")
             self.score_var.set(f"{score:.3f}")
 
             self._last_pt_params = p

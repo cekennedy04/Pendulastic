@@ -5,6 +5,7 @@ import builtins
 import json
 import pytest
 
+import pendulastic_pt_score as pt
 import pt_report_common as common
 import run_pt_analysis
 
@@ -1255,3 +1256,40 @@ def test_row5_source_mas_falls_back_when_excursion_is_unknown():
     assert common._row5_source_mas(0.278, []) == common.pt.pt_to_mas(0.278)
     assert common._row5_source_mas(0.278, [{"R2n": 1.0}]) == common.pt.pt_to_mas(0.278)
     assert common._row5_source_mas(None, [{"A0_deg": 48.0}]) is None
+
+
+# -- The excursion gate must guard BOTH directions (2026-08-31) -------------
+# _row5_source_mas checked only the floor. pendulastic_pt_score's own docstring
+# warns why that is not enough: "A one-sided gate only guards one failure
+# direction." A seed-window bug produced A0 = 418.1 deg on P9 Left/Right
+# trial_3 at 97.3% coverage, and that value was being graded MAS "4" -- the
+# worst grade on the scale, off a number that cannot be an interior knee angle
+# at all (they live in [0, 180]).
+
+
+def test_row5_source_mas_refuses_a_collapsed_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 9.0}]) is None
+
+
+def test_row5_source_mas_refuses_an_impossible_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 418.1}]) is None
+
+
+def test_row5_source_mas_grades_a_normal_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 46.6}]) is not None
+
+
+def test_row5_source_mas_boundaries_match_the_reference_constants():
+    lo, hi = pt.MIN_INTERPRETABLE_A0_DEG, pt.MAX_INTERPRETABLE_A0_DEG
+    assert common._row5_source_mas(1.9, [{"A0_deg": lo}]) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": hi}]) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": lo - 0.01}]) is None
+    assert common._row5_source_mas(1.9, [{"A0_deg": hi + 0.01}]) is None
+
+
+def test_row5_source_mas_still_grades_when_no_excursion_is_available():
+    """A source with no A0 at all (a test double) keeps its prior behaviour
+    rather than silently losing its label -- the gate refuses what it can
+    measure and is out of scope for what it cannot."""
+    assert common._row5_source_mas(1.9, []) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": None}]) is not None
