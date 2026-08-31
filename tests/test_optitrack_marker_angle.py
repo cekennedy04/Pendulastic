@@ -542,3 +542,57 @@ def test_the_ordinary_hold_first_trial_still_works(tmp_path, monkeypatch):
     p = _write_csv(str(tmp_path / "hold_first.csv"), rows)
     max_err, _base = _err(p, truth, monkeypatch)
     assert max_err < 2.0, f"regression on the easy case: {max_err:.1f} deg"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The seed window has to actually BE a hold. Nothing checked that before.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_a_moving_seed_window_is_flagged(tmp_path):
+    """P9 Left trial_3's shape: the recording opens mid-swing, so the pose the
+    zero is taken from is moving. It reported A0 = 418 deg at 97.3% coverage,
+    where neither the coverage gate nor the plausibility checks saw anything."""
+    rows, _truth = _build_protocol(start_at=340)
+    p = _write_csv(str(tmp_path / "moving_seed.csv"), rows)
+    _t, _ang, q = pts.load_optitrack_detailed(p)
+    assert any("reference window is not a hold" in w for w in q.warnings), q.warnings
+
+
+def test_a_genuine_hold_is_not_flagged(tmp_path):
+    rows, _truth = _build_protocol(lead_in=0, lift_frames=0)
+    p = _write_csv(str(tmp_path / "real_hold.csv"), rows)
+    _t, _ang, q = pts.load_optitrack_detailed(p)
+    assert not any("reference window is not a hold" in w for w in q.warnings), q.warnings
+
+
+def test_a_trial_that_opens_at_rest_is_still_stationary_and_so_not_flagged(tmp_path):
+    """Documents the limit of this detector rather than overselling it. A
+    recording that opens with the leg resting IS still, so a stillness check
+    cannot see that the pose is flexed rather than extended. That case needs
+    the joint-centre method, which this rig's collinear thigh bar cannot
+    support -- see USE_FUNCTIONAL_KNEE_CENTRE."""
+    rows, _truth = _build_protocol()
+    p = _write_csv(str(tmp_path / "rest_open.csv"), rows)
+    _t, _ang, q = pts.load_optitrack_detailed(p)
+    assert not any("reference window is not a hold" in w for w in q.warnings)
+
+
+def test_seed_window_speed_is_measured_without_any_reference_pose(tmp_path):
+    """It must not depend on the seed it is checking."""
+    import pandas as pd
+    n = 80
+    moving = np.linspace(0.0, 0.20, n)          # 200 mm over 80 frames
+    cols = {}
+    for m in range(3):
+        for axis in range(3):
+            cols[m * 3 + axis] = 0.4 + moving
+    df = pd.DataFrame(cols)
+    trips = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+    speed = pts._seed_window_speed_mm(df, trips, n_frames=60)
+    # 200 mm / 79 steps, projected on three equal axes
+    assert speed == pytest.approx(200.0 / (n - 1) * math.sqrt(3), rel=0.05)
+
+
+def test_seed_window_speed_is_nan_without_markers():
+    import pandas as pd
+    assert not np.isfinite(pts._seed_window_speed_mm(pd.DataFrame(), []))

@@ -766,6 +766,29 @@ def _raw_column_coverage(df: pd.DataFrame, cols: list) -> float:
     return float(np.isfinite(arr).all(axis=1).mean())
 
 
+def _seed_window_speed_mm(df: pd.DataFrame, shank_triplets: list,
+                          n_frames: int = 60) -> float:
+    """Median per-frame travel (mm) of the shank cluster over the seed window.
+
+    Seed-free by construction -- it only asks whether the leg was STILL while
+    the reference pose was being taken, which is what the seed assumes and
+    never checks.
+    """
+    if len(df) == 0 or len(shank_triplets) < 3:
+        return float("nan")
+    cols = []
+    for trip in shank_triplets[:3]:
+        arr = df.iloc[:, trip].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        cols.append(arr)
+    centroid = np.nanmean(np.stack(cols), axis=0)[:n_frames]
+    if len(centroid) < 2:
+        return float("nan")
+    step = np.linalg.norm(np.diff(centroid, axis=0), axis=1) * 1000.0
+    step = step[np.isfinite(step)]
+    return float(np.median(step)) if step.size else float("nan")
+
+
 def _coverage_from_cols(df: pd.DataFrame, shank_triplets: list,
                         thigh_triplets: list) -> float:
     """Fraction of frames in which every Shank and Thigh marker was tracked."""
@@ -957,6 +980,31 @@ def _split_unlabeled_by_motion(df: pd.DataFrame, triplets: list):
     if scored[-3][0] < 3.0 * max(scored[2][0], 1e-6):
         return None, None
     return shank, thigh
+
+
+# Marker speed (mm per frame) above which the seed window is not a hold.
+#
+# The anatomical seed assumes the first 60 frames show the leg held still and
+# extended, and makes that pose exactly 180 deg. If the recording opens while
+# the leg is still MOVING, the zero is anchored to a moving pose and every
+# angle after it is wrong -- P9 Left trial_3 does this and reports A0 = 418 deg
+# at 97.3% coverage, where nothing else flags it.
+#
+# Set from the corpus: across 248 trials the median seed-window speed is
+# 0.06 mm/frame and the 90th percentile 0.24, while the failing trials sit at
+# 2.0-2.8. 1.0 is ~4x the p90 and less than half the smallest failure, and
+# selects 8 trials. This detects the MOVING-seed case only; a recording that
+# opens at rest is stationary and cannot be caught this way.
+MAX_SEED_WINDOW_SPEED_MM = 1.0
+
+SEED_WINDOW_MOVING = (
+    "The reference window is not a hold: the shank markers move {speed:.2f} mm "
+    "per frame over the first {n} frames, against {gate:.1f} for a still leg "
+    "(corpus median 0.06). The knee angle's zero is taken from those frames on "
+    "the assumption they show the leg held extended, so if the recording opened "
+    "mid-movement the whole curve is offset by an unknown amount. Re-record "
+    "starting before the lift."
+)
 
 
 # Whether to measure the knee angle about a joint centre found from the swing
@@ -1783,6 +1831,10 @@ def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQua
                 raise ValueError(
                     f"{exc} (optical coverage {cov*100:.1f}%)") from exc
             warns = list(_curve_quality_warnings(angles))
+            _seed_speed = _seed_window_speed_mm(df, _shank_mks)
+            if np.isfinite(_seed_speed) and _seed_speed > MAX_SEED_WINDOW_SPEED_MM:
+                warns.insert(0, SEED_WINDOW_MOVING.format(
+                    speed=_seed_speed, n=60, gate=MAX_SEED_WINDOW_SPEED_MM))
             if cov < LOW_OPTICAL_COVERAGE:
                 warns.insert(0,
                     f"Optical coverage {cov*100:.1f}% is below "
