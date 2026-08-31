@@ -861,7 +861,6 @@ if (typeof document !== 'undefined') {
     // with the state screen the operator just watched. Do not "harmonise"
     // the markers into the palette -- see app.css's state-color note.
     ctx.strokeStyle = '#64748B';
-    ctx.fillStyle = '#0F172A';
     ctx.lineWidth = 1;
 
     // Axes.
@@ -881,7 +880,7 @@ if (typeof document !== 'undefined') {
       ctx.moveTo(padL, y);
       ctx.lineTo(padL + plotW, y);
       ctx.stroke();
-      ctx.fillStyle = '#5a6169';
+      ctx.fillStyle = '#64748B';
       ctx.fillText(`${a.toFixed(0)}°`, padL - 6, y);
     }
     // X ticks: whole seconds across the trial span.
@@ -892,19 +891,19 @@ if (typeof document !== 'undefined') {
     for (let s = 0; s <= tHi; s += step) {
       if (s < tLo) continue;
       const x = xOf(s);
-      ctx.fillStyle = '#5a6169';
+      ctx.fillStyle = '#64748B';
       ctx.fillText(`${s}s`, x, padT + plotH + 4);
     }
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = '#5a6169';
+    ctx.fillStyle = '#64748B';
     ctx.fillText('deg', 4, padT + 10);
 
     // Neutral line.
     if (typeof neutral_deg === 'number' && Number.isFinite(neutral_deg)) {
       const y = yOf(neutral_deg);
       ctx.save();
-      ctx.strokeStyle = '#5a6169';
+      ctx.strokeStyle = '#64748B';
       ctx.setLineDash([5, 4]);
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -933,7 +932,7 @@ if (typeof document !== 'undefined') {
     // tick 0 always, and any mid-trial sensor dropout -- rather than
     // interpolating through zero, which would draw a motion that never
     // happened.
-    ctx.strokeStyle = '#101317';
+    ctx.strokeStyle = '#0F172A';
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     let drawing = false;
