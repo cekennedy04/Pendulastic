@@ -233,6 +233,39 @@ pub fn pt_score(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// `breakdown` is emitted as an array of `{"key":...,"value":...}` objects,
 /// pre-sorted by descending contribution (`PtScoreBreakdown::ordered`), so the
 /// caller can render it directly without re-deriving the sort in JS.
+/// `pendulastic_pt_score._N_SIMPLE` — the 4 keys of the simplified score
+/// (`_SIMPLE_KEYS`: R2n, N, phi_max_ratio, omega_max_n).
+pub const N_SIMPLE: usize = 4;
+
+/// `pendulastic_pt_score.compute_pt_score_simple` — the 4-parameter score.
+///
+/// This exists because `pendulastic_app.py:1799` displays THIS number, not the
+/// seven-parameter one, so without it the phone and the capture app report
+/// different scores for the same trial. It drops `area_ratio` (the reference
+/// calls it unreliable for marker-based "duo" angles) and `f`, and every
+/// remaining key is penalise-below-only — so unlike the full score there is no
+/// bidirectional term and no uncomputable-`f` special case.
+///
+/// Worth knowing which two it drops: `area_ratio` saturates near 1.0 and `f`
+/// goes unmeasurable on a limb that never swings back, so the simple score is
+/// markedly less inflated than the full one on exactly those trials.
+pub fn pt_score_simple(params: &PtParams, healthy: &HealthyRef) -> f64 {
+    let denom = |phj: f64| N_SIMPLE as f64 * phj.max(DENOM_FLOOR);
+    let mut total = 0.0;
+    for (pij, phj) in [
+        (params.r2n, healthy.r2n),
+        (params.n, healthy.n),
+        (params.phi_max_ratio, healthy.phi_max_ratio),
+        (params.omega_max_n, healthy.omega_max_n),
+    ] {
+        if phj <= 0.0 {
+            continue;
+        }
+        total += dev_below(pij, phj, denom(phj));
+    }
+    total
+}
+
 /// `pendulastic_pt_score.MIN_INTERPRETABLE_A0_DEG` — the floor below which
 /// PT7 stops meaning anything. Control excursion mean 46.6 deg, sd 11.1,
 /// n=53; a swing that collapses takes every ratio-normalised parameter with
@@ -368,8 +401,10 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
     };
 
     format!(
-        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}],\"unmeasured\":[{}],\"excursion_reason\":{}}}",
+        "{{\"score\":{},\"score_simple\":{},\"zone\":\"{}\",\"breakdown\":[{}],\
+         \"unmeasured\":[{}],\"excursion_reason\":{}}}",
         fmt_f64(total),
+        fmt_f64(pt_score_simple(params, healthy)),
         zone_str,
         items,
         unmeasured,
@@ -733,6 +768,102 @@ mod tests {
         // The refusal is still reported -- withholding it would hide WHY the
         // trial is doubly unusable.
         assert!(json.contains("Insufficient excursion"), "{json}");
+    }
+
+
+    // -- Simple 4-parameter score (pendulastic_app's live view) -------------
+    // pendulastic_app.py:1799 displays compute_pt_score_simple, not the full
+    // seven-parameter score, so the phone and the capture app were reporting
+    // different numbers for the same trial. The simple score deliberately drops
+    // area_ratio and f -- which are precisely the two that saturate or go
+    // unmeasurable on a rigid limb.
+
+    #[test]
+    fn the_simple_score_uses_four_parameters_not_seven() {
+        assert_eq!(N_SIMPLE, 4);
+    }
+
+    #[test]
+    fn a_reference_trial_scores_zero_on_both_scales() {
+        let p = params(|_p| {}); // params() defaults ARE the healthy reference
+        assert!(pt_score_simple(&p, &HEALTHY_REF).abs() < 1e-12);
+        assert!(pt_score(&p, &HEALTHY_REF).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_simple_score_ignores_area_ratio_and_f() {
+        // Both are excluded by _SIMPLE_KEYS, so moving them must not move it.
+        let base = pt_score_simple(&params(|_p| {}), &HEALTHY_REF);
+        let moved = pt_score_simple(&params(|p| {
+            p.area_ratio = 0.99;
+            p.f = 0.0;
+        }), &HEALTHY_REF);
+        assert!((base - moved).abs() < 1e-12, "{base} vs {moved}");
+        // ...while the full score DOES move on the same params.
+        assert!(pt_score(&params(|p| { p.area_ratio = 0.99; p.f = 0.0; }), &HEALTHY_REF)
+                > pt_score(&params(|_p| {}), &HEALTHY_REF));
+    }
+
+    #[test]
+    fn the_simple_score_penalises_only_below_reference() {
+        // All four simple keys are "penalise below" -- above-reference values
+        // contribute nothing, matching the reference's one-directional loop.
+        let above = pt_score_simple(&params(|p| {
+            p.r2n = 99.0;
+            p.n = 99.0;
+            p.phi_max_ratio = 99.0;
+            p.omega_max_n = 99.0;
+        }), &HEALTHY_REF);
+        assert!(above.abs() < 1e-12, "{above}");
+    }
+
+    #[test]
+    fn a_rigid_limb_scores_lower_on_the_simple_scale_than_the_full_one() {
+        // The divergence that matters in practice: dropping area_ratio (which
+        // saturates near 1.0 with no return swing) roughly halves the number
+        // the operator sees.
+        let p = params(|p| {
+            p.r2n = 0.0;
+            p.n = 0.0;
+            p.phi_max_ratio = 0.0;
+            p.omega_max_n = 2.5;
+            p.f = 0.0;
+            p.area_ratio = 0.99;
+            p.a0_deg = 57.7;
+        });
+        let full = pt_score(&p, &HEALTHY_REF);
+        let simple = pt_score_simple(&p, &HEALTHY_REF);
+        assert!(simple < full, "simple {simple} should be below full {full}");
+    }
+
+    #[test]
+    fn the_json_payload_carries_both_scores() {
+        let p = params(|p| p.a0_deg = 46.6);
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(json.contains("\"score\":"), "{json}");
+        assert!(json.contains("\"score_simple\":"), "{json}");
+    }
+
+
+    #[test]
+    fn both_scores_match_the_python_reference_bit_for_bit() {
+        // Values produced by pendulastic_pt_score.compute_pt_score_simple /
+        // compute_pt_score on this exact params dict, printed at 17 significant
+        // digits. A structural test would pass on a port that got the formula
+        // subtly wrong; this one cannot.
+        let p = params(|p| {
+            p.r2n = 0.42;
+            p.n = 1.5;
+            p.phi_max_ratio = 0.11;
+            p.omega_max_n = 2.5;
+            p.omega_min_n = 0.004;
+            p.f = 0.0;
+            p.area_ratio = 0.94;
+        });
+        let simple = pt_score_simple(&p, &HEALTHY_REF);
+        let full = pt_score(&p, &HEALTHY_REF);
+        assert!((simple - 0.655_718_986_385_898_98_f64).abs() < 1e-15, "simple={simple:.17}");
+        assert!((full - 1.612_125_135_077_656_2_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

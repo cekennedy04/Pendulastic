@@ -1010,6 +1010,18 @@ if (typeof document !== 'undefined') {
     const badge = zoneDisplay(zone);
     zoneEl.textContent = badge.text;
     zoneEl.className = badge.className;
+    // The 4-parameter score, shown alongside the 7-parameter one because
+    // pendulastic_app.py's live view displays THIS number -- without it the
+    // phone and the desktop capture app report different figures for the same
+    // trial and neither says so. It drops area_ratio and f, which are exactly
+    // the two that saturate or go unmeasurable on a limb that never swings
+    // back, so it runs markedly lower on those trials.
+    const simpleEl = el('pt-score-simple');
+    if (simpleEl) {
+      simpleEl.textContent = typeof ptScore.score_simple === 'number'
+        ? `4-parameter score: ${ptScore.score_simple.toFixed(4)} (what the desktop capture app shows)`
+        : '';
+    }
     el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
       .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
       .join('');

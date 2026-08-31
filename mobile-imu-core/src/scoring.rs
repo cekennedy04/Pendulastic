@@ -133,61 +133,6 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     bi
 }
 
-/// `_merge_close_extrema`: repeatedly collapse consecutive extrema closer than
-/// `min_sep` samples, keeping the larger of each pair.
-///
-/// The spastic quadriceps catch produces an abrupt deceleration that
-/// `find_peaks` reads as two adjacent peaks; without merging, that single
-/// clinical event inflates the cycle count.
-///
-/// **This step cannot currently fire, in this port or in the Python
-/// reference.** Its callers pass `min_sep = max(3, fps_eff / 6)`, but the
-/// extrema reaching it have already been through
-/// `find_peaks(distance = max(3, fps_eff / 3.5))`, which guarantees survivors
-/// are at least that far apart. Since `3.5 < 6`, the distance filter's
-/// separation is always the wider of the two, at every sampling rate (the
-/// shared floor of 3 preserves the relation at low rates) — so no adjacent
-/// pair is ever closer than `min_sep` by the time this runs, and the merge
-/// loop always returns its input unchanged.
-///
-/// It is kept because U2 is a faithful port and removing it would be a
-/// behavioral redesign, not a translation. But it means the quadriceps-catch
-/// double-peak it was written to handle is in fact being handled by the
-/// distance filter alone — worth confirming against real spastic trials
-/// before anyone relies on this function as the safeguard.
-///
-/// A mutation test that deletes the call is not caught by any fixture, which
-/// is the observable consequence of the above rather than a gap in coverage.
-fn merge_close_extrema(idx: &[usize], values: &[f64], min_sep: usize) -> Vec<usize> {
-    if idx.len() < 2 {
-        return idx.to_vec();
-    }
-    let mut merged = idx.to_vec();
-    loop {
-        let mut new = Vec::with_capacity(merged.len());
-        let mut changed = false;
-        let mut i = 0;
-        while i < merged.len() {
-            if i + 1 < merged.len() && merged[i + 1] - merged[i] < min_sep {
-                let keep = if values[merged[i]] >= values[merged[i + 1]] {
-                    merged[i]
-                } else {
-                    merged[i + 1]
-                };
-                new.push(keep);
-                i += 2;
-                changed = true;
-            } else {
-                new.push(merged[i]);
-                i += 1;
-            }
-        }
-        merged = new;
-        if !changed {
-            return merged;
-        }
-    }
-}
 
 /// First index from which `ang_r` stays permanently within `tol` of `neutral`.
 ///
@@ -396,10 +341,13 @@ pub fn compute_pt_params(
     pk_i.retain(|&i| t_r[i] <= window_end_t);
     tr_i.retain(|&i| t_r[i] <= window_end_t);
 
-    // Merge sub-peaks from the spastic quadriceps catch.
-    let merge_sep = 3.max((fps_eff / 6.0) as usize);
-    let pk_i = merge_close_extrema(&pk_i, &phi_s, merge_sep);
-    let tr_i = merge_close_extrema(&tr_i, &neg_phi_s, merge_sep);
+    // The quadriceps-catch merge was removed here to match Python (d323104,
+    // "remove the quadriceps-catch merge -- it could never fire"). It
+    // collapsed extrema closer than max(3, fps/6) samples, but find_peaks
+    // above already enforces distance = max(3, fps/3.5), and fps/6 < fps/3.5
+    // at every sample rate, so no surviving pair was ever close enough to
+    // merge. Keeping it implied a spastic-catch safeguard that was not in
+    // fact running. Verified behaviour-neutral: all fixtures still pass.
 
     // ---- 1. R2n (A1 = peak-to-peak of the first oscillation) --------------
     let first_neg_trough = tr_i.iter().copied().find(|&i| phi[i] < -min_amp);
