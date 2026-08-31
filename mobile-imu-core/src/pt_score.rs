@@ -233,6 +233,58 @@ pub fn pt_score(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// `breakdown` is emitted as an array of `{"key":...,"value":...}` objects,
 /// pre-sorted by descending contribution (`PtScoreBreakdown::ordered`), so the
 /// caller can render it directly without re-deriving the sort in JS.
+/// `pendulastic_pt_score.MIN_INTERPRETABLE_A0_DEG` — the floor below which
+/// PT7 stops meaning anything. Control excursion mean 46.6 deg, sd 11.1,
+/// n=53; a swing that collapses takes every ratio-normalised parameter with
+/// it. Low excursion also comes from poor positioning, an incomplete release,
+/// guarding, pain, mechanical obstruction and sensor failure, so the refusal
+/// is phrased about the MEASUREMENT, never about the patient.
+pub const MIN_INTERPRETABLE_A0_DEG: f64 = 25.0;
+
+/// `pendulastic_pt_score.MAX_INTERPRETABLE_A0_DEG` — the ceiling above which a
+/// number is not a swing at all. A0 is the initial extension of an INTERIOR
+/// knee angle, which lives in [0, 180], so 180 is already arithmetically
+/// impossible; 120 sits below that and above the data (99th percentile of 218
+/// scored optical trials is 89.8 deg, which is also the largest genuine
+/// value). Not hypothetical: a seed-window bug produced A0 = 418.1 deg on P9
+/// Left/Right trial_3 at 97.3% coverage and a MAS grade was printed off it. A
+/// floor-only gate guards one failure direction out of two.
+pub const MAX_INTERPRETABLE_A0_DEG: f64 = 120.0;
+
+/// `pendulastic_pt_score.excursion_ok` — false when the swing is too small, or
+/// too large, to interpret. A non-finite A0 is NOT ok: an unmeasurable trial
+/// is not an interpretable one.
+pub fn excursion_ok(params: &PtParams) -> bool {
+    params.a0_deg.is_finite()
+        && params.a0_deg >= MIN_INTERPRETABLE_A0_DEG
+        && params.a0_deg <= MAX_INTERPRETABLE_A0_DEG
+}
+
+/// Why the excursion gate refused, or `None` when it did not. Text mirrors
+/// `pendulastic_pt_score.INSUFFICIENT_EXCURSION` / `IMPOSSIBLE_EXCURSION` so
+/// the phone and the desktop say the same thing about the same trial.
+pub fn excursion_reason(params: &PtParams) -> Option<String> {
+    if excursion_ok(params) {
+        return None;
+    }
+    if params.a0_deg.is_finite() && params.a0_deg > MAX_INTERPRETABLE_A0_DEG {
+        return Some(format!(
+            "Impossible excursion: the leg moved {:.1} deg, above the {:.0} deg ceiling. \
+             A0 is the initial extension of an interior knee angle, which cannot exceed \
+             180 deg at all. A number this size means the reconstruction failed, not that \
+             the leg swung far.",
+            params.a0_deg, MAX_INTERPRETABLE_A0_DEG
+        ));
+    }
+    Some(format!(
+        "Insufficient excursion: the leg moved {:.1} deg, below the {:.0} deg floor for \
+         interpreting PT7 (control mean 46.6, sd 11.1, n=53). PT7's parameters are ratios \
+         normalised on the swing, so they stop tracking severity once the swing collapses. \
+         Repeat the trial and check positioning, release and sensor placement.",
+        params.a0_deg, MIN_INTERPRETABLE_A0_DEG
+    ))
+}
+
 /// Which of the seven scored parameters are placeholders rather than
 /// measurements, in `_PARAM_KEYS` order.
 ///
@@ -287,12 +339,41 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
         .collect::<Vec<_>>()
         .join(",");
 
+    // The score is always reported; the ZONE is withheld when the excursion
+    // gate refuses. That split is deliberate and mirrors `mas_estimate`, which
+    // returns `pt7` alongside `mas: None`: the number is still the arithmetic
+    // that came out, but a band read off a collapsed or impossible swing is a
+    // claim the measurement cannot support. `uninterpretable` is a distinct
+    // zone string rather than `unknown`, which already means "the score itself
+    // is not a number".
+    // Precedence: `unknown` outranks `uninterpretable`. They answer different
+    // questions -- "the score is not a number" versus "the score is a number
+    // but the swing cannot support a band read off it" -- and the first is the
+    // more fundamental failure, so a non-finite total keeps saying `unknown`
+    // rather than being relabelled by the excursion gate.
+    let refused = excursion_reason(params);
+    let zone_str = if zone == PtZone::Unknown {
+        zone.as_str()
+    } else if refused.is_some() {
+        "uninterpretable"
+    } else {
+        zone.as_str()
+    };
+    let reason_json = match &refused {
+        // Escaped: the message interpolates a float and fixed prose, so it
+        // cannot currently contain a quote or backslash -- but it is JSON now,
+        // and a future edit to the wording must not be able to break the payload.
+        Some(r) => format!("\"{}\"", r.replace('\\', "\\\\").replace('"', "\\\"")),
+        None => "null".to_string(),
+    };
+
     format!(
-        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}],\"unmeasured\":[{}]}}",
+        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}],\"unmeasured\":[{}],\"excursion_reason\":{}}}",
         fmt_f64(total),
-        zone.as_str(),
+        zone_str,
         items,
         unmeasured,
+        reason_json,
     )
 }
 
@@ -558,6 +639,100 @@ mod tests {
             p.n = 3.5;
         });
         assert!(pt_score_to_json(&p, &HEALTHY_REF).contains("\"unmeasured\":[]"));
+    }
+
+
+    // -- Excursion gate (ported from pendulastic_pt_score.excursion_ok) -----
+    // Python added this after the Rust port and the phone never had it. It
+    // refuses to interpret a swing that collapsed or one that is arithmetically
+    // impossible. Both directions matter: the seed-window bug produced
+    // A0 = 418.1 deg on P9 at 97.3% coverage and a MAS grade was printed off it.
+
+    #[test]
+    fn a_normal_swing_is_interpretable() {
+        let p = params(|p| p.a0_deg = 46.6); // control mean
+        assert!(excursion_ok(&p));
+        assert!(excursion_reason(&p).is_none());
+    }
+
+    #[test]
+    fn a_collapsed_swing_is_refused() {
+        let p = params(|p| p.a0_deg = 9.0); // the real P9 case
+        assert!(!excursion_ok(&p));
+        let why = excursion_reason(&p).unwrap();
+        assert!(why.contains("Insufficient excursion"), "{why}");
+        assert!(why.contains("9.0"), "{why}");
+    }
+
+    #[test]
+    fn an_impossible_swing_is_refused() {
+        // A0 is the initial extension of an INTERIOR knee angle: it cannot
+        // exceed 180 at all, so 418.1 means the reconstruction failed.
+        let p = params(|p| p.a0_deg = 418.1);
+        assert!(!excursion_ok(&p));
+        let why = excursion_reason(&p).unwrap();
+        assert!(why.contains("Impossible excursion"), "{why}");
+    }
+
+    #[test]
+    fn the_gate_boundaries_match_the_python_reference() {
+        assert_eq!(MIN_INTERPRETABLE_A0_DEG, 25.0);
+        assert_eq!(MAX_INTERPRETABLE_A0_DEG, 120.0);
+        assert!(excursion_ok(&params(|p| p.a0_deg = 25.0)), "floor is inclusive");
+        assert!(excursion_ok(&params(|p| p.a0_deg = 120.0)), "ceiling is inclusive");
+        assert!(!excursion_ok(&params(|p| p.a0_deg = 24.999)));
+        assert!(!excursion_ok(&params(|p| p.a0_deg = 120.001)));
+    }
+
+    #[test]
+    fn a_non_finite_excursion_is_not_interpretable() {
+        assert!(!excursion_ok(&params(|p| p.a0_deg = f64::NAN)));
+        assert!(!excursion_ok(&params(|p| p.a0_deg = f64::INFINITY)));
+    }
+
+    #[test]
+    fn an_uninterpretable_trial_reports_no_zone_but_keeps_its_score() {
+        // Mirrors mas_estimate: refuse the verdict, keep the number. Printing
+        // a band off a 418 deg reconstruction is the failure being closed.
+        let p = params(|p| {
+            p.a0_deg = 418.1;
+            p.first_trough_depth = 39.0;
+        });
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(json.contains("\"zone\":\"uninterpretable\""), "{json}");
+        assert!(json.contains("\"score\":"), "the score is still reported: {json}");
+        assert!(json.contains("Impossible excursion"), "{json}");
+    }
+
+    #[test]
+    fn an_interpretable_trial_still_reports_its_zone() {
+        let p = params(|p| {
+            p.a0_deg = 46.6;
+            p.first_trough_depth = 39.0;
+        });
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(!json.contains("uninterpretable"), "{json}");
+        assert!(json.contains("\"excursion_reason\":null"), "{json}");
+    }
+
+
+    #[test]
+    fn a_non_finite_score_stays_unknown_even_when_the_excursion_is_refused() {
+        // The two zones answer different questions: `unknown` = the score is
+        // not a number, `uninterpretable` = it is a number the swing cannot
+        // support. Both conditions hold here (a0_deg 0.0 fails the gate AND
+        // the total is non-finite); `unknown` is the more fundamental claim
+        // and must win, or a caller loses the fact that there is no number.
+        let p = params(|p| {
+            p.a0_deg = 0.0;
+            p.f = f64::NAN;
+            p.n = 5.0;
+        });
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(json.contains("\"zone\":\"unknown\""), "{json}");
+        // The refusal is still reported -- withholding it would hide WHY the
+        // trial is doubly unusable.
+        assert!(json.contains("Insufficient excursion"), "{json}");
     }
 
 }

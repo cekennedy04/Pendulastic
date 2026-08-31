@@ -325,6 +325,20 @@ const PARAM_PLAIN_NAME = {
 // and does not swing back; that is the finding, not a mistake, and the trial
 // is kept and scored. The trial worth retaking is the one where the leg never
 // moved, and that never reaches here -- it is rejected in compute_pt_params.
+// The excursion gate's refusal, from mobile-imu-core's excursion_reason()
+// (a port of pendulastic_pt_score.excursion_ok / mas_estimate). Distinct from
+// unmeasuredNotice: that one QUALIFIES the number, this one says the swing
+// cannot support reading a band off it at all -- too collapsed to be
+// interpretable, or arithmetically impossible.
+//
+// Shown regardless of whether zone classification is enabled. The zone
+// suppression is about the REFERENCE being unreproducible; this is about the
+// MEASUREMENT, and it stays true whatever happens to HEALTHY_REF.
+export function excursionNotice(reason) {
+  if (typeof reason !== 'string' || reason.trim() === '') return null;
+  return { text: reason, impossible: /^Impossible excursion/.test(reason) };
+}
+
 export function unmeasuredNotice(unmeasured) {
   if (!Array.isArray(unmeasured) || unmeasured.length === 0) return null;
   const names = unmeasured.map((k) => PARAM_PLAIN_NAME[k] || k);
@@ -1002,6 +1016,13 @@ if (typeof document !== 'undefined') {
 
     // Shown ABOVE the score, not below it: the notice changes how the number
     // should be read, so it has to be seen before the number, not after.
+    const refusal = excursionNotice(ptScore.excursion_reason);
+    const refusalEl = el('pt-score-excursion');
+    if (refusalEl) {
+      refusalEl.hidden = refusal === null;
+      refusalEl.textContent = refusal ? refusal.text : '';
+      refusalEl.className = refusal && refusal.impossible ? 'excursion-impossible' : '';
+    }
     const notice = unmeasuredNotice(ptScore.unmeasured);
     const noticeEl = el('pt-score-unmeasured');
     if (noticeEl) {

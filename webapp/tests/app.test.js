@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported,
-  exportLockState, retainExportHandle, zoneDisplay, unmeasuredNotice,
+  exportLockState, retainExportHandle, zoneDisplay, unmeasuredNotice, excursionNotice,
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 
@@ -470,4 +470,41 @@ test('parameters are named in plain language, not raw keys alone', () => {
 test('an unrecognised key degrades to the key itself rather than throwing', () => {
   const n = unmeasuredNotice(['some_new_param']);
   assert.ok(n.text.includes('some_new_param'), n.text);
+});
+
+
+// -- Excursion gate on the phone (ported from Python, 2026-08-31) ----------
+// Python refuses to grade a swing outside [25, 120] deg; the phone had no such
+// gate and rendered a band regardless. A0 = 418.1 deg -- a real reconstruction
+// failure on P9 at 97.3% coverage -- was being graded MAS "3".
+
+test('a normal swing produces no refusal', () => {
+  assert.equal(excursionNotice(null), null);
+  assert.equal(excursionNotice(undefined), null);
+  assert.equal(excursionNotice(''), null);
+  assert.equal(excursionNotice('   '), null);
+});
+
+test('a collapsed swing is refused and says so in measurement terms', () => {
+  const n = excursionNotice('Insufficient excursion: the leg moved 9.0 deg, below the 25 deg floor.');
+  assert.ok(n);
+  assert.equal(n.impossible, false);
+  assert.ok(/9\.0 deg/.test(n.text));
+});
+
+test('an impossible swing is marked distinctly from a collapsed one', () => {
+  // They need different treatment: one is a patient/positioning issue, the
+  // other means the reconstruction failed and nothing should be read at all.
+  const n = excursionNotice('Impossible excursion: the leg moved 418.1 deg, above the 120 deg ceiling.');
+  assert.ok(n);
+  assert.equal(n.impossible, true);
+});
+
+test('the refusal is independent of zone suppression', () => {
+  // zoneDisplay withholds the band because the REFERENCE is unreproducible.
+  // The excursion refusal is about the MEASUREMENT and must survive that --
+  // otherwise re-enabling zones would be the only way to see it again.
+  const n = excursionNotice('Insufficient excursion: the leg moved 9.0 deg, below the 25 deg floor.');
+  assert.ok(n, 'refusal must not depend on ZONE_CLASSIFICATION_CALIBRATED');
+  assert.equal(zoneDisplay('impaired').className, 'zone-uncalibrated');
 });

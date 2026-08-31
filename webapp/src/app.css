@@ -359,6 +359,17 @@ body {
    the number should be read. Amber, not red: the trial is valid and kept --
    a limb with high tone legitimately produces this -- it is the SCORE that
    needs qualifying, not the capture that needs repeating. */
+/* The excursion gate's refusal. Red, unlike the amber unmeasured notice:
+   that one qualifies a number worth reading, this one says the swing cannot
+   support a reading at all. */
+#pt-score-excursion {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid var(--pt-impaired-bg, #dc3545);
+  background: rgba(220, 53, 69, 0.12);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
 #pt-score-unmeasured {
   margin: 0 0 0.5rem;
   padding: 0.5rem 0.75rem;
