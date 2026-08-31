@@ -108,3 +108,30 @@ def test_hinge_conditioning_falls_when_the_plate_tumbles():
     mk = _rotating_triangle(300, [0.0, 0.0, 1.0], 0.4, wobble_deg=12.0, wobble_hz=2.0)
     _axis, cond, _pc2 = ka.hinge_axis(mk)
     assert cond < 0.95, cond
+
+
+def test_low_freq_ratio_separates_slow_motion_from_jitter():
+    fps, n = 120.0, 600
+    t = np.arange(n) / fps
+    slow = np.sin(2 * np.pi * 1.0 * t)
+    fast = np.random.default_rng(0).normal(size=n)
+    assert ka.low_freq_ratio(slow, fps) > 0.9
+    assert ka.low_freq_ratio(fast, fps) < 0.4
+
+
+def test_verdict_refuses_jitter_but_keeps_real_out_of_plane_motion():
+    """A single conditioning cut would refuse 9 of 30 measured trials, and 2 of
+    those are real limb motion -- biased toward unusual movement, which is
+    where spasticity lives."""
+    fps, n = 120.0, 600
+    t = np.arange(n) / fps
+    slow = np.sin(2 * np.pi * 1.0 * t)
+    fast = np.random.default_rng(0).normal(size=n)
+    assert ka.conditioning_verdict(0.97, fast, fps) == "ok"
+    assert ka.conditioning_verdict(0.70, fast, fps) == "ill_conditioned_axis"
+    assert ka.conditioning_verdict(0.70, slow, fps) == "out_of_plane_motion"
+
+
+def test_verdict_refuses_a_series_too_short_to_have_a_spectrum():
+    short = np.sin(np.arange(50) / 5.0)
+    assert ka.conditioning_verdict(0.70, short, 120.0) == "ill_conditioned_axis"
