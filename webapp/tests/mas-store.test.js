@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAS_ORDER, PENDING_MAS_GRADE, STRONGER_LEG_OPTIONS, MAS_FIELDS,
+  MAS_ORDER, PENDING_MAS_GRADE, STRONGER_LEG_OPTIONS, LEG_OPTIONS, MAS_FIELDS,
   validateMasForm, makeMasRecord, masIdentity, isPending,
 } from '../src/mas-store.js';
 
@@ -30,6 +30,10 @@ test('MAS_FIELDS matches mas_validation.DEFAULT_MAS_FIELDS in order', () => {
 
 test('STRONGER_LEG_OPTIONS keeps the leading blank meaning "not assessed"', () => {
   assert.deepEqual(STRONGER_LEG_OPTIONS, ['', 'left', 'right', 'equal']);
+});
+
+test('LEG_OPTIONS is the closed list of required choices', () => {
+  assert.deepEqual(LEG_OPTIONS, ['left', 'right']);
 });
 
 const valid = {

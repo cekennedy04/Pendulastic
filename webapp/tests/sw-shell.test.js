@@ -144,3 +144,27 @@ test('ALGORITHM_VERSION carries a resolvable crate version and source revision, 
   assert.notEqual(ALGORITHM_VERSION, BUILD_ID, 'the algorithm version must not be the shell cache key');
   assert.ok(!/^[0-9a-f]{12}$/.test(ALGORITHM_VERSION), 'a bare wasm hash is unresolvable by anyone but the machine that built it');
 });
+
+// Regression test for the real tree (not a fixture). These tests catch when a
+// developer adds a src/ file or edits src/*.js/src/*.css without running
+// `npm run build:shell`, leaving build-id.js stale. A cache key that changed
+// without the file changing means an installed phone never notices a new
+// build and serves stale code indefinitely -- the exact failure the header of
+// computeBuildId warns about.
+test('the real SHELL in build-id.js equals a fresh scan of webapp/src/', () => {
+  const fresh = computeShell(srcDir);
+  assert.deepEqual(
+    SHELL,
+    fresh,
+    'src/build-id.js is stale -- run `npm run build:shell` to regenerate SHELL',
+  );
+});
+
+test('the real BUILD_ID in build-id.js equals a fresh hash of SHELL and its files', () => {
+  const fresh = computeBuildId(webappRoot, SHELL);
+  assert.equal(
+    BUILD_ID,
+    fresh,
+    'src/build-id.js is stale -- run `npm run build:shell` to regenerate BUILD_ID',
+  );
+});
