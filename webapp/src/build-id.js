@@ -16,6 +16,7 @@ export const SHELL = [
   './src/db.js',
   './src/export.js',
   './src/install-gate.js',
+  './src/mas-store.js',
   './src/session-store.js',
   './src/worker.js',
   './src/build-id.js',
