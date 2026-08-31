@@ -49,32 +49,80 @@ def _plate(centre, long_axis, tilt_deg, size=0.06):
     ])
 
 
+def _bar(centre, long_axis, tilt_deg, size=0.06):
+    """3 markers that are nearly collinear, matching the real thigh cluster.
+
+    The real thigh sits 1.5 mm out of line over a 92 mm span, so its roll is
+    unobservable. `tilt_deg` offsets the bar from the limb axis the way a
+    strapped cluster does (measured median 14.8 deg on 40 trials).
+    """
+    long_axis = np.asarray(long_axis, float)
+    long_axis = long_axis / np.linalg.norm(long_axis)
+    perp = np.cross(long_axis, [0.0, 0.0, 1.0])
+    if np.linalg.norm(perp) < 1e-6:
+        perp = np.cross(long_axis, [0.0, 1.0, 0.0])
+    perp = perp / np.linalg.norm(perp)
+    spin = np.cross(long_axis, perp)
+    bar_dir = _rot(spin, tilt_deg) @ long_axis
+    return np.array([
+        centre + bar_dir * size,
+        centre - bar_dir * size,
+        centre + spin * 0.0012,        # 1.2 mm out of line: a bar, not a plate
+    ])
+
+
 def _build_trial(n=240, hold=60, flex_deg=40.0, thigh_tilt=22.0, shank_tilt=30.0,
-                 drop_from=None, drop_to=None, sign=-1.0):
+                 drop_from=None, drop_to=None, sign=-1.0, start_state="held",
+                 hold_drift_deg=0.0, out_of_plane_deg=0.0, swap_frame=None,
+                 thigh_as_bar=False):
     """Ground-truth trial: thigh fixed, shank flexes by `flex_deg` after release.
 
-    Returns (rows, truth) where truth[i] is the true interior knee angle.
-    `drop_from`/`drop_to` blank out the labeled markers to simulate occlusion.
+    start_state:
+      "held"       - the leg is extended and stationary through the hold. This
+                     is the ONLY state the old generator could produce, which
+                     is why the seed bug was invisible to the suite.
+      "rest"       - the leg already hangs flexed before the recording starts,
+                     as in P8 Left trial_2 where nobody is holding it.
+      "mid_motion" - the recording starts partway through the swing, as in
+                     P9 Left trial_3.
+
+    hold_drift_deg drifts the hold linearly (patient shifting).
+    out_of_plane_deg rotates the flexion axis out of the sagittal plane.
+    swap_frame permutes marker indices on one frame (Motive re-solve).
+    thigh_as_bar emits a near-collinear thigh, which is what 239/254 real
+    trials actually have.
     """
     hip = np.array([0.0, 0.40, 1.50])
     knee = np.array([0.0, 0.00, 1.50])
-    thigh_axis = hip - knee                      # knee -> hip
+    thigh_axis = hip - knee
     thigh_axis = thigh_axis / np.linalg.norm(thigh_axis)
-    flex_axis = np.array([1.0, 0.0, 0.0])        # sagittal flexion
+    flex_axis = _rot(np.array([0.0, 1.0, 0.0]), out_of_plane_deg) @ np.array([1.0, 0.0, 0.0])
+
+    start_offset = {"held": 0.0, "rest": flex_deg, "mid_motion": flex_deg * 0.45}[start_state]
 
     truth = np.empty(n)
     rows = []
     for i in range(n):
-        f = 0.0 if i < hold else flex_deg * (1.0 - math.exp(-(i - hold) / 25.0))
-        # shank points knee -> ankle, i.e. opposite the thigh axis when extended
+        if start_state == "held":
+            f = 0.0 if i < hold else flex_deg * (1.0 - math.exp(-(i - hold) / 25.0))
+        elif start_state == "rest":
+            f = start_offset                      # never moves
+        else:
+            f = start_offset + (flex_deg - start_offset) * (1.0 - math.exp(-i / 25.0))
+        if i < hold:
+            f += hold_drift_deg * (i / max(1, hold))
+
         shank_axis = _rot(flex_axis, sign * f) @ (-thigh_axis)
         truth[i] = math.degrees(
             math.acos(np.clip(np.dot(thigh_axis, shank_axis), -1.0, 1.0)))
 
         t_c = knee + thigh_axis * 0.18
         s_c = knee + shank_axis * 0.20
-        T = _plate(t_c, thigh_axis, thigh_tilt)
+        T = (_bar(t_c, thigh_axis, thigh_tilt) if thigh_as_bar
+             else _plate(t_c, thigh_axis, thigh_tilt))
         S = _plate(s_c, shank_axis, shank_tilt)
+        if swap_frame is not None and i == swap_frame:
+            T = T[[1, 0, 2]]                       # Motive permutes Marker1/2/3
 
         occluded = drop_from is not None and drop_from <= i < drop_to
         rows.append((i, i / 120.0, S, T, occluded))
@@ -596,3 +644,37 @@ def test_seed_window_speed_is_measured_without_any_reference_pose(tmp_path):
 def test_seed_window_speed_is_nan_without_markers():
     import pandas as pd
     assert not np.isfinite(pts._seed_window_speed_mm(pd.DataFrame(), []))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Synthetic generator: near-collinear bar clusters and non-held trial states.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_bar_cluster_is_near_collinear_like_the_real_thigh():
+    """Real thigh clusters are 3 markers 1.5 mm out of line over a 92 mm span.
+    A bar built here must land in that regime, or every geometry test is
+    exercising a triangle and proving nothing."""
+    import numpy as np
+    from pendulastic_pt_score import MIN_CLUSTER_PLANAR_EXTENT_M
+    pts = _bar(np.array([0.0, 0.0, 1.0]), np.array([0.0, 1.0, 0.0]), 15.0)
+    centred = pts - pts.mean(axis=0)
+    sv = np.linalg.svd(centred, compute_uv=False)
+    assert sv[1] < MIN_CLUSTER_PLANAR_EXTENT_M, sv
+    assert sv[0] > 0.03, "bar must still have a real span"
+
+
+def test_generator_can_start_at_rest_and_mid_motion():
+    """The two states that break the seed. `held` is the old behaviour."""
+    rows_h, truth_h = _build_trial(start_state="held")
+    rows_r, truth_r = _build_trial(start_state="rest")
+    rows_m, truth_m = _build_trial(start_state="mid_motion")
+    assert truth_h[0] == pytest.approx(180.0, abs=0.5)
+    assert truth_r[0] < 150.0, "a resting leg is not extended"
+    assert 150.0 < truth_m[0] < 179.0, "mid-motion starts partway through"
+
+
+def test_generator_can_emit_out_of_plane_swing_and_a_marker_swap():
+    rows, truth = _build_trial(out_of_plane_deg=18.0)
+    assert len(rows) == len(truth)
+    rows2, _ = _build_trial(swap_frame=140)
+    assert rows2[140][2].shape == (3, 3)
