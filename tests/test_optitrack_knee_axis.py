@@ -159,3 +159,33 @@ def test_signed_angle_is_nan_where_either_direction_is_missing():
     ang = ka.signed_knee_angle(thigh, shank, hinge)
     assert np.isnan(ang[10:15]).all()
     assert np.isfinite(ang[20])
+
+
+def test_absolute_angles_raise_when_the_offset_was_never_established():
+    r = ka.KneeAngleResult(raw_angles=np.array([10.0, 20.0, 30.0]),
+                           is_calibrated=False, offset_deg=None,
+                           conditioning=0.97, low_freq_ratio=0.1,
+                           flags=("uncalibrated_offset",))
+    with pytest.raises(ka.UncalibratedOffsetError):
+        r.get_absolute_angles()
+    rel = r.get_relative_angles()
+    assert rel[0] == 0.0 and rel[2] == 20.0
+
+
+def test_absolute_angles_also_refuse_a_low_confidence_hold():
+    r = ka.KneeAngleResult(raw_angles=np.array([1.0, 2.0]), is_calibrated=True,
+                           offset_deg=5.0, conditioning=0.97, low_freq_ratio=0.1,
+                           flags=("low_confidence_hold",))
+    with pytest.raises(ka.UncalibratedOffsetError):
+        r.get_absolute_angles()
+
+
+def test_result_has_no_innocuous_angles_attribute():
+    """A plain .angles would let a consumer reach an absolute curve without
+    saying so. The escape hatch is named raw_angles, so its use is visible in
+    a diff."""
+    r = ka.KneeAngleResult(raw_angles=np.array([1.0]), is_calibrated=True,
+                           offset_deg=0.0, conditioning=0.97,
+                           low_freq_ratio=0.1, flags=())
+    assert not hasattr(r, "angles")
+    assert r.get_absolute_angles()[0] == 1.0

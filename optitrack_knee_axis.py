@@ -12,6 +12,8 @@ See docs/superpowers/specs/2026-08-31-optitrack-knee-axis-design.md.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import numpy as np
 from scipy.signal import welch
 
@@ -246,3 +248,51 @@ def conditioning_verdict(conditioning: float, pc2: np.ndarray, fps: float) -> st
     if np.isfinite(ratio) and ratio >= OUT_OF_PLANE_MIN_LF_RATIO:
         return "out_of_plane_motion"
     return "ill_conditioned_axis"
+
+
+class UncalibratedOffsetError(RuntimeError):
+    """Absolute angles were requested for a curve with no trustworthy zero."""
+
+
+@dataclass(frozen=True)
+class KneeAngleResult:
+    """A knee curve plus what is known about how far it can be trusted.
+
+    There is deliberately NO `.angles` attribute. A plain, innocuous-looking
+    name is how an uncalibrated curve reaches an absolute-angle consumer
+    without anyone deciding it should. Access is by named accessor instead.
+
+    Magic-method overrides (__getitem__, __array__) are deliberately NOT used:
+    they break slicing and iteration in surprising ways, and they cannot
+    protect the real seam anyway, since load_optitrack_detailed must keep
+    returning a plain array for its existing consumers.
+    """
+    raw_angles: np.ndarray
+    is_calibrated: bool
+    offset_deg: float | None
+    conditioning: float
+    low_freq_ratio: float
+    flags: tuple = field(default_factory=tuple)
+
+    def get_relative_angles(self) -> np.ndarray:
+        """Baseline-subtracted. Always valid, calibrated or not.
+
+        This is what scoring uses: every scored PT parameter is a difference,
+        a ratio of differences, a derivative, a frequency or a count, so a
+        constant offset cancels.
+        """
+        a = np.asarray(self.raw_angles, dtype=float)
+        finite = np.isfinite(a)
+        if not finite.any():
+            return a.copy()
+        return a - a[np.argmax(finite)]
+
+    def get_absolute_angles(self) -> np.ndarray:
+        """Angles on the 180-is-extended convention. Raises when unearned."""
+        if not self.is_calibrated or "low_confidence_hold" in self.flags:
+            raise UncalibratedOffsetError(
+                "No trustworthy zero was established for this trial "
+                f"(flags: {', '.join(self.flags) or 'none'}). Use "
+                "get_relative_angles(); every scored PT parameter is "
+                "offset-invariant and does not need an absolute zero.")
+        return np.asarray(self.raw_angles, dtype=float)
