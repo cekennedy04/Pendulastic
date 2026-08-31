@@ -18,6 +18,7 @@ import csv
 import cv2
 import glob
 import hashlib
+import importlib
 import inspect
 import json
 import mediapipe
@@ -445,6 +446,50 @@ _FINGERPRINTED_MODULES = ("rmse_pipeline_common", "workbench_engine",
                           "analysis_pipeline", "pendulastic_pt_score")
 
 
+# Raw landmark extraction reaches a strict SUBSET of the modules above:
+# sweep_mediapipe_config.extract_raw_landmarks runs the inference loop, and
+# reads batch_mediapipe.MP_LEG_IDX and batch_mediapipe._select_patient_pose
+# to pick the leg indices and decide which detected pose is the patient.
+# Nothing else in the scoring path can change a landmark VALUE -- see
+# compute_landmark_fingerprint.
+_LANDMARK_FINGERPRINTED_MODULES = ("sweep_mediapipe_config", "batch_mediapipe")
+
+
+def compute_landmark_fingerprint():
+    """Hash of everything that can change a raw landmark without touching
+    the video or the .task weights: the source of the two modules that
+    perform extraction, plus the versions of the two libraries that do the
+    decoding and the inference.
+
+    Deliberately narrower than compute_implementation_fingerprint(). That
+    one is correct for the RMSE-level cache, where every module it lists
+    really can move a score, but using it for the landmark cache made 107
+    cached inference results depend on modules that provably cannot reach
+    them -- editing pendulastic_pt_score, workbench_engine or the IMU path
+    threw away hours of MediaPipe inference for a guaranteed-identical
+    result. Narrowing does not weaken the staleness guarantee that
+    extract_landmarks_cached's docstring describes: a change to the
+    extraction code still misses.
+
+    numpy and scipy are left out because extract_raw_landmarks uses
+    neither -- the coordinates come out of mediapipe and the frames out of
+    cv2. Both grids are left out too: model_variant is already part of the
+    cache key in the clear, and vis_thresh is applied by
+    angles_from_raw AFTER this cache, which is the entire reason
+    extraction and thresholding were split.
+
+    Modules are imported rather than read out of sys.modules, so a module
+    that happens not to be loaded yet cannot silently drop out of the
+    hash the way compute_implementation_fingerprint's sys.modules.get()
+    lookup allows."""
+    parts = [inspect.getsource(importlib.import_module(name))
+             for name in _LANDMARK_FINGERPRINTED_MODULES]
+    parts.append(f"opencv={cv2.__version__}")
+    parts.append(f"mediapipe={mediapipe.__version__}")
+    blob = "\x00".join(parts).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
 def compute_implementation_fingerprint():
     """Hash of everything that can silently change a candidate's score
     without touching any trial's input files: both grids (imported live,
@@ -521,16 +566,21 @@ def extract_landmarks_cached(trial, model_variant, model_path):
     re-score the OLD landmarks, so a "fresh" RMSE was silently computed
     from superseded extraction code.
 
-    The extraction-code fingerprint used is the full
-    compute_implementation_fingerprint() -- broader than strictly
-    necessary (it also covers the IMU scoring path, which cannot affect
-    landmarks), but consistent with how the rest of this module treats
-    that fingerprint, and erring toward extra cache misses rather than
-    stale landmarks."""
+    The extraction-code fingerprint is compute_landmark_fingerprint(),
+    which covers exactly the two modules inference actually runs through.
+    It was the full compute_implementation_fingerprint() until 2026-08-31
+    -- "erring toward extra cache misses rather than stale landmarks", on
+    the assumption that the extra misses were rare. They are not: that
+    fingerprint also hashes pendulastic_pt_score, workbench_engine,
+    analysis_pipeline and the whole IMU path, all under active edit, and
+    each such edit discarded all 107 cached extractions to recompute a
+    provably identical result. Erring toward extra misses is still the
+    rule for the RMSE-level cache, where those modules genuinely move the
+    score; here they cannot reach the output at all."""
     stat_cache = {}
     video_fp = sha256_file(trial["video_path"], stat_cache)
     model_fp = sha256_file(model_path, stat_cache)
-    impl_fp = compute_implementation_fingerprint()
+    landmark_fp = compute_landmark_fingerprint()
     cache_dir = _LANDMARK_CACHE_DIR()
     os.makedirs(cache_dir, exist_ok=True)
     # The three digests are folded into one, not concatenated into the
@@ -539,7 +589,7 @@ def extract_landmarks_cached(trial, model_variant, model_path):
     # stay in the clear so the cache directory is still greppable by hand.
     cache_id = hashlib.sha256(json.dumps({
         "video": video_fp, "model_file": model_fp,
-        "implementation": impl_fp,
+        "implementation": landmark_fp,
     }, sort_keys=True).encode("utf-8")).hexdigest()
     cache_file = os.path.join(
         cache_dir, f"{trial['trial_key']}_{model_variant}_{cache_id}.pkl")
