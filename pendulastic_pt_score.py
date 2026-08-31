@@ -397,10 +397,33 @@ def pt_to_mas(pt: float) -> str:
 # support fitting a diagnostic cutoff, and every one of them has A0 >= 28.7 deg
 # so the collapsed-excursion regime is not represented in this corpus at all.
 # Over 53 non-spastic OptiTrack trials passing the quality filter (coverage
-# >= 80%, no area-ratio warning): mean 46.6 deg, sd 11.1. Two SD below the
-# healthy mean is 24.5, rounded to 25 -- the conventional "outside the normal
-# range" bound, which is the honest claim here, rather than a tuned operating
-# point.
+# >= 80%, no area-ratio warning): mean 46.6 deg, sd 11.1, two SD below = 24.5.
+#
+# CORRECTION (same day, after the seed-window bug in
+# _angle_from_labeled_markers was found). That "two SD below the control mean"
+# derivation is CIRCULAR and must not be quoted as the justification. The only
+# two trials dragging the control distribution down are P9 left and right at
+# A0 9.0 -- precisely the two this gate then catches. Drop them and the
+# remaining 51 controls read mean 48.0, sd 8.3, two SD below = 31.5.
+#
+# And 31.5 is unusable: the lowest spastic leg in the corpus sits at 28.7, so a
+# clean two-SD control bound would land ABOVE the spastic range and start
+# refusing grades on the very cases the study exists to measure. No single
+# threshold satisfies both "two SD below controls" and "clears every spastic
+# leg" on this data.
+#
+# So 25 is NOT a control-derived bound. It is a conservative floor CONSTRAINED
+# BY THE SPASTIC MINIMUM: as high as it can go while staying clear of the
+# lowest observed spastic leg (28.7, ~13% margin), which is what stops it
+# silently reclassifying a study case. It catches the collapsed tail and
+# nothing more, and it claims nothing about where the healthy range ends.
+#
+# RE-DERIVE this once the seed-window bug is fixed. The control distribution is
+# contaminated in an unknown direction today: that bug anchors the zero to
+# whatever pose fills the first 60 frames, produces a convincing ~180 baseline
+# either way, and survives the coverage and area-ratio filters untouched (P9
+# Left trial_3 reaches A0 418 deg at 97.3% coverage). Until the reconstruction
+# is trustworthy, no threshold derived from these A0 values is either.
 #
 # Effect on the current corpus: flags 2 of 53 non-spastic trials (4%) and 0 of
 # 7 spastic. Both flagged trials have A0 = 9.0 deg and currently report

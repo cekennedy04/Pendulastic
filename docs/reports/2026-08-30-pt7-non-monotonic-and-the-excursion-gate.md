@@ -71,14 +71,45 @@ between 7 and **418 deg**. A 418 deg knee excursion is impossible, so that
 distribution measures tracking failure, not physiology, and any threshold from
 it would be meaningless.
 
+### Correction: the two-SD derivation is circular
+
+Found the same day, after the seed-window bug in `_angle_from_labeled_markers`
+surfaced. **Do not quote "two SD below the control mean" as the justification.**
+
+The only two trials pulling the control distribution down are P9 left and right
+at A0 9.0 — precisely the two the gate then catches.
+
+| control set | n | mean | sd | 2-SD floor |
+|---|---|---|---|---|
+| all (used for the original derivation) | 53 | 46.5 | 11.1 | 24.4 |
+| excluding the two suspect trials | 51 | 48.0 | 8.3 | **31.5** |
+
+And 31.5 is unusable: the lowest spastic leg sits at **28.7**, so a clean
+two-SD control bound lands *above* the spastic range and would refuse grades on
+the very cases the study exists to measure. **No single threshold satisfies
+both "two SD below controls" and "clears every spastic leg" on this data.**
+
+So 25 is not a control-derived bound. It is a conservative floor **constrained
+by the spastic minimum** — as high as it can go while staying clear of 28.7
+(~13% margin). It catches the collapsed tail and claims nothing about where the
+healthy range ends.
+
+**Re-derive once the seed-window bug is fixed.** That bug anchors the zero to
+whatever pose fills the first 60 frames, yields a convincing ~180 baseline
+either way, and passes the coverage and area-ratio filters untouched (P9 Left
+trial_3: A0 418 deg at 97.3% coverage). Until the reconstruction is
+trustworthy, no threshold derived from these A0 values is either.
+
 ## Effect on the corpus
 
 58 trials graded exactly as before. **2 refused** — P9 left and right, both at
 A0 9.0 deg, both previously reported as **MAS 1**.
 
-Those two files are independently recorded as a known rig defect: P9's left and
-right exports are identical. The gate's first real catch is a trial that was
-already broken, which is the behaviour intended.
+Those two trials are independently broken — P9's left and right exports are
+identical, and P9 is also named in the seed-window finding. The gate's first
+real catch is a trial that was already bad, which is the intended behaviour.
+Note this cuts both ways: because those same two trials set the control floor,
+the derivation had to be corrected (above).
 
 ## The wording is deliberate
 

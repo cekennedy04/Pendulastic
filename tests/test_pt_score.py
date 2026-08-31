@@ -1026,15 +1026,24 @@ def test_a_normal_swing_is_graded_as_before():
     assert out["mas"] == p.pt_to_mas(out["pt7"]), "unchanged grading above the gate"
 
 
-def test_excursion_gate_threshold_came_from_controls_not_from_spastic_legs():
-    """Seven spastic legs cannot support fitting a diagnostic cutoff, and all
-    of them sit at A0 >= 28.7 deg, so the gate must sit below that or it would
-    be silently reclassifying the very cases the study is about."""
+def test_excursion_gate_stays_clear_of_the_lowest_spastic_leg():
+    """What actually constrains the threshold.
+
+    The "two SD below the control mean" story is circular: the only two trials
+    pulling that mean down are P9 left/right at A0 9.0, which are exactly the
+    trials the gate catches. Excluding them the 51 clean controls give a 2-SD
+    floor of 31.5 -- ABOVE the lowest spastic leg (28.7), so a clean control
+    bound would refuse grades on the study's own cases.
+
+    The real constraint is therefore the spastic minimum, and it is the one
+    worth pinning: the gate must stay below 28.7 or it starts reclassifying
+    the cases the study exists to measure.
+    """
     import pendulastic_pt_score as p
-    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7
-    two_sd_below = p.EXCURSION_REF_MEAN_DEG - 2 * p.EXCURSION_REF_SD_DEG
-    assert abs(p.MIN_INTERPRETABLE_A0_DEG - two_sd_below) < 1.0, (
-        "threshold should stay the 2-SD bound on the control distribution")
+    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7, (
+        "gate would refuse grades on real spastic legs")
+    assert p.MIN_INTERPRETABLE_A0_DEG > 12.0, (
+        "gate so low it would stop catching collapsed swings")
 
 
 def test_unscoreable_trial_is_not_interpretable():
