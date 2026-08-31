@@ -418,6 +418,13 @@ def pt_to_mas(pt: float) -> str:
 # silently reclassifying a study case. It catches the collapsed tail and
 # nothing more, and it claims nothing about where the healthy range ends.
 #
+# There is a second reason to hang the threshold off the spastic side rather
+# than the control side: the labels are not equally trustworthy. Of the
+# "non-spastic" rows, 17 are ASSUMED controls that nobody examined -- the same
+# claim recruitment already makes -- and only 10 legs across 5 participants were
+# genuinely examined by a clinician. The spastic labels are mostly examined; the
+# control labels mostly are not.
+#
 # RE-DERIVE this once the seed-window bug is fixed. The control distribution is
 # contaminated in an unknown direction today: that bug anchors the zero to
 # whatever pose fills the first 60 frames, produces a convincing ~180 baseline
