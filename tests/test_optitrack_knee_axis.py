@@ -135,3 +135,27 @@ def test_verdict_refuses_jitter_but_keeps_real_out_of_plane_motion():
 def test_verdict_refuses_a_series_too_short_to_have_a_spectrum():
     short = np.sin(np.arange(50) / 5.0)
     assert ka.conditioning_verdict(0.70, short, 120.0) == "ill_conditioned_axis"
+
+
+def test_signed_angle_does_not_fold_past_180():
+    """The defect this replaces: an unsigned arccos mirrors at 180, so an
+    angle continuing past it reads as coming back down."""
+    n = 200
+    hinge = np.array([0.0, 0.0, 1.0])
+    thigh = np.repeat(np.array([[1.0, 0.0, 0.0]]), n, axis=0)
+    sweep = np.linspace(170.0, 200.0, n)
+    shank = np.stack([_rot(hinge, a) @ np.array([1.0, 0.0, 0.0]) for a in sweep])
+    ang = ka.signed_knee_angle(thigh, shank, hinge)
+    assert np.all(np.diff(ang) > 0), "angle folded instead of continuing"
+    assert ang[-1] - ang[0] == pytest.approx(30.0, abs=1.0)
+
+
+def test_signed_angle_is_nan_where_either_direction_is_missing():
+    n = 40
+    hinge = np.array([0.0, 0.0, 1.0])
+    thigh = np.repeat(np.array([[1.0, 0.0, 0.0]]), n, axis=0)
+    shank = np.repeat(np.array([[0.0, 1.0, 0.0]]), n, axis=0)
+    shank[10:15] = np.nan
+    ang = ka.signed_knee_angle(thigh, shank, hinge)
+    assert np.isnan(ang[10:15]).all()
+    assert np.isfinite(ang[20])

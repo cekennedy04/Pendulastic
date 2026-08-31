@@ -167,6 +167,72 @@ def low_freq_ratio(pc2: np.ndarray, fps: float) -> float:
     return float(p[f < LOW_FREQ_CUTOFF_HZ].sum() / total)
 
 
+def signed_knee_angle(thigh_dirs: np.ndarray, shank_dirs: np.ndarray,
+                      hinge: np.ndarray) -> np.ndarray:
+    """Continuous signed angle between two directions, about `hinge`.
+
+    atan2 rather than arccos. The old code used an unsigned arccos, which
+    FOLDS at 180: an angle continuing past it reads as coming back down, so a
+    wrong anchor produced a plausible curve instead of an obvious error. A
+    signed angle plus unwrapping cannot fold, so an anchoring error shows up
+    as an out-of-range value rather than hiding as a mirrored one.
+    """
+    hinge = np.asarray(hinge, float)
+    hinge = hinge / np.linalg.norm(hinge)
+    n = len(thigh_dirs)
+    ang = np.full(n, np.nan)
+    ok = (np.isfinite(thigh_dirs).all(axis=1) & np.isfinite(shank_dirs).all(axis=1))
+    if not ok.any():
+        return ang
+    t = thigh_dirs[ok] - np.outer(thigh_dirs[ok] @ hinge, hinge)
+    s = shank_dirs[ok] - np.outer(shank_dirs[ok] @ hinge, hinge)
+    tn = np.linalg.norm(t, axis=1, keepdims=True)
+    sn = np.linalg.norm(s, axis=1, keepdims=True)
+    good = (tn[:, 0] > 1e-9) & (sn[:, 0] > 1e-9)
+    t = np.divide(t, np.where(tn > 1e-9, tn, 1.0))
+    s = np.divide(s, np.where(sn > 1e-9, sn, 1.0))
+    cross = np.cross(t, s) @ hinge
+    dot = np.sum(t * s, axis=1)
+    vals = np.degrees(np.arctan2(cross, dot))
+    vals[~good] = np.nan
+    finite = np.isfinite(vals)
+    if finite.any():
+        vals[finite] = np.degrees(np.unwrap(np.radians(vals[finite])))
+    ang[np.where(ok)[0]] = vals
+    return ang
+
+
+def segment_axis_from_plate(triangle: np.ndarray, hinge: np.ndarray) -> np.ndarray:
+    """Per-frame direction of the triangle's segment, carried by its rotation.
+
+    The reference direction is any unit vector perpendicular to the hinge; its
+    absolute phase is arbitrary, which is exactly the constant offset the
+    scored parameters are invariant to.
+    """
+    hinge = np.asarray(hinge, float)
+    hinge = hinge / np.linalg.norm(hinge)
+    seed = np.cross(hinge, [0.0, 0.0, 1.0])
+    if np.linalg.norm(seed) < 1e-6:
+        seed = np.cross(hinge, [0.0, 1.0, 0.0])
+    seed = seed / np.linalg.norm(seed)
+
+    tracked = np.isfinite(triangle).all(axis=(0, 2))
+    idx = np.where(tracked)[0]
+    n = triangle.shape[1]
+    out = np.full((n, 3), np.nan)
+    if len(idx) < 3:
+        return out
+    ref = _reference_shape(triangle, idx)
+    cur = np.transpose(triangle[:, idx, :], (1, 0, 2))
+    cur = cur - cur.mean(axis=1, keepdims=True)
+    try:
+        rots = _kabsch_rotations(ref, cur)
+    except np.linalg.LinAlgError:
+        return out
+    out[idx] = np.einsum("mij,j->mi", rots, seed)
+    return out
+
+
 def conditioning_verdict(conditioning: float, pc2: np.ndarray, fps: float) -> str:
     """"ok" | "ill_conditioned_axis" | "out_of_plane_motion".
 
