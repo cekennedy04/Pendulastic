@@ -674,7 +674,27 @@ def test_generator_can_start_at_rest_and_mid_motion():
 
 
 def test_generator_can_emit_out_of_plane_swing_and_a_marker_swap():
-    rows, truth = _build_trial(out_of_plane_deg=18.0)
-    assert len(rows) == len(truth)
-    rows2, _ = _build_trial(swap_frame=140)
-    assert rows2[140][2].shape == (3, 3)
+    """Both fixtures must be verified by their EFFECT, not their shape.
+
+    An out-of-plane swing has to actually leave the sagittal plane, and a
+    marker swap has to actually reorder markers at exactly one frame.
+    """
+    # Out of plane: the shank centroid gains an x-component it does not have
+    # in a purely sagittal swing.
+    rows_flat, _ = _build_trial(out_of_plane_deg=0.0)
+    rows_oop, _ = _build_trial(out_of_plane_deg=18.0)
+    x_flat = max(abs(r[2][:, 0].mean()) for r in rows_flat[120:])
+    x_oop = max(abs(r[2][:, 0].mean()) for r in rows_oop[120:])
+    assert x_flat < 1e-6, f"a sagittal swing should stay at x=0, got {x_flat}"
+    assert x_oop > 0.01, f"18 deg out of plane should move x, got {x_oop}"
+
+    # Marker swap: the SAME three points in a different order, at exactly the
+    # one frame, and nowhere else.
+    rows_plain, _ = _build_trial()
+    rows_swap, _ = _build_trial(swap_frame=140)
+    assert np.allclose(rows_swap[140][3], rows_plain[140][3][[1, 0, 2]]), \
+        "swap_frame did not reorder the thigh markers"
+    assert not np.allclose(rows_swap[140][3], rows_plain[140][3]), \
+        "assertion would pass even with no swap"
+    assert np.allclose(rows_swap[139][3], rows_plain[139][3]), \
+        "the swap leaked into a neighbouring frame"
