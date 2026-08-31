@@ -251,3 +251,33 @@ def test_no_hold_at_all_is_reported_not_guessed():
     offset, flags = ka.anchor_to_extension(np.linspace(0, 60, 300), None)
     assert offset is None
     assert "uncalibrated_offset" in flags
+
+
+def test_orchestrator_recovers_a_known_flexion_from_a_bar_and_triangle():
+    try:
+        from tests.test_optitrack_marker_angle import _build_trial
+    except ImportError:
+        # A site-packages "tests" package (unrelated to this repo) shadows
+        # the local tests/ namespace package on this machine. Fall back to
+        # the top-level module name pytest's own collection already put on
+        # sys.path -- same workaround as the _rot import above.
+        from test_optitrack_marker_angle import _build_trial
+    rows, truth = _build_trial(n=400, hold=80, flex_deg=45.0, thigh_as_bar=True)
+    shank = np.stack([r[2] for r in rows], axis=1)     # (3, n, 3)
+    thigh = np.stack([r[3] for r in rows], axis=1)
+    res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
+    rel = res.get_relative_angles()
+    swept_true = abs(truth[-1] - truth[0])
+    swept_got = abs(np.nanmax(rel) - np.nanmin(rel))
+    assert swept_got == pytest.approx(swept_true, rel=0.15), (swept_got, swept_true)
+
+
+def test_orchestrator_refuses_an_ill_conditioned_trial_with_a_named_reason():
+    n = 400
+    rng = np.random.default_rng(1)
+    tumbling = rng.normal(scale=0.05, size=(3, n, 3))
+    bar = np.repeat(np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :],
+                    n, axis=1)
+    with pytest.raises(ka.GeometryError) as exc:
+        ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
+    assert "conditioned" in str(exc.value).lower() or "hinge" in str(exc.value).lower()

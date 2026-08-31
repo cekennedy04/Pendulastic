@@ -344,3 +344,37 @@ def find_hold(triangle: np.ndarray, bar: np.ndarray, angles: np.ndarray):
     if len(best) < 5:
         return None, ("uncalibrated_offset",)
     return slice(int(best[0]), int(best[-1]) + 1), ()
+
+
+def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
+                             fps: float) -> KneeAngleResult:
+    """Knee angle from two marker clusters, in either role order.
+
+    Raises GeometryError when no trustworthy angle exists. Returns a
+    KneeAngleResult otherwise, flagged with everything known about it.
+    """
+    triangle, bar, _which = classify_clusters(cluster_a, cluster_b)
+    axis, conditioning, pc2 = hinge_axis(triangle)
+    verdict = conditioning_verdict(conditioning, pc2, fps)
+    if verdict == "ill_conditioned_axis":
+        raise GeometryError(
+            f"The hinge axis is not recoverable: only "
+            f"{conditioning * 100:.0f}% of the segment's rotation lies on a "
+            f"single axis, and the remainder is high-frequency, i.e. marker "
+            f"noise rather than limb motion. Check marker placement and "
+            f"tracking quality for this trial.")
+
+    flags = () if verdict == "ok" else (verdict, "out_of_plane_amplitude_underreported")
+    thigh_dirs = segment_line_direction(bar)
+    shank_dirs = segment_axis_from_plate(triangle, axis)
+    angles = signed_knee_angle(thigh_dirs, shank_dirs, axis)
+
+    hold, hold_flags = find_hold(triangle, bar, angles)
+    offset, offset_flags = anchor_to_extension(angles, hold)
+    flags = flags + hold_flags + offset_flags
+    if offset is not None:
+        angles = angles + offset
+    return KneeAngleResult(raw_angles=angles, is_calibrated=offset is not None,
+                           offset_deg=offset, conditioning=conditioning,
+                           low_freq_ratio=low_freq_ratio(pc2, fps),
+                           flags=tuple(dict.fromkeys(flags)))
