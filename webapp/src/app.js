@@ -854,8 +854,14 @@ if (typeof document !== 'undefined') {
     const yOf = (a) => padT + (1 - (a - yLo) / Math.max(1e-9, yHi - yLo)) * plotH;
 
     ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.strokeStyle = '#5a6169';
-    ctx.fillStyle = '#101317';
+    // These duplicate app.css's palette by hand because a 2D canvas cannot
+    // read CSS custom properties. The three chrome colors track --fg3/--fg/
+    // --border; the three marker colors are the SAME hues as #guide's release/
+    // ready/banner states on purpose, so a plotted trial reads consistently
+    // with the state screen the operator just watched. Do not "harmonise"
+    // the markers into the palette -- see app.css's state-color note.
+    ctx.strokeStyle = '#64748B';
+    ctx.fillStyle = '#0F172A';
     ctx.lineWidth = 1;
 
     // Axes.
@@ -870,7 +876,7 @@ if (typeof document !== 'undefined') {
     ctx.textBaseline = 'middle';
     for (const a of [yLo + pad, (yLo + yHi) / 2, yHi - pad]) {
       const y = yOf(a);
-      ctx.strokeStyle = '#e3e6ea';
+      ctx.strokeStyle = '#CBD5E1';
       ctx.beginPath();
       ctx.moveTo(padL, y);
       ctx.lineTo(padL + plotW, y);
