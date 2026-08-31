@@ -304,3 +304,63 @@ def test_orchestrator_emits_and_flags_out_of_plane_motion_instead_of_refusing():
     assert "out_of_plane_motion" in res.flags, res.flags
     assert "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED" in res.flags, res.flags
     assert np.isfinite(res.get_relative_angles()).any(), "angles must still be produced"
+
+
+def test_offset_invariance_of_every_scored_parameter():
+    """The claim the whole design rests on, tested rather than argued.
+
+    If this fails, an unknown offset DOES reach the score and the decision to
+    demote 180-is-extended to presentation was wrong."""
+    import pendulastic_pt_score as pt
+    t = np.arange(1200) / 120.0
+    ts = np.maximum(t - 1.0, 0.0)
+    ang = 130.0 + 50.0 * np.exp(-ts / 3.0) * np.cos(2 * np.pi * 0.9 * ts)
+    base = pt.compute_pt_params(t, ang)
+    for off in (-37.0, -5.0, 12.5, 88.0):
+        shifted = pt.compute_pt_params(t, ang + off)
+        assert shifted is not None
+        for k in pt._PARAM_KEYS:
+            assert shifted[k] == pytest.approx(base[k], rel=1e-6), (k, off)
+        assert shifted["A0_deg"] == pytest.approx(base["A0_deg"], rel=1e-6)
+
+
+def test_out_of_plane_branch_is_reachable():
+    """Two real positives cannot keep a branch honest. A dialled-in
+    out-of-plane trial must actually reach out_of_plane_motion, or the branch
+    is dead code the way the quadriceps-catch merge was."""
+    fps, n = 120.0, 600
+    t = np.arange(n) / fps
+    slow_pc2 = np.sin(2 * np.pi * 1.0 * t)
+    assert ka.conditioning_verdict(0.80, slow_pc2, fps) == "out_of_plane_motion"
+    assert ka.low_freq_ratio(slow_pc2, fps) >= ka.OUT_OF_PLANE_MIN_LF_RATIO
+
+
+def test_a_blackout_at_release_does_not_spike_the_angle():
+    try:
+        from tests.test_optitrack_marker_angle import _build_trial
+    except ImportError:
+        from test_optitrack_marker_angle import _build_trial
+    rows, _truth = _build_trial(n=400, hold=80, thigh_as_bar=True,
+                                drop_from=80, drop_to=90)
+    shank = np.stack([r[2] if not r[4] else np.full((3, 3), np.nan)
+                      for r in rows], axis=1)
+    thigh = np.stack([r[3] if not r[4] else np.full((3, 3), np.nan)
+                      for r in rows], axis=1)
+    res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
+    rel = res.get_relative_angles()
+    steps = np.abs(np.diff(rel[np.isfinite(rel)]))
+    assert np.nanmax(steps) < 20.0, f"spiked {np.nanmax(steps)} deg across the gap"
+
+
+def test_a_marker_index_swap_does_not_spike_the_angle():
+    try:
+        from tests.test_optitrack_marker_angle import _build_trial
+    except ImportError:
+        from test_optitrack_marker_angle import _build_trial
+    rows, _truth = _build_trial(n=400, hold=80, thigh_as_bar=True, swap_frame=200)
+    shank = np.stack([r[2] for r in rows], axis=1)
+    thigh = np.stack([r[3] for r in rows], axis=1)
+    res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
+    rel = res.get_relative_angles()
+    steps = np.abs(np.diff(rel[np.isfinite(rel)]))
+    assert np.nanmax(steps) < 20.0, f"index swap spiked {np.nanmax(steps)} deg"
