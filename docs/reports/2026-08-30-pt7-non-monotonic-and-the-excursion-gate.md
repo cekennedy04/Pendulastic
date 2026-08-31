@@ -54,19 +54,22 @@ severity rises, and no gate addresses that.
 
 ## Threshold derivation
 
-From the **control distribution**, never from the spastic legs.
+**25 deg, constrained by the spastic minimum.** Not a control-derived bound —
+see the correction below, which supersedes the first attempt.
 
 There are 7 spastic legs with a usable reference. That cannot support fitting a
 diagnostic cutoff, and every one of them sits at A0 >= 28.7 deg — the
-collapsed-excursion regime is not represented in this corpus at all.
+collapsed-excursion regime is not represented in this corpus at all. The gate
+therefore has to stay clear of 28.7 or it starts refusing grades on the study's
+own cases. 25 is as high as it can go while keeping that margin (~13%).
 
-Over **53 non-spastic OptiTrack trials** passing the quality filter (coverage
->= 80%, no area-ratio warning): **mean 46.6 deg, sd 11.1**. Two SD below the
-healthy mean is 24.5, rounded to **25 deg** — the conventional "outside the
-normal range" bound, which is the honest claim, rather than an operating point
-tuned to make the simulator look good.
+The first attempt derived it from the control distribution instead: over 53
+non-spastic OptiTrack trials passing the quality filter (coverage >= 80%, no
+area-ratio warning), mean 46.6 deg, sd 11.1, two SD below = 24.5, rounded to
+25. Same number, wrong reasoning — the correction below explains why, and the
+reasoning is what a reader would rely on.
 
-An unfiltered pass was tried first and discarded: it put control A0 anywhere
+An unfiltered pass was tried before that and discarded: it put control A0 anywhere
 between 7 and **418 deg**. A 418 deg knee excursion is impossible, so that
 distribution measures tracking failure, not physiology, and any threshold from
 it would be meaningless.
