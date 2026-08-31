@@ -296,6 +296,52 @@ const ZONE_CLASSIFICATION_CALIBRATED = false;
 
 const ZONE_UNCALIBRATED_LABEL = 'not classified — reference under recalibration';
 
+// Plain-English names for the scored parameters, for the unmeasured notice.
+// The raw keys are what the breakdown table shows; this is what a clinician
+// reads in a sentence.
+const PARAM_PLAIN_NAME = {
+  r2n: 'first-swing return (R2n)',
+  n: 'number of swings (N)',
+  phi_max_ratio: 'second-swing size (phi_max_ratio)',
+  omega_max_n: 'peak speed (omega_max_n)',
+  omega_min_n: 'slowest speed (omega_min_n)',
+  f: 'swing frequency (f)',
+  area_ratio: 'swing symmetry (area_ratio)',
+};
+
+// What to say when some parameters were never measurable. `unmeasured` is the
+// list mobile-imu-core puts on the ptScore payload (pt_score.rs's
+// `unmeasured_params`), in _PARAM_KEYS order.
+//
+// This exists because the arithmetic is actively misleading without it. An
+// unmeasured parameter sits at 0.0, and the score penalises `r2n`,
+// `phi_max_ratio`, `n` and `omega_max_n` for being BELOW the healthy
+// reference -- so a value that is 0.0 because nothing could be computed
+// contributes the largest penalty that parameter can produce, exactly 1/7 of
+// the scale each. The score therefore reads MORE impaired the less was
+// measurable, which is backwards, and nothing on screen said so.
+//
+// Deliberately not phrased as a capture failure. A limb with high tone drops
+// and does not swing back; that is the finding, not a mistake, and the trial
+// is kept and scored. The trial worth retaking is the one where the leg never
+// moved, and that never reaches here -- it is rejected in compute_pt_params.
+export function unmeasuredNotice(unmeasured) {
+  if (!Array.isArray(unmeasured) || unmeasured.length === 0) return null;
+  const names = unmeasured.map((k) => PARAM_PLAIN_NAME[k] || k);
+  const list = names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const noReturn = unmeasured.includes('r2n') && unmeasured.includes('phi_max_ratio');
+  return {
+    count: unmeasured.length,
+    text: `${list} could not be measured in this trial`
+      + (noReturn ? ' — the leg did not swing back past neutral' : '')
+      + `. ${unmeasured.length === 1 ? 'It counts' : 'They count'} as fully impaired`
+      + ' in the score below, so the score overstates impairment by up to '
+      + `${(unmeasured.length / 7 * 100).toFixed(0)}% of the scale.`,
+  };
+}
+
 // The zone decision, split out from rendering so it is testable without a DOM
 // (same split as nextOutcome above). Returns what the badge should say and the
 // class it carries -- never the raw zone while uncalibrated.
@@ -485,11 +531,12 @@ if (typeof document !== 'undefined') {
   // increment/decrement live entirely on the caller's side rather than
   // split between here and there. persistTrial is only ever invoked from
   // that one call site.
-  async function persistTrial(params, trajectory, rawJsonl) {
+  async function persistTrial(params, trajectory, rawJsonl, ptScore) {
     await ensureSessionReady();
     const record = makeTrialRecord({
       sessionId: currentSession.id,
       side: TRIAL_SIDE,
+        unmeasured: (ptScore && ptScore.unmeasured) || [],
       params,
       trajectory,
       rawJsonl,
@@ -952,6 +999,15 @@ if (typeof document !== 'undefined') {
     el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
       .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
       .join('');
+
+    // Shown ABOVE the score, not below it: the notice changes how the number
+    // should be read, so it has to be seen before the number, not after.
+    const notice = unmeasuredNotice(ptScore.unmeasured);
+    const noticeEl = el('pt-score-unmeasured');
+    if (noticeEl) {
+      noticeEl.hidden = notice === null;
+      noticeEl.textContent = notice ? notice.text : '';
+    }
   }
 
   function onState({ code, calm_s, drift_deg }) {
@@ -1039,7 +1095,7 @@ if (typeof document !== 'undefined') {
       sessionBusyCount++;
       Promise.resolve()
         .then(() => capture.exportJsonl())
-        .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl))
+        .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;

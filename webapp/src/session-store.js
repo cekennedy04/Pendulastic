@@ -21,6 +21,7 @@ function uuid() {
 export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
+  unmeasured = [],
 }) {
   // Copy only the known fields. Anything else the caller passes -- notably a
   // composite score -- is dropped rather than persisted.
@@ -34,6 +35,13 @@ export function makeTrialRecord({
     algorithm_version: algorithmVersion,
     capture_quality: captureQuality,
     release_idx: releaseIdx,
+    // Which of the seven scored parameters were placeholders rather than
+    // measurements, straight from mobile-imu-core's unmeasured_params(). The
+    // composite score is deliberately NOT persisted -- it is derived at read
+    // time because HEALTHY_REF moves -- but this is a property of the
+    // MEASUREMENT, not of the reference, so it belongs in the archive. Carried
+    // through from Rust rather than recomputed here, so the rule has one home.
+    unmeasured,
     release_override_idx: releaseOverrideIdx,
     params: kept,
     // Plain object `{t, angle_deg, release_idx, peak_idx, trough_idx,

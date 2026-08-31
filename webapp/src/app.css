@@ -355,6 +355,19 @@ body {
    red/amber/green zone colours would read as a verdict. */
 #pt-score-zone.zone-uncalibrated { background: var(--pt-unknown-bg); }
 
+/* Unmeasured-parameter notice. Sits above the number because it changes how
+   the number should be read. Amber, not red: the trial is valid and kept --
+   a limb with high tone legitimately produces this -- it is the SCORE that
+   needs qualifying, not the capture that needs repeating. */
+#pt-score-unmeasured {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid var(--pt-borderline-bg, #d39e00);
+  background: rgba(211, 158, 0, 0.12);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 #pt-score-breakdown-label {
   margin: 12px 0 4px;
   font-size: clamp(11px, 3vw, 13px);

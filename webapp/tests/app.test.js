@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   nextOutcome, resumeOrCreateSession, sessionLockState, invalidateExport, canMarkExported,
-  exportLockState, retainExportHandle, zoneDisplay,
+  exportLockState, retainExportHandle, zoneDisplay, unmeasuredNotice,
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 
@@ -415,4 +415,59 @@ test('every re-enabled label still carries the provisional qualifier', () => {
   for (const zone of ['healthy', 'borderline', 'impaired']) {
     assert.ok(/provisional/.test(zoneDisplay(zone, true).text), zone);
   }
+});
+
+
+// -- Unmeasured-parameter notice -------------------------------------------
+// An unmeasured parameter sits at 0.0, and the score penalises r2n,
+// phi_max_ratio, n and omega_max_n for being BELOW the healthy reference --
+// so "could not be computed" contributes the LARGEST penalty that parameter
+// can produce. The score reads more impaired the less was measurable. The
+// notice exists to say so; without it the number is actively misleading.
+
+test('a fully measured trial gets no notice', () => {
+  assert.equal(unmeasuredNotice([]), null);
+  assert.equal(unmeasuredNotice(undefined), null);
+  assert.equal(unmeasuredNotice(null), null);
+});
+
+test('the no-return-swing case names the physical cause, not a capture fault', () => {
+  const n = unmeasuredNotice(['r2n', 'phi_max_ratio']);
+  assert.ok(/did not swing back past neutral/.test(n.text), n.text);
+  // Must NOT tell the operator to retake: a limb with high tone legitimately
+  // does this, and the trial is a real finding that is kept and scored.
+  assert.ok(!/retake|re-record|discard|invalid/i.test(n.text), n.text);
+});
+
+test('the notice quantifies how much the score is overstated', () => {
+  // Two of seven parameters unmeasured = up to 29% of the scale.
+  const n = unmeasuredNotice(['r2n', 'phi_max_ratio']);
+  assert.ok(/29% of the scale/.test(n.text), n.text);
+  assert.ok(/overstates impairment/.test(n.text), n.text);
+});
+
+test('a single unmeasured parameter reads in the singular', () => {
+  const n = unmeasuredNotice(['f']);
+  assert.equal(n.count, 1);
+  assert.ok(/It counts/.test(n.text), n.text);
+  assert.ok(!/They count/.test(n.text), n.text);
+});
+
+test('three unmeasured parameters list correctly and scale correctly', () => {
+  const n = unmeasuredNotice(['r2n', 'phi_max_ratio', 'f']);
+  assert.equal(n.count, 3);
+  assert.ok(/They count/.test(n.text), n.text);
+  assert.ok(/43% of the scale/.test(n.text), n.text);
+  assert.ok(/, .* and /.test(n.text), `should use a serial list: ${n.text}`);
+});
+
+test('parameters are named in plain language, not raw keys alone', () => {
+  const n = unmeasuredNotice(['r2n']);
+  assert.ok(/first-swing return/.test(n.text), n.text);
+  assert.ok(/R2n/.test(n.text), 'the raw key stays, to match the breakdown table');
+});
+
+test('an unrecognised key degrades to the key itself rather than throwing', () => {
+  const n = unmeasuredNotice(['some_new_param']);
+  assert.ok(n.text.includes('some_new_param'), n.text);
 });

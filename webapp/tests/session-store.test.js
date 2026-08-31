@@ -43,3 +43,29 @@ test('a trial keeps its raw log, which is the archive of record', () => {
   const r = makeTrialRecord({ sessionId: 's1', side: 'left', params, trajectory: new ArrayBuffer(8), rawJsonl: 'line\n', algorithmVersion: '0.1.0' });
   assert.equal(r.raw_jsonl, 'line\n');
 });
+
+
+// -- unmeasured survives into the archive (2026-08-31) ---------------------
+// The composite score is deliberately never persisted (it is derived at read
+// time because HEALTHY_REF moves). `unmeasured` is different: it describes the
+// MEASUREMENT, not the reference, so a trial where two parameters were never
+// measurable must say so in the export rather than leaving a reader to infer
+// it from first_trough_depth being 0.
+
+test('a trial records which parameters were never measured', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.1.0',
+    unmeasured: ['r2n', 'phi_max_ratio'],
+  });
+  assert.deepEqual(r.unmeasured, ['r2n', 'phi_max_ratio']);
+});
+
+test('a fully measured trial records an empty list, not a missing key', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.1.0',
+  });
+  assert.ok('unmeasured' in r, 'the key must always be present');
+  assert.deepEqual(r.unmeasured, []);
+});

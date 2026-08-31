@@ -57,6 +57,7 @@ export function buildExportFiles({ session, patient, trials }) {
       algorithm_version: t.algorithm_version,
       capture_quality: t.capture_quality,
       release_idx: t.release_idx,
+      unmeasured: t.unmeasured || [],
       release_override_idx: t.release_override_idx,
       // The 20 scalars only. The composite score and zone are derived at read
       // time against the current HEALTHY_REF, which is still being

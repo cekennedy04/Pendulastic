@@ -233,6 +233,41 @@ pub fn pt_score(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// `breakdown` is emitted as an array of `{"key":...,"value":...}` objects,
 /// pre-sorted by descending contribution (`PtScoreBreakdown::ordered`), so the
 /// caller can render it directly without re-deriving the sort in JS.
+/// Which of the seven scored parameters are placeholders rather than
+/// measurements, in `_PARAM_KEYS` order.
+///
+/// The distinction matters clinically. A limb with high tone legitimately
+/// drops and never swings back: that is a real finding, the trial must still
+/// score, and it must NOT be thrown away as a bad capture. But `r2n` and
+/// `phi_max_ratio` both hang off the first negative trough, so with no trough
+/// they are 0.0 by fallback, not by measurement -- and `dev_below` reads a
+/// fallback 0.0 as maximal impairment, the largest penalty the parameter can
+/// contribute. A reader has to be able to tell those apart.
+///
+/// A measured zero is NOT unmeasured: `phi_max_ratio` is legitimately 0.0 when
+/// a trough exists but the oscillation died before a second peak, which is a
+/// real observation about a heavily damped limb. Hence the test is on
+/// `first_trough_depth`, never on the parameter's own value.
+///
+/// The trial that actually warrants a retake -- the leg never moved -- is
+/// rejected upstream in `compute_pt_params`: `neutral` is the median of the
+/// settled tail, so a motionless leg yields `a0 ~ 0` and fails the
+/// `|a0_raw| < 3.0` guard before any of this runs.
+pub fn unmeasured_params(params: &PtParams) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if params.first_trough_depth <= 0.0 {
+        out.push("r2n");
+        out.push("phi_max_ratio");
+    }
+    // Deliberately the same condition as `pt_score_breakdown`'s own `f` skip
+    // below. Two copies of this rule drifting apart would mean the score
+    // silently skips a parameter the UI still presents as measured.
+    if params.f < 0.1 || params.n < 2.0 {
+        out.push("f");
+    }
+    out
+}
+
 pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
     let breakdown = pt_score_breakdown(params, healthy);
     let total = breakdown.total();
@@ -246,11 +281,18 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
         items.push_str(&format!("{{\"key\":\"{key}\",\"value\":{}}}", fmt_f64(*value)));
     }
 
+    let unmeasured = unmeasured_params(params)
+        .iter()
+        .map(|k| format!("\"{k}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+
     format!(
-        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}]}}",
+        "{{\"score\":{},\"zone\":\"{}\",\"breakdown\":[{}],\"unmeasured\":[{}]}}",
         fmt_f64(total),
         zone.as_str(),
         items,
+        unmeasured,
     )
 }
 
@@ -425,4 +467,97 @@ mod tests {
             + breakdown.omega_min_n + breakdown.f + breakdown.area_ratio;
         assert_eq!(pt_score(&p, &HEALTHY_REF), manual);
     }
+
+    // -- Which parameters were never measured (2026-08-31) -----------------
+    // A limb with high tone legitimately drops and does not swing back. That
+    // is a real measurement, not a failed capture, so it must still score --
+    // but r2n and phi_max_ratio are then placeholders, not measurements, and
+    // a reader has to be able to tell which. The trial the operator should
+    // actually retake is the one where the leg never moved at all, and that
+    // is already rejected upstream in compute_pt_params (neutral comes from
+    // the settled tail, so a motionless leg gives a0 ~ 0 and fails the
+    // |a0| < 3 deg guard).
+
+    #[test]
+    fn a_trial_with_a_return_swing_has_nothing_unmeasured() {
+        let p = params(|p| {
+            p.first_trough_depth = 39.0;
+            p.f = 0.9;
+            p.n = 3.5;
+        });
+        assert!(unmeasured_params(&p).is_empty());
+    }
+
+    #[test]
+    fn no_return_swing_leaves_r2n_and_phi_max_ratio_unmeasured() {
+        // The rigid-limb case: drop with no trough. r2n = a1/(1.6*a0) and
+        // phi_max_ratio both hang off the first negative trough.
+        let p = params(|p| {
+            p.first_trough_depth = 0.0;
+            p.r2n = 0.0;
+            p.phi_max_ratio = 0.0;
+            p.f = 0.9;
+            p.n = 3.5;
+        });
+        let u = unmeasured_params(&p);
+        assert!(u.contains(&"r2n"), "{u:?}");
+        assert!(u.contains(&"phi_max_ratio"), "{u:?}");
+    }
+
+    #[test]
+    fn frequency_is_unmeasured_below_two_cycles() {
+        // Mirrors pt_score_breakdown's own skip rule, so the two cannot drift.
+        let p = params(|p| {
+            p.first_trough_depth = 39.0;
+            p.f = 0.9;
+            p.n = 1.5;
+        });
+        assert_eq!(unmeasured_params(&p), vec!["f"]);
+    }
+
+    #[test]
+    fn frequency_is_unmeasured_when_it_rounds_to_nothing() {
+        let p = params(|p| {
+            p.first_trough_depth = 39.0;
+            p.f = 0.0;
+            p.n = 3.5;
+        });
+        assert_eq!(unmeasured_params(&p), vec!["f"]);
+    }
+
+    #[test]
+    fn a_measured_zero_is_not_reported_as_unmeasured() {
+        // phi_max_ratio can legitimately BE zero when a trough exists but the
+        // oscillation died before a second peak. That is a measurement of a
+        // heavily damped limb, not a missing value, and must not be flagged.
+        let p = params(|p| {
+            p.first_trough_depth = 35.9;
+            p.phi_max_ratio = 0.0;
+            p.f = 0.68;
+            p.n = 2.5;
+        });
+        assert!(unmeasured_params(&p).is_empty());
+    }
+
+    #[test]
+    fn the_json_payload_carries_what_was_unmeasured() {
+        let p = params(|p| {
+            p.first_trough_depth = 0.0;
+            p.f = 0.0;
+            p.n = 0.0;
+        });
+        let json = pt_score_to_json(&p, &HEALTHY_REF);
+        assert!(json.contains("\"unmeasured\":[\"r2n\",\"phi_max_ratio\",\"f\"]"), "{json}");
+    }
+
+    #[test]
+    fn a_clean_trial_reports_an_empty_unmeasured_list() {
+        let p = params(|p| {
+            p.first_trough_depth = 39.0;
+            p.f = 0.9;
+            p.n = 3.5;
+        });
+        assert!(pt_score_to_json(&p, &HEALTHY_REF).contains("\"unmeasured\":[]"));
+    }
+
 }
