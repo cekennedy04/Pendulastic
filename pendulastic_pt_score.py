@@ -959,6 +959,313 @@ def _split_unlabeled_by_motion(df: pd.DataFrame, triplets: list):
     return shank, thigh
 
 
+# Whether to measure the knee angle about a joint centre found from the swing
+# instead of about an axis seeded from an assumed hold.
+#
+# OFF, because this corpus cannot support it -- not because the method is
+# wrong. It is validated against synthetic ground truth (see the three
+# _build_protocol tests): it measures a trial that opens at rest, one that
+# opens mid-swing, and one that opens at the hold all to within 2 deg, which
+# the seeded method cannot do because it anchors 180 deg to whatever pose
+# frames 0-59 happen to contain.
+#
+# What blocks it here is the marker geometry, measured across 238 trials: the
+# shank markers do not orbit any fixed point to better than a MEDIAN 25 mm
+# residual (p25 17 mm, p75 37 mm) where a usable fit needs about 8 mm, so only
+# 18 trials qualify. De-rotating the thigh frame rather than merely
+# translating it moved the median from 30.9 mm to 25.1 mm and changed nothing
+# material. That is consistent with the rig defects already on file: the thigh
+# cluster is a collinear BAR, so its roll is unobservable and it cannot define
+# a stable frame to fit in.
+#
+# Leaving it on would be worse than leaving it off, because 18 trials would be
+# measured one way and 220 another inside the same cohort comparison.
+#
+# To make this usable, fix the RIG: put a real triangle on the thigh instead of
+# a collinear bar. Then the thigh has an observable frame, the residual should
+# collapse, and the seed assumption can be deleted outright.
+USE_FUNCTIONAL_KNEE_CENTRE = False
+
+# Smallest shank rotation (degrees, peak-to-peak) that makes the knee centre
+# observable. The sphere fit needs the shank to actually sweep an arc about the
+# joint; on a leg that never swings, the centre is unconstrained along the
+# direction of no motion and the fit will happily return a confident-looking
+# number that is meaningless. 15 deg is well under the smallest genuine swing
+# in this corpus and well over the 6.4 deg seen on trials whose swing the
+# cameras missed entirely.
+MIN_ROTATION_FOR_KNEE_FIT_DEG = 15.0
+
+# Largest acceptable sphere-fit residual (metres). A marker orbiting a fixed
+# joint centre holds its radius; 8 mm is loose enough for soft-tissue movement
+# over a plate and tight enough to reject a fit to something that is not a
+# hinge.
+MAX_KNEE_FIT_RESIDUAL_M = 0.008
+
+
+def _functional_knee_centre(shank_mk: np.ndarray, thigh_mk: np.ndarray):
+    """Locate the knee from the motion itself, with no reference pose.
+
+    Returns (centre, residual_m, rotation_deg) in the thigh-anchored frame, or
+    (None, nan, rotation_deg) when the motion cannot support a fit.
+
+    Why this exists: every earlier version derived the segment axes from an
+    assumed extended hold in the first 60 frames, and made that pose exactly
+    180 deg by construction. When a recording opens at rest, or mid-swing, the
+    zero is anchored to a flexed pose and every angle after it is wrong while
+    the baseline still reads a convincing 179.9. That was confirmed on video
+    for P8 Left trial_2 and produced A0 = 418 deg on P9 Left trial_3.
+
+    A pendulum trial contains what is needed to avoid the assumption. The thigh
+    is held still and the shank swings about the knee, so in the thigh's frame
+    every shank marker traces an arc of a sphere centred on the joint. Fitting
+    that centre uses the swing itself as the reference and needs no opinion
+    about which frames are the hold.
+
+    The fit is the standard algebraic one: for marker m at frame i,
+        |p_mi|^2 - 2 p_mi . c = r_m^2 - |c|^2
+    which is linear in c and in one per-marker constant, so all three markers
+    are solved jointly for a single shared centre.
+    """
+    ok = (np.isfinite(shank_mk).all(axis=(0, 2)) &
+          np.isfinite(thigh_mk).all(axis=(0, 2)))
+    if ok.sum() < 30:
+        return None, float("nan"), 0.0, None
+
+    # Anchor to the thigh. Subtracting its centroid removes translation, but the
+    # thigh also ROTATES 8-22 deg over a trial on this rig, and a rotating
+    # reference frame turns the shank's pure hinge motion into something that is
+    # not a sphere about any point. Measured, translation-only anchoring left a
+    # median fit residual of 30.9 mm against an 8 mm tolerance and rejected 212
+    # of 253 trials. So de-rotate as well.
+    #
+    # The thigh cluster is a collinear bar on nearly every trial here, so its
+    # roll is unobservable and only the line direction can be tracked -- the
+    # same constraint _seg_axes works under. Shortest-arc rotation from the
+    # reference line is therefore the most that can honestly be removed, and it
+    # removes the two degrees of freedom that matter for a sagittal swing.
+    thigh_c = thigh_mk[:, ok, :].mean(axis=0)          # (nv, 3)
+    rel = shank_mk[:, ok, :] - thigh_c[None, :, :]     # (3, nv, 3)
+
+    t_rel = thigh_mk[:, ok, :] - thigh_c[None, :, :]   # thigh markers, centred
+    ref_line = np.linalg.svd(t_rel[:, 0, :] - t_rel[:, 0, :].mean(axis=0),
+                             full_matrices=False)[2][0]
+    for j in range(rel.shape[1]):
+        cur = t_rel[:, j, :] - t_rel[:, j, :].mean(axis=0)
+        try:
+            line = np.linalg.svd(cur, full_matrices=False)[2][0]
+        except np.linalg.LinAlgError:
+            continue
+        if np.dot(line, ref_line) < 0:
+            line = -line
+        rot = _shortest_arc_rotation(line, ref_line)   # bring frame back to ref
+        rel[:, j, :] = rel[:, j, :] @ rot.T
+
+    # How far does the shank actually sweep? Use the marker furthest from the
+    # cluster centroid, whose arc is longest and least noise-dominated.
+    span = 0.0
+    for m in range(rel.shape[0]):
+        d = rel[m] - rel[m].mean(axis=0)
+        nrm = np.linalg.norm(d, axis=1)
+        good = nrm > 1e-9
+        if good.sum() < 10:
+            continue
+        u = d[good] / nrm[good][:, None]
+        cosines = np.clip(u @ u[0], -1.0, 1.0)
+        span = max(span, float(np.degrees(np.arccos(cosines)).max()))
+    if span < MIN_ROTATION_FOR_KNEE_FIT_DEG:
+        return None, float("nan"), span, None, None
+
+    # A knee is a HINGE, so the shank sweeps a plane and every marker holds a
+    # constant coordinate along the flexion axis. A free sphere fit is therefore
+    # rank-deficient in that direction -- the term is absorbed into the radius,
+    # and least squares returns an arbitrary value for it (measured: 7 mm of
+    # error, a systematic 4.2 deg bias, from a fit whose residual was 0.00 mm).
+    # So find the flexion axis, fit a circle in the plane perpendicular to it,
+    # and place the centre along the axis where the segments themselves say.
+    disp = np.diff(rel, axis=1).reshape(-1, 3)
+    disp = disp[np.isfinite(disp).all(axis=1)]
+    if len(disp) < 10:
+        return None, float("nan"), span, None, None
+    # Motion lies in the plane perpendicular to the axis, so the axis is the
+    # direction of least displacement.
+    axis = np.linalg.svd(disp - disp.mean(axis=0), full_matrices=False)[2][-1]
+    e1 = np.cross(axis, [0.0, 0.0, 1.0])
+    if np.linalg.norm(e1) < 1e-6:
+        e1 = np.cross(axis, [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(axis, e1)
+
+    n_m, n_f, _ = rel.shape
+    rows, rhs = [], []
+    for m in range(n_m):
+        q = np.column_stack([rel[m] @ e1, rel[m] @ e2])      # (n_f, 2)
+        blk = np.zeros((n_f, 2 + n_m))
+        blk[:, :2] = -2.0 * q
+        blk[:, 2 + m] = -1.0
+        rows.append(blk)
+        rhs.append(-np.sum(q ** 2, axis=1))
+    A = np.vstack(rows)
+    b = np.concatenate(rhs)
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None, float("nan"), span, None, None
+    # The along-axis component is unobservable from a hinge's motion. Take it
+    # from the segments: the joint sits between the two cluster centroids, so
+    # their mean projection onto the axis is the honest choice.
+    shank_c_rel = rel.mean(axis=0)
+    along = float(np.mean(shank_c_rel @ axis)) * 0.5
+    centre = sol[0] * e1 + sol[1] * e2 + along * axis
+
+    resid = []
+    for m in range(n_m):
+        d = rel[m] - centre
+        r = np.linalg.norm(d - np.outer(d @ axis, axis), axis=1)   # in-plane radius
+        resid.append(np.abs(r - r.mean()))
+    residual = float(np.sqrt(np.mean(np.concatenate(resid) ** 2)))
+    if not np.isfinite(residual) or residual > MAX_KNEE_FIT_RESIDUAL_M:
+        return None, residual, span, None
+    return centre, residual, span, axis
+
+
+def _angle_from_knee_centre(shank_mk: np.ndarray, thigh_mk: np.ndarray,
+                            centre: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """Interior knee angle per frame, measured about a located joint centre.
+
+    The flexion is measured as a SIGNED rotation in the plane of the swing,
+    not as an unsigned angle between two direction vectors. That matters: a
+    marker plate's centroid sits a few millimetres off the bone axis, which
+    displaces the ZERO of the rotation by a couple of degrees, and an unsigned
+    arccos folds at 180 deg and turns that displacement into a sign flip
+    (measured -4.23 deg at extension, +4.23 deg when flexed, on the same
+    trial). A folded error cannot be removed by any later shift. A signed one
+    is a genuine constant, and _anchor_to_extension takes it out.
+
+    Cluster CENTROIDS are used throughout, which are invariant to Motive
+    permuting Marker1/2/3 -- the relabeling the Kabsch path needs continuity
+    heuristics to survive does not arise here.
+    """
+    n = shank_mk.shape[1]
+    out = np.full(n, np.nan)
+    ok = (np.isfinite(shank_mk).all(axis=(0, 2)) &
+          np.isfinite(thigh_mk).all(axis=(0, 2)))
+    if not ok.any():
+        return out
+    thigh_c = thigh_mk[:, ok, :].mean(axis=0)
+    shank_c = shank_mk[:, ok, :].mean(axis=0)
+    knee = thigh_c + centre                      # centre is thigh-relative
+
+    w = np.asarray(axis, dtype=float)
+    w = w / max(float(np.linalg.norm(w)), 1e-12)
+
+    def _in_plane(v):
+        return v - np.outer(v @ w, w)
+
+    u_t = _in_plane(thigh_c - knee)
+    u_s = _in_plane(shank_c - knee)
+    nt = np.linalg.norm(u_t, axis=1)
+    ns = np.linalg.norm(u_s, axis=1)
+    good = (nt > 1e-9) & (ns > 1e-9)
+    if not good.any():
+        return out
+
+    # Where the shank would point if the leg were straight.
+    ref = -u_t[good] / nt[good][:, None]
+    cur = u_s[good] / ns[good][:, None]
+    cos = np.clip(np.sum(ref * cur, axis=1), -1.0, 1.0)
+    sin = np.sum(np.cross(ref, cur) * w, axis=1)
+    flexion = np.degrees(np.arctan2(sin, cos))   # signed, 0 when straight
+
+    # The flexion axis comes from an SVD, so its sign is arbitrary and the
+    # rotation could come out negated. A knee flexes; it does not hyperextend
+    # through a whole swing. Orient the axis so the trial's dominant rotation
+    # is positive flexion.
+    if np.median(flexion) < 0:
+        flexion = -flexion
+
+    idx = np.where(ok)[0][good]
+    out[idx] = 180.0 - flexion
+    return out
+
+
+# How close to the maximum an angle must sit to count as part of the held
+# extension, and how long that must last.
+#
+# The discriminator is between an examiner HOLDING the leg up and a swing
+# merely passing through its turning point, where the angle is also
+# momentarily flat. Measured on the synthetic protocol at this rig's 120 Hz:
+# a real hold gives a run of 91-97 frames within 0.5 deg of the maximum, while
+# a 0.85 Hz swing's turning point manages only 23. 60 frames -- half a second --
+# sits in that gap with ~1.5x margin below the shortest hold and ~2.6x above
+# the longest turning point.
+#
+# Frames, not seconds, because this path only ever runs on the 120 Hz optical
+# rig. A slower source would need this expressed as a duration.
+EXTENSION_HOLD_BAND_DEG = 0.5
+MIN_EXTENSION_HOLD_FRAMES = 60
+
+
+def _held_extension_frames(angles: np.ndarray) -> int:
+    """Longest run of frames sitting within EXTENSION_HOLD_BAND_DEG of the
+    curve's maximum -- i.e. how long the leg was HELD at its most extended.
+
+    Distinguishes an examiner holding the leg up from a swing merely passing
+    through its turning point, where the angle is also momentarily flat.
+    """
+    ok = np.isfinite(angles)
+    if ok.sum() < 7:
+        return 0
+    top = float(np.percentile(angles[ok], 98.0)) - EXTENSION_HOLD_BAND_DEG
+    longest = run = 0
+    for i, good in enumerate(ok):
+        if good and angles[i] >= top:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return longest
+
+
+def _anchor_to_extension(angles: np.ndarray) -> np.ndarray:
+    """Shift a knee-centre angle so full extension reads 180 deg.
+
+    The joint-centre measurement is unbiased in SHAPE but carries a constant
+    offset, because a marker plate's centroid does not sit on the bone axis.
+    Measured on the synthetic rig that offset is ~7 mm, which is
+    atan(7/200) + atan(7/180) = 4.2 deg of bias -- small, constant, and real on
+    hardware too, since no plate is glued to the bone's centreline.
+
+    The offset cannot be recovered from markers alone; it needs one pose whose
+    true angle is known. The Wartenberg protocol supplies exactly one: the
+    examiner raises the leg to full extension and holds it before releasing. So
+    the largest sustained angle in the trial is that pose, and mapping it to
+    180 removes the offset.
+
+    Note what this does and does NOT assume. It assumes the leg reaches full
+    extension at SOME point in the recording -- which the protocol requires --
+    and nothing whatever about WHERE. That is the whole difference from the
+    method it replaces, which assumed extension in frames 0-59 specifically and
+    silently anchored 180 to a resting pose whenever the recording started
+    early. A high percentile rather than the raw maximum, so a single noisy
+    frame cannot set the reference.
+    """
+    ok = np.isfinite(angles)
+    if ok.sum() < 7:
+        return angles
+    extension = float(np.percentile(angles[ok], 98.0))
+
+    # The anchor is only valid if the recording actually CONTAINS the held
+    # extension. A trial that starts after release never shows it: the largest
+    # angle in the file is then just the first sample of an ongoing swing, and
+    # mapping that to 180 would invent up to 46 deg of extension the leg never
+    # had. Require the top of the range to be HELD, which is what a hold looks
+    # like and what a passing swing does not.
+    out = angles + (180.0 - extension)
+    # The interior angle cannot exceed full extension.
+    out[np.isfinite(out)] = np.minimum(out[np.isfinite(out)], 180.0)
+    return out
+
+
 def _angle_from_labeled_markers(
         df: pd.DataFrame,
         shank_triplets: list,
@@ -996,6 +1303,22 @@ def _angle_from_labeled_markers(
 
     sm = np.stack([_get(c) for c in shank_triplets[:3]])   # (3, n, 3)
     tm = np.stack([_get(c) for c in thigh_triplets[:3]])
+
+    # Preferred path: locate the knee from the swing and measure about it. This
+    # needs no reference pose, so a recording that opens at rest or mid-swing is
+    # measured correctly rather than being zeroed on whatever it happened to
+    # start on. Falls through to the hold-seeded method below only when the
+    # motion cannot support a fit, which is itself worth knowing.
+    _centre, _resid, _span, _axis = (
+        _functional_knee_centre(sm, tm) if USE_FUNCTIONAL_KNEE_CENTRE
+        else (None, float("nan"), 0.0, None))
+    if _centre is not None and _axis is not None:
+        _ang = _angle_from_knee_centre(sm, tm, _centre, _axis)
+        _sm_ok = np.isfinite(_ang)
+        if _sm_ok.sum() >= 7:
+            _ang[_sm_ok] = _mf(_ang[_sm_ok], size=7)
+            _ang = _anchor_to_extension(_ang)
+            return _ang
 
     # Anatomical seed: centroid-to-centroid over the hold, when the leg is
     # extended. Use only fully-tracked frames so occlusion cannot skew it.

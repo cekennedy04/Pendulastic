@@ -429,3 +429,116 @@ def test_split_refuses_with_fewer_than_six_markers():
             cols[c] = np.linspace(0, 0.1, n); idx.append(c); c += 1
         trips.append(idx)
     assert pts._split_unlabeled_by_motion(pd.DataFrame(cols), trips) == (None, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trials that do NOT start at an extended hold.
+#
+# _build_trial above always opens with the leg held straight, which is the one
+# case the seed assumption gets right. Real recordings are often started before
+# the examiner has lifted the leg, or after the swing has already begun, and
+# those are the shapes that broke the reconstruction in the field:
+#   * P8 Left trial_2  -- video frame 5 and frame 370 both show the leg hanging
+#     flexed with nobody holding it; the recording brackets the whole procedure.
+#   * P9 Left trial_3  -- opens mid-motion, seed window moving at 2.0 mm/frame.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_protocol(rest_flex=50.0, lift_frames=90, hold_frames=90,
+                    swing_frames=300, lead_in=120, start_at=0,
+                    thigh_tilt=22.0, shank_tilt=30.0, fps=120.0):
+    """A whole pendulum procedure: rest -> lift -> hold -> release -> rest.
+
+    `lead_in` frames of the leg sitting at rest BEFORE the examiner lifts it,
+    then the lift, the held extension, the damped swing, and rest again.
+    `start_at` drops the first N frames, so the recording can be made to begin
+    mid-lift or mid-swing. Returns (rows, truth) with truth the true interior
+    knee angle, 180 = straight.
+    """
+    hip = np.array([0.0, 0.40, 1.50])
+    knee = np.array([0.0, 0.00, 1.50])
+    thigh_axis = (hip - knee) / np.linalg.norm(hip - knee)
+    flex_axis = np.array([1.0, 0.0, 0.0])
+
+    flex = []
+    flex += [rest_flex] * lead_in                                  # sitting at rest
+    for i in range(lift_frames):                                   # examiner lifts
+        flex.append(rest_flex * (1.0 - (i + 1) / lift_frames))
+    flex += [0.0] * hold_frames                                    # held extended
+    for i in range(swing_frames):                                  # released, swings
+        t = i / fps
+        flex.append(rest_flex * (1.0 - math.exp(-2.2 * t) * math.cos(2 * math.pi * 0.85 * t)))
+    flex += [rest_flex] * lead_in                                  # settles at rest
+
+    # Build each plate ONCE at the reference pose, then carry it rigidly. The
+    # earlier helper rebuilt the plate from world-z every frame, which lets it
+    # twist about its own long axis as the segment swings -- a marker plate
+    # screwed to a limb does not do that, and the twist put a 7 mm bias into
+    # any joint-centre estimate fitted to the trajectories.
+    ref_shank = -thigh_axis
+    S_ref = _plate(knee + ref_shank * 0.20, ref_shank, shank_tilt) - (knee + ref_shank * 0.20)
+    T_ref = _plate(knee + thigh_axis * 0.18, thigh_axis, thigh_tilt) - (knee + thigh_axis * 0.18)
+
+    rows, truth = [], []
+    for i, f in enumerate(flex[start_at:]):
+        R = _rot(flex_axis, -f)
+        shank_axis = R @ ref_shank
+        truth.append(math.degrees(math.acos(np.clip(np.dot(thigh_axis, shank_axis), -1.0, 1.0))))
+        T = T_ref + (knee + thigh_axis * 0.18)          # thigh is stationary
+        S = (R @ S_ref.T).T + (knee + shank_axis * 0.20)
+        rows.append((i, i / fps, S, T, False))
+    return rows, np.asarray(truth)
+
+
+def _err(path, truth, monkeypatch=None):
+    """Error against ground truth, with the joint-centre path forced ON.
+
+    That path is disabled by default because this corpus's marker geometry
+    cannot support it (see USE_FUNCTIONAL_KNEE_CENTRE). These tests exercise
+    the METHOD, which is sound, so they enable it explicitly.
+    """
+    if monkeypatch is not None:
+        monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
+    t, ang = pts.load_optitrack(path)
+    ok = np.isfinite(ang)
+    return float(np.max(np.abs(ang[ok] - truth[ok]))), float(np.nanmedian(ang[:60]))
+
+
+def test_trial_that_starts_at_rest_is_not_zeroed_on_the_resting_pose(tmp_path, monkeypatch):
+    """The failure confirmed on video for P8 Left trial_2. The recording opens
+    with the leg hanging flexed; seeding on frames 0-59 makes that pose 180 deg
+    by construction, so the baseline reads a convincing 179.9 while every angle
+    after it is wrong."""
+    rows, truth = _build_protocol()
+    p = _write_csv(str(tmp_path / "rest_start.csv"), rows)
+    max_err, base = _err(p, truth, monkeypatch)
+    assert max_err < 2.0, (
+        f"max error {max_err:.1f} deg -- the zero is anchored to the wrong pose "
+        f"(reported baseline {base:.1f}, true opening angle {truth[0]:.1f})")
+
+
+def test_trial_that_starts_mid_swing_is_not_zeroed_on_a_moving_pose(tmp_path, monkeypatch):
+    """P9 Left trial_3's shape: the recording begins after release, so the seed
+    window is not calm and not extended. It reported A0 = 418.1 deg."""
+    rows, truth = _build_protocol(start_at=340)
+    p = _write_csv(str(tmp_path / "mid_swing.csv"), rows)
+    # This recording never contains the held extension, so there is no pose of
+    # known angle to anchor the zero on. The honest outcome is a refusal --
+    # anchoring on the largest angle present would invent 46 deg of extension
+    # the leg never reached.
+    monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
+    t, ang, q = pts.load_optitrack_detailed(p)
+    assert len(ang) == len(rows), "the trial must still be returned, not dropped"
+    # No held extension is in frame, so the zero cannot be recovered. The shape
+    # is still right: the swing's peak-to-peak excursion survives even though
+    # its absolute position does not.
+    fin = ang[np.isfinite(ang)]
+    assert (fin.max() - fin.min()) == pytest.approx(truth.max() - truth.min(), abs=3.0)
+
+
+def test_the_ordinary_hold_first_trial_still_works(tmp_path, monkeypatch):
+    """The case that already worked must not regress: recording starts with the
+    leg already held extended, which is what the current seed assumes."""
+    rows, truth = _build_protocol(lead_in=0, lift_frames=0)
+    p = _write_csv(str(tmp_path / "hold_first.csv"), rows)
+    max_err, _base = _err(p, truth, monkeypatch)
+    assert max_err < 2.0, f"regression on the easy case: {max_err:.1f} deg"
