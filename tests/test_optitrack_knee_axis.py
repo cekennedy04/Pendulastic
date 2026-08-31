@@ -281,3 +281,26 @@ def test_orchestrator_refuses_an_ill_conditioned_trial_with_a_named_reason():
     with pytest.raises(ka.GeometryError) as exc:
         ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
     assert "conditioned" in str(exc.value).lower() or "hinge" in str(exc.value).lower()
+
+
+def test_orchestrator_emits_and_flags_out_of_plane_motion_instead_of_refusing():
+    """Real non-sagittal limb motion is a finding, not a defect: the angle must
+    still be produced, flagged as a lower bound. Refusing here would discard
+    exactly the trials with unusual movement, which is where spasticity lives."""
+    import numpy as np
+    n = 600
+    hinge = np.array([0.0, 0.0, 1.0])
+    perp = np.array([1.0, 0.0, 0.0])
+    base = np.array([[0.06, 0.0, 0.0], [-0.06, 0.0, 0.0], [0.0, 0.021, 0.0]])
+    tri = np.empty((3, n, 3))
+    for i in range(n):
+        # a hinge sweep plus a SLOW out-of-plane wobble: low-frequency, so it
+        # is real limb motion rather than marker jitter
+        R = _rot(perp, 9.0 * np.sin(2 * np.pi * 1.0 * i / 120.0)) @ _rot(hinge, 0.25 * i)
+        tri[:, i, :] = base @ R.T
+    bar = np.repeat(np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0],
+                              [0.0, 0.0012, 0.0]])[:, None, :], n, axis=1)
+    res = ka.knee_angle_from_clusters(tri, bar, fps=120.0)   # must NOT raise
+    assert "out_of_plane_motion" in res.flags, res.flags
+    assert "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED" in res.flags, res.flags
+    assert np.isfinite(res.get_relative_angles()).any(), "angles must still be produced"

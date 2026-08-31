@@ -364,7 +364,7 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
             f"noise rather than limb motion. Check marker placement and "
             f"tracking quality for this trial.")
 
-    flags = () if verdict == "ok" else (verdict, "out_of_plane_amplitude_underreported")
+    flags = () if verdict == "ok" else (verdict, "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED")
     thigh_dirs = segment_line_direction(bar)
     shank_dirs = segment_axis_from_plate(triangle, axis)
     angles = signed_knee_angle(thigh_dirs, shank_dirs, axis)
