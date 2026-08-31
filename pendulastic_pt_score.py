@@ -369,6 +369,99 @@ def pt_to_mas(pt: float) -> str:
         if pt <= thresh: return label
     return "4"
 
+
+# ── Excursion gate: refuse a MAS grade PT7 cannot support ────────────────────
+#
+# PT7 is NOT monotonic in severity. All seven of its parameters are ratios
+# normalised on the swing itself, so when the swing collapses they renormalise
+# on a tiny, clean, near-symmetric motion and a barely-moving leg scores
+# healthy. Measured against the pendulum simulator at dialled-in muscle tone
+# (k_x=0, shipped scorer, 2026-08-30):
+#
+#     tone   PT7     MAS    A0
+#      0.0   0.036    0     78.3
+#      3.0   0.989    4     62.4    <- peak
+#      8.0   0.246    1     19.0
+#     10.0   0.322    1+    11.2    <- near-rigid, scored MILD
+#
+# A0 falls monotonically (78.3 -> 11.2) across the whole range and is not one
+# of the scored parameters.
+#
+# This gate does NOT fix the non-monotonicity. PT7 already turns over around
+# A0 ~60 deg, far above any defensible threshold. What the gate does is refuse
+# the VERDICT in the regime where the verdict is actively unsafe -- a leg that
+# barely moved being reported as mild.
+#
+# Threshold derivation. Taken from the CONTROL distribution, never from the
+# spastic legs: there are 7 of those with a usable reference, which cannot
+# support fitting a diagnostic cutoff, and every one of them has A0 >= 28.7 deg
+# so the collapsed-excursion regime is not represented in this corpus at all.
+# Over 53 non-spastic OptiTrack trials passing the quality filter (coverage
+# >= 80%, no area-ratio warning): mean 46.6 deg, sd 11.1. Two SD below the
+# healthy mean is 24.5, rounded to 25 -- the conventional "outside the normal
+# range" bound, which is the honest claim here, rather than a tuned operating
+# point.
+#
+# Effect on the current corpus: flags 2 of 53 non-spastic trials (4%) and 0 of
+# 7 spastic. Both flagged trials have A0 = 9.0 deg and currently report
+# PT7 0.278 -> MAS "1+", i.e. a leg that barely moved being called mildly
+# spastic. That is the cell this exists to close.
+#
+# The message is deliberately about the MEASUREMENT, not the patient. Low
+# excursion also comes from poor positioning, an incomplete release, guarding
+# or pain, mechanical obstruction, and sensor failure. Reporting "severe
+# spasticity" on those would trade one wrong answer for another.
+EXCURSION_REF_MEAN_DEG = 46.6
+EXCURSION_REF_SD_DEG = 11.1
+EXCURSION_REF_N = 53
+MIN_INTERPRETABLE_A0_DEG = 25.0
+
+INSUFFICIENT_EXCURSION = (
+    "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
+    "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
+    "PT7's parameters are ratios normalised on the swing, so they stop tracking "
+    "severity once the swing collapses. Repeat the trial and check positioning, "
+    "release and sensor placement before reading anything into the score."
+)
+
+
+def excursion_ok(params: Optional[dict]) -> bool:
+    """False when the swing is too small for PT7's ratios to mean anything.
+
+    None params, or a missing A0, count as NOT ok: an unmeasurable trial is not
+    an interpretable one.
+    """
+    if not params:
+        return False
+    a0 = params.get("A0_deg")
+    if a0 is None or not np.isfinite(a0):
+        return False
+    return float(a0) >= MIN_INTERPRETABLE_A0_DEG
+
+
+def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
+    """MAS estimate for a trial, or an explicit refusal.
+
+    Returns {"mas": str|None, "pt7": float|None, "interpretable": bool,
+             "reason": str}. `mas` is None exactly when `interpretable` is
+    False, so a caller cannot accidentally render a grade the score does not
+    support -- which is the failure this whole block exists to prevent.
+
+    Prefer this over calling pt_to_mas(compute_pt_score(params)) directly.
+    """
+    if not params:
+        return {"mas": None, "pt7": None, "interpretable": False,
+                "reason": "No PT parameters: the trial could not be scored."}
+    score = compute_pt_score(params) if ref is None else compute_pt_score(params, ref)
+    if not excursion_ok(params):
+        a0 = params.get("A0_deg")
+        return {"mas": None, "pt7": score, "interpretable": False,
+                "reason": INSUFFICIENT_EXCURSION.format(
+                    a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),
+                    gate=MIN_INTERPRETABLE_A0_DEG, mean=EXCURSION_REF_MEAN_DEG,
+                    sd=EXCURSION_REF_SD_DEG, n=EXCURSION_REF_N)}
+    return {"mas": pt_to_mas(score), "pt7": score, "interpretable": True, "reason": ""}
+
 # Ordinal MAS scale, single source of truth for anything that needs a numeric
 # rank (Spearman correlation, weighted Cohen's kappa) rather than the raw
 # label -- e.g. mas_validation.py. pt_to_mas() above only ever returns one of

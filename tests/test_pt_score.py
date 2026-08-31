@@ -980,3 +980,65 @@ def test_missing_cluster_error_names_the_real_cause_not_a_frame_shortage():
     assert "shank" in msg.lower(), msg
     assert "200" in msg, msg
     assert "fewer than 5" not in msg.lower(), msg
+
+
+# ── excursion gate (2026-08-30) ────────────────────────────────────────────
+# PT7 is non-monotonic in severity: all seven parameters are ratios normalised
+# on the swing, so a collapsed swing renormalises them and a near-rigid leg
+# scores healthy. The gate refuses the VERDICT in that regime; it does not
+# claim to fix the non-monotonicity.
+
+def test_excursion_gate_refuses_a_grade_for_a_barely_moving_leg():
+    """The unsafe cell, in real numbers: two corpus trials with A0 = 9.0 deg
+    currently report PT7 0.278 -> MAS '1+'. A leg that moved 9 degrees is not
+    mildly spastic; it is a trial you cannot read."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 9.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.1}
+    out = p.mas_estimate(params)
+    assert out["interpretable"] is False
+    assert out["mas"] is None, "must not hand back a grade it cannot support"
+    assert out["pt7"] is not None, "the score is still reported, just not graded"
+    assert "excursion" in out["reason"].lower()
+
+
+def test_excursion_gate_message_is_about_the_measurement_not_the_patient():
+    """Low excursion also comes from poor positioning, incomplete release,
+    guarding, obstruction and sensor failure. Reporting 'severe spasticity'
+    would trade one wrong answer for another."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 5.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.1}
+    reason = p.mas_estimate(params)["reason"].lower()
+    assert "repeat" in reason, "must tell the operator to re-run the trial"
+    assert "positioning" in reason, "must point at the protocol, not the patient"
+    assert "severe" not in reason, "must not assert a severity it cannot measure"
+
+
+def test_a_normal_swing_is_graded_as_before():
+    """The gate must be inert on trials it has no business touching -- it fires
+    on 2 of 53 control trials, not on the population."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 48.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.7,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.05}
+    out = p.mas_estimate(params)
+    assert out["interpretable"] is True
+    assert out["mas"] == p.pt_to_mas(out["pt7"]), "unchanged grading above the gate"
+
+
+def test_excursion_gate_threshold_came_from_controls_not_from_spastic_legs():
+    """Seven spastic legs cannot support fitting a diagnostic cutoff, and all
+    of them sit at A0 >= 28.7 deg, so the gate must sit below that or it would
+    be silently reclassifying the very cases the study is about."""
+    import pendulastic_pt_score as p
+    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7
+    two_sd_below = p.EXCURSION_REF_MEAN_DEG - 2 * p.EXCURSION_REF_SD_DEG
+    assert abs(p.MIN_INTERPRETABLE_A0_DEG - two_sd_below) < 1.0, (
+        "threshold should stay the 2-SD bound on the control distribution")
+
+
+def test_unscoreable_trial_is_not_interpretable():
+    import pendulastic_pt_score as p
+    for params in (None, {}, {"A0_deg": None}, {"A0_deg": float("nan")}):
+        assert p.excursion_ok(params) is False
+        assert p.mas_estimate(params)["mas"] is None
