@@ -781,7 +781,15 @@ def _seed_window_speed_mm(df: pd.DataFrame, shank_triplets: list,
         arr = df.iloc[:, trip].values.astype(float)
         arr[np.abs(arr) > 1e5] = np.nan
         cols.append(arr)
-    centroid = np.nanmean(np.stack(cols), axis=0)[:n_frames]
+    stacked = np.stack(cols)[:, :n_frames, :]
+    # A frame with no tracked marker is an empty slice for nanmean, which warns
+    # and yields NaN. Drop those frames instead: the question is how fast the
+    # leg moved while it WAS seen, not how many frames were missed -- coverage
+    # is reported separately.
+    seen = np.isfinite(stacked).any(axis=(0, 2))
+    if seen.sum() < 2:
+        return float("nan")
+    centroid = np.nanmean(stacked[:, seen, :], axis=0)
     if len(centroid) < 2:
         return float("nan")
     step = np.linalg.norm(np.diff(centroid, axis=0), axis=1) * 1000.0
