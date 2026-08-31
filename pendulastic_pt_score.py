@@ -416,6 +416,31 @@ EXCURSION_REF_SD_DEG = 11.1
 EXCURSION_REF_N = 53
 MIN_INTERPRETABLE_A0_DEG = 25.0
 
+# Upper bound on a believable excursion. The floor above catches a swing that
+# collapsed; this catches a number that is not a swing at all.
+#
+# A0 is the initial extension above neutral of an INTERIOR knee angle, which
+# lives in [0, 180], so anything at or above 180 is arithmetically impossible
+# rather than merely unusual. 120 sits well below that and well above the data:
+# across 218 scored optical trials the 99th percentile is 89.8 deg and the
+# largest genuine value is also 89.8, so the gate has ~34% headroom over the
+# real maximum and rejects nothing that was ever measured.
+#
+# It is not hypothetical. The seed-window bug documented in
+# _angle_from_labeled_markers produces A0 = 418.1 deg on P9 Left/Right trial_3
+# at 97.3% coverage, and that value passed the floor-only gate and had a MAS
+# grade printed off it. A one-sided gate only guards one failure direction.
+MAX_INTERPRETABLE_A0_DEG = 120.0
+
+IMPOSSIBLE_EXCURSION = (
+    "Impossible excursion: the leg moved {a0:.1f} deg, above the {gate:.0f} deg "
+    "ceiling. A0 is the initial extension of an interior knee angle, which "
+    "cannot exceed 180 deg at all, and the largest value measured across this "
+    "corpus is 89.8 deg. A number this size means the reconstruction failed, "
+    "not that the leg swung far -- check the trial's anatomical reference "
+    "before reading anything into the score."
+)
+
 INSUFFICIENT_EXCURSION = (
     "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
     "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
@@ -426,17 +451,20 @@ INSUFFICIENT_EXCURSION = (
 
 
 def excursion_ok(params: Optional[dict]) -> bool:
-    """False when the swing is too small for PT7's ratios to mean anything.
+    """False when the swing is too small -- or too large -- to mean anything.
 
     None params, or a missing A0, count as NOT ok: an unmeasurable trial is not
-    an interpretable one.
+    an interpretable one. The upper bound matters as much as the lower one: a
+    reconstruction failure shows up as an impossibly LARGE excursion just as
+    readily as a collapsed one, and a floor-only gate waves it straight through
+    to a printed MAS grade.
     """
     if not params:
         return False
     a0 = params.get("A0_deg")
     if a0 is None or not np.isfinite(a0):
         return False
-    return float(a0) >= MIN_INTERPRETABLE_A0_DEG
+    return MIN_INTERPRETABLE_A0_DEG <= float(a0) <= MAX_INTERPRETABLE_A0_DEG
 
 
 def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
@@ -455,6 +483,10 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     score = compute_pt_score(params) if ref is None else compute_pt_score(params, ref)
     if not excursion_ok(params):
         a0 = params.get("A0_deg")
+        if a0 is not None and np.isfinite(a0) and float(a0) > MAX_INTERPRETABLE_A0_DEG:
+            return {"mas": None, "pt7": score, "interpretable": False,
+                    "reason": IMPOSSIBLE_EXCURSION.format(
+                        a0=float(a0), gate=MAX_INTERPRETABLE_A0_DEG)}
         return {"mas": None, "pt7": score, "interpretable": False,
                 "reason": INSUFFICIENT_EXCURSION.format(
                     a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),

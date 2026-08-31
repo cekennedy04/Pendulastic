@@ -1042,3 +1042,61 @@ def test_unscoreable_trial_is_not_interpretable():
     for params in (None, {}, {"A0_deg": None}, {"A0_deg": float("nan")}):
         assert p.excursion_ok(params) is False
         assert p.mas_estimate(params)["mas"] is None
+
+
+# ── the excursion gate must guard BOTH directions ────────────────────────────
+
+def _plausible_params(a0):
+    return {"A0_deg": a0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+            "omega_max_n": 6.0, "omega_min_n": 0.001, "f": 0.9, "area_ratio": 0.08}
+
+
+def test_impossibly_large_excursion_is_refused_a_mas_grade():
+    import pendulastic_pt_score as pt
+    """A0 = 418.1 deg is produced by the seed-window bug on P9 Left/Right
+    trial_3 at 97.3% coverage. A floor-only gate passed it straight through and
+    printed a MAS grade off a reconstruction that had failed."""
+    got = pt.mas_estimate(_plausible_params(418.1))
+    assert got["mas"] is None
+    assert got["interpretable"] is False
+    assert "Impossible excursion" in got["reason"]
+    assert "418.1" in got["reason"]
+
+
+def test_the_gate_still_refuses_a_collapsed_swing():
+    import pendulastic_pt_score as pt
+    got = pt.mas_estimate(_plausible_params(8.5))
+    assert got["mas"] is None
+    assert "Insufficient excursion" in got["reason"]
+
+
+def test_the_two_refusals_give_different_reasons():
+    import pendulastic_pt_score as pt
+    """Too-small and too-large are different failures and must not be reported
+    with the same message -- one says repeat the trial, the other says the
+    reconstruction is wrong."""
+    small = pt.mas_estimate(_plausible_params(8.5))["reason"]
+    large = pt.mas_estimate(_plausible_params(418.1))["reason"]
+    assert small != large
+
+
+def test_every_excursion_measured_in_this_corpus_is_still_accepted():
+    import pendulastic_pt_score as pt
+    """The ceiling must reject nothing that was ever really measured. Across 218
+    scored optical trials the largest genuine A0 is 89.8 deg."""
+    for a0 in (25.0, 46.6, 63.5, 89.8):
+        assert pt.excursion_ok(_plausible_params(a0)), a0
+
+
+def test_a_knee_angle_cannot_exceed_180_so_the_ceiling_sits_below_it():
+    import pendulastic_pt_score as pt
+    assert pt.MAX_INTERPRETABLE_A0_DEG < 180.0
+    assert pt.MAX_INTERPRETABLE_A0_DEG > 89.8
+    assert not pt.excursion_ok(_plausible_params(180.0))
+
+
+def test_nan_and_missing_a0_are_still_not_interpretable():
+    import pendulastic_pt_score as pt
+    assert not pt.excursion_ok({"A0_deg": float("nan")})
+    assert not pt.excursion_ok({})
+    assert not pt.excursion_ok(None)
