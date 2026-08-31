@@ -848,8 +848,33 @@ def _angle_from_labeled_markers(
     hold_ok = (np.isfinite(sm[:, :ref_n, :]).all(axis=(0, 2)) &
                np.isfinite(tm[:, :ref_n, :]).all(axis=(0, 2)))
     if hold_ok.sum() < 5:
-        raise ValueError("Fewer than 5 fully-tracked frames in the hold window "
-                         "— cannot establish an anatomical reference.")
+        # Measured across 253 trials: every failure here is a whole cluster
+        # missing through the entire hold, not a marginal shortage. The
+        # cluster is acquired hundreds of frames later, after release, so no
+        # extended-leg reference was ever recorded. Name that, because the
+        # operator's fix is capture-side (start the take before positioning
+        # the leg), and "fewer than 5 frames" points at the wrong problem.
+        _s_all = np.isfinite(sm).all(axis=(0, 2))
+        _t_all = np.isfinite(tm).all(axis=(0, 2))
+        _detail = []
+        for _label, _all_ok in (("shank", _s_all), ("thigh", _t_all)):
+            if _all_ok[:ref_n].any():
+                continue
+            _seen = np.where(_all_ok)[0]
+            if len(_seen):
+                _detail.append(f"the {_label} cluster is untracked through the "
+                               f"whole hold window (frames 0-{ref_n - 1}) and is "
+                               f"first tracked at frame {int(_seen[0])}, after "
+                               f"release")
+            else:
+                _detail.append(f"the {_label} cluster is never tracked in this "
+                               f"trial")
+        if not _detail:
+            _detail.append(f"only {int(hold_ok.sum())} frames in the hold window "
+                           f"(0-{ref_n - 1}) have both clusters tracked")
+        raise ValueError("No usable pre-release hold was recorded: "
+                         + "; ".join(_detail)
+                         + " — cannot establish an anatomical reference.")
     hold_idx = np.where(hold_ok)[0]
     sc = sm[:, hold_idx, :].mean(axis=(0, 1))
     tc = tm[:, hold_idx, :].mean(axis=(0, 1))
