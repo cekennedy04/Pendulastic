@@ -154,7 +154,8 @@ def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
     tc, ac = t[mask], angle[mask]
     if len(tc) < 40:
         return None
-    ac_s = pendulastic_pt_score._sg(ac, w=15, p=3)
+    ac_s = pendulastic_pt_score._sg(
+        ac, dt=pendulastic_pt_score._median_dt(tc), p=3)
     rel_i = pendulastic_pt_score._detect_release(tc, ac_s)
     return float(tc[rel_i])
 

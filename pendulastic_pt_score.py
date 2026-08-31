@@ -1975,8 +1975,60 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
 # PT parameter computation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _sg(sig: np.ndarray, w: int = 11, p: int = 3) -> np.ndarray:
+# Smoothing window as a PHYSICAL DURATION, not a sample count.
+#
+# Until 2026-08-31 _sg took a fixed number of SAMPLES (11/15/15/9/7 at the
+# five call sites below). The three modalities reach compute_pt_params at
+# three different rates, so one constant meant three different filters:
+# a 15-sample window spans 0.750 s of a 20 Hz IMU replay, 0.500 s of 30 Hz
+# video and 0.125 s of 120 Hz OptiTrack -- 75% of a ~1 Hz swing period
+# against 12% of one. Decimating real 120 Hz OptiTrack to 20 Hz, which
+# changes the sampling and nothing else about the motion, moved the median
+# omega_max_n from 8.50 to 3.19 and N from 3.5 to 2.5 across 205 trials.
+# Re-running the 120 Hz data with 20 Hz-EQUIVALENT durations reproduced the
+# 20 Hz values (omega_max_n gap 153.8% -> 7.2%, N 25.0% -> 0.0%), which is
+# what attributes the divergence to this window rather than to anything
+# else in the pipeline. IMU and OptiTrack could not agree on a PT score at
+# any angle accuracy while this stood.
+#
+# 0.10 s passes the ~0.9 Hz swing and its first several harmonics while
+# still rejecting the release transient and sensor jitter. Note that the
+# choice is definitional, not measured: peak angular velocity has no
+# asymptote as the window shrinks (median 186 deg/s at 0.75 s, 343 at
+# 0.25 s, 433 at 0.05 s on 40 trials at 120 Hz), because a shorter window
+# simply admits more differentiation noise. N, by contrast, sits at ~3.0
+# across that whole range -- the parameter least defined by this constant.
+_SG_WINDOW_S = 0.10
+
+
+def _median_dt(t: np.ndarray) -> float:
+    """Sample interval of a time base, robust to the dropped frames and
+    duplicate timestamps that both the optical and the phone streams
+    contain. Falls back to 30 fps only for a series too short to measure."""
+    t = np.asarray(t, dtype=float)
+    if len(t) < 2:
+        return 1.0 / 30.0
+    dt = float(np.median(np.diff(t)))
+    return dt if dt > 0 else 1.0 / 30.0
+
+
+def _sg(sig: np.ndarray, dt: float, win_s: float = _SG_WINDOW_S,
+        p: int = 3) -> np.ndarray:
+    """Savitzky-Golay smoothing over a window of win_s SECONDS.
+
+    dt is the series' own sample interval, so the same physical filter is
+    applied whatever rate the trial was captured at. Where the rate is too
+    low to realise win_s -- 0.10 s is only 3 samples at 30 fps video, below
+    savgol's polyorder+2 floor -- the window widens to that floor rather
+    than failing, which means a 30 fps trace is smoothed over 0.167 s and
+    is NOT strictly comparable to a 100 Hz one. That residual is bounded
+    and reported; it is not the 6x spread the sample-count window had."""
     n = len(sig)
+    w = int(round(win_s / dt))
+    if w % 2 == 0:
+        w += 1
+    if w < p + 2:
+        w = p + 2 if (p + 2) % 2 == 1 else p + 3
     w = min(w, n - 1 if n % 2 == 0 else n)
     w = w if w % 2 == 1 else w - 1
     return savgol_filter(sig, w, p) if w >= p + 2 else sig.copy()
@@ -2188,7 +2240,7 @@ def detect_release_t0(t: np.ndarray, signal: np.ndarray,
     if mask.sum() < 4:
         raise ValueError("Need at least 4 finite samples to detect release.")
     t_c = t[mask]
-    sig_s = _sg(signal[mask])
+    sig_s = _sg(signal[mask], dt=_median_dt(t_c))
     baseline_i = max(3, int(np.searchsorted(t_c, t_c[0] + baseline_sec)))
     baseline_i = min(baseline_i, len(t_c) - 1)
     rel_i = _detect_release(t_c, sig_s, baseline_sec=baseline_sec)
@@ -2299,7 +2351,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # moves -- same failure mode already documented and worked around in
     # pt_report_common.release_aligned_waveform for plotting, needed here
     # too since this is what computes the score.
-    ang_s_raw = _sg(ang_c_raw, w=15, p=3)
+    ang_s_raw = _sg(ang_c_raw, dt=_median_dt(t_c), p=3)
     if release_idx is not None:
         # Map raw frame index into the finite-only compressed array
         finite_indices = np.where(mask)[0]
@@ -2360,7 +2412,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
         ang_c = ang_c_raw
-    ang_s = _sg(ang_c, w=15, p=3)
+    ang_s = _sg(ang_c, dt=_median_dt(t_c), p=3)
     # Pre-release angle: median of the window just before release
     # (the held/extended leg position — used as the "Rest" reference on the graph)
     pre_n = max(3, min(20, rel_i))
@@ -2404,7 +2456,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     if phi_negated:              # convention: extension = positive
         phi = -phi; A0_raw = abs(A0_raw)
 
-    phi_s = _sg(phi, w=9, p=2)
+    phi_s = _sg(phi, dt=_median_dt(t_r), p=2)
 
     # A0: maximum of smoothed phi in first 20% after release (wider window handles late trigger)
     # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
@@ -2494,7 +2546,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         phi_max_ratio = 0.0
 
     # ── 4 & 5. omega max/min (normalised by A0) ───────────────────────────────
-    omega_s        = _sg(np.gradient(phi, t_r), w=7, p=2)
+    omega_s        = _sg(np.gradient(phi, t_r), dt=_median_dt(t_r), p=2)
     omega_abs      = np.abs(omega_s)
     omega_peak_dps = float(np.nanmax(omega_abs))      # deg/s  (raw, not normalised)
     omega_max_n    = omega_peak_dps / A0               # normalised by A0
