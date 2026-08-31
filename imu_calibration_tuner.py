@@ -31,6 +31,24 @@ from imu_flex_axis import FlexAxisEstimator
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
 
+# Grid the ANALYSIS path derives parameters on. The phone streams accel,
+# gyro and mag at ~100 Hz each (measured across the corpus: 100.6/100.7/
+# 100.7 Hz average per trial), so 20 Hz was never a sensor limit -- it is
+# TICK_S, the app's display poll, and resampling to it before deriving
+# parameters pushed compute_pt_params' 0.10 s smoothing window below
+# savgol's floor, leaving IMU parameters filtered over 0.25 s against the
+# 120 Hz OptiTrack reference's 0.10 s.
+#
+# Measured over 46 trials scored against their own OptiTrack reference,
+# moving analysis to this grid improves agreement on the parameters the
+# window governs: omega_peak 29.1% -> 19.6%, omega_max_n 41.9% -> 32.6%,
+# A0_deg 25.8% -> 20.9%, R2n 10.8% -> 10.2%; N is unchanged at 15.5%, and
+# phi_max_ratio (24.9% -> 25.5%) and f (2.7% -> 3.8%) are marginally worse.
+# Angle accuracy itself is untouched, as it must be -- the AHRS is identical
+# and only its output grid moves: RMSE against OptiTrack went 10.52 -> 10.53
+# deg mean, 8.65 -> 8.70 median.
+ANALYSIS_TICK_S = 0.01
+
 
 def _rescale_ema_alpha(alpha: float, tick_s: float) -> float:
     """The EMA coefficient that reproduces `alpha`'s time constant on a grid

@@ -495,7 +495,8 @@ def _replay_samples(samples: list, config: Optional[dict],
     if ft_ratio is not None:
         params["ft_ratio"] = ft_ratio
 
-    t, angle = imu_calibration_tuner.replay_trial(samples, params)
+    t, angle = imu_calibration_tuner.replay_trial(
+        samples, params, tick_s=imu_calibration_tuner.ANALYSIS_TICK_S)
     finite = np.isfinite(t) & np.isfinite(angle)
     return t[finite], angle[finite]
 

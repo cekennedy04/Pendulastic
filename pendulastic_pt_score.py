@@ -2735,10 +2735,11 @@ def _replay_raw_imu_fallback(rec_dir: str, trial: str):
         return None
     try:
         from imu_calibration_config import load_config
-        from imu_calibration_tuner import replay_trial
+        from imu_calibration_tuner import ANALYSIS_TICK_S, replay_trial
         from reconstruct_imu_raw_logs import reconstruct_trial
         samples = reconstruct_trial(accel, gyro, mag)
-        t_m, ang_m = replay_trial(samples, load_config())
+        t_m, ang_m = replay_trial(samples, load_config(),
+                                  tick_s=ANALYSIS_TICK_S)
     except Exception:
         return None
     if len(t_m) == 0 or np.count_nonzero(np.isfinite(ang_m)) < 10:

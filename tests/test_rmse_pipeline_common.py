@@ -723,7 +723,7 @@ def test_score_imu_candidate_returns_rmse(monkeypatch):
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (
+                        lambda samples, params, tick_s=None: (
                             __import__("numpy").array([0.0] * 10),
                             __import__("numpy").array([1.0] * 10)))
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
@@ -741,7 +741,8 @@ def test_score_imu_candidate_returns_none_when_too_few_finite_samples(monkeypatc
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (np.array([0.0]), np.array([float("nan")])))
+                        lambda samples, params, tick_s=None: (
+                            np.array([0.0]), np.array([float("nan")])))
     result = rpc.score_imu_candidate(trial, {"beta": 0.041})
     assert result is None
 
@@ -752,7 +753,7 @@ def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (
+                        lambda samples, params, tick_s=None: (
                             np.array([0.0] * 20), np.array([1.0] * 20)))
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
                         lambda path: (np.array([0.0] * 20), np.array([1.0] * 20)))
@@ -1650,3 +1651,33 @@ def test_make_figures_writes_three_png_files_without_stubbing(tmp_path, monkeypa
         assert os.path.isfile(path)
         assert os.path.getsize(path) > 0
         assert not os.path.isfile(path + ".tmp")  # no leftover temp file
+
+
+def test_score_imu_candidate_replays_on_the_native_analysis_grid():
+    # The sweep scores IMU against OptiTrack, so it is an analysis path.
+    # Only the grid is observable from here -- the RMSE it returns cannot
+    # distinguish one cadence from another -- so the tick is asserted
+    # directly at the boundary.
+    import numpy as np
+    import pytest as _pytest
+    seen = {}
+
+    def fake_replay(samples, params, tick_s=None):
+        seen["tick_s"] = tick_s
+        return np.linspace(0.0, 1.0, 50), np.linspace(1.0, 2.0, 50)
+
+    trial = {"imu_component_paths": {"imu": "i", "accel": "a", "gyro": "g", "mag": "m"},
+             "optitrack_path": "o"}
+    import imu_calibration_tuner as tuner
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
+        mp.setattr(rpc.imu_calibration_tuner, "replay_trial", fake_replay)
+        mp.setattr(rpc.pt_score, "load_optitrack",
+                   lambda path: (np.linspace(0.0, 1.0, 50), np.linspace(1.0, 2.0, 50)))
+        mp.setattr(rpc.engine, "compare_pair",
+                   lambda *a, **k: {"status": "ok", "rmse_deg": 1.0, "n_samples": 50})
+        rpc.score_imu_candidate(trial, {"beta": 0.041})
+    finally:
+        mp.undo()
+    assert seen["tick_s"] == tuner.ANALYSIS_TICK_S

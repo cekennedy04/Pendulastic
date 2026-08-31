@@ -984,3 +984,10 @@ def test_native_rate_replay_describes_the_same_motion_as_the_display_grid():
     assert float(np.nanmax(np.abs(a_slow[ok] - on_slow[ok]))) < 2.5
     settled = ok & (t_slow > t_slow[ok][-1] - 0.5)
     assert float(np.nanmax(np.abs(a_slow[settled] - on_slow[settled]))) < 0.15
+
+
+def test_analysis_grid_is_the_native_sensor_rate():
+    # The phone streams each sensor at ~100 Hz. Analysis derives parameters
+    # on that grid; TICK_S stays the app's 20 Hz display poll.
+    assert tuner.ANALYSIS_TICK_S == 0.01
+    assert tuner.ANALYSIS_TICK_S < tuner.TICK_S
