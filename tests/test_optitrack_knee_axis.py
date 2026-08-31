@@ -229,3 +229,25 @@ def test_segment_axis_from_plate_tracks_rotation_and_preserves_gaps():
     swept = np.degrees(np.arccos(np.clip(
         float(np.dot(dirs[0], dirs[100])), -1.0, 1.0)))
     assert swept > 30.0, f"axis barely moved ({swept:.1f} deg) with a 50 deg plate rotation"
+
+
+def test_a_drifting_hold_withholds_the_offset():
+    """Patients shift during the hold, which drifts the reference rather than
+    stepping it. A drifting hold must not be used to set an absolute zero."""
+    ang = np.concatenate([np.linspace(0.0, 9.0, 80), np.linspace(9.0, 60.0, 220)])
+    offset, flags = ka.anchor_to_extension(ang, slice(0, 80))
+    assert offset is None
+    assert "low_confidence_hold" in flags
+
+
+def test_a_steady_hold_sets_the_offset_so_extension_reads_180():
+    ang = np.concatenate([np.full(80, 4.0), np.linspace(4.0, 60.0, 220)])
+    offset, flags = ka.anchor_to_extension(ang, slice(0, 80))
+    assert offset == pytest.approx(176.0, abs=0.5)
+    assert flags == ()
+
+
+def test_no_hold_at_all_is_reported_not_guessed():
+    offset, flags = ka.anchor_to_extension(np.linspace(0, 60, 300), None)
+    assert offset is None
+    assert "uncalibrated_offset" in flags

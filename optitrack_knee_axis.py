@@ -27,6 +27,10 @@ MIN_HINGE_CONDITIONING = 0.90
 LOW_FREQ_CUTOFF_HZ = 6.0
 OUT_OF_PLANE_MIN_LF_RATIO = 0.50
 MIN_SPECTRAL_FRAMES = 240
+MAX_HOLD_SPEED_MM_PER_FRAME = 0.5
+MAX_HOLD_COLLINEARITY_DEG = 25.0
+MAX_HOLD_SD_DEG = 2.0
+EXTENDED_ANGLE_DEG = 180.0
 
 
 class GeometryError(ValueError):
@@ -296,3 +300,47 @@ class KneeAngleResult:
                 "get_relative_angles(); every scored PT parameter is "
                 "offset-invariant and does not need an absolute zero.")
         return np.asarray(self.raw_angles, dtype=float)
+
+
+def anchor_to_extension(angles: np.ndarray, hold):
+    """(offset_deg, flags). Cosmetic only -- scoring never depends on it.
+
+    A hold that DRIFTS is not a reference. Patients shift during the hold, so
+    the failure is a slow ramp rather than a clean step, and averaging over it
+    would silently bake the drift into the zero.
+    """
+    if hold is None:
+        return None, ("uncalibrated_offset",)
+    seg = np.asarray(angles, dtype=float)[hold]
+    seg = seg[np.isfinite(seg)]
+    if len(seg) < 5:
+        return None, ("uncalibrated_offset",)
+    if float(np.std(seg)) > MAX_HOLD_SD_DEG:
+        return None, ("low_confidence_hold",)
+    return float(EXTENDED_ANGLE_DEG - np.median(seg)), ()
+
+
+def find_hold(triangle: np.ndarray, bar: np.ndarray, angles: np.ndarray):
+    """(slice | None, flags) for the pre-release extended hold.
+
+    Calm AND geometrically extended. Calm alone is not enough: a leg resting
+    flexed is perfectly calm, and calling that "extended" is precisely the bug
+    being fixed.
+    """
+    n = triangle.shape[1]
+    cen = np.nanmean(np.concatenate([triangle, bar], axis=0), axis=0)   # (n,3)
+    speed_mm = np.full(n, np.inf)
+    step = np.linalg.norm(np.diff(cen, axis=0), axis=1) * 1000.0
+    speed_mm[1:] = step
+    ang = np.asarray(angles, dtype=float)
+    extended = np.abs(ang - EXTENDED_ANGLE_DEG) <= MAX_HOLD_COLLINEARITY_DEG
+    ok = (speed_mm <= MAX_HOLD_SPEED_MM_PER_FRAME) & extended & np.isfinite(ang)
+    if not ok.any():
+        return None, ("uncalibrated_offset",)
+    idx = np.where(ok)[0]
+    breaks = np.where(np.diff(idx) > 1)[0]
+    runs = np.split(idx, breaks + 1)
+    best = max(runs, key=len)
+    if len(best) < 5:
+        return None, ("uncalibrated_offset",)
+    return slice(int(best[0]), int(best[-1]) + 1), ()
