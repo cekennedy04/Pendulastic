@@ -1633,34 +1633,6 @@ def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
     return t - t0
 
 
-def _merge_close_extrema(idx_arr: np.ndarray, values: np.ndarray, min_sep: int) -> np.ndarray:
-    """
-    Merge consecutive detected extrema that are closer than min_sep samples.
-    Keeps the one with the larger value (used for both peaks and troughs by
-    passing the appropriate sign of the signal). Eliminates spurious sub-peaks
-    introduced by the spastic quadriceps catch.
-    """
-    if len(idx_arr) < 2:
-        return idx_arr
-    merged = list(idx_arr)
-    changed = True
-    while changed:
-        changed = False
-        new: list = []
-        i = 0
-        while i < len(merged):
-            if i + 1 < len(merged) and (merged[i + 1] - merged[i]) < min_sep:
-                keep = merged[i] if values[merged[i]] >= values[merged[i + 1]] else merged[i + 1]
-                new.append(keep)
-                i += 2
-                changed = True
-            else:
-                new.append(merged[i])
-                i += 1
-        merged = new
-    return np.array(merged, dtype=int)
-
-
 # Matches imu_calibration_tuner.score_waveform's own Continuity-check window
 # cap -- a real pendulum swing settles well within this, so a stray extremum
 # past it is tail noise, not real oscillation.
@@ -1878,11 +1850,22 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     pk_i2 = pk_i2[t_r[pk_i2] <= window_end_t]
     tr_i2 = tr_i2[t_r[tr_i2] <= window_end_t]
 
-    # Merge sub-peaks closer than fps/6 apart — the spastic quadriceps catch
-    # produces an abrupt deceleration that find_peaks misreads as two peaks.
-    merge_sep = max(3, int(fps_eff / 6))
-    pk_i2 = _merge_close_extrema(pk_i2,  phi_s, merge_sep)
-    tr_i2 = _merge_close_extrema(tr_i2, -phi_s, merge_sep)
+    # A sub-peak merge used to run here, to absorb the extra extremum a spastic
+    # quadriceps catch can put into the curve. It was unreachable and has been
+    # removed. find_peaks above is given distance=min_dist = fps/3.5, so no two
+    # returned extrema are EVER closer than 0.286 s; the merge window was
+    # fps/6 = 0.167 s, i.e. strictly inside a separation that was already
+    # guaranteed. The two constants were inverted against each other, so the
+    # merge could not fire at any sample rate (verified at 30/60/100/120/200/
+    # 2000 Hz), and removing it changed nothing on any of the 186 real curves
+    # in the corpus. See test_quadriceps_catch_merge_was_subsumed_by_find_peaks.
+    #
+    # The protection itself is not lost: find_peaks' distance constraint is the
+    # STRICTER of the two and keeps the more prominent extremum, which is what
+    # the merge did. What neither ever handled is a catch whose sub-peak lands
+    # MORE than min_dist away -- that extremum survives and is counted as a real
+    # oscillation. Handling that needs a deliberate physiological rule, not a
+    # window; it is not silently covered today and never was.
 
     # ── 1. R2n  (A1 = PEAK-TO-PEAK of first oscillation) ─────────────────────
     neg_tr = [(i, phi[i]) for i in tr_i2 if phi[i] < -min_amp]

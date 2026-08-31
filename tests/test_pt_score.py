@@ -911,3 +911,32 @@ def test_padding_a_short_tail_with_stable_data_erases_the_drift_it_should_find()
     # never recovers the real slope, which is the entire point.
     assert padded_slope is None or abs(padded_slope) < abs(tail_slope) / 2.0, (
         tail_slope, padded_slope)
+
+
+def test_quadriceps_catch_merge_was_subsumed_by_find_peaks():
+    """The removed sub-peak merge could never fire, at any sample rate.
+
+    find_peaks is given distance = fps/3.5, so no two returned extrema are ever
+    closer than that. The merge window was fps/6 -- strictly INSIDE a separation
+    already guaranteed. The two constants were inverted against each other, so
+    a 'spastic quadriceps catch' safeguard was advertised in the code while
+    being unreachable. Removing it changed nothing on any of the 186 real
+    curves in the corpus.
+
+    This test exists so the same mistake is not reintroduced: any merge window
+    must be WIDER than find_peaks' distance to do anything at all.
+    """
+    for fps in (30, 60, 100, 120, 200, 2000):
+        find_peaks_distance = max(3, int(fps / 3.5))
+        old_merge_window = max(3, int(fps / 6))
+        assert old_merge_window <= find_peaks_distance, (
+            f"at {fps} Hz the merge window ({old_merge_window}) exceeds "
+            f"find_peaks distance ({find_peaks_distance}) -- if this ever "
+            f"becomes true the removal reasoning needs revisiting")
+
+
+def test_merge_helper_is_gone_not_merely_unused():
+    """A dead function that claims a clinical safeguard is worse than no
+    function: it reads as protection that exists."""
+    import pendulastic_pt_score as p
+    assert not hasattr(p, "_merge_close_extrema")
