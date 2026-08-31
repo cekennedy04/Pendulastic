@@ -20,7 +20,17 @@ Keep this root alive. Destroying it mid-session reintroduces the problem.
 """
 
 import os
+import sys
 import tkinter
+
+# The repo ships a src-layout package (setup.py, package_dir={"": "src"}) that
+# is not installed in the dev environment, so `import pendulastic` failed and
+# tests/test_pose.py and tests/test_metrics.py could not even be collected.
+# Every other test file here bootstraps its own path rather than requiring an
+# install step; do the same for src/ so a bare checkout runs the whole suite.
+_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if os.path.isdir(_SRC) and _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
 
 _anchor = None
 

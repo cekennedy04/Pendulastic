@@ -8,14 +8,21 @@ from typing import Generator
 import mediapipe as mp
 import numpy as np
 
-# MediaPipe landmark indices relevant to the pendulum test
-_POSE = mp.solutions.pose
-HIP_LEFT = _POSE.PoseLandmark.LEFT_HIP.value
-HIP_RIGHT = _POSE.PoseLandmark.RIGHT_HIP.value
-KNEE_LEFT = _POSE.PoseLandmark.LEFT_KNEE.value
-KNEE_RIGHT = _POSE.PoseLandmark.RIGHT_KNEE.value
-ANKLE_LEFT = _POSE.PoseLandmark.LEFT_ANKLE.value
-ANKLE_RIGHT = _POSE.PoseLandmark.RIGHT_ANKLE.value
+# MediaPipe landmark indices relevant to the pendulum test.
+#
+# Written as the documented integers rather than read off mp.solutions.pose.
+# That attribute is the LEGACY MediaPipe API and was removed in the 0.10.x
+# series -- against the installed 0.10.35 this module raised AttributeError at
+# IMPORT time, which took the whole pendulastic package down with it and stopped
+# tests/test_pose.py and tests/test_metrics.py even being collected, all for a
+# handful of constants. requirements.txt asks for mediapipe>=0.10.14, so the
+# breaking version is inside the range the project declares it supports.
+#
+# The indices themselves are part of MediaPipe's published Pose topology and
+# have not changed across the API migration; mediapipe_worker.py hardcodes the
+# same values (MP_L_HIP, MP_L_KNEE, MP_L_ANKLE = 23, 25, 27).
+HIP_LEFT, KNEE_LEFT, ANKLE_LEFT = 23, 25, 27
+HIP_RIGHT, KNEE_RIGHT, ANKLE_RIGHT = 24, 26, 28
 
 
 @dataclass
@@ -55,7 +62,17 @@ def extract_landmarks(
 
     results: list[LandmarkFrame | None] = []
 
-    with _POSE.Pose(
+    legacy_pose = getattr(getattr(mp, "solutions", None), "pose", None)
+    if legacy_pose is None:
+        raise RuntimeError(
+            "This function uses MediaPipe's legacy mp.solutions.pose API, which "
+            f"was removed in the installed mediapipe {getattr(mp, '__version__', '?')}. "
+            "Use mediapipe_worker.py instead -- it runs the current PoseLandmarker "
+            "tasks API against models/mediapipe/*.task. The landmark constants and "
+            "LandmarkFrame in this module remain usable."
+        )
+
+    with legacy_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
         min_detection_confidence=min_detection_confidence,
