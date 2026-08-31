@@ -1109,3 +1109,69 @@ def test_nan_and_missing_a0_are_still_not_interpretable():
     assert not pt.excursion_ok({"A0_deg": float("nan")})
     assert not pt.excursion_ok({})
     assert not pt.excursion_ok(None)
+
+
+# ── every scored parameter is invariant to a constant angle offset ───────────
+#
+# This is the load-bearing property of the 2026-08-31 pose-free knee-axis design
+# (docs/superpowers/specs/2026-08-31-optitrack-knee-axis-design.md). That design
+# gives up on recovering the absolute zero -- the rig cannot support it, since
+# in all 254 trials at least one segment is a collinear bar whose roll is
+# unobservable -- and instead argues that the zero does not matter, because
+# every scored quantity is a difference, a ratio of differences, a derivative,
+# a frequency, a count, or an integral of those.
+#
+# The spec verifies that by reading the source. These tests verify it by
+# measurement, because if it is false the whole design collapses and the failure
+# would be silent: scores would drift with an offset nobody can observe.
+
+def _offset_invariance_probe():
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t = np.arange(0, 6.0, 1 / 120.0)
+    hold = t < 1.0
+    swing = 180.0 - 45.0 * (1.0 - np.exp(-1.8 * (t - 1.0)) * np.cos(2 * np.pi * 0.9 * (t - 1.0)))
+    ang = np.where(hold, 180.0, swing)
+    return t, ang
+
+
+def test_every_scored_parameter_ignores_a_constant_angle_offset():
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt.compute_pt_params(t, ang)
+    assert base, "probe signal must score"
+    for off in (-15.0, -5.0, 5.0, 15.0):
+        shifted = pt.compute_pt_params(t, ang + off)
+        assert shifted, f"offset {off} made the trial unscoreable"
+        for key in list(pt._PARAM_KEYS) + ["A0_deg", "A1_deg"]:
+            a, b = base.get(key), shifted.get(key)
+            if a is None or b is None or not (np.isfinite(a) and np.isfinite(b)):
+                continue
+            assert abs(b - a) <= 1e-6 + 1e-6 * abs(a), (
+                f"{key} moved by {b - a:.3e} under a {off:+.0f} deg offset -- the "
+                f"pose-free design assumes it cannot")
+
+
+def test_the_composite_pt7_score_ignores_a_constant_angle_offset():
+    """The number a clinician actually reads."""
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt.compute_pt_score(pt.compute_pt_params(t, ang))
+    for off in (-15.0, 15.0):
+        shifted = pt.compute_pt_score(pt.compute_pt_params(t, ang + off))
+        assert abs(shifted - base) <= 1e-6 + 1e-6 * abs(base), (
+            f"pt7 moved {shifted - base:.3e} under a {off:+.0f} deg offset")
+
+
+def test_release_detection_ignores_a_constant_angle_offset():
+    """If the release index moved, every downstream parameter would move with
+    it and the invariance argument would collapse. Measured across the real
+    corpus: 0 moves in 872 offset scorings."""
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt._detect_release(t, ang)
+    for off in (-15.0, -5.0, 5.0, 15.0):
+        assert pt._detect_release(t, ang + off) == base, f"release moved at {off:+.0f}"
