@@ -60,6 +60,12 @@ differences, `R2n` and `phi_max_ratio` are ratios of differences, `omega_*` are
 derivatives, `f` is a frequency, `N` is a count, `area_ratio` integrates phi. So
 a constant, unknown offset **does not block scoring**.
 
+`_detect_release` is invariant as well, which the claim depends on: it tests
+`abs(ang[i] - baseline) > 0.08 * signal_range`, a difference against a range,
+so an offset shifts neither the trigger nor the index. Verified in source, not
+assumed -- if release detection moved, every downstream parameter would move
+with it and the invariance argument would collapse.
+
 That is the load-bearing property of this design. It means `180 = extended`
 demotes from an assumption the reconstruction depends on to a *presentation*
 offset applied only when evidence supports it — and it lets trials with no clean
@@ -114,9 +120,16 @@ one-sided bias the seed bug already inflicted, so it gets its own branch.
 
 | conditioning | PC2 character | outcome |
 |---|---|---|
-| >= 0.90 | — | `ok` |
-| < 0.90 | high-frequency | refuse: `ill_conditioned_axis` |
-| < 0.90 | low-frequency | emit + flag `out_of_plane_motion` |
+| >= `MIN_HINGE_CONDITIONING` | — | `ok` |
+| below it | high-frequency | refuse: `ill_conditioned_axis` |
+| below it | low-frequency | emit + flag `out_of_plane_motion` |
+
+`MIN_HINGE_CONDITIONING = 0.90`, and it is **provisional on the same terms as
+the spectral threshold**. It is not derived: well-conditioned trials measure a
+median 0.968 and the 0.90 cut simply splits the observed set 21/9. It must not
+be quoted as validated. Re-derive both thresholds together once the
+reconstruction is trustworthy, because until then the conditioning is being
+measured through the very reconstruction under repair.
 
 **The spectral metric, defined exactly.** Welch PSD of the PC2 increment series,
 Hann window, `nperseg = min(256, len(pc2))`. Short series suffer *spectral
@@ -157,8 +170,8 @@ independently of how many real trials happen to trip it.
 rotation onto a single hinge axis scales excursion by roughly
 `cos(theta_out_of_plane)`. `TrialQuality` therefore carries
 `OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED`, and `phi_max` / `R2n` are to be read as
-lower bounds. The out-of-plane angle is *estimated and reported* from the
-PC2/PC1 energy ratio, but the score is **not** auto-corrected by it: correcting
+lower bounds. The out-of-plane angle is *estimated and reported* as
+`degrees(arctan(sqrt(w[1] / w[0])))` from the hinge eigenvalues, but the score is **not** auto-corrected by it: correcting
 against an unvalidated model is how a fabricated number becomes a trusted one.
 
 ### Result object
@@ -188,8 +201,13 @@ offset-invariant and therefore safe. The real absolute consumers are display,
 
 ### Hold detection and confidence
 
-A candidate hold is a window that is calm *and* geometrically extended (thigh
-line near-parallel to shank axis). Patient shift during the hold produces slow
+A candidate hold is a window that is calm *and* geometrically extended. "Calm"
+is marker centroid speed below `MAX_HOLD_SPEED_MM_PER_FRAME = 0.5` across the
+window -- the P9 Left trial_3 seed window measured 2.0 mm/frame, so this
+separates a genuine hold from the mid-motion start that caused the bug.
+"Extended" is the thigh line within `MAX_HOLD_COLLINEARITY_DEG = 25` of the
+shank axis, set clear of the 14.8 deg median bar-mounting offset rather than
+tuned to any result. Patient shift during the hold produces slow
 drift rather than a clean step, so the window carries a variance bound: if the
 angle's standard deviation across the candidate hold exceeds
 `MAX_HOLD_SD_DEG = 2.0`, it is flagged `low_confidence_hold` and the offset is
