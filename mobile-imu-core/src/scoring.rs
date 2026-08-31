@@ -187,6 +187,107 @@ fn active_oscillation_window_end(
     (t_r[0] + ACTIVE_WINDOW_CAP_SEC).min(settle_t)
 }
 
+/// `pendulastic_pt_score._TAIL_FRAC` and friends — the settled-tail drift
+/// estimator's constants, ported verbatim.
+const TAIL_FRAC: f64 = 0.25;
+const TAIL_MIN_SAMPLES: usize = 15;
+const TAIL_MIN_SECONDS: f64 = 1.0;
+const TAIL_MIN_HALF_SAMPLES: usize = 8;
+const SLOPE_CONSISTENCY_FRAC: f64 = 1.20;
+const SLOPE_CONSISTENCY_ABS_DEG_S: f64 = 0.60;
+const TAIL_MAX_RESIDUAL_DEG: f64 = 6.0;
+const MAX_DRIFT_DEG_S: f64 = 4.0;
+const TAIL_MAX_DISPLACEMENT_FRAC: f64 = 0.15;
+
+/// `pendulastic_pt_score._settled_tail_drift_slope` — sensor drift in deg/s
+/// measured from the settled tail, or `None` meaning "do not correct".
+///
+/// A pendulum at rest has zero slope, so whatever slope remains in the tail
+/// belongs to the sensor. Every guard below exists to answer one question --
+/// is this tail actually at rest? -- and `None` is the safe answer, because
+/// over-correcting a trial that never settled eats real swing.
+///
+/// The reference's own measurement of the rejected cases is worth keeping in
+/// view: of the 19 trials that fail the consistency check, 16 are still moving
+/// faster than 1 deg/s when the recording stops. Padding the tail with an
+/// assumed-stable continuation drives the fitted slope to +0.000 -- it does not
+/// estimate the drift, it erases it, on exactly the trials that drift most.
+pub fn settled_tail_drift_slope(t: &[f64], ang: &[f64], rel_i: usize) -> Option<f64> {
+    let n = t.len();
+    if n < rel_i || n - rel_i < TAIL_MIN_SAMPLES {
+        return None;
+    }
+    let start = rel_i + ((1.0 - TAIL_FRAC) * (n - rel_i) as f64) as usize;
+    if start >= n {
+        return None;
+    }
+    let (t_tail, a_tail): (Vec<f64>, Vec<f64>) = t[start..]
+        .iter()
+        .zip(&ang[start..])
+        .filter(|(tt, aa)| tt.is_finite() && aa.is_finite())
+        .map(|(tt, aa)| (*tt, *aa))
+        .unzip();
+    if t_tail.len() < TAIL_MIN_SAMPLES {
+        return None;
+    }
+    if t_tail[t_tail.len() - 1] - t_tail[0] < TAIL_MIN_SECONDS {
+        return None;
+    }
+
+    // Decay flattens; drift does not. Comparing the tail's two halves is what
+    // separates "still settling" from "drifting" without estimating a frequency.
+    let half = t_tail.len() / 2;
+    if half < TAIL_MIN_HALF_SAMPLES {
+        return None;
+    }
+    let s_first = polyfit1(&t_tail[..half], &a_tail[..half])?.0;
+    let s_second = polyfit1(&t_tail[half..], &a_tail[half..])?.0;
+    if !s_first.is_finite() || !s_second.is_finite() {
+        return None;
+    }
+
+    let (slope, intercept) = polyfit1(&t_tail, &a_tail)?;
+    if !slope.is_finite() || slope.abs() > MAX_DRIFT_DEG_S {
+        return None;
+    }
+
+    let tolerance = SLOPE_CONSISTENCY_ABS_DEG_S.max(SLOPE_CONSISTENCY_FRAC * slope.abs());
+    if (s_first - s_second).abs() > tolerance {
+        return None; // flattening, i.e. still settling -- not drift
+    }
+
+    // Settled means the tail is a straight line plus noise. Still swinging and
+    // the residual about that line is large, so the slope is not drift.
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for (tt, aa) in t_tail.iter().zip(&a_tail) {
+        let r = aa - (slope * tt + intercept);
+        if r < lo {
+            lo = r;
+        }
+        if r > hi {
+            hi = r;
+        }
+    }
+    if hi - lo > TAIL_MAX_RESIDUAL_DEG {
+        return None;
+    }
+
+    // Final guard, and the one that catches slow decay the residual check
+    // cannot: a genuinely settled tail hardly moves. Scaled by the trial's own
+    // swing range so the test does not assume an absolute size.
+    let post: Vec<f64> = ang[rel_i..].iter().copied().filter(|a| a.is_finite()).collect();
+    if post.len() >= 2 {
+        let swing_range = post.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            - post.iter().cloned().fold(f64::INFINITY, f64::min);
+        let displacement = slope.abs() * (t_tail[t_tail.len() - 1] - t_tail[0]);
+        if swing_range > 1e-6 && displacement > TAIL_MAX_DISPLACEMENT_FRAC * swing_range {
+            return None;
+        }
+    }
+    Some(slope)
+}
+
 /// Compute the Popović PT parameters from a knee-angle time series.
 ///
 /// `release_idx` bypasses auto-detection and forces the release point (a frame
@@ -248,17 +349,29 @@ pub fn compute_pt_params(
     } else {
         0
     };
-    let ang_c: Vec<f64> = if detrend && baseline_end >= MIN_BASELINE {
-        match polyfit1(&t_c[..baseline_end], &ang_c_raw[..baseline_end]) {
-            Some((slope, _)) => ang_c_raw
-                .iter()
-                .zip(&t_c)
-                .map(|(a, tt)| a - slope * (tt - t_c[0]))
-                .collect(),
-            None => ang_c_raw.clone(),
-        }
+    // Order matters and mirrors the reference exactly: the settled tail first,
+    // the pre-release baseline only as a fallback when the tail cannot be
+    // trusted. Rust previously had the fallback ALONE, so a detrended trial
+    // here would not have matched the desktop even though both said
+    // "detrend=true".
+    let slope: Option<f64> = if detrend {
+        settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i).or_else(|| {
+            if baseline_end >= MIN_BASELINE {
+                polyfit1(&t_c[..baseline_end], &ang_c_raw[..baseline_end]).map(|(s, _)| s)
+            } else {
+                None
+            }
+        })
     } else {
-        ang_c_raw.clone()
+        None
+    };
+    let ang_c: Vec<f64> = match slope {
+        Some(s) => ang_c_raw
+            .iter()
+            .zip(&t_c)
+            .map(|(a, tt)| a - s * (tt - t_c[0]))
+            .collect(),
+        None => ang_c_raw.clone(),
     };
     let ang_s = sg(&ang_c, 15, 3);
 

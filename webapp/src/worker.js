@@ -61,6 +61,28 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
     // the raw log survives scoring and this is available whether or not the
     // trial was scorable at all -- an operator debugging exactly the "why
     // didn't this score" question needs the log most when scoring failed.
+    // The ANALYSIS convention (detrend=true). `finish`/`finishPtScore` above
+    // stay on the LIVE convention, matching pendulastic_app.py's live view;
+    // these match pt_report_common -> run_pt_analysis, which is what the
+    // cohort reports are built from. The two disagree on the MAS grade for
+    // 63 of 197 real trials, so the stored record uses these and the
+    // on-screen estimate uses those -- see TrialSession::finish_with.
+    // Feature-detected, not assumed. A service worker can serve new JS against
+    // a wasm binary already in the cache, and an unconditional call would then
+    // throw inside the finish handler and take the WHOLE result down -- the
+    // trial would read as unscorable rather than merely un-detrended. Degrading
+    // to undefined keeps the live result intact and costs only the analysis
+    // convention, which is the strictly better failure.
+    finishDetrended: () => {
+      if (typeof inner.finish_detrended !== 'function') return undefined;
+      const json = inner.finish_detrended();
+      return json === undefined ? undefined : JSON.parse(json);
+    },
+    finishPtScoreDetrended: () => {
+      if (typeof inner.finish_pt_score_detrended !== 'function') return undefined;
+      const json = inner.finish_pt_score_detrended();
+      return json === undefined ? undefined : JSON.parse(json);
+    },
     exportJsonl: () => inner.export_jsonl(),
   };
 }
@@ -121,7 +143,12 @@ export function createWorkerHandler() {
         // `undefined` property, which is harder to notice on the far end).
         post(params
           ? { type: 'result', params, trajectory: session.finishTrajectory() ?? null,
-              ptScore: session.finishPtScore() ?? null }
+              ptScore: session.finishPtScore() ?? null,
+              // Analysis-convention pair, for the stored/exported record.
+              // Null rather than absent when unavailable, so the far end can
+              // tell "not computed" from "dropped by structured clone".
+              paramsDetrended: session.finishDetrended() ?? null,
+              ptScoreDetrended: session.finishPtScoreDetrended() ?? null }
           : { type: 'error', reason: 'unscorable' });
       } else if (m.type === 'export') {
         // Deliberately does not `await starting`+require a result the way
