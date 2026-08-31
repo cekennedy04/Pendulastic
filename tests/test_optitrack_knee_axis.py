@@ -189,3 +189,43 @@ def test_result_has_no_innocuous_angles_attribute():
                            low_freq_ratio=0.1, flags=())
     assert not hasattr(r, "angles")
     assert r.get_absolute_angles()[0] == 1.0
+
+
+def test_relative_angles_baseline_on_the_first_FINITE_value_not_index_zero():
+    """A leading NaN is normal: the clusters are often untracked at the start.
+    Subtracting a[0] blindly would make the whole curve NaN, and no existing
+    test would notice."""
+    r = ka.KneeAngleResult(raw_angles=np.array([np.nan, np.nan, 10.0, 25.0]),
+                           is_calibrated=False, offset_deg=None,
+                           conditioning=0.97, low_freq_ratio=0.1, flags=())
+    rel = r.get_relative_angles()
+    assert np.isnan(rel[0]) and np.isnan(rel[1])
+    assert rel[2] == 0.0, "baseline must be the first FINITE sample"
+    assert rel[3] == 15.0
+
+
+def test_relative_angles_survive_an_all_nan_curve():
+    r = ka.KneeAngleResult(raw_angles=np.array([np.nan, np.nan]),
+                           is_calibrated=False, offset_deg=None,
+                           conditioning=0.5, low_freq_ratio=0.1, flags=())
+    rel = r.get_relative_angles()
+    assert rel.shape == (2,) and np.isnan(rel).all()
+
+
+def test_segment_axis_from_plate_tracks_rotation_and_preserves_gaps():
+    """Its output feeds signed_knee_angle, so a silently wrong or gap-filled
+    axis would corrupt every angle downstream."""
+    n = 120
+    hinge = np.array([0.0, 0.0, 1.0])
+    base = np.array([[0.06, 0.0, 0.0], [-0.06, 0.0, 0.0], [0.0, 0.021, 0.0]])
+    tri = np.empty((3, n, 3))
+    for i in range(n):
+        tri[:, i, :] = base @ _rot(hinge, 0.5 * i).T
+    tri[:, 40:45, :] = np.nan                      # untracked gap
+    dirs = ka.segment_axis_from_plate(tri, hinge)
+    assert np.isnan(dirs[40:45]).all(), "a gap must stay a gap, never be filled"
+    assert np.isfinite(dirs[60]).all()
+    # the axis must actually rotate with the plate, not sit still
+    swept = np.degrees(np.arccos(np.clip(
+        float(np.dot(dirs[0], dirs[100])), -1.0, 1.0)))
+    assert swept > 30.0, f"axis barely moved ({swept:.1f} deg) with a 50 deg plate rotation"
