@@ -982,3 +982,101 @@ def test_relative_mode_suppresses_only_the_check_that_needs_the_zero(tmp_path):
     assert any("never varies" in w for w in pts._curve_quality_warnings(flat, relative=True))
     assert any("entirely NaN" in w
                for w in pts._curve_quality_warnings(np.full(240, np.nan), relative=True))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real-corpus regression: the seed-window bug (Task 12)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The old code seeded its anatomical axis from the first 60 frames and set
+# axis_thigh = -axis_shank, so the seed frame read exactly 180 deg BY
+# CONSTRUCTION -- an unsigned arccos folded there instead of running past.
+# A trial starting at rest-but-flexed or mid-motion still anchored "straight"
+# to that pose and reported a convincing ~180 baseline. These two real trials
+# are the evidence the bug is fixed.
+#
+# Participant folders were renamed 2026-09-01 to carry the parent study
+# (Control_/CHAT_/DOSA_/legacy Participant_), and there is also a condition
+# subdirectory (pre/post) the original brief for this task did not account
+# for. Both are resolved through participant_paths rather than hardcoded, per
+# CLAUDE.md's "never spell a participant folder name out in code" rule --
+# hardcoding either literal is exactly what silently disabled this same
+# regression check once already.
+
+import glob as _glob_mod
+import participant_paths as _pp
+
+
+def _resolve_real_trial(pid, side, trial_filename):
+    """Find `trial_filename` under participant `pid`'s `side` folder.
+
+    Returns None if the corpus root itself is absent (legitimate skip).
+    Returns the literal string "MISSING" if the corpus root IS present but
+    the participant or trial cannot be found under it (hard failure -- see
+    the two tests below). This distinction is the point: a corpus that is
+    present but reorganized again must FAIL these tests loudly, not skip
+    them, so a third rename can't hide the regression a second time.
+    """
+    if not os.path.isdir(_pp.OPTI_ROOT):
+        return None
+    pdir = _pp.find_participant_dir(_pp.OPTI_ROOT, pid)
+    if pdir is None:
+        return "MISSING"
+    hits = _glob_mod.glob(os.path.join(pdir, side, "**", trial_filename),
+                          recursive=True)
+    return hits[0] if hits else "MISSING"
+
+
+_REAL_CORPUS_PRESENT = os.path.isdir(_pp.OPTI_ROOT)
+_P8_LEFT_TRIAL2 = _resolve_real_trial("8", "Left", "trial_2_optitrack.csv")
+_P9_LEFT_TRIAL3 = _resolve_real_trial("9", "Left", "trial_3_optitrack.csv")
+
+
+@pytest.mark.skipif(not _REAL_CORPUS_PRESENT,
+                    reason="real OptiTrack corpus not present on this machine")
+def test_p8_left_trial2_no_longer_claims_a_fully_extended_resting_leg():
+    """Video shows the leg hanging flexed for the whole recording with nobody
+    holding it, yet the old code reported head 179.9 / tail 179.6 / A0 8.5.
+    It must no longer claim a fully extended resting leg."""
+    assert _P8_LEFT_TRIAL2 not in (None, "MISSING"), (
+        "OptiTrack_Recordings is present but participant 8's Left "
+        "trial_2_optitrack.csv could not be resolved via participant_paths "
+        "-- a folder rename must not silently disable this regression test.")
+    _t, ang, quality = pts.load_optitrack_detailed(_P8_LEFT_TRIAL2)
+    a = np.asarray(ang, dtype=float); a = a[np.isfinite(a)]
+    assert a.size > 0, "no finite samples at all"
+    head = float(np.median(a[:max(1, len(a) // 10)]))
+    msg = " ".join(quality.warnings).lower()
+    # Any of: head well below full extension, OR the trial explicitly warns
+    # that its curve is relative and carries no absolute zero (the loader's
+    # designed way of refusing to assert an absolute angle it cannot know).
+    assert head < 170.0 or "relative" in msg, (
+        f"head={head:.1f} deg, warnings={quality.warnings}")
+
+
+@pytest.mark.skipif(not _REAL_CORPUS_PRESENT,
+                    reason="real OptiTrack corpus not present on this machine")
+def test_p9_left_trial3_no_longer_reports_an_impossible_excursion():
+    """A0 418 deg at 97.3% coverage: arithmetically impossible for an interior
+    knee angle, and invisible to every existing filter. A0 must now be
+    plausible, or the trial must carry a named reason it cannot be trusted."""
+    assert _P9_LEFT_TRIAL3 not in (None, "MISSING"), (
+        "OptiTrack_Recordings is present but participant 9's Left "
+        "trial_3_optitrack.csv could not be resolved via participant_paths "
+        "-- a folder rename must not silently disable this regression test.")
+    try:
+        t, ang, quality = pts.load_optitrack_detailed(_P9_LEFT_TRIAL3)
+    except ValueError:
+        return  # a named refusal is an acceptable outcome
+    p = pts.compute_pt_params(np.asarray(t), np.asarray(ang))
+    if p and p.get("A0_deg") is not None:
+        a0 = p["A0_deg"]
+        # A moving (non-hold) seed window is exactly the mechanism that made
+        # this trial's zero -- and so its A0 -- unreliable; see
+        # SEED_WINDOW_MOVING, which names this trial in its own comment.
+        flagged = any("reference window" in w.lower()
+                      or "mid-movement" in w.lower()
+                      for w in quality.warnings)
+        assert a0 < 120.0 or flagged, (
+            f"A0={a0:.1f} deg and not flagged as unreliable; "
+            f"warnings={quality.warnings}")
