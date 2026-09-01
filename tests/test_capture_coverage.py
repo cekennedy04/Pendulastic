@@ -489,3 +489,78 @@ def test_the_marker_failure_still_says_markers():
 def test_the_default_modality_is_the_marker_check():
     """Every existing caller passes no modality and means Motive."""
     assert cc.verdict(None).detail == cc.verdict(None, modality=cc.MOCAP).detail
+
+
+# -- too few frames to judge -------------------------------------------------
+
+def test_the_sample_floor_is_derived_from_the_coverage_threshold():
+    """Not a picked number: below 1/(1-min_coverage) samples, a single dropped
+    frame lands under the bar on its own."""
+    assert cc.min_samples_for(0.95) == 20
+    assert cc.min_samples_for(0.90) == 10
+    assert cc.min_samples_for(0.99) == 100
+    assert cc.min_samples_for(1.0) == 2
+
+
+def test_a_handful_of_perfect_frames_is_not_a_pass():
+    """Pose inference samples at ~8 Hz, so a short watch really can land here.
+    Calling 12 clean frames a PASS would certify a setup nobody looked at."""
+    monitor = cc.CoverageMonitor()
+    for i in range(12):
+        monitor.feed(i / 8.0, True, True)
+    v = cc.verdict(monitor.stats(), modality=cc.POSE)
+    assert v.status == cc.NO_DATA
+    assert "too few" in v.headline
+
+
+def test_a_handful_of_frames_with_one_miss_is_not_a_fail_either():
+    """The false FAIL this exists to prevent: 1 miss in 15 is 93%, which fails
+    a 95% bar and sends the operator rearranging a room that was fine."""
+    monitor = cc.CoverageMonitor()
+    for i in range(15):
+        ok = i != 7
+        monitor.feed(i / 8.0, ok, ok)
+    assert monitor.stats().coverage < cc.PREFLIGHT_MIN_COVERAGE
+    assert cc.verdict(monitor.stats(), modality=cc.POSE).status == cc.NO_DATA
+
+
+def test_enough_frames_are_judged_normally():
+    monitor = cc.CoverageMonitor()
+    for i in range(40):
+        monitor.feed(i / 8.0, True, True)
+    assert cc.verdict(monitor.stats(), modality=cc.POSE).status == cc.PASS
+
+
+def test_the_floor_never_rescues_a_genuinely_broken_setup():
+    """A long watch that saw plenty of frames and almost no tracking must still
+    fail -- the floor is about too few SAMPLES, not about being lenient."""
+    monitor = cc.CoverageMonitor()
+    for i in range(200):
+        monitor.feed(i / 8.0, i % 40 == 0, i % 40 == 0)
+    assert cc.verdict(monitor.stats(), modality=cc.POSE).status == cc.FAIL
+
+
+def test_a_mocap_watch_clears_the_floor_immediately():
+    """120 Hz for one second is 120 samples, so this guard never fires on the
+    mocap path and cannot weaken the check it was already doing."""
+    monitor = cc.CoverageMonitor()
+    for i in range(120):
+        monitor.feed(i / 120.0, True, True)
+    assert monitor.stats().n_frames > cc.min_samples_for()
+
+
+# -- the watch length belongs to the sensor ----------------------------------
+
+def test_the_pose_watch_is_longer_than_the_mocap_watch():
+    """Same number of samples wanted from a sensor that reports ~15x slower."""
+    assert cc.POSE.watch_s > cc.MOCAP.watch_s
+    assert cc.MOCAP.watch_s == cc.PREFLIGHT_WATCH_S
+
+
+def test_each_watch_can_actually_reach_the_sample_floor():
+    """Guards the two constants against drifting apart: a watch too short to
+    collect min_samples_for frames would report "too few to judge" every time,
+    which is a check that can never pass."""
+    floor = cc.min_samples_for()
+    assert cc.MOCAP.watch_s * 120.0 >= floor      # Motive streams at 120 Hz
+    assert cc.POSE.watch_s * 8.0 >= floor         # measured pose rate, ~8 Hz

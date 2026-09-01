@@ -45,8 +45,18 @@ MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 DETECTION_CONFIDENCE = 0.5
 
 # How often to sample. Well under the camera rate, so the preview and the
-# recording keep priority, and still ~50 samples across a 5 s pre-flight watch.
+# recording keep priority. Measured inference on this machine is ~105 ms a
+# frame with the lite model, so the real ceiling is nearer 8 Hz and this is a
+# cap rather than a promise -- which is why cc.min_samples_for exists and why
+# the pose pre-flight watch is longer than the mocap one.
 TARGET_FPS = 10.0
+
+# Longest edge fed to the detector. The model resizes internally anyway, so
+# full 1280x720 frames buy nothing: measured 126 ms/frame at full resolution
+# against 105 ms at 640 wide, for identical landmarks. Landmark coordinates are
+# normalised and the biomechanical gate is a ratio, so nothing downstream
+# notices the scale.
+MAX_INFERENCE_WIDTH = 640
 
 # The lite model, deliberately: this is a visibility check, not the measurement,
 # and it has to keep up alongside a live recording.
@@ -183,6 +193,12 @@ class PoseCoverageSession(CoverageSession):
         try:
             import cv2
             import mediapipe as mp
+            if frame.shape[1] > MAX_INFERENCE_WIDTH:
+                h, w = frame.shape[:2]
+                frame = cv2.resize(
+                    frame,
+                    (MAX_INFERENCE_WIDTH, max(1, int(h * MAX_INFERENCE_WIDTH / w))),
+                    interpolation=cv2.INTER_AREA)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             result = self._detector.detect(
                 mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))

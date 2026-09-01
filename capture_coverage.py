@@ -44,6 +44,7 @@ Two uses, one core:
 """
 from __future__ import annotations
 
+import math
 from typing import NamedTuple, Optional
 
 # A usable trial needs the markers held continuously through the pre-release
@@ -70,6 +71,28 @@ FAIL = "fail"
 NO_DATA = "no_data"
 
 
+def min_samples_for(min_coverage: float = PREFLIGHT_MIN_COVERAGE) -> int:
+    """Fewest frames at which a coverage fraction can be believed.
+
+    Derived from the threshold rather than picked: with fewer than
+    1/(1-min_coverage) samples, a SINGLE dropped frame lands under the bar on
+    its own. At 0.95 that is 20 frames -- 19 samples with one miss is 94.7%,
+    which fails a setup that is fine and sends the operator rearranging a room
+    that had nothing wrong with it. A false FAIL costs less than a false PASS,
+    but it costs trust in the check, which is worse than either.
+
+    This matters unevenly. Motive streams at 120 Hz, so any watch clears it
+    immediately; pose inference samples at roughly 8 Hz, where a short watch
+    genuinely can land in this range.
+    """
+    if min_coverage >= 1.0:
+        return 2
+    # Rounded before the ceiling: 1/(1-0.90) is 10.000000000000002 in binary
+    # floating point, and taking the ceiling of that would quietly demand an
+    # eleventh frame that the arithmetic does not actually call for.
+    return max(2, int(math.ceil(round(1.0 / (1.0 - min_coverage), 9))))
+
+
 class Modality(NamedTuple):
     """What is being watched, so the messages name the right thing.
 
@@ -81,6 +104,7 @@ class Modality(NamedTuple):
     noun: str          # what is being tracked, plural
     source: str        # where it comes from, for the no-data message
     fix_hint: str      # what to check when nothing arrives
+    watch_s: float     # how long a pre-flight watch runs on this sensor
 
 
 MOCAP = Modality(
@@ -88,13 +112,18 @@ MOCAP = Modality(
     source="Motive",
     fix_hint=("Check that Motive is streaming (View > Data Streaming, Broadcast "
               "Frame Data on) and that the Thigh and Shank rigid bodies exist "
-              "in the current asset list."))
+              "in the current asset list."),
+    watch_s=PREFLIGHT_WATCH_S)
 
 POSE = Modality(
     noun="pose landmarks",
     source="the camera",
     fix_hint=("Check the camera preview is running and the participant is in "
-              "frame."))
+              "frame."),
+    # Longer than the mocap watch, because pose inference samples at ~8 Hz
+    # against Motive's 120 and the two must still collect enough frames for the
+    # coverage fraction to mean anything -- see min_samples_for().
+    watch_s=PREFLIGHT_WATCH_S * 2)
 
 
 class CoverageStats(NamedTuple):
@@ -207,6 +236,20 @@ def verdict(stats: Optional[CoverageStats],
             NO_DATA,
             f"No frames received from {modality.source}",
             f"Nothing arrived from {modality.source}. {modality.fix_hint}",
+            stats)
+
+    floor = min_samples_for(min_coverage)
+    if stats.n_frames < floor:
+        return Verdict(
+            NO_DATA,
+            f"Only {stats.n_frames} frames seen -- too few to judge",
+            f"Watched {stats.duration_s:.1f}s but only {stats.n_frames} frames "
+            f"arrived from {modality.source}, and at least {floor} are needed "
+            f"before a coverage percentage means anything (one dropped frame "
+            f"out of {stats.n_frames} would fail the "
+            f"{min_coverage * 100:.0f}% bar by itself).\n\n"
+            "Watch for longer, or check whether frames are arriving at the "
+            "rate you expect.",
             stats)
 
     seg = _worst_segment(stats)
