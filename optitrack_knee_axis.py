@@ -562,15 +562,34 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
     triangle, bar, _which = classify_clusters(cluster_a, cluster_b)
     axis, conditioning, pc2 = hinge_axis(triangle, bar)
     verdict = conditioning_verdict(conditioning, pc2, fps)
-    if verdict == "ill_conditioned_axis":
-        raise GeometryError(
-            f"The hinge axis is not recoverable: only "
-            f"{conditioning * 100:.0f}% of the segment's rotation lies on a "
-            f"single axis, and the remainder is high-frequency, i.e. marker "
-            f"noise rather than limb motion. Check marker placement and "
-            f"tracking quality for this trial.")
 
-    flags = () if verdict == "ok" else (verdict, "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED")
+    # An ill-conditioned axis is FLAGGED, never refused. Raising here removed
+    # 49 of 261 real trials (19.2%) inside the loader -- 2.5x the operator's
+    # entire history of confirmed exclusions in excluded_trials.json -- and
+    # did it where nothing downstream could see: three separate
+    # `except Exception: continue` sites in the figure pipeline swallowed it
+    # without a trace. It emptied three legs outright, among them the only
+    # MAS 1+ leg in the corpus, at 100% optical coverage, whose grade had
+    # been corrected on the strength of the damped signature those very
+    # trials carry.
+    #
+    # The refusal also mis-ranked its own evidence: median eigengap w1/w0 is
+    # 0.256 for this branch against 0.522 for out_of_plane_motion, which is
+    # emitted -- the branch being refused has the BETTER determined axis of
+    # the two. And MIN_HINGE_CONDITIONING is not derived; the design spec
+    # says so in terms: it "simply splits the observed set 21/9" and "must
+    # not be quoted as validated".
+    #
+    # Analysis code reports quality; only excluded_trials.json excludes.
+    if verdict == "ok":
+        flags = ()
+    elif verdict == "out_of_plane_motion":
+        # Real non-sagittal limb motion, so the reported swing IS a lower bound.
+        flags = (verdict, "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED")
+    else:
+        # High-frequency residual, not limb motion: the amplitude is not
+        # systematically underreported, so that claim must not ride along.
+        flags = (verdict,)
     thigh_dirs = segment_line_direction(bar)
     shank_dirs = segment_axis_from_plate(triangle, axis)
     angles = signed_knee_angle(thigh_dirs, shank_dirs, axis)

@@ -331,15 +331,10 @@ def test_orchestrator_recovers_a_known_flexion_from_a_bar_and_triangle():
     assert swept_got == pytest.approx(swept_true, rel=0.15), (swept_got, swept_true)
 
 
-def test_orchestrator_refuses_an_ill_conditioned_trial_with_a_named_reason():
-    n = 400
-    rng = np.random.default_rng(1)
-    tumbling = rng.normal(scale=0.05, size=(3, n, 3))
-    bar = np.repeat(np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :],
-                    n, axis=1)
-    with pytest.raises(ka.GeometryError) as exc:
-        ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
-    assert "conditioned" in str(exc.value).lower() or "hinge" in str(exc.value).lower()
+# test_orchestrator_refuses_an_ill_conditioned_trial_with_a_named_reason was
+# removed on 2026-09-01: the orchestrator no longer refuses. See
+# test_orchestrator_flags_an_ill_conditioned_axis_instead_of_refusing at the
+# end of this file for what replaced it, and why.
 
 
 def test_orchestrator_emits_and_flags_out_of_plane_motion_instead_of_refusing():
@@ -496,3 +491,44 @@ def test_a_marker_index_swap_at_peak_velocity_does_not_spike_the_angle():
     rel = res.get_relative_angles()
     steps = np.abs(np.diff(rel[np.isfinite(rel)]))
     assert np.nanmax(steps) < 20.0, f"index swap spiked {np.nanmax(steps):.1f} deg"
+
+
+def test_orchestrator_flags_an_ill_conditioned_axis_instead_of_refusing():
+    """Replaces test_orchestrator_refuses_an_ill_conditioned_trial_with_a_named_reason.
+
+    Refusing here removed 49 of 261 real trials (19.2%) inside the loader,
+    where nothing downstream can see or reverse it -- 2.5x the operator's
+    entire history of confirmed exclusions in excluded_trials.json. It also
+    emptied three legs completely, including the corpus's only MAS 1+ leg
+    (P4 right) at 100% optical coverage, whose MAS grade had been corrected
+    on the strength of the very signature those refused trials carry.
+
+    Analysis code reports quality; it does not enforce it. excluded_trials
+    .json is the only exclusion path.
+    """
+    n = 400
+    rng = np.random.default_rng(1)
+    tumbling = rng.normal(scale=0.05, size=(3, n, 3))
+    bar = np.repeat(np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :],
+                    n, axis=1)
+    res = ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
+    assert "ill_conditioned_axis" in res.flags
+    assert np.isfinite(res.raw_angles).any()
+    assert res.conditioning < ka.MIN_HINGE_CONDITIONING
+
+
+def test_ill_conditioned_flag_does_not_claim_out_of_plane_underreporting():
+    """The two verdicts are different failures and must not share a flag.
+
+    out_of_plane_motion means real non-sagittal limb motion, so the reported
+    amplitude IS a lower bound. An ill-conditioned axis is the opposite case
+    -- high-frequency marker noise -- and telling the reader the amplitude is
+    underreported would be a claim the data does not support.
+    """
+    n = 400
+    rng = np.random.default_rng(1)
+    tumbling = rng.normal(scale=0.05, size=(3, n, 3))
+    bar = np.repeat(np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :],
+                    n, axis=1)
+    res = ka.knee_angle_from_clusters(tumbling, bar, fps=120.0)
+    assert "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED" not in res.flags
