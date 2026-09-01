@@ -1,58 +1,215 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb, put, getAll, STORES } from '../src/db.js';
+import {
+  openDb, put, getAll, getOne, legacyPatientPatches,
+  STORES, DB_VERSION, MAS_IDENTITY_KEYPATH,
+} from '../src/db.js';
+import { masIdentity } from '../src/mas-store.js';
 
 // Node 24 has no IndexedDB. Rather than pull in a fake-indexeddb dependency,
 // these tests drive the schema logic through the same upgrade callback a real
 // browser would, using a minimal stand-in that records what was asked for.
-function fakeIndexedDB() {
-  const created = [];
+//
+// The original fake modeled only a FRESH database (oldVersion 0). v2 adds an
+// upgrade path, so the fake now takes the version the device is coming from
+// -- the branch that decides whether a store already exists is exactly what
+// db.js's header warns is easy to get wrong.
+// A store descriptor doubles as the store itself. The migration does not
+// merely CREATE stores -- backfillPatientAnchors reads `sessions` and
+// `patients` and upserts into `patients` -- so a descriptor carrying only
+// createIndex() is not enough: openDb would throw inside the upgrade handler,
+// onsuccess would never fire, and every await openDb() would hang forever
+// rather than fail. (It did. See the ledger's Ruling F.)
+function makeStore(name, opts, rows = []) {
+  return {
+    name, opts, indexes: [], rows: rows.map((r) => ({ ...r })),
+    createIndex(i, kp, o) { this.indexes.push({ name: i, keyPath: kp, options: o || {} }); },
+    // Real IDB requests settle asynchronously, and the migration depends on
+    // it: it fires two getAll()s and patches only once BOTH have landed.
+    // Resolving synchronously here would skip that interleaving entirely.
+    getAll() {
+      const req = {};
+      queueMicrotask(() => { req.result = this.rows.map((r) => ({ ...r })); req.onsuccess?.({ target: req }); });
+      return req;
+    },
+    put(record) {
+      const i = this.rows.findIndex((r) => r && r.id === record.id);
+      if (i === -1) this.rows.push(record); else this.rows[i] = record;
+      return {};
+    },
+  };
+}
+
+// The original fake modeled only a FRESH database (oldVersion 0). v2 adds an
+// upgrade path, so the fake now takes the version the device is coming from
+// -- the branch that decides whether a store already exists is exactly what
+// db.js's header warns is easy to get wrong.
+//
+// `existing` is either a store name or { name, rows }, so a test can stand up
+// a v1 device that already holds real sessions and patients.
+function fakeIndexedDBAt(oldVersion, existing = []) {
+  const created = existing.map((e) => (
+    typeof e === 'string' ? makeStore(e, null) : makeStore(e.name, null, e.rows)
+  ));
   return {
     created,
     open(name, version) {
       const req = {};
-      queueMicrotask(() => {
+      (async () => {
+        await null; // let the caller attach its handlers first
         const db = {
           objectStoreNames: { contains: (n) => created.some((c) => c.name === n) },
           createObjectStore(n, opts) {
-            const store = { name: n, opts, indexes: [], createIndex(i, kp) { this.indexes.push({ i, kp }); } };
+            const store = makeStore(n, opts);
             created.push(store);
             return store;
           },
         };
         req.result = db;
-        req.onupgradeneeded?.({ target: { result: db } });
+        req.transaction = { objectStore: (n) => created.find((c) => c.name === n) };
+        req.onupgradeneeded?.({ target: req, oldVersion, newVersion: version });
+        // A real versionchange transaction COMMITS before onsuccess fires, so
+        // by then every getAll() the migration issued has already delivered.
+        // Draining the queue here reproduces that ordering; firing onsuccess
+        // immediately would let a test observe the database "open" with the
+        // backfill still in flight, a state a browser never presents.
+        await new Promise((r) => setTimeout(r, 0));
         req.onsuccess?.({ target: { result: db } });
-      });
+      })();
       return req;
     },
   };
 }
 
-test('the schema creates exactly the three stores the spec names', async () => {
-  const idb = fakeIndexedDB();
+const storeNames = (idb) => idb.created.map((c) => c.name).sort();
+const findStore = (idb, n) => idb.created.find((c) => c.name === n);
+
+test('the schema creates exactly the five stores the spec names', async () => {
+  const idb = fakeIndexedDBAt(0);
   await openDb(idb);
-  assert.deepEqual(idb.created.map((s) => s.name).sort(), ['patients', 'sessions', 'trials']);
+  assert.deepEqual(storeNames(idb), ['mas', 'patients', 'sessions', 'settings', 'trials']);
 });
 
 test('trials are indexed by session so a session view does not scan every trial', async () => {
-  const idb = fakeIndexedDB();
+  const idb = fakeIndexedDBAt(0);
   await openDb(idb);
-  const trials = idb.created.find((s) => s.name === 'trials');
-  assert.ok(trials.indexes.some((x) => x.kp === 'session_id'), 'missing session_id index');
+  const trials = findStore(idb, 'trials');
+  assert.ok(trials.indexes.some((x) => x.keyPath === 'session_id'), 'missing session_id index');
 });
 
 test('sessions are indexed by patient', async () => {
-  const idb = fakeIndexedDB();
+  const idb = fakeIndexedDBAt(0);
   await openDb(idb);
-  const sessions = idb.created.find((s) => s.name === 'sessions');
-  assert.ok(sessions.indexes.some((x) => x.kp === 'patient_id'), 'missing patient_id index');
+  const sessions = findStore(idb, 'sessions');
+  assert.ok(sessions.indexes.some((x) => x.keyPath === 'patient_id'), 'missing patient_id index');
 });
 
 test('STORES names match what openDb creates', async () => {
-  const idb = fakeIndexedDB();
+  const idb = fakeIndexedDBAt(0);
   await openDb(idb);
-  assert.deepEqual(Object.values(STORES).sort(), idb.created.map((s) => s.name).sort());
+  assert.deepEqual(Object.values(STORES).sort(), storeNames(idb));
+});
+
+test('DB_VERSION is 2', () => {
+  assert.equal(DB_VERSION, 2);
+});
+
+test('a fresh database gets all five stores', async () => {
+  const idb = fakeIndexedDBAt(0);
+  await openDb(idb);
+  assert.deepEqual(storeNames(idb), ['mas', 'patients', 'sessions', 'settings', 'trials']);
+});
+
+// db.js's header warns that every createIndex sits inside an
+// objectStoreNames.contains() branch that is FALSE for a device upgrading
+// from v1 -- so the v2 work must hang off oldVersion, not off contains().
+test('a v1 device gains settings and mas without recreating v1 stores', async () => {
+  const idb = fakeIndexedDBAt(1, ['patients', 'sessions', 'trials']);
+  await openDb(idb);
+  assert.deepEqual(storeNames(idb), ['mas', 'patients', 'sessions', 'settings', 'trials']);
+  // v1 stores were pre-existing, so they must not have been re-created --
+  // a re-create would have replaced them and dropped every stored trial.
+  assert.equal(findStore(idb, 'trials').opts, null);
+  assert.equal(findStore(idb, 'mas').opts.keyPath, 'id');
+});
+
+test('settings is keyed by `key`', async () => {
+  const idb = fakeIndexedDBAt(0);
+  await openDb(idb);
+  assert.equal(findStore(idb, 'settings').opts.keyPath, 'key');
+});
+
+// The composite identity is enforced by the engine, not by a view. A view
+// -level check would be bypassed by any other caller of the store.
+test('mas carries a unique compound index over the identity tuple', async () => {
+  const idb = fakeIndexedDBAt(0);
+  await openDb(idb);
+  const idx = findStore(idb, 'mas').indexes.find((i) => i.name === 'by_identity');
+  assert.deepEqual(idx.keyPath, ['patient_id', 'leg', 'condition', 'assessed_date']);
+  assert.equal(idx.options.unique, true);
+});
+
+// masIdentity() builds the lookup key for this index. If the two orders ever
+// diverge, every lookup silently misses and the duplicate check stops working
+// -- with no error anywhere. This is the test that catches it.
+test('masIdentity agrees with the index keyPath', () => {
+  const record = {
+    patient_id: 'p', leg: 'left', condition: 'rest', assessed_date: '2026-08-31',
+  };
+  assert.deepEqual(masIdentity(record), MAS_IDENTITY_KEYPATH.map((k) => record[k]));
+});
+
+test('mas also carries a non-unique by_patient index', async () => {
+  const idb = fakeIndexedDBAt(0);
+  await openDb(idb);
+  const idx = findStore(idb, 'mas').indexes.find((i) => i.name === 'by_patient');
+  assert.equal(idx.keyPath, 'patient_id');
+  assert.notEqual(idx.options.unique, true);
+});
+
+// ---- legacyPatientPatches ------------------------------------------------
+// The invariant: every patient_id a session references resolves to a
+// patients row. Trials are never rewritten -- see the spec's migration note.
+test('a session pointing at a missing patient gets an anchor row', () => {
+  const patches = legacyPatientPatches(
+    [{ id: 's1', patient_id: 'ghost-abcdefgh' }], [], { now: 5 });
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].id, 'ghost-abcdefgh');
+  assert.equal(patches[0].legacy, true);
+  assert.match(patches[0].clinic_patient_id, /^UNASSIGNED-/);
+});
+
+test('a session whose patient already exists produces no patch', () => {
+  const patches = legacyPatientPatches(
+    [{ id: 's1', patient_id: 'p1' }], [{ id: 'p1', clinic_patient_id: 'P-1' }], { now: 5 });
+  assert.deepEqual(patches, []);
+});
+
+test('two sessions sharing one missing patient produce a single anchor', () => {
+  const patches = legacyPatientPatches(
+    [{ id: 's1', patient_id: 'g' }, { id: 's2', patient_id: 'g' }], [], { now: 5 });
+  assert.equal(patches.length, 1);
+});
+
+// The hardcoded participant every pre-v2 install already has on disk. Its
+// record is NOT deleted -- deleting it would strand every trial recorded
+// before this release -- it is flagged so the UI can label and export it.
+test('the hardcoded test participant is flagged legacy, not removed', () => {
+  const existing = { id: 'fixed-test-participant', clinic_patient_id: 'TEST-PARTICIPANT' };
+  const patches = legacyPatientPatches([], [existing], { now: 5 });
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].id, 'fixed-test-participant');
+  assert.equal(patches[0].legacy, true);
+  assert.equal(patches[0].clinic_patient_id, 'TEST-PARTICIPANT');
+});
+
+test('an already-flagged legacy participant is not patched again', () => {
+  const existing = { id: 'fixed-test-participant', clinic_patient_id: 'TEST-PARTICIPANT', legacy: true };
+  assert.deepEqual(legacyPatientPatches([], [existing], { now: 5 }), []);
+});
+
+test('a session with no patient_id is skipped rather than anchored to undefined', () => {
+  assert.deepEqual(legacyPatientPatches([{ id: 's1' }, null], [], { now: 5 }), []);
 });
 
 // --- put()/getAll() promise-wiring stand-in -------------------------------
@@ -194,4 +351,59 @@ test('getAll with key undefined calls getAll() with no argument, not getAll(unde
   state.getAllReq.onsuccess();
   await p;
   assert.deepEqual(state.getAllArgs, [], 'called getAll(undefined) instead of getAll()');
+});
+
+// ---- the migration, driven end to end -----------------------------------
+// legacyPatientPatches is covered as a pure function above. These drive the
+// real upgrade path -- openDb -> onupgradeneeded -> backfillPatientAnchors ->
+// patientsStore.put -- because this migration runs over the only on-device
+// copy of clinical data, and a pure-function test cannot show that the
+// plumbing around it actually wires up. (The plan left this untested; the
+// repaired fake makes it cheap. See Ruling F.)
+
+test('a v1 device with a dangling session gets the anchor WRITTEN to patients', async () => {
+  const idb = fakeIndexedDBAt(1, [
+    { name: 'patients', rows: [] },
+    { name: 'sessions', rows: [{ id: 's1', patient_id: 'ghost-abcdefgh' }] },
+    { name: 'trials', rows: [{ id: 't1', session_id: 's1' }] },
+  ]);
+  await openDb(idb);
+  const patients = findStore(idb, 'patients').rows;
+  assert.equal(patients.length, 1);
+  assert.equal(patients[0].id, 'ghost-abcdefgh');
+  assert.equal(patients[0].legacy, true);
+  assert.match(patients[0].clinic_patient_id, /^UNASSIGNED-/);
+});
+
+test('the migration leaves trials untouched', async () => {
+  const trial = { id: 't1', session_id: 's1', params: { A0: 42 } };
+  const idb = fakeIndexedDBAt(1, [
+    { name: 'patients', rows: [] },
+    { name: 'sessions', rows: [{ id: 's1', patient_id: 'ghost' }] },
+    { name: 'trials', rows: [trial] },
+  ]);
+  await openDb(idb);
+  assert.deepEqual(findStore(idb, 'trials').rows, [trial]);
+});
+
+test('a v1 device carrying the hardcoded participant has it flagged in place', async () => {
+  const idb = fakeIndexedDBAt(1, [
+    { name: 'patients', rows: [{ id: 'fixed-test-participant', clinic_patient_id: 'TEST-PARTICIPANT' }] },
+    { name: 'sessions', rows: [{ id: 's1', patient_id: 'fixed-test-participant' }] },
+    { name: 'trials', rows: [] },
+  ]);
+  await openDb(idb);
+  const patients = findStore(idb, 'patients').rows;
+  // Flagged, NOT duplicated and NOT deleted -- deleting it would strand every
+  // trial recorded before this release.
+  assert.equal(patients.length, 1);
+  assert.equal(patients[0].id, 'fixed-test-participant');
+  assert.equal(patients[0].clinic_patient_id, 'TEST-PARTICIPANT');
+  assert.equal(patients[0].legacy, true);
+});
+
+test('a fresh v0 install has nothing to backfill', async () => {
+  const idb = fakeIndexedDBAt(0);
+  await openDb(idb);
+  assert.deepEqual(findStore(idb, 'patients').rows, []);
 });

@@ -5,39 +5,136 @@
 // never a record -- see session-store.js's export gate.
 
 export const DB_NAME = 'pendulastic';
-export const DB_VERSION = 1;
-export const STORES = { patients: 'patients', sessions: 'sessions', trials: 'trials' };
+export const DB_VERSION = 2;
+
+// The logical identity of a MAS assessment, as an index keyPath. Defined
+// here because this module owns the schema; mas-store.js's masIdentity()
+// must produce values in this same order, and tests/db.test.js cross-checks
+// the two rather than leaving it to a comment.
+export const MAS_IDENTITY_KEYPATH = ['patient_id', 'leg', 'condition', 'assessed_date'];
+
+export const STORES = {
+  patients: 'patients',
+  sessions: 'sessions',
+  trials: 'trials',
+  settings: 'settings',
+  mas: 'mas',
+};
 
 export function openDb(idb) {
   return new Promise((resolve, reject) => {
     const req = idb.open(DB_NAME, DB_VERSION);
-    // NOTE for a future DB_VERSION bump: every createIndex() call below sits
-    // nested inside the createObjectStore() branch that only runs the first
-    // time a store is created. A v2 migration that wants to add an index to
-    // a store someone already has from v1 must NOT extend these blocks --
-    // objectStoreNames.contains() will be true for them and the block will
-    // silently never run. Branch on event.oldVersion instead (e.g.
-    // `if (e.oldVersion < 2) { db.transaction(...).objectStore(...).createIndex(...) }`
-    // using the versionchange transaction IDBOpenDBRequest exposes), or the
-    // missing index surfaces later as an unrelated runtime failure.
+    // Branched on oldVersion, NOT on objectStoreNames.contains(). The v1
+    // block below only runs for a database that has never existed; a device
+    // upgrading from v1 already contains those three stores, so a
+    // contains()-guarded block would silently never run and the v2 work
+    // would be skipped on exactly the installs that need it. This is the
+    // trap the note that used to live here warned about -- it is now
+    // structural rather than advisory.
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORES.patients)) {
+      const tx = e.target.transaction;
+
+      if (e.oldVersion < 1) {
         db.createObjectStore(STORES.patients, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(STORES.sessions)) {
         const s = db.createObjectStore(STORES.sessions, { keyPath: 'id' });
         s.createIndex('by_patient', 'patient_id');
-      }
-      if (!db.objectStoreNames.contains(STORES.trials)) {
         const t = db.createObjectStore(STORES.trials, { keyPath: 'id' });
         // Without this, rendering one session's trials means scanning every
         // trial ever recorded on the device.
         t.createIndex('by_session', 'session_id');
       }
+
+      if (e.oldVersion < 2) {
+        if (!db.objectStoreNames.contains(STORES.settings)) {
+          // Active participant, last-used side, and MAS form drafts.
+          db.createObjectStore(STORES.settings, { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains(STORES.mas)) {
+          const m = db.createObjectStore(STORES.mas, { keyPath: 'id' });
+          m.createIndex('by_patient', 'patient_id');
+          // The logical identity of an assessment. Enforced by the engine so
+          // a duplicate is impossible regardless of which view writes -- a
+          // view-layer check only binds the view that remembers to run it.
+          // `id` stays a UUID rather than a value derived from this tuple:
+          // the components are free text and mutable, so a derived key would
+          // both collide on delimiters (participant "P_1" + leg "left" vs
+          // "P" + "1_left") and, on an edit, write a SECOND record under the
+          // new key while stranding the original.
+          m.createIndex('by_identity', MAS_IDENTITY_KEYPATH, { unique: true });
+        }
+        backfillPatientAnchors(tx);
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = () => reject(req.error || new Error('indexedDB open failed'));
+  });
+}
+
+// Every patient_id a session references must resolve to a patients row.
+// Pure, so the rule is testable without a database; backfillPatientAnchors
+// below is the thin IndexedDB plumbing around it.
+//
+// Two cases, both produced by the release that removed app.js's hardcoded
+// FIXED_PATIENT_ID:
+//
+//  - A session references a patient with no row. Not reachable through any
+//    shipped code path, but the invariant is cheap to guarantee and a
+//    dangling reference would make those trials invisible AND unexportable.
+//  - The row IS there and is the hardcoded 'fixed-test-participant' every
+//    pre-v2 install has. Deleting it would strand every trial recorded
+//    before this release, so it is flagged `legacy` instead and the
+//    participant picker lists and exports it like any other.
+export function legacyPatientPatches(sessions = [], patients = [], { now = Date.now() } = {}) {
+  const byId = new Map(patients.filter(Boolean).map((p) => [p.id, p]));
+  const patches = [];
+  const seen = new Set();
+
+  for (const s of sessions) {
+    if (!s || s.patient_id == null) continue;
+    if (byId.has(s.patient_id) || seen.has(s.patient_id)) continue;
+    seen.add(s.patient_id);
+    patches.push({
+      id: s.patient_id,
+      clinic_patient_id: `UNASSIGNED-${String(s.patient_id).slice(0, 8)}`,
+      created_at: now,
+      legacy: true,
+    });
+  }
+
+  const fixed = byId.get('fixed-test-participant');
+  if (fixed && fixed.legacy !== true) patches.push({ ...fixed, legacy: true });
+
+  return patches;
+}
+
+// Runs inside the versionchange transaction. Deliberately touches only the
+// `patients` store: rewriting `trials` here would put the only on-device
+// copy of clinical data inside a transaction that can abort part-way, to
+// solve a problem a handful of upserts already solves.
+function backfillPatientAnchors(tx) {
+  if (!tx) return;
+  const sessionsReq = tx.objectStore(STORES.sessions).getAll();
+  const patientsStore = tx.objectStore(STORES.patients);
+  const patientsReq = patientsStore.getAll();
+  let sessions = null;
+  let patients = null;
+  const apply = () => {
+    if (sessions === null || patients === null) return;
+    for (const p of legacyPatientPatches(sessions, patients)) patientsStore.put(p);
+  };
+  sessionsReq.onsuccess = () => { sessions = sessionsReq.result || []; apply(); };
+  patientsReq.onsuccess = () => { patients = patientsReq.result || []; apply(); };
+}
+
+// Single-record read. getAll already covers the list cases; the settings
+// store is looked up one key at a time.
+export function getOne(db, storeName, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
 
