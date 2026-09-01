@@ -1449,6 +1449,18 @@ class TrialQuality(NamedTuple):
     """
     coverage: float
     warnings: tuple
+    # Share of the segment's rotation energy carried by the dominant axis
+    # (floor 1/3 = isotropic). Effectively a signal-to-noise ratio for the
+    # hinge-axis estimate, NOT a planarity measure -- it falls when the swing
+    # is small relative to marker noise, so it is amplitude-selective.
+    #
+    # Surfaced because ill_conditioned_axis is flagged rather than refused as
+    # of 2026-09-01, which makes the exclusion the operator's call. They
+    # cannot make it without seeing how close a trial sat to the line: 0.897
+    # and 0.901 landed on opposite sides of MIN_HINGE_CONDITIONING, a
+    # threshold its own design spec says "must not be quoted as validated".
+    # NaN where the reconstruction path does not compute one.
+    conditioning: float = float("nan")
 
 
 def _load_precomputed_angle(path: str):
@@ -1566,6 +1578,21 @@ def optical_coverage(path: str) -> float:
 
 
 _KNEE_AXIS_WARNINGS = {
+    # Emitted, not refused, since 2026-09-01. The wording deliberately does
+    # NOT tell the reader the amplitude is underreported -- that is the
+    # out_of_plane_motion case, a different failure -- and does not assert the
+    # curve is wrong, because the axis DIRECTION survives this far better than
+    # the number suggests (~1.5 deg of axis error at conditioning 0.62 over a
+    # 12 s trial, which is 0.04% of amplitude).
+    "ill_conditioned_axis":
+        "The hinge axis is poorly determined for this trial: the dominant "
+        "rotation axis carries a low share of the total rotation energy, "
+        "which usually means the swing was small relative to marker noise "
+        "rather than that the leg moved oddly. The curve is still reported. "
+        "Treat it with more caution than a clean trial, and exclude it "
+        "through excluded_trials.json if you judge it unusable -- see the "
+        "conditioning value on this trial's quality record for how marginal "
+        "it is.",
     # NOT a complaint about the capture. Nothing looks for a hold any more, so
     # blaming the operator's protocol (as the previous wording did, on 26/26
     # trials) pointed at the wrong thing entirely: this is the reconstruction
@@ -1678,7 +1705,8 @@ def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQua
                     f"the markers for {(1-cov)*100:.1f}% of this trial, so the "
                     "gap is NaN rather than swing. Prefer the IMU curve.")
             return t, angles, TrialQuality(coverage=float(cov),
-                                           warnings=tuple(warns))
+                                           warnings=tuple(warns),
+                                           conditioning=float(_res.conditioning))
 
     # ── Quaternion path ────────────────────────────────────────────────────────
     try:
