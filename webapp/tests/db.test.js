@@ -407,3 +407,43 @@ test('a fresh v0 install has nothing to backfill', async () => {
   await openDb(idb);
   assert.deepEqual(findStore(idb, 'patients').rows, []);
 });
+
+// The spec states this as the post-migration invariant to assert, in these
+// words: "every patient_id referenced by a sessions row resolves to a
+// patients row". The tests above check the two mechanisms that produce it;
+// this one checks the property itself, over a device messy enough that a
+// mechanism could pass while the invariant still failed -- several sessions,
+// some anchored, some dangling, one duplicate, one with no patient_id.
+test('post-migration, every session patient_id resolves to a patients row', async () => {
+  const idb = fakeIndexedDBAt(1, [
+    {
+      name: 'patients',
+      rows: [
+        { id: 'real-1', clinic_patient_id: 'P-001' },
+        { id: 'fixed-test-participant', clinic_patient_id: 'TEST-PARTICIPANT' },
+      ],
+    },
+    {
+      name: 'sessions',
+      rows: [
+        { id: 's1', patient_id: 'real-1' },
+        { id: 's2', patient_id: 'fixed-test-participant' },
+        { id: 's3', patient_id: 'ghost-one' },
+        { id: 's4', patient_id: 'ghost-one' },
+        { id: 's5', patient_id: 'ghost-two' },
+        { id: 's6' },
+      ],
+    },
+    { name: 'trials', rows: [] },
+  ]);
+  await openDb(idb);
+
+  const sessions = findStore(idb, 'sessions').rows;
+  const ids = new Set(findStore(idb, 'patients').rows.map((p) => p.id));
+  for (const s of sessions) {
+    if (s.patient_id == null) continue;
+    assert.ok(ids.has(s.patient_id), `session ${s.id} references unanchored ${s.patient_id}`);
+  }
+  // And the anchoring did not multiply rows: 2 pre-existing + 2 distinct ghosts.
+  assert.equal(findStore(idb, 'patients').rows.length, 4);
+});
