@@ -74,7 +74,7 @@ def _bar(centre, long_axis, tilt_deg, size=0.06):
 def _build_trial(n=240, hold=60, flex_deg=40.0, thigh_tilt=22.0, shank_tilt=30.0,
                  drop_from=None, drop_to=None, sign=-1.0, start_state="held",
                  hold_drift_deg=0.0, out_of_plane_deg=0.0, swap_frame=None,
-                 thigh_as_bar=False):
+                 thigh_as_bar=True):
     """Ground-truth trial: thigh fixed, shank flexes by `flex_deg` after release.
 
     start_state:
@@ -90,7 +90,9 @@ def _build_trial(n=240, hold=60, flex_deg=40.0, thigh_tilt=22.0, shank_tilt=30.0
     out_of_plane_deg rotates the flexion axis out of the sagittal plane.
     swap_frame permutes marker indices on one frame (Motive re-solve).
     thigh_as_bar emits a near-collinear thigh, which is what 239/254 real
-    trials actually have.
+    trials actually have, and is therefore the DEFAULT. Pass False only to
+    exercise the plate-plate rig deliberately -- it occurs in 0 of the 65 real
+    trials sampled, and optitrack_knee_axis refuses it.
     """
     hip = np.array([0.0, 0.40, 1.50])
     knee = np.array([0.0, 0.00, 1.50])
@@ -221,7 +223,7 @@ def test_angle_recovers_ground_truth_despite_tilted_marker_plates(tmp_path):
     """The plates sit 22 deg (thigh) and 30 deg (shank) off the limb axis --
     the geometry measured on real P21 data. The old PC1-as-long-axis
     assumption produced a ~20-26 deg baseline error from exactly this."""
-    rows, truth = _build_trial(thigh_as_bar=True)
+    rows, truth = _build_trial()
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     t, ang = pts.load_optitrack(p)
 
@@ -235,24 +237,13 @@ def test_angle_recovers_ground_truth_despite_tilted_marker_plates(tmp_path):
         "max shape deviation from ground truth %.1f deg" % _shape_err(ang, truth))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "UNRESOLVED, awaiting a ruling. The 2026-09-01 decision accepted that the "
-    "hinge axis's sign is arbitrary (it is an eigenvector) and relied on score "
-    "mirror-invariance to make that safe. This test asserts a DETERMINATE "
-    "polarity, which that decision makes unobtainable: measured, sign=-1 gives "
-    "0 -> -39.9 and sign=+1 gives 0 -> +39.9 for the same ground truth "
-    "180 -> 140. Scores are unaffected, but any absolute or plotted angle is. "
-    "Fixable by pinning the sign against an anatomical reference -- e.g. the "
-    "thigh-centroid-to-shank-centroid direction, which needs only to be "
-    "correct to a hemisphere, not accurate. strict=True so this fails loudly "
-    "the day the sign is pinned and the xfail must be removed."))
 def test_flexion_decreases_the_angle_for_both_flexion_directions(tmp_path):
     """P21's right leg inverted because the shank plate's PC1 fell on the far
     side of the thigh axis, so flexion INCREASED the computed angle. The
     interior angle must decrease under flexion regardless of which way the
     shank swings relative to the plate geometry."""
     for sign in (-1.0, +1.0):
-        rows, truth = _build_trial(sign=sign, thigh_as_bar=True)
+        rows, truth = _build_trial(sign=sign)
         p = _write_csv(str(tmp_path / ("t%s.csv" % sign)), rows)
         _t, ang = pts.load_optitrack(p)
         baseline = np.median(ang[:50])
@@ -265,9 +256,39 @@ def test_flexion_decreases_the_angle_for_both_flexion_directions(tmp_path):
             % (sign, np.nanmax(ang)))
 
 
+def test_the_curve_polarity_survives_a_micron_of_rounding(tmp_path):
+    """The specific instability the sign pin exists to remove.
+
+    The hinge axis is an eigenvector, and `eigh`'s sign is arbitrary: before
+    the pin, the SAME trial reconstructed as 0 -> -40 deg in memory and
+    0 -> +40 deg after a CSV round trip, which perturbs the coordinates by
+    5e-7 m. Sign is observable, so it must not depend on rounding."""
+    import optitrack_knee_axis as ka
+    for sign in (-1.0, +1.0):
+        rows, _truth = _build_trial(n=400, hold=60, flex_deg=40.0, sign=sign)
+        shank = np.stack([r[2] for r in rows], axis=1)
+        thigh = np.stack([r[3] for r in rows], axis=1)
+        direct = ka.knee_angle_from_clusters(shank, thigh, 120.0).get_relative_angles()
+
+        p = _write_csv(str(tmp_path / ("rt%s.csv" % sign)), rows)
+        _t, viacsv = pts.load_optitrack(p)
+
+        # the round trip really does perturb the data, or this proves nothing
+        raw = np.stack([r[2] for r in rows], axis=1)
+        df, nr, cr, tr, _new = pts._parse_optitrack_header(p)
+        cols = pts._find_labeled_marker_cols(nr, cr or [], "Shank", type_row=tr)
+        got = np.stack([df.iloc[:, c].values.astype(float) for c in cols[:3]])
+        delta = float(np.nanmax(np.abs(got - raw)))
+        assert 0.0 < delta < 1e-5, f"expected a sub-micron perturbation, got {delta}"
+
+        assert np.sign(direct[-1] - direct[0]) == np.sign(viacsv[-1] - viacsv[0]), (
+            "sign=%s: polarity flipped on %.1e m of rounding (%.2f vs %.2f)"
+            % (sign, delta, direct[-1] - direct[0], viacsv[-1] - viacsv[0]))
+
+
 def test_no_curve_exceeds_180_degrees(tmp_path):
     """A knee cannot open past 180 deg. The P21 report plotted 202 deg."""
-    rows, _ = _build_trial(sign=+1.0, thigh_as_bar=True)
+    rows, _ = _build_trial(sign=+1.0)
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     _t, ang = pts.load_optitrack(p)
     assert np.nanmax(ang) <= 180.5
@@ -286,7 +307,7 @@ def test_no_curve_exceeds_180_degrees(tmp_path):
 def test_occluded_swing_is_flagged_but_still_returned(tmp_path):
     """73% of the corpus loses marker tracking at release. The loader must
     return the curve anyway and warn, so the operator can judge it."""
-    rows, _ = _build_trial(drop_from=70, drop_to=200, thigh_as_bar=True)  # ~54% blank
+    rows, _ = _build_trial(drop_from=70, drop_to=200)   # ~54% of frames blank
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     t, ang, q = pts.load_optitrack_detailed(p)
     assert len(ang) == len(rows), "the trial must not be dropped"
@@ -297,7 +318,7 @@ def test_occluded_swing_is_flagged_but_still_returned(tmp_path):
 def test_occluded_frames_stay_nan_and_are_never_fabricated(tmp_path):
     """The whole point of the 2026-08-26 work: dropped frames must remain NaN
     rather than being frozen forward across the gap."""
-    rows, _ = _build_trial(drop_from=70, drop_to=200, thigh_as_bar=True)
+    rows, _ = _build_trial(drop_from=70, drop_to=200)
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     _t, ang, _q = pts.load_optitrack_detailed(p)
     assert not np.isfinite(ang[80:190]).any(), (
@@ -306,7 +327,7 @@ def test_occluded_frames_stay_nan_and_are_never_fabricated(tmp_path):
 
 def test_low_coverage_trial_does_not_raise_from_plain_load_optitrack(tmp_path):
     """The 2-tuple entry point keeps working and likewise must not reject."""
-    rows, _ = _build_trial(drop_from=70, drop_to=200, thigh_as_bar=True)
+    rows, _ = _build_trial(drop_from=70, drop_to=200)
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     _t, ang = pts.load_optitrack(p)              # must not raise
     assert len(ang) == len(rows)
@@ -315,7 +336,7 @@ def test_low_coverage_trial_does_not_raise_from_plain_load_optitrack(tmp_path):
 def test_well_tracked_trial_carries_no_warnings(tmp_path):
     """A clean trial must come back with an empty warning list, so a warning
     means something."""
-    rows, _ = _build_trial(drop_from=100, drop_to=105, thigh_as_bar=True)  # ~2%
+    rows, _ = _build_trial(drop_from=100, drop_to=105)   # ~2% of frames
     p = _write_csv(str(tmp_path / "t.csv"), rows)
     _t, ang, q = pts.load_optitrack_detailed(p)
     assert np.isfinite(ang).mean() > 0.9
@@ -770,7 +791,7 @@ def test_loader_reports_knee_axis_flags_in_trial_quality(tmp_path):
     earned and the curve comes back relative -- which the operator is told."""
     import pendulastic_pt_score as pt
     rows, _truth = _build_trial(n=400, hold=0, flex_deg=40.0,
-                                start_state="mid_motion", thigh_as_bar=True)
+                                start_state="mid_motion")
     path = tmp_path / "trial_mid_motion_optitrack.csv"
     _write_csv(str(path), rows)
     _t, _ang, quality = pt.load_optitrack_detailed(str(path))
@@ -788,8 +809,7 @@ def test_a_leg_that_never_moves_is_refused_not_reconstructed(tmp_path):
     a confident 179.9 for a leg that was flexed the whole time. Refusing with a
     named reason is the honest answer, and the operator's fix is capture-side."""
     import pendulastic_pt_score as pt
-    rows, _truth = _build_trial(n=400, hold=0, flex_deg=40.0,
-                                start_state="rest", thigh_as_bar=True)
+    rows, _truth = _build_trial(n=400, hold=0, flex_deg=40.0, start_state="rest")
     path = tmp_path / "trial_rest_optitrack.csv"
     _write_csv(str(path), rows)
     with pytest.raises(ValueError) as exc:
@@ -813,7 +833,7 @@ def test_the_loader_never_hands_out_an_absolute_optical_angle(tmp_path):
     180 -> 140. An absolute zero taken from that is the 179.9-on-a-flexed-leg
     bug wearing a different hat."""
     import optitrack_knee_axis as ka
-    rows, _truth = _build_trial(n=400, hold=80, flex_deg=45.0, thigh_as_bar=True)
+    rows, _truth = _build_trial(n=400, hold=80, flex_deg=45.0)
     shank = np.stack([r[2] for r in rows], axis=1)
     thigh = np.stack([r[3] for r in rows], axis=1)
     res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)

@@ -126,8 +126,87 @@ def _rotation_increments(triangle: np.ndarray) -> np.ndarray:
     return np.asarray(out)
 
 
-def hinge_axis(triangle: np.ndarray):
+MIN_SIGN_PIN_SCORE = 1e-9
+
+
+def _proxy_extension_angle(triangle: np.ndarray, bar: np.ndarray,
+                           idx: np.ndarray) -> np.ndarray:
+    """A crude but SIGN-DETERMINATE stand-in for the interior knee angle.
+
+    Not accurate, and not used as an angle -- only its DIRECTION OF CHANGE
+    matters, to tell flexion from extension. It is the angle between the thigh
+    bar's line (oriented proximally, i.e. away from the shank cluster) and the
+    thigh-cluster-to-shank-cluster direction: near 180 deg with the leg
+    straight, falling as the knee bends.
+
+    Both of its inputs have a determinate sign, which is the point. The bar's
+    own SVD direction does not, so it is oriented here against the centroid
+    separation rather than trusted as returned.
+    """
+    c_tri = np.nanmean(triangle[:, idx, :], axis=0)
+    c_bar = np.nanmean(bar[:, idx, :], axis=0)
+    w = c_tri - c_bar
+    wn = np.linalg.norm(w, axis=1, keepdims=True)
+    w = np.divide(w, np.where(wn > 1e-9, wn, np.nan))
+    u = segment_line_direction(bar)[idx]
+    along = np.nansum(u * w, axis=1)
+    if np.isfinite(along).any() and float(np.nanmean(along)) > 0.0:
+        u = -u                      # point it proximally, away from the shank
+    return np.degrees(np.arccos(np.clip(np.sum(u * w, axis=1), -1.0, 1.0)))
+
+
+def _pin_axis_sign(axis: np.ndarray, rv: np.ndarray, triangle: np.ndarray,
+                   bar: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Give the hinge axis a determinate SIGN. Deliberately NOT a zero.
+
+    `eigh` returns an eigenvector whose sign is mathematically arbitrary, and
+    that sign alone decides the reported curve's polarity: a 5e-7 m rounding
+    difference once flipped a trial from 0 -> -40 deg to 0 -> +40 deg. A
+    mirrored curve scores identically (compute_pt_params is mirror-invariant),
+    but it misleads a clinician reading the plot, and it makes the "inverted
+    curve" tripwire meaningless.
+
+    SIGN IS OBSERVABLE; ZERO IS NOT. That distinction is the whole point of
+    this function. Picking a hemisphere is a binary choice, decided here by
+    the accumulated agreement between the plate's rotation and the direction
+    the knee is opening or closing over the WHOLE trial -- so it is robust to
+    the perturbation that flips `eigh`. Picking a zero would require knowing
+    that some recorded pose was truly extended, which no marker geometry here
+    can establish; that is why anchor_to_extension stays disconnected and the
+    curve stays relative.
+
+    Note the obvious reference does NOT work: the thigh-to-shank centroid
+    direction lies along the limb, and the hinge is medio-lateral, so the two
+    are perpendicular by construction -- measured dot 0.000000 on synthetic
+    trials and inconsistent-sign noise (+0.003 to +0.83) on real ones. What is
+    used instead is the CHANGE in that geometry, which does resolve onto the
+    hinge.
+    """
+    if bar is None or len(rv) < 2 or len(idx) != len(rv) + 1:
+        return axis
+    theta = _proxy_extension_angle(triangle, bar, idx)
+    d_theta = np.diff(theta)
+    turn = rv @ axis
+    good = np.isfinite(d_theta) & np.isfinite(turn)
+    if not good.any():
+        return axis
+    # Positive rotation about the axis should mean the knee is EXTENDING.
+    score = float(np.sum(turn[good] * d_theta[good]))
+    if not np.isfinite(score) or abs(score) < MIN_SIGN_PIN_SCORE:
+        # The leg barely moved, or the reference is orthogonal to the axis, so
+        # the sign is undetermined. Leave it rather than flip on noise; the
+        # curve is relative either way and every scored parameter is
+        # mirror-invariant, so nothing downstream breaks.
+        return axis
+    return axis if score > 0 else -axis
+
+
+def hinge_axis(triangle: np.ndarray, bar: np.ndarray = None):
     """(axis, conditioning, pc2_series) from the plate's own rotation.
+
+    Pass `bar` to pin the axis's SIGN against the limb's own geometry (see
+    _pin_axis_sign). Without it the sign is whatever `eigh` returned, which is
+    arbitrary; the magnitude results are unaffected either way.
 
     `conditioning` is the dominant eigenvalue's share of the total. 1.0 is a
     perfect hinge; a tumbling plate tends toward 1/3. `pc2_series` is the
@@ -145,7 +224,9 @@ def hinge_axis(triangle: np.ndarray):
     total = float(w.sum())
     if not np.isfinite(total) or total <= 0:
         raise GeometryError("Cluster shows no rotation; no hinge axis exists.")
-    return V[:, 0], float(w[0] / total), rv @ V[:, 1]
+    tracked = np.isfinite(triangle).all(axis=(0, 2))
+    axis = _pin_axis_sign(V[:, 0], rv, triangle, bar, np.where(tracked)[0])
+    return axis, float(w[0] / total), rv @ V[:, 1]
 
 
 def low_freq_ratio(pc2: np.ndarray, fps: float) -> float:
@@ -380,7 +461,7 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
     invented one is how the original 179.9-on-a-flexed-leg bug happened.
     """
     triangle, bar, _which = classify_clusters(cluster_a, cluster_b)
-    axis, conditioning, pc2 = hinge_axis(triangle)
+    axis, conditioning, pc2 = hinge_axis(triangle, bar)
     verdict = conditioning_verdict(conditioning, pc2, fps)
     if verdict == "ill_conditioned_axis":
         raise GeometryError(
