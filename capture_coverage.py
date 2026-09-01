@@ -70,6 +70,33 @@ FAIL = "fail"
 NO_DATA = "no_data"
 
 
+class Modality(NamedTuple):
+    """What is being watched, so the messages name the right thing.
+
+    The decision logic is identical for optical markers and for pose landmarks
+    -- both reduce to "was each segment observable this frame" -- but the words
+    must not be. Telling an operator with no mocap connected that their "marker
+    coverage" is 63% names a sensor that is not in the room.
+    """
+    noun: str          # what is being tracked, plural
+    source: str        # where it comes from, for the no-data message
+    fix_hint: str      # what to check when nothing arrives
+
+
+MOCAP = Modality(
+    noun="markers",
+    source="Motive",
+    fix_hint=("Check that Motive is streaming (View > Data Streaming, Broadcast "
+              "Frame Data on) and that the Thigh and Shank rigid bodies exist "
+              "in the current asset list."))
+
+POSE = Modality(
+    noun="pose landmarks",
+    source="the camera",
+    fix_hint=("Check the camera preview is running and the participant is in "
+              "frame."))
+
+
 class CoverageStats(NamedTuple):
     """What was seen over a window of frames.
 
@@ -172,15 +199,14 @@ def _worst_segment(stats: CoverageStats) -> str:
 
 def verdict(stats: Optional[CoverageStats],
             min_continuous_s: float = PREFLIGHT_MIN_CONTINUOUS_S,
-            min_coverage: float = PREFLIGHT_MIN_COVERAGE) -> Verdict:
+            min_coverage: float = PREFLIGHT_MIN_COVERAGE,
+            modality: Modality = MOCAP) -> Verdict:
     """Turn coverage statistics into a pass/fail and something to do about it."""
     if stats is None or stats.n_frames < 2:
         return Verdict(
             NO_DATA,
-            "No mocap frames received",
-            "Nothing arrived from Motive. Check that Motive is streaming "
-            "(View > Data Streaming, Broadcast Frame Data on) and that the "
-            "Thigh and Shank rigid bodies exist in the current asset list.",
+            f"No frames received from {modality.source}",
+            f"Nothing arrived from {modality.source}. {modality.fix_hint}",
             stats)
 
     seg = _worst_segment(stats)
@@ -189,28 +215,29 @@ def verdict(stats: Optional[CoverageStats],
             FAIL,
             f"Tracking is breaking up ({stats.longest_continuous_s:.2f}s "
             f"unbroken, need {min_continuous_s:.1f}s)",
-            f"The {seg} markers are visible only in short bursts, so no part of "
+            f"The {seg} {modality.noun} are visible only in short bursts, so no part of "
             f"the hold can be reconstructed. Longest unbroken stretch was "
             f"{stats.longest_continuous_s:.2f}s out of {stats.duration_s:.1f}s "
             f"watched (thigh seen {stats.thigh_coverage * 100:.0f}% of frames, "
             f"shank {stats.shank_coverage * 100:.0f}%).\n\n"
             "This is almost always the assessor standing between the cameras "
             "and the leg. Step to the side of the limb rather than over it, and "
-            "check no camera's view of the markers passes through your torso or "
-            "arms. Recording now will produce a trial that cannot be scored.",
+            f"check no camera's view of the {modality.noun} passes through your "
+            "torso or arms. Recording now will produce a trial that cannot be "
+            "scored.",
             stats)
 
     if stats.coverage < min_coverage:
         return Verdict(
             FAIL,
-            f"Marker coverage {stats.coverage * 100:.0f}% "
+            f"Coverage {stats.coverage * 100:.0f}% "
             f"(need {min_coverage * 100:.0f}%)",
             f"Tracking holds for {stats.longest_continuous_s:.2f}s at a time but "
             f"drops repeatedly: both clusters were seen in only "
             f"{stats.coverage * 100:.0f}% of frames over {stats.duration_s:.1f}s "
             f"(thigh {stats.thigh_coverage * 100:.0f}%, shank "
-            f"{stats.shank_coverage * 100:.0f}%). The {seg} markers are the ones "
-            "being lost. Adjust the assessor's position or add a camera "
+            f"{stats.shank_coverage * 100:.0f}%). The {seg} {modality.noun} are the "
+            "ones being lost. Adjust the assessor's position or add a camera "
             "covering the swing arc before recording.",
             stats)
 

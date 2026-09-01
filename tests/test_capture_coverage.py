@@ -454,3 +454,38 @@ def test_cli_exits_two_when_nothing_arrives(monkeypatch, capsys):
 def test_cli_exits_two_when_the_stream_will_not_open(monkeypatch, capsys):
     assert _run_cli(monkeypatch, _steady(600), opened=False) == 2
     assert "Data Streaming" in capsys.readouterr().out
+
+
+# -- the words match the sensor actually in the room ------------------------
+
+def test_the_no_data_message_names_the_source_it_was_waiting_on():
+    """An operator with no mocap connected must not be told to check Motive."""
+    assert "Motive" in cc.verdict(None, modality=cc.MOCAP).detail
+    assert "Motive" not in cc.verdict(None, modality=cc.POSE).detail
+    assert "camera" in cc.verdict(None, modality=cc.POSE).detail
+
+
+def test_a_pose_failure_does_not_blame_markers():
+    """The pose check ran on video with no markers in it at all; calling the
+    result 'marker coverage' names a sensor that is not there."""
+    monitor = cc.CoverageMonitor()
+    for i in range(600):
+        ok = i % 3 != 0
+        monitor.feed(i / 120.0, ok, ok)
+    v = cc.verdict(monitor.stats(), modality=cc.POSE)
+    assert v.status == cc.FAIL
+    assert "marker" not in (v.headline + v.detail).lower()
+    assert "pose landmarks" in v.detail
+
+
+def test_the_marker_failure_still_says_markers():
+    monitor = cc.CoverageMonitor()
+    for i in range(600):
+        ok = i % 3 != 0
+        monitor.feed(i / 120.0, ok, ok)
+    assert "markers" in cc.verdict(monitor.stats(), modality=cc.MOCAP).detail
+
+
+def test_the_default_modality_is_the_marker_check():
+    """Every existing caller passes no modality and means Motive."""
+    assert cc.verdict(None).detail == cc.verdict(None, modality=cc.MOCAP).detail
