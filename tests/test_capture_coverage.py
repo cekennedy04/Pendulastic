@@ -334,3 +334,123 @@ def test_preflight_countdown_reaches_done():
     assert s.preflight_seconds_left() == 0.0
     s.begin_preflight(duration_s=0.0)
     assert s.preflight_done()
+
+
+# ── timestamps that cannot be real ───────────────────────────────────────────
+#
+# natnet_client falls back to time.monotonic() when a packet's suffix is
+# missing, so one short read on the wire hands us a timestamp from a different
+# clock. Believing it would stretch the window and the longest unbroken stretch
+# with it -- reporting a setup that cannot record as fine, which is the worst
+# direction to fail in.
+
+def test_a_forward_clock_jump_does_not_inflate_the_window():
+    s, _ = _session()
+    s.start()
+    for i in range(120):
+        s.feed_frame(i, i / FPS, _RB(True), _RB(True))
+    s.feed_frame(120, 987654.0, _RB(True), _RB(True))       # monotonic fallback
+    for i in range(121, 240):
+        s.feed_frame(i, 987654.0 + (i - 120) / FPS, _RB(True), _RB(True))
+    st = s.live.stats()
+    assert st.duration_s < 5.0, f"window inflated to {st.duration_s:.1f}s"
+    assert s.clock_breaks == 1
+
+
+def test_a_backward_clock_jump_is_refused_too():
+    s, _ = _session()
+    s.start()
+    for i in range(120):
+        s.feed_frame(i, 500.0 + i / FPS, _RB(True), _RB(True))
+    s.feed_frame(120, 1.0, _RB(True), _RB(True))
+    st = s.live.stats()
+    assert st.duration_s > 0, "time must keep moving forward"
+    assert s.clock_breaks == 1
+
+
+def test_the_jump_cannot_manufacture_a_passing_verdict():
+    """The failure mode that matters: fragmented tracking plus a clock jump
+    must still read as fragmented, not as one long clean stretch."""
+    s, _ = _session()
+    s.start()
+    for i in range(60):                                     # 0.5 s tracked
+        s.feed_frame(i, i / FPS, _RB(True), _RB(True))
+    s.feed_frame(60, 987654.0, _RB(True), _RB(True))        # clock break
+    for i in range(61, 120):                                # 0.5 s more
+        s.feed_frame(i, 987654.0 + (i - 60) / FPS, _RB(True), _RB(True))
+    assert s.live.stats().longest_continuous_s < 1.5
+
+
+def test_ordinary_frame_intervals_are_untouched():
+    """The guard must not fire on anything legitimate."""
+    s, _ = _session()
+    s.start()
+    for i in range(600):
+        s.feed_frame(i, i / FPS, _RB(True), _RB(True))
+    assert s.clock_breaks == 0
+    # `live` is a rolling window, so it holds LIVE_WINDOW_S, not the whole run.
+    assert s.live.stats().duration_s == pytest.approx(cc.LIVE_WINDOW_S, abs=0.05)
+
+
+def test_clock_break_state_resets_on_restart():
+    s, client = _session()
+    s.start()
+    s.feed_frame(0, 0.0, _RB(True), _RB(True))
+    s.feed_frame(1, 987654.0, _RB(True), _RB(True))
+    assert s.clock_breaks == 1
+    s.stop()
+    s._client = None
+    s.start()
+    assert s.clock_breaks == 0
+
+
+# ── the command-line smoke test ──────────────────────────────────────────────
+#
+# Its exit code is the part worth pinning: a wrong mapping would let a broken
+# setup look fine to anything scripting it.
+
+def _run_cli(monkeypatch, pattern, opened=True):
+    class _Fake:
+        def __init__(self, *a, **k):
+            self.live = cc.CoverageMonitor()
+            self._done = False
+            self.clock_breaks = 0
+            self._pattern = pattern
+
+        def start(self):
+            return opened
+
+        def begin_preflight(self, duration_s=0.0):
+            for i, (t_ok, s_ok) in enumerate(self._pattern):
+                self.live.feed(i / FPS, t_ok, s_ok)
+
+        def preflight_done(self):
+            return True
+
+        def finish_preflight(self):
+            return cc.verdict(self.live.stats())
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ccs, "CoverageSession", _Fake)
+    return ccs._main([])
+
+
+def test_cli_exits_zero_when_the_setup_would_pass(monkeypatch, capsys):
+    assert _run_cli(monkeypatch, _steady(600)) == 0
+    assert "Safe to record" in capsys.readouterr().out
+
+
+def test_cli_exits_one_when_the_setup_would_fail(monkeypatch, capsys):
+    assert _run_cli(monkeypatch, _steady(600, shank=False)) == 1
+    assert "shank" in capsys.readouterr().out
+
+
+def test_cli_exits_two_when_nothing_arrives(monkeypatch, capsys):
+    assert _run_cli(monkeypatch, [], opened=True) == 2
+
+
+def test_cli_exits_two_when_the_stream_will_not_open(monkeypatch, capsys):
+    assert _run_cli(monkeypatch, _steady(600), opened=False) == 2
+    assert "Data Streaming" in capsys.readouterr().out
