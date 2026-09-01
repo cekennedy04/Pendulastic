@@ -58,6 +58,12 @@ TARGET_FPS = 10.0
 # notices the scale.
 MAX_INFERENCE_WIDTH = 640
 
+# Above this share of frames with nobody detected, the verdict says so rather
+# than letting the inherited "the assessor is in the way" message stand. Set
+# low because any sustained non-detection is worth naming: it is a different
+# fault with a different fix, and on this rig it is the common one.
+NO_DETECTION_NOTE_THRESHOLD = 0.20
+
 # The lite model, deliberately: this is a visibility check, not the measurement,
 # and it has to keep up alongside a live recording.
 PREFERRED_MODELS = ("pose_landmarker_lite.task",
@@ -134,6 +140,15 @@ class PoseCoverageSession(CoverageSession):
         self._thread = None
         self._stop_evt = threading.Event()
         self.last_error = None      # first inference failure, for diagnosis
+        # Frames in which no person was detected at all, against frames sampled.
+        # Kept apart from coverage because the two want opposite responses: an
+        # occluded leg means move, no detection at all means the camera cannot
+        # find the participant, and telling someone to step aside when nobody
+        # is being detected sends them to fix the wrong thing. Measured across
+        # raw trial video on this rig, no-detection is the DOMINANT failure --
+        # 17 to 27 frames in 40 on several participants.
+        self._no_pose = 0
+        self._sampled = 0
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -168,6 +183,45 @@ class PoseCoverageSession(CoverageSession):
     @property
     def running(self) -> bool:
         return self._detector is not None
+
+    # -- what kind of failure was it? ----------------------------------------
+
+    def no_detection_fraction(self) -> float:
+        """Share of sampled frames in which no person was found at all."""
+        with self._lock:
+            return (self._no_pose / self._sampled) if self._sampled else 0.0
+
+    def begin_preflight(self, duration_s=None) -> None:
+        with self._lock:
+            self._no_pose = 0
+            self._sampled = 0
+        if duration_s is None:
+            super().begin_preflight()
+        else:
+            super().begin_preflight(duration_s)
+
+    def finish_preflight(self) -> cc.Verdict:
+        """The inherited verdict, plus what kind of failure this was.
+
+        The base message attributes a loss of tracking to the assessor standing
+        in the line of sight, which is what the marker evidence supports. For
+        pose it is often not the cause: the detector simply never finds the
+        participant, and an operator told to step aside will move for nothing.
+        """
+        v = super().finish_preflight()
+        if v.status == cc.PASS:
+            return v
+        share = self.no_detection_fraction()
+        if share < NO_DETECTION_NOTE_THRESHOLD:
+            return v
+        note = (f"\n\nNo person was detected at all in "
+                f"{share * 100:.0f}% of frames. That is a different problem "
+                "from the leg being blocked: pose estimation is failing to "
+                "find the participant, which is common with someone lying or "
+                "reclined. Check the camera can see the whole body, that the "
+                "participant is not cropped, and that the scene is well lit -- "
+                "moving out of the line of sight will not help here.")
+        return v._replace(detail=v.detail + note)
 
     # -- the worker ----------------------------------------------------------
 
@@ -206,7 +260,13 @@ class PoseCoverageSession(CoverageSession):
             h, w = frame.shape[:2]
             thigh, shank = hpe.frame_observable(
                 poses, leg=self._leg_getter(), width=w, height=h)
+            with self._lock:
+                self._sampled += 1
+                if not poses:
+                    self._no_pose += 1
         except Exception as exc:
+            with self._lock:
+                self._sampled += 1
             # A failed inference is not evidence that the leg was visible, and
             # silently dropping it would let a broken detector read as a clean
             # session. Count it as an unobservable frame -- but keep the first

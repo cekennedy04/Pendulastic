@@ -339,3 +339,99 @@ def test_feed_frame_still_reads_tracking_valid():
     stats = session.live.stats()
     assert stats.thigh_coverage == 1.0
     assert stats.shank_coverage == 0.0
+
+
+# -- naming the right fault --------------------------------------------------
+
+def _no_pose_detector():
+    """A detector that finds nobody -- the dominant real failure on this rig.
+
+    Measured over 26 participant-legs of archived trial video: median pose
+    coverage 70.8%, and on several participants 17 to 27 frames in 40 detect no
+    person at all. The base verdict blames the assessor's line of sight, which
+    is right for markers and wrong here.
+    """
+    return _FakeDetector(poses_for=lambda n: [])
+
+
+def _run_preflight(session, mailbox, detector, watch_s=0.3):
+    session.begin_preflight(duration_s=watch_s)
+    while not session.preflight_done():
+        _pump(mailbox, detector, 1)
+        time.sleep(0.01)
+    return session.finish_preflight()
+
+
+def test_a_failure_with_nobody_detected_says_so():
+    det = _no_pose_detector()
+    mb = _Mailbox()
+    session = _session(det, mb)
+    session.start()
+    try:
+        v = _run_preflight(session, mb, det)
+        assert v.status != cc.PASS
+        assert "No person was detected" in v.detail
+        assert "will not help" in v.detail
+    finally:
+        session.stop()
+
+
+def test_the_note_is_absent_when_people_are_being_found():
+    """An occluded leg on a detected person is the assessor-in-the-way case,
+    and must keep the message that tells them to move."""
+    det = _FakeDetector(poses_for=lambda n: [_pose(ankle_v=0.05)])
+    mb = _Mailbox()
+    session = _session(det, mb)
+    session.start()
+    try:
+        v = _run_preflight(session, mb, det)
+        assert v.status != cc.PASS
+        assert "No person was detected" not in v.detail
+        assert session.no_detection_fraction() == 0.0
+    finally:
+        session.stop()
+
+
+def test_a_pass_is_never_annotated():
+    det = _FakeDetector()
+    mb = _Mailbox()
+    session = _session(det, mb)
+    session.start()
+    try:
+        v = _run_preflight(session, mb, det,
+                           watch_s=cc.PREFLIGHT_MIN_CONTINUOUS_S + 0.3)
+        assert v.status == cc.PASS
+        assert "No person was detected" not in v.detail
+    finally:
+        session.stop()
+
+
+def test_the_no_detection_share_is_measured_not_guessed():
+    det = _FakeDetector(poses_for=lambda n: [] if n % 2 else [_pose()])
+    mb = _Mailbox()
+    session = _session(det, mb)
+    session.start()
+    try:
+        session.begin_preflight(duration_s=0.3)
+        while not session.preflight_done():
+            _pump(mb, det, 1)
+            time.sleep(0.01)
+        session.finish_preflight()
+        assert 0.4 <= session.no_detection_fraction() <= 0.6
+    finally:
+        session.stop()
+
+
+def test_beginning_a_watch_clears_the_previous_one():
+    """Otherwise a first bad check would keep annotating every later one."""
+    det = _no_pose_detector()
+    mb = _Mailbox()
+    session = _session(det, mb)
+    session.start()
+    try:
+        _run_preflight(session, mb, det)
+        assert session.no_detection_fraction() > 0
+        session.begin_preflight(duration_s=0.05)
+        assert session.no_detection_fraction() == 0.0
+    finally:
+        session.stop()
