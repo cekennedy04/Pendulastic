@@ -1779,6 +1779,24 @@ def optical_coverage(path: str) -> float:
     return _coverage_from_cols(df, shank, thigh)
 
 
+_KNEE_AXIS_WARNINGS = {
+    "uncalibrated_offset":
+        "No extended hold was recorded, so this curve has no absolute zero. "
+        "The shape and every scored PT parameter are still valid -- they are "
+        "offset-invariant -- but the angle values themselves are relative.",
+    "low_confidence_hold":
+        "The pre-release hold drifted more than 2 deg, so it was not used to "
+        "set the zero. Scored parameters are unaffected; absolute angles are "
+        "withheld.",
+    "out_of_plane_motion":
+        "The leg did not swing in a single plane, so the reported amplitude "
+        "is a LOWER BOUND: a non-sagittal swing projected onto one axis reads "
+        "short by roughly cos(out-of-plane angle).",
+    "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED":
+        "Treat phi_max and R2n as minimum bounds for this trial.",
+}
+
+
 def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQuality]:
     """Return (t_sec, angle_deg, quality) from an OptiTrack CSV.
 
@@ -1829,16 +1847,35 @@ def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQua
 
         if len(_shank_mks) >= 3 and len(_thigh_mks) >= 3:
             cov = _coverage_from_cols(df, _shank_mks, _thigh_mks)
+            import optitrack_knee_axis as _ka
+
+            def _cluster(cols_list):
+                arr = np.stack([df.iloc[:, c].values.astype(float)
+                                for c in cols_list[:3]])
+                arr[np.abs(arr) > 1e5] = np.nan
+                return arr
+
+            _fps = 1.0 / max(float(np.median(np.diff(t))), 1e-9)
             try:
-                angles = _angle_from_labeled_markers(df, _shank_mks, _thigh_mks)
-            except ValueError as exc:
-                # The cluster geometry itself defeated the fit (e.g. no fully
-                # tracked hold frames to seed the anatomical axis). There is no
-                # curve to hand back, but the trial is still not "excluded" —
-                # it is unreadable, which the caller reports as such.
-                raise ValueError(
-                    f"{exc} (optical coverage {cov*100:.1f}%)") from exc
+                _res = _ka.knee_angle_from_clusters(_cluster(_shank_mks),
+                                                    _cluster(_thigh_mks), _fps)
+            except _ka.GeometryError as exc:
+                # The cluster geometry itself defeated the reconstruction.
+                # There is no curve to hand back, but the trial is still not
+                # "excluded" — it is unreadable, which the caller reports as
+                # such.
+                raise ValueError(f"{exc} (optical coverage {cov*100:.1f}%)") from exc
+            # Scoring uses the RELATIVE curve: every scored PT parameter is
+            # offset-invariant, so an unearned absolute zero buys nothing and
+            # risks everything. The absolute convention is applied only when
+            # anchor_to_extension actually established it.
+            angles = (_res.get_absolute_angles() if _res.is_calibrated
+                      and "low_confidence_hold" not in _res.flags
+                      else _res.get_relative_angles())
             warns = list(_curve_quality_warnings(angles))
+            for _flag in _res.flags:
+                warns.append(_KNEE_AXIS_WARNINGS.get(
+                    _flag, f"Knee-axis reconstruction flag: {_flag}."))
             _seed_speed = _seed_window_speed_mm(df, _shank_mks)
             if np.isfinite(_seed_speed) and _seed_speed > MAX_SEED_WINDOW_SPEED_MM:
                 warns.insert(0, SEED_WINDOW_MOVING.format(
@@ -2197,6 +2234,39 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
     return slope
 
 
+# How far back from the threshold crossing the reported release is placed.
+#
+# This was a fixed 2 SAMPLES until 2026-09-01 -- the same defect as the
+# smoothing window had, one layer down. Two samples is 0.040 s at 50 Hz but
+# 0.005 s at 400 Hz, so the faster the capture, the less it stepped back and
+# the later the release it reported: 2.0400 s at 50 Hz against 2.0725 s at
+# 400 Hz for a synthetic released at exactly 2.0 s. A0_deg is read just after
+# the release, so it fell 47.75 -> 44.23 deg across that range on identical
+# motion, and omega_max_n and phi_max_ratio inherited it because both
+# normalise by A0.
+#
+# Pinned to what the old constant meant at 120 Hz, OptiTrack's capture rate:
+# the reference instrument barely moves and every other rate comes to it.
+# Over the rates where compute_pt_params' 0.10 s window is realisable
+# (>= 50 Hz) this takes the A0 spread from 7.8% to 1.7%.
+#
+# The back-off compensates a real lag -- smoothing plus the 8%-of-range
+# threshold mean detection fires after motion starts -- but it is NOT tuned
+# to cancel it. On the synthetic above a 0.080 s back-off would drive the
+# error to zero, and that is a trap: the lag scales with how fast the leg is
+# released, so a value fitted to one signal would be wrong for others, and
+# too large a back-off lands inside the pre-release hold, where A0 reads the
+# flat plateau instead of the swing. Removing the rate dependence and
+# re-tuning the lag are separate questions; this is only the first.
+#
+# The duration still quantises to whole samples, so below ~60 Hz it rounds
+# to zero: 30 fps video gets no back-off where it previously got 0.067 s.
+# That is the intended direction -- two samples at 30 fps overshot by four
+# times in time -- but it is a floor, not an exact conversion, the same way
+# the 0.10 s smoothing window floors at savgol's polyorder+2.
+_RELEASE_BACKOFF_S = 2.0 / 120.0
+
+
 def _detect_release(t: np.ndarray, ang: np.ndarray,
                     baseline_sec: float = 0.6,
                     thresh_deg:   float = 5.0) -> int:
@@ -2208,9 +2278,10 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     # normalized tilt magnitude, ...) rather than assuming a degree-scale signal.
     signal_range = float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
     thresh_deg = 0.08 * signal_range
+    back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
     for i in range(bi, len(t)):
         if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
-            return max(0, i - 2)
+            return max(0, i - back)
     return bi
 
 
