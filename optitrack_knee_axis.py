@@ -12,6 +12,7 @@ See docs/superpowers/specs/2026-08-31-optitrack-knee-axis-design.md.
 """
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass, field
 
@@ -19,7 +20,10 @@ import numpy as np
 from scipy.signal import welch
 
 from pendulastic_pt_score import (
+    MAX_AXIS_STEP_DEG,
+    MAX_CLUSTER_RMSD_M,
     MIN_CLUSTER_PLANAR_EXTENT_M,
+    _MARKER_PERMUTATIONS,
     _kabsch_rotations,
     _reference_shape,
 )
@@ -339,6 +343,28 @@ def segment_axis_from_plate(triangle: np.ndarray, hinge: np.ndarray) -> np.ndarr
     The reference direction is any unit vector perpendicular to the hinge; its
     absolute phase is arbitrary, which is exactly the constant offset the
     scored parameters are invariant to.
+
+    Motive permutes Marker1/2/3 between frames when it re-solves the cluster.
+    A single fixed marker order into `_kabsch_rotations` therefore matches the
+    wrong physical markers on some frames and the fitted rotation -- and this
+    axis -- jumps ~180 deg; `signed_knee_angle`'s unwrap then turns that jump
+    into permanent winding (measured: 44/48 real trials span 319-4859 deg for
+    a joint that carries ~150). Fit RESIDUAL cannot pick the right
+    permutation either: these plates are near-isoceles (85.0/85.6/159.2 mm on
+    P21, a 0.6 mm asymmetry against 0.3 mm of noise), so the deleted
+    `_seg_axes` (git show 909050a~6:pendulastic_pt_score.py) measured that
+    picking the lowest-residual permutation chose a mirrored correspondence
+    on ~16% of frames and flipped the axis by ~130 deg.
+
+    So, per frame: try all six marker permutations, keep only the ones whose
+    fit still matches the cluster's OWN reference shape to within
+    MAX_CLUSTER_RMSD_M (a cluster that no longer matches its own shape is not
+    that cluster), then let TEMPORAL CONTINUITY choose among the survivors --
+    seeded from `seed` on the first tracked frame, carried from the last
+    accepted frame after that -- and reject a step no limb could make
+    (MAX_AXIS_STEP_DEG). This is a straight port of `_seg_axes`'s
+    non-collinear branch, adapted to return a per-frame direction array
+    instead of that function's shape.
     """
     hinge = np.asarray(hinge, float)
     hinge = hinge / np.linalg.norm(hinge)
@@ -356,11 +382,40 @@ def segment_axis_from_plate(triangle: np.ndarray, hinge: np.ndarray) -> np.ndarr
     ref = _reference_shape(triangle, idx)
     cur = np.transpose(triangle[:, idx, :], (1, 0, 2))
     cur = cur - cur.mean(axis=1, keepdims=True)
+
+    perms = np.asarray(_MARKER_PERMUTATIONS)                     # (6, 3)
+    stack = cur[:, perms, :].reshape(-1, 3, 3)                   # (nv*6, 3, 3)
     try:
-        rots = _kabsch_rotations(ref, cur)
+        rots = _kabsch_rotations(ref, stack)
     except np.linalg.LinAlgError:
         return out
-    out[idx] = np.einsum("mij,j->mi", rots, seed)
+    fitted = np.einsum("mij,kj->mki", rots, ref)                 # (nv*6, 3, 3)
+    rmsd = np.sqrt(np.mean(np.sum((stack - fitted) ** 2, axis=2), axis=1))
+    n_perm = len(perms)
+    axes = np.einsum("mij,j->mi", rots, seed).reshape(len(idx), n_perm, 3)
+    keep = rmsd.reshape(len(idx), n_perm) <= MAX_CLUSTER_RMSD_M
+
+    max_step_cos = math.cos(math.radians(MAX_AXIS_STEP_DEG))
+    prev = None                      # last accepted axis, for temporal continuity
+    for j, i in enumerate(idx):
+        cand = axes[j][keep[j]]
+        if len(cand) == 0:
+            continue
+        if prev is None:
+            # Nothing to be continuous with yet; the ref frame is close to
+            # `seed`'s own orientation, so pick whichever candidate agrees
+            # with it best.
+            axis = cand[np.argmax(cand @ seed)]
+        else:
+            axis = cand[np.argmax(cand @ prev)]
+            # A limb cannot slew this fast. If nothing plausible is on offer
+            # the frame is untrustworthy, so drop it rather than accept a
+            # jump -- exactly what turns into permanent winding once unwrap
+            # sees it.
+            if float(axis @ prev) < max_step_cos:
+                continue
+        out[i] = axis
+        prev = axis
     return out
 
 

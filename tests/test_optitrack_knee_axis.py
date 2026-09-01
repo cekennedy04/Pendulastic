@@ -231,6 +231,65 @@ def test_segment_axis_from_plate_tracks_rotation_and_preserves_gaps():
     assert swept > 30.0, f"axis barely moved ({swept:.1f} deg) with a 50 deg plate rotation"
 
 
+def test_segment_axis_survives_marker_permutations_on_16pct_of_frames():
+    """Motive re-solves relabel Marker1/2/3 on a SUBSTANTIAL fraction of real
+    frames, not one isolated frame -- measured ~16% on P21. The deleted
+    _seg_axes (git show 909050a~6:pendulastic_pt_score.py) records by
+    measurement why RESIDUAL ALONE cannot pick the right permutation on this
+    geometry: these plates are near-isoceles (85.0/85.6/159.2 mm on P21, a
+    0.6 mm asymmetry against 0.3 mm of noise), so picking the lowest-residual
+    permutation chose a mirrored correspondence on ~16% of frames and flipped
+    the axis by ~130 deg. Build that geometry, permute markers on 16% of
+    scattered frames, and require BOTH that the per-frame axis stays
+    continuous and that the resulting knee curve stays physically plausible
+    end to end -- a knee carries ~150 deg of flexion, not thousands.
+    """
+    rng = np.random.default_rng(20260901)
+    n = 500
+    fps = 120.0
+    hinge = np.array([0.0, 0.0, 1.0])
+    tri_base = np.array([[0.0850, 0.0, 0.0], [-0.0856, 0.0, 0.0], [0.0, 0.0300, 0.0]])
+    bar_base = np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0], [0.0, 0.0012, 0.0]])
+    t = np.arange(n) / fps
+    ts = np.maximum(t - 0.5, 0.0)
+    theta = 40.0 * np.exp(-ts / 1.5) * np.cos(2 * np.pi * 0.9 * ts)   # decaying swing, deg
+    tri = np.empty((3, n, 3))
+    for i in range(n):
+        tri[:, i, :] = tri_base @ _rot(hinge, theta[i]).T
+    bar = np.repeat(bar_base[:, None, :], n, axis=1)
+
+    swap_idx = rng.choice(n, size=int(round(0.16 * n)), replace=False)
+    for i in swap_idx:
+        tri[[0, 1], i, :] = tri[[1, 0], i, :]
+
+    # The direct primitive: per-frame axis must stay continuous through the
+    # permuted frames rather than flipping ~180 deg on each one.
+    dirs = ka.segment_axis_from_plate(tri, hinge)
+    ok = np.isfinite(dirs).all(axis=1)
+    assert ok.sum() > 0.5 * n, "the RMSD+continuity gate dropped too much of the trial"
+    kept = dirs[ok]
+    axis_steps = np.degrees(np.arccos(np.clip(
+        np.sum(kept[1:] * kept[:-1], axis=1), -1.0, 1.0)))
+    assert np.max(axis_steps) < 90.0, (
+        f"a permuted frame flipped the axis by {np.max(axis_steps):.1f} deg -- "
+        f"{len(swap_idx)} of {n} frames were permuted")
+
+    # End to end: the reconstructed curve itself must stay physically
+    # plausible, which is the acceptance bar this whole defect was measured
+    # against (44/48 real trials spanning 319-4859 deg before this fix).
+    res = ka.knee_angle_from_clusters(tri, bar, fps=fps)
+    rel = res.get_relative_angles()
+    finite = np.isfinite(rel)
+    span = float(np.nanmax(rel[finite]) - np.nanmin(rel[finite]))
+    assert span < 200.0, (
+        f"span {span:.1f} deg with {len(swap_idx)}/{n} permuted frames: "
+        f"a joint that swings ~80 deg must not report hundreds to thousands")
+    curve_steps = np.abs(np.diff(rel[finite]))
+    assert np.max(curve_steps) < 90.0, (
+        f"permuted markers spiked the curve by {np.max(curve_steps):.1f} deg "
+        f"between adjacent tracked frames")
+
+
 def test_a_drifting_hold_withholds_the_offset():
     """Patients shift during the hold, which drifts the reference rather than
     stepping it. A drifting hold must not be used to set an absolute zero."""
