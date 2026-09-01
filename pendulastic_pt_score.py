@@ -1600,6 +1600,14 @@ def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
     return angles
 
 
+# Widest peak-to-peak knee-angle excursion a real pendulum test can contain.
+# Knee flexion ROM is ~150 deg; 200 leaves generous headroom for a noisy but
+# genuine curve while staying far below the hundreds-to-thousands of degrees a
+# flipped hinge axis accumulates. Used only to WARN (see
+# _curve_quality_warnings) -- no trial is ever dropped on it.
+MAX_PLAUSIBLE_CURVE_SPAN_DEG = 200.0
+
+
 def _curve_quality_warnings(angles: np.ndarray,
                             hold_frames: int = 60,
                             relative: bool = False) -> list:
@@ -1635,6 +1643,38 @@ def _curve_quality_warnings(angles: np.ndarray,
         warnings.append(
             f"Knee angle reaches {np.max(finite):.1f}° — above full extension, "
             "so the segment axes are mis-derived.")
+
+    # An excursion far larger than the joint can physically make is the
+    # OPPOSITE failure, and unlike a flat curve nothing downstream catches it.
+    # The knee carries roughly 150 deg of flexion, so a pendulum-test curve
+    # cannot legitimately span more than about 180 deg peak-to-peak. Spans of
+    # several hundred to several thousand degrees are what a mis-derived hinge
+    # axis produces once its eigenvector flips mid-trial and the angle
+    # accumulates instead of oscillating.
+    #
+    # Measured on the 253-trial OptiTrack corpus (2026-09-01): sampled curves
+    # span 362, 395, 679, 714, 899, 1040, 1617, 1698, 1960, 2342 and 2724 deg
+    # while raising no warning at all, and only 8% of scored trials carry an
+    # A0 inside compute_pt_params' 25-120 deg interpretable band. Every other
+    # check in this function was either convention-dependent (and so skipped
+    # for a relative curve) or looked only for TOO LITTLE motion, so this
+    # entire failure mode was silent.
+    #
+    # Convention-free on purpose: a span is invariant to both the arbitrary
+    # zero and the arbitrary polarity of a relative curve, so unlike the
+    # "above full extension" and "rises after release" checks this one stays
+    # correct in relative mode -- which is the mode the knee-axis
+    # reconstruction actually returns, and therefore the mode that needs it.
+    #
+    # A warning, never a rejection: same contract as every other check here,
+    # and the same rule the excursion gate follows -- flag the data, let the
+    # operator decide via excluded_trials.json.
+    if span > MAX_PLAUSIBLE_CURVE_SPAN_DEG:
+        warnings.append(
+            f"Knee angle spans {span:.0f}° — more than the joint can travel "
+            f"(> {MAX_PLAUSIBLE_CURVE_SPAN_DEG:.0f}°), so this curve is an "
+            "accumulating hinge-axis artifact rather than a swing. Every PT "
+            "parameter derived from it is meaningless; prefer the IMU curve.")
 
     # A curve with no excursion at all carries no pendulum in it — seen when
     # the Shank and Thigh bodies were built from overlapping markers, which

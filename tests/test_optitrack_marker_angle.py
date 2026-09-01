@@ -831,13 +831,47 @@ def test_the_loader_never_hands_out_an_absolute_optical_angle(tmp_path):
     assert any("no absolute zero" in w for w in q.warnings), q.warnings
 
 
+def test_an_accumulating_hinge_axis_is_flagged_in_both_conventions():
+    """A curve spanning more degrees than the knee can travel is a mis-derived
+    hinge axis that accumulated instead of oscillating, and nothing downstream
+    catches it: compute_pt_params happily returns an A0 of several hundred
+    degrees, compute_pt_score scores it, and pt_to_mas grades it.
+
+    Measured on the OptiTrack corpus (2026-09-01) before this check existed:
+    sampled curves spanned 362 to 2724 deg with an empty warning list, and only
+    8% of scored trials carried an A0 inside the 25-120 deg interpretable band.
+
+    The check must be convention-free -- a span is invariant to the arbitrary
+    zero and arbitrary polarity of a relative curve, which is the form the
+    knee-axis reconstruction returns and therefore the form that needs it."""
+    t = np.linspace(0.0, 12.0, 1440)
+    # a swing that never reverses: the angle winds on and on
+    accumulating = -220.0 * t + 40.0 * np.sin(2 * np.pi * 0.9 * t)
+    for relative in (True, False):
+        warns = pts._curve_quality_warnings(accumulating, relative=relative)
+        assert any("more than the joint can travel" in w for w in warns), (relative, warns)
+
+    # a real pendulum swing is NOT flagged, in either convention
+    genuine = 180.0 - 90.0 * (1.0 - np.cos(2 * np.pi * 0.9 * t)) * np.exp(-t / 4.0)
+    assert genuine.max() - genuine.min() < pts.MAX_PLAUSIBLE_CURVE_SPAN_DEG
+    for relative in (True, False):
+        warns = pts._curve_quality_warnings(genuine, relative=relative)
+        assert not any("more than the joint can travel" in w for w in warns), (relative, warns)
+
+    # flagged, never dropped -- the curve still comes back intact
+    assert np.isfinite(accumulating).all()
+
+
 def test_relative_curves_do_not_trip_the_absolute_convention_guards(tmp_path):
     """_curve_quality_warnings' "above full extension" and "rises after
     release" checks presuppose 180-is-extended. On a relative curve they fired
     on 18/26 and 9/26 real trials. They must be suppressed for a relative
     curve -- and must still fire for an absolute one, or suppressing them
     would have silently retired the P21 tripwire."""
-    ang = np.concatenate([np.zeros(60), np.linspace(0.0, 205.0, 180)])
+    # 190, not 205: still above the 180.5 full-extension guard this test is
+    # about, but inside MAX_PLAUSIBLE_CURVE_SPAN_DEG so the span check (a
+    # separate, convention-free guard) stays out of this assertion.
+    ang = np.concatenate([np.zeros(60), np.linspace(0.0, 190.0, 180)])
     absolute = pts._curve_quality_warnings(ang, relative=False)
     relative = pts._curve_quality_warnings(ang, relative=True)
     assert any("above full extension" in w for w in absolute), absolute
