@@ -2,6 +2,7 @@ import os, sys, math
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import numpy as np
+import pytest
 import imu_calibration_tuner as tuner
 import pendulastic_imu_server as imu
 
@@ -913,3 +914,80 @@ def test_replay_trial_estimates_accel_bias_during_stillness():
     # Code should run without error and produce finite angle values
     assert len(t_result) > 0, "replay_trial should produce output with accel bias correction"
     assert np.isfinite(angle_result[-1]), "final angle should be finite"
+
+
+# -- native-rate replay grid ----------------------------------------------
+
+def test_replay_trial_defaults_to_the_live_50ms_display_grid():
+    # TICK_S stays the app's poll cadence. Analysis opts out explicitly, so
+    # nothing silently changes under the live path.
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 0.3,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, _ang = tuner.replay_trial(samples, params)
+    assert float(np.median(np.diff(t))) == pytest.approx(tuner.TICK_S, rel=1e-6)
+
+
+def test_replay_trial_can_emit_on_the_native_100hz_grid():
+    # The phone streams accel, gyro and mag at ~100 Hz each; the 20 Hz grid
+    # is the app's DISPLAY poll, not a sensor limit. Resampling metrics down
+    # to 20 Hz is what pushed compute_pt_params' 0.10 s smoothing window
+    # below savgol's floor, so the analysis path asks for the native rate.
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 0.3,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t, ang = tuner.replay_trial(samples, params, tick_s=0.01)
+    assert float(np.median(np.diff(t))) == pytest.approx(0.01, rel=1e-6)
+    assert len(ang) == len(t)
+
+
+def test_ema_alpha_is_rescaled_to_preserve_its_time_constant():
+    # An EMA's smoothing depends on alpha AND the interval it steps at.
+    # Reusing alpha on a 5x finer grid makes it a 5x LIGHTER filter, passing
+    # through the jitter the tuned value was chosen to reject -- a change to
+    # the signal disguised as a change to the sampling.
+    assert tuner._rescale_ema_alpha(0.3, tick_s=tuner.TICK_S) == pytest.approx(0.3)
+    fine = tuner._rescale_ema_alpha(0.3, tick_s=tuner.TICK_S / 5.0)
+    assert fine < 0.3
+    # Five steps of the rescaled filter must decay exactly as one old step.
+    assert (1.0 - fine) ** 5 == pytest.approx(1.0 - 0.3)
+
+
+def test_ema_alpha_of_one_means_no_smoothing_at_every_rate():
+    # alpha == 1.0 is "no smoothing"; rescaling must not turn it into a
+    # filter. Several existing tests replay with ema_alpha=1.0 precisely to
+    # remove smoothing lag from their assertions.
+    for tick in (tuner.TICK_S, 0.01, 0.001):
+        assert tuner._rescale_ema_alpha(1.0, tick_s=tick) == 1.0
+
+
+def test_native_rate_replay_describes_the_same_motion_as_the_display_grid():
+    # Behavioural check on the rescale: the same trial replayed on both grids
+    # must describe the same motion, not a noisier version of it. Both bounds
+    # discriminate -- measured on this fixture, dropping the rescale and
+    # reusing alpha on the finer grid gives 10.317 deg peak / 0.367 deg
+    # settled against 2.069 / 0.058 with it.
+    #
+    # The remaining peak is a transient: the fixture slews at 2.0 rad/s
+    # between t=1.0 and t=1.5 s, and the two grids necessarily sample the EMA
+    # at different instants through it. The settled bound is taken over the
+    # last 0.5 s, which is clear of that burst -- a 1.0 s window is NOT, and
+    # would be asserting on the slew while claiming to measure the tail.
+    samples = _solo_hold_then_burst_samples()
+    params = {"beta": 0.0, "ema_alpha": 0.3,
+              "flex_axis_capture": True, "gravity_seed": True}
+    t_slow, a_slow = tuner.replay_trial(samples, params)
+    t_fast, a_fast = tuner.replay_trial(samples, params, tick_s=0.01)
+    on_slow = np.interp(t_slow, t_fast, a_fast)
+    ok = np.isfinite(a_slow) & np.isfinite(on_slow)
+    assert ok.sum() > 10
+    assert float(np.nanmax(np.abs(a_slow[ok] - on_slow[ok]))) < 2.5
+    settled = ok & (t_slow > t_slow[ok][-1] - 0.5)
+    assert float(np.nanmax(np.abs(a_slow[settled] - on_slow[settled]))) < 0.15
+
+
+def test_analysis_grid_is_the_native_sensor_rate():
+    # The phone streams each sensor at ~100 Hz. Analysis derives parameters
+    # on that grid; TICK_S stays the app's 20 Hz display poll.
+    assert tuner.ANALYSIS_TICK_S == 0.01
+    assert tuner.ANALYSIS_TICK_S < tuner.TICK_S

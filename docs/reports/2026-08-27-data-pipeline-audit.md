@@ -90,6 +90,53 @@ This is the most severe case of the corpus-wide coverage collapse (73% of the
 **This is absence of data, not poor data.** It is reported as `unreadable` with
 that message, distinct from a low-coverage trial that still produces a curve.
 
+### Resolved 2026-08-31: re-exported, and still not recoverable
+
+The four `.tak` files were re-exported with full marker reconstruction. That is
+the correct fix for a labelling or coordinate-frame fault, and it did help a
+little -- coverage moved from the 27-32% previously on file to 27-37%. It also
+gave a precise cause where there had only been a symptom.
+
+**The shank cluster is untracked through the entire pre-release hold on all four
+trials**, first appearing at frame 245-356, after release. The decisive figure is
+DETECTIONS, not coverage: counting every point the cameras registered, labelled
+and unlabelled together, the hold window averages
+
+| trial | detections/frame in hold | shank first seen | shank cov |
+|---|---|---|---|
+| 1 | 3.08 / 6 | frame 282 | 34.8% |
+| 2 | 3.75 / 6 | frame 330 | 29.8% |
+| 3 | 3.42 / 6 | frame 245 | 37.3% |
+| 4 | 4.08 / 6 | frame 356 | 27.0% |
+
+against the **6 simultaneous detections** needed to reconstruct both clusters.
+The maximum in any hold frame is 5.
+
+So the markers were not mislabelled -- they were never detected. Reconstruction
+can name detections that exist; it cannot create ones that were never made. **No
+re-processing recovers these trials.**
+
+All four are now in `excluded_trials.json` with their own measured numbers,
+generated from the data rather than transcribed. Backup at
+`excluded_trials.json.bak-2026-08-31-pre-P22-left-exclusion`, matching the
+convention used for the P17 pre exclusion. P22's right leg is unaffected and
+still characterises the participant; P22 left now reports alongside P7 left as
+having no parameters from any modality.
+
+**Capture-side pattern worth acting on.** The shank leaves the camera volume
+BEFORE release here, not during the swing. That is distinct from the mid-swing
+occlusion documented elsewhere in this file: the leg starts outside coverage.
+Together with the collinear thigh bar it is the second concrete thing to fix
+before the next session.
+
+**A gap this exposed.** `generate_figures_by_spasticity.py`'s IMU fallback
+globbed the trial files directly and never consulted `excluded_trials.json`, so
+trials the operator had just excluded still contributed IMU parameters. Fixed.
+Because the registry is modality-agnostic, excluding a trial for an OPTICAL
+fault now also drops its IMU, which may still have been good -- per-modality
+exclusion does not exist. Named here rather than worked around: an operator who
+excludes a trial should not have to know which code paths honour it.
+
 **Deliberately NOT worked around.** P22 left has usable IMU recordings, and it
 is tempting to derive its amplitude from those. That is rejected — see §5.
 

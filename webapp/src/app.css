@@ -386,6 +386,17 @@ body {
 /* The excursion gate's refusal. Red, unlike the amber unmeasured notice:
    that one qualifies a number worth reading, this one says the swing cannot
    support a reading at all. */
+/* The live score is the capture app's convention (detrend=false); the STORED
+   record uses the analysis convention. Labelling the on-screen number stops it
+   being mistaken for the one in the exported manifest. */
+#pt-score-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
 #pt-score-excursion {
   margin: 0 0 0.5rem;
   padding: 0.5rem 0.75rem;

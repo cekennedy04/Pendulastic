@@ -69,3 +69,24 @@ test('a fully measured trial records an empty list, not a missing key', () => {
   assert.ok('unmeasured' in r, 'the key must always be present');
   assert.deepEqual(r.unmeasured, []);
 });
+
+
+// -- Which drift-correction convention produced the record (2026-08-31) ----
+
+test('a stored trial records which convention produced it', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.1.0', driftCorrection: 'analysis',
+  });
+  assert.equal(r.drift_correction, 'analysis');
+});
+
+test('the convention defaults to live rather than claiming analysis', () => {
+  // Defaulting the other way would assert agreement with the cohort reports
+  // that was never computed.
+  const r = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.1.0',
+  });
+  assert.equal(r.drift_correction, 'live');
+});

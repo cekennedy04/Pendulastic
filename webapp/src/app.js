@@ -83,6 +83,9 @@ export function nextOutcome(latched, event) {
     // `ptScore: undefined` key.
     if ('trajectory' in event) action.trajectory = event.trajectory;
     if ('ptScore' in event) action.ptScore = event.ptScore;
+    // The analysis-convention pair rides alongside, same only-when-present rule.
+    if ('paramsDetrended' in event) action.paramsDetrended = event.paramsDetrended;
+    if ('ptScoreDetrended' in event) action.ptScoreDetrended = event.ptScoreDetrended;
     return { latched: false, action };
   }
   if (event.reason === 'unscorable') {
@@ -545,13 +548,27 @@ if (typeof document !== 'undefined') {
   // increment/decrement live entirely on the caller's side rather than
   // split between here and there. persistTrial is only ever invoked from
   // that one call site.
-  async function persistTrial(params, trajectory, rawJsonl, ptScore) {
+  async function persistTrial(params, trajectory, rawJsonl, ptScore,
+                              paramsDetrended, ptScoreDetrended) {
+    // The STORED record uses the analysis convention (detrend=true) so it
+    // agrees with the cohort reports it will be compared against; the live
+    // screen keeps the capture app's convention. Which one produced a stored
+    // record is recorded rather than left to be inferred: the two disagree on
+    // the MAS grade for 63 of 197 real trials, so a number without its
+    // convention attached is not interpretable later. Falls back to the live
+    // pair when the analysis pair is unavailable (an older cached wasm), and
+    // says so in the same field rather than storing one convention under the
+    // other's name.
+    const useDetrended = paramsDetrended != null;
+    const storedParams = useDetrended ? paramsDetrended : params;
+    const storedScore = useDetrended ? ptScoreDetrended : ptScore;
     await ensureSessionReady();
     const record = makeTrialRecord({
       sessionId: currentSession.id,
       side: TRIAL_SIDE,
-        unmeasured: (ptScore && ptScore.unmeasured) || [],
-      params,
+      unmeasured: (storedScore && storedScore.unmeasured) || [],
+      driftCorrection: useDetrended ? 'analysis' : 'live',
+      params: storedParams,
       trajectory,
       rawJsonl,
       // NOT BUILD_ID: that is the offline shell's cache key and now changes
@@ -1133,7 +1150,8 @@ if (typeof document !== 'undefined') {
       sessionBusyCount++;
       Promise.resolve()
         .then(() => capture.exportJsonl())
-        .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore))
+        .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore,
+                                         action.paramsDetrended, action.ptScoreDetrended))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;

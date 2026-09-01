@@ -1251,3 +1251,19 @@ def test_max_lag_sec_excludes_physically_unreachable_skew():
     case), so the lag search must not be free to roam multiple seconds. The
     old +/-5s bound placed 22 of 77 real video trials at |lag| > 2.5s."""
     assert analysis_pipeline.MAX_LAG_SEC <= 1.5
+
+
+def test_replay_samples_uses_the_native_analysis_grid():
+    # Workbench comparisons are analysis, not display: replaying at the
+    # 20 Hz display cadence put compute_pt_params' 0.10 s smoothing window
+    # below savgol's floor, so every PT parameter it derived was filtered
+    # over 0.25 s while the 120 Hz OptiTrack reference used 0.10 s.
+    import numpy as np
+    import imu_calibration_tuner as tuner
+    config = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": True,
+              "gravity_seed": True, "method": "relative"}
+    t, _angle = engine._replay_samples(_solo_hold_then_burst_samples(),
+                                       config, None, None)
+    assert len(t) > 50
+    assert float(np.median(np.diff(t))) == pytest.approx(
+        tuner.ANALYSIS_TICK_S, rel=1e-6)

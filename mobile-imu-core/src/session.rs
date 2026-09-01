@@ -137,9 +137,31 @@ impl TrialSession {
     /// Score the accumulated log. Consumes nothing — a caller may re-finish
     /// with a different `release_override` to honour a clinician's scrub.
     pub fn finish(&self, release_override: Option<usize>) -> Result<(TrialResult, PtParams), TrialError> {
+        self.finish_with(release_override, false)
+    }
+
+    /// `finish`, choosing the drift-correction convention explicitly.
+    ///
+    /// The repo has two, and they disagree: the live view
+    /// (`pendulastic_app.py:1793`) scores with `detrend=false` because its own
+    /// truthfulness gate treats the raw IMU signal as authoritative, while the
+    /// analysis path (`pt_report_common` -> `run_pt_analysis`) uses the
+    /// `detrend=True` default. Measured across 197 real trials the two disagree
+    /// on the MAS grade for 63 of them (32%), so which one a number came from
+    /// is not a detail.
+    ///
+    /// Neither is wrong, and this deliberately does not pick: `finish` keeps the
+    /// live convention so the on-screen estimate matches the capture app, and a
+    /// caller persisting a trial asks for `true` so the stored and exported
+    /// numbers match the cohort reports they will be compared against.
+    pub fn finish_with(
+        &self,
+        release_override: Option<usize>,
+        detrend: bool,
+    ) -> Result<(TrialResult, PtParams), TrialError> {
         let cfg = ReplayConfig { release_override, ..self.cfg };
         let r = replay(&self.samples, &cfg)?;
-        let p = compute_pt_params(&r.t, &r.angle_deg, None, false)
+        let p = compute_pt_params(&r.t, &r.angle_deg, None, detrend)
             .ok_or(TrialError::InsufficientSamples)?;
         Ok((r, p))
     }

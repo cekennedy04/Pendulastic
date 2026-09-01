@@ -508,3 +508,25 @@ test('the refusal is independent of zone suppression', () => {
   assert.ok(n, 'refusal must not depend on ZONE_CLASSIFICATION_CALIBRATED');
   assert.equal(zoneDisplay('impaired').className, 'zone-uncalibrated');
 });
+
+
+// -- Dual drift-correction conventions (2026-08-31) ------------------------
+// The live screen scores with detrend=false, matching pendulastic_app.py's live
+// view. The STORED record scores with detrend=true, matching pt_report_common
+// -> run_pt_analysis, which the cohort reports are built from. The two disagree
+// on the MAS grade for 63 of 197 real trials.
+
+test('a result carries both conventions through the outcome reducer', () => {
+  const { action } = nextOutcome(false, {
+    type: 'result', params: { f: 1 }, ptScore: { score: 0.4 },
+    paramsDetrended: { f: 2 }, ptScoreDetrended: { score: 0.3 },
+  });
+  assert.deepEqual(action.paramsDetrended, { f: 2 });
+  assert.deepEqual(action.ptScoreDetrended, { score: 0.3 });
+});
+
+test('a result without the analysis pair omits the keys rather than adding undefined', () => {
+  const { action } = nextOutcome(false, { type: 'result', params: { f: 1 } });
+  assert.ok(!('paramsDetrended' in action));
+  assert.ok(!('ptScoreDetrended' in action));
+});

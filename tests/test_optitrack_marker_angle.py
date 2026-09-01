@@ -74,7 +74,7 @@ def _bar(centre, long_axis, tilt_deg, size=0.06):
 def _build_trial(n=240, hold=60, flex_deg=40.0, thigh_tilt=22.0, shank_tilt=30.0,
                  drop_from=None, drop_to=None, sign=-1.0, start_state="held",
                  hold_drift_deg=0.0, out_of_plane_deg=0.0, swap_frame=None,
-                 thigh_as_bar=False):
+                 thigh_as_bar=True):
     """Ground-truth trial: thigh fixed, shank flexes by `flex_deg` after release.
 
     start_state:
@@ -90,7 +90,9 @@ def _build_trial(n=240, hold=60, flex_deg=40.0, thigh_tilt=22.0, shank_tilt=30.0
     out_of_plane_deg rotates the flexion axis out of the sagittal plane.
     swap_frame permutes marker indices on one frame (Motive re-solve).
     thigh_as_bar emits a near-collinear thigh, which is what 239/254 real
-    trials actually have.
+    trials actually have, and is therefore the DEFAULT. Pass False only to
+    exercise the plate-plate rig deliberately -- it occurs in 0 of the 65 real
+    trials sampled, and optitrack_knee_axis refuses it.
     """
     hip = np.array([0.0, 0.40, 1.50])
     knee = np.array([0.0, 0.00, 1.50])
@@ -226,10 +228,13 @@ def test_angle_recovers_ground_truth_despite_tilted_marker_plates(tmp_path):
     t, ang = pts.load_optitrack(p)
 
     assert len(ang) == len(truth)
-    assert abs(np.median(ang[:50]) - 180.0) < 2.0, (
-        "hold baseline should read ~180 deg, got %.1f" % np.median(ang[:50]))
-    assert np.nanmax(np.abs(ang - truth)) < 3.0, (
-        "max deviation from ground truth %.1f deg" % np.nanmax(np.abs(ang - truth)))
+    # The baseline is NOT asserted to be 180: this curve is relative, because
+    # no absolute zero can be earned from an arbitrary hinge sign. The tilted
+    # plates must not distort the SHAPE, which is what the old PC1-as-long-axis
+    # assumption got wrong -- it put a 20-26 deg error into the curve itself,
+    # not merely into its zero.
+    assert _shape_err(ang, truth) < 3.0, (
+        "max shape deviation from ground truth %.1f deg" % _shape_err(ang, truth))
 
 
 def test_flexion_decreases_the_angle_for_both_flexion_directions(tmp_path):
@@ -249,6 +254,36 @@ def test_flexion_decreases_the_angle_for_both_flexion_directions(tmp_path):
         assert np.nanmax(ang) <= 180.5, (
             "sign=%s: produced %.1f deg -- above anatomical full extension"
             % (sign, np.nanmax(ang)))
+
+
+def test_the_curve_polarity_survives_a_micron_of_rounding(tmp_path):
+    """The specific instability the sign pin exists to remove.
+
+    The hinge axis is an eigenvector, and `eigh`'s sign is arbitrary: before
+    the pin, the SAME trial reconstructed as 0 -> -40 deg in memory and
+    0 -> +40 deg after a CSV round trip, which perturbs the coordinates by
+    5e-7 m. Sign is observable, so it must not depend on rounding."""
+    import optitrack_knee_axis as ka
+    for sign in (-1.0, +1.0):
+        rows, _truth = _build_trial(n=400, hold=60, flex_deg=40.0, sign=sign)
+        shank = np.stack([r[2] for r in rows], axis=1)
+        thigh = np.stack([r[3] for r in rows], axis=1)
+        direct = ka.knee_angle_from_clusters(shank, thigh, 120.0).get_relative_angles()
+
+        p = _write_csv(str(tmp_path / ("rt%s.csv" % sign)), rows)
+        _t, viacsv = pts.load_optitrack(p)
+
+        # the round trip really does perturb the data, or this proves nothing
+        raw = np.stack([r[2] for r in rows], axis=1)
+        df, nr, cr, tr, _new = pts._parse_optitrack_header(p)
+        cols = pts._find_labeled_marker_cols(nr, cr or [], "Shank", type_row=tr)
+        got = np.stack([df.iloc[:, c].values.astype(float) for c in cols[:3]])
+        delta = float(np.nanmax(np.abs(got - raw)))
+        assert 0.0 < delta < 1e-5, f"expected a sub-micron perturbation, got {delta}"
+
+        assert np.sign(direct[-1] - direct[0]) == np.sign(viacsv[-1] - viacsv[0]), (
+            "sign=%s: polarity flipped on %.1e m of rounding (%.2f vs %.2f)"
+            % (sign, delta, direct[-1] - direct[0], viacsv[-1] - viacsv[0]))
 
 
 def test_no_curve_exceeds_180_degrees(tmp_path):
@@ -306,7 +341,10 @@ def test_well_tracked_trial_carries_no_warnings(tmp_path):
     _t, ang, q = pts.load_optitrack_detailed(p)
     assert np.isfinite(ang).mean() > 0.9
     assert q.coverage > pts.LOW_OPTICAL_COVERAGE
-    assert q.warnings == (), q.warnings
+    # Every optical trial now carries the uncalibrated notice, by design: the
+    # zero is never invented. That one is expected; anything else is not.
+    other = [w for w in q.warnings if "RELATIVE, not absolute" not in w]
+    assert other == [], other
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -493,7 +531,8 @@ def test_split_refuses_with_fewer_than_six_markers():
 
 def _build_protocol(rest_flex=50.0, lift_frames=90, hold_frames=90,
                     swing_frames=300, lead_in=120, start_at=0,
-                    thigh_tilt=22.0, shank_tilt=30.0, fps=120.0):
+                    thigh_tilt=22.0, shank_tilt=30.0, fps=120.0,
+                    thigh_as_bar=True):
     """A whole pendulum procedure: rest -> lift -> hold -> release -> rest.
 
     `lead_in` frames of the leg sitting at rest BEFORE the examiner lifts it,
@@ -524,7 +563,12 @@ def _build_protocol(rest_flex=50.0, lift_frames=90, hold_frames=90,
     # any joint-centre estimate fitted to the trajectories.
     ref_shank = -thigh_axis
     S_ref = _plate(knee + ref_shank * 0.20, ref_shank, shank_tilt) - (knee + ref_shank * 0.20)
-    T_ref = _plate(knee + thigh_axis * 0.18, thigh_axis, thigh_tilt) - (knee + thigh_axis * 0.18)
+    # The thigh is a near-collinear BAR by default, because that is the rig:
+    # 239/254 real trials have one, and a plate-plate pair occurs in 0 of the
+    # 65 real trials sampled -- a plate thigh models a rig that does not exist.
+    _thigh_cluster = _bar if thigh_as_bar else _plate
+    T_ref = (_thigh_cluster(knee + thigh_axis * 0.18, thigh_axis, thigh_tilt)
+             - (knee + thigh_axis * 0.18))
 
     rows, truth = [], []
     for i, f in enumerate(flex[start_at:]):
@@ -537,18 +581,51 @@ def _build_protocol(rest_flex=50.0, lift_frames=90, hold_frames=90,
     return rows, np.asarray(truth)
 
 
-def _err(path, truth, monkeypatch=None):
-    """Error against ground truth, with the joint-centre path forced ON.
+def _shape_err(ang, truth):
+    """Max deviation from ground truth after quotienting out offset and sign.
 
-    That path is disabled by default because this corpus's marker geometry
-    cannot support it (see USE_FUNCTIONAL_KNEE_CENTRE). These tests exercise
-    the METHOD, which is sound, so they enable it explicitly.
+    Since the 2026-09-01 ruling the optical curve is RELATIVE, and its polarity
+    comes from an eigenvector sign, so neither its zero nor its sign carries
+    information (see optitrack_knee_axis.anchor_to_extension). What must still
+    be exact is the SHAPE. This is not a weaker test of the defect these cases
+    were written for: the old seeded reconstruction FOLDED the curve at 180
+    (unsigned arccos), and a fold is a shape error that no offset and no sign
+    flip can absorb -- see test_a_folded_curve_is_still_caught_by_shape_error.
     """
-    if monkeypatch is not None:
-        monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
+    ok = np.isfinite(ang) & np.isfinite(truth)
+    a, b = ang[ok], truth[ok]
+    return min(float(np.max(np.abs((sgn * a - np.mean(sgn * a))
+                                   - (b - np.mean(b)))))
+               for sgn in (+1.0, -1.0))
+
+
+def _err(path, truth, monkeypatch=None):
+    """Shape error against ground truth.
+
+    `monkeypatch` is accepted and ignored. It used to force the joint-centre
+    path on via USE_FUNCTIONAL_KNEE_CENTRE, but that flag was only ever read by
+    _angle_from_labeled_markers, which was deleted on 2026-09-01; setting it
+    now would be a no-op dressed up as configuration.
+    """
     t, ang = pts.load_optitrack(path)
-    ok = np.isfinite(ang)
-    return float(np.max(np.abs(ang[ok] - truth[ok]))), float(np.nanmedian(ang[:60]))
+    return _shape_err(ang, truth), float(np.nanmedian(ang[:60]))
+
+
+def test_a_folded_curve_is_still_caught_by_shape_error():
+    """_shape_err quotients out offset and sign, so it must be shown to still
+    catch the defect the absolute check used to catch. It does, because the old
+    bug was never a pure offset: it anchored the seed pose to 180 and then an
+    UNSIGNED arccos folded everything past 180 back down. A fold is a shape
+    change, and no offset or mirror can undo it."""
+    _rows, truth = _build_protocol()          # starts at rest, lifts through extension
+    # What the old reconstruction produced: seed pose forced to 180, then folded.
+    x = truth - truth[0] + 180.0
+    folded = 180.0 - np.abs(x - 180.0)
+    assert _shape_err(folded, truth) > 20.0, (
+        "a folded curve must be caught: got %.2f deg" % _shape_err(folded, truth))
+    # ...while the two things the ruling says carry no information are absorbed.
+    assert _shape_err(truth - 37.0, truth) < 1e-9, "a constant offset must not count"
+    assert _shape_err(-truth, truth) < 1e-9, "a mirror must not count"
 
 
 def test_trial_that_starts_at_rest_is_not_zeroed_on_the_resting_pose(tmp_path, monkeypatch):
@@ -573,7 +650,6 @@ def test_trial_that_starts_mid_swing_is_not_zeroed_on_a_moving_pose(tmp_path, mo
     # known angle to anchor the zero on. The honest outcome is a refusal --
     # anchoring on the largest angle present would invent 46 deg of extension
     # the leg never reached.
-    monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
     t, ang, q = pts.load_optitrack_detailed(p)
     assert len(ang) == len(rows), "the trial must still be returned, not dropped"
     # No held extension is in frame, so the zero cannot be recovered. The shape
@@ -616,9 +692,8 @@ def test_a_genuine_hold_is_not_flagged(tmp_path):
 def test_a_trial_that_opens_at_rest_is_still_stationary_and_so_not_flagged(tmp_path):
     """Documents the limit of this detector rather than overselling it. A
     recording that opens with the leg resting IS still, so a stillness check
-    cannot see that the pose is flexed rather than extended. That case needs
-    the joint-centre method, which this rig's collinear thigh bar cannot
-    support -- see USE_FUNCTIONAL_KNEE_CENTRE."""
+    cannot see that the pose is flexed rather than extended. Under the pose-free
+    reconstruction that no longer matters: no zero is taken from any pose."""
     rows, _truth = _build_protocol()
     p = _write_csv(str(tmp_path / "rest_open.csv"), rows)
     _t, _ang, q = pts.load_optitrack_detailed(p)
@@ -698,3 +773,310 @@ def test_generator_can_emit_out_of_plane_swing_and_a_marker_swap():
         "assertion would pass even with no swap"
     assert np.allclose(rows_swap[139][3], rows_plain[139][3]), \
         "the swap leaked into a neighbouring frame"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loader integration: the pose-free reconstruction reaches the call site, and
+# what it knows about the trial reaches the operator.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_loader_reports_knee_axis_flags_in_trial_quality(tmp_path):
+    """The loader's tuple contract does not change; the flags ride in
+    TrialQuality, which is where every other quality signal already lives.
+
+    This trial never passes through extension, so no absolute zero can be
+    earned and the curve comes back relative -- which the operator is told."""
+    import pendulastic_pt_score as pt
+    rows, _truth = _build_trial(n=400, hold=0, flex_deg=40.0,
+                                start_state="mid_motion")
+    path = tmp_path / "trial_mid_motion_optitrack.csv"
+    _write_csv(str(path), rows)
+    _t, _ang, quality = pt.load_optitrack_detailed(str(path))
+    joined = " ".join(quality.warnings).lower()
+    assert "relative, not absolute" in joined, quality.warnings
+
+
+def test_a_leg_that_never_moves_is_refused_not_reconstructed(tmp_path):
+    """P8 Left trial_2's shape taken to its limit: the leg hangs flexed and
+    nobody ever moves it.
+
+    A hinge axis is recovered FROM the rotation, so a recording with no
+    rotation contains no axis -- there is nothing to measure the angle about.
+    The old code answered anyway, seeding on the first 60 frames and reporting
+    a confident 179.9 for a leg that was flexed the whole time. Refusing with a
+    named reason is the honest answer, and the operator's fix is capture-side."""
+    import pendulastic_pt_score as pt
+    rows, _truth = _build_trial(n=400, hold=0, flex_deg=40.0, start_state="rest")
+    path = tmp_path / "trial_rest_optitrack.csv"
+    _write_csv(str(path), rows)
+    with pytest.raises(ValueError) as exc:
+        pt.load_optitrack_detailed(str(path))
+    assert "no rotation" in str(exc.value).lower(), str(exc.value)
+    # and the refusal must be the module's, not an incidental crash
+    import optitrack_knee_axis as ka
+    shank = np.stack([r[2] for r in rows], axis=1)
+    thigh = np.stack([r[3] for r in rows], axis=1)
+    with pytest.raises(ka.GeometryError):
+        ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
+
+
+def test_the_loader_never_hands_out_an_absolute_optical_angle(tmp_path):
+    """The seam the 2026-09-01 ruling closed.
+
+    knee_angle_from_clusters can no longer report is_calibrated, because the
+    hinge axis's sign comes from an eigenvector and is therefore arbitrary: a
+    5e-7 m rounding difference flipped one synthetic trial from
+    (uncalibrated, 0 -> -40) to (calibrated, 180 -> +220) against a truth of
+    180 -> 140. An absolute zero taken from that is the 179.9-on-a-flexed-leg
+    bug wearing a different hat."""
+    import optitrack_knee_axis as ka
+    rows, _truth = _build_trial(n=400, hold=80, flex_deg=45.0)
+    shank = np.stack([r[2] for r in rows], axis=1)
+    thigh = np.stack([r[3] for r in rows], axis=1)
+    res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
+    assert res.is_calibrated is False
+    assert res.offset_deg is None
+    assert "uncalibrated_offset" in res.flags, res.flags
+    with pytest.raises(ka.UncalibratedOffsetError):
+        res.get_absolute_angles()
+
+    # and the loader's curve is that relative curve, not an anchored one
+    p = _write_csv(str(tmp_path / "abs.csv"), rows)
+    _t, ang, q = pts.load_optitrack_detailed(p)
+    assert np.nanmedian(ang[:60]) == pytest.approx(0.0, abs=1e-6), (
+        "the loader anchored the curve; it must stay relative")
+    assert any("RELATIVE, not absolute" in w for w in q.warnings), q.warnings
+
+
+def test_an_accumulating_hinge_axis_is_flagged_in_both_conventions():
+    """A curve spanning more degrees than the knee can travel is a mis-derived
+    hinge axis that accumulated instead of oscillating, and nothing downstream
+    catches it: compute_pt_params happily returns an A0 of several hundred
+    degrees, compute_pt_score scores it, and pt_to_mas grades it.
+
+    Measured on the OptiTrack corpus (2026-09-01) before this check existed:
+    sampled curves spanned 362 to 2724 deg with an empty warning list, and only
+    8% of scored trials carried an A0 inside the 25-120 deg interpretable band.
+
+    The check must be convention-free -- a span is invariant to the arbitrary
+    zero and arbitrary polarity of a relative curve, which is the form the
+    knee-axis reconstruction returns and therefore the form that needs it."""
+    t = np.linspace(0.0, 12.0, 1440)
+    # a swing that never reverses: the angle winds on and on
+    accumulating = -220.0 * t + 40.0 * np.sin(2 * np.pi * 0.9 * t)
+    for relative in (True, False):
+        warns = pts._curve_quality_warnings(accumulating, relative=relative)
+        assert any("more than the joint can travel" in w for w in warns), (relative, warns)
+
+    # a real pendulum swing is NOT flagged, in either convention
+    genuine = 180.0 - 90.0 * (1.0 - np.cos(2 * np.pi * 0.9 * t)) * np.exp(-t / 4.0)
+    assert genuine.max() - genuine.min() < pts.MAX_PLAUSIBLE_CURVE_SPAN_DEG
+    for relative in (True, False):
+        warns = pts._curve_quality_warnings(genuine, relative=relative)
+        assert not any("more than the joint can travel" in w for w in warns), (relative, warns)
+
+    # flagged, never dropped -- the curve still comes back intact
+    assert np.isfinite(accumulating).all()
+
+
+def test_an_inverted_relative_curve_still_trips_the_p21_tripwire():
+    """The check that must NOT be convention-suppressed.
+
+    "rises after release" compares the post-release median against the
+    pre-release median of the SAME curve, so it is offset-invariant by
+    construction and depends only on polarity. It was briefly skipped in
+    relative mode, which retired the P21 tripwire on the optical path -- the
+    one path P21's inversion actually happened on. It is back on."""
+    n = 600
+    t = np.linspace(0.0, 5.0, n)
+    swing = 40.0 * (1.0 - np.exp(-2.0 * np.maximum(t - 0.5, 0.0)))
+    correct = -swing                    # relative curve: falls after release
+    inverted = +swing                   # the P21 signature, zero still at 0
+
+    for relative in (True, False):
+        assert any("inverted" in w for w in
+                   pts._curve_quality_warnings(inverted, relative=relative)), relative
+        assert not any("inverted" in w for w in
+                       pts._curve_quality_warnings(correct, relative=relative)), relative
+
+    # and it really is offset-invariant, so re-enabling it cannot fire on a
+    # relative curve merely for having an arbitrary zero
+    for off in (-137.0, 0.0, 88.0):
+        assert not any("inverted" in w for w in
+                       pts._curve_quality_warnings(correct + off, relative=True)), off
+
+
+def test_the_sign_pin_guard_can_actually_fire():
+    """A safeguard whose threshold sits where it can never be reached is not a
+    safeguard. The previous absolute cut (1e-9 on a rad*deg*frames quantity of
+    order tens to thousands) could not fire, so the documented "leave the sign
+    rather than flip on noise" behaviour was dead code -- the same defect this
+    project already removed once in _merge_close_extrema.
+
+    Measured: clean swings agree 0.98-1.00, pure marker noise agrees 0.08-0.12,
+    and 12 of a 64-trial real sample fall below the 0.20 cut."""
+    import optitrack_knee_axis as ka
+
+    def agreement(tri, bar):
+        rv = ka._rotation_increments(tri)
+        w, V = np.linalg.eigh(rv.T @ rv)
+        axis = V[:, np.argsort(w)[::-1]][:, 0]
+        idx = np.where(np.isfinite(tri).all(axis=(0, 2)))[0]
+        d = np.diff(ka._proxy_extension_angle(tri, bar, idx))
+        turn = rv @ axis
+        g = np.isfinite(d) & np.isfinite(turn)
+        wt = turn[g] * d[g]
+        return abs(float(np.sum(wt))) / float(np.sum(np.abs(wt)))
+
+    # A clean swing is decisive and must NOT reach the guard.
+    rows, _truth = _build_trial(n=400, hold=60, flex_deg=40.0)
+    tri, bar, _w = ka.classify_clusters(np.stack([r[2] for r in rows], axis=1),
+                                        np.stack([r[3] for r in rows], axis=1))
+    clean = agreement(tri, bar)
+    assert clean > ka.MIN_SIGN_PIN_AGREEMENT, clean
+    assert clean > 0.9, f"a clean swing should be near-unanimous, got {clean:.3f}"
+
+    # Marker noise with no real hinge carries no flexion information and MUST
+    # reach the guard, rather than flipping the sign on a coin toss.
+    rng = np.random.default_rng(3)
+    tri_n = (rng.normal(scale=0.002, size=(3, 400, 3))
+             + np.array([[0.06, 0, 0], [-0.06, 0, 0], [0, 0.021, 0]])[:, None, :])
+    bar_n = (rng.normal(scale=0.002, size=(3, 400, 3))
+             + np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :])
+    noisy = agreement(tri_n, bar_n)
+    assert noisy < ka.MIN_SIGN_PIN_AGREEMENT, (
+        f"noise agreed {noisy:.3f}, at or above the {ka.MIN_SIGN_PIN_AGREEMENT} "
+        "cut -- the guard cannot distinguish evidence from a coin toss")
+
+    # and the guard, reached, leaves the axis exactly as it was
+    rv = ka._rotation_increments(tri_n)
+    w, V = np.linalg.eigh(rv.T @ rv)
+    axis = V[:, np.argsort(w)[::-1]][:, 0]
+    idx = np.where(np.isfinite(tri_n).all(axis=(0, 2)))[0]
+    kept = ka._pin_axis_sign(axis, rv, tri_n, bar_n, idx)
+    assert np.allclose(kept, axis), "the guard fired but the axis still moved"
+
+
+def test_relative_mode_suppresses_only_the_check_that_needs_the_zero(tmp_path):
+    """Exactly one of the two 180-convention checks may be suppressed.
+
+    "above full extension" reads an ABSOLUTE value, so it needs the zero and is
+    meaningless on a relative curve -- it fired on 18/26 real trials.
+    "rises after release" compares two medians of the SAME curve, so it needs
+    only the POLARITY, which the hinge sign pin now fixes. Suppressing that one
+    too, as this code briefly did, retired the P21 tripwire on the optical
+    path -- the one path P21's inversion actually happened on."""
+    # 190, not 205: still above the 180.5 full-extension guard this test is
+    # about, but inside MAX_PLAUSIBLE_CURVE_SPAN_DEG so the span check (a
+    # separate, convention-free guard) stays out of this assertion.
+    ang = np.concatenate([np.zeros(60), np.linspace(0.0, 190.0, 180)])
+    absolute = pts._curve_quality_warnings(ang, relative=False)
+    relative = pts._curve_quality_warnings(ang, relative=True)
+    assert any("above full extension" in w for w in absolute), absolute
+    assert not any("above full extension" in w for w in relative), relative
+    # the P21 tripwire fires in BOTH modes
+    assert any("inverted" in w for w in absolute), absolute
+    assert any("inverted" in w for w in relative), relative
+    # the convention-free checks survive in BOTH modes
+    flat = np.zeros(240)
+    assert any("never varies" in w for w in pts._curve_quality_warnings(flat, relative=True))
+    assert any("entirely NaN" in w
+               for w in pts._curve_quality_warnings(np.full(240, np.nan), relative=True))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real-corpus regression: the seed-window bug (Task 12)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The old code seeded its anatomical axis from the first 60 frames and set
+# axis_thigh = -axis_shank, so the seed frame read exactly 180 deg BY
+# CONSTRUCTION -- an unsigned arccos folded there instead of running past.
+# A trial starting at rest-but-flexed or mid-motion still anchored "straight"
+# to that pose and reported a convincing ~180 baseline. These two real trials
+# are the evidence the bug is fixed.
+#
+# Participant folders were renamed 2026-09-01 to carry the parent study
+# (Control_/CHAT_/DOSA_/legacy Participant_), and there is also a condition
+# subdirectory (pre/post) the original brief for this task did not account
+# for. Both are resolved through participant_paths rather than hardcoded, per
+# CLAUDE.md's "never spell a participant folder name out in code" rule --
+# hardcoding either literal is exactly what silently disabled this same
+# regression check once already.
+
+import glob as _glob_mod
+import participant_paths as _pp
+
+
+def _resolve_real_trial(pid, side, trial_filename):
+    """Find `trial_filename` under participant `pid`'s `side` folder.
+
+    Returns None if the corpus root itself is absent (legitimate skip).
+    Returns the literal string "MISSING" if the corpus root IS present but
+    the participant or trial cannot be found under it (hard failure -- see
+    the two tests below). This distinction is the point: a corpus that is
+    present but reorganized again must FAIL these tests loudly, not skip
+    them, so a third rename can't hide the regression a second time.
+    """
+    if not os.path.isdir(_pp.OPTI_ROOT):
+        return None
+    pdir = _pp.find_participant_dir(_pp.OPTI_ROOT, pid)
+    if pdir is None:
+        return "MISSING"
+    hits = _glob_mod.glob(os.path.join(pdir, side, "**", trial_filename),
+                          recursive=True)
+    return hits[0] if hits else "MISSING"
+
+
+_REAL_CORPUS_PRESENT = os.path.isdir(_pp.OPTI_ROOT)
+_P8_LEFT_TRIAL2 = _resolve_real_trial("8", "Left", "trial_2_optitrack.csv")
+_P9_LEFT_TRIAL3 = _resolve_real_trial("9", "Left", "trial_3_optitrack.csv")
+
+
+@pytest.mark.skipif(not _REAL_CORPUS_PRESENT,
+                    reason="real OptiTrack corpus not present on this machine")
+def test_p8_left_trial2_no_longer_claims_a_fully_extended_resting_leg():
+    """Video shows the leg hanging flexed for the whole recording with nobody
+    holding it, yet the old code reported head 179.9 / tail 179.6 / A0 8.5.
+    It must no longer claim a fully extended resting leg."""
+    assert _P8_LEFT_TRIAL2 not in (None, "MISSING"), (
+        "OptiTrack_Recordings is present but participant 8's Left "
+        "trial_2_optitrack.csv could not be resolved via participant_paths "
+        "-- a folder rename must not silently disable this regression test.")
+    _t, ang, quality = pts.load_optitrack_detailed(_P8_LEFT_TRIAL2)
+    a = np.asarray(ang, dtype=float); a = a[np.isfinite(a)]
+    assert a.size > 0, "no finite samples at all"
+    head = float(np.median(a[:max(1, len(a) // 10)]))
+    msg = " ".join(quality.warnings).lower()
+    # Any of: head well below full extension, OR the trial explicitly warns
+    # that its curve is relative and carries no absolute zero (the loader's
+    # designed way of refusing to assert an absolute angle it cannot know).
+    assert head < 170.0 or "relative" in msg, (
+        f"head={head:.1f} deg, warnings={quality.warnings}")
+
+
+@pytest.mark.skipif(not _REAL_CORPUS_PRESENT,
+                    reason="real OptiTrack corpus not present on this machine")
+def test_p9_left_trial3_no_longer_reports_an_impossible_excursion():
+    """A0 418 deg at 97.3% coverage: arithmetically impossible for an interior
+    knee angle, and invisible to every existing filter. A0 must now be
+    plausible, or the trial must carry a named reason it cannot be trusted."""
+    assert _P9_LEFT_TRIAL3 not in (None, "MISSING"), (
+        "OptiTrack_Recordings is present but participant 9's Left "
+        "trial_3_optitrack.csv could not be resolved via participant_paths "
+        "-- a folder rename must not silently disable this regression test.")
+    try:
+        t, ang, quality = pts.load_optitrack_detailed(_P9_LEFT_TRIAL3)
+    except ValueError:
+        return  # a named refusal is an acceptable outcome
+    p = pts.compute_pt_params(np.asarray(t), np.asarray(ang))
+    if p and p.get("A0_deg") is not None:
+        a0 = p["A0_deg"]
+        # A moving (non-hold) seed window is exactly the mechanism that made
+        # this trial's zero -- and so its A0 -- unreliable; see
+        # SEED_WINDOW_MOVING, which names this trial in its own comment.
+        flagged = any("reference window" in w.lower()
+                      or "mid-movement" in w.lower()
+                      for w in quality.warnings)
+        assert a0 < 120.0 or flagged, (
+            f"A0={a0:.1f} deg and not flagged as unreliable; "
+            f"warnings={quality.warnings}")

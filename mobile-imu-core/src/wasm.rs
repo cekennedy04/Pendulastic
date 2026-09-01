@@ -110,6 +110,23 @@ impl WasmSession {
     /// `cargo test` can reach it. Available before AND after `finish` --
     /// `TrialSession::finish` takes `&self`, so scoring never consumes the
     /// raw log.
+    /// Params under the ANALYSIS convention (`detrend=true`), for the record
+    /// that gets stored and exported. `finish` above stays on the live
+    /// convention so the on-screen number matches the desktop capture app;
+    /// these two deliberately differ, and `TrialSession::finish_with` explains
+    /// why picking one globally is not available.
+    pub fn finish_detrended(&self) -> Option<String> {
+        let (_, p) = self.inner.finish_with(None, true).ok()?;
+        Some(params_json::params_to_json(&p))
+    }
+
+    /// The composite score under the analysis convention — the number that must
+    /// agree with the cohort reports.
+    pub fn finish_pt_score_detrended(&self) -> Option<String> {
+        let (_, p) = self.inner.finish_with(None, true).ok()?;
+        Some(pt_score_to_json(&p, &HEALTHY_REF))
+    }
+
     pub fn export_jsonl(&self) -> String {
         export_jsonl::export_jsonl(self.inner.samples())
     }

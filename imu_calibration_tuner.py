@@ -31,6 +31,45 @@ from imu_flex_axis import FlexAxisEstimator
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
 
+# Grid the ANALYSIS path derives parameters on. The phone streams accel,
+# gyro and mag at ~100 Hz each (measured across the corpus: 100.6/100.7/
+# 100.7 Hz average per trial), so 20 Hz was never a sensor limit -- it is
+# TICK_S, the app's display poll, and resampling to it before deriving
+# parameters pushed compute_pt_params' 0.10 s smoothing window below
+# savgol's floor, leaving IMU parameters filtered over 0.25 s against the
+# 120 Hz OptiTrack reference's 0.10 s.
+#
+# Measured over 46 trials scored against their own OptiTrack reference,
+# moving analysis to this grid improves agreement on the parameters the
+# window governs: omega_peak 29.1% -> 19.6%, omega_max_n 41.9% -> 32.6%,
+# A0_deg 25.8% -> 20.9%, R2n 10.8% -> 10.2%; N is unchanged at 15.5%, and
+# phi_max_ratio (24.9% -> 25.5%) and f (2.7% -> 3.8%) are marginally worse.
+# Angle accuracy itself is untouched, as it must be -- the AHRS is identical
+# and only its output grid moves: RMSE against OptiTrack went 10.52 -> 10.53
+# deg mean, 8.65 -> 8.70 median.
+ANALYSIS_TICK_S = 0.01
+
+
+def _rescale_ema_alpha(alpha: float, tick_s: float) -> float:
+    """The EMA coefficient that reproduces `alpha`'s time constant on a grid
+    of `tick_s` seconds instead of TICK_S.
+
+    An EMA's actual smoothing is set by alpha AND the interval it steps at:
+    one step retains (1 - alpha) of the old value, so over a fixed duration
+    the retention is (1 - alpha) ** (duration / step). Replaying on the
+    native 100 Hz grid while reusing the alpha tuned for 50 ms steps would
+    therefore make it a five-times LIGHTER filter and let through exactly
+    the jitter that value was chosen to reject -- a change to the signal,
+    dressed up as a change to the sampling. Solving
+    (1 - a_new) ** (TICK_S / tick_s) = (1 - alpha) keeps the filter fixed
+    and moves only the grid.
+
+    alpha = 1.0 means "no smoothing" and stays 1.0 at every rate."""
+    a = min(max(float(alpha), 0.0), 1.0)
+    if tick_s == TICK_S or a >= 1.0:
+        return a
+    return 1.0 - (1.0 - a) ** (tick_s / TICK_S)
+
 # Zero-orientation capture guard (2026-08-07 fix): the raw gyro magnitude for
 # the qualifying role must have stayed below this bound for a full trailing
 # GYRO_BIAS_WINDOW_S before a _FLEX_CAPTURE_THRESHOLD crossing is trusted as
@@ -172,7 +211,7 @@ class _RoleState:
         self.accel_bias = mean_accel - gravity
 
 
-def replay_trial(raw_samples: list, params: dict):
+def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
     """
     Re-simulate the AHRS + flex-axis + zero-referencing + EMA pipeline over a
     raw trial log, mirroring pendulastic_imu_server.py's on_accel/on_mag/
@@ -229,8 +268,8 @@ def replay_trial(raw_samples: list, params: dict):
 
     t0 = raw_samples[0]["t"]
     t_end = raw_samples[-1]["t"]
-    n_ticks = max(1, int((t_end - t0) / TICK_S) + 1)
-    tick_times = t0 + np.arange(n_ticks) * TICK_S
+    n_ticks = max(1, int((t_end - t0) / tick_s) + 1)
+    tick_times = t0 + np.arange(n_ticks) * tick_s
 
     # tick_quats[i] = per-role quaternion snapshot as of tick i, taken just
     # before any sample at/after that tick's time is processed — i.e. "as it
@@ -469,7 +508,7 @@ def replay_trial(raw_samples: list, params: dict):
         kappas = np.array([ockendon_deg(_beta_from_quats(q), ft_ratio) for q in tick_quats])
         angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
 
-    alpha = params["ema_alpha"]
+    alpha = _rescale_ema_alpha(params["ema_alpha"], tick_s)
     ema = None
     smoothed = np.empty_like(angle_raw)
     for i, a in enumerate(angle_raw):

@@ -33,7 +33,7 @@ import numpy as np
 import batch_imu_vs_optitrack_rmse as discovery
 import pendulastic_pt_score as pt
 import workbench_engine as engine
-from imu_calibration_tuner import replay_trial
+from imu_calibration_tuner import ANALYSIS_TICK_S, replay_trial
 from reconstruct_imu_raw_logs import reconstruct_trial
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -86,7 +86,8 @@ def score_config(trials, params):
     from the sweep as a whole (a different config may still score it)."""
     rmses = []
     for trial in trials:
-        t_m, ang_m = replay_trial(trial["samples"], params)
+        t_m, ang_m = replay_trial(trial["samples"], params,
+                                  tick_s=ANALYSIS_TICK_S)
         if np.count_nonzero(np.isfinite(ang_m)) < 10:
             continue
         result = engine.compare_pair(trial["opti_t"], trial["opti_ang"], t_m, ang_m,

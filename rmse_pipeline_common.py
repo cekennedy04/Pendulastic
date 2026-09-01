@@ -535,7 +535,8 @@ def score_imu_candidate(trial, params):
     samples = reconstruct_trial(comp["accel"], comp["gyro"], comp["mag"])
     if not samples:
         return None
-    t_m, ang_m = imu_calibration_tuner.replay_trial(samples, params)
+    t_m, ang_m = imu_calibration_tuner.replay_trial(
+        samples, params, tick_s=imu_calibration_tuner.ANALYSIS_TICK_S)
     if np.count_nonzero(np.isfinite(ang_m)) < 10:
         return None
     opti_t, opti_ang = pt_score.load_optitrack(trial["optitrack_path"])

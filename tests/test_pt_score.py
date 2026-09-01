@@ -842,7 +842,7 @@ def test_pendulum_still_decaying_is_not_mistaken_for_drift():
     t = np.linspace(0, 10, 400)
     ang = np.where(t < 2.0, 180.0,
                    130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
-    rel = p._detect_release(t, p._sg(ang, w=15, p=3))
+    rel = p._detect_release(t, p._sg(ang, dt=p._median_dt(t), p=3))
     assert p._settled_tail_drift_slope(t, ang, rel) is None
     params = p.compute_pt_params(t, ang)
     assert params["A0_deg"] == pytest.approx(45.6, rel=0.10), params["A0_deg"]
@@ -863,7 +863,7 @@ def test_drift_cap_is_what_stops_the_decay_case_and_must_not_be_raised():
     t = np.linspace(0, 10, 400)
     ang = np.where(t < 2.0, 180.0,
                    130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
-    rel = p._detect_release(t, p._sg(ang, w=15, p=3))
+    rel = p._detect_release(t, p._sg(ang, dt=p._median_dt(t), p=3))
     assert p._MAX_DRIFT_DEG_S <= 4.0, "raising this re-opens the 29 deg swing-eating bug"
     assert p._settled_tail_drift_slope(t, ang, rel) is None
 
@@ -940,46 +940,6 @@ def test_merge_helper_is_gone_not_merely_unused():
     function: it reads as protection that exists."""
     import pendulastic_pt_score as p
     assert not hasattr(p, "_merge_close_extrema")
-
-
-def test_missing_cluster_error_names_the_real_cause_not_a_frame_shortage():
-    """The old message said "Fewer than 5 fully-tracked frames in the hold
-    window", implying a generic shortage. Measured across 253 trials, every
-    one of the 21 failures is the opposite: an ENTIRE cluster is untracked
-    through the whole hold window and first appears hundreds of frames later,
-    after release (shank first seen at frame 282, 330, 245, 198, 244...).
-    The operator's fix is to start the Motive take before positioning the
-    leg, so the message has to say that.
-    """
-    import numpy as np
-    import pandas as pd
-    import pendulastic_pt_score as pt
-
-    n = 400
-    # Thigh tracked throughout; shank absent until frame 200 (after release).
-    cols, data = [], {}
-    for name, first in (("thigh", 0), ("shank", 200)):
-        for m in range(3):
-            for ax in "xyz":
-                c = f"{name}{m}_{ax}"
-                v = np.full(n, np.nan)
-                v[first:] = float(m) + (0.0 if ax != "z" else 1.0)
-                data[c] = v
-                cols.append(c)
-    df = pd.DataFrame(data)
-    shank = [[cols.index(f"shank{m}_{ax}") for ax in "xyz"] for m in range(3)]
-    thigh = [[cols.index(f"thigh{m}_{ax}") for ax in "xyz"] for m in range(3)]
-
-    try:
-        pt._angle_from_labeled_markers(df, shank, thigh)
-    except ValueError as exc:
-        msg = str(exc)
-    else:
-        raise AssertionError("expected a ValueError for the missing cluster")
-
-    assert "shank" in msg.lower(), msg
-    assert "200" in msg, msg
-    assert "fewer than 5" not in msg.lower(), msg
 
 
 # ── excursion gate (2026-08-30) ────────────────────────────────────────────
@@ -1175,3 +1135,158 @@ def test_release_detection_ignores_a_constant_angle_offset():
     base = pt._detect_release(t, ang)
     for off in (-15.0, -5.0, 5.0, 15.0):
         assert pt._detect_release(t, ang + off) == base, f"release moved at {off:+.0f}"
+
+
+# -- physical (time-based) smoothing window -------------------------------
+
+def _pendulum_at(fs, dur=12.0, hold=2.0, A0=50.0, freq=0.9, decay=0.4):
+    """One physical swing, sampled at fs. The MOTION is identical at every
+    fs -- only the sampling changes -- so any PT parameter that moves with fs
+    is measuring the filter, not the patient."""
+    import numpy as np
+    t = np.arange(0.0, dur, 1.0 / fs)
+    swing = (130.0 + A0 * np.exp(-decay * (t - hold))
+             * np.cos(2 * np.pi * freq * (t - hold)))
+    return t, np.where(t < hold, 180.0, swing)
+
+
+def test_sg_window_is_a_duration_not_a_sample_count():
+    # The defect: _sg took a fixed sample COUNT, so the same 15-sample window
+    # spanned 0.75 s of a 20 Hz IMU trace and 0.125 s of a 120 Hz OptiTrack
+    # trace -- 75% of a swing period against 12% of one.
+    import numpy as np
+    import pendulastic_pt_score as p
+    sig = np.zeros(400); sig[200] = 1.0
+    n_50 = int((p._sg(sig, dt=1.0 / 50.0) != 0).sum())
+    n_200 = int((p._sg(sig, dt=1.0 / 200.0) != 0).sum())
+    # An impulse spreads over exactly the filter window, so the support IS the
+    # window: 4x the rate must give ~4x the samples for the same duration.
+    assert n_200 == pytest.approx(4 * n_50, rel=0.25), (n_50, n_200)
+
+
+def test_sg_window_spans_the_configured_number_of_seconds():
+    import numpy as np
+    import pendulastic_pt_score as p
+    for fs in (50.0, 100.0, 200.0):
+        sig = np.zeros(600); sig[300] = 1.0
+        support = int((p._sg(sig, dt=1.0 / fs) != 0).sum())
+        assert support / fs == pytest.approx(p._SG_WINDOW_S, abs=0.03), fs
+
+
+def test_sg_window_is_the_single_documented_knob():
+    import pendulastic_pt_score as p
+    assert p._SG_WINDOW_S == 0.10
+
+
+def test_sg_falls_back_to_the_savgol_minimum_when_the_rate_is_too_low():
+    # At 30 Hz a 0.10 s window is 3 samples, below savgol's polyorder+2
+    # floor. It must widen to the minimum, not crash and not silently
+    # return an unfiltered signal.
+    import numpy as np
+    import pendulastic_pt_score as p
+    sig = np.zeros(200); sig[100] = 1.0
+    out = p._sg(sig, dt=1.0 / 30.0, p=3)
+    support = int((out != 0).sum())
+    assert support >= 5
+    assert not np.array_equal(out, sig)
+
+
+def test_compute_pt_params_does_not_depend_on_sample_rate():
+    # The parameters the smoothing window governs. Same swing at 50 Hz and
+    # 200 Hz -- identical motion, only the sampling differs -- so anything
+    # that moves here is measuring the filter rather than the patient.
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert slow is not None and fast is not None
+    # omega_max_n and phi_max_ratio are both normalised by A0, so they were
+    # excluded from this list while the release back-off was still counted in
+    # samples. With that fixed they belong here: measured 1.58% and 1.13%.
+    for k in ("omega_peak_deg_s", "N", "f", "R2n", "omega_max_n", "phi_max_ratio"):
+        assert fast[k] == pytest.approx(slow[k], rel=0.05), (
+            f"{k} moved {slow[k]:.4f} -> {fast[k]:.4f} on identical motion")
+
+
+def test_peak_angular_velocity_survives_a_four_fold_change_in_sample_rate():
+    # omega_peak is the quantity the fixed-sample window hurt most: it is the
+    # peak of a numerical derivative, so its value was set by the filter
+    # width. On the real corpus the same motion read 350 deg/s at 120 Hz and
+    # 163 deg/s at 20 Hz. Tight tolerance on purpose -- this one is now
+    # invariant to 0.3% over 50-400 Hz, and a regression here means the
+    # window has gone back to being counted in samples.
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert fast["omega_peak_deg_s"] == pytest.approx(
+        slow["omega_peak_deg_s"], rel=0.01)
+
+
+def test_oscillation_count_is_the_same_at_20_hz_and_120_hz():
+    # The rates the pipeline really runs at: the IMU replay grid and the
+    # OptiTrack capture rate. With a 15-SAMPLE window these were a 0.75 s
+    # and a 0.125 s filter, and the count of oscillations disagreed by a
+    # median 16.7% across 143 real trials -- the same leg was scored as
+    # having a different number of swings depending on which instrument
+    # watched it. Measured 0.0% after the window became a duration.
+    #
+    # 20 Hz cannot realise a 0.10 s window (2 samples, below the savgol
+    # floor), so this asserts the floor still leaves N invariant; it does
+    # not claim the two rates are fully equivalent. omega does still differ
+    # at 20 Hz, which is why the IMU replay grid moves off 20 Hz.
+    #
+    # Characterisation, not a regression guard: a synthetic pendulum is far
+    # smoother than a real trace, so reverting _sg to a fixed sample count
+    # does NOT break this test (verified by mutation). What actually catches
+    # that reversion is test_sg_window_is_a_duration_not_a_sample_count.
+    import numpy as np
+    import pendulastic_pt_score as p
+    rng = np.random.default_rng(11)
+    def noisy(fs):
+        t, a = _pendulum_at(fs)
+        return t, a + rng.normal(0.0, 0.25, len(a))
+    slow = p.compute_pt_params(*noisy(20.0))
+    fast = p.compute_pt_params(*noisy(120.0))
+    assert slow is not None and fast is not None
+    assert slow["N"] == fast["N"], (slow["N"], fast["N"])
+
+
+def test_a0_does_not_depend_on_sample_rate():
+    """Was a strict xfail between 258ca60 and the release back-off fix.
+
+    The smoothing window fixed what it governed -- omega_peak became
+    invariant to 0.3% over 50-400 Hz -- but A0_deg kept drifting
+    monotonically, 47.75 deg at 50 Hz down to 44.23 at 400 Hz, because
+    _detect_release stepped back a fixed 2 SAMPLES from the threshold
+    crossing and so reported a later release the faster the capture was.
+    Making that back-off a duration took the A0 spread over the rates where
+    the 0.10 s window is realisable from 7.8% to 1.7%, and this now holds at
+    1.29% between 50 and 200 Hz.
+    """
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert fast["A0_deg"] == pytest.approx(slow["A0_deg"], rel=0.02)
+
+
+def test_release_detection_backoff_is_a_duration_not_a_sample_count():
+    # _detect_release stepped back a fixed 2 SAMPLES from the threshold
+    # crossing -- 0.040 s at 50 Hz but 0.005 s at 400 Hz -- so the faster the
+    # capture, the later the release it reported. Same class of bug as the
+    # smoothing window, and the reason A0_deg drifted 47.75 -> 44.23 deg
+    # across 50-400 Hz on identical motion.
+    import numpy as np
+    import pendulastic_pt_score as p
+    times = []
+    for fs in (50.0, 120.0, 400.0):
+        t, ang = _pendulum_at(fs)
+        smoothed = p._sg(ang, dt=p._median_dt(t))
+        times.append(float(t[p._detect_release(t, smoothed)]))
+    assert max(times) - min(times) < 0.02, times
+
+
+def test_release_backoff_matches_what_two_samples_meant_at_120_hz():
+    # The duration is pinned to what the old constant meant at OptiTrack's
+    # capture rate -- the reference instrument -- so the modality every other
+    # one is validated against barely moves, and the rest come to it.
+    import pendulastic_pt_score as p
+    assert p._RELEASE_BACKOFF_S == pytest.approx(2.0 / 120.0)

@@ -21,7 +21,7 @@ function uuid() {
 export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
-  unmeasured = [],
+  unmeasured = [], driftCorrection = 'live',
 }) {
   // Copy only the known fields. Anything else the caller passes -- notably a
   // composite score -- is dropped rather than persisted.
@@ -42,6 +42,13 @@ export function makeTrialRecord({
     // MEASUREMENT, not of the reference, so it belongs in the archive. Carried
     // through from Rust rather than recomputed here, so the rule has one home.
     unmeasured,
+    // Which drift-correction convention produced `params`: 'analysis'
+    // (detrend=true, matching pt_report_common -> run_pt_analysis and the
+    // cohort reports) or 'live' (detrend=false, matching pendulastic_app's
+    // live view). The two disagree on the MAS grade for 63 of 197 real
+    // trials, so a stored number without its convention cannot be compared
+    // to anything later.
+    drift_correction: driftCorrection,
     release_override_idx: releaseOverrideIdx,
     params: kept,
     // Plain object `{t, angle_deg, release_idx, peak_idx, trough_idx,

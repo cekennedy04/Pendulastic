@@ -140,7 +140,7 @@ def release_aligned_waveform(rep):
     mask = np.isfinite(rep["angle_raw"])
     t_masked = rep["t_raw"][mask]
     a_masked = rep["angle_raw"][mask]
-    a_smooth = pt._sg(a_masked, w=15, p=3)
+    a_smooth = pt._sg(a_masked, dt=pt._median_dt(t_masked), p=3)
     release_idx = pt._detect_release(t_masked, a_smooth)
     release_idx = max(0, min(release_idx, len(t_masked) - 1))
     t_release = t_masked[release_idx]
@@ -189,7 +189,7 @@ def release_aligned_hpe_curve(mdl_t, mdl_ang):
     a_masked = mdl_ang[mask]
     if np.any(np.diff(t_masked) <= 0):
         return None
-    a_smooth = pt._sg(a_masked, w=15, p=3)
+    a_smooth = pt._sg(a_masked, dt=pt._median_dt(t_masked), p=3)
     release_idx = pt._detect_release(t_masked, a_smooth)
     release_idx = max(0, min(release_idx, len(t_masked) - 1))
     if release_idx < MIN_BASELINE_SAMPLES:
