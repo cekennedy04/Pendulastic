@@ -24,6 +24,7 @@ Every task's requirements implicitly include this section.
 - **`DEFAULT_MAS_FIELDS` order is fixed:** `participant, leg, condition, diagnosis, mas_grade, assessed_by, assessed_date, stronger_leg, notes, mas_flexion, mas_extension`.
 - **`ZONE_CLASSIFICATION_CALIBRATED` stays `false`.** Zone classification remains suppressed.
 - Run tests with `cd webapp && npm test`. `npm run build:wasm` must have been run once in the checkout first.
+- **Any task that adds, removes, or MODIFIES a file under `src/` must run `npm run build:shell` before committing.** Modifying counts: `BUILD_ID` is a content hash folded over the shell list *and the bytes of every file in it*, so editing `app.css` or `db.js` invalidates it just as surely as adding a new module does. `src/build-id.js` is generated — its `SHELL` list comes from `scripts/shell-list.mjs`'s `computeShell()`, its `BUILD_ID` from `computeBuildId()`. `sw.js` keys its offline cache as `pendulastic-${BUILD_ID}`, so a `SHELL` that changes without the key moving leaves an installed phone serving stale code forever — and no fixture-based test catches it. Never hand-edit that file, and never run `npm run build:wasm` just to refresh it: that rebuilds Rust and recomputes `ALGORITHM_VERSION`, which must track the wasm alone because it is stamped into every exported trial record. `build:shell` updates `SHELL` and `BUILD_ID` while preserving `ALGORITHM_VERSION`. (Added in Task 2; see `scripts/build-shell.mjs`.)
 
 ---
 
@@ -127,16 +128,18 @@ In `webapp/src/app.css`, make exactly these substitutions:
 
 `drawWaveform` paints on a 2D canvas and cannot read CSS variables, so these six hexes duplicate the palette by hand. Three are semantic and stay; three are chrome and move.
 
-In `webapp/src/app.js`:
+In `webapp/src/app.js`, migrate **every occurrence** of the three chrome hexes — not just the first of each. `#5a6169` appears five times in `drawWaveform` and `#101317` twice; the line numbers below are a starting point, not the complete set. Finish with `grep -n "5a6169\|101317\|e3e6ea" src/app.js` returning nothing.
 
-| line | current | new | why |
+| hex | occurrences | new | why |
 | --- | --- | --- | --- |
-| 857 | `#5a6169` | `#64748B` | neutral line — chrome, follows `--fg3` |
-| 858 | `#101317` | `#0F172A` | angle trace — chrome, follows `--fg` |
-| 873 | `#e3e6ea` | `#CBD5E1` | grid — chrome, follows `--border` |
-| 916 | `#1d4ed8` | *unchanged* | release marker — pairs with `#guide.fired` |
-| 975 | `#0f7a37` | *unchanged* | peak marker — pairs with `#guide.ready` |
-| 976 | `#7a0d0d` | *unchanged* | trough marker — pairs with the banner |
+| `#5a6169` | ~857, 884, 895, 900, 907 | `#64748B` | neutral line, tick labels, axis label — chrome, follows `--fg3` |
+| `#101317` | ~858, 936 | `#0F172A` | **:936 is the stroke that actually draws the angle trace** — chrome, follows `--fg` |
+| `#e3e6ea` | ~873 | `#CBD5E1` | grid — chrome, follows `--border` |
+| `#1d4ed8` | 916 | *unchanged* | release marker — pairs with `#guide.fired` |
+| `#0f7a37` | 975 | *unchanged* | peak marker — pairs with `#guide.ready` |
+| `#7a0d0d` | 976 | *unchanged* | trough marker — pairs with the banner |
+
+Also check whether the `fillStyle` set at ~858/864 is dead — it may be overwritten by the next `fillStyle` assignment before any `fill`/`fillText` consumes it. **Verify by reading the code before acting**; if it is genuinely dead, remove it rather than recolouring it, so the comment above it describes something true.
 
 Add above the first of them:
 
