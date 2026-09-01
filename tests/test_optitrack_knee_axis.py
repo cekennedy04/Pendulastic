@@ -352,15 +352,30 @@ def test_a_blackout_at_release_does_not_spike_the_angle():
     assert np.nanmax(steps) < 20.0, f"spiked {np.nanmax(steps)} deg across the gap"
 
 
-def test_a_marker_index_swap_does_not_spike_the_angle():
+def test_a_marker_index_swap_at_peak_velocity_does_not_spike_the_angle():
+    """The swap must land where the limb is moving FASTEST.
+
+    Motive permutes Marker1/2/3 when it re-solves a cluster, and SVD's sign is
+    arbitrary; a flip there is a 180 deg error. At low velocity the continuity
+    check has an easy job, so a swap in the settled tail proves almost nothing.
+    """
     try:
         from tests.test_optitrack_marker_angle import _build_trial
     except ImportError:
         from test_optitrack_marker_angle import _build_trial
-    rows, _truth = _build_trial(n=400, hold=80, thigh_as_bar=True, swap_frame=200)
+    SWAP = 85                      # just after release at hold=80: peak velocity
+    rows, truth = _build_trial(n=400, hold=80, thigh_as_bar=True, swap_frame=SWAP)
+
+    # The fixture must actually be near peak velocity at SWAP, or this test
+    # quietly becomes the easy case again.
+    step = np.abs(np.diff(truth))
+    assert step[SWAP - 1] > 0.5 * step.max(), (
+        f"frame {SWAP} is not near peak velocity: "
+        f"{step[SWAP - 1]:.3f} deg/frame vs peak {step.max():.3f}")
+
     shank = np.stack([r[2] for r in rows], axis=1)
     thigh = np.stack([r[3] for r in rows], axis=1)
     res = ka.knee_angle_from_clusters(shank, thigh, fps=120.0)
     rel = res.get_relative_angles()
     steps = np.abs(np.diff(rel[np.isfinite(rel)]))
-    assert np.nanmax(steps) < 20.0, f"index swap spiked {np.nanmax(steps)} deg"
+    assert np.nanmax(steps) < 20.0, f"index swap spiked {np.nanmax(steps):.1f} deg"
