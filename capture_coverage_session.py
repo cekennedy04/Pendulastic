@@ -50,7 +50,15 @@ class CoverageSession:
     `live` is a rolling window for the during-recording indicator. `preflight`
     accumulates over a fixed watch and is only running while a check is in
     progress, so the two never interfere.
+
+    `modality` is what the verdict calls the thing it is watching. It is a class
+    attribute rather than a constructor argument because it is a property of the
+    subclass, not of an instance: this class always reads Motive, and the pose
+    subclass always reads a camera. Nothing should be able to construct a mocap
+    session that describes itself as a camera.
     """
+
+    modality = cc.MOCAP
 
     def __init__(self,
                  thigh_id: int = DEFAULT_THIGH_ID,
@@ -69,6 +77,11 @@ class CoverageSession:
         self._last_raw: Optional[float] = None
         self._last_rel = 0.0
         self._clock_breaks = 0
+        # Frames seen since start, including ones with nothing tracked. Used to
+        # tell "connected" from "a socket opened": binding a NatNet multicast
+        # socket succeeds whether or not Motive is on the other end, so start()
+        # returning True is not evidence that anything is streaming.
+        self.frames_seen = 0
 
     def _default_client(self):
         import natnet_client
@@ -91,6 +104,7 @@ class CoverageSession:
             self._client = None
             return False
         self._client = client
+        self.frames_seen = 0
         self._t0 = None
         self._last_raw = None
         self._last_rel = 0.0
@@ -126,7 +140,20 @@ class CoverageSession:
         self.feed_frame(frame_no, t, thigh, shank)
 
     def feed_frame(self, frame_no, t, thigh, shank) -> None:
-        """Record one frame. Separated from the callback so tests can drive it.
+        """Record one frame from NatNet rigid bodies.
+
+        Kept separate from `feed_flags` because unwrapping a rigid body is the
+        one part of intake that is specific to Motive. A subclass reading
+        another sensor has already reduced its frame to two booleans and must
+        not be made to fake a `tracking_valid` attribute to get them in.
+        """
+        self.feed_flags(
+            frame_no, t,
+            bool(thigh is not None and getattr(thigh, "tracking_valid", False)),
+            bool(shank is not None and getattr(shank, "tracking_valid", False)))
+
+    def feed_flags(self, frame_no, t, thigh_ok, shank_ok) -> None:
+        """Record one frame from per-segment observability flags.
 
         `t` from NatNet is a stream timestamp whose origin is not meaningful, so
         elapsed time is accumulated from the first frame seen; the statistics
@@ -137,10 +164,11 @@ class CoverageSession:
         otherwise hand us a timestamp from a different clock, and why believing
         it would report a broken setup as fine.
         """
-        thigh_ok = bool(thigh is not None and getattr(thigh, "tracking_valid", False))
-        shank_ok = bool(shank is not None and getattr(shank, "tracking_valid", False))
+        thigh_ok = bool(thigh_ok)
+        shank_ok = bool(shank_ok)
         raw = float(t)
         with self._lock:
+            self.frames_seen += 1
             if self._t0 is None:
                 self._t0 = raw
                 self._last_raw = raw
@@ -166,7 +194,7 @@ class CoverageSession:
     def live_verdict(self) -> cc.Verdict:
         with self._lock:
             stats = self.live.stats()
-        return cc.verdict(stats)
+        return cc.verdict(stats, modality=self.modality)
 
     def begin_preflight(self, duration_s: float = cc.PREFLIGHT_WATCH_S) -> None:
         with self._lock:
@@ -188,7 +216,7 @@ class CoverageSession:
         with self._lock:
             monitor, self._preflight = self._preflight, None
             stats = monitor.stats() if monitor is not None else None
-        return cc.verdict(stats)
+        return cc.verdict(stats, modality=self.modality)
 
 
 def _main(argv=None) -> int:
