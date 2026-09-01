@@ -68,6 +68,20 @@ export function openDb(idb) {
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = () => reject(req.error || new Error('indexedDB open failed'));
+    // A versionchange upgrade cannot start while another context -- a second
+    // tab, or the browser tab alongside the installed Home Screen app -- still
+    // holds this database open at the old version. IndexedDB fires `blocked`
+    // and then just waits, indefinitely. Before v2 there was no second version
+    // to upgrade TO, so this could never fire; the moment DB_VERSION moved to
+    // 2 it became reachable, and with no handler openDb would neither resolve
+    // nor reject -- a blank screen with nothing to tell the operator why.
+    // Rejecting is strictly better than hanging: the message names the fix,
+    // and if the other context does close, the upgrade still completes (this
+    // promise has already settled, so the later resolve is a no-op) and the
+    // next load opens cleanly.
+    req.onblocked = () => reject(new Error(
+      'Pendulastic is open in another tab or window. Close it, then reload this page to finish updating.',
+    ));
   });
 }
 

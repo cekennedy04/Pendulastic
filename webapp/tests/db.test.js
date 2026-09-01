@@ -447,3 +447,40 @@ test('post-migration, every session patient_id resolves to a patients row', asyn
   // And the anchoring did not multiply rows: 2 pre-existing + 2 distinct ghosts.
   assert.equal(findStore(idb, 'patients').rows.length, 4);
 });
+
+// Before DB_VERSION moved to 2 there was no version to upgrade to, so a
+// `blocked` event could not occur. It can now, and IndexedDB's behaviour on
+// blocked is to fire the event and then WAIT -- no error, no timeout. Without
+// a handler openDb never settles.
+test('a blocked upgrade rejects with an actionable message instead of hanging', async () => {
+  const idb = {
+    open() {
+      const req = {};
+      queueMicrotask(() => req.onblocked?.({ target: req }));
+      return req;
+    },
+  };
+  await assert.rejects(
+    openDb(idb),
+    (err) => /another tab or window/i.test(err.message),
+    'a blocked upgrade must reject, not hang',
+  );
+});
+
+// The later resolve must not be able to un-reject the promise, and must not
+// throw: if the blocking context closes, the upgrade really does go on to
+// succeed and fire onsuccess against the same request.
+test('a blocked upgrade that later succeeds does not double-settle', async () => {
+  let req;
+  const idb = {
+    open() {
+      req = {};
+      queueMicrotask(() => req.onblocked?.({ target: req }));
+      return req;
+    },
+  };
+  const p = openDb(idb);
+  await assert.rejects(p, /another tab or window/i);
+  // The other tab closed; the upgrade proceeds and fires onsuccess.
+  assert.doesNotThrow(() => req.onsuccess?.({ target: { result: {} } }));
+});
