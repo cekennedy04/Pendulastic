@@ -324,6 +324,64 @@ def test_offset_invariance_of_every_scored_parameter():
         assert shifted["A0_deg"] == pytest.approx(base["A0_deg"], rel=1e-6)
 
 
+def test_mirror_invariance_of_every_scored_parameter():
+    """The second claim the design rests on, and since 2026-09-01 a
+    load-bearing one rather than an incidental measurement.
+
+    The hinge axis is an eigenvector, so its sign is arbitrary: the same trial
+    can reconstruct as +40 deg or -40 deg depending on numerical noise. That is
+    tolerable ONLY because a mirrored curve scores identically. If this fails,
+    the decision to emit a relative curve of arbitrary polarity was wrong and
+    the sign must be pinned before any optical angle is scored."""
+    import pendulastic_pt_score as pt
+    t = np.arange(1200) / 120.0
+    ts = np.maximum(t - 1.0, 0.0)
+    ang = 130.0 + 50.0 * np.exp(-ts / 3.0) * np.cos(2 * np.pi * 0.9 * ts)
+    base = pt.compute_pt_params(t, ang)
+    assert base is not None
+
+    for label, mirrored in (("about the baseline", 2.0 * ang[0] - ang),
+                            ("negated", -ang),
+                            ("180 - ang", 180.0 - ang)):
+        got = pt.compute_pt_params(t, mirrored)
+        assert got is not None, label
+        for k in pt._PARAM_KEYS:
+            assert got[k] == pytest.approx(base[k], rel=1e-6), (k, label)
+        assert got["A0_deg"] == pytest.approx(base["A0_deg"], rel=1e-6), label
+
+    # The assertion must be capable of failing: a curve that is NOT a mirror
+    # of the original has to score differently, or this proves nothing.
+    other = pt.compute_pt_params(t, 130.0 + 50.0 * np.exp(-ts / 8.0)
+                                 * np.cos(2 * np.pi * 0.5 * ts))
+    assert other is not None
+    assert other["f"] != pytest.approx(base["f"], rel=1e-6)
+
+
+def test_the_orchestrator_never_reports_a_calibrated_result():
+    """find_hold/anchor_to_extension are retained but disconnected: their gate,
+    abs(ang - 180) <= 25, is an ABSOLUTE test on a quantity this module's own
+    docstrings call arbitrary. Measured: a 5e-7 m CSV rounding difference
+    flipped one trial from (uncalibrated, 0 -> -40) to (calibrated, 180 ->
+    +220) against a truth of 180 -> 140."""
+    n = 600
+    hinge = np.array([0.0, 0.0, 1.0])
+    base = np.array([[0.06, 0.0, 0.0], [-0.06, 0.0, 0.0], [0.0, 0.021, 0.0]])
+    tri = np.empty((3, n, 3))
+    for i in range(n):
+        tri[:, i, :] = base @ _rot(hinge, 0.05 * i).T
+    bar = np.repeat(np.array([[0.046, 0.0, 0.0], [-0.046, 0.0, 0.0],
+                              [0.0, 0.0012, 0.0]])[:, None, :], n, axis=1)
+    res = ka.knee_angle_from_clusters(tri, bar, fps=120.0)
+    assert res.is_calibrated is False
+    assert res.offset_deg is None
+    assert "uncalibrated_offset" in res.flags, res.flags
+    with pytest.raises(ka.UncalibratedOffsetError):
+        res.get_absolute_angles()
+    # the helpers themselves still work, so a future sign fix can re-enable them
+    off, flags = ka.anchor_to_extension(np.full(80, 4.0), slice(0, 80))
+    assert off == pytest.approx(176.0, abs=0.5) and flags == ()
+
+
 def test_out_of_plane_branch_is_reachable():
     """Two real positives cannot keep a branch honest. A dialled-in
     out-of-plane trial must actually reach out_of_plane_motion, or the branch

@@ -303,7 +303,25 @@ class KneeAngleResult:
 
 
 def anchor_to_extension(angles: np.ndarray, hold):
-    """(offset_deg, flags). Cosmetic only -- scoring never depends on it.
+    """(offset_deg, flags). NOT CALLED by knee_angle_from_clusters any more.
+
+    Retained, with its tests, for a future fix -- but disconnected on
+    2026-09-01 because it cannot be sound as long as the hinge axis has no
+    deterministic sign. `hinge_axis` takes an eigenvector from `np.linalg.eigh`,
+    whose sign is mathematically arbitrary, and flipping it both mirrors the
+    curve and moves its zero by 180 deg. So `find_hold`'s absolute gate,
+    abs(ang - 180) <= MAX_HOLD_COLLINEARITY_DEG, is testing a quantity this
+    module's own docstrings call arbitrary.
+
+    Measured: the same synthetic trial, differing only by the 5e-7 m rounding
+    of a CSV round trip, went from (uncalibrated, 0 -> -40 deg) to
+    (is_calibrated=True, 180 -> +220 deg) against a ground truth of
+    180 -> 140. The "calibrated" branch stamped a flexed pose as exactly 180
+    by construction -- which is the very defect this module was written to
+    remove, keyed on an eigenvector sign instead of on the first 60 frames.
+
+    Re-enable only once hinge_axis returns a sign that is a function of the
+    limb rather than of LAPACK.
 
     A hold that DRIFTS is not a reference. Patients shift during the hold, so
     the failure is a slow ramp rather than a clean step, and averaging over it
@@ -352,6 +370,14 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
 
     Raises GeometryError when no trustworthy angle exists. Returns a
     KneeAngleResult otherwise, flagged with everything known about it.
+
+    The result is ALWAYS uncalibrated. find_hold/anchor_to_extension are not
+    called: see anchor_to_extension's docstring for why an absolute gate on
+    this angle cannot be sound while the hinge sign is arbitrary. Nothing is
+    lost by refusing -- every scored PT parameter is invariant to both a
+    constant offset (measured to ~1e-13) and a mirror, so the score never
+    needed an absolute zero. Only presentation did, and presenting an
+    invented one is how the original 179.9-on-a-flexed-leg bug happened.
     """
     triangle, bar, _which = classify_clusters(cluster_a, cluster_b)
     axis, conditioning, pc2 = hinge_axis(triangle)
@@ -369,12 +395,8 @@ def knee_angle_from_clusters(cluster_a: np.ndarray, cluster_b: np.ndarray,
     shank_dirs = segment_axis_from_plate(triangle, axis)
     angles = signed_knee_angle(thigh_dirs, shank_dirs, axis)
 
-    hold, hold_flags = find_hold(triangle, bar, angles)
-    offset, offset_flags = anchor_to_extension(angles, hold)
-    flags = flags + hold_flags + offset_flags
-    if offset is not None:
-        angles = angles + offset
-    return KneeAngleResult(raw_angles=angles, is_calibrated=offset is not None,
-                           offset_deg=offset, conditioning=conditioning,
+    flags = flags + ("uncalibrated_offset",)
+    return KneeAngleResult(raw_angles=angles, is_calibrated=False,
+                           offset_deg=None, conditioning=conditioning,
                            low_freq_ratio=low_freq_ratio(pc2, fps),
                            flags=tuple(dict.fromkeys(flags)))

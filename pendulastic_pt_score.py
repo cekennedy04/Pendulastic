@@ -1601,8 +1601,15 @@ def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
 
 
 def _curve_quality_warnings(angles: np.ndarray,
-                            hold_frames: int = 60) -> list:
+                            hold_frames: int = 60,
+                            relative: bool = False) -> list:
     """Describe everything wrong with a knee-angle curve. Never raises.
+
+    `relative=True` skips the two checks that presuppose the 180-is-extended
+    convention — "above full extension" and "rises after release". A relative
+    curve has an arbitrary zero and an arbitrary polarity, so both fire on
+    perfectly good trials: measured 18/26 and 9/26 on a real-corpus sample.
+    The remaining checks (all-NaN, no excursion) are convention-free and stay.
 
     Each returned string is a complete, operator-readable sentence naming one
     way this curve fails to describe a real pendulum test. An empty list means
@@ -1624,7 +1631,7 @@ def _curve_quality_warnings(angles: np.ndarray,
 
     span = float(np.max(finite) - np.min(finite))
 
-    if float(np.max(finite)) > 180.5:
+    if not relative and float(np.max(finite)) > 180.5:
         warnings.append(
             f"Knee angle reaches {np.max(finite):.1f}° — above full extension, "
             "so the segment axes are mis-derived.")
@@ -1643,7 +1650,7 @@ def _curve_quality_warnings(angles: np.ndarray,
     hold = hold[np.isfinite(hold)]
     post = angles[hold_frames:]
     post = post[np.isfinite(post)]
-    if hold.size >= 5 and post.size >= 5:
+    if not relative and hold.size >= 5 and post.size >= 5:
         baseline = float(np.median(hold))
         if float(np.median(post)) > baseline + 5.0:
             warnings.append(
@@ -1865,14 +1872,16 @@ def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQua
                 # "excluded" — it is unreadable, which the caller reports as
                 # such.
                 raise ValueError(f"{exc} (optical coverage {cov*100:.1f}%)") from exc
-            # Scoring uses the RELATIVE curve: every scored PT parameter is
-            # offset-invariant, so an unearned absolute zero buys nothing and
-            # risks everything. The absolute convention is applied only when
-            # anchor_to_extension actually established it.
-            angles = (_res.get_absolute_angles() if _res.is_calibrated
-                      and "low_confidence_hold" not in _res.flags
-                      else _res.get_relative_angles())
-            warns = list(_curve_quality_warnings(angles))
+            # ALWAYS the relative curve. Every scored PT parameter is invariant
+            # to both a constant offset and a mirror (both measured, see
+            # tests/test_optitrack_knee_axis.py), so an absolute zero buys the
+            # score nothing — and this reconstruction cannot earn one honestly:
+            # the hinge axis comes from an eigenvector whose sign is arbitrary,
+            # so a half-micron of rounding decides the curve's polarity and its
+            # zero. Inventing an absolute angle from that is exactly the
+            # 179.9-on-a-flexed-leg bug this work exists to remove.
+            angles = _res.get_relative_angles()
+            warns = list(_curve_quality_warnings(angles, relative=True))
             for _flag in _res.flags:
                 warns.append(_KNEE_AXIS_WARNINGS.get(
                     _flag, f"Knee-axis reconstruction flag: {_flag}."))
