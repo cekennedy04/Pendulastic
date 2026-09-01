@@ -12,6 +12,7 @@ See docs/superpowers/specs/2026-08-31-optitrack-knee-axis-design.md.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -53,7 +54,15 @@ def _planar_extent(mk: np.ndarray) -> float:
 
 
 def classify_clusters(a: np.ndarray, b: np.ndarray):
-    """(triangle, bar, which) for a triangle-and-bar pair, in either order."""
+    """(triangle, bar, which) for a triangle-and-bar pair, in either order.
+
+    Sorts by planar extent, i.e. by cluster SHAPE. It does NOT check anatomy:
+    nothing here establishes which cluster is proximal and which is distal.
+    Downstream code that treats the bar as the thigh and the triangle as the
+    shank (_proxy_extension_angle) is relying on a convention of this rig, not
+    on anything verified. On a rig with the plate on the thigh the proxy's
+    sense would invert, and the pinned polarity with it.
+    """
     ea, eb = _planar_extent(a), _planar_extent(b)
     a_tri = ea >= MIN_CLUSTER_PLANAR_EXTENT_M
     b_tri = eb >= MIN_CLUSTER_PLANAR_EXTENT_M
@@ -126,7 +135,31 @@ def _rotation_increments(triangle: np.ndarray) -> np.ndarray:
     return np.asarray(out)
 
 
-MIN_SIGN_PIN_SCORE = 1e-9
+# How decisively the trial must agree about which way the knee opens before the
+# hinge sign is pinned. This is a NORMALISED agreement in [0, 1]: the net
+# rotation-vs-proxy agreement divided by its total absolute weight, i.e. how
+# one-sided the evidence is. 1.0 means every weighted frame agrees; 0.0 means
+# the rotation carries no information about flexion direction at all.
+#
+# It MUST be normalised. The raw sum is of order rad*deg*frames -- tens to
+# thousands on a real trial -- so an absolute threshold like the 1e-9 used
+# until 2026-09-01 could never fire, which made the documented "leave the sign
+# rather than flip on noise" behaviour dead code while letting a genuinely
+# near-degenerate trial flip on noise. This project has removed a safeguard
+# whose threshold sat where it could never reach once already
+# (_merge_close_extrema); it must not recur.
+#
+# Measured 2026-09-01. Clean synthetic swings score 0.98-1.00. Pure marker
+# noise with no real hinge scores 0.08-0.12. A 1-in-4 real-corpus sample
+# (n=64) runs min 0.000, p5 0.005, median 0.630, max 0.999.
+#
+# 0.20 sits above the noise floor and far below a clean swing. It is a LIVE
+# guard, not decoration: 12 of those 64 real trials fall below it and keep the
+# sign `eigh` returned rather than being flipped on evidence that is not there.
+# Their polarity is therefore still arbitrary -- which is the honest outcome
+# when the rotation genuinely carries no information about flexion direction,
+# and is visible in the corpus polarity counts in the task report.
+MIN_SIGN_PIN_AGREEMENT = 0.20
 
 
 def _proxy_extension_angle(triangle: np.ndarray, bar: np.ndarray,
@@ -143,8 +176,15 @@ def _proxy_extension_angle(triangle: np.ndarray, bar: np.ndarray,
     own SVD direction does not, so it is oriented here against the centroid
     separation rather than trusted as returned.
     """
-    c_tri = np.nanmean(triangle[:, idx, :], axis=0)
-    c_bar = np.nanmean(bar[:, idx, :], axis=0)
+    # `idx` is the fully-tracked frames of the TRIANGLE, so the bar may still
+    # be all-NaN on some of them. nanmean warns on an all-NaN slice; the NaN it
+    # returns is the correct answer and is filtered downstream, so suppress the
+    # warning rather than the value.
+    with np.errstate(invalid="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            c_tri = np.nanmean(triangle[:, idx, :], axis=0)
+            c_bar = np.nanmean(bar[:, idx, :], axis=0)
     w = c_tri - c_bar
     wn = np.linalg.norm(w, axis=1, keepdims=True)
     w = np.divide(w, np.where(wn > 1e-9, wn, np.nan))
@@ -191,12 +231,16 @@ def _pin_axis_sign(axis: np.ndarray, rv: np.ndarray, triangle: np.ndarray,
     if not good.any():
         return axis
     # Positive rotation about the axis should mean the knee is EXTENDING.
-    score = float(np.sum(turn[good] * d_theta[good]))
-    if not np.isfinite(score) or abs(score) < MIN_SIGN_PIN_SCORE:
-        # The leg barely moved, or the reference is orthogonal to the axis, so
-        # the sign is undetermined. Leave it rather than flip on noise; the
-        # curve is relative either way and every scored parameter is
-        # mirror-invariant, so nothing downstream breaks.
+    weighted = turn[good] * d_theta[good]
+    total = float(np.sum(np.abs(weighted)))
+    score = float(np.sum(weighted))
+    agreement = abs(score) / total if total > 0 else 0.0
+    if not np.isfinite(score) or agreement < MIN_SIGN_PIN_AGREEMENT:
+        # The leg barely moved, the rotation is noise, or the reference is
+        # orthogonal to the axis -- so which way the knee opens is not
+        # established and a flip here would be a flip on noise. Leave the sign
+        # as `eigh` returned it: the curve is relative either way and every
+        # scored parameter is mirror-invariant, so nothing downstream breaks.
         return axis
     return axis if score > 0 else -axis
 

@@ -942,46 +942,6 @@ def test_merge_helper_is_gone_not_merely_unused():
     assert not hasattr(p, "_merge_close_extrema")
 
 
-def test_missing_cluster_error_names_the_real_cause_not_a_frame_shortage():
-    """The old message said "Fewer than 5 fully-tracked frames in the hold
-    window", implying a generic shortage. Measured across 253 trials, every
-    one of the 21 failures is the opposite: an ENTIRE cluster is untracked
-    through the whole hold window and first appears hundreds of frames later,
-    after release (shank first seen at frame 282, 330, 245, 198, 244...).
-    The operator's fix is to start the Motive take before positioning the
-    leg, so the message has to say that.
-    """
-    import numpy as np
-    import pandas as pd
-    import pendulastic_pt_score as pt
-
-    n = 400
-    # Thigh tracked throughout; shank absent until frame 200 (after release).
-    cols, data = [], {}
-    for name, first in (("thigh", 0), ("shank", 200)):
-        for m in range(3):
-            for ax in "xyz":
-                c = f"{name}{m}_{ax}"
-                v = np.full(n, np.nan)
-                v[first:] = float(m) + (0.0 if ax != "z" else 1.0)
-                data[c] = v
-                cols.append(c)
-    df = pd.DataFrame(data)
-    shank = [[cols.index(f"shank{m}_{ax}") for ax in "xyz"] for m in range(3)]
-    thigh = [[cols.index(f"thigh{m}_{ax}") for ax in "xyz"] for m in range(3)]
-
-    try:
-        pt._angle_from_labeled_markers(df, shank, thigh)
-    except ValueError as exc:
-        msg = str(exc)
-    else:
-        raise AssertionError("expected a ValueError for the missing cluster")
-
-    assert "shank" in msg.lower(), msg
-    assert "200" in msg, msg
-    assert "fewer than 5" not in msg.lower(), msg
-
-
 # ── excursion gate (2026-08-30) ────────────────────────────────────────────
 # PT7 is non-monotonic in severity: all seven parameters are ratios normalised
 # on the swing, so a collapsed swing renormalises them and a near-rigid leg

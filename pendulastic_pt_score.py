@@ -400,7 +400,8 @@ def pt_to_mas(pt: float) -> str:
 # >= 80%, no area-ratio warning): mean 46.6 deg, sd 11.1, two SD below = 24.5.
 #
 # CORRECTION (same day, after the seed-window bug in
-# _angle_from_labeled_markers was found). That "two SD below the control mean"
+# the old labeled-marker reconstruction was found). That "two SD below the
+# control mean"
 # derivation is CIRCULAR and must not be quoted as the justification. The only
 # two trials dragging the control distribution down are P9 left and right at
 # A0 9.0 -- precisely the two this gate then catches. Drop them and the
@@ -457,7 +458,7 @@ MIN_INTERPRETABLE_A0_DEG = 25.0
 # real maximum and rejects nothing that was ever measured.
 #
 # It is not hypothetical. The seed-window bug documented in
-# _angle_from_labeled_markers produces A0 = 418.1 deg on P9 Left/Right trial_3
+# the old seeded reconstruction produced A0 = 418.1 deg on P9 Left/Right trial_3
 # at 97.3% coverage, and that value passed the floor-only gate and had a MAS
 # grade printed off it. A one-sided gate only guards one failure direction.
 MAX_INTERPRETABLE_A0_DEG = 120.0
@@ -751,7 +752,7 @@ def _find_labeled_marker_cols(name_row: list, comp_row: list, segment: str,
 # the reports (P21's right leg lost all 5 trials). Deciding a trial is bad is
 # the operator's call, made through excluded_trials.json; the loader's job is
 # to hand over an honest curve and say plainly what is wrong with it. The one
-# thing it must never do is fill the gap in — see _angle_from_labeled_markers.
+# thing it must never do is fill the gap in — see optitrack_knee_axis.
 LOW_OPTICAL_COVERAGE = 0.90
 
 
@@ -1282,287 +1283,19 @@ def _held_extension_frames(angles: np.ndarray) -> int:
     return longest
 
 
-def _anchor_to_extension(angles: np.ndarray) -> np.ndarray:
-    """Shift a knee-centre angle so full extension reads 180 deg.
-
-    The joint-centre measurement is unbiased in SHAPE but carries a constant
-    offset, because a marker plate's centroid does not sit on the bone axis.
-    Measured on the synthetic rig that offset is ~7 mm, which is
-    atan(7/200) + atan(7/180) = 4.2 deg of bias -- small, constant, and real on
-    hardware too, since no plate is glued to the bone's centreline.
-
-    The offset cannot be recovered from markers alone; it needs one pose whose
-    true angle is known. The Wartenberg protocol supplies exactly one: the
-    examiner raises the leg to full extension and holds it before releasing. So
-    the largest sustained angle in the trial is that pose, and mapping it to
-    180 removes the offset.
-
-    Note what this does and does NOT assume. It assumes the leg reaches full
-    extension at SOME point in the recording -- which the protocol requires --
-    and nothing whatever about WHERE. That is the whole difference from the
-    method it replaces, which assumed extension in frames 0-59 specifically and
-    silently anchored 180 to a resting pose whenever the recording started
-    early. A high percentile rather than the raw maximum, so a single noisy
-    frame cannot set the reference.
-    """
-    ok = np.isfinite(angles)
-    if ok.sum() < 7:
-        return angles
-    extension = float(np.percentile(angles[ok], 98.0))
-
-    # The anchor is only valid if the recording actually CONTAINS the held
-    # extension. A trial that starts after release never shows it: the largest
-    # angle in the file is then just the first sample of an ongoing swing, and
-    # mapping that to 180 would invent up to 46 deg of extension the leg never
-    # had. Require the top of the range to be HELD, which is what a hold looks
-    # like and what a passing swing does not.
-    out = angles + (180.0 - extension)
-    # The interior angle cannot exceed full extension.
-    out[np.isfinite(out)] = np.minimum(out[np.isfinite(out)], 180.0)
-    return out
-
-
-def _angle_from_labeled_markers(
-        df: pd.DataFrame,
-        shank_triplets: list,
-        thigh_triplets: list) -> np.ndarray:
-    """
-    Knee angle from labeled Shank/Thigh marker positions.
-
-    Each 3-marker cluster is a rigid plate. We track its ORIENTATION with a
-    Kabsch fit against its own shape during the hold, and apply that rotation
-    to an anatomically-seeded axis — the thigh→shank centroid vector measured
-    during the hold, when the leg is extended and the two segments are close to
-    collinear.
-
-    Why not the cluster's own PC1 (what this function used to do): a marker
-    plate's longest extent is not the limb's long axis. Measured on P21 the
-    plates sit 17.6-24.3° (thigh) and 27.3-32.4° (shank) off the segment axis,
-    which put the hold baseline at 153-161° instead of 180°. Worse, on the
-    right leg the shank plate's PC1 fell on the far side of the thigh axis, so
-    flexion INCREASED the computed angle and the curve came out inverted. The
-    plate tells us how the segment has rotated; it does not tell us where the
-    segment points, so only the rotation is taken from it.
-
-    Frames where either cluster is incompletely tracked yield NaN — they are
-    NOT filled in. See the coverage gate in load_optitrack for why.
-    Returns interior knee angle in degrees (180° = fully extended).
-    """
-    from scipy.ndimage import median_filter as _mf
-
-    n = len(df)
-
-    def _get(cols):
-        arr = df.iloc[:, cols].values.astype(float)
-        arr[np.abs(arr) > 1e5] = np.nan
-        return arr
-
-    sm = np.stack([_get(c) for c in shank_triplets[:3]])   # (3, n, 3)
-    tm = np.stack([_get(c) for c in thigh_triplets[:3]])
-
-    # Preferred path: locate the knee from the swing and measure about it. This
-    # needs no reference pose, so a recording that opens at rest or mid-swing is
-    # measured correctly rather than being zeroed on whatever it happened to
-    # start on. Falls through to the hold-seeded method below only when the
-    # motion cannot support a fit, which is itself worth knowing.
-    _centre, _resid, _span, _axis = (
-        _functional_knee_centre(sm, tm) if USE_FUNCTIONAL_KNEE_CENTRE
-        else (None, float("nan"), 0.0, None))
-    if _centre is not None and _axis is not None:
-        _ang = _angle_from_knee_centre(sm, tm, _centre, _axis)
-        _sm_ok = np.isfinite(_ang)
-        if _sm_ok.sum() >= 7:
-            _ang[_sm_ok] = _mf(_ang[_sm_ok], size=7)
-            _ang = _anchor_to_extension(_ang)
-            return _ang
-
-    # Anatomical seed: centroid-to-centroid over the hold, when the leg is
-    # extended. Use only fully-tracked frames so occlusion cannot skew it.
-    #
-    # KNOWN BUG (2026-08-30, unfixed) -- this assumes the FIRST 60 frames are the
-    # extended hold, and because axis_thigh = -axis_shank the seed pose becomes
-    # exactly 180 deg by construction. When a trial instead starts AT REST or
-    # MID-MOTION the zero is anchored to a flexed pose and every later angle is
-    # wrong, while the baseline still reads a convincing 179.9.
-    #
-    # Confirmed on video: P8 Left trial_2 starts and ends with the leg hanging
-    # flexed, nobody holding it, yet reports head 179.9 / tail 179.6 / A0 8.5.
-    # P9 Left trial_3 starts mid-motion (seed window 2.0 mm/frame, not calm) and
-    # reports A0 = 418.1 deg at 97.3% coverage.
-    #
-    # Measured blast radius: 20/214 trials settle above 170 deg (a resting knee
-    # is not fully extended) against 3/214 for the pre-2026-08-27 code, and 6
-    # legs go degenerate (R2n exactly 0 or area_ratio >= 0.9) against 1 -- ALL
-    # SIX of them MAS-0, i.e. biased in the direction that erases group
-    # separation. Excluding them restores most of the MAS discrimination.
-    #
-    # DO NOT read a MAS-vs-PT comparison off this branch until this is fixed.
-    # tests/test_optitrack_marker_angle.py cannot catch it: _build_trial always
-    # starts with a held, extended leg. A fix needs synthetic trials that start
-    # at rest and mid-motion. Seeding from the calm window of maximum
-    # thigh->shank centroid separation was tried and does NOT discriminate.
-    ref_n = min(60, n)
-    hold_ok = (np.isfinite(sm[:, :ref_n, :]).all(axis=(0, 2)) &
-               np.isfinite(tm[:, :ref_n, :]).all(axis=(0, 2)))
-    if hold_ok.sum() < 5:
-        # Measured across 253 trials: every failure here is a whole cluster
-        # missing through the entire hold, not a marginal shortage. The
-        # cluster is acquired hundreds of frames later, after release, so no
-        # extended-leg reference was ever recorded. Name that, because the
-        # operator's fix is capture-side (start the take before positioning
-        # the leg), and "fewer than 5 frames" points at the wrong problem.
-        _s_all = np.isfinite(sm).all(axis=(0, 2))
-        _t_all = np.isfinite(tm).all(axis=(0, 2))
-        _detail = []
-        for _label, _all_ok in (("shank", _s_all), ("thigh", _t_all)):
-            if _all_ok[:ref_n].any():
-                continue
-            _seen = np.where(_all_ok)[0]
-            if len(_seen):
-                _detail.append(f"the {_label} cluster is untracked through the "
-                               f"whole hold window (frames 0-{ref_n - 1}) and is "
-                               f"first tracked at frame {int(_seen[0])}, after "
-                               f"release")
-            else:
-                _detail.append(f"the {_label} cluster is never tracked in this "
-                               f"trial")
-        if not _detail:
-            _detail.append(f"only {int(hold_ok.sum())} frames in the hold window "
-                           f"(0-{ref_n - 1}) have both clusters tracked")
-        raise ValueError("No usable pre-release hold was recorded: "
-                         + "; ".join(_detail)
-                         + " — cannot establish an anatomical reference.")
-    hold_idx = np.where(hold_ok)[0]
-    sc = sm[:, hold_idx, :].mean(axis=(0, 1))
-    tc = tm[:, hold_idx, :].mean(axis=(0, 1))
-    v_ts = sc - tc
-    nrm = float(np.linalg.norm(v_ts))
-    if nrm < 1e-6:
-        raise ValueError("Shank and thigh centroids coincide — cannot determine reference direction.")
-    axis_shank = v_ts / nrm    # toward ankle
-    axis_thigh = -axis_shank   # toward hip
-
-    def _seg_axes(mk: np.ndarray, seed: np.ndarray) -> np.ndarray:
-        """Per-frame unit axis for one segment, NaN where it cannot be trusted.
-
-        Two regimes, because this rig uses two different marker geometries.
-        A cluster laid out as a TRIANGLE fixes all three rotational degrees of
-        freedom, so we take the full Kabsch rotation. A cluster laid out as a
-        collinear BAR — which is what the thigh is on almost every trial here,
-        out-of-line extent ~1.5 mm against a 79 mm span — cannot observe roll
-        about its own line at all; asking Kabsch for it yields an arbitrary
-        rotation. For a bar we track only what it does determine, its line
-        direction, and move the seed by the shortest arc carrying the
-        reference line onto the current one.
-        """
-        ref_c = _reference_shape(mk, hold_idx)
-        sv = np.linalg.svd(ref_c, compute_uv=False)
-        collinear = float(sv[1]) < MIN_CLUSTER_PLANAR_EXTENT_M
-        ref_line = np.linalg.svd(ref_c, full_matrices=False)[2][0]
-
-        # Everything that does not depend on the previous frame is computed
-        # for all frames at once; only the continuity choice below is
-        # inherently sequential. Same arithmetic, ~30x less Python.
-        tracked = np.isfinite(mk).all(axis=(0, 2))          # (n,)
-        idx = np.where(tracked)[0]
-        cur_all = np.transpose(mk[:, idx, :], (1, 0, 2))    # (nv, 3, 3)
-        cur_all = cur_all - cur_all.mean(axis=1, keepdims=True)
-
-        cand_axes = {}      # frame -> (m, 3) candidate axes, best first
-        cand_lines = {}     # frame -> (m, 3) matching line dirs, or None
-        if len(idx):
-            if collinear:
-                # Only the line direction is observable. Its sign is not, so
-                # it is taken from the previous frame in the loop below.
-                lines = np.linalg.svd(cur_all, full_matrices=False)[2][:, 0, :]
-                for j, i in enumerate(idx):
-                    cand_lines[i] = lines[j]
-            else:
-                # Motive permutes Marker1/2/3 between frames when it re-solves
-                # the cluster, and these plates are near-isoceles (85.0/85.6/
-                # 159.2 mm on P21) — a 0.6 mm asymmetry against 0.3 mm of noise.
-                # Fit quality therefore CANNOT identify the right permutation:
-                # picking the lowest residual chose a mirrored correspondence on
-                # ~16% of frames and flipped the axis by ~130 deg. Keep every
-                # permutation that fits the shape and let continuity choose.
-                perms = np.asarray(_MARKER_PERMUTATIONS)             # (6, 3)
-                stack = cur_all[:, perms, :].reshape(-1, 3, 3)       # (nv*6, 3, 3)
-                try:
-                    rots = _kabsch_rotations(ref_c, stack)
-                except np.linalg.LinAlgError:
-                    # One non-converging 3x3 SVD must not cost the whole
-                    # trial, so fall back per-candidate and drop only the
-                    # ones that genuinely fail (NaN rotations fail the
-                    # rmsd test below and are discarded like any bad fit).
-                    rots = np.full((len(stack), 3, 3), np.nan)
-                    for _j, _c in enumerate(stack):
-                        try:
-                            rots[_j] = _kabsch_rotation(ref_c, _c)
-                        except np.linalg.LinAlgError:
-                            pass
-                fitted = np.einsum("mij,kj->mki", rots, ref_c)       # (nv*6, 3, 3)
-                rmsd = np.sqrt(np.mean(np.sum((stack - fitted) ** 2, axis=2), axis=1))
-                axes = np.einsum("mij,j->mi", rots, seed)            # (nv*6, 3)
-                n_perm = len(perms)
-                axes = axes.reshape(len(idx), n_perm, 3)
-                # A cluster that no longer matches its own reference shape
-                # is not this cluster — a stray marker got labeled in.
-                keep = (rmsd.reshape(len(idx), n_perm) <= MAX_CLUSTER_RMSD_M)
-                for j, i in enumerate(idx):
-                    if keep[j].any():
-                        cand_axes[i] = axes[j][keep[j]]
-
-        out = np.full((n, 3), np.nan)
-        prev = None                 # last accepted axis, for temporal continuity
-        prev_line = ref_line        # last accepted line, for the collinear branch
-        for i in range(n):
-            if collinear:
-                cur_line = cand_lines.get(i)
-                if cur_line is None:
-                    continue
-                if np.dot(cur_line, prev_line) < 0:
-                    cur_line = -cur_line
-                cand = [(_shortest_arc_rotation(ref_line, cur_line) @ seed, cur_line)]
-            else:
-                axes_i = cand_axes.get(i)
-                if axes_i is None:
-                    continue
-                cand = [(a, None) for a in axes_i]
-            if not cand:
-                continue
-
-            if prev is None:
-                # Nothing to be continuous with yet. During the hold the leg is
-                # extended, so the seed itself is the best available anchor.
-                axis, line = min(cand, key=lambda c: -float(np.dot(c[0], seed)))
-            else:
-                axis, line = min(cand, key=lambda c: -float(np.dot(c[0], prev)))
-                # A limb cannot slew this fast: at 120 Hz, 30 deg between
-                # consecutive frames is 3600 deg/s. If nothing plausible is on
-                # offer the frame is untrustworthy, so drop it rather than
-                # accept a jump.
-                if float(np.dot(axis, prev)) < math.cos(math.radians(MAX_AXIS_STEP_DEG)):
-                    continue
-            out[i] = axis
-            prev = axis
-            if line is not None:
-                prev_line = line
-        return out
-
-    shank_dirs = _seg_axes(sm, axis_shank)
-    thigh_dirs = _seg_axes(tm, axis_thigh)
-
-    ok = np.isfinite(shank_dirs).all(axis=1) & np.isfinite(thigh_dirs).all(axis=1)
-    angles = np.full(n, np.nan)
-    dot = np.sum(shank_dirs[ok] * thigh_dirs[ok], axis=1)
-    angles[ok] = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
-
-    # Smooth only across tracked frames; gaps stay NaN.
-    if ok.sum() >= 7:
-        smoothed = _mf(angles[ok], size=7)
-        angles[ok] = smoothed
-
-    return angles
+# _anchor_to_extension and _angle_from_labeled_markers were DELETED on
+# 2026-09-01. The latter seeded the anatomical axis from the FIRST 60 frames
+# and set axis_thigh = -axis_shank, so the seed frame read exactly 180 deg by
+# construction and an unsigned arccos folded there instead of running past --
+# a trial starting at rest or mid-motion anchored "straight" to a flexed pose
+# and still reported a convincing 179.9 baseline. It had no production callers
+# after the loader moved to optitrack_knee_axis, but it still read as live
+# code. optitrack_knee_axis.knee_angle_from_clusters replaces it.
+#
+# _functional_knee_centre and _angle_from_knee_centre above are now reachable
+# only through USE_FUNCTIONAL_KNEE_CENTRE, which nothing sets. They are kept
+# deliberately: that method is sound and is parked pending the rig fix
+# documented at USE_FUNCTIONAL_KNEE_CENTRE, not left behind by accident.
 
 
 def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
@@ -1613,11 +1346,17 @@ def _curve_quality_warnings(angles: np.ndarray,
                             relative: bool = False) -> list:
     """Describe everything wrong with a knee-angle curve. Never raises.
 
-    `relative=True` skips the two checks that presuppose the 180-is-extended
-    convention — "above full extension" and "rises after release". A relative
-    curve has an arbitrary zero and an arbitrary polarity, so both fire on
-    perfectly good trials: measured 18/26 and 9/26 on a real-corpus sample.
-    The remaining checks (all-NaN, no excursion) are convention-free and stay.
+    `relative=True` skips ONLY "above full extension", which reads an absolute
+    value and so needs the zero. A relative curve's zero is arbitrary, and it
+    fired on 18/26 trials of a real-corpus sample.
+
+    "rises after release" is NOT skipped. It compares the post-release median
+    against the pre-release median of the same curve, so it is offset-invariant
+    by construction and depends only on POLARITY -- which the hinge-axis sign
+    pin now fixes (optitrack_knee_axis._pin_axis_sign). It was briefly
+    suppressed here while polarity was still arbitrary, which retired the P21
+    tripwire on the optical path: the one path P21's inversion actually
+    happened on. Re-enabled 2026-09-01.
 
     Each returned string is a complete, operator-readable sentence naming one
     way this curve fails to describe a real pendulum test. An empty list means
@@ -1690,7 +1429,7 @@ def _curve_quality_warnings(angles: np.ndarray,
     hold = hold[np.isfinite(hold)]
     post = angles[hold_frames:]
     post = post[np.isfinite(post)]
-    if not relative and hold.size >= 5 and post.size >= 5:
+    if hold.size >= 5 and post.size >= 5:
         baseline = float(np.median(hold))
         if float(np.median(post)) > baseline + 5.0:
             warnings.append(
@@ -1827,14 +1566,17 @@ def optical_coverage(path: str) -> float:
 
 
 _KNEE_AXIS_WARNINGS = {
+    # NOT a complaint about the capture. Nothing looks for a hold any more, so
+    # blaming the operator's protocol (as the previous wording did, on 26/26
+    # trials) pointed at the wrong thing entirely: this is the reconstruction
+    # declining to invent a zero it cannot observe.
     "uncalibrated_offset":
-        "No extended hold was recorded, so this curve has no absolute zero. "
-        "The shape and every scored PT parameter are still valid -- they are "
-        "offset-invariant -- but the angle values themselves are relative.",
-    "low_confidence_hold":
-        "The pre-release hold drifted more than 2 deg, so it was not used to "
-        "set the zero. Scored parameters are unaffected; absolute angles are "
-        "withheld.",
+        "These angles are RELATIVE, not absolute: the knee axis is recovered "
+        "from the markers' rotation, whose direction fixes the curve's sense "
+        "but not its origin, so no zero is observable and none is invented. "
+        "The shape, the swing, and every scored PT parameter are unaffected -- "
+        "they are offset-invariant -- but do not read an individual angle "
+        "value as a joint angle.",
     "out_of_plane_motion":
         "The leg did not swing in a single plane, so the reported amplitude "
         "is a LOWER BOUND: a non-sagittal swing projected onto one axis reads "

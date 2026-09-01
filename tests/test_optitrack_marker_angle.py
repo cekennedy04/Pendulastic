@@ -343,7 +343,7 @@ def test_well_tracked_trial_carries_no_warnings(tmp_path):
     assert q.coverage > pts.LOW_OPTICAL_COVERAGE
     # Every optical trial now carries the uncalibrated notice, by design: the
     # zero is never invented. That one is expected; anything else is not.
-    other = [w for w in q.warnings if "no absolute zero" not in w]
+    other = [w for w in q.warnings if "RELATIVE, not absolute" not in w]
     assert other == [], other
 
 
@@ -600,14 +600,13 @@ def _shape_err(ang, truth):
 
 
 def _err(path, truth, monkeypatch=None):
-    """Shape error against ground truth, with the joint-centre path forced ON.
+    """Shape error against ground truth.
 
-    That path is disabled by default because this corpus's marker geometry
-    cannot support it (see USE_FUNCTIONAL_KNEE_CENTRE). These tests exercise
-    the METHOD, which is sound, so they enable it explicitly.
+    `monkeypatch` is accepted and ignored. It used to force the joint-centre
+    path on via USE_FUNCTIONAL_KNEE_CENTRE, but that flag was only ever read by
+    _angle_from_labeled_markers, which was deleted on 2026-09-01; setting it
+    now would be a no-op dressed up as configuration.
     """
-    if monkeypatch is not None:
-        monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
     t, ang = pts.load_optitrack(path)
     return _shape_err(ang, truth), float(np.nanmedian(ang[:60]))
 
@@ -651,7 +650,6 @@ def test_trial_that_starts_mid_swing_is_not_zeroed_on_a_moving_pose(tmp_path, mo
     # known angle to anchor the zero on. The honest outcome is a refusal --
     # anchoring on the largest angle present would invent 46 deg of extension
     # the leg never reached.
-    monkeypatch.setattr(pts, "USE_FUNCTIONAL_KNEE_CENTRE", True)
     t, ang, q = pts.load_optitrack_detailed(p)
     assert len(ang) == len(rows), "the trial must still be returned, not dropped"
     # No held extension is in frame, so the zero cannot be recovered. The shape
@@ -694,9 +692,8 @@ def test_a_genuine_hold_is_not_flagged(tmp_path):
 def test_a_trial_that_opens_at_rest_is_still_stationary_and_so_not_flagged(tmp_path):
     """Documents the limit of this detector rather than overselling it. A
     recording that opens with the leg resting IS still, so a stillness check
-    cannot see that the pose is flexed rather than extended. That case needs
-    the joint-centre method, which this rig's collinear thigh bar cannot
-    support -- see USE_FUNCTIONAL_KNEE_CENTRE."""
+    cannot see that the pose is flexed rather than extended. Under the pose-free
+    reconstruction that no longer matters: no zero is taken from any pose."""
     rows, _truth = _build_protocol()
     p = _write_csv(str(tmp_path / "rest_open.csv"), rows)
     _t, _ang, q = pts.load_optitrack_detailed(p)
@@ -796,7 +793,7 @@ def test_loader_reports_knee_axis_flags_in_trial_quality(tmp_path):
     _write_csv(str(path), rows)
     _t, _ang, quality = pt.load_optitrack_detailed(str(path))
     joined = " ".join(quality.warnings).lower()
-    assert "uncalibrated" in joined or "hold" in joined, quality.warnings
+    assert "relative, not absolute" in joined, quality.warnings
 
 
 def test_a_leg_that_never_moves_is_refused_not_reconstructed(tmp_path):
@@ -848,7 +845,7 @@ def test_the_loader_never_hands_out_an_absolute_optical_angle(tmp_path):
     _t, ang, q = pts.load_optitrack_detailed(p)
     assert np.nanmedian(ang[:60]) == pytest.approx(0.0, abs=1e-6), (
         "the loader anchored the curve; it must stay relative")
-    assert any("no absolute zero" in w for w in q.warnings), q.warnings
+    assert any("RELATIVE, not absolute" in w for w in q.warnings), q.warnings
 
 
 def test_an_accumulating_hinge_axis_is_flagged_in_both_conventions():
@@ -882,12 +879,93 @@ def test_an_accumulating_hinge_axis_is_flagged_in_both_conventions():
     assert np.isfinite(accumulating).all()
 
 
-def test_relative_curves_do_not_trip_the_absolute_convention_guards(tmp_path):
-    """_curve_quality_warnings' "above full extension" and "rises after
-    release" checks presuppose 180-is-extended. On a relative curve they fired
-    on 18/26 and 9/26 real trials. They must be suppressed for a relative
-    curve -- and must still fire for an absolute one, or suppressing them
-    would have silently retired the P21 tripwire."""
+def test_an_inverted_relative_curve_still_trips_the_p21_tripwire():
+    """The check that must NOT be convention-suppressed.
+
+    "rises after release" compares the post-release median against the
+    pre-release median of the SAME curve, so it is offset-invariant by
+    construction and depends only on polarity. It was briefly skipped in
+    relative mode, which retired the P21 tripwire on the optical path -- the
+    one path P21's inversion actually happened on. It is back on."""
+    n = 600
+    t = np.linspace(0.0, 5.0, n)
+    swing = 40.0 * (1.0 - np.exp(-2.0 * np.maximum(t - 0.5, 0.0)))
+    correct = -swing                    # relative curve: falls after release
+    inverted = +swing                   # the P21 signature, zero still at 0
+
+    for relative in (True, False):
+        assert any("inverted" in w for w in
+                   pts._curve_quality_warnings(inverted, relative=relative)), relative
+        assert not any("inverted" in w for w in
+                       pts._curve_quality_warnings(correct, relative=relative)), relative
+
+    # and it really is offset-invariant, so re-enabling it cannot fire on a
+    # relative curve merely for having an arbitrary zero
+    for off in (-137.0, 0.0, 88.0):
+        assert not any("inverted" in w for w in
+                       pts._curve_quality_warnings(correct + off, relative=True)), off
+
+
+def test_the_sign_pin_guard_can_actually_fire():
+    """A safeguard whose threshold sits where it can never be reached is not a
+    safeguard. The previous absolute cut (1e-9 on a rad*deg*frames quantity of
+    order tens to thousands) could not fire, so the documented "leave the sign
+    rather than flip on noise" behaviour was dead code -- the same defect this
+    project already removed once in _merge_close_extrema.
+
+    Measured: clean swings agree 0.98-1.00, pure marker noise agrees 0.08-0.12,
+    and 12 of a 64-trial real sample fall below the 0.20 cut."""
+    import optitrack_knee_axis as ka
+
+    def agreement(tri, bar):
+        rv = ka._rotation_increments(tri)
+        w, V = np.linalg.eigh(rv.T @ rv)
+        axis = V[:, np.argsort(w)[::-1]][:, 0]
+        idx = np.where(np.isfinite(tri).all(axis=(0, 2)))[0]
+        d = np.diff(ka._proxy_extension_angle(tri, bar, idx))
+        turn = rv @ axis
+        g = np.isfinite(d) & np.isfinite(turn)
+        wt = turn[g] * d[g]
+        return abs(float(np.sum(wt))) / float(np.sum(np.abs(wt)))
+
+    # A clean swing is decisive and must NOT reach the guard.
+    rows, _truth = _build_trial(n=400, hold=60, flex_deg=40.0)
+    tri, bar, _w = ka.classify_clusters(np.stack([r[2] for r in rows], axis=1),
+                                        np.stack([r[3] for r in rows], axis=1))
+    clean = agreement(tri, bar)
+    assert clean > ka.MIN_SIGN_PIN_AGREEMENT, clean
+    assert clean > 0.9, f"a clean swing should be near-unanimous, got {clean:.3f}"
+
+    # Marker noise with no real hinge carries no flexion information and MUST
+    # reach the guard, rather than flipping the sign on a coin toss.
+    rng = np.random.default_rng(3)
+    tri_n = (rng.normal(scale=0.002, size=(3, 400, 3))
+             + np.array([[0.06, 0, 0], [-0.06, 0, 0], [0, 0.021, 0]])[:, None, :])
+    bar_n = (rng.normal(scale=0.002, size=(3, 400, 3))
+             + np.array([[0.046, 0, 0], [-0.046, 0, 0], [0, 0.0012, 0]])[:, None, :])
+    noisy = agreement(tri_n, bar_n)
+    assert noisy < ka.MIN_SIGN_PIN_AGREEMENT, (
+        f"noise agreed {noisy:.3f}, at or above the {ka.MIN_SIGN_PIN_AGREEMENT} "
+        "cut -- the guard cannot distinguish evidence from a coin toss")
+
+    # and the guard, reached, leaves the axis exactly as it was
+    rv = ka._rotation_increments(tri_n)
+    w, V = np.linalg.eigh(rv.T @ rv)
+    axis = V[:, np.argsort(w)[::-1]][:, 0]
+    idx = np.where(np.isfinite(tri_n).all(axis=(0, 2)))[0]
+    kept = ka._pin_axis_sign(axis, rv, tri_n, bar_n, idx)
+    assert np.allclose(kept, axis), "the guard fired but the axis still moved"
+
+
+def test_relative_mode_suppresses_only_the_check_that_needs_the_zero(tmp_path):
+    """Exactly one of the two 180-convention checks may be suppressed.
+
+    "above full extension" reads an ABSOLUTE value, so it needs the zero and is
+    meaningless on a relative curve -- it fired on 18/26 real trials.
+    "rises after release" compares two medians of the SAME curve, so it needs
+    only the POLARITY, which the hinge sign pin now fixes. Suppressing that one
+    too, as this code briefly did, retired the P21 tripwire on the optical
+    path -- the one path P21's inversion actually happened on."""
     # 190, not 205: still above the 180.5 full-extension guard this test is
     # about, but inside MAX_PLAUSIBLE_CURVE_SPAN_DEG so the span check (a
     # separate, convention-free guard) stays out of this assertion.
@@ -895,8 +973,10 @@ def test_relative_curves_do_not_trip_the_absolute_convention_guards(tmp_path):
     absolute = pts._curve_quality_warnings(ang, relative=False)
     relative = pts._curve_quality_warnings(ang, relative=True)
     assert any("above full extension" in w for w in absolute), absolute
+    assert not any("above full extension" in w for w in relative), relative
+    # the P21 tripwire fires in BOTH modes
     assert any("inverted" in w for w in absolute), absolute
-    assert relative == [], relative
+    assert any("inverted" in w for w in relative), relative
     # the convention-free checks survive in BOTH modes
     flat = np.zeros(240)
     assert any("never varies" in w for w in pts._curve_quality_warnings(flat, relative=True))
