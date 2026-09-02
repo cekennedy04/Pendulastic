@@ -107,10 +107,22 @@ def load_group_and_demo():
     "spasticity" is the per-participant characterisation from
     spasticity_grouping -- non-spastic / spastic / unknown -- rolled up from
     per-leg labels. It exists because diagnosis is not the variable the
-    pendulum test measures, and because grouping on it keeps every participant
-    in the analysis: the arm-based split has no home for a post-stroke
-    participant, so correcting the arm alone would have dropped those four
-    rather than mislabelling them, which is not an improvement.
+    pendulum test measures.
+
+    It was ALSO justified on the grounds that it keeps every participant in the
+    analysis, where the arm-based split has no home for a post-stroke one. That
+    second claim stopped being true on 2026-09-02, and the honest thing is to
+    say so here rather than leave the old reason standing. With
+    spasticity_grouping.A0_DERIVED_LABELS_ENABLED off -- the amplitude threshold
+    is calibrated on a superseded reconstruction, see that constant -- the legs
+    that had no clinical MAS are UNKNOWN, and 7 of 22 participants roll up that
+    way: P11, P18, P19, P20, P21, P22, P24. That includes all four post-stroke
+    participants, the exact group this grouping was introduced to keep.
+
+    So the remaining case for grouping on spasticity is only the first one: it
+    is the variable the test measures. It no longer buys coverage, and a reader
+    comparing cohort sizes against an older run will find 7 participants
+    missing for this reason and not for a data-quality one.
     """
     import pt_cohort_common as _pcc
     import spasticity_grouping as _sg
@@ -118,6 +130,13 @@ def load_group_and_demo():
     registry, registry_exists = _pcc.load_registry()
     mas_by_leg = _sg.load_mas_by_leg()
     mas_components = _sg.load_mas_components_by_leg()
+    # Narrowed to the same timepoint load_mas_by_leg uses (condition_prefix
+    # "pre"). load_mas_assessors is keyed (pid, leg, condition) while
+    # classify_leg looks up (pid, leg), so handing it over raw would match
+    # nothing and silently downgrade every source to "assumed" -- the failure
+    # looks like data, not like a bug. for_condition is what makes the shapes
+    # agree, and it is what generate_figures_by_spasticity already does.
+    mas_assessors = _sg.for_condition(_sg.load_mas_assessors(), "pre")
     a0 = a0_by_leg_from_optitrack()
 
     out = {}
@@ -140,6 +159,7 @@ def load_group_and_demo():
         legs = _sg.classify_participant_legs(
             pid, arm=arm, mas_by_leg=mas_by_leg,
             mas_components=mas_components,
+            mas_assessors=mas_assessors,
             a0_by_leg={leg: a0.get((pid, leg)) for leg in _sg.LEGS})
         rolled = _sg.participant_level(legs)
         out[pid] = {"group": arm,
