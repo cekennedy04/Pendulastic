@@ -304,9 +304,25 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     mae = float(np.mean(np.abs(test_f - ref_f)))
     bias, loa_lower, loa_upper = analysis_pipeline.compute_bias_and_loa(ref_f, test_f)
 
+    # Agreement with the constant offset taken out, i.e. sqrt(rmse^2 - bias^2).
+    #
+    # Reported alongside rather than instead, because whether the offset is an
+    # ERROR depends on the reference. Against a bone-axis rigid-body curve it is
+    # real disagreement and must not be hidden. Against the marker path it is
+    # not measurable at all: since 87d7645 that loader returns a RELATIVE curve
+    # and refuses to invent a zero, so the offset is whatever the hinge
+    # eigenvector's arbitrary sign made it, and raw RMSE mostly reports that.
+    #
+    # Measured on MINT_13 Left/post trial_4: rmse 143.90 with bias 142.93 --
+    # 99.5% of the "error" is the missing zero -- against 16.69 here. The IMU
+    # had not regressed at all; the reference had stopped claiming an origin.
+    diff = test_f - ref_f
+    rmse_offset_removed = float(np.sqrt(np.mean((diff - np.mean(diff)) ** 2)))
+
     return {
         "status": "ok",
         "rmse_deg": rmse,
+        "rmse_deg_offset_removed": rmse_offset_removed,
         "mae_deg": mae,
         "bias_deg": bias,
         "loa_lower_deg": loa_lower,
