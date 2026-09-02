@@ -3,37 +3,21 @@
 // no build step -- plain ES module loaded directly by the browser.
 import { startCapture } from './capture.js';
 import { installState, installInstructions } from './install-gate.js';
-import { openDb, put, getAll, STORES } from './db.js';
+import { openDb, put, getAll, getOne, STORES } from './db.js';
 import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
 import { ALGORITHM_VERSION } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
+import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS } from './views/session.js';
 
 const el = (id) => document.getElementById(id);
 
-// Participant management (unit U8) does not exist yet -- every trial is
-// attributed to a single fixed on-device test participant until a real picker
-// replaces it (task-6 dispatch, correction 2).
-//
-// SPEC DEVIATION, deliberate: spec 3.2 types `side` as the union
-// `'left' | 'right'`, and this is `null`, which is neither. It was `'left'`.
-//
-// The reason: the exported manifest is the archive of record, and there is no
-// laterality anywhere in the JSONL to cross-check it against -- a phone strapped
-// to a shank reports the same axes either way. A hardcoded `'left'` therefore
-// does not mean "unknown, defaulted"; it asserts, as recorded clinical fact,
-// that every trial ever captured was a left leg. The soak-test protocol has
-// operators recording real participants NOW, so someone would later have to
-// reconstruct which leg was actually used from a file that confidently says
-// "left" and offers no way to tell it is lying. A fabricated clinical fact is
-// worse than an absent one: `null` makes the gap visible to whoever reads the
-// export, which is the only honest thing this can say until U8 lands a real
-// side selector and restores the spec's union.
-const TRIAL_SIDE = null; // U8 replaces this with a real side selector
-const FIXED_PATIENT_ID = 'fixed-test-participant';
-const FIXED_PATIENT_LABEL = 'TEST-PARTICIPANT'; // a literal we control, not free text -- see export.js's clinic_patient_id note
+// Participant identity and trial side are owned by views/session.js and
+// persisted in the `settings` store, replacing the hardcoded
+// FIXED_PATIENT_ID/FIXED_PATIENT_LABEL/TRIAL_SIDE that attributed every trial
+// on every device to one synthetic participant and recorded no laterality.
 
 // code 0..3 from onState, per capture.js's doc comment: 0 Moving, 1 Holding,
 // 2 Ready, 3 Released. Both arrays are indexed by that same code, matching
@@ -535,20 +519,40 @@ if (typeof document !== 'undefined') {
   // independent of that and needed the count regardless.)
   let sessionBusyCount = 0;
 
+  // Was: a hardcoded synthetic participant every device shared. Now the
+  // active participant is whatever the session view last stored, resolved
+  // through `settings` so it survives a reload and an app relaunch.
   async function ensurePatient() {
+    const active = await getOne(db, STORES.settings, SETTING_KEYS.activePatient);
     const patients = await getAll(db, STORES.patients);
-    const existing = patients.find((p) => p.id === FIXED_PATIENT_ID);
-    if (existing) return existing;
-    const patient = { id: FIXED_PATIENT_ID, clinic_patient_id: FIXED_PATIENT_LABEL, created_at: Date.now() };
-    await put(db, STORES.patients, patient);
-    return patient;
+    if (active && active.value) {
+      const found = patients.find((p) => p.id === active.value);
+      if (found) return found;
+    }
+    // Exactly one participant on the device -- typically the legacy row a
+    // v1 install is carrying -- is adopted rather than forcing a choice a
+    // clinician mid-study did not ask to make.
+    if (patients.length === 1) return patients[0];
+    return null;
   }
 
   async function initSession() {
     db ??= await openDb(indexedDB);
-    const patient = await ensurePatient();
-    const sessions = await getAll(db, STORES.sessions, 'by_patient', patient.id);
-    currentSession = resumeOrCreateSession(sessions, patient.id);
+    currentPatient = await ensurePatient();
+    const stored = await getOne(db, STORES.settings, SETTING_KEYS.side);
+    currentSide = stored?.value ?? null;
+    // No participant is a legitimate first-run state, not an error. Leaving
+    // currentSession null keeps both session buttons disabled through
+    // exportLockState's existing `session: null` branch -- no new lock
+    // condition is introduced, so the export gate's reasoning is unchanged.
+    if (!currentPatient) {
+      currentSession = null;
+      currentTrialCount = 0;
+      refreshExportLock();
+      return;
+    }
+    const sessions = await getAll(db, STORES.sessions, 'by_patient', currentPatient.id);
+    currentSession = resumeOrCreateSession(sessions, currentPatient.id);
     await put(db, STORES.sessions, currentSession); // no-op if resumed and already stored; creates it otherwise
     const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
     currentTrialCount = trials.length;
@@ -615,7 +619,7 @@ if (typeof document !== 'undefined') {
     await ensureSessionReady();
     const record = makeTrialRecord({
       sessionId: currentSession.id,
-      side: TRIAL_SIDE,
+      side: currentSide,
       unmeasured: (storedScore && storedScore.unmeasured) || [],
       driftCorrection: useDetrended ? 'analysis' : 'live',
       params: storedParams,
@@ -1066,6 +1070,48 @@ if (typeof document !== 'undefined') {
   });
   router.register('capture', captureView);
 
+  // ---- Session view: participant + side (task 8) --------------------------
+  let participantError = null;
+
+  router.register('session', createSessionView({
+    el,
+    context: () => ({ patient: currentPatient, side: currentSide, error: participantError }),
+    listPatients: async () => {
+      await ensureSessionReady();
+      return { patients: await getAll(db, STORES.patients) };
+    },
+    addPatient: async (clinicId) => {
+      const patient = { id: crypto.randomUUID(), clinic_patient_id: clinicId, created_at: Date.now() };
+      await put(db, STORES.patients, patient);
+      await applyParticipantAction({ type: 'select', patient });
+    },
+    selectPatient: (patient) => applyParticipantAction({ type: 'select', patient }),
+    selectSide: (side) => applyParticipantAction({ type: 'side', side }),
+  }));
+
+  // One funnel for both actions so the "cannot switch mid-session" rule lives
+  // in the tested reducer rather than being re-decided at each call site.
+  async function applyParticipantAction(action) {
+    const next = nextParticipantState(
+      { patient: currentPatient, side: currentSide, trialCount: currentTrialCount },
+      action,
+    );
+    participantError = next.error ?? null;
+    if (next.patient !== currentPatient) {
+      currentPatient = next.patient;
+      await put(db, STORES.settings, { key: SETTING_KEYS.activePatient, value: currentPatient.id });
+      // A different participant means a different session; force the next
+      // ensureSessionReady() to resolve one rather than reusing the old
+      // patient's.
+      sessionReadyPromise = null;
+      await ensureSessionReady();
+    }
+    if (next.side !== currentSide) {
+      currentSide = next.side;
+      await put(db, STORES.settings, { key: SETTING_KEYS.side, value: currentSide });
+    }
+  }
+
   // Was: an unconditional redraw gated only on #waveform-wrap.hidden. That
   // check does not see the VIEW's visibility, so once capture lived inside a
   // toggled section a resize on any other view redrew a canvas whose
@@ -1270,6 +1316,14 @@ if (typeof document !== 'undefined') {
   }
 
   el('start').addEventListener('click', async () => {
+    // Checked before any capture starts rather than at persist time: a trial
+    // recorded with nowhere to file it would be scored, shown, and then
+    // silently dropped by persistTrial.
+    if (!currentPatient || !currentSide) {
+      el('guide').className = 'fault';
+      el('guide').textContent = 'Set a participant and leg\nin Session first';
+      return;
+    }
     faulted = false; // fresh trial: the previous trial's latch must not carry over
     el('start').hidden = true;
     el('stop').hidden = false;

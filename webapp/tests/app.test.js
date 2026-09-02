@@ -6,6 +6,7 @@ import {
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 import { createCaptureView } from '../src/views/capture.js';
+import { patientLabel, nextParticipantState, SETTING_KEYS } from '../src/views/session.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
 // message stream for one trial -- no DOM, no worker, no globals required
@@ -612,4 +613,66 @@ test('the capture-in-flight window is bracketed by #stop, not by a session handl
   assert.notEqual(byStop.onLeave(), true, '#stop derivation must refuse here');
   assert.equal(bySession.onLeave(), true,
     'the session derivation permits leaving mid-start -- this is the orphan bug');
+});
+
+// ---- participant + side (task 8) -----------------------------------------
+test('setting keys are stable strings', () => {
+  assert.equal(SETTING_KEYS.activePatient, 'active-patient');
+  assert.equal(SETTING_KEYS.side, 'trial-side');
+});
+
+test('a normal participant shows its clinic id', () => {
+  assert.equal(patientLabel({ clinic_patient_id: 'P-014' }), 'P-014');
+});
+
+// Legacy rows must stay visible and exportable -- they anchor every trial
+// recorded before participant entry existed.
+test('a legacy participant is labelled as such rather than hidden', () => {
+  assert.equal(patientLabel({ clinic_patient_id: 'TEST-PARTICIPANT', legacy: true }),
+    'TEST-PARTICIPANT (legacy)');
+});
+
+test('a missing participant reads as unset, never as undefined', () => {
+  assert.equal(patientLabel(null), 'no participant set');
+  assert.equal(patientLabel({}), 'no participant set');
+});
+
+const participantBase = { patient: null, side: null, trialCount: 0 };
+
+test('choosing a participant sets it and clears nothing else', () => {
+  const s = nextParticipantState(participantBase, { type: 'select', patient: { id: 'p1', clinic_patient_id: 'P-1' } });
+  assert.equal(s.patient.id, 'p1');
+  assert.equal(s.side, null);
+});
+
+test('choosing a side records it', () => {
+  assert.equal(nextParticipantState(participantBase, { type: 'side', side: 'left' }).side, 'left');
+});
+
+test('an invalid side is ignored rather than stored', () => {
+  assert.equal(nextParticipantState(participantBase, { type: 'side', side: 'middle' }).side, null);
+});
+
+// Switching participant mid-session would silently attach the next trial to
+// a different person than the ones already recorded.
+test('switching participant is refused while the session holds trials', () => {
+  const withTrials = { ...participantBase, patient: { id: 'p1' }, trialCount: 2 };
+  const s = nextParticipantState(withTrials, { type: 'select', patient: { id: 'p2' } });
+  assert.equal(s.patient.id, 'p1');
+  assert.match(s.error, /export and close/i);
+});
+
+test('switching participant is allowed once the session is empty', () => {
+  const empty = { ...participantBase, patient: { id: 'p1' }, trialCount: 0 };
+  assert.equal(nextParticipantState(empty, { type: 'select', patient: { id: 'p2' } }).patient.id, 'p2');
+});
+
+// Re-selecting the SAME participant must not trip the mid-session guard --
+// the select element fires change on any interaction, and refusing here
+// would show a spurious error for a no-op.
+test('re-selecting the same participant mid-session is not refused', () => {
+  const withTrials = { ...participantBase, patient: { id: 'p1' }, trialCount: 2 };
+  const s = nextParticipantState(withTrials, { type: 'select', patient: { id: 'p1' } });
+  assert.equal(s.patient.id, 'p1');
+  assert.equal(s.error, undefined);
 });

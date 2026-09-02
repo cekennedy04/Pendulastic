@@ -171,6 +171,25 @@
     <section class="view" id="view-session">
       <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
         <h2>Session</h2></div>
+      <div class="card">
+        <p class="card-label">Participant</p>
+        <select id="participant-select"></select>
+        <div class="field-row">
+          <input id="participant-new" type="text" inputmode="text" autocomplete="off"
+                 placeholder="New participant ID">
+          <button class="btn btn--secondary" id="participant-add">Add</button>
+        </div>
+        <p id="participant-error" class="field-error" hidden></p>
+      </div>
+
+      <div class="card">
+        <p class="card-label">Leg</p>
+        <div class="seg" id="side-select" role="group" aria-label="Leg">
+          <button class="seg-btn" data-side="left">Left</button>
+          <button class="seg-btn" data-side="right">Right</button>
+        </div>
+      </div>
+
       <div id="session-bar">
         <button id="export-session">Export session</button>
         <button id="close-session" disabled>Close session</button>
