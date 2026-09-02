@@ -1943,6 +1943,35 @@ _MAX_DRIFT_DEG_S = 4.0
 # than this share of the trial's own swing range, it is tracking motion.
 _TAIL_MAX_DISPLACEMENT_FRAC = 0.15
 
+# The pre-release baseline fallback needs the same discipline as the tail fit,
+# and used to have none of it. It is fitted over the HOLD -- a window of well
+# under a second on most trials -- and then extrapolated across the entire
+# recording, so a slope that is merely noisy becomes an enormous displacement.
+# Measured on the two trials that exposed this (MINT_18 Left trial_1 and
+# CHAT_21 Right trial_1, 2026-09-01): a 0.53 s hold carrying 15.6 deg of marker
+# noise fits 12.8 deg/s -- three times _MAX_DRIFT_DEG_S -- and extrapolating it
+# 27x its own fit window injected 185 deg of drift into a curve that spans 70.
+#
+# A held leg is not moving, so spread in that window is noise, and a line
+# through noise has no slope worth extrapolating. Require the same minimum
+# window the tail requires before believing one.
+_BASELINE_MIN_SECONDS = _TAIL_MIN_SECONDS
+
+# ...and bound what the finished correction may do, whichever estimator
+# produced it. The tail estimator already bounds displacement WITHIN the tail
+# window, but the slope is applied across the whole trial, so that bound does
+# not constrain what actually happens to the curve. Real drift is small next to
+# the swing it sits on: the measured median is 0.833 deg/s, which over a 10 s
+# trial moves a ~60 deg swing by 8.3 deg, or 14%. A "correction" that moves the
+# curve by more than a quarter of its own range is not removing a bias from the
+# signal, it is rewriting the signal.
+_MAX_TOTAL_CORRECTION_FRAC = 0.25
+
+# Fewest baseline samples worth fitting a line through. Module level because
+# _baseline_drift_slope enforces it now; it used to be a local in
+# compute_pt_params, where the fallback that needed it lived inline.
+_MIN_BASELINE = 10
+
 
 def _dominant_frequency_hz(t: np.ndarray, ang: np.ndarray,
                            rel_i: int) -> Optional[float]:
@@ -2210,6 +2239,143 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
     return min(t_r[0] + _ACTIVE_WINDOW_CAP_SEC, settle_t)
 
 
+def _baseline_drift_slope(t: np.ndarray, ang: np.ndarray,
+                          baseline_end: int) -> Optional[float]:
+    """Sensor drift in deg/s from the pre-release hold, or None.
+
+    The historical fallback, used when the settled tail cannot be trusted. It
+    had no guards at all, which meant it was least restrained on exactly the
+    trials where the tail estimator had already refused to guess -- the ones
+    with the worst data.
+
+    A held leg is at rest, so spread in this window is marker noise rather than
+    drift, and a least-squares line through noise has a slope that means
+    nothing. Two real trials fitted 12.8 deg/s here, three times the cap the
+    tail path enforces, off 0.53 s of hold carrying 15.6 deg of scatter.
+
+    Returns None -- do not correct -- rather than a doubtful number, for the
+    same reason the tail estimator does: no correction leaves the curve as
+    measured, while a wrong one rewrites it.
+    """
+    if baseline_end < _MIN_BASELINE:
+        return None
+    seg_t = np.asarray(t[:baseline_end], dtype=float)
+    seg_a = np.asarray(ang[:baseline_end], dtype=float)
+    ok = np.isfinite(seg_t) & np.isfinite(seg_a)
+    seg_t, seg_a = seg_t[ok], seg_a[ok]
+    if len(seg_t) < _MIN_BASELINE:
+        return None
+    if float(seg_t[-1] - seg_t[0]) < _BASELINE_MIN_SECONDS:
+        # Too short a lever arm. Extrapolating it across the trial multiplies
+        # whatever noise it fitted by the ratio of the two durations.
+        return None
+    slope = float(np.polyfit(seg_t, seg_a, 1)[0])
+    if not np.isfinite(slope) or abs(slope) > _MAX_DRIFT_DEG_S:
+        return None
+    return slope
+
+
+def _credible_drift_slope(slope: Optional[float], t: np.ndarray,
+                          ang: np.ndarray) -> Optional[float]:
+    """The slope, or None if applying it across the trial would rewrite it.
+
+    Guards the BASELINE fallback specifically. That estimator bounds the slope
+    within the sub-second hold it was fitted on, but the correction is applied
+    to the whole recording, so that bound does not constrain what finally
+    happens to the curve. This checks the thing that actually matters: the
+    total displacement the correction imposes, against the range of the signal
+    it is imposed on.
+
+    Deliberately NOT applied to the settled-tail estimator, which was tuned on
+    93 IMU trials against measured accuracy and needs the headroom -- see the
+    call site.
+
+    This is what A0 depends on. `neutral` is the tail median, so a correction
+    that drags the tail drags the reference the amplitude is measured from, and
+    A0 = phi[0] = release - neutral inherits the whole displacement. That is how
+    a curve spanning 70 deg came to report A0 = 169.8 deg.
+    """
+    if slope is None or not np.isfinite(slope):
+        return None
+    t = np.asarray(t, dtype=float)
+    ang = np.asarray(ang, dtype=float)
+    if len(t) < 2:
+        return None
+    duration = float(t[-1] - t[0])
+    finite = ang[np.isfinite(ang)]
+    if duration <= 0 or len(finite) < 2:
+        return None
+    ang_range = float(np.nanmax(finite) - np.nanmin(finite))
+    if ang_range <= 0:
+        return None
+    if abs(slope) * duration > _MAX_TOTAL_CORRECTION_FRAC * ang_range:
+        return None
+    return slope
+
+
+class AmplitudeExceedsCurveError(AssertionError):
+    """A0 came out larger than the curve it was measured from.
+
+    An internal-consistency failure, deliberately distinct from the data-quality
+    warnings on TrialQuality. Those describe a recording; this describes a bug
+    in the reconstruction, and the repository rule that analysis code flags
+    rather than refuses is about the former. Nothing is being excluded here --
+    the trial is fine and will score correctly once the defect is fixed.
+    """
+
+
+# Smoothing can overshoot a sharp release by a little, so the bound is not
+# exact. 2% of the range is far below the scale of any real defect (the two
+# 2026-09-01 cases exceeded their curves by 141% and 71%) and comfortably above
+# Savitzky-Golay ringing.
+_AMPLITUDE_SLACK_FRAC = 0.02
+
+
+def _assert_amplitude_within_curve(A0: float, angle_raw: np.ndarray,
+                                   t: np.ndarray) -> None:
+    """Raise if A0 exceeds what the raw curve plus a permitted correction allows.
+
+    The comparison basis matters, and the obvious two choices are both wrong.
+
+    Against the DETRENDED curve the check is vacuous: `neutral` is a median of a
+    window inside that curve, so |phi| <= its range by construction and A0 can
+    never exceed it except by smoothing ringing. It would also have passed the
+    defect it exists for -- the runaway correction inflated the detrended range
+    to ~185 deg, comfortably above the 169.8 deg A0 it produced.
+
+    Against the RAW curve alone it is too strict, because detrending legitimately
+    moves the signal: a real optical trial spanning 16.2 deg took a 0.30 deg/s
+    tail correction (3.5 deg, 22% of its range) and A0 landed 0.35 deg over the
+    raw span. Nothing was wrong with it.
+
+    So the bound is the raw span plus the correction the drift guard actually
+    permits. Anything past that means the reference was moved by something other
+    than a sanctioned correction, which is exactly the failure being guarded --
+    and it still catches it with room to spare: DOSA_18 Left trial_1 allowed
+    89.3 deg against the 169.8 it reported.
+    """
+    finite = np.asarray(angle_raw, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if len(finite) < 2 or not np.isfinite(A0):
+        return
+    span = float(np.nanmax(finite) - np.nanmin(finite))
+    if span <= 0:
+        return
+    if A0 <= span * (1.0 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC):
+        return
+    raise AmplitudeExceedsCurveError(
+        f"A0 = {A0:.1f} deg exceeds the curve's range of {span:.1f} deg by more "
+        f"than the drift correction may account for (limit "
+        f"{span * (1.0 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC):.1f} "
+        f"deg) "
+        f"([{np.nanmin(finite):.1f}, {np.nanmax(finite):.1f}] over "
+        f"{float(t[-1] - t[0]):.1f}s). A0 is measured from a reference inside "
+        "the curve, so this cannot happen physically -- the reference has been "
+        "moved outside it. The usual cause is the drift correction: check "
+        "whether the fitted slope is being extrapolated far beyond the window "
+        "it was fitted on.")
+
+
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                       release_idx: Optional[int] = None,
                       detrend: bool = True) -> Optional[dict]:
@@ -2290,16 +2456,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # the region that can actually show the problem. OptiTrack tails measure
     # +0.009 deg/s, so this is a no-op on optical curves and only bites where
     # there is real drift.
-    _MIN_BASELINE = 10
     _LAG_MARGIN_SEC = 0.05
     baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
     slope = None
     if detrend:
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
-        if slope is None and baseline_end >= _MIN_BASELINE:
+        if slope is None:
             # Tail unusable (trial ended mid-swing, too short, still ringing).
-            # Fall back to the historical baseline fit rather than to nothing.
-            slope = float(np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)[0])
+            # Fall back to the historical baseline fit rather than to nothing --
+            # but guarded now, because unguarded it was worst exactly where the
+            # tail estimator had already declined to guess.
+            #
+            # The bound applies HERE and not to the tail estimator above. That
+            # one was tuned against 93 IMU trials by measured accuracy rather
+            # than by taste, and it legitimately corrects more than a quarter
+            # of a curve's range on the trials that drift most -- a synthetic
+            # with 6 deg of true drift over a 27.7 deg swing fits 0.97 deg/s
+            # and needs 35% of the range to remove it. Bounding that path would
+            # switch the correction off on exactly the trials it exists for.
+            slope = _credible_drift_slope(
+                _baseline_drift_slope(t_c, ang_c_raw, baseline_end),
+                t_c, ang_c_raw)
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
@@ -2354,6 +2531,22 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
     first_n = max(5, int(0.20 * len(phi)))
     A0 = max(float(np.nanmax(phi_s[:first_n])), A0_raw)
+
+    # A0 is an amplitude measured from a reference that lies INSIDE the curve
+    # (neutral is a median of a window of it), so it cannot exceed the curve's
+    # own range. Violating that is not bad data, it is a wrong computation, and
+    # it is worth failing loudly for: A0 does not only appear on a figure, it
+    # is the variable spasticity_grouping.classify_leg thresholds at 38.1 deg
+    # to label a leg, so a silently inflated one moves the grouping rather than
+    # an outcome, and moves it in the direction that looks healthy.
+    #
+    # It fired for real. An unguarded drift-correction fallback fitted 12.8
+    # deg/s to 0.53 s of held-still marker noise and extrapolated it across the
+    # trial, dragging `neutral` (the tail median) 161 deg below the curve and
+    # reporting A0 = 169.8 deg on a curve spanning 70.3 (MINT_18 Left trial_1,
+    # 2026-09-01). This check would have caught it at the source rather than in
+    # a figure. Raising, not flagging, is the point: the trial's data was fine.
+    _assert_amplitude_within_curve(A0, angle_raw, t)
 
     # Re-detect peaks on phi with amplitude threshold. prominence=min_amp
     # (not just height=min_amp) is required: height alone only checks a
