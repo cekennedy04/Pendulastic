@@ -8,6 +8,30 @@ import pt_cohort_common as pcc
 
 # ── classify_participant ─────────────────────────────────────────────────
 
+def test_every_declared_output_path_is_redirected(monkeypatch, tmp_path):
+    """_redirect_outputs must cover EVERY output the module declares.
+
+    The leak this guards against was not that redirection was missing -- one of
+    the four paths was redirected, which is what made it look handled. A fifth
+    output added later would reintroduce it just as quietly, so this asserts on
+    the module's own declarations rather than on a list kept in the test.
+    """
+    import os
+    declared = [n for n in dir(pcc)
+                if (n.endswith("_CSV") or n.endswith("_PNG"))
+                and isinstance(getattr(pcc, n), str)
+                and getattr(pcc, n).startswith(pcc.OUT_DIR)]
+    assert declared, "no output paths found; has the module been restructured?"
+
+    _redirect_outputs(monkeypatch, tmp_path)
+
+    leaked = [n for n in declared
+              if not str(getattr(pcc, n)).startswith(str(tmp_path))]
+    assert not leaked, (
+        f"{leaked} still point inside {pcc.OUT_DIR} -- running the suite would "
+        f"overwrite published results")
+
+
 def _redirect_outputs(monkeypatch, tmp_path):
     """Point every cohort output at tmp_path, not just the composition CSV.
 
