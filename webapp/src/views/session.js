@@ -31,6 +31,19 @@ export function initialView({ patient } = {}) {
   return patient ? 'home' : 'session';
 }
 
+// The build line shown at the foot of the session view. Pure, so the format is
+// pinned by a test rather than by whatever the DOM happened to render.
+//
+// BUILD_ID leads because it is the service worker's actual cache key: matching
+// it against what the deployment serves proves the device is running exactly
+// those bytes, which is the only question a tester needs answered. A git
+// revision cannot answer it -- the commit containing a generated build-id.js
+// does not exist at the moment it is generated, which is precisely the
+// off-by-one ALGORITHM_VERSION already carries.
+export function buildInfoText({ buildId, algorithmVersion } = {}) {
+  return `build ${buildId || 'unknown'} · algorithm ${algorithmVersion || 'unknown'}`;
+}
+
 // Which participant a launch should resume, given the stored setting and every
 // participant on the device. Pure, because the three-way distinction below is
 // the whole rule and it must not live inside an IndexedDB callback.

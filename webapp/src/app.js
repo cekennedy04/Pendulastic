@@ -6,11 +6,11 @@ import { installState, installInstructions } from './install-gate.js';
 import { openDb, put, getAll, getOne, STORES } from './db.js';
 import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
-import { ALGORITHM_VERSION } from './build-id.js';
+import { ALGORITHM_VERSION, BUILD_ID } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
-import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView, resolveActivePatient } from './views/session.js';
+import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView, resolveActivePatient, buildInfoText } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { isPending } from './mas-store.js';
@@ -418,6 +418,15 @@ if (typeof document !== 'undefined') {
   });
 
   router.register('home', createHomeView({ el }));
+
+  // Spec 7.1: without this a tester cannot tell which build a phone is running.
+  // Set once at startup rather than on view entry -- it never changes for the
+  // life of the page, and a value that is absent when the session view is
+  // first opened would be indistinguishable from a stale one.
+  el('build-info').textContent = buildInfoText({
+    buildId: BUILD_ID,
+    algorithmVersion: ALGORITHM_VERSION,
+  });
 
   // One delegated listener rather than a listener per control: Task 9's trial
   // rows and Task 10's form are rendered after this runs, and a per-element

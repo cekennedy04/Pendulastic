@@ -7,7 +7,7 @@ import {
 import { canCloseSession, markExported } from '../src/session-store.js';
 import { createCaptureView } from '../src/views/capture.js';
 import {
-  patientLabel, nextParticipantState, SETTING_KEYS, initialView, resolveActivePatient,
+  patientLabel, nextParticipantState, SETTING_KEYS, initialView, resolveActivePatient, buildInfoText,
 } from '../src/views/session.js';
 import { trialSummary } from '../src/views/trials.js';
 
@@ -773,4 +773,33 @@ test('no setting and no participants resolves to nothing', () => {
 // A stored id whose participant is gone must not crash or silently adopt.
 test('a stored id that matches nothing resolves to nothing', () => {
   assert.equal(resolveActivePatient({ activeSetting: { value: 'ghost' }, patients: pats }), null);
+});
+
+// ---- in-app build identifier ---------------------------------------------
+// Spec 7.1. Without this there is no way to tell from a phone which build it
+// is running, which already invalidated one full smoke-test pass: production's
+// old UI was tested and reported as the new build failing.
+//
+// BUILD_ID is shown rather than a git revision because it is the service
+// worker's actual cache key -- matching it against what the deployment serves
+// proves the phone is running those exact bytes. A revision stamp cannot: the
+// commit containing a generated build-id.js does not exist when it is
+// generated, which is the same off-by-one ALGORITHM_VERSION already has.
+test('the build line leads with the shell cache key', () => {
+  const s = buildInfoText({ buildId: 'eb3156030cac', algorithmVersion: '0.1.0+2ae581b696c3.acf3447a3bb9' });
+  assert.match(s, /^build eb3156030cac/);
+});
+
+test('the build line also carries the algorithm version', () => {
+  const s = buildInfoText({ buildId: 'eb3156030cac', algorithmVersion: '0.1.0+2ae581b696c3.acf3447a3bb9' });
+  assert.ok(s.includes('0.1.0+2ae581b696c3.acf3447a3bb9'));
+});
+
+// A missing value must read as unknown, never as the string "undefined" --
+// a tester comparing against a deployment needs to see that it is absent.
+test('missing values read as unknown rather than undefined', () => {
+  const s = buildInfoText({});
+  assert.ok(!s.includes('undefined'), s);
+  assert.match(s, /unknown/);
+  assert.ok(!buildInfoText().includes('undefined'));
 });

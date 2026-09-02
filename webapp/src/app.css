@@ -696,3 +696,17 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   background: var(--surface); color: var(--fg); cursor: pointer;
 }
 .seg-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* The build line at the foot of the session view. Deliberately selectable --
+   a tester compares it against what the deployment serves, and on a phone the
+   only way to do that reliably is to select and copy it. Monospace so a
+   12-hex-character id can be read a character at a time. */
+.build-info {
+  margin: 4px 16px 20px;
+  font-family: var(--mono);
+  font-size: clamp(11px, 3vw, 13px);
+  color: var(--fg3);
+  word-break: break-all;
+  -webkit-user-select: text;
+  user-select: text;
+}
