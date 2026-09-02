@@ -191,21 +191,41 @@ def a0_by_leg_from_optitrack():
     import statistics
     import pendulastic_pt_score as _pts
 
+    # Cached per trial for the same reason the main loop is: this walks the
+    # whole optical corpus at ~22 s a trial and it runs BEFORE that loop, so an
+    # uncached pass here meant every killed run died in this function having
+    # banked nothing -- the resume cache below never got a chance to help.
+    cache = _load_a0_cache()
+    dirty = False
     per_leg = {}
     paths = participant_paths.glob_participants(
         "OptiTrack_Recordings", "*", "pre", "**", "trial_*_optitrack.csv",
         recursive=True)
-    for path in paths:
+    for i, path in enumerate(paths, 1):
         parts = path.replace("\\", "/").split("/")
         pid = participant_paths.strip_prefix(parts[1])
         leg = parts[2].lower()
         try:
-            t, angle, _quality = _pts.load_optitrack_detailed(path)
-            val = _pts.compute_pt_params(t, angle).get("A0_deg")
-        except Exception:
+            st = os.stat(path)
+            key = f"{_CACHE_VERSION}|{path}|{st.st_size}|{int(st.st_mtime)}"
+        except OSError:
             continue
+        if key in cache:
+            val = cache[key]
+        else:
+            try:
+                t, angle, _quality = _pts.load_optitrack_detailed(path)
+                val = _pts.compute_pt_params(t, angle).get("A0_deg")
+            except Exception:
+                val = None
+            cache[key] = val
+            dirty = True
+            _save_a0_cache(cache)
+            print(f"  A0 [{i}/{len(paths)}] {pid} {leg}", flush=True)
         if val is not None and float(val) == float(val):
             per_leg.setdefault((pid, leg), []).append(float(val))
+    if dirty:
+        _save_a0_cache(cache)
     return {k: statistics.median(v) for k, v in per_leg.items() if v}
 
 
@@ -256,6 +276,26 @@ def _cache_key(t_dict):
         except (OSError, TypeError):
             parts.append(f"{k}:missing")
     return "|".join(parts)
+
+
+_A0_CACHE_PATH = os.path.join("Model_Analysis_Outputs", "_cache",
+                              "paper_a0_by_trial.json")
+
+
+def _load_a0_cache():
+    try:
+        with open(_A0_CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_a0_cache(cache):
+    os.makedirs(os.path.dirname(_A0_CACHE_PATH), exist_ok=True)
+    tmp = _A0_CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f)
+    os.replace(tmp, _A0_CACHE_PATH)
 
 
 def _load_cache():
