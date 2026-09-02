@@ -1290,3 +1290,29 @@ def test_release_backoff_matches_what_two_samples_meant_at_120_hz():
     # one is validated against barely moves, and the rest come to it.
     import pendulastic_pt_score as p
     assert p._RELEASE_BACKOFF_S == pytest.approx(2.0 / 120.0)
+
+
+# -- axis conditioning reaches the operator ------------------------------
+
+def test_ill_conditioned_axis_has_a_real_warning_not_the_generic_fallback():
+    # The flag is now emitted rather than raised, so its sentence is what the
+    # operator actually reads when deciding whether to exclude the trial via
+    # excluded_trials.json. "Knee-axis reconstruction flag: ill_conditioned_
+    # axis." is the unmapped fallback and tells them nothing actionable.
+    import pendulastic_pt_score as p
+    assert "ill_conditioned_axis" in p._KNEE_AXIS_WARNINGS
+    text = p._KNEE_AXIS_WARNINGS["ill_conditioned_axis"]
+    assert not text.startswith("Knee-axis reconstruction flag:")
+    assert len(text) > 80
+
+
+def test_trial_quality_carries_the_axis_conditioning_number():
+    # The operator is the only one allowed to exclude, so they need the number
+    # the gate used to be keyed on -- a trial at 0.897 and one at 0.901 sat on
+    # either side of an undeclared threshold. KneeAngleResult.conditioning was
+    # computed and thrown away; nothing downstream could see it.
+    import math
+    import pendulastic_pt_score as p
+    assert "conditioning" in p.TrialQuality._fields
+    q = p.TrialQuality(coverage=1.0, warnings=())
+    assert math.isnan(q.conditioning), "must default to NaN, not 0.0"
