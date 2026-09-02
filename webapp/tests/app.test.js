@@ -7,6 +7,7 @@ import {
 import { canCloseSession, markExported } from '../src/session-store.js';
 import { createCaptureView } from '../src/views/capture.js';
 import { patientLabel, nextParticipantState, SETTING_KEYS } from '../src/views/session.js';
+import { trialSummary } from '../src/views/trials.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
 // message stream for one trial -- no DOM, no worker, no globals required
@@ -675,4 +676,43 @@ test('re-selecting the same participant mid-session is not refused', () => {
   const s = nextParticipantState(withTrials, { type: 'select', patient: { id: 'p1' } });
   assert.equal(s.patient.id, 'p1');
   assert.equal(s.error, undefined);
+});
+
+// ---- trial history (task 9) ----------------------------------------------
+const historyTrial = {
+  id: 't-1', side: 'left', timestamp: Date.UTC(2026, 7, 31, 14, 5, 0),
+  capture_quality: 'clean', unmeasured: [], params: { n: 4.25, a0_deg: 41.2 },
+};
+
+test('a trial summary is numbered from one, not zero', () => {
+  assert.equal(trialSummary(historyTrial, 0).label, 'Trial 1');
+});
+
+test('the summary carries side and the two headline parameters', () => {
+  const s = trialSummary(historyTrial, 0);
+  assert.match(s.meta, /left/);
+  assert.match(s.meta, /4\.25/);
+  assert.match(s.meta, /41\.2/);
+});
+
+test('the summary carries the trial id so a row can open its detail', () => {
+  assert.equal(trialSummary(historyTrial, 0).id, 't-1');
+});
+
+// An unscorable trial is an expected clinical outcome, not a fault -- it must
+// still be listed, or the operator cannot tell it was recorded at all.
+test('a trial with no params still lists', () => {
+  const s = trialSummary({ ...historyTrial, params: {} }, 2);
+  assert.equal(s.label, 'Trial 3');
+  assert.match(s.meta, /left/);
+});
+
+test('a trial with unmeasured parameters is flagged in the summary', () => {
+  const s = trialSummary({ ...historyTrial, unmeasured: ['r2n', 'f'] }, 0);
+  assert.match(s.meta, /2 unmeasured/);
+});
+
+test('a null side reads as unset rather than "null"', () => {
+  const s = trialSummary({ ...historyTrial, side: null }, 0);
+  assert.ok(!s.meta.includes('null'));
 });

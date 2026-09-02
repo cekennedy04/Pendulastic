@@ -11,6 +11,7 @@ import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
 import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS } from './views/session.js';
+import { createTrialsView } from './views/trials.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -879,6 +880,18 @@ if (typeof document !== 'undefined') {
   // large, high-contrast plot over a dense one: this is read at arm's length
   // by someone who just performed the swing and wants to confirm the trace
   // matches it, not study it.
+  // Extracted from onResult so the trials view can re-render a stored trial
+  // through the SAME renderer the capture path uses. A second copy of this
+  // table is exactly the kind of duplicate that drifts -- session-store.js's
+  // PARAM_FIELDS note records what happened last time a param list was kept
+  // in two places.
+  function renderResult(params) {
+    el('result').hidden = false;
+    el('result').innerHTML = PARAM_FIELDS
+      .map((k) => `<tr><td>${k}</td><td>${formatValue(params[k])}</td></tr>`)
+      .join('');
+  }
+
   function drawWaveform(trajectory) {
     const wrap = el('waveform-wrap');
     const canvas = el('waveform');
@@ -1070,6 +1083,26 @@ if (typeof document !== 'undefined') {
   });
   router.register('capture', captureView);
 
+  // ---- Trial history (task 9) ---------------------------------------------
+  router.register('trials', createTrialsView({
+    el,
+    loadTrials: async () => {
+      await ensureSessionReady();
+      if (!currentSession) return [];
+      const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
+      return trials.sort((a, b) => a.timestamp - b.timestamp);
+    },
+    // Re-uses the capture view's own renderers rather than a second copy --
+    // a divergent second waveform/score renderer is exactly the kind of
+    // duplicate this codebase has been bitten by before.
+    showTrial: (t) => {
+      lastTrajectory = t.trajectory;
+      renderResult(t.params);
+      drawWaveform(t.trajectory);
+      router.navigate('capture');
+    },
+  }));
+
   // ---- Session view: participant + side (task 8) --------------------------
   let participantError = null;
 
@@ -1211,10 +1244,7 @@ if (typeof document !== 'undefined') {
     el('guide').textContent = 'scored';
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
-    el('result').hidden = false;
-    el('result').innerHTML = PARAM_FIELDS
-      .map((k) => `<tr><td>${k}</td><td>${formatValue(p[k])}</td></tr>`)
-      .join('');
+    renderResult(p);
     showExportControls();
     resetToIdle();
 
