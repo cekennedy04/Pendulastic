@@ -8,6 +8,37 @@ all 20 parameters.
 Not validated. The banner saying so is required by the spec and has no
 dismiss control.
 
+## Views
+
+The app is five sections toggled by `src/router.js`: **home** (tiles),
+**capture**, **trials** (this session's history), **mas** (assessment entry),
+and **session** (participant, leg, export, close).
+
+Views use `.view` / `.view.active`, never the `hidden` attribute -- see the
+note above the `.view` rule in `src/app.css` for why.
+
+Leaving the capture view is refused while a trial is recording: a live
+capture owns a `devicemotion` listener, a flush interval, and a screen wake
+lock, and navigating away would orphan all three.
+
+Recording requires a participant and a leg. Both are entered in **session**
+and persist in the `settings` store across a reload and a relaunch; there is
+no longer a hardcoded test participant.
+
+## MAS export
+
+A session with assessments exports `<base>-mas.csv` alongside the trial
+`.jsonl` files, with exactly `mas_validation.DEFAULT_MAS_FIELDS` as its
+header, so `append_mas_score()` ingests it unchanged. `mas_grade` may be `-1`
+("not yet assessed"); it may never be blank. The optional grades take the
+inverse rule -- blank is valid, `-1` is not. See
+`docs/superpowers/specs/2026-08-31-mobile-webapp-workbench-restyle-design.md`.
+
+A half-filled MAS form is saved as a draft in the `settings` store (not
+`sessionStorage`, which is cleared exactly when a standalone app is
+terminated). Drafts are keyed per participant and leg, and the most recently
+saved one is resumed.
+
 ## Build step (required before serving or testing)
 
 ```
