@@ -347,8 +347,25 @@ _PT_PARAM_KEYS = ("R2n", "N", "phi_max_ratio", "omega_max_n", "f",
                   "area_ratio", "omega_min_n")
 
 
-def _zero_pt_params() -> dict:
-    return {k: 0.0 for k in _PT_PARAM_KEYS}
+# Smallest release amplitude worth scoring. Below it there is no swing to
+# measure, whichever way round the curve is.
+_MIN_WINDOWED_A0_DEG = 5.0
+
+
+def _missing_pt_params() -> dict:
+    """NaN, not 0.0 -- a failure to measure is not a measurement of zero.
+
+    This used to return zeros, and the difference was not academic. 70 of 119
+    optical trials in the 2026-09-02 paper table came back all-zero and were
+    averaged into IMU-vs-OptiTrack ICC as if they were observations, taking R2n
+    from 0.226 to 0.037 and N from 0.458 to 0.071. The zeros were not outliers
+    to be trimmed; they were absences wearing a number.
+
+    NaN propagates instead, so an aggregate over trials that could not be
+    measured comes out NaN and says so, rather than quietly reporting the
+    agreement of a constant.
+    """
+    return {k: float("nan") for k in _PT_PARAM_KEYS}
 
 
 def windowed_pt_params(t: np.ndarray, angle: np.ndarray) -> dict:
@@ -370,22 +387,51 @@ def windowed_pt_params(t: np.ndarray, angle: np.ndarray) -> dict:
     finite = np.isfinite(t) & np.isfinite(angle)
     t, angle = t[finite], angle[finite]
     if len(t) < 10:
-        return _zero_pt_params()
+        return _missing_pt_params()
 
     fs = 1.0 / float(np.median(np.diff(t)))
     sg_w = max(5, int(fs * 0.15) // 2 * 2 + 1)
     if sg_w >= len(angle):
         sg_w = len(angle) - 1 if len(angle) % 2 == 0 else len(angle)
         if sg_w < 5:
-            return _zero_pt_params()
+            return _missing_pt_params()
     smooth = savgol_filter(angle, sg_w, polyorder=2)
     vel = savgol_filter(angle, sg_w, polyorder=2, deriv=1) * fs
 
     phi_inf = float(np.median(smooth[-max(4, int(fs)):]))
     phi_0 = float(smooth[0])
     A0 = phi_0 - phi_inf
-    if A0 < 5.0:
-        return _zero_pt_params()
+
+    # Orient the curve before anything is measured off it.
+    #
+    # A0 = phi_0 - phi_inf assumes the series starts extended and settles
+    # lower, i.e. an extension-positive convention. The optical loader stopped
+    # guaranteeing that in 87d7645: it returns a RELATIVE curve whose sense
+    # comes from a hinge eigenvector, so half the trials arrive inverted, and
+    # the loader says so in its own warnings ("the leg is released from
+    # extension, so this curve is inverted").
+    #
+    # An inverted curve made A0 negative, tripped the minimum-amplitude gate
+    # below, and returned a full set of zeros. Measured on the 2026-09-02 paper
+    # table: 7 of 8 sampled all-zero trials had A0 between -0.5 and -54.1,
+    # every scoring trial was positive, and the failure tracked neither
+    # coverage (66.5% vs 74.4% median) nor axis conditioning (0.975 vs 0.952 --
+    # the failing trials were the BETTER conditioned ones). Polarity, not data
+    # quality.
+    #
+    # Negating HERE, before find_peaks, is what makes it a fix rather than a
+    # patch: peaks and troughs swap roles under inversion, so orienting after
+    # detection would leave every downstream role reversed. compute_pt_params
+    # does the same thing with its own phi_negated flag.
+    inverted = A0 < 0.0
+    if inverted:
+        angle = -angle
+        smooth = -smooth
+        vel = -vel
+        phi_inf, phi_0, A0 = -phi_inf, -phi_0, -A0
+
+    if A0 < _MIN_WINDOWED_A0_DEG:
+        return _missing_pt_params()
 
     prom = max(2.0, 0.05 * A0)
     min_dist = max(3, int(fs * 0.3))

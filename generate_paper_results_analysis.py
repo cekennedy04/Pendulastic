@@ -207,7 +207,7 @@ def a0_by_leg_from_optitrack():
         leg = parts[2].lower()
         try:
             st = os.stat(path)
-            key = f"{_CACHE_VERSION}|{path}|{st.st_size}|{int(st.st_mtime)}"
+            key = f"{_A0_CACHE_VERSION}|{path}|{st.st_size}|{int(st.st_mtime)}"
         except OSError:
             continue
         if key in cache:
@@ -261,7 +261,15 @@ def load_mas_scores():
 # imu_pt_params_for_trial changes -- the loaders, windowed_pt_params, or the
 # quality fields recorded below. When in doubt, bump it; a needless full
 # recompute costs an hour, a silently stale one costs a result.
-_CACHE_VERSION = 3          # 3: records optitrack_method/coverage/conditioning
+_CACHE_VERSION = 4          # 4: windowed_pt_params orients inverted curves
+                            # 3: records optitrack_method/coverage/conditioning
+
+# The A0 walk has its OWN version, deliberately. It runs compute_pt_params,
+# which the 2026-09-02 windowed_pt_params fix did not touch, so bumping the
+# shared number would have discarded 74 already-computed trials for nothing --
+# and at ~22 s each that is half an hour of recompute to invalidate work that
+# is still correct. Bump this one only when the A0 computation itself changes.
+_A0_CACHE_VERSION = 3
 _CACHE_PATH = os.path.join("Model_Analysis_Outputs", "_cache",
                            "paper_trial_params.json")
 
