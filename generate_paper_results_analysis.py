@@ -230,6 +230,50 @@ def load_mas_scores():
     return {pid: statistics.mean(vals) for pid, vals in out.items()}
 
 
+# Per-trial results cached on disk, because one pass over the corpus loads
+# every trial at ~22 s and the whole run takes the better part of an hour --
+# long enough that three attempts in a row were killed before they could write
+# anything, and long enough that nobody re-runs it to check a change.
+#
+# Invalidation is deliberately paranoid, because a stale cache here does not
+# crash, it publishes wrong numbers: the key carries the source files' sizes and
+# mtimes AND _CACHE_VERSION, which MUST be bumped whenever anything feeding
+# imu_pt_params_for_trial changes -- the loaders, windowed_pt_params, or the
+# quality fields recorded below. When in doubt, bump it; a needless full
+# recompute costs an hour, a silently stale one costs a result.
+_CACHE_VERSION = 3          # 3: records optitrack_method/coverage/conditioning
+_CACHE_PATH = os.path.join("Model_Analysis_Outputs", "_cache",
+                           "paper_trial_params.json")
+
+
+def _cache_key(t_dict):
+    parts = [str(_CACHE_VERSION), str(t_dict.get("trial_key"))]
+    for k in ("imu", "accel", "gyro", "mag", "optitrack_path"):
+        path = t_dict.get(k)
+        try:
+            st = os.stat(path)
+            parts.append(f"{k}:{st.st_size}:{int(st.st_mtime)}")
+        except (OSError, TypeError):
+            parts.append(f"{k}:missing")
+    return "|".join(parts)
+
+
+def _load_cache():
+    try:
+        with open(_CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cache(cache):
+    os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
+    tmp = _CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f)
+    os.replace(tmp, _CACHE_PATH)      # atomic, so a kill cannot truncate it
+
+
 def imu_pt_params_for_trial(t_dict):
     validations = {
         "accel": engine.validate_component_csv(t_dict["accel"], "accel"),
@@ -258,12 +302,36 @@ def main():
     groups = load_group_and_demo()
     mas = load_mas_scores()
 
+    cache = _load_cache()
+    hits = misses = 0
     rows = []  # one row per trial: pid, group, imu_pt..., opti_pt...
-    for t in matched:
-        result = imu_pt_params_for_trial(t)
-        if result is None:
+    for i, t in enumerate(matched, 1):
+        key = _cache_key(t)
+        if key in cache:
+            cached = cache[key]
+            hits += 1
+        else:
+            result = imu_pt_params_for_trial(t)
+            cached = None if result is None else {
+                "imu_pt": result[0], "opti_pt": result[1],
+                "method": result[2],
+                "coverage": (None if result[3] is None
+                             else getattr(result[3], "coverage", None)),
+                "conditioning": (None if result[3] is None
+                                 else getattr(result[3], "conditioning", None)),
+            }
+            cache[key] = cached
+            misses += 1
+            # Saved every few trials, not at the end: three runs in a row were
+            # killed mid-corpus and lost everything they had computed.
+            if misses % 5 == 0:
+                _save_cache(cache)
+                print(f"  [{i}/{len(matched)}] computed {misses} new", flush=True)
+        if cached is None:
             continue
-        imu_pt, opti_pt, opti_method, opti_q = result
+        imu_pt, opti_pt = cached["imu_pt"], cached["opti_pt"]
+        opti_method = cached["method"]
+        opti_cov, opti_cond = cached["coverage"], cached["conditioning"]
         pid = participant_paths.strip_prefix(t["participant"])
         # spasticity/spasticity_source were computed by load_group_and_demo and
         # then dropped on the floor: they reached no output and no model, while
@@ -283,16 +351,16 @@ def main():
               # -- analysis flags, it does not drop -- but the flag only helps
               # if something downstream reads it, and nothing here did.
               "optitrack_method": opti_method,
-              "opti_coverage": (None if opti_q is None
-                                else getattr(opti_q, "coverage", None)),
-              "opti_conditioning": (None if opti_q is None
-                                    else getattr(opti_q, "conditioning", None))}
+              "opti_coverage": opti_cov,
+              "opti_conditioning": opti_cond}
         for p in PARAMS:
             row[f"imu_{p}"] = imu_pt[p]
             row[f"opti_{p}"] = opti_pt[p]
         rows.append(row)
 
-    print(f"{len(rows)} trials with computable PT parameters (of {len(matched)} matched)\n")
+    _save_cache(cache)
+    print(f"{len(rows)} trials with computable PT parameters (of {len(matched)} "
+          f"matched); {hits} from cache, {misses} computed\n")
 
     # --- ICC(2,1) + Bland-Altman per parameter, IMU vs OptiTrack ---
     print("=== IMU vs OptiTrack: ICC(2,1) + Bland-Altman, per PT parameter ===")
