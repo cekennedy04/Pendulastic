@@ -13,6 +13,18 @@ attempts there were repeatedly killed mid-corpus.
 Both expensive stages are now cached, so a killed run resumes instead of starting
 over. **Run these from an ordinary terminal, not from a time-limited session.**
 
+## The interpreter
+
+`python` is **not on PATH on this machine** -- `python generate_...` fails with
+"no such file". Use the full path:
+
+```
+~/miniconda3/python.exe generate_paper_results_analysis.py
+```
+
+(or `%USERPROFILE%\miniconda3\python.exe` from cmd/PowerShell). Every command
+below assumes that interpreter.
+
 ## Order, and why it is not arbitrary
 
 ```
