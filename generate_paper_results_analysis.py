@@ -324,9 +324,11 @@ def main():
             misses += 1
             # Saved every few trials, not at the end: three runs in a row were
             # killed mid-corpus and lost everything they had computed.
-            if misses % 5 == 0:
-                _save_cache(cache)
-                print(f"  [{i}/{len(matched)}] computed {misses} new", flush=True)
+            # Every trial, not every fifth: a run was killed before it reached
+            # the fifth and banked nothing. The file is small and the write is
+            # atomic, so the cost is noise against a 22 s trial load.
+            _save_cache(cache)
+            print(f"  [{i}/{len(matched)}] computed {misses} new", flush=True)
         if cached is None:
             continue
         imu_pt, opti_pt = cached["imu_pt"], cached["opti_pt"]
