@@ -8,6 +8,26 @@ import pt_cohort_common as pcc
 
 # ── classify_participant ─────────────────────────────────────────────────
 
+def _redirect_outputs(monkeypatch, tmp_path):
+    """Point every cohort output at tmp_path, not just the composition CSV.
+
+    run_cohort_comparison writes four files. Redirecting one left the other
+    three -- cohort_stats.csv, normative_ranges.csv and cohort_boxplots.png --
+    aimed at the real Model_Analysis_Outputs/Cohort_Comparison/, so simply
+    RUNNING this suite silently overwrote published results with whatever the
+    working tree happened to compute. Caught on 2026-09-02 when a diagnostic
+    call restamped those three files.
+    """
+    for attr, name in (("COMPOSITION_CSV", "cohort_composition.csv"),
+                       ("STATS_CSV", "cohort_stats.csv"),
+                       ("RANGES_CSV", "normative_ranges.csv"),
+                       ("FIGURE_PNG", "cohort_boxplots.png")):
+        if hasattr(pcc, attr):
+            monkeypatch.setattr(pcc, attr, str(tmp_path / name))
+    if hasattr(pcc, "OUT_DIR"):
+        monkeypatch.setattr(pcc, "OUT_DIR", str(tmp_path))
+
+
 def test_classify_metadata_ms():
     assert pcc.classify_participant("13", "MS", {}, True) == ("MS", "metadata")
 
@@ -496,7 +516,7 @@ def _stub_common(monkeypatch, qualifying, groups, trials):
 
 
 def test_run_cohort_comparison_skips_when_control_arm_empty(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
                 {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
     pcc.run_cohort_comparison()
@@ -506,7 +526,7 @@ def test_run_cohort_comparison_skips_when_control_arm_empty(monkeypatch, capsys,
 
 
 def test_run_cohort_comparison_writes_composition_csv_with_correct_groups(monkeypatch, tmp_path):
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
                 {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
     pcc.run_cohort_comparison()
@@ -515,7 +535,7 @@ def test_run_cohort_comparison_writes_composition_csv_with_correct_groups(monkey
 
 
 def test_run_cohort_comparison_runs_stats_and_figure_when_both_arms_present(monkeypatch, tmp_path):
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
     figure_calls = []
     monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
@@ -535,7 +555,7 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     # empty lists for both legs. run_cohort_comparison must not crash, and
     # the resulting stats/figure must show 0 MS contributors while
     # cohort_composition.csv still shows 13's raw (non-zero) trial count.
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
     figure_calls = []
     monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
@@ -579,7 +599,7 @@ def test_run_cohort_comparison_real_figure_end_to_end(monkeypatch, tmp_path):
     # summaries. Participant "2" only has right-leg trials, so it also
     # exercises the zero-summaries-for-a-leg path (left has only 1 MS
     # contributor) reaching the real figure.
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     monkeypatch.setattr(pcc, "STATS_CSV", str(tmp_path / "ms_vs_control_stats.csv"))
     monkeypatch.setattr(pcc, "FIGURE_PNG", str(tmp_path / "ms_vs_control_boxplots.png"))
 
@@ -654,7 +674,7 @@ def test_write_cohort_artifacts_no_recollection_when_arm_empty(monkeypatch, tmp_
     this function, proving no rescanning happens."""
     monkeypatch.setattr(pcc.common, "collect_participant",
                         lambda pid: (_ for _ in ()).throw(AssertionError("should not recollect")))
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     snapshot = {
         "composition_rows": [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
                              "n_trials_left": 4, "n_trials_right": 4}],
@@ -673,7 +693,7 @@ def test_run_cohort_comparison_still_works_as_combinator(monkeypatch, tmp_path):
     existing tests in this file that call pcc.run_cohort_comparison()
     directly."""
     monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: set())
-    monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
+    _redirect_outputs(monkeypatch, tmp_path)
     pcc.run_cohort_comparison()   # must not raise, same as before this task
 
 
