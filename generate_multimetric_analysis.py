@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 
@@ -61,11 +62,56 @@ def build_unified_rows():
     model_path = os.path.join(rpc.BASE_DIR, "models", "mediapipe",
                               f"pose_landmarker_{MODEL_VARIANT}.task")
 
+    # Per-trial cache, same reasoning as generate_paper_results_analysis's:
+    # this loop reloads OptiTrack and replays the IMU for every trial and takes
+    # far longer than a time-limited session survives -- a run here reached 79
+    # trials and lost all of it. MediaPipe landmarks were already cached by
+    # rpc.extract_landmarks_cached; these two were not.
+    #
+    # Keyed on the source files' sizes and mtimes plus _ROW_CACHE_VERSION, which
+    # must be bumped whenever windowed_pt_params or either loader changes. A
+    # stale entry here does not crash, it publishes a wrong row.
+    _ROW_CACHE_VERSION = 2      # 2: windowed_pt_params orients inverted curves
+    cache_path = os.path.join("Model_Analysis_Outputs", "_cache",
+                              "multimetric_rows.json")
+    try:
+        with open(cache_path, encoding="utf-8") as _f:
+            row_cache = json.load(_f)
+    except (OSError, ValueError):
+        row_cache = {}
+
+    def _row_key(imu_t, vid_t):
+        parts = [str(_ROW_CACHE_VERSION), str(imu_t.get("trial_key"))]
+        for path in (imu_t.get("optitrack_path"),
+                     imu_t["imu_component_paths"].get("accel"),
+                     vid_t if isinstance(vid_t, str) else vid_t.get("video")):
+            try:
+                st = os.stat(path)
+                parts.append(f"{st.st_size}:{int(st.st_mtime)}")
+            except (OSError, TypeError, AttributeError):
+                parts.append("missing")
+        return "|".join(parts)
+
+    def _save_rows():
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        tmp = cache_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as _f:
+            json.dump(row_cache, _f)
+        os.replace(tmp, cache_path)
+
     rows = []
     for i, key in enumerate(common_keys):
         imu_t = imu_by_key[key]
         vid_t = video_by_key[key]
         comp = imu_t["imu_component_paths"]
+
+        _ck = _row_key(imu_t, vid_t)
+        if _ck in row_cache:
+            _hit = row_cache[_ck]
+            if _hit is not None:
+                rows.append(_hit)
+            print(f"  [{i+1}/{len(common_keys)}] {key} -> cached", flush=True)
+            continue
         try:
             samples = rpc.reconstruct_trial(comp["accel"], comp["gyro"], comp["mag"])
         except Exception:
@@ -106,11 +152,15 @@ def build_unified_rows():
         _unmeasurable = [k for k in ("opti_pt", "imu_pt", "mp_pt")
                          if not all(math.isfinite(v) for v in row[k].values())]
         if _unmeasurable:
+            row_cache[_ck] = None
+            _save_rows()
             print(f"  [{i+1}/{len(common_keys)}] {pid} {key} -> skipped, "
-                  f"not measurable: {', '.join(_unmeasurable)}")
+                  f"not measurable: {', '.join(_unmeasurable)}", flush=True)
             continue
         rows.append(row)
-        print(f"  [{i+1}/{len(common_keys)}] {pid} {key} -> ok")
+        row_cache[_ck] = row
+        _save_rows()
+        print(f"  [{i+1}/{len(common_keys)}] {pid} {key} -> ok", flush=True)
     return rows
 
 
