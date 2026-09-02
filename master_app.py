@@ -57,6 +57,28 @@ except Exception:
     _coverage_session = None
     _COVERAGE_AVAIL = False
 
+# How long to wait for the first mocap frame before deciding Motive is not
+# there. A NatNet socket binds successfully with nothing on the other end, so
+# this is what actually distinguishes the two modalities. One second is many
+# frames at 120 Hz and is not noticeable on a button press.
+COVERAGE_MOCAP_PROBE_S = 1.0
+
+# The same check driven by pose estimation on the webcam, for sessions with no
+# Motive connection. Imported separately: it needs MediaPipe and a model asset
+# that the mocap path does not, so one being unavailable must not cost the
+# other. This does NOT verify marker visibility -- see the module docstring --
+# it checks the modality actually being relied on when there is no mocap.
+try:
+    import capture_coverage_hpe_session as _coverage_pose
+    _COVERAGE_POSE_AVAIL = True
+except Exception:
+    _coverage_pose = None
+    _COVERAGE_POSE_AVAIL = False
+
+# Overridable so tests can exercise the fallback without loading a real pose
+# model. None means "use the real one".
+_POSE_DETECTOR_FACTORY = None
+
 # On Windows, the MSMF backend can hang for 30-120 seconds opening a USB camera
 # because of hardware Media Foundation Transforms. Disabling them makes camera
 # open near-instant. This MUST be set before OpenCV (cv2) is imported.
@@ -126,9 +148,18 @@ class MasterApp:
         self._imu_raw_jsonl_path = ""
         self._sync_after_id = None                # pending after() for status poll
 
-        # ---- Marker coverage (pre-flight + live) ----
+        # ---- Tracking coverage (pre-flight + live) ----
         self._cov_session = None
         self._cov_after_id = None
+        # One-slot mailbox for the pose fallback. The preview loop publishes
+        # its newest frame here and the coverage worker takes whatever is
+        # there when it is ready, so inference never delays a recorded frame.
+        # Only populated while _cov_want_frames is set, so a session with
+        # Motive connected pays nothing for it.
+        self._cov_frame_lock = threading.Lock()
+        self._cov_frame = None
+        self._cov_frame_seq = 0
+        self._cov_want_frames = threading.Event()
         if _IMU_AVAIL:
             try:
                 imu_server.start()
@@ -275,19 +306,22 @@ class MasterApp:
         # go missing the cameras are seeing 0.21 of the 6, so nothing downstream
         # recovers them -- the only place to catch it is here, while the
         # participant is still on the plinth.
-        cov_frame = tk.LabelFrame(self.root, text="Marker Coverage (OptiTrack)",
+        cov_frame = tk.LabelFrame(self.root, text="Tracking Coverage",
                                   font=("Segoe UI", 9, "bold"))
+        self.cov_frame = cov_frame
         cov_frame.grid(row=18, column=0, columnspan=2, sticky="ew",
                        padx=10, pady=(0, 6))
         self.btn_coverage = tk.Button(
             cov_frame, text="CHECK COVERAGE",
             command=self._on_check_coverage,
-            state=("normal" if _COVERAGE_AVAIL else "disabled"))
+            state=("normal" if (_COVERAGE_AVAIL or _COVERAGE_POSE_AVAIL)
+                   else "disabled"))
         self.btn_coverage.pack(anchor="w", padx=8, pady=(4, 0))
         self.lbl_coverage = tk.Label(
             cov_frame, justify="left", anchor="w", font=("Consolas", 8),
             fg="gray",
-            text=("coverage module unavailable" if not _COVERAGE_AVAIL else
+            text=("coverage module unavailable"
+                  if not (_COVERAGE_AVAIL or _COVERAGE_POSE_AVAIL) else
                   "Hold the leg in the start position, with the assessor\n"
                   "standing as they will during the trial, then press\n"
                   "CHECK COVERAGE."))
@@ -863,6 +897,17 @@ class MasterApp:
                     continue
                 miss = 0
 
+                # Hand the newest frame to the coverage worker, before the REC
+                # overlay is drawn: it must measure what the camera saw, not
+                # what the preview shows. A copy, because the overlay mutates
+                # this array in place a few lines below. Skipped entirely
+                # unless a pose check is running, so the mocap path and an
+                # ordinary recording pay nothing.
+                if self._cov_want_frames.is_set():
+                    with self._cov_frame_lock:
+                        self._cov_frame_seq += 1
+                        self._cov_frame = (frame.copy(), self._cov_frame_seq)
+
                 # Write the clean frame to disk if we are recording.
                 if self.writing_flag.is_set():
                     with self.out_lock:
@@ -1093,25 +1138,104 @@ class MasterApp:
     # rolling window that keeps updating so a trial going bad is visible while
     # it is still cheap to repeat.
 
+    def _mocap_is_streaming(self, session, probe_s=COVERAGE_MOCAP_PROBE_S):
+        """Is Motive actually sending, or did we just open a socket?
+
+        Binding the NatNet multicast socket succeeds whether or not anything is
+        broadcasting, so `start()` returning True says nothing about whether
+        Motive is running. Without this the app would always pick the mocap
+        path and then report a perfectly good setup as having no tracking at
+        all. Blocking briefly is the honest cost of answering the question; the
+        UI is only idle-updated so no other handler can re-enter here.
+        """
+        deadline = time.monotonic() + probe_s
+        while time.monotonic() < deadline:
+            if getattr(session, "frames_seen", 0) > 0:
+                return True
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+            time.sleep(0.02)
+        return getattr(session, "frames_seen", 0) > 0
+
+    def _read_cov_frame(self):
+        """Newest preview frame for the pose worker, or None."""
+        with self._cov_frame_lock:
+            return self._cov_frame
+
     def _coverage_start(self):
-        """Open the mocap stream if it is not already open. Returns success."""
-        if not _COVERAGE_AVAIL:
-            return False
-        if getattr(self, "_cov_session", None) is None:
-            self._cov_session = _coverage_session.CoverageSession()
-        if not self._cov_session.running:
-            if not self._cov_session.start():
-                self.lbl_coverage.config(
-                    fg="#a31515",
-                    text=("No connection to Motive.\n"
-                          "Check View > Data Streaming is on and broadcasting."))
-                return False
-        return True
+        """Open a coverage stream if one is not already open. Returns success.
+
+        Motive first, the camera second. The order is not a preference between
+        two views of the same thing -- when Motive is connected the markers ARE
+        the measurement and their visibility is what matters, and when it is
+        not, the video is. Either way this checks the modality the session will
+        actually be scored from.
+        """
+        session = getattr(self, "_cov_session", None)
+        if session is not None and session.running:
+            return True
+
+        # An already-constructed session is honoured rather than replaced, so a
+        # caller can supply one; otherwise open the mocap path.
+        mocap = session
+        if mocap is None and _COVERAGE_AVAIL:
+            mocap = _coverage_session.CoverageSession()
+        if mocap is not None and mocap.start():
+            if self._mocap_is_streaming(mocap):
+                self._cov_session = mocap
+                self._cov_want_frames.clear()
+                self._set_coverage_mode("OptiTrack markers")
+                return True
+            # Bound a socket but nothing is coming down it. Motive is not
+            # running, or not broadcasting, and treating that as "connected"
+            # would leave the operator watching a check of a sensor that is
+            # not sending -- reported as a leg that is never visible.
+            mocap.stop()
+
+        # No mocap. Fall back to the camera, which is what the trial will be
+        # scored from in that case.
+        if _COVERAGE_POSE_AVAIL and self.streaming_flag.is_set():
+            self._cov_want_frames.set()
+            session = _coverage_pose.PoseCoverageSession(
+                frame_source=self._read_cov_frame,
+                leg_getter=lambda: self.var_leg.get(),
+                detector_factory=_POSE_DETECTOR_FACTORY)
+            if session.start():
+                self._cov_session = session
+                self._set_coverage_mode("camera pose (no Motive)")
+                return True
+            self._cov_want_frames.clear()
+
+        self._cov_session = None
+        self.lbl_coverage.config(
+            fg="#a31515",
+            text=("No connection to Motive, and no camera check available.\n"
+                  "Check View > Data Streaming is on and broadcasting, or\n"
+                  "start the camera preview."))
+        return False
+
+    def _set_coverage_mode(self, label):
+        """Name the sensor in the panel title.
+
+        The operator has to know which one was checked, because a pass from one
+        says nothing about the other: a leg framed perfectly in the webcam can
+        have its markers wholly occluded to the mocap volume.
+        """
+        try:
+            self.cov_frame.config(text=f"Tracking Coverage - {label}")
+        except Exception:
+            pass
 
     def _on_check_coverage(self):
         if not self._coverage_start():
             return
-        self._cov_session.begin_preflight()
+        # The watch length is the sensor's, not the panel's: pose inference
+        # samples at roughly 8 Hz against Motive's 120, and a watch that is
+        # fine for one collects too few frames on the other to judge.
+        self._cov_session.begin_preflight(
+            duration_s=self._cov_session.modality.watch_s)
         self.btn_coverage.config(state="disabled")
         self.lbl_coverage.config(fg="gray", text="Watching...")
         self._poll_preflight()
@@ -1147,13 +1271,18 @@ class MasterApp:
             return          # a check is running; it owns the label
         v = session.live_verdict()
         if v.status == _coverage.NO_DATA:
-            self.lbl_coverage.config(fg="gray", text="No mocap frames")
+            # v.headline already names the sensor that went quiet; hardcoding
+            # "mocap" here told a camera-only session to check Motive.
+            self.lbl_coverage.config(fg="gray", text=v.headline)
         else:
             colour = "#1e7d34" if v.status == _coverage.PASS else "#a31515"
             self.lbl_coverage.config(fg=colour, text=v.headline)
         self._cov_after_id = self.root.after(500, self._poll_coverage_live)
 
     def _coverage_stop(self):
+        self._cov_want_frames.clear()
+        with self._cov_frame_lock:
+            self._cov_frame = None
         session = getattr(self, "_cov_session", None)
         if session is not None:
             session.stop()

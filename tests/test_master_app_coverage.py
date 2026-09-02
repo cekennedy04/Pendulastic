@@ -92,6 +92,19 @@ def test_the_panel_is_built():
         _teardown(app, root)
 
 
+class _FakeDetector:
+    """Stands in for a PoseLandmarker so the fallback can be exercised without
+    loading a real model into a GUI test."""
+
+    def detect(self, _image):
+        class _R:
+            pose_landmarks = []
+        return _R()
+
+    def close(self):
+        pass
+
+
 def test_the_app_starts_with_no_session_open():
     """The socket must not be opened until asked -- an operator who never runs
     a check should not have a listener running."""
@@ -103,8 +116,10 @@ def test_the_app_starts_with_no_session_open():
         _teardown(app, root)
 
 
-def test_a_stream_that_will_not_open_shows_a_message_and_does_not_raise():
-    """Motive closed is the normal case when someone opens the app at a desk."""
+def test_no_stream_and_no_camera_shows_a_message_and_does_not_raise():
+    """Motive closed is the normal case when someone opens the app at a desk.
+    With no camera preview either there is nothing to check, and the operator
+    has to be told which of the two to fix."""
     root = _root(); app = None
     try:
         app = _app(root)
@@ -113,10 +128,64 @@ def test_a_stream_that_will_not_open_shows_a_message_and_does_not_raise():
             raise OSError("no route to host")
 
         app._cov_session = ccs.CoverageSession(client_factory=boom)
+        app.streaming_flag.clear()
         app._on_check_coverage()          # must not raise
-        assert "Motive" in app.lbl_coverage.cget("text")
+        text = app.lbl_coverage.cget("text")
+        assert "Motive" in text and "camera" in text
         assert app.btn_coverage.cget("state") == "normal"
     finally:
+        _teardown(app, root)
+
+
+def test_no_motive_but_a_running_camera_falls_back_to_the_pose_check():
+    """The whole point of the fallback: sessions without a mocap connection are
+    real, and the video is what they will be scored from."""
+    root = _root(); app = None
+    try:
+        app = _app(root)
+
+        def boom():
+            raise OSError("no route to host")
+
+        master_app._POSE_DETECTOR_FACTORY = _FakeDetector
+        app._cov_session = ccs.CoverageSession(client_factory=boom)
+        app.streaming_flag.set()
+        assert app._coverage_start() is True
+        assert app._cov_session.modality is cc.POSE
+        assert "camera" in app.cov_frame.cget("text")
+        # The preview loop must now be publishing frames, or the worker has
+        # nothing to measure.
+        assert app._cov_want_frames.is_set()
+    finally:
+        master_app._POSE_DETECTOR_FACTORY = None
+        _teardown(app, root)
+
+
+def test_a_socket_that_opens_with_nothing_behind_it_is_not_motive():
+    """A NatNet multicast socket binds whether or not Motive is broadcasting.
+    Believing start() alone would pin every session to the mocap path and then
+    report a working setup as having no tracking at all."""
+    root = _root(); app = None
+    try:
+        app = _app(root)
+
+        class _SilentClient:
+            on_frame = None
+
+            def run(self):
+                return True
+
+            def shutdown(self):
+                pass
+
+        master_app._POSE_DETECTOR_FACTORY = _FakeDetector
+        app._cov_session = ccs.CoverageSession(client_factory=_SilentClient)
+        app.streaming_flag.set()
+        assert app._coverage_start(
+            ) is True, "should have fallen through to the camera"
+        assert app._cov_session.modality is cc.POSE
+    finally:
+        master_app._POSE_DETECTOR_FACTORY = None
         _teardown(app, root)
 
 
