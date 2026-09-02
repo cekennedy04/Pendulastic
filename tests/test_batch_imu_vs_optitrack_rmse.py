@@ -211,6 +211,11 @@ def test_contaminated_trial_no_longer_has_extreme_bias():
     this trial is well-scored; the corpus-level regression coverage lives
     in the mean/median printed by batch_imu_vs_optitrack_rmse.py's main().
 
+    2026-09-02 note: the assertion below now reads rmse_deg_offset_removed for
+    this trial. See the comment at the assertion -- the optical reference stopped
+    claiming an absolute zero, so raw RMSE against it measures the missing
+    origin rather than the IMU.
+
     Path note: Recordings/ has been reorganized twice. The trial first moved
     under an extra Participant_13/ wrapper
     (Recordings/Participant_13/Participant_13_left_post/...), and has since
@@ -222,19 +227,35 @@ def test_contaminated_trial_no_longer_has_extreme_bias():
     imu_path = _real_trial_path("13", "Left", "post", 4)
     row = _score_real_trial(imu_path)
     assert row["status"] == "ok", row.get("error")
-    # Measured value is 28.4 deg; 31.0 leaves headroom for benign numeric
-    # noise (library version drift, float rounding) without tolerating a
-    # further silent slide.
-    assert row["rmse_deg"] < 31.0, (
-        f"rmse_deg={row['rmse_deg']:.2f} -- expected ~28.4 deg (the current "
-        f"measured value; see docstring for why this one trial got worse "
-        f"even as the corpus improved); "
-        f"this catches a regression, not just any change")
+
+    # 2026-09-02: this assertion moved off rmse_deg, and NOT to make a failure
+    # go away. This trial's optical reference loads by the marker path, which
+    # since 87d7645 returns a RELATIVE curve and refuses to invent an absolute
+    # zero. Raw rmse_deg went to 142.26 with bias_deg 141.57 -- 99.5% of it is
+    # the missing origin, and the IMU had not moved at all. Measured directly:
+    # the IMU curve spans [141.8, 179.9] and the optical one [-0.2, 51.4].
+    #
+    # With the offset removed this trial scores 16.7 deg, BETTER than the 28.4
+    # it was pinned at. Asserting on rmse_deg here would be asserting on the
+    # arbitrary sign of a hinge eigenvector.
+    if row.get("optical_absolute_zero"):
+        # A bone-axis reference does have an origin, so a constant offset there
+        # is real disagreement and must still be scored.
+        measured = row["rmse_deg"]
+        limit = 31.0
+    else:
+        measured = row["rmse_deg_offset_removed"]
+        limit = 22.0        # measured 16.7; headroom without tolerating a slide
+    assert measured is not None and measured < limit, (
+        f"{measured} exceeds {limit} (optical_absolute_zero="
+        f"{row.get('optical_absolute_zero')}, raw rmse_deg={row['rmse_deg']:.2f}, "
+        f"bias_deg={row['bias_deg']:.2f}) -- this catches a regression in the "
+        f"IMU pipeline, not a change of reference convention")
 
 
 @skip_without_real_recordings
 def test_trial_with_no_genuine_pre_release_calm_is_flagged_not_silently_wrong():
-    """Participant_15/Left/pre/Trial_4: 33.0 deg RMSE / 28.4 deg bias
+    """P15 Left/pre/Trial_4: 33.0 deg RMSE / 28.4 deg bias
     before the fix, and unlike Trial_4 above, this raw log has NO
     contiguous stretch of low gyro magnitude anywhere before its original
     (contaminated) zero-capture point -- there is no genuine still baseline
@@ -251,8 +272,7 @@ def test_trial_with_no_genuine_pre_release_calm_is_flagged_not_silently_wrong():
     finite samples", a symptom of the same bad data. Either message keeps
     this test's point (unscoreable, not silently wrong); the coverage one
     names the actual cause."""
-    imu_path = os.path.join(
-        batch.REC_ROOT, "Participant_15", "Left", "pre", "Trial_4_imu.csv")
+    imu_path = _real_trial_path("15", "Left", "pre", 4)
     row = _score_real_trial(imu_path)
     assert row["status"] == "error"
     # Must fail for a reason this test is actually about -- either the

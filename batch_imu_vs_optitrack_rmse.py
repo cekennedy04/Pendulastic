@@ -160,8 +160,8 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
 
     # Redundant-wrapper fallback (2026-08-11 fix): Recordings/ was
     # reorganized to nest each participant's legacy per-condition folders
-    # under one Participant_N/ parent (e.g.
-    # Recordings/Participant_13/Participant_13_left_post/...), but
+    # under one participant parent (e.g.
+    # Recordings/MINT_13/Participant_13_left_post/...), but
     # OptiTrack_Recordings/ never got that extra wrapper for those legacy
     # folders -- they still sit as flat top-level siblings
     # (OptiTrack_Recordings/Participant_13_left_post/...), alongside a
@@ -310,6 +310,8 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         "lag_sec": None,
         "n_samples": None,
         "optitrack_method": None,
+        "optical_absolute_zero": None,
+        "rmse_deg_offset_removed": None,
         "error": None,
     }
 
@@ -346,6 +348,12 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
 
     row["status"] = "ok"
     row["rmse_deg"] = result["rmse_deg"]
+    # Whether the reference curve has an origin at all. The marker path returns
+    # a relative curve by design, so for those trials rmse_deg is dominated by
+    # an arbitrary offset and rmse_deg_offset_removed is the only comparable
+    # number. rmse_deg is left exactly as it was so no existing consumer moves.
+    row["optical_absolute_zero"] = (method == "rigid_body")
+    row["rmse_deg_offset_removed"] = result.get("rmse_deg_offset_removed")
     row["mae_deg"] = result["mae_deg"]
     row["bias_deg"] = result["bias_deg"]
     row["lag_sec"] = result["lag_sec"]
@@ -354,8 +362,9 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
 
 
 _FIELDNAMES = ["participant", "trial_key", "position", "trial", "imu_path", "optitrack_path",
-              "status", "rmse_deg", "mae_deg", "bias_deg", "lag_sec",
-              "n_samples", "optitrack_method", "error"]
+              "status", "rmse_deg", "rmse_deg_offset_removed", "mae_deg",
+              "bias_deg", "lag_sec", "n_samples", "optitrack_method",
+              "optical_absolute_zero", "error"]
 
 
 def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) -> dict:
