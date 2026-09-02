@@ -166,6 +166,54 @@
     <section class="view" id="view-mas">
       <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
         <h2>MAS Score Entry</h2></div>
+      <form id="mas-form" class="form">
+        <div class="card">
+          <p class="card-label">Who</p>
+          <label class="field"><span>Participant ID</span>
+            <input name="participant" type="text" autocomplete="off"></label>
+          <label class="field"><span>Leg</span>
+            <select name="leg">
+              <option value="">--</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select></label>
+          <label class="field"><span>Stronger leg</span>
+            <select name="stronger_leg"></select></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Context</p>
+          <label class="field"><span>Condition</span>
+            <input name="condition" type="text" autocomplete="off"></label>
+          <label class="field"><span>Diagnosis</span>
+            <input name="diagnosis" type="text" autocomplete="off"></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Grades</p>
+          <label class="field"><span>MAS grade</span>
+            <select name="mas_grade"></select></label>
+          <label class="field"><span>MAS flexion</span>
+            <select name="mas_flexion"></select></label>
+          <label class="field"><span>MAS extension</span>
+            <select name="mas_extension"></select></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Assessment</p>
+          <label class="field"><span>Assessed by</span>
+            <input name="assessed_by" type="text" autocomplete="off"></label>
+          <label class="field"><span>Assessed date</span>
+            <input name="assessed_date" type="date"></label>
+          <label class="field"><span>Notes</span>
+            <textarea name="notes" rows="3"></textarea></label>
+        </div>
+
+        <p id="mas-errors" class="field-error" hidden></p>
+        <p id="mas-status" class="field-status"></p>
+        <button class="btn btn--primary" id="mas-save" type="submit">Save assessment</button>
+      </form>
+      <div id="mas-list"></div>
     </section>
 
     <section class="view" id="view-session">

@@ -155,9 +155,18 @@ export function getOne(db, storeName, key) {
 export function put(db, storeName, record) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, 'readwrite');
-    tx.objectStore(storeName).put(record);
+    const req = tx.objectStore(storeName).put(record);
+    // The REQUEST's error is preferred over the transaction's, and the order
+    // matters. `tx.error` is null while the transaction is merely erroring --
+    // it is only populated once the abort actually completes -- so reading it
+    // from the error handler rejected with literal `null` and threw away the
+    // real cause. The unique `by_identity` index makes that user-visible: a
+    // duplicate assessment raises ConstraintError on the request, and the MAS
+    // view's "an assessment already exists" recovery message can only be shown
+    // if `err.name` survives the trip out of here. It did not.
+    const failure = () => req.error || tx.error || new Error('indexedDB transaction aborted');
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(failure());
     // abort is handled separately from error: IndexedDB does not guarantee a
     // transaction's error event fires before it aborts -- an exception thrown
     // inside a request's own onsuccess, or (inconsistently across engines,
@@ -166,7 +175,7 @@ export function put(db, storeName, record) {
     // those paths leave the promise neither resolved nor rejected forever,
     // which for this module's "never a silent record loss" stance is worse
     // than a clean rejection: the caller gets no signal and cannot retry.
-    tx.onabort = () => reject(tx.error || new Error('indexedDB transaction aborted'));
+    tx.onabort = () => reject(failure());
   });
 }
 

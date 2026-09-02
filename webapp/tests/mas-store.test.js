@@ -4,6 +4,7 @@ import {
   MAS_ORDER, PENDING_MAS_GRADE, STRONGER_LEG_OPTIONS, LEG_OPTIONS, MAS_FIELDS,
   validateMasForm, makeMasRecord, masIdentity, isPending,
 } from '../src/mas-store.js';
+import { draftKey, draftCandidateKeys, pickNewestDraft, masGuardReason } from '../src/views/mas.js';
 
 // These four constants are transcriptions of the desktop's own definitions.
 // A drift here does not fail loudly -- it produces a CSV the desktop's
@@ -131,4 +132,68 @@ test('isPending is true only for the sentinel', () => {
   assert.equal(isPending({ mas_grade: PENDING_MAS_GRADE }), true);
   assert.equal(isPending({ mas_grade: '0' }), false);
   assert.equal(isPending({ mas_grade: '' }), false);
+});
+
+// ---- MAS form drafts (task 10) -------------------------------------------
+test('a draft key is scoped to participant and leg', () => {
+  assert.equal(draftKey('pat-1', 'left'), 'mas-draft:pat-1:left');
+});
+
+test('two legs of one participant keep separate drafts', () => {
+  assert.notEqual(draftKey('pat-1', 'left'), draftKey('pat-1', 'right'));
+});
+
+test('an unset leg still yields a usable key rather than "undefined"', () => {
+  assert.equal(draftKey('pat-1', null), 'mas-draft:pat-1:');
+});
+
+// Ruling J. The form's Leg field is editable and independent of the session's
+// side, so a draft can be written under a leg the session does not have
+// selected. Loading by the session side alone would silently lose it.
+test('the candidate key set covers both legs and the unset leg', () => {
+  const keys = draftCandidateKeys('pat-1');
+  assert.equal(keys.length, 3);
+  assert.ok(keys.includes('mas-draft:pat-1:left'));
+  assert.ok(keys.includes('mas-draft:pat-1:right'));
+  assert.ok(keys.includes('mas-draft:pat-1:'));
+});
+
+test('the most recently saved draft is the one resumed', () => {
+  const picked = pickNewestDraft([
+    { values: { participant: 'old' }, saved_at: 100 },
+    { values: { participant: 'new' }, saved_at: 900 },
+    { values: { participant: 'mid' }, saved_at: 500 },
+  ]);
+  assert.equal(picked.participant, 'new');
+});
+
+// clearDraft stores null rather than deleting the row, so a cleared draft is
+// present in the candidate scan and must never be resumed.
+test('a cleared draft never wins over a live one', () => {
+  assert.equal(pickNewestDraft([
+    null,
+    { values: null, saved_at: 999 },
+    { values: { participant: 'live' }, saved_at: 1 },
+  ]).participant, 'live');
+});
+
+test('no drafts at all resumes nothing rather than throwing', () => {
+  assert.equal(pickNewestDraft([null, null, null]), null);
+  assert.equal(pickNewestDraft([]), null);
+  assert.equal(pickNewestDraft(undefined), null);
+});
+
+// Ruling K. A record with no patient_id is an unanchored row; the spec
+// forbids one and db.js's backfill exists to guarantee it cannot happen.
+// Found in a browser, where Save with no participant persisted patient_id
+// null and then threw out of invalidateExport.
+test('saving is refused when no participant is set', () => {
+  assert.match(masGuardReason({ patientId: null }), /participant/i);
+  assert.match(masGuardReason({ patientId: '' }), /participant/i);
+  assert.match(masGuardReason({}), /participant/i);
+  assert.match(masGuardReason(), /participant/i);
+});
+
+test('saving is permitted once a participant exists', () => {
+  assert.equal(masGuardReason({ patientId: 'pat-1' }), null);
 });

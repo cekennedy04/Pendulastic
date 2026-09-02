@@ -12,6 +12,7 @@ import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
 import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
+import { createMasView } from './views/mas.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1082,6 +1083,39 @@ if (typeof document !== 'undefined') {
     },
   });
   router.register('capture', captureView);
+
+  // ---- MAS entry (task 10) ------------------------------------------------
+  router.register('mas', createMasView({
+    el,
+    context: () => ({
+      patientId: currentPatient?.id ?? null,
+      participantLabel: currentPatient?.clinic_patient_id ?? '',
+      side: currentSide,
+    }),
+    saveRecord: async (record) => {
+      await ensureSessionReady();
+      // Defensive, behind the view's own guard: an assessment with no
+      // patient_id is an unanchored row, which is exactly what db.js's
+      // backfill exists to make impossible. No caller may write one, and a
+      // null session is a legitimate resting state since participant entry
+      // landed -- invalidateExport would throw on it.
+      if (!currentPatient || !currentSession) {
+        throw new Error('Set a participant in Session before saving an assessment.');
+      }
+      await put(db, STORES.mas, record);
+      // A new assessment is unexported session data, so it re-arms the close
+      // lock exactly as a new trial does.
+      currentSession = invalidateExport(currentSession);
+      await put(db, STORES.sessions, currentSession);
+      refreshExportLock();
+    },
+    loadRecords: async () => (currentPatient
+      ? getAll(db, STORES.mas, 'by_patient', currentPatient.id)
+      : []),
+    loadDraft: async (key) => (await getOne(db, STORES.settings, key))?.value ?? null,
+    saveDraft: (key, value) => put(db, STORES.settings, { key, value }),
+    clearDraft: (key) => put(db, STORES.settings, { key, value: null }),
+  }));
 
   // ---- Trial history (task 9) ---------------------------------------------
   router.register('trials', createTrialsView({

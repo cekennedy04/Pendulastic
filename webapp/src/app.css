@@ -642,3 +642,57 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn--secondary { background: var(--accent-soft); color: var(--fg); }
+
+/* ---- Cards (workbench_style.card_frame) ---------------------------------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0 16px 12px;
+}
+.card-label {
+  margin: 0 0 8px;
+  font-size: clamp(11px, 3vw, 13px); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg3);
+}
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.field > span { font-size: clamp(12px, 3.4vw, 14px); font-weight: 600; color: var(--fg2); }
+.field input, .field select, .field textarea, #participant-select, #participant-new {
+  font: inherit;
+  padding: 10px 12px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.field input:focus, .field select:focus, .field textarea:focus { outline: 2px solid var(--accent); }
+.field-row { display: flex; gap: 8px; margin-top: 8px; }
+.field-row #participant-new { flex: 1; min-width: 0; }
+#participant-select { width: 100%; }
+
+.field-error {
+  margin: 0 16px 8px; font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 14px); color: var(--banner-bg);
+}
+.field-error[hidden] { display: none; }
+.field-status { margin: 0 16px 8px; font-size: clamp(12px, 3.2vw, 14px); color: var(--fg3); }
+
+#mas-save { margin: 0 16px 16px; width: calc(100% - 32px); }
+
+/* A pending assessment is incomplete, not wrong -- the same amber the
+   unmeasured-parameter notice uses, never the fault red. */
+.mas-row.is-pending { border-left: 4px solid var(--holding-bg); }
+.empty { margin: 16px; color: var(--fg3); }
+
+/* Segmented left/right control. Both options are always visible, so the
+   choice is legible without opening a picker. */
+.seg { display: flex; gap: 8px; }
+.seg-btn {
+  flex: 1; min-height: 44px; font: inherit; font-weight: 700;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); color: var(--fg); cursor: pointer;
+}
+.seg-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }

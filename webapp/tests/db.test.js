@@ -484,3 +484,27 @@ test('a blocked upgrade that later succeeds does not double-settle', async () =>
   // The other tab closed; the upgrade proceeds and fires onsuccess.
   assert.doesNotThrow(() => req.onsuccess?.({ target: { result: {} } }));
 });
+
+// Ruling L. A duplicate MAS assessment raises ConstraintError on the PUT
+// REQUEST. tx.error is still null at the moment the transaction's error
+// event fires -- it is only populated once the abort completes -- so reading
+// tx.error there rejected with literal null and the MAS view could never show
+// its "an assessment already exists" recovery message. Observed in a browser
+// as "Save failed: null".
+test('put rejects with the request error, not a null transaction error', async () => {
+  const { db, state } = fakeDbWithTx();
+  const p = put(db, STORES.mas, { id: 'm1' });
+  state.putReq.error = Object.assign(new Error('duplicate'), { name: 'ConstraintError' });
+  state.tx.error = null; // exactly the state a real engine is in here
+  state.tx.onerror();
+  await assert.rejects(p, (e) => e.name === 'ConstraintError');
+});
+
+test('an aborted put still prefers the request error when there is one', async () => {
+  const { db, state } = fakeDbWithTx();
+  const p = put(db, STORES.mas, { id: 'm2' });
+  state.putReq.error = Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+  state.tx.error = null;
+  state.tx.onabort();
+  await assert.rejects(p, (e) => e.name === 'QuotaExceededError');
+});
