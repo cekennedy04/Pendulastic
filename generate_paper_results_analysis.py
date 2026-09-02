@@ -123,6 +123,15 @@ def load_group_and_demo():
     is the variable the test measures. It no longer buys coverage, and a reader
     comparing cohort sizes against an older run will find 7 participants
     missing for this reason and not for a data-quality one.
+
+    Note what this function's output is actually used for. Until 2026-09-02 the
+    caller took only `group`, `age` and `sex` from it: the spasticity rollup was
+    computed here and discarded, reaching no CSV column and no model, while this
+    docstring described it as the reason the grouping exists. It is now written
+    into the per-trial table so the value is inspectable, but the mixed-effects
+    model, the AUC and the boxplots still run on `group` (MS/Control). Moving
+    them onto spasticity is a research decision rather than a cleanup, and it
+    would be underpowered: 11 non-spastic, 4 spastic, 7 unknown participants.
     """
     import pt_cohort_common as _pcc
     import spasticity_grouping as _sg
@@ -255,8 +264,19 @@ def main():
             continue
         imu_pt, opti_pt = result
         pid = participant_paths.strip_prefix(t["participant"])
-        row = {"pid": pid, "trial_key": t["trial_key"], "group": groups.get(pid, {}).get("group"),
-              "age": groups.get(pid, {}).get("age"), "sex": groups.get(pid, {}).get("sex")}
+        # spasticity/spasticity_source were computed by load_group_and_demo and
+        # then dropped on the floor: they reached no output and no model, while
+        # the docstring described them as the reason this grouping exists. They
+        # are emitted now so the value is at least inspectable. The model below
+        # still runs on `group` (MS/Control) -- switching it to spasticity is a
+        # research decision, not a cleanup, and it would be underpowered: after
+        # A0_DERIVED_LABELS_ENABLED went off the cohort is 11 non-spastic,
+        # 4 spastic and 7 unknown participants.
+        _demo = groups.get(pid, {})
+        row = {"pid": pid, "trial_key": t["trial_key"], "group": _demo.get("group"),
+              "spasticity": _demo.get("spasticity"),
+              "spasticity_source": _demo.get("spasticity_source"),
+              "age": _demo.get("age"), "sex": _demo.get("sex")}
         for p in PARAMS:
             row[f"imu_{p}"] = imu_pt[p]
             row[f"opti_{p}"] = opti_pt[p]
