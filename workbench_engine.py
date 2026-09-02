@@ -972,12 +972,27 @@ def load_optitrack_trial(csv_path: str):
     on 2026-08-26, when the segment axis became an anatomically-seeded Kabsch
     fit (see _angle_from_labeled_markers). The string is kept as-is because it
     is written into exported sessions; only the meaning below changed."""
+    t, angle, method, _quality = load_optitrack_trial_detailed(csv_path)
+    return t, angle, method
+
+
+def load_optitrack_trial_detailed(csv_path: str):
+    """(t, angle, method, quality) -- load_optitrack_trial plus TrialQuality.
+
+    Same dispatch, same numbers; the fourth value is the quality record the
+    marker path already builds and load_optitrack throws away. Callers that
+    want to stratify by axis conditioning or optical coverage can have it
+    without loading the trial a second time -- a corpus pass costs ~22 s per
+    trial, so a second one purely to fetch a flag is not affordable.
+
+    `quality` is None on the rigid_body path, which does not produce one.
+    """
     try:
         t, angle = analysis_pipeline._optitrack_knee_angle_series(csv_path)
-        return t, angle, "rigid_body"
+        return t, angle, "rigid_body", None
     except ValueError:
-        t, angle = pendulastic_pt_score.load_optitrack(csv_path)
-        return t, angle, "marker_pca"
+        t, angle, quality = pendulastic_pt_score.load_optitrack_detailed(csv_path)
+        return t, angle, "marker_pca", quality
 
 
 def load_video_trial(video_path: str, models: list,

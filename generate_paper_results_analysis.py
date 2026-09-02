@@ -241,14 +241,15 @@ def imu_pt_params_for_trial(t_dict):
         return None
     try:
         t, angle, _ref = engine.load_imu_trial_from_components(validations, method="relative")
-        ref_t, ref_angle, _m = engine.load_optitrack_trial(t_dict["optitrack_path"])
+        ref_t, ref_angle, _m, _q = engine.load_optitrack_trial_detailed(
+            t_dict["optitrack_path"])
     except Exception:
         return None
     if len(t) < 10 or len(ref_t) < 10:
         return None
     imu_pt = engine.windowed_pt_params(t, angle)
     opti_pt = engine.windowed_pt_params(ref_t, ref_angle)
-    return imu_pt, opti_pt
+    return imu_pt, opti_pt, _m, _q
 
 
 def main():
@@ -262,7 +263,7 @@ def main():
         result = imu_pt_params_for_trial(t)
         if result is None:
             continue
-        imu_pt, opti_pt = result
+        imu_pt, opti_pt, opti_method, opti_q = result
         pid = participant_paths.strip_prefix(t["participant"])
         # spasticity/spasticity_source were computed by load_group_and_demo and
         # then dropped on the floor: they reached no output and no model, while
@@ -276,7 +277,16 @@ def main():
         row = {"pid": pid, "trial_key": t["trial_key"], "group": _demo.get("group"),
               "spasticity": _demo.get("spasticity"),
               "spasticity_source": _demo.get("spasticity_source"),
-              "age": _demo.get("age"), "sex": _demo.get("sex")}
+              "age": _demo.get("age"), "sex": _demo.get("sex"),
+              # Quality of the OPTICAL reference this trial is scored against.
+              # bccb44c stopped refusing ill-conditioned trials, which is right
+              # -- analysis flags, it does not drop -- but the flag only helps
+              # if something downstream reads it, and nothing here did.
+              "optitrack_method": opti_method,
+              "opti_coverage": (None if opti_q is None
+                                else getattr(opti_q, "coverage", None)),
+              "opti_conditioning": (None if opti_q is None
+                                    else getattr(opti_q, "conditioning", None))}
         for p in PARAMS:
             row[f"imu_{p}"] = imu_pt[p]
             row[f"opti_{p}"] = opti_pt[p]
