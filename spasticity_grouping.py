@@ -49,6 +49,14 @@ compute_pt_params; it is simply not one of the seven scored parameters.
 
 What the A0 threshold can and cannot do
 ---------------------------------------
+WITHHELD SINCE 2026-09-02 -- see A0_DERIVED_LABELS_ENABLED. Everything below
+describes the threshold as derived, and remains true of that derivation; what
+changed is that the reconstruction it was derived on has been replaced, and on
+the current one the reference population's sd doubles (7.2 -> 15.6), which puts
+mean-2sd at 14.0 and leaves the bar unable to separate. Legs that would have
+been labelled this way now come back UNKNOWN with source `a0-threshold-invalid`
+and their measured amplitude in the detail.
+
 A0_SPASTIC_MAX_DEG is set from this cohort's own known-MAS-0 legs: mean 52.5,
 sd 7.2, so mean - 2sd = 38.1 deg. Measured against the legs with clinical MAS:
 
@@ -124,6 +132,7 @@ SRC_MAS_OPERATOR = "mas-operator-set"
 SRC_CLINICAL_COMPONENT = "clinical-mas-components"
 SRC_CONTROL = "control-by-recruitment"
 SRC_A0 = "a0-derived"
+SRC_A0_WITHHELD = "a0-threshold-invalid"
 SRC_NONE = "no-data"
 
 # mas_validation.PENDING_MAS_GRADE -- "assessed_date set, grade not yet given".
@@ -140,6 +149,39 @@ CLINICIAN_ASSESSED_SOURCES = (SRC_CLINICAL, SRC_CLINICAL_COMPONENT)
 # is called spastic. See the module docstring for the derivation and for what
 # this threshold provably does and does not detect.
 A0_SPASTIC_MAX_DEG = 38.1
+
+# Whether a leg with no clinical MAS may still be labelled from its amplitude.
+# OFF since 2026-09-02, by operator decision, because the threshold above no
+# longer describes this corpus.
+#
+# 38.1 is mean - 2sd of the known-MAS-0 legs, recorded at mean 52.5 / sd 7.2.
+# That was measured on a reconstruction that has since been replaced. Re-measured
+# over the same 18 clinical-MAS-0 legs (15 scoreable) on the current one:
+#
+#     recorded   mean 52.5   sd  7.2  ->  mean-2sd = 38.1
+#     current    mean 45.1   sd 15.6  ->  mean-2sd = 14.0
+#
+# The mean fell 7.4 deg and the spread more than DOUBLED. Judging current
+# amplitudes against the old threshold flipped 5 of 13 a0-derived legs to
+# spastic, all in the same direction -- an artefact of the mismatch, not a
+# finding.
+#
+# Three rescues were measured and all three failed. A coverage floor makes it
+# worse (sd 16.6 at >=90%, n falls to 6). Axis conditioning is flat (sd 16.0 at
+# >=0.90; no trial has NaN conditioning, so the trials bccb44c stopped refusing
+# are not the cause). Excluding the documented rig-defect legs leaves sd 15.1.
+#
+# The spread is intrinsic: clinically-normal legs now span 19.5-67.4 deg, P4 L
+# at 19.5 and P5 at 25.1/26.8 sit as low as the legs the threshold flags, and
+# P10 differs 37.6 vs 22.6 between its own two legs. That is this module's own
+# stated confound -- A0 also reflects how far the examiner lifted the leg --
+# now dominating the signal.
+#
+# Re-enabling this requires re-deriving the threshold on the reconstruction in
+# force at the time AND showing the reference population is tight enough for
+# mean-2sd to mean anything. Flipping it back to True on its own would restore
+# the artefact.
+A0_DERIVED_LABELS_ENABLED = False
 
 
 class SpasticityLabel(NamedTuple):
@@ -412,6 +454,17 @@ def classify_leg(pid: str, leg: str, *, arm: Optional[str] = None,
 
     if a0_deg is not None and a0_deg == a0_deg:      # not NaN
         a0 = float(a0_deg)
+        if not A0_DERIVED_LABELS_ENABLED:
+            # UNKNOWN, and said so with its own source rather than folding into
+            # SRC_NONE: the amplitude was measured and is reported here, so a
+            # reader can tell "we could not measure this leg" apart from "we
+            # measured it and the threshold that would interpret it is not
+            # trustworthy". They are different problems with different fixes.
+            return SpasticityLabel(
+                UNKNOWN, SRC_A0_WITHHELD,
+                f"A0 {a0:.1f} deg measured, but the {A0_SPASTIC_MAX_DEG:.1f} "
+                "deg threshold is calibrated on a superseded reconstruction "
+                "(MAS-0 reference sd 7.2 -> 15.6); no label derived")
         if a0 <= A0_SPASTIC_MAX_DEG:
             return SpasticityLabel(
                 SPASTIC, SRC_A0,

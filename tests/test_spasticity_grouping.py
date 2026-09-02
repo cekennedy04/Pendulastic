@@ -16,6 +16,19 @@ import spasticity_grouping as sg
 
 # ── mas_level ────────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def a0_enabled(monkeypatch):
+    """Turn the amplitude-derived label back on for the tests that exercise it.
+
+    A0_DERIVED_LABELS_ENABLED is False by default since 2026-09-02 -- the
+    threshold is calibrated on a superseded reconstruction, see the constant's
+    own comment. The MECHANISM is still there and may be re-enabled once the
+    threshold is re-derived, so it stays under test rather than being deleted;
+    what changed is the default, which is covered separately below.
+    """
+    monkeypatch.setattr(sg, "A0_DERIVED_LABELS_ENABLED", True)
+
+
 def test_mas_zero_is_non_spastic():
     assert sg.mas_level("0") == sg.NON_SPASTIC
 
@@ -66,14 +79,14 @@ def test_control_still_defers_to_a_real_mas_score():
 
 # ── the A0 proxy ─────────────────────────────────────────────────────────────
 
-def test_low_amplitude_leg_without_mas_is_derived_spastic():
+def test_low_amplitude_leg_without_mas_is_derived_spastic(a0_enabled):
     """P21 right measures ~21.5 deg and has no MAS -- the case this exists for."""
     lab = sg.classify_leg("21", "right", arm="Stroke", mas_by_leg={}, a0_deg=21.5)
     assert (lab.level, lab.source) == (sg.SPASTIC, sg.SRC_A0)
     assert "21.5" in lab.detail
 
 
-def test_normal_amplitude_leg_without_mas_is_not_claimed_to_be_mas_zero():
+def test_normal_amplitude_leg_without_mas_is_not_claimed_to_be_mas_zero(a0_enabled):
     """Above the threshold means "no MARKED amplitude loss found", not "MAS 0".
     The detail string must say so, because the proxy provably misses mild
     spasticity (3 of 5 known MAS>=1 legs sit inside the healthy range)."""
@@ -82,7 +95,7 @@ def test_normal_amplitude_leg_without_mas_is_not_claimed_to_be_mas_zero():
     assert "mild spasticity is not detectable" in lab.detail
 
 
-def test_threshold_is_inclusive_at_the_boundary():
+def test_threshold_is_inclusive_at_the_boundary(a0_enabled):
     at = sg.classify_leg("x", "left", arm="MS", mas_by_leg={},
                          a0_deg=sg.A0_SPASTIC_MAX_DEG)
     assert at.level == sg.SPASTIC
@@ -148,14 +161,14 @@ def test_both_legs_are_returned_even_with_no_data_at_all():
     assert set(got) == {"left", "right"}
 
 
-def test_a_diagnosed_leg_with_no_data_is_unknown_not_absent():
+def test_a_diagnosed_leg_with_no_data_is_unknown_not_absent(a0_enabled):
     got = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
                                        a0_by_leg={"right": 42.7})
     assert got["left"].level == sg.UNKNOWN
     assert got["right"].level == sg.NON_SPASTIC
 
 
-def test_a0_by_leg_accepts_either_key_shape():
+def test_a0_by_leg_accepts_either_key_shape(a0_enabled):
     plain = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
                                          a0_by_leg={"left": 27.0, "right": 21.5})
     tupled = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
@@ -177,7 +190,7 @@ def test_participant_is_spastic_if_either_leg_is():
     assert "right" in got.detail
 
 
-def test_participant_is_non_spastic_when_one_leg_is_known_and_clean():
+def test_participant_is_non_spastic_when_one_leg_is_known_and_clean(a0_enabled):
     """P22: left unassessable, right non-spastic. The PARTICIPANT is still
     characterised -- and the note has to admit the left leg was not."""
     legs = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
@@ -268,7 +281,7 @@ def test_ms_participant_with_mas_zero_is_non_spastic():
     assert lab.level == sg.NON_SPASTIC
 
 
-def test_ms_participant_with_normal_amplitude_is_non_spastic():
+def test_ms_participant_with_normal_amplitude_is_non_spastic(a0_enabled):
     """Same, via the derived path: no clinical MAS, healthy swing."""
     lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
     assert lab.level == sg.NON_SPASTIC
@@ -362,3 +375,48 @@ def test_real_csv_separates_the_three_tiers():
         tiers[src] = tiers.get(src, 0) + 1
     assert tiers.get(sg.SRC_MAS_ASSUMED, 0) > 0, tiers
     assert tiers.get(sg.SRC_CLINICAL, 0) > 0, tiers
+
+
+# ── the amplitude-derived label is withheld by default ───────────────────────
+
+def test_a0_derived_labelling_is_off_by_default():
+    """The operator's 2026-09-02 decision. 38.1 deg is mean-2sd of the known
+    MAS-0 legs as they read on a reconstruction that has been replaced; on the
+    current one the same legs give mean 45.1 / sd 15.6, so mean-2sd would be
+    14.0. Judging today's amplitudes against the old bar flipped 5 of 13
+    a0-derived legs to spastic, all in one direction."""
+    assert sg.A0_DERIVED_LABELS_ENABLED is False
+
+
+def test_a_leg_that_would_have_been_a0_derived_is_unknown():
+    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=27.6)
+    assert lab.level == sg.UNKNOWN
+    assert lab.source == sg.SRC_A0_WITHHELD
+
+
+def test_the_withheld_label_still_reports_the_amplitude_it_measured():
+    """"could not measure this leg" and "measured it, but the threshold that
+    would read it is not trustworthy" are different problems with different
+    fixes, so they must not share a source."""
+    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=27.6)
+    assert "27.6" in lab.detail
+    assert lab.source != sg.SRC_NONE
+
+
+def test_a_leg_with_no_amplitude_at_all_is_still_plain_no_data():
+    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=None)
+    assert (lab.level, lab.source) == (sg.UNKNOWN, sg.SRC_NONE)
+
+
+def test_clinical_mas_still_wins_over_the_withheld_amplitude():
+    """Withholding the derived label must not disturb precedence -- the legs
+    that have a real examination are exactly the ones that must keep it."""
+    lab = sg.classify_leg("14", "left", arm="MS",
+                          mas_by_leg={("14", "left"): "1"}, a0_deg=44.8)
+    assert (lab.level, lab.source) == (sg.SPASTIC, sg.SRC_CLINICAL)
+
+
+def test_control_by_recruitment_still_wins_too():
+    lab = sg.classify_leg("23", "right", arm="Control", mas_by_leg={},
+                          a0_deg=28.2)
+    assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CONTROL)
