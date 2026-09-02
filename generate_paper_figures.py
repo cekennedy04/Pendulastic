@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import math
 import os
 
 import matplotlib
@@ -55,9 +56,43 @@ def _style_axis(ax):
     ax.set_axisbelow(True)
 
 
+def _drop_unmeasurable(rows, params, sides=("imu", "opti")):
+    """Rows where every named parameter was actually measured, on both sides.
+
+    Since 48d7c96 an unmeasurable PT parameter is NaN rather than 0.0, and this
+    table now carries them. A NaN reaching np.mean voids the whole aggregate,
+    and a NaN reaching a scatter silently drops a point while the caption still
+    claims the full n -- so they are removed here, once, where the count can be
+    reported, rather than absorbed by nan-aware aggregates further down.
+    """
+    kept, dropped = [], 0
+    for r in rows:
+        ok = True
+        for side in sides:
+            for p in params:
+                key = f"{side}_{p}"
+                if key not in r:
+                    continue
+                try:
+                    if not math.isfinite(float(r[key])):
+                        ok = False
+                except (TypeError, ValueError):
+                    ok = False
+        if ok:
+            kept.append(r)
+        else:
+            dropped += 1
+    if dropped:
+        print(f"[{dropped} of {len(rows)} trials dropped: PT parameters not "
+              f"measurable on one or both modalities]")
+    return kept
+
+
 def load_trials_csv():
     with open("Model_Analysis_Outputs/paper_results_analysis_trials.csv", newline="") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    return _drop_unmeasurable(rows, ["R2n", "N", "phi_max_ratio", "omega_max_n",
+                                     "f", "area_ratio", "omega_min_n"])
 
 
 def figure1_bland_altman(rows):

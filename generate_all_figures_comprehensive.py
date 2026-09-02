@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import math
 import re
 import os
 import json
@@ -125,13 +126,45 @@ def parse_mag_toggle():
     return rows
 
 
+def _drop_unmeasurable(rows, params, sides=("imu", "opti")):
+    """Rows where every named parameter was actually measured, on both sides.
+
+    Since 48d7c96 an unmeasurable PT parameter is NaN rather than 0.0, and this
+    table now carries them. A NaN reaching np.mean voids the whole aggregate,
+    and a NaN reaching a scatter silently drops a point while the caption still
+    claims the full n -- so they are removed here, once, where the count can be
+    reported, rather than absorbed by nan-aware aggregates further down.
+    """
+    kept, dropped = [], 0
+    for r in rows:
+        ok = True
+        for side in sides:
+            for p in params:
+                key = f"{side}_{p}"
+                if key not in r:
+                    continue
+                try:
+                    if not math.isfinite(float(r[key])):
+                        ok = False
+                except (TypeError, ValueError):
+                    ok = False
+        if ok:
+            kept.append(r)
+        else:
+            dropped += 1
+    if dropped:
+        print(f"[{dropped} of {len(rows)} trials dropped: PT parameters not "
+              f"measurable on one or both modalities]")
+    return kept
+
+
 def load_pt_params_trials():
     path = os.path.join(BASE, "Model_Analysis_Outputs", "paper_results_analysis_trials.csv")
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             rows.append(r)
-    return rows
+    return _drop_unmeasurable(rows, PARAMS)
 
 
 PARAMS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "f", "area_ratio", "omega_min_n"]

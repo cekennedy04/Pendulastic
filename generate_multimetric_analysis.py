@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import math
 import os
 
 import matplotlib
@@ -97,6 +98,17 @@ def build_unified_rows():
         row["opti_pt"] = engine.windowed_pt_params(ref_t, ref_angle)
         row["imu_pt"] = engine.windowed_pt_params(t_imu, ang_imu)
         row["mp_pt"] = engine.windowed_pt_params(t_mp, ang_mp)
+        # Since 48d7c96 an unmeasurable parameter is NaN, not 0.0. This row
+        # exists to compare three modalities against each other, so a trial
+        # that one of them could not measure is not a comparison -- dropping it
+        # here, where the reason is visible, beats letting a NaN void an
+        # aggregate or silently vanish from a scatter that still claims full n.
+        _unmeasurable = [k for k in ("opti_pt", "imu_pt", "mp_pt")
+                         if not all(math.isfinite(v) for v in row[k].values())]
+        if _unmeasurable:
+            print(f"  [{i+1}/{len(common_keys)}] {pid} {key} -> skipped, "
+                  f"not measurable: {', '.join(_unmeasurable)}")
+            continue
         rows.append(row)
         print(f"  [{i+1}/{len(common_keys)}] {pid} {key} -> ok")
     return rows

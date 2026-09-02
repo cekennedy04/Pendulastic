@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import math
 import os
 
 import matplotlib
@@ -56,6 +57,8 @@ def build_rows():
     groups = load_group_and_demo()
 
     rows = []
+
+    n_unmeasurable = [0]
     for t in matched:
         validations = {
             "accel": engine.validate_component_csv(t["accel"], "accel"),
@@ -76,9 +79,18 @@ def build_rows():
         raw_cond = os.path.basename(os.path.dirname(t["imu"]))
         row = {"pid": pid, "group": groups.get(pid, {}).get("group"),
               "condition": normalize_condition(raw_cond), "raw_condition": raw_cond}
+        # Unmeasurable parameters are NaN since 48d7c96; a single one voids
+        # every group mean it lands in, so the trial is dropped here where the
+        # count can be reported rather than nan-ignored downstream.
+        if not all(math.isfinite(imu_pt[p]) for p in PARAMS):
+            n_unmeasurable[0] += 1
+            continue
         for p in PARAMS:
             row[f"imu_{p}"] = imu_pt[p]
         rows.append(row)
+    if n_unmeasurable[0]:
+        print(f"[{n_unmeasurable[0]} trials dropped: IMU PT parameters not "
+              f"measurable]")
     return rows
 
 
