@@ -2,6 +2,7 @@
 import csv, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
+import participant_paths
 
 
 def test_app_starts_with_mode_select_visible():
@@ -3039,8 +3040,9 @@ def test_start_optitrack_recording_sends_relpath_matching_master_app_layout(monk
     motive_sync.mirror_relpath() silently warned and skipped
     SetCurrentSession, leaving any OptiTrack recording in whatever session
     Motive last had open instead of this participant's folder. relpath must
-    match master_app.py's Participant_{pid}/{leg}/{characterization}
-    layout."""
+    match master_app.py's {prefix}_{pid}/{leg}/{characterization} layout,
+    where the prefix is the participant's study (Control_/CHAT_/MINT_) or the
+    legacy Participant_ when their diagnosis names no study."""
     import pendulastic_app as _m
     if not _m._MOTIVE_AVAIL:
         return
@@ -3054,7 +3056,10 @@ def test_start_optitrack_recording_sends_relpath_matching_master_app_layout(monk
         app._start_optitrack_recording(meta)
 
         assert len(sent) == 1, "must trigger motive_sync exactly once"
-        expected_relpath = os.path.join("Participant_P1", "Right", "MS")
+        expected_relpath = os.path.join(
+            participant_paths.participant_dir_name(
+                "P1", participant_paths.OPTI_ROOT),
+            "Right", "MS")
         assert f"relpath={expected_relpath}" in sent[0]
     finally:
         app.destroy()

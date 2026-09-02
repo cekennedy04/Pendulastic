@@ -40,6 +40,7 @@ import warnings
 from typing import Optional
 
 import workbench_engine as engine
+import participant_paths
 import pt_report_common
 
 BASE_DIR = r"C:\Users\cladi\Pendulastic"
@@ -167,11 +168,13 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
     # de-wrapped path with parts[0] dropped, tried strictly after every
     # depth of the direct path so a genuine mirrored match is always
     # preferred over the fallback.
-    _pid_re = re.compile(r"^Participant_(\d+)$", re.IGNORECASE)
+    # Prefix-agnostic: the wrapper may be MINT_13/ while the legacy folder
+    # inside it is still Participant_13_left_post/ (see participant_paths).
     part_candidates = [parts]
     if len(parts) > 1:
-        m0, m1 = _pid_re.match(parts[0]), re.match(r"^Participant_(\d+)[_/]", parts[1], re.IGNORECASE)
-        if m0 and m1 and m0.group(1) == m1.group(1):
+        p0 = participant_paths.pid_from_dir_name(parts[0])
+        m1 = participant_paths.PATH_PID_RE.match(parts[1])
+        if p0 and p0.isdigit() and m1 and m1.group(1) == p0:
             part_candidates.append(parts[1:])
 
     for candidate_parts in part_candidates:
@@ -212,9 +215,14 @@ def _parse_trial_identifiers(imu_path: str) -> dict:
     """Parse participant/position/trial identifiers out of the anchor
     path, reusing the existing Recordings/ directory-naming convention
     (e.g. .../Participant_13_right_post/Session_post/Position_1/
-    Height_Joint-Level/Trial_3_imu.csv)."""
+    Height_Joint-Level/Trial_3_imu.csv). The folder may carry a study prefix
+    (Control_/CHAT_/MINT_) or the legacy Participant_ one; the folder NAME is
+    returned as-is, so read the id back out with
+    participant_paths.strip_prefix()."""
     parts = os.path.normpath(imu_path).split(os.sep)
-    participant = next((p for p in parts if p.startswith("Participant_")), "unknown")
+    participant = next(
+        (p for p in parts if participant_paths.is_participant_dir_name(p)),
+        "unknown")
     position = next((p for p in parts if p.startswith("Position_")), "unknown")
     trial_name = os.path.basename(imu_path)
     m = _TRIAL_ANCHOR_RE.match(trial_name)

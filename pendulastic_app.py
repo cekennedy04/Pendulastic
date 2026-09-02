@@ -138,6 +138,7 @@ except Exception:
     _MPL_AVAIL = False
 
 import workbench_style as ws   # zero-dependency (tkinter only) -- always available
+import participant_paths       # group-prefixed folder naming (Control_/CHAT_/MINT_)
 
 try:
     import pt_report_common as _report
@@ -4249,10 +4250,14 @@ class App(tk.Tk):
                 # and skips SetCurrentSession entirely, leaving Motive
                 # recording into whatever session it last had open instead
                 # of this participant's folder. Mirrors master_app.py's
-                # Participant_{pid}/{leg}/{characterization} layout so both
-                # apps' OptiTrack_Recordings trees stay compatible.
+                # {Control,CHAT,MINT,Participant}_{pid}/{leg}/{characterization}
+                # layout so both apps' OptiTrack_Recordings trees stay
+                # compatible -- participant_paths picks whichever prefix this
+                # participant's folders already use.
                 rel_path = os.path.join(
-                    f"Participant_{meta['pid']}", meta['leg'], meta['ms_status'])
+                    participant_paths.participant_dir_name(
+                        meta['pid'], participant_paths.OPTI_ROOT),
+                    meta['leg'], meta['ms_status'])
                 msg = (f"START|id={meta['pid']}|leg={meta['leg']}|"
                        f"characterization={meta['ms_status']}|"
                        f"trial={meta['trial']}|relpath={rel_path}")

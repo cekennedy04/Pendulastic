@@ -64,6 +64,7 @@ import numpy as np
 from scipy.stats import mannwhitneyu
 
 import pt_report_common as common
+import participant_paths
 import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -281,15 +282,15 @@ def load_registry():
 
 
 def load_metadata_diagnosis(pid):
-    """Recordings/Participant_<pid>*/metadata.json -> diagnosis field, or
-    None if nothing matches. The glob pattern alone can over-match (e.g.
-    "Participant_13*" also matches "Participant_130"), so every
-    candidate's own participant_id field must equal `pid` exactly before
-    its diagnosis is used. Multiple real folders can exist for one
-    participant (e.g. Participant_13 and Participant_13_right_post); the
-    first with a non-empty diagnosis wins."""
-    pattern = os.path.join(REC_ROOT, f"Participant_{pid}*", "metadata.json")
-    for path in glob.glob(pattern):
+    """Recordings/<participant folder>/metadata.json -> diagnosis field, or
+    None if nothing matches. Folder names are not trusted to identify the
+    participant -- they carry a study prefix (Control_/CHAT_/MINT_) or the
+    legacy Participant_ one, and can over-match on a prefix scan -- so every
+    candidate's own participant_id field must equal `pid` exactly before its
+    diagnosis is used. Multiple real folders can exist for one participant
+    (e.g. MINT_13 and Participant_13_right_post); the first with a non-empty
+    diagnosis wins."""
+    for path in participant_paths.glob_participants(REC_ROOT, "metadata.json"):
         try:
             with open(path, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -400,8 +401,8 @@ def _folder_hints_control(pid):
 
 
 def _recordings_root_missing_or_empty():
-    """True when REC_ROOT doesn't exist, or exists but has no
-    Participant_* subdirectories -- i.e. metadata.json (the PRIMARY
+    """True when REC_ROOT doesn't exist, or exists but has no participant
+    subdirectories (Control_*/CHAT_*/MINT_*/Participant_*) -- i.e. metadata.json (the PRIMARY
     classification source, see classify_participant's priority order) is
     unavailable in this checkout. Recordings/ is gitignored, so this is a
     real, expected state for a fresh clone or an isolated worktree, not a
@@ -409,7 +410,7 @@ def _recordings_root_missing_or_empty():
     already has its own registry_missing hint)."""
     if not os.path.isdir(REC_ROOT):
         return True
-    return not any(os.path.isdir(p) for p in glob.glob(os.path.join(REC_ROOT, "Participant_*")))
+    return not any(True for _ in participant_paths.iter_participant_dirs(REC_ROOT))
 
 
 def build_composition_rows(pids):

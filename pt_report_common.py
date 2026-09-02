@@ -35,6 +35,8 @@ if "tkinter" not in sys.modules:
 import matplotlib.pyplot as plt
 import numpy as np
 
+import participant_paths
+
 import pendulastic_pt_score as pt
 import workbench_engine as we
 
@@ -224,9 +226,11 @@ def _hpe_overlay_series(rec):
 # Generic multi-participant discovery
 #
 # Folder conventions seen in this project so far:
-#   Participant_{N}_{leg}_{condition}/Position_1/Height_Joint-Level/trial_*.csv
-#   Participant_{N}_{leg}_{condition}/Session_{condition}/Position_1/.../trial_*.csv
-#   Participant_{N}/{Leg}/{condition}/trial_*.csv           (no Position_N)
+#   {P}_{N}_{leg}_{condition}/Position_1/Height_Joint-Level/trial_*.csv
+#   {P}_{N}_{leg}_{condition}/Session_{condition}/Position_1/.../trial_*.csv
+#   {P}_{N}/{Leg}/{condition}/trial_*.csv                   (no Position_N)
+# where {P} is the study prefix -- Control_/CHAT_/MINT_ -- or the legacy
+# Participant_ (see participant_paths.py).
 # New participants may not match any of these exactly, so parsing is
 # heuristic: pull the participant number and leg out with regex, and treat
 # whatever folder segments are left (with structural names like Position_N /
@@ -237,13 +241,15 @@ def _hpe_overlay_series(rec):
 def _parse_trial_path(csv_path, root):
     rel = os.path.relpath(csv_path, root).replace("\\", "/")
 
-    pids = sorted(set(m.group(1) for m in re.finditer(r"Participant_(\d+)", rel, re.I)))
+    pids = participant_paths.pids_in_path(rel)
     if len(pids) != 1:
         # Zero matches, or more than one distinct participant number in the
         # same path -- the latter happens when archived data has a stray
         # nested folder from a different participant (seen: a whole
         # Participant_0_control/ tree misplaced inside a Participant_5
         # folder). Either way this path can't be attributed unambiguously.
+        # NOTE: the pid is read off the path, never off the folder's study
+        # prefix, so trial keys are stable across the 2026-09-01 rename.
         return None
     pid = pids[0]
 
@@ -257,8 +263,8 @@ def _parse_trial_path(csv_path, root):
     for part in parts:
         cleaned = part
         low = cleaned.lower()
-        if low.startswith("participant_"):
-            cleaned = re.sub(r"^participant_\d+_?", "", cleaned, flags=re.I)
+        if participant_paths.has_pid_prefix(cleaned):
+            cleaned = participant_paths.strip_leading_pid(cleaned)
         elif low.startswith("session_"):
             cleaned = cleaned[len("session_"):]
         elif low.startswith("position_") or low.startswith("height_"):

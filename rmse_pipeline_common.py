@@ -38,6 +38,7 @@ import pendulastic_pt_score as pt_score
 import sweep_mediapipe_config as mediapipe_sweep
 import workbench_engine as engine
 from reconstruct_imu_raw_logs import reconstruct_trial
+import participant_paths
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # NOTE: this module deliberately does NOT define its own REC_ROOT/OPTI_ROOT.
@@ -77,7 +78,10 @@ def parse_structural_fields(path, root):
     rather than guessing."""
     rel = os.path.relpath(path, root).replace("\\", "/")
 
-    pids = sorted(set(m.group(1) for m in re.finditer(r"Participant_(\d+)", rel, re.I)))
+    # Read off the path, never off the folder's study prefix, so trial keys
+    # stay stable across the 2026-09-01 Control_/CHAT_/MINT_ renames
+    # (the MS study's folders went Participant_ -> DOSA_ -> MINT_ that day).
+    pids = participant_paths.pids_in_path(rel)
     if len(pids) != 1:
         return None
     participant = pids[0]
