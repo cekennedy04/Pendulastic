@@ -38,6 +38,7 @@ import rmse_pipeline_common as rpc
 import sweep_mediapipe_config as mp_sweep
 from generate_paper_figures import BLUE, ORANGE, INK, MUTED, GRID, OUT_DIR, _style_axis
 from generate_paper_results_analysis import PARAMS, load_group_and_demo, load_mas_scores
+import participant_paths
 
 MODEL_VARIANT = "full"
 VIS_THRESH = 0.5
@@ -110,7 +111,7 @@ def build_rows():
         if np.count_nonzero(np.isfinite(ang_mp)) < 10:
             continue
 
-        pid = imu_t["participant"].replace("Participant_", "")
+        pid = participant_paths.strip_prefix(imu_t["participant"])
         leg = imu_t["leg"]
         cond = normalize_condition(imu_t["condition"])
         row = {"pid": pid, "leg": leg, "condition": cond, "raw_condition": imu_t["condition"],

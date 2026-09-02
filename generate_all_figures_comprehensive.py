@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from generate_paper_figures import BLUE, ORANGE, INK, MUTED, GRID, OUT_DIR, _style_axis
+import participant_paths
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -171,7 +172,7 @@ def fig11_rmse_distribution(rows):
 def fig12_rmse_by_participant(rows):
     by_p = {}
     for r in rows:
-        by_p.setdefault(r["participant"].replace("Participant_", "P"), []).append(r["rmse"])
+        by_p.setdefault("P" + participant_paths.strip_prefix(r["participant"]), []).append(r["rmse"])
     parts = sorted(by_p, key=lambda p: np.median(by_p[p]))
     fig, ax = plt.subplots(figsize=(7.6, 4.6), dpi=200, facecolor="white")
     bp = ax.boxplot([by_p[p] for p in parts], tick_labels=parts, patch_artist=True, widths=0.55,
@@ -351,7 +352,7 @@ def fig20_data_availability():
     imu_trials = rpc.discover_imu_trials()
     video_trials = rpc.discover_video_trials()
     def pid(p):
-        p = str(p).replace("Participant_", "")
+        p = participant_paths.strip_prefix(str(p))
         return f"P{p}"
     imu_parts = {pid(t["participant"]) for t in imu_trials if t["optitrack_path"]}
     video_parts = {pid(t["participant"]) for t in video_trials}

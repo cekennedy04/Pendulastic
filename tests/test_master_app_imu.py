@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
+import participant_paths
 import master_app
 
 
@@ -336,6 +337,7 @@ def test_overwrite_confirmation_names_raw_jsonl_log(monkeypatch):
                 app.stop_recording()
             app._close_camera()
         r.destroy()
-        p = os.path.join(master_app.ROOT_DIR, f"Participant_{pid}")
-        if os.path.isdir(p):
-            shutil.rmtree(p)
+        for _name in participant_paths.dir_name_candidates(pid):
+            p = os.path.join(master_app.ROOT_DIR, _name)
+            if os.path.isdir(p):
+                shutil.rmtree(p)

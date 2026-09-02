@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 from scipy.spatial.transform import Rotation as R
+import participant_paths
 
 
 # ===========================================================================
@@ -232,9 +233,9 @@ class DataIndex:
         parts = rel.replace("\\", "/").split("/")
         pid = pos = None
         for part in parts:
-            pm = re.match(r"Participant_(\w+)$", part, re.I)
-            if pm:
-                pid = pm.group(1)
+            found = participant_paths.pid_from_dir_name(part)
+            if found:
+                pid = found
             pm = re.match(r"Position_(\w+)$", part, re.I)
             if pm:
                 pos = pm.group(1)

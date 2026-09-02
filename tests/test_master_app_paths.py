@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import tkinter as tk
 
+import participant_paths
 import master_app
 
 
@@ -47,9 +48,15 @@ def _teardown(app, root):
 
 
 def _cleanup_participant(pid):
-    p = os.path.join(master_app.ROOT_DIR, f"Participant_{pid}")
-    if os.path.isdir(p):
-        shutil.rmtree(p)
+    """Remove the test participant's folder under EVERY naming scheme.
+
+    A new folder takes the study prefix for the app's diagnosis field
+    (Control_/CHAT_/MINT_), so cleaning only Participant_{pid} would leave
+    litter behind in the real Recordings/ root."""
+    for name in participant_paths.dir_name_candidates(pid):
+        p = os.path.join(master_app.ROOT_DIR, name)
+        if os.path.isdir(p):
+            shutil.rmtree(p)
 
 
 # ---------------------------------------------------------------------------
@@ -186,11 +193,16 @@ def test_build_paths_creates_two_level_structure():
         _set(app.entry_characterization, "post")
         app.var_trial.set("2")
 
+        app.var_diag.set("MS")
+
         participant_dir, video_path, rel_path = app._build_paths(pid)
 
+        # A new participant's folder carries their study prefix: MS -> MINT_.
+        folder = f"MINT_{pid}"
+        assert os.path.basename(participant_dir) == folder
         assert video_path == os.path.join(master_app.ROOT_DIR,
-                                           f"Participant_{pid}", "Left", "post", "Trial_2.avi")
-        assert rel_path == os.path.join(f"Participant_{pid}", "Left", "post")
+                                           folder, "Left", "post", "Trial_2.avi")
+        assert rel_path == os.path.join(folder, "Left", "post")
         assert os.path.isdir(os.path.dirname(video_path))
     finally:
         _teardown(app, r)
