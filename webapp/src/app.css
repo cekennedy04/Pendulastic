@@ -24,10 +24,6 @@
      are retired as each rule is migrated, and this block goes away in the
      styling pass. Kept so this task is a pure value change with no chance
      of a missed selector silently losing its color. */
-  --ink:   var(--fg);
-  --paper: var(--surface);
-  --muted: var(--fg3);
-  --line:  var(--border);
 
   /* SAFETY-CRITICAL -- DO NOT RETUNE. Each is documented below at the rule
      that uses it: read at arm's length under outdoor glare, always paired
@@ -52,7 +48,7 @@ html, body {
   margin: 0;
   padding: 0;
   background: var(--bg);
-  color: var(--ink);
+  color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   /* Prevent iOS Safari from letting a long word or long number blow out
      layout width on a narrow phone screen. */
@@ -99,14 +95,14 @@ body {
    it cannot be scrolled past or covered. */
 #install-gate {
   position: fixed; inset: 0; z-index: 100;
-  background: var(--surface); color: var(--ink);
+  background: var(--surface); color: var(--fg);
   padding: 24px; overflow-y: auto;
   display: flex; flex-direction: column; justify-content: center;
 }
 #install-gate[hidden] { display: none; }
 #install-gate h1 { font-size: 22px; margin: 0 0 12px; }
 #install-gate p { font-size: 16px; line-height: 1.5; margin: 0 0 14px; }
-.install-note { color: var(--muted); font-size: 14px; }
+.install-note { color: var(--fg3); font-size: 14px; }
 
 #start, #stop {
   display: block;
@@ -239,7 +235,7 @@ body {
   height: 42vh;
   min-height: 220px;
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
 }
 
@@ -247,7 +243,7 @@ body {
   margin: 8px 2px 0;
   font-weight: 700;
   font-size: clamp(13px, 3.6vw, 16px);
-  color: var(--ink);
+  color: var(--fg);
 }
 
 #waveform-legend {
@@ -256,7 +252,7 @@ body {
   gap: 6px 16px;
   margin: 6px 2px 0;
   font-size: clamp(12px, 3.2vw, 14px);
-  color: var(--muted);
+  color: var(--fg3);
 }
 
 #waveform-legend .legend-item {
@@ -275,8 +271,8 @@ body {
 
 /* Same hue vocabulary as #guide's state colors, reused so a released trial's
    plot reads consistently with the state screen the operator just watched. */
-.swatch-trace { background: var(--ink); }
-.swatch-neutral { background: var(--muted); }
+.swatch-trace { background: var(--fg); }
+.swatch-neutral { background: var(--fg3); }
 .swatch-release { background: var(--fired-bg); }
 .swatch-peak { background: var(--ready-bg); }
 .swatch-trough { background: var(--banner-bg); }
@@ -295,7 +291,7 @@ body {
 .gate {
   flex: 1;
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 10px 12px;
   text-align: center;
@@ -304,18 +300,19 @@ body {
 #gates dt {
   font-size: clamp(12px, 3.2vw, 14px);
   font-weight: 600;
-  color: var(--muted);
+  color: var(--fg3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin: 0 0 4px;
 }
 
 #gates dd {
+  font-family: var(--mono);
   margin: 0;
   font-variant-numeric: tabular-nums;
   font-size: clamp(16px, 4.6vw, 20px);
   font-weight: 700;
-  color: var(--ink);
+  color: var(--fg);
 }
 
 /* ---- Provisional PT score -------------------------------------------------
@@ -330,7 +327,7 @@ body {
   width: calc(100% - 32px);
   margin: 8px 16px 16px;
   padding: 12px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel);
 }
@@ -338,11 +335,11 @@ body {
 #pt-score-disclaimer {
   margin: 0 0 10px;
   font-size: clamp(12px, 3.4vw, 14px);
-  color: var(--muted);
+  color: var(--fg3);
   line-height: 1.4;
 }
 
-#pt-score-disclaimer strong { color: var(--ink); }
+#pt-score-disclaimer strong { color: var(--fg); }
 
 #pt-score-summary {
   display: flex;
@@ -352,10 +349,11 @@ body {
 }
 
 #pt-score-value {
+  font-family: var(--mono);
   font-weight: 800;
   font-size: clamp(28px, 9vw, 40px);
   font-variant-numeric: tabular-nums;
-  color: var(--ink);
+  color: var(--fg);
 }
 
 #pt-score-zone {
@@ -418,7 +416,7 @@ body {
   margin: 12px 0 4px;
   font-size: clamp(11px, 3vw, 13px);
   font-weight: 600;
-  color: var(--muted);
+  color: var(--fg3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -430,12 +428,13 @@ body {
 }
 
 #pt-score-breakdown td {
+  font-family: var(--mono);
   padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
 
-#pt-score-breakdown td:first-child { color: var(--muted); font-weight: 600; }
+#pt-score-breakdown td:first-child { color: var(--fg3); font-weight: 600; }
 #pt-score-breakdown td:last-child { text-align: right; }
 
 /* ---- Raw-log export (KTD4) ------------------------------------------------
@@ -461,9 +460,9 @@ body {
   padding: 12px 18px;
   font-size: clamp(14px, 3.8vw, 16px);
   font-weight: 700;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  color: var(--ink);
+  color: var(--fg);
   background: var(--panel);
   cursor: pointer;
 }
@@ -477,7 +476,7 @@ body {
   flex-basis: 100%;
   margin: 0;
   font-size: clamp(12px, 3.2vw, 14px);
-  color: var(--muted);
+  color: var(--fg3);
 }
 
 /* ---- Result table -------------------------------------------------------
@@ -492,13 +491,14 @@ body {
 }
 
 #result td {
+  font-family: var(--mono);
   padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
 
 #result td:first-child {
-  color: var(--muted);
+  color: var(--fg3);
   font-weight: 600;
 }
 
@@ -527,9 +527,9 @@ body {
   padding: 12px 18px;
   font-size: clamp(14px, 3.8vw, 16px);
   font-weight: 700;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  color: var(--ink);
+  color: var(--fg);
   background: var(--panel);
   cursor: pointer;
 }
@@ -540,7 +540,7 @@ body {
 }
 
 #close-session:disabled {
-  color: var(--muted);
+  color: var(--fg3);
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -560,7 +560,7 @@ body {
   flex-basis: 100%;
   margin: 0;
   font-size: clamp(12px, 3.2vw, 14px);
-  color: var(--muted);
+  color: var(--fg3);
 }
 
 /* ---- Views ---------------------------------------------------------------
