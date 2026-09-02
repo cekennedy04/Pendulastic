@@ -5,6 +5,7 @@ import {
   exportLockState, retainExportHandle, zoneDisplay, unmeasuredNotice, excursionNotice,
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
+import { createCaptureView } from '../src/views/capture.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
 // message stream for one trial -- no DOM, no worker, no globals required
@@ -529,4 +530,86 @@ test('a result without the analysis pair omits the keys rather than adding undef
   const { action } = nextOutcome(false, { type: 'result', params: { f: 1 } });
   assert.ok(!('paramsDetrended' in action));
   assert.ok(!('ptScoreDetrended' in action));
+});
+
+// ---- capture view lifecycle (task 7) -------------------------------------
+// A stub `el` -- the view only ever reads/writes properties these objects
+// have, so no DOM is needed.
+function fakeEl(map) {
+  return (id) => map[id] ?? null;
+}
+
+test('a live capture refuses to leave the view', () => {
+  const view = createCaptureView({
+    el: fakeEl({}), isCapturing: () => true, redraw: () => {},
+  });
+  const verdict = view.onLeave();
+  assert.notEqual(verdict, true);
+  assert.match(String(verdict), /trial/i);
+});
+
+test('an idle capture view leaves freely', () => {
+  const view = createCaptureView({
+    el: fakeEl({}), isCapturing: () => false, redraw: () => {},
+  });
+  assert.equal(view.onLeave(), true);
+});
+
+// The canvas lives inside a `display: none` subtree while another view is
+// active, where getBoundingClientRect() is all zeros -- redrawing then
+// resizes it to 0x0 and the plot comes back blank with no error anywhere.
+test('leaving detaches the resize redraw and entering re-attaches it', () => {
+  let redraws = 0;
+  const view = createCaptureView({
+    el: fakeEl({}), isCapturing: () => false, redraw: () => { redraws += 1; },
+  });
+  // onEnter() itself redraws (see the next test), so every count here is
+  // "one for the enter, plus one per resize that was allowed through". The
+  // plan's original counts omitted the enter's own redraw and contradicted
+  // the next test; the property under test is unchanged -- see Ruling I.
+  view.onEnter();
+  assert.equal(redraws, 1, 'onEnter redraws');
+  view.handleResize();
+  assert.equal(redraws, 2, 'a resize while active redraws');
+  view.onLeave();
+  view.handleResize();
+  assert.equal(redraws, 2, 'a resize while the view is inactive must not redraw');
+  view.onEnter();
+  assert.equal(redraws, 3, 're-entering redraws again');
+  view.handleResize();
+  assert.equal(redraws, 4, 'the resize redraw is live again after re-entry');
+});
+
+test('entering redraws once so a returning view is not blank', () => {
+  let redraws = 0;
+  const view = createCaptureView({
+    el: fakeEl({}), isCapturing: () => false, redraw: () => { redraws += 1; },
+  });
+  view.onEnter();
+  assert.equal(redraws, 1);
+});
+
+// Ruling B, pinned as a test rather than left as a comment. app.js nulls
+// `session` BEFORE `await startCapture(...)` (deliberately -- see the comment
+// there), so `session !== null` reads FALSE for the whole iOS permission
+// prompt window while a capture is in fact being started. Deriving from the
+// Stop button instead brackets that window, because #stop is un-hidden
+// synchronously before the await and re-hidden by resetToIdle and Stop.
+test('the capture-in-flight window is bracketed by #stop, not by a session handle', () => {
+  const stop = { hidden: true };
+  let session = null;
+  const byStop = createCaptureView({
+    el: fakeEl({ stop }), isCapturing: () => !stop.hidden, redraw: () => {},
+  });
+  const bySession = createCaptureView({
+    el: fakeEl({ stop }), isCapturing: () => session !== null, redraw: () => {},
+  });
+
+  // The Start handler, up to and including the line before the await.
+  stop.hidden = false;
+  session = null;
+
+  assert.notEqual(byStop.onLeave(), true, '#stop derivation must refuse here');
+  assert.equal(bySession.onLeave(), true,
+    'the session derivation permits leaving mid-start -- this is the orphan bug');
 });

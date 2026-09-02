@@ -9,6 +9,7 @@ import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
 import { ALGORITHM_VERSION } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
+import { createCaptureView } from './views/capture.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1047,9 +1048,29 @@ if (typeof document !== 'undefined') {
     marker(trough_idx, '#7a0d0d', false);
   }
 
-  window.addEventListener('resize', () => {
-    if (!el('waveform-wrap').hidden && lastTrajectory) drawWaveform(lastTrajectory);
+  // ---- Capture view lifecycle (task 7) ------------------------------------
+  const captureView = createCaptureView({
+    el,
+    // NOT `session !== null`. The Start handler nulls `session` deliberately
+    // BEFORE `await startCapture(...)` (see its comment), so across the whole
+    // iOS permission-prompt window a capture is being started while `session`
+    // is null -- that derivation would report "not capturing", let the router
+    // navigate away, and leave startCapture to resolve and run headless on
+    // another view. #stop is un-hidden synchronously before that await and
+    // re-hidden by resetToIdle() and the Stop handler, so it brackets the
+    // entire in-flight window with no new state to keep in sync.
+    isCapturing: () => !el('stop').hidden,
+    redraw: () => {
+      if (!el('waveform-wrap').hidden && lastTrajectory) drawWaveform(lastTrajectory);
+    },
   });
+  router.register('capture', captureView);
+
+  // Was: an unconditional redraw gated only on #waveform-wrap.hidden. That
+  // check does not see the VIEW's visibility, so once capture lived inside a
+  // toggled section a resize on any other view redrew a canvas whose
+  // getBoundingClientRect() is all zeros -- silently resizing it to 0x0.
+  window.addEventListener('resize', () => captureView.handleResize());
 
   // Human-readable zone label. Every label carries "(provisional)" -- this
   // instrument has not passed its validation gate (trajectory RMSE 14.84°
