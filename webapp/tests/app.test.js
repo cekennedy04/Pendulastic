@@ -7,7 +7,7 @@ import {
 import { canCloseSession, markExported } from '../src/session-store.js';
 import { createCaptureView } from '../src/views/capture.js';
 import {
-  patientLabel, nextParticipantState, SETTING_KEYS, initialView,
+  patientLabel, nextParticipantState, SETTING_KEYS, initialView, resolveActivePatient,
 } from '../src/views/session.js';
 import { trialSummary } from '../src/views/trials.js';
 
@@ -733,4 +733,44 @@ test('a device with a participant opens on home', () => {
 test('a missing or empty argument is treated as no participant', () => {
   assert.equal(initialView(), 'session');
   assert.equal(initialView({}), 'session');
+});
+
+// The three-way distinction that makes Close Session re-prompt without
+// breaking a v1 install that never chose a participant. See the plan's
+// "Spec refinement resolved here".
+const pats = [{ id: 'p1', clinic_patient_id: 'P-1' }, { id: 'p2', clinic_patient_id: 'P-2' }];
+
+test('a stored participant id resolves to that participant', () => {
+  const got = resolveActivePatient({ activeSetting: { value: 'p2' }, patients: pats });
+  assert.equal(got.id, 'p2');
+});
+
+// A row that EXISTS carrying no value is Close Session's deliberate clear.
+test('a deliberately cleared setting re-prompts instead of re-adopting', () => {
+  assert.equal(
+    resolveActivePatient({ activeSetting: { key: 'active-patient', value: null }, patients: [pats[0]] }),
+    null,
+  );
+});
+
+// No row at all is a pre-v2 install that never chose. Adopting its single
+// legacy participant is what keeps a clinician mid-study from being asked a
+// question they never had to answer before.
+test('no setting at all adopts a lone participant', () => {
+  const got = resolveActivePatient({ activeSetting: undefined, patients: [pats[0]] });
+  assert.equal(got.id, 'p1');
+});
+
+test('no setting and several participants forces a choice', () => {
+  assert.equal(resolveActivePatient({ activeSetting: undefined, patients: pats }), null);
+});
+
+test('no setting and no participants resolves to nothing', () => {
+  assert.equal(resolveActivePatient({ activeSetting: undefined, patients: [] }), null);
+  assert.equal(resolveActivePatient({}), null);
+});
+
+// A stored id whose participant is gone must not crash or silently adopt.
+test('a stored id that matches nothing resolves to nothing', () => {
+  assert.equal(resolveActivePatient({ activeSetting: { value: 'ghost' }, patients: pats }), null);
 });

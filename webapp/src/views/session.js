@@ -31,6 +31,30 @@ export function initialView({ patient } = {}) {
   return patient ? 'home' : 'session';
 }
 
+// Which participant a launch should resume, given the stored setting and every
+// participant on the device. Pure, because the three-way distinction below is
+// the whole rule and it must not live inside an IndexedDB callback.
+//
+// Whether the `settings` row EXISTS is load-bearing, not incidental:
+//
+//   absent              -- never chosen. A pre-v2 install carrying one legacy
+//                          participant adopts it rather than forcing a choice
+//                          a clinician mid-study never had to make.
+//   present, value set  -- a chosen participant.
+//   present, value null -- deliberately cleared by Close Session. Re-prompt.
+//
+// Collapsing the last two into "no value" would re-adopt the participant the
+// operator just closed, on exactly the single-participant device where that is
+// most likely, and the prompt would never appear.
+export function resolveActivePatient({ activeSetting, patients = [] } = {}) {
+  if (activeSetting && activeSetting.value) {
+    return patients.find((p) => p.id === activeSetting.value) ?? null;
+  }
+  if (activeSetting) return null;
+  if (patients.length === 1) return patients[0];
+  return null;
+}
+
 // Pure. `state` is `{patient, side, trialCount}`; the returned state carries
 // an `error` string when an action was refused.
 export function nextParticipantState(state, action) {

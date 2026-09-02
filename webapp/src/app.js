@@ -10,7 +10,7 @@ import { ALGORITHM_VERSION } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
-import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView } from './views/session.js';
+import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView, resolveActivePatient } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { isPending } from './mas-store.js';
@@ -525,18 +525,13 @@ if (typeof document !== 'undefined') {
   // Was: a hardcoded synthetic participant every device shared. Now the
   // active participant is whatever the session view last stored, resolved
   // through `settings` so it survives a reload and an app relaunch.
+  // Thin plumbing: the rule itself lives in resolveActivePatient, where it is
+  // tested against plain objects.
   async function ensurePatient() {
-    const active = await getOne(db, STORES.settings, SETTING_KEYS.activePatient);
-    const patients = await getAll(db, STORES.patients);
-    if (active && active.value) {
-      const found = patients.find((p) => p.id === active.value);
-      if (found) return found;
-    }
-    // Exactly one participant on the device -- typically the legacy row a
-    // v1 install is carrying -- is adopted rather than forcing a choice a
-    // clinician mid-study did not ask to make.
-    if (patients.length === 1) return patients[0];
-    return null;
+    return resolveActivePatient({
+      activeSetting: await getOne(db, STORES.settings, SETTING_KEYS.activePatient),
+      patients: await getAll(db, STORES.patients),
+    });
   }
 
   async function initSession() {
@@ -762,6 +757,20 @@ if (typeof document !== 'undefined') {
       currentSession = null;
       currentTrialCount = 0;
       sessionReadyPromise = null;
+      // Written as an EXISTING row with a null value, not deleted: a deleted
+      // row is indistinguishable from "never chosen", which on a
+      // single-participant device would re-adopt the participant just closed
+      // and the next launch would never prompt. See resolveActivePatient.
+      //
+      // The leg is cleared in BOTH places for the same reason the participant
+      // is. Clearing only the in-memory copy would leave initSession restoring
+      // the previous patient's leg from `settings` on the next launch, so a
+      // freshly prompted participant would arrive with someone else's leg
+      // already selected -- and the Start gate would happily pass.
+      currentPatient = null;
+      currentSide = null;
+      await put(db, STORES.settings, { key: SETTING_KEYS.activePatient, value: null });
+      await put(db, STORES.settings, { key: SETTING_KEYS.side, value: null });
       el('result').hidden = true;
       el('waveform-wrap').hidden = true;
       el('pt-score').hidden = true;
