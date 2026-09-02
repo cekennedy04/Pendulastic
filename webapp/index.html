@@ -35,65 +35,150 @@
       how often you need them, it is not what makes your data safe.
     </p>
   </div>
-  <button id="start">Start trial</button>
-  <div id="guide">tap Start</div>
-  <dl id="gates">
-    <div class="gate">
-      <dt>hold (motion)</dt><dd id="calm">&mdash;</dd>
-    </div>
-    <div class="gate">
-      <dt>drift (pose)</dt><dd id="drift">&mdash;</dd>
-    </div>
-  </dl>
-  <button id="stop" hidden>Stop</button>
-  <div id="waveform-wrap" hidden>
-    <canvas id="waveform"></canvas>
-    <p id="waveform-range" class="waveform-caption"></p>
-    <div id="waveform-legend">
-      <span class="legend-item"><span class="swatch swatch-trace"></span>angle</span>
-      <span class="legend-item"><span class="swatch swatch-neutral"></span>neutral</span>
-      <span class="legend-item"><span class="swatch swatch-release"></span>release</span>
-      <span class="legend-item"><span class="swatch swatch-peak"></span>&#9650; peak</span>
-      <span class="legend-item"><span class="swatch swatch-trough"></span>&#9660; trough</span>
-    </div>
-  </div>
-  <div id="pt-score" hidden>
-    <p id="pt-score-disclaimer">
-      Provisional composite score &mdash; not a validated clinical measure
-      (research capture only, see banner above). <strong>Lower is
-      healthier.</strong> Unbounded above &mdash; not a 0&ndash;1 scale.
-      <strong>No healthy/borderline/impaired classification is shown.</strong>
-      Two reasons: the healthy reference the bands are measured against cannot
-      be reproduced from the data it is documented as coming from, so what the
-      bands encode is unknown; and this instrument's ability to tell one
-      person's trial from another's has been measured at worse than chance.
-      Group averages may separate, but that does not license classifying a
-      single trial. The score and its per-parameter breakdown are still the raw
-      measurement and are shown unchanged.
-    </p>
-    <p id="pt-score-excursion" hidden></p>
-    <p id="pt-score-unmeasured" hidden></p>
-    <div id="pt-score-summary">
-      <span id="pt-score-label">Real-time estimate</span>
-      <span id="pt-score-value">&mdash;</span>
-      <span id="pt-score-zone">&mdash;</span>
-    </div>
-    <p id="pt-score-simple"></p>
-    <p id="pt-score-breakdown-label">largest driver first</p>
-    <table id="pt-score-breakdown"></table>
-  </div>
-  <div id="export-actions" hidden>
-    <button id="export-btn">Export raw log</button>
-    <button id="send-to-laptop" hidden>Send to laptop</button>
-    <p id="export-status"></p>
-  </div>
-  <table id="result" hidden></table>
-  <div id="session-bar">
-    <button id="export-session">Export session</button>
-    <button id="close-session" disabled>Close session</button>
-    <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
-    <p id="session-status"></p>
-  </div>
+  <main>
+    <section class="view active" id="view-home">
+      <header class="brand">
+        <svg class="brand-mark" viewBox="0 0 52 52" aria-hidden="true">
+          <!-- workbench_style.brand_mark() at identical proportions: pivot dot,
+               swing line, weighted bob, enclosing ring. -->
+          <circle cx="26" cy="26" r="21.8" fill="none" stroke="currentColor" stroke-width="2.5"/>
+          <line x1="26" y1="11.4" x2="36.4" y2="35.4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="36.4" cy="35.4" r="4.7" fill="currentColor"/>
+          <circle cx="26" cy="11.4" r="2.3" fill="currentColor"/>
+        </svg>
+        <div class="brand-text">
+          <h1>Pendulastic</h1>
+          <p>Clinical Pendulum Test Platform</p>
+        </div>
+      </header>
+
+      <button class="tile tile--primary" data-nav="capture">
+        <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="4" fill="currentColor"/>
+        </svg>
+        <span class="tile-text">
+          <span class="tile-title">Record Trial</span>
+          <span class="tile-sub" id="home-participant">no participant set</span>
+        </span>
+      </button>
+
+      <div class="tile-grid">
+        <button class="tile" data-nav="trials">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="5" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2"/>
+            <rect x="13" y="5" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Trials</span>
+            <span class="tile-sub" id="home-trial-count">none yet</span>
+          </span>
+        </button>
+        <button class="tile" data-nav="mas">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M8 12l3 3 5-6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">MAS Entry</span>
+            <span class="tile-sub">Enter &amp; validate</span>
+          </span>
+        </button>
+        <button class="tile" data-nav="session">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 20V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Session</span>
+            <span class="tile-sub">Participant &amp; export</span>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <section class="view" id="view-capture">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Record Trial</h2></div>
+      <p id="nav-blocked" class="nav-blocked" hidden></p>
+      <button id="start">Start trial</button>
+      <div id="guide">tap Start</div>
+      <dl id="gates">
+        <div class="gate">
+          <dt>hold (motion)</dt><dd id="calm">&mdash;</dd>
+        </div>
+        <div class="gate">
+          <dt>drift (pose)</dt><dd id="drift">&mdash;</dd>
+        </div>
+      </dl>
+      <button id="stop" hidden>Stop</button>
+      <div id="waveform-wrap" hidden>
+        <canvas id="waveform"></canvas>
+        <p id="waveform-range" class="waveform-caption"></p>
+        <div id="waveform-legend">
+          <span class="legend-item"><span class="swatch swatch-trace"></span>angle</span>
+          <span class="legend-item"><span class="swatch swatch-neutral"></span>neutral</span>
+          <span class="legend-item"><span class="swatch swatch-release"></span>release</span>
+          <span class="legend-item"><span class="swatch swatch-peak"></span>&#9650; peak</span>
+          <span class="legend-item"><span class="swatch swatch-trough"></span>&#9660; trough</span>
+        </div>
+      </div>
+      <div id="pt-score" hidden>
+        <p id="pt-score-disclaimer">
+          Provisional composite score &mdash; not a validated clinical measure
+          (research capture only, see banner above). <strong>Lower is
+          healthier.</strong> Unbounded above &mdash; not a 0&ndash;1 scale.
+          <strong>No healthy/borderline/impaired classification is shown.</strong>
+          Two reasons: the healthy reference the bands are measured against cannot
+          be reproduced from the data it is documented as coming from, so what the
+          bands encode is unknown; and this instrument's ability to tell one
+          person's trial from another's has been measured at worse than chance.
+          Group averages may separate, but that does not license classifying a
+          single trial. The score and its per-parameter breakdown are still the raw
+          measurement and are shown unchanged.
+        </p>
+        <p id="pt-score-excursion" hidden></p>
+        <p id="pt-score-unmeasured" hidden></p>
+        <div id="pt-score-summary">
+          <span id="pt-score-label">Real-time estimate</span>
+          <span id="pt-score-value">&mdash;</span>
+          <span id="pt-score-zone">&mdash;</span>
+        </div>
+        <p id="pt-score-simple"></p>
+        <p id="pt-score-breakdown-label">largest driver first</p>
+        <table id="pt-score-breakdown"></table>
+      </div>
+      <div id="export-actions" hidden>
+        <button id="export-btn">Export raw log</button>
+        <button id="send-to-laptop" hidden>Send to laptop</button>
+        <p id="export-status"></p>
+      </div>
+      <table id="result" hidden></table>
+    </section>
+
+    <section class="view" id="view-trials">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Trials</h2></div>
+      <div id="trial-list"></div>
+    </section>
+
+    <section class="view" id="view-mas">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>MAS Score Entry</h2></div>
+    </section>
+
+    <section class="view" id="view-session">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Session</h2></div>
+      <div id="session-bar">
+        <button id="export-session">Export session</button>
+        <button id="close-session" disabled>Close session</button>
+        <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
+        <p id="session-status"></p>
+      </div>
+    </section>
+  </main>
   <script type="module" src="./src/app.js"></script>
   <script>
     // Module service workers need {type:'module'} -- sw.js imports build-id.js.

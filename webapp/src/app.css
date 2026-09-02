@@ -562,3 +562,83 @@ body {
   font-size: clamp(12px, 3.2vw, 14px);
   color: var(--muted);
 }
+
+/* ---- Views ---------------------------------------------------------------
+   Views deliberately do NOT use the `hidden` attribute. app.css already
+   carries a long note (see the #start/#stop rule) on author-origin `display`
+   silently defeating `hidden`; that fix works but obliges every future author
+   rule to remember it. A dedicated class cannot be defeated the same way, so
+   new code avoids the bug class by construction. The existing intra-view
+   `hidden` toggles are unchanged. */
+main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.view { display: none; }
+.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.view-head {
+  display: flex; align-items: center; gap: 12px;
+  margin: 16px 16px 8px;
+}
+.view-head h2 {
+  margin: 0;
+  font-size: clamp(17px, 4.8vw, 21px);
+  font-weight: 700;
+  color: var(--fg);
+}
+
+/* Why a transition was refused -- shown in place rather than as an alert(),
+   which would block the extension AND the capture it is reporting on. */
+.nav-blocked {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--holding-bg);
+  background: rgba(180, 83, 9, 0.12);
+  font-size: clamp(13px, 3.6vw, 15px);
+  font-weight: 600;
+  color: var(--fg);
+}
+.nav-blocked[hidden] { display: none; }
+
+/* ---- Brand (workbench_style.brand_mark + the ModeSelectView header) ------ */
+.brand { display: flex; align-items: center; gap: 14px; margin: 24px 16px 28px; }
+.brand-mark { width: 52px; height: 52px; flex: none; color: var(--accent); }
+.brand-text h1 {
+  margin: 0; font-size: clamp(22px, 7vw, 28px); font-weight: 700; color: var(--fg);
+}
+.brand-text p {
+  margin: 2px 0 0; font-size: clamp(12px, 3.6vw, 15px); color: var(--fg3);
+}
+
+/* ---- Tiles (workbench_style.Tile) ---------------------------------------
+   The desktop tile's hover state becomes :active/:focus-visible -- a phone
+   has no hover, and a hover rule there sticks after a tap. */
+.tile {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  padding: 16px; margin: 0;
+  font: inherit; text-align: left; cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--fg);
+}
+.tile:active, .tile:focus-visible { border-color: var(--accent); border-width: 2px; padding: 15px; }
+.tile-icon { width: 26px; height: 26px; flex: none; color: var(--accent); }
+.tile-text { display: flex; flex-direction: column; min-width: 0; }
+.tile-title { font-size: clamp(15px, 4.4vw, 18px); font-weight: 700; }
+.tile-sub { font-size: clamp(12px, 3.4vw, 14px); color: var(--fg3); margin-top: 2px; }
+
+.tile--primary { background: var(--accent); border-color: var(--accent); color: #fff; margin: 0 0 18px; }
+.tile--primary .tile-icon { color: #fff; }
+.tile--primary .tile-sub { color: #EAF2FF; }
+.tile--primary:active, .tile--primary:focus-visible { background: #1D4ED8; border-color: #1D4ED8; }
+
+#view-home { padding: 0 16px 24px; }
+.tile-grid { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- Buttons (workbench_style.primary_button / secondary_button) --------- */
+.btn {
+  padding: 12px 18px; font: inherit; font-weight: 700;
+  border-radius: 12px; border: 1px solid var(--border); cursor: pointer;
+  min-height: 44px;
+}
+.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--secondary { background: var(--accent-soft); color: var(--fg); }

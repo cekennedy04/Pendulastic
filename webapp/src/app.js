@@ -7,6 +7,8 @@ import { openDb, put, getAll, STORES } from './db.js';
 import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
 import { ALGORITHM_VERSION } from './build-id.js';
+import { createRouter, VIEWS } from './router.js';
+import { createHomeView } from './views/home.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -414,6 +416,50 @@ if (typeof document !== 'undefined') {
     el('start').hidden = true;
   }
 
+  // ---- View routing -------------------------------------------------------
+  const router = createRouter({
+    onShow: (name) => {
+      for (const v of VIEWS) {
+        el(`view-${v}`).classList.toggle('active', v === name);
+      }
+      // A view switch scrolls to the top: the banner is sticky, but a page
+      // scrolled halfway down the previous view otherwise opens the new one
+      // mid-content.
+      window.scrollTo(0, 0);
+    },
+  });
+
+  router.register('home', createHomeView({ el }));
+
+  // One delegated listener rather than a listener per control: Task 9's trial
+  // rows and Task 10's form are rendered after this runs, and a per-element
+  // binding would miss every one of them.
+  document.addEventListener('click', (e) => {
+    const nav = e.target.closest?.('[data-nav]');
+    if (!nav) return;
+    const result = router.navigate(nav.dataset.nav, navParams(nav.dataset.nav));
+    const blocked = el('nav-blocked');
+    if (result.kind === 'blocked') {
+      blocked.textContent = result.reason;
+      blocked.hidden = false;
+    } else {
+      blocked.hidden = true;
+    }
+  });
+
+  // Assembled here rather than inside each view so a view module never needs
+  // a reference to the session bookkeeping this file owns.
+  function navParams(name) {
+    if (name === 'home') {
+      return {
+        participantLabel: currentPatient?.clinic_patient_id ?? '',
+        side: currentSide,
+        trialCount: currentTrialCount,
+      };
+    }
+    return {};
+  }
+
   // ---- Local persistence + export lock (task-6) --------------------------
   // A scored trial is worthless the moment it is forgotten, and IndexedDB is
   // a volatile cache the platform may erase -- see db.js's and
@@ -428,6 +474,9 @@ if (typeof document !== 'undefined') {
   // every render (see that function's doc comment for why the distinction
   // matters).
   let currentTrialCount = 0;
+  // Set by Task 8's session view; read here only to label the home tiles.
+  let currentPatient = null;
+  let currentSide = null;
   // Memoises the one-time-per-session init below so every call site
   // (persistTrial, the two session-bar buttons) can simply `await` it
   // instead of racing each other to create a duplicate session record.
