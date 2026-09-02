@@ -538,3 +538,15 @@ body {
   font-size: clamp(12px, 3.2vw, 14px);
   color: var(--muted);
 }
+
+/* Build identity. Small and low-contrast: it must be readable when someone
+   goes looking for it during a preview test, and invisible the rest of the
+   time -- it is diagnostic, not content. */
+.build-info {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #888;
+  text-align: center;
+  user-select: all;   /* so a tester can select and paste it into a report */
+}

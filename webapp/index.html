@@ -94,6 +94,12 @@
     <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
     <p id="session-status"></p>
   </div>
+  <!-- Which build this device is actually running. Filled in by app.js from
+       the generated build-id.js. It is here, in the page rather than a
+       console log or an About dialog, because its whole job is to be readable
+       from a phone during a preview test: "I refreshed and it looks the same"
+       is not evidence that a deploy landed, and a visible revision is. -->
+  <p id="build-info" class="build-info">&mdash;</p>
   <script type="module" src="./src/app.js"></script>
   <script>
     // Module service workers need {type:'module'} -- sw.js imports build-id.js.

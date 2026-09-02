@@ -6,7 +6,7 @@ import { installState, installInstructions } from './install-gate.js';
 import { openDb, put, getAll, STORES } from './db.js';
 import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
-import { ALGORITHM_VERSION } from './build-id.js';
+import { ALGORITHM_VERSION, COMMIT, BUILT_AT } from './build-id.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1231,4 +1231,25 @@ if (typeof document !== 'undefined') {
     el('stop').hidden = true;
     el('start').hidden = false;
   });
+}
+
+
+// Show which build this device is running.
+//
+// Deliberately the LAST thing in this module and wrapped in its own try: a
+// version label is the least important thing on the page, and it must never be
+// the reason a capture screen fails to come up. If it throws, the app is
+// unaffected and the label simply stays as the em dash the markup ships with.
+//
+// BUILT_AT is rendered as the raw UTC stamp rather than localised, so what a
+// tester reads off the phone is byte-identical to what the build printed in
+// the terminal -- the point is to compare two strings, not to tell the time.
+try {
+  const el = document.getElementById('build-info');
+  if (el) {
+    el.textContent = `build ${COMMIT} · ${BUILT_AT}`;
+    el.title = `algorithm ${ALGORITHM_VERSION}`;
+  }
+} catch (err) {
+  /* a missing label must never break capture */
 }
