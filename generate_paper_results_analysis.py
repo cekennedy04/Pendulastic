@@ -429,10 +429,20 @@ def main():
 
     # --- MAS correlation (R2n vs MAS, per-trial where MAS available) ---
     print("\n=== Spearman correlation: IMU R2n (relaxation index) vs MAS grade ===")
-    mas_pairs = [(mas[r["pid"]], r["imu_R2n"]) for r in rows if r["pid"] in mas]
+    # Trials whose R2n could not be measured are dropped, not counted as zero.
+    # Since 48d7c96 an unmeasurable parameter is NaN rather than 0.0, and a
+    # NaN reaching spearmanr turns the whole correlation into nan -- which is
+    # the honest failure mode, but the analysis wants the correlation over the
+    # trials that DO have a value. The n printed below is that count, so a
+    # reader can see how much of the corpus it rests on.
+    mas_pairs = [(mas[r["pid"]], r["imu_R2n"]) for r in rows
+                 if r["pid"] in mas and np.isfinite(r["imu_R2n"])]
+    n_dropped = sum(1 for r in rows
+                    if r["pid"] in mas and not np.isfinite(r["imu_R2n"]))
     if len(mas_pairs) >= 3:
         mas_vals, r2n_vals = zip(*mas_pairs)
         rho, pval = stats.spearmanr(mas_vals, r2n_vals)
+        print(f"({n_dropped} trials dropped: R2n not measurable)")
         print(f"n={len(mas_pairs)} trials (participants with MAS scores: "
               f"{sorted(set(r['pid'] for r in rows if r['pid'] in mas))})")
         print(f"Spearman rho={rho:.3f}, p={pval:.4f}")
@@ -443,6 +453,14 @@ def main():
     print("\n=== MS vs Control: linear mixed-effects model (R2n ~ group, random=participant) ===")
     df = pd.DataFrame(rows)
     df_grouped = df[df["group"].isin(["MS", "Control"])].copy()
+    # Same reason as above: mixedlm cannot fit rows whose response is NaN, and
+    # patsy raises rather than dropping them. Dropping here is explicit, and
+    # the count is reported so the model's n is not silently smaller than the
+    # cohort's.
+    _before = len(df_grouped)
+    df_grouped = df_grouped[np.isfinite(df_grouped["imu_R2n"])].copy()
+    if len(df_grouped) < _before:
+        print(f"({_before - len(df_grouped)} trials dropped: R2n not measurable)")
     print(f"n={len(df_grouped)} trials, participants: "
           f"{df_grouped.groupby('group')['pid'].nunique().to_dict()}")
     if df_grouped["group"].nunique() == 2 and len(df_grouped) >= 6:
