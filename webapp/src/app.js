@@ -10,7 +10,7 @@ import { ALGORITHM_VERSION } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
 import { createHomeView } from './views/home.js';
 import { createCaptureView } from './views/capture.js';
-import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS } from './views/session.js';
+import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { isPending } from './mas-store.js';
@@ -572,11 +572,19 @@ if (typeof document !== 'undefined') {
   // moment a trial finishes and needs to be saved, and a failure here (e.g.
   // IndexedDB unavailable) is surfaced immediately rather than silently at
   // the worst possible time.
-  ensureSessionReady().catch((err) => {
-    console.error('session init failed', err);
-    el('session-status').textContent =
-      `Could not open local storage: ${err instanceof Error ? err.message : String(err)}. Trials will not be saved.`;
-  });
+  // Routing waits on session init because `currentPatient` is not known until
+  // it resolves. `initialView` returning 'home' is a no-op -- the markup
+  // already has #view-home active -- so the only observable effect is landing
+  // on selection when nothing is set.
+  ensureSessionReady()
+    .then(() => {
+      router.navigate(initialView({ patient: currentPatient }));
+    })
+    .catch((err) => {
+      console.error('session init failed', err);
+      el('session-status').textContent =
+        `Could not open local storage: ${err instanceof Error ? err.message : String(err)}. Trials will not be saved.`;
+    });
 
   // Pure plumbing over `exportLockState` -- the decision itself (including
   // "while ANY entry point is mid-mutation, both buttons are locked

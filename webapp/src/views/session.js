@@ -21,6 +21,16 @@ export function patientLabel(patient) {
   return patient.legacy === true ? `${id} (legacy)` : id;
 }
 
+// Which view a launch lands on. Pure so the launch rule is testable without a
+// DOM or a database.
+//
+// Opening on the tiles when no participant is set invites the operator to tap
+// Record Trial first; the Start handler would then refuse, which teaches the
+// gate by failure. Opening on selection teaches it by layout instead.
+export function initialView({ patient } = {}) {
+  return patient ? 'home' : 'session';
+}
+
 // Pure. `state` is `{patient, side, trialCount}`; the returned state carries
 // an `error` string when an action was refused.
 export function nextParticipantState(state, action) {
@@ -115,6 +125,11 @@ export function createSessionView({
     const errEl = el('participant-error');
     errEl.textContent = error || '';
     errEl.hidden = !error;
+
+    // Shown only when there is nothing selected. This is guidance, not an
+    // error, so it uses .field-status rather than .field-error.
+    const needEl = el('participant-required');
+    if (needEl) needEl.hidden = Boolean(patient);
 
     // A notice, never a block. A pending row is legitimate and the desktop
     // ingests it; the failure this guards against is forgetting one, not

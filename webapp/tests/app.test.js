@@ -6,7 +6,9 @@ import {
 } from '../src/app.js';
 import { canCloseSession, markExported } from '../src/session-store.js';
 import { createCaptureView } from '../src/views/capture.js';
-import { patientLabel, nextParticipantState, SETTING_KEYS } from '../src/views/session.js';
+import {
+  patientLabel, nextParticipantState, SETTING_KEYS, initialView,
+} from '../src/views/session.js';
 import { trialSummary } from '../src/views/trials.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
@@ -715,4 +717,20 @@ test('a trial with unmeasured parameters is flagged in the summary', () => {
 test('a null side reads as unset rather than "null"', () => {
   const s = trialSummary({ ...historyTrial, side: null }, 0);
   assert.ok(!s.meta.includes('null'));
+});
+
+// ---- participant-first gate (unit A) -------------------------------------
+// A trial recorded against an unchosen participant is unattributable after
+// the fact, so the app opens on selection rather than on the tiles.
+test('a device with no participant opens on the session view', () => {
+  assert.equal(initialView({ patient: null }), 'session');
+});
+
+test('a device with a participant opens on home', () => {
+  assert.equal(initialView({ patient: { id: 'p1', clinic_patient_id: 'P-1' } }), 'home');
+});
+
+test('a missing or empty argument is treated as no participant', () => {
+  assert.equal(initialView(), 'session');
+  assert.equal(initialView({}), 'session');
 });
