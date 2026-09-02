@@ -161,9 +161,61 @@ A second one buys nothing here that an in-memory join does not.
 
 `makeTrialRecord` deliberately drops the composite score: it is derived at
 read time because `HEALTHY_REF` moves. The trends view therefore **recomputes
-PT7 from the stored 20 parameters** through the same path the capture view
-uses. No second scoring implementation is introduced. This is also the
-mechanism behind the §2.1 caption about recalibration moving the curve.
+PT7 from the stored 20 parameters**. This is also the mechanism behind the
+§2.1 caption about recalibration moving the curve.
+
+**Amended 2026-09-02.** The original text said this reuses "the same path the
+capture view uses". It cannot: that path is `WasmSession::finish_pt_score()`,
+a method on a *live session with samples pushed into it*. There is no
+`params -> score` entry point in the wasm veneer, and `PtParams` carries no
+deserializer (the crate is dependency-free by design, so there is no serde).
+
+**Resolution, chosen by the user over three alternatives:** export a new
+wasm entry point.
+
+```rust
+// mobile-imu-core/src/wasm.rs
+#[wasm_bindgen]
+pub fn pt_score_from_params(
+    r2n: f64, n: f64, phi_max_ratio: f64, omega_max_n: f64, omega_min_n: f64,
+    f: f64, area_ratio: f64, first_trough_depth: f64, a0_deg: f64,
+) -> String
+```
+
+**Nine named arguments, not a positional slice of twenty.** `PtParams` has 23
+fields, six of which are trajectory vectors (`phi`, `ang_r`, `t_r`, `omega_s`,
+`pk_i`, `tr_i`), plus two `bool`s and a `SpasticityType` enum — so it is not
+reconstructible from stored scalars in general. It does not need to be.
+Auditing the three functions the scoring path actually calls shows they read
+**only** these nine scalars and touch **zero** vector fields:
+
+| Function | Fields read |
+| --- | --- |
+| `pt_score_breakdown` | `r2n, n, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio` |
+| `unmeasured_params` | `f, first_trough_depth, n` |
+| `excursion_reason` | `a0_deg` |
+
+Named arguments are used rather than a slice so a mis-ordered call is a
+compile error in Rust and an obvious mistake at the JS call site, instead of a
+silent mis-scoring. `spasticity_type` is not read by any of the three and is
+defaulted.
+
+The function is a veneer only: it builds the minimal `PtParams` and delegates
+to the existing `pt_score_to_json(&params, &HEALTHY_REF)`. **No scoring maths
+is added, duplicated, or changed**, and a Rust test pins it against
+`finish_pt_score()` on a real trial so the two paths cannot diverge.
+
+Rejected: replaying each trial's stored `raw_jsonl` through a `WasmSession`
+(needs a JSONL-to-samples parser that must mirror the encoder exactly — a new
+drift risk), and reimplementing the composite in JS (a second implementation
+of a clinical score).
+
+**Consequence to accept knowingly:** rebuilding the wasm changes its hash, so
+`ALGORITHM_VERSION` bumps once. Trials exported before and after will carry
+different version strings despite identical scoring maths. This is honest —
+the binary genuinely changed — but it is a traceability event, and the field
+order must be cross-checked by a test in both languages or a silent
+mis-scoring becomes possible.
 
 ### 4.3 Import
 
@@ -326,7 +378,8 @@ the gate, not a wish list.
 
 ## 9. Out of scope
 
-- Any change to how PT7 is computed. This spec renders it; it does not touch
+- Any change to how PT7 is computed. This spec renders it and adds a read-only
+  entry point to reach it (§4.2); it does not touch
   the scoring path.
 - Cross-participant or cohort views. One participant at a time.
 - Editing or deleting stored trials and assessments.
