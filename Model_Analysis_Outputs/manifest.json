@@ -1,0 +1,4714 @@
+{
+  "counts": {
+    "csv": 91,
+    "figures": 748,
+    "files": 887,
+    "total_bytes": 238569072
+  },
+  "files": {
+    "Cohort_Comparison/cohort_boxplots.png": {
+      "bytes": 498832,
+      "modified": "2026-09-02T14:25:06Z"
+    },
+    "Cohort_Comparison/cohort_composition.csv": {
+      "bytes": 547,
+      "columns": [
+        "pid",
+        "group",
+        "source",
+        "n_trials_left",
+        "n_trials_right"
+      ],
+      "modified": "2026-08-31T18:49:32Z",
+      "rows": 22,
+      "sha256_16": "861472b651a05806"
+    },
+    "Cohort_Comparison/cohort_stats.csv": {
+      "bytes": 4106,
+      "columns": [
+        "leg",
+        "parameter",
+        "arm_a",
+        "arm_b",
+        "n_a",
+        "a_median",
+        "a_iqr",
+        "n_b",
+        "b_median",
+        "b_iqr",
+        "mann_whitney_p",
+        "holm_p",
+        "cliffs_delta_b_minus_a",
+        "effect_size"
+      ],
+      "modified": "2026-09-02T14:24:59Z",
+      "rows": 48,
+      "sha256_16": "78172204dc83a77d"
+    },
+    "Cohort_Comparison/normative_ranges.csv": {
+      "bytes": 972,
+      "columns": [
+        "leg",
+        "parameter",
+        "control_min",
+        "control_max",
+        "control_n_trials",
+        "control_n_participants",
+        "ms_min",
+        "ms_max",
+        "ms_n_trials",
+        "ms_n_participants",
+        "overlap"
+      ],
+      "modified": "2026-09-02T14:24:59Z",
+      "rows": 16,
+      "sha256_16": "a58d997f5e063aff"
+    },
+    "Figures/Fig_A_P10_Left_T3_ctrl_best.pdf": {
+      "bytes": 58248,
+      "modified": "2026-07-22T16:15:01Z"
+    },
+    "Figures/Fig_A_P10_Left_T3_ctrl_best.png": {
+      "bytes": 898956,
+      "modified": "2026-07-22T16:15:02Z"
+    },
+    "Figures/Fig_A_P10_Right_T2_ctrl_best.pdf": {
+      "bytes": 77644,
+      "modified": "2026-07-22T16:15:04Z"
+    },
+    "Figures/Fig_A_P10_Right_T2_ctrl_best.png": {
+      "bytes": 1057767,
+      "modified": "2026-07-22T16:15:05Z"
+    },
+    "Figures/Fig_A_P4_Left_T2_MS_best.pdf": {
+      "bytes": 52750,
+      "modified": "2026-07-22T16:14:32Z"
+    },
+    "Figures/Fig_A_P4_Left_T2_MS_best.png": {
+      "bytes": 729884,
+      "modified": "2026-07-22T16:14:33Z"
+    },
+    "Figures/Fig_A_P4_Right_T1_MS_best.pdf": {
+      "bytes": 55399,
+      "modified": "2026-07-22T16:14:35Z"
+    },
+    "Figures/Fig_A_P4_Right_T1_MS_best.png": {
+      "bytes": 927774,
+      "modified": "2026-07-22T16:14:36Z"
+    },
+    "Figures/Fig_A_P5_Right_T4_MS_best.pdf": {
+      "bytes": 57155,
+      "modified": "2026-07-22T16:14:39Z"
+    },
+    "Figures/Fig_A_P5_Right_T4_MS_best.png": {
+      "bytes": 756169,
+      "modified": "2026-07-22T16:14:40Z"
+    },
+    "Figures/Fig_A_P6_Left_T4_ctrl_best.pdf": {
+      "bytes": 83721,
+      "modified": "2026-07-22T16:14:42Z"
+    },
+    "Figures/Fig_A_P6_Left_T4_ctrl_best.png": {
+      "bytes": 1123893,
+      "modified": "2026-07-22T16:14:43Z"
+    },
+    "Figures/Fig_A_P6_Right_T3_ctrl_best.pdf": {
+      "bytes": 82929,
+      "modified": "2026-07-22T16:14:46Z"
+    },
+    "Figures/Fig_A_P6_Right_T3_ctrl_best.png": {
+      "bytes": 1185529,
+      "modified": "2026-07-22T16:14:48Z"
+    },
+    "Figures/Fig_A_P7_Right_T1_ctrl_best.pdf": {
+      "bytes": 58771,
+      "modified": "2026-07-22T16:14:50Z"
+    },
+    "Figures/Fig_A_P7_Right_T1_ctrl_best.png": {
+      "bytes": 903136,
+      "modified": "2026-07-22T16:14:51Z"
+    },
+    "Figures/Fig_A_P8_Left_T2_ctrl_best.pdf": {
+      "bytes": 83307,
+      "modified": "2026-07-22T16:14:54Z"
+    },
+    "Figures/Fig_A_P8_Left_T2_ctrl_best.png": {
+      "bytes": 1155025,
+      "modified": "2026-07-22T16:14:55Z"
+    },
+    "Figures/Fig_A_P8_Right_T3_ctrl_best.pdf": {
+      "bytes": 62792,
+      "modified": "2026-07-22T16:14:57Z"
+    },
+    "Figures/Fig_A_P8_Right_T3_ctrl_best.png": {
+      "bytes": 1150181,
+      "modified": "2026-07-22T16:14:58Z"
+    },
+    "Figures/Fig_A_goniogram.pdf": {
+      "bytes": 72746,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "Figures/Fig_A_goniogram.png": {
+      "bytes": 303091,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "Figures/Fig_A_goniogram_P4_allmodels.pdf": {
+      "bytes": 75710,
+      "modified": "2026-07-22T13:06:56Z"
+    },
+    "Figures/Fig_A_goniogram_P4_allmodels.png": {
+      "bytes": 814512,
+      "modified": "2026-07-22T13:06:58Z"
+    },
+    "Figures/Fig_A_goniogram_P6_allmodels.pdf": {
+      "bytes": 74263,
+      "modified": "2026-07-22T13:07:06Z"
+    },
+    "Figures/Fig_A_goniogram_P6_allmodels.png": {
+      "bytes": 965939,
+      "modified": "2026-07-22T13:07:07Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_2_left_duo_T1.pdf": {
+      "bytes": 64767,
+      "modified": "2026-07-21T02:47:17Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_2_left_duo_T1.png": {
+      "bytes": 1258132,
+      "modified": "2026-07-21T02:47:18Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T2.pdf": {
+      "bytes": 71113,
+      "modified": "2026-07-22T13:06:59Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T2.png": {
+      "bytes": 1314031,
+      "modified": "2026-07-22T13:07:01Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T3.pdf": {
+      "bytes": 85181,
+      "modified": "2026-07-22T13:06:57Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T3.png": {
+      "bytes": 1223085,
+      "modified": "2026-07-22T13:06:59Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T5.pdf": {
+      "bytes": 83635,
+      "modified": "2026-07-22T13:07:02Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_left_T5.png": {
+      "bytes": 1181360,
+      "modified": "2026-07-22T13:07:03Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T1.pdf": {
+      "bytes": 73309,
+      "modified": "2026-07-22T13:07:04Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T1.png": {
+      "bytes": 791940,
+      "modified": "2026-07-22T13:07:05Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T2.pdf": {
+      "bytes": 57928,
+      "modified": "2026-07-22T13:06:56Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T2.png": {
+      "bytes": 656091,
+      "modified": "2026-07-22T13:06:58Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T4.pdf": {
+      "bytes": 51214,
+      "modified": "2026-07-22T13:07:02Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_4_right_T4.png": {
+      "bytes": 540448,
+      "modified": "2026-07-22T13:07:04Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_5_right_side_T3.pdf": {
+      "bytes": 70630,
+      "modified": "2026-07-22T13:07:07Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_5_right_side_T3.png": {
+      "bytes": 651848,
+      "modified": "2026-07-22T13:07:08Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T1.pdf": {
+      "bytes": 77197,
+      "modified": "2026-07-22T13:07:09Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T1.png": {
+      "bytes": 982031,
+      "modified": "2026-07-22T13:07:10Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T2.pdf": {
+      "bytes": 56815,
+      "modified": "2026-07-21T02:47:37Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T2.png": {
+      "bytes": 1087441,
+      "modified": "2026-07-21T02:47:38Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T3.pdf": {
+      "bytes": 72161,
+      "modified": "2026-07-22T13:07:12Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T3.png": {
+      "bytes": 704132,
+      "modified": "2026-07-22T13:07:13Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T4.pdf": {
+      "bytes": 76170,
+      "modified": "2026-07-22T13:07:14Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_left_control_T4.png": {
+      "bytes": 966399,
+      "modified": "2026-07-22T13:07:15Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T1.pdf": {
+      "bytes": 73162,
+      "modified": "2026-07-22T13:07:16Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T1.png": {
+      "bytes": 977064,
+      "modified": "2026-07-22T13:07:17Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T2.pdf": {
+      "bytes": 77164,
+      "modified": "2026-07-22T13:07:19Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T2.png": {
+      "bytes": 1114612,
+      "modified": "2026-07-22T13:07:20Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T3.pdf": {
+      "bytes": 76414,
+      "modified": "2026-07-22T13:07:23Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T3.png": {
+      "bytes": 1089743,
+      "modified": "2026-07-22T13:07:24Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T5.pdf": {
+      "bytes": 76197,
+      "modified": "2026-07-22T13:07:25Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_6_right_control_T5.png": {
+      "bytes": 1049169,
+      "modified": "2026-07-22T13:07:26Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T1.pdf": {
+      "bytes": 57908,
+      "modified": "2026-07-21T02:47:54Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T1.png": {
+      "bytes": 1101274,
+      "modified": "2026-07-21T02:47:55Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T2.pdf": {
+      "bytes": 58794,
+      "modified": "2026-07-21T02:47:56Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T2.png": {
+      "bytes": 1091168,
+      "modified": "2026-07-21T02:47:57Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T3.pdf": {
+      "bytes": 51518,
+      "modified": "2026-07-21T02:47:59Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T3.png": {
+      "bytes": 877876,
+      "modified": "2026-07-21T02:48:00Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T4.pdf": {
+      "bytes": 58120,
+      "modified": "2026-07-21T02:48:01Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_left_control_T4.png": {
+      "bytes": 969822,
+      "modified": "2026-07-21T02:48:02Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_right_control_T1.pdf": {
+      "bytes": 70780,
+      "modified": "2026-07-22T13:07:27Z"
+    },
+    "Figures/Fig_A_goniogram_Participant_7_right_control_T1.png": {
+      "bytes": 846986,
+      "modified": "2026-07-22T13:07:28Z"
+    },
+    "Figures/Fig_A_pt_equation_explainer.pdf": {
+      "bytes": 79679,
+      "modified": "2026-07-21T21:51:21Z"
+    },
+    "Figures/Fig_A_pt_equation_explainer.png": {
+      "bytes": 1000754,
+      "modified": "2026-07-21T21:51:22Z"
+    },
+    "Figures/Fig_B_rmse_accuracy.pdf": {
+      "bytes": 38352,
+      "modified": "2026-07-20T06:44:16Z"
+    },
+    "Figures/Fig_B_rmse_accuracy.png": {
+      "bytes": 342556,
+      "modified": "2026-07-20T06:44:17Z"
+    },
+    "Figures/Fig_C_param_delta.pdf": {
+      "bytes": 45025,
+      "modified": "2026-07-20T06:44:17Z"
+    },
+    "Figures/Fig_C_param_delta.png": {
+      "bytes": 243896,
+      "modified": "2026-07-20T06:44:18Z"
+    },
+    "Figures/Fig_D_scatter.pdf": {
+      "bytes": 40009,
+      "modified": "2026-07-20T06:44:18Z"
+    },
+    "Figures/Fig_D_scatter.png": {
+      "bytes": 720102,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "Figures/Fig_E_annotation_comparison.pdf": {
+      "bytes": 45486,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "Figures/Fig_E_annotation_comparison.png": {
+      "bytes": 269112,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "Figures/Fig_F_small_multiples.pdf": {
+      "bytes": 65685,
+      "modified": "2026-07-20T06:44:23Z"
+    },
+    "Figures/Fig_F_small_multiples.png": {
+      "bytes": 847192,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "Figures/Fig_Flow_pipeline.pdf": {
+      "bytes": 43779,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "Figures/Fig_Flow_pipeline.png": {
+      "bytes": 142882,
+      "modified": "2026-07-20T06:44:16Z"
+    },
+    "Figures/Fig_G_velocity.pdf": {
+      "bytes": 39347,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "Figures/Fig_G_velocity.png": {
+      "bytes": 249149,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "Figures/Fig_H_healthy_vs_ms.pdf": {
+      "bytes": 41158,
+      "modified": "2026-07-20T06:44:25Z"
+    },
+    "Figures/Fig_H_healthy_vs_ms.png": {
+      "bytes": 296618,
+      "modified": "2026-07-20T06:44:25Z"
+    },
+    "Figures/Fig_I_7param_comparison.pdf": {
+      "bytes": 56962,
+      "modified": "2026-07-20T06:44:26Z"
+    },
+    "Figures/Fig_I_7param_comparison.png": {
+      "bytes": 331448,
+      "modified": "2026-07-20T06:44:27Z"
+    },
+    "Figures/Fig_MP_P10_Left_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 54732,
+      "modified": "2026-07-22T16:15:03Z"
+    },
+    "Figures/Fig_MP_P10_Left_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 701022,
+      "modified": "2026-07-22T16:15:03Z"
+    },
+    "Figures/Fig_MP_P10_Right_T2_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 51353,
+      "modified": "2026-07-22T16:15:06Z"
+    },
+    "Figures/Fig_MP_P10_Right_T2_ctrl_mediapipe_cmp.png": {
+      "bytes": 789423,
+      "modified": "2026-07-22T16:15:07Z"
+    },
+    "Figures/Fig_MP_P4_Left_T2_MS_mediapipe_cmp.pdf": {
+      "bytes": 46165,
+      "modified": "2026-07-22T16:14:34Z"
+    },
+    "Figures/Fig_MP_P4_Left_T2_MS_mediapipe_cmp.png": {
+      "bytes": 542741,
+      "modified": "2026-07-22T16:14:35Z"
+    },
+    "Figures/Fig_MP_P4_Right_T1_MS_mediapipe_cmp.pdf": {
+      "bytes": 47568,
+      "modified": "2026-07-22T16:14:37Z"
+    },
+    "Figures/Fig_MP_P4_Right_T1_MS_mediapipe_cmp.png": {
+      "bytes": 506974,
+      "modified": "2026-07-22T16:14:38Z"
+    },
+    "Figures/Fig_MP_P5_Right_T4_MS_mediapipe_cmp.pdf": {
+      "bytes": 45654,
+      "modified": "2026-07-22T16:14:41Z"
+    },
+    "Figures/Fig_MP_P5_Right_T4_MS_mediapipe_cmp.png": {
+      "bytes": 419721,
+      "modified": "2026-07-22T16:14:42Z"
+    },
+    "Figures/Fig_MP_P6_Left_T4_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 43703,
+      "modified": "2026-07-22T16:14:44Z"
+    },
+    "Figures/Fig_MP_P6_Left_T4_ctrl_mediapipe_cmp.png": {
+      "bytes": 388086,
+      "modified": "2026-07-22T16:14:45Z"
+    },
+    "Figures/Fig_MP_P6_Right_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 48136,
+      "modified": "2026-07-22T16:14:48Z"
+    },
+    "Figures/Fig_MP_P6_Right_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 504493,
+      "modified": "2026-07-22T16:14:49Z"
+    },
+    "Figures/Fig_MP_P7_Right_T1_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 45807,
+      "modified": "2026-07-22T16:14:52Z"
+    },
+    "Figures/Fig_MP_P7_Right_T1_ctrl_mediapipe_cmp.png": {
+      "bytes": 470379,
+      "modified": "2026-07-22T16:14:53Z"
+    },
+    "Figures/Fig_MP_P8_Left_T2_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 48711,
+      "modified": "2026-07-22T16:14:56Z"
+    },
+    "Figures/Fig_MP_P8_Left_T2_ctrl_mediapipe_cmp.png": {
+      "bytes": 683483,
+      "modified": "2026-07-22T16:14:56Z"
+    },
+    "Figures/Fig_MP_P8_Right_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 50806,
+      "modified": "2026-07-22T16:14:59Z"
+    },
+    "Figures/Fig_MP_P8_Right_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 712301,
+      "modified": "2026-07-22T16:15:00Z"
+    },
+    "Figures/Fig_control_validation.pdf": {
+      "bytes": 84613,
+      "modified": "2026-07-21T15:01:44Z"
+    },
+    "Figures/Fig_control_validation.png": {
+      "bytes": 647157,
+      "modified": "2026-07-21T15:01:52Z"
+    },
+    "Figures/Fig_derivation_pipeline.pdf": {
+      "bytes": 86661,
+      "modified": "2026-07-21T22:21:01Z"
+    },
+    "Figures/Fig_derivation_pipeline.png": {
+      "bytes": 588055,
+      "modified": "2026-07-21T22:20:59Z"
+    },
+    "Figures/Fig_model_accuracy_comparison.pdf": {
+      "bytes": 56515,
+      "modified": "2026-07-22T13:34:00Z"
+    },
+    "Figures/Fig_model_accuracy_comparison.png": {
+      "bytes": 539872,
+      "modified": "2026-07-22T13:34:02Z"
+    },
+    "Figures/Fig_pt_equation_explainer.pdf": {
+      "bytes": 200235,
+      "modified": "2026-07-23T00:22:30Z"
+    },
+    "Figures/Fig_pt_equation_explainer.png": {
+      "bytes": 842283,
+      "modified": "2026-07-23T00:22:28Z"
+    },
+    "HPE_Comparison/hpe_accuracy_bar.png": {
+      "bytes": 147511,
+      "modified": "2026-07-20T06:43:31Z"
+    },
+    "HPE_Comparison/hpe_accuracy_summary.csv": {
+      "bytes": 1627,
+      "columns": [
+        "model_family",
+        "n_trials",
+        "n_healthy",
+        "n_spastic",
+        "exact_MAS_agree_%",
+        "adj_MAS_agree_%",
+        "healthy_MAS0_%",
+        "spastic_MAS1+_%",
+        "PT_correlation",
+        "PT_MAE",
+        "mean_delta_N",
+        "mean_abs_delta_N",
+        "mean_delta_A0_deg",
+        "mean_abs_delta_A0_deg",
+        "mean_abs_delta_phi_max",
+        "mean_abs_delta_omega_max",
+        "mean_abs_delta_omega_min",
+        "mean_abs_delta_f_hz",
+        "mean_abs_delta_area"
+      ],
+      "modified": "2026-07-20T06:43:28Z",
+      "rows": 12,
+      "sha256_16": "393549f9821e8743"
+    },
+    "HPE_Comparison/hpe_mas_comparison.csv": {
+      "bytes": 91460,
+      "columns": [
+        "pid",
+        "pos",
+        "trial",
+        "family",
+        "model",
+        "is_healthy",
+        "opti_pt",
+        "opti_mas",
+        "opti_N",
+        "opti_A0_deg",
+        "hpe_pt",
+        "hpe_mas",
+        "hpe_N",
+        "hpe_A0_deg",
+        "hpe_phi_max_ratio",
+        "hpe_omega_max_n",
+        "hpe_omega_min_n",
+        "hpe_f_hz",
+        "hpe_area_ratio",
+        "delta_N",
+        "delta_A0",
+        "delta_phi_max",
+        "delta_omega_max",
+        "delta_omega_min",
+        "delta_f_hz",
+        "delta_area",
+        "mas_match",
+        "pt_diff"
+      ],
+      "modified": "2026-07-20T06:43:28Z",
+      "rows": 313,
+      "sha256_16": "a0c45386e86885a1"
+    },
+    "HPE_Comparison/hpe_mas_heatmap.png": {
+      "bytes": 315308,
+      "modified": "2026-07-20T06:43:30Z"
+    },
+    "HPE_Comparison/hpe_param_diffs.png": {
+      "bytes": 149933,
+      "modified": "2026-07-20T06:43:32Z"
+    },
+    "IMU_Sweep/imu_sweep_results.csv": {
+      "bytes": 21121,
+      "columns": [
+        "beta",
+        "ema_alpha",
+        "flex_axis_capture",
+        "gravity_seed",
+        "method",
+        "n_scored",
+        "median_rmse_deg",
+        "mean_rmse_deg"
+      ],
+      "modified": "2026-08-08T06:30:28Z",
+      "rows": 288,
+      "sha256_16": "22ab127a632639da"
+    },
+    "MAS_Validation/mas_validation_figure.png": {
+      "bytes": 105787,
+      "modified": "2026-08-28T20:17:50Z"
+    },
+    "MAS_Validation/mas_validation_stats.csv": {
+      "bytes": 338,
+      "columns": [
+        "metric",
+        "value"
+      ],
+      "modified": "2026-08-28T20:17:49Z",
+      "rows": 11,
+      "sha256_16": "42aa8ed700717d66"
+    },
+    "MS_vs_Healthy/ms_vs_healthy_boxplots.png": {
+      "bytes": 156712,
+      "modified": "2026-07-13T13:43:21Z"
+    },
+    "MS_vs_Healthy/ms_vs_healthy_ptscores.png": {
+      "bytes": 69251,
+      "modified": "2026-07-13T13:43:24Z"
+    },
+    "MS_vs_Healthy/ms_vs_healthy_radar.png": {
+      "bytes": 147146,
+      "modified": "2026-07-13T13:43:23Z"
+    },
+    "MS_vs_Healthy/ms_vs_healthy_stats.csv": {
+      "bytes": 640,
+      "columns": [
+        "parameter",
+        "column",
+        "healthy_ref",
+        "healthy_n",
+        "healthy_median",
+        "healthy_IQR",
+        "ms_n",
+        "ms_median",
+        "ms_IQR",
+        "mann_whitney_p",
+        "cliffs_delta",
+        "effect_size"
+      ],
+      "modified": "2026-07-13T13:43:18Z",
+      "rows": 6,
+      "sha256_16": "5853f6f0ad0f878e"
+    },
+    "MediaPipe_Sweep/mediapipe_sweep_results.csv": {
+      "bytes": 498,
+      "columns": [
+        "model",
+        "vis_thresh",
+        "n_scored",
+        "median_rmse_deg",
+        "mean_rmse_deg"
+      ],
+      "modified": "2026-08-06T22:08:42Z",
+      "rows": 9,
+      "sha256_16": "f96a3d052a4cce03"
+    },
+    "MediaPipe_Sweep/p16_mask_assessor_sweep_results.csv": {
+      "bytes": 955,
+      "columns": [
+        "candidate",
+        "trial_key",
+        "leg",
+        "rmse_deg"
+      ],
+      "modified": "2026-08-17T19:16:23Z",
+      "rows": 8,
+      "sha256_16": "b676bb89413ee186"
+    },
+    "MediaPipe_Sweep/p16_model_variant_sweep_results.csv": {
+      "bytes": 1508,
+      "columns": [
+        "model",
+        "trial_key",
+        "leg",
+        "rmse_deg"
+      ],
+      "modified": "2026-08-17T19:04:43Z",
+      "rows": 16,
+      "sha256_16": "d473a4919932d263"
+    },
+    "MediaPipe_Sweep/p16_preprocessing_sweep_results.csv": {
+      "bytes": 3849,
+      "columns": [
+        "candidate",
+        "trial_key",
+        "leg",
+        "rmse_deg"
+      ],
+      "modified": "2026-08-17T17:09:51Z",
+      "rows": 40,
+      "sha256_16": "f1c4f29af431f0a7"
+    },
+    "MediaPipe_Sweep/partial_preprocessing_sweep_results.csv": {
+      "bytes": 245,
+      "columns": [
+        "candidate",
+        "n_trials",
+        "n_scored",
+        "median_rmse_deg",
+        "mean_rmse_deg",
+        "pct_under_10deg"
+      ],
+      "modified": "2026-08-18T18:15:42Z",
+      "rows": 5,
+      "sha256_16": "bd8e805f00e2064f"
+    },
+    "MediaPipe_Sweep/preprocessing_sweep_results.csv": {
+      "bytes": 423,
+      "columns": [
+        "candidate",
+        "n_trials",
+        "n_scored",
+        "median_rmse_deg",
+        "mean_rmse_deg",
+        "pct_under_10deg"
+      ],
+      "modified": "2026-08-19T19:14:59Z",
+      "rows": 5,
+      "sha256_16": "922ebdba01ca2d4c"
+    },
+    "Multisource_Waveforms/P13_left_post_T3_multisource.png": {
+      "bytes": 119527,
+      "modified": "2026-08-06T21:35:12Z"
+    },
+    "Multisource_Waveforms/P13_left_post_T4_multisource.png": {
+      "bytes": 108715,
+      "modified": "2026-08-06T21:35:12Z"
+    },
+    "Multisource_Waveforms/P13_left_pre_T1_multisource.png": {
+      "bytes": 113226,
+      "modified": "2026-08-06T21:35:13Z"
+    },
+    "Multisource_Waveforms/P13_left_pre_T2_multisource.png": {
+      "bytes": 117274,
+      "modified": "2026-08-06T21:35:13Z"
+    },
+    "Multisource_Waveforms/P13_left_pre_T4_multisource.png": {
+      "bytes": 113850,
+      "modified": "2026-08-06T21:35:14Z"
+    },
+    "Multisource_Waveforms/P13_left_week_1_post_T2_multisource.png": {
+      "bytes": 143398,
+      "modified": "2026-08-06T21:35:09Z"
+    },
+    "Multisource_Waveforms/P13_left_week_1_post_T4_multisource.png": {
+      "bytes": 142925,
+      "modified": "2026-08-06T21:35:10Z"
+    },
+    "Multisource_Waveforms/P13_right_post_T1_multisource.png": {
+      "bytes": 133151,
+      "modified": "2026-08-06T21:35:14Z"
+    },
+    "Multisource_Waveforms/P13_right_post_T3_multisource.png": {
+      "bytes": 124919,
+      "modified": "2026-08-06T21:35:15Z"
+    },
+    "Multisource_Waveforms/P13_right_post_T4_multisource.png": {
+      "bytes": 121763,
+      "modified": "2026-08-06T21:35:15Z"
+    },
+    "Multisource_Waveforms/P13_right_post_T5_multisource.png": {
+      "bytes": 128957,
+      "modified": "2026-08-06T21:35:15Z"
+    },
+    "Multisource_Waveforms/P13_right_pre_T1_multisource.png": {
+      "bytes": 117961,
+      "modified": "2026-08-06T21:35:16Z"
+    },
+    "Multisource_Waveforms/P13_right_pre_T2_multisource.png": {
+      "bytes": 113262,
+      "modified": "2026-08-06T21:35:16Z"
+    },
+    "Multisource_Waveforms/P13_right_pre_T3_multisource.png": {
+      "bytes": 115447,
+      "modified": "2026-08-06T21:35:17Z"
+    },
+    "Multisource_Waveforms/P13_right_pre_T4_multisource.png": {
+      "bytes": 114023,
+      "modified": "2026-08-06T21:35:17Z"
+    },
+    "Multisource_Waveforms/P13_right_pre_T5_multisource.png": {
+      "bytes": 115547,
+      "modified": "2026-08-06T21:35:17Z"
+    },
+    "Multisource_Waveforms/P13_right_week_1_post_T3_multisource.png": {
+      "bytes": 121904,
+      "modified": "2026-08-06T21:35:10Z"
+    },
+    "Multisource_Waveforms/P13_right_week_1_post_T4_multisource.png": {
+      "bytes": 130655,
+      "modified": "2026-08-06T21:35:11Z"
+    },
+    "Multisource_Waveforms/P13_right_week_1_post_T5_multisource.png": {
+      "bytes": 122829,
+      "modified": "2026-08-06T21:35:12Z"
+    },
+    "Multisource_Waveforms/P14_left_pre_T2_multisource.png": {
+      "bytes": 134057,
+      "modified": "2026-08-06T21:35:18Z"
+    },
+    "Multisource_Waveforms/P14_left_pre_T3_multisource.png": {
+      "bytes": 118486,
+      "modified": "2026-08-06T21:35:18Z"
+    },
+    "Multisource_Waveforms/P14_right_pre_T3_multisource.png": {
+      "bytes": 95069,
+      "modified": "2026-08-06T21:35:19Z"
+    },
+    "Multisource_Waveforms/P14_right_pre_T4_multisource.png": {
+      "bytes": 115964,
+      "modified": "2026-08-06T21:35:20Z"
+    },
+    "Multisource_Waveforms/multisource_concurrent_validity.csv": {
+      "bytes": 436,
+      "columns": [
+        "modality",
+        "n_pt_pairs",
+        "icc_2_1",
+        "pearson_r",
+        "pearson_p",
+        "rmse_n",
+        "rmse_median_deg",
+        "rmse_mean_deg",
+        "ba_bias",
+        "ba_loa_lo",
+        "ba_loa_hi"
+      ],
+      "modified": "2026-08-06T21:35:20Z",
+      "rows": 2,
+      "sha256_16": "92446d7641055ffb"
+    },
+    "Multisource_Waveforms/multisource_summary.csv": {
+      "bytes": 2046,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "trial",
+        "optitrack_pt_score",
+        "imu_rmse",
+        "imu_pt_score",
+        "mediapipe_rmse",
+        "mediapipe_pt_score"
+      ],
+      "modified": "2026-08-06T21:35:20Z",
+      "rows": 23,
+      "sha256_16": "12e3ba7bd75ae110"
+    },
+    "OpenSim_IK_Prototype/0752471bd270a54fdb308ed24db8bb26367669ad17dc2a36bf50cf727a4c63c3.mot": {
+      "bytes": 235323,
+      "modified": "2026-08-19T19:32:04Z"
+    },
+    "OpenSim_IK_Prototype/0752471bd270a54fdb308ed24db8bb26367669ad17dc2a36bf50cf727a4c63c3.osim": {
+      "bytes": 309731,
+      "modified": "2026-08-19T19:31:45Z"
+    },
+    "OpenSim_IK_Prototype/0752471bd270a54fdb308ed24db8bb26367669ad17dc2a36bf50cf727a4c63c3.trc": {
+      "bytes": 253395,
+      "modified": "2026-08-19T19:31:42Z"
+    },
+    "OpenSim_IK_Prototype/0bc3dfc14d83a7d2dc2a522fe4f761721bfe4659b528512720ad1400c0c1a19c.mot": {
+      "bytes": 229739,
+      "modified": "2026-08-19T19:34:11Z"
+    },
+    "OpenSim_IK_Prototype/0bc3dfc14d83a7d2dc2a522fe4f761721bfe4659b528512720ad1400c0c1a19c.osim": {
+      "bytes": 309772,
+      "modified": "2026-08-19T19:33:50Z"
+    },
+    "OpenSim_IK_Prototype/0bc3dfc14d83a7d2dc2a522fe4f761721bfe4659b528512720ad1400c0c1a19c.trc": {
+      "bytes": 247019,
+      "modified": "2026-08-19T19:33:47Z"
+    },
+    "OpenSim_IK_Prototype/1fa39b73575acf3ab1acfdf8c43e6e1c2a9427e49b1cea10474ba54562a3ec59.mot": {
+      "bytes": 256263,
+      "modified": "2026-08-19T19:27:53Z"
+    },
+    "OpenSim_IK_Prototype/1fa39b73575acf3ab1acfdf8c43e6e1c2a9427e49b1cea10474ba54562a3ec59.osim": {
+      "bytes": 309765,
+      "modified": "2026-08-19T19:27:40Z"
+    },
+    "OpenSim_IK_Prototype/1fa39b73575acf3ab1acfdf8c43e6e1c2a9427e49b1cea10474ba54562a3ec59.trc": {
+      "bytes": 274310,
+      "modified": "2026-08-19T19:27:35Z"
+    },
+    "OpenSim_IK_Prototype/242417439275273ae0f361369e988a069104c2db8253eca2cc16d329315c738b.mot": {
+      "bytes": 243699,
+      "modified": "2026-08-19T19:29:57Z"
+    },
+    "OpenSim_IK_Prototype/242417439275273ae0f361369e988a069104c2db8253eca2cc16d329315c738b.osim": {
+      "bytes": 309768,
+      "modified": "2026-08-19T19:29:40Z"
+    },
+    "OpenSim_IK_Prototype/242417439275273ae0f361369e988a069104c2db8253eca2cc16d329315c738b.trc": {
+      "bytes": 262047,
+      "modified": "2026-08-19T19:29:38Z"
+    },
+    "OpenSim_IK_Prototype/_ik_marker_errors.sto": {
+      "bytes": 22780,
+      "modified": "2026-08-19T19:34:11Z"
+    },
+    "OpenSim_IK_Prototype/prototype_results.csv": {
+      "bytes": 289,
+      "columns": [
+        "trial_key",
+        "leg",
+        "baseline_rmse_deg",
+        "opensim_ik_rmse_deg",
+        "opensim_ik_error"
+      ],
+      "modified": "2026-08-18T20:16:50Z",
+      "rows": 2,
+      "sha256_16": "308a6cb84e3edfb7"
+    },
+    "OpenSim_IK_Prototype/prototype_results_corrected.csv": {
+      "bytes": 224,
+      "columns": [
+        "trial_key",
+        "leg",
+        "opensim_ik_rmse_deg_corrected"
+      ],
+      "modified": "2026-08-18T20:19:13Z",
+      "rows": 2,
+      "sha256_16": "24ba2eab0abfb3d5"
+    },
+    "OpenSim_IK_Prototype/prototype_results_pass2_lower_weighted.csv": {
+      "bytes": 559,
+      "columns": [
+        "trial_key",
+        "leg",
+        "baseline_rmse_deg",
+        "opensim_ik_lower_rmse_deg",
+        "n_upper_body_markers_downweighted",
+        "opensim_ik_error"
+      ],
+      "modified": "2026-08-19T19:34:11Z",
+      "rows": 4,
+      "sha256_16": "b460a476d48c4174"
+    },
+    "P5_concurrent_validity.csv": {
+      "bytes": 596,
+      "columns": [
+        "Parameter",
+        "n",
+        "OptiTrack med",
+        "Pendulastic med",
+        "ICC(2,1)",
+        "ICC 95% CI",
+        "ICC interp",
+        "Pearson r",
+        "p (Pearson)",
+        "MAE",
+        "Bias (mean)",
+        "LoA (+/-)"
+      ],
+      "modified": "2026-07-17T21:43:15Z",
+      "rows": 5,
+      "sha256_16": "3b7591effffc2ff7"
+    },
+    "P5_wilcoxon_optitrack.csv": {
+      "bytes": 914,
+      "columns": [
+        "Leg",
+        "Parameter",
+        "n_pairs",
+        "Pre med [IQR]",
+        "Post med [IQR]",
+        "Change%",
+        "Healthy ref",
+        "W",
+        "p",
+        "r_effect"
+      ],
+      "modified": "2026-07-17T21:43:15Z",
+      "rows": 10,
+      "sha256_16": "c1b48fc9ba25ad94"
+    },
+    "P5_wilcoxon_results.csv": {
+      "bytes": 1688,
+      "columns": [
+        "Leg",
+        "Metric",
+        "n_pairs",
+        "Pre median [IQR]",
+        "Post median [IQR]",
+        "Change %",
+        "Healthy ref",
+        "W",
+        "p-value",
+        "r (effect)",
+        "Significance"
+      ],
+      "modified": "2026-07-17T21:33:11Z",
+      "rows": 14,
+      "sha256_16": "abbff07fff365133"
+    },
+    "PT_Scores/P0_Pos1_T1_pt_score.png": {
+      "bytes": 487722,
+      "modified": "2026-07-02T16:29:09Z"
+    },
+    "PT_Scores/P0_Pos1_T2_pt_score.png": {
+      "bytes": 358668,
+      "modified": "2026-07-02T16:29:15Z"
+    },
+    "PT_Scores/P0_Pos2_T1_pt_score.png": {
+      "bytes": 453073,
+      "modified": "2026-07-02T16:29:18Z"
+    },
+    "PT_Scores/P0_Pos2_T2_pt_score.png": {
+      "bytes": 472752,
+      "modified": "2026-07-02T16:29:20Z"
+    },
+    "PT_Scores/P0_control_Pos1_T1_pt_score.png": {
+      "bytes": 489897,
+      "modified": "2026-07-17T16:54:11Z"
+    },
+    "PT_Scores/P0_control_Pos1_T2_pt_score.png": {
+      "bytes": 353375,
+      "modified": "2026-07-17T16:54:15Z"
+    },
+    "PT_Scores/P0_control_Pos2_T1_pt_score.png": {
+      "bytes": 490916,
+      "modified": "2026-07-17T16:54:18Z"
+    },
+    "PT_Scores/P0_control_Pos2_T2_pt_score.png": {
+      "bytes": 502517,
+      "modified": "2026-07-17T16:54:23Z"
+    },
+    "PT_Scores/P10_clinician_mas.csv": {
+      "bytes": 106,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:55:21Z",
+      "rows": 1,
+      "sha256_16": "4a7c96bc13421095"
+    },
+    "PT_Scores/P10_full_report.png": {
+      "bytes": 327591,
+      "modified": "2026-08-21T19:55:25Z"
+    },
+    "PT_Scores/P10_left_Pos1_T1_pt_score.png": {
+      "bytes": 379212,
+      "modified": "2026-07-17T16:54:27Z"
+    },
+    "PT_Scores/P10_left_Pos1_T2_pt_score.png": {
+      "bytes": 348562,
+      "modified": "2026-07-17T16:54:30Z"
+    },
+    "PT_Scores/P10_left_Pos1_T3_pt_score.png": {
+      "bytes": 403175,
+      "modified": "2026-07-17T16:54:33Z"
+    },
+    "PT_Scores/P10_left_Pos1_T4_pt_score.png": {
+      "bytes": 360997,
+      "modified": "2026-07-17T16:54:36Z"
+    },
+    "PT_Scores/P10_right_Pos1_T1_pt_score.png": {
+      "bytes": 408586,
+      "modified": "2026-07-17T16:54:38Z"
+    },
+    "PT_Scores/P10_right_Pos1_T2_pt_score.png": {
+      "bytes": 378388,
+      "modified": "2026-07-17T16:54:41Z"
+    },
+    "PT_Scores/P10_right_Pos1_T4_pt_score.png": {
+      "bytes": 424357,
+      "modified": "2026-07-17T16:54:44Z"
+    },
+    "PT_Scores/P10_rmse.png": {
+      "bytes": 57924,
+      "modified": "2026-08-21T19:55:26Z"
+    },
+    "PT_Scores/P10_vs_P13_comparison.png": {
+      "bytes": 199239,
+      "modified": "2026-08-21T19:55:45Z"
+    },
+    "PT_Scores/P10_vs_P5_comparison.png": {
+      "bytes": 189687,
+      "modified": "2026-08-21T19:55:39Z"
+    },
+    "PT_Scores/P11_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:55:48Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P11_full_report.png": {
+      "bytes": 313411,
+      "modified": "2026-08-21T19:55:52Z"
+    },
+    "PT_Scores/P11_left_Pos1_T1_pt_score.png": {
+      "bytes": 193451,
+      "modified": "2026-07-17T16:54:47Z"
+    },
+    "PT_Scores/P11_left_Pos1_T2_pt_score.png": {
+      "bytes": 201863,
+      "modified": "2026-07-17T16:54:49Z"
+    },
+    "PT_Scores/P11_left_Pos1_T3_pt_score.png": {
+      "bytes": 199603,
+      "modified": "2026-07-17T16:54:51Z"
+    },
+    "PT_Scores/P11_left_Pos1_T4_pt_score.png": {
+      "bytes": 205668,
+      "modified": "2026-07-17T16:54:53Z"
+    },
+    "PT_Scores/P11_right_Pos1_T1_pt_score.png": {
+      "bytes": 222620,
+      "modified": "2026-07-17T16:54:55Z"
+    },
+    "PT_Scores/P11_right_Pos1_T2_pt_score.png": {
+      "bytes": 230472,
+      "modified": "2026-07-17T16:54:57Z"
+    },
+    "PT_Scores/P11_right_Pos1_T3_pt_score.png": {
+      "bytes": 222422,
+      "modified": "2026-07-17T16:55:00Z"
+    },
+    "PT_Scores/P11_right_Pos1_T4_pt_score.png": {
+      "bytes": 219469,
+      "modified": "2026-07-17T16:55:03Z"
+    },
+    "PT_Scores/P11_rmse.png": {
+      "bytes": 58365,
+      "modified": "2026-08-21T19:55:52Z"
+    },
+    "PT_Scores/P11_vs_P13_comparison.png": {
+      "bytes": 196377,
+      "modified": "2026-08-21T19:56:13Z"
+    },
+    "PT_Scores/P11_vs_P5_comparison.png": {
+      "bytes": 188345,
+      "modified": "2026-08-21T19:56:03Z"
+    },
+    "PT_Scores/P12_clinician_mas.csv": {
+      "bytes": 106,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:56:18Z",
+      "rows": 1,
+      "sha256_16": "0866415c241cf2fc"
+    },
+    "PT_Scores/P12_full_report.png": {
+      "bytes": 378142,
+      "modified": "2026-08-21T19:56:25Z"
+    },
+    "PT_Scores/P12_left_Pos1_T1_pt_score.png": {
+      "bytes": 227370,
+      "modified": "2026-07-17T16:55:05Z"
+    },
+    "PT_Scores/P12_left_Pos1_T2_pt_score.png": {
+      "bytes": 222524,
+      "modified": "2026-07-17T16:55:07Z"
+    },
+    "PT_Scores/P12_left_Pos1_T3_pt_score.png": {
+      "bytes": 227197,
+      "modified": "2026-07-17T16:55:09Z"
+    },
+    "PT_Scores/P12_left_Pos1_T4_pt_score.png": {
+      "bytes": 225590,
+      "modified": "2026-07-17T16:55:11Z"
+    },
+    "PT_Scores/P12_right_Pos1_T1_pt_score.png": {
+      "bytes": 211862,
+      "modified": "2026-07-17T16:55:13Z"
+    },
+    "PT_Scores/P12_right_Pos1_T2_pt_score.png": {
+      "bytes": 221558,
+      "modified": "2026-07-17T16:55:15Z"
+    },
+    "PT_Scores/P12_right_Pos1_T3_pt_score.png": {
+      "bytes": 219051,
+      "modified": "2026-07-17T16:55:18Z"
+    },
+    "PT_Scores/P12_right_Pos1_T4_pt_score.png": {
+      "bytes": 218043,
+      "modified": "2026-07-17T16:55:21Z"
+    },
+    "PT_Scores/P12_rmse.png": {
+      "bytes": 56619,
+      "modified": "2026-08-21T19:56:26Z"
+    },
+    "PT_Scores/P12_vs_P13_comparison.png": {
+      "bytes": 198234,
+      "modified": "2026-08-21T19:57:02Z"
+    },
+    "PT_Scores/P12_vs_P5_comparison.png": {
+      "bytes": 199513,
+      "modified": "2026-08-21T19:56:49Z"
+    },
+    "PT_Scores/P13_clinician_mas.csv": {
+      "bytes": 199,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-25T17:59:46Z",
+      "rows": 3,
+      "sha256_16": "408e46df606f33bc"
+    },
+    "PT_Scores/P13_full_report.png": {
+      "bytes": 504366,
+      "modified": "2026-08-21T19:57:30Z"
+    },
+    "PT_Scores/P13_left_post_Pos1_T1_pt_score.png": {
+      "bytes": 205700,
+      "modified": "2026-08-10T21:28:38Z"
+    },
+    "PT_Scores/P13_left_post_Pos1_T2_pt_score.png": {
+      "bytes": 210194,
+      "modified": "2026-08-10T21:28:39Z"
+    },
+    "PT_Scores/P13_left_post_Pos1_T3_pt_score.png": {
+      "bytes": 212025,
+      "modified": "2026-08-10T21:28:41Z"
+    },
+    "PT_Scores/P13_left_post_Pos1_T4_pt_score.png": {
+      "bytes": 218370,
+      "modified": "2026-08-10T21:28:43Z"
+    },
+    "PT_Scores/P13_left_pre_Pos1_T1_pt_score.png": {
+      "bytes": 193925,
+      "modified": "2026-08-10T21:28:44Z"
+    },
+    "PT_Scores/P13_left_pre_Pos1_T2_pt_score.png": {
+      "bytes": 203759,
+      "modified": "2026-08-10T21:28:46Z"
+    },
+    "PT_Scores/P13_left_pre_Pos1_T3_pt_score.png": {
+      "bytes": 199681,
+      "modified": "2026-08-10T21:28:47Z"
+    },
+    "PT_Scores/P13_left_pre_Pos1_T4_pt_score.png": {
+      "bytes": 205767,
+      "modified": "2026-08-10T21:28:49Z"
+    },
+    "PT_Scores/P13_leg_session_comparison.png": {
+      "bytes": 248306,
+      "modified": "2026-08-05T19:27:38Z"
+    },
+    "PT_Scores/P13_right_post_Pos1_T1_pt_score.png": {
+      "bytes": 210095,
+      "modified": "2026-08-10T21:28:51Z"
+    },
+    "PT_Scores/P13_right_post_Pos1_T3_pt_score.png": {
+      "bytes": 210067,
+      "modified": "2026-08-10T21:28:53Z"
+    },
+    "PT_Scores/P13_right_post_Pos1_T4_pt_score.png": {
+      "bytes": 217847,
+      "modified": "2026-08-10T21:28:55Z"
+    },
+    "PT_Scores/P13_right_post_Pos1_T5_pt_score.png": {
+      "bytes": 214945,
+      "modified": "2026-08-10T21:28:56Z"
+    },
+    "PT_Scores/P13_right_pre_Pos1_T1_pt_score.png": {
+      "bytes": 210316,
+      "modified": "2026-08-10T21:28:58Z"
+    },
+    "PT_Scores/P13_right_pre_Pos1_T2_pt_score.png": {
+      "bytes": 207268,
+      "modified": "2026-08-10T21:29:00Z"
+    },
+    "PT_Scores/P13_right_pre_Pos1_T3_pt_score.png": {
+      "bytes": 210734,
+      "modified": "2026-08-10T21:29:01Z"
+    },
+    "PT_Scores/P13_right_pre_Pos1_T4_pt_score.png": {
+      "bytes": 205677,
+      "modified": "2026-08-10T21:29:03Z"
+    },
+    "PT_Scores/P13_right_pre_Pos1_T5_pt_score.png": {
+      "bytes": 211958,
+      "modified": "2026-08-10T21:29:05Z"
+    },
+    "PT_Scores/P13_rmse.png": {
+      "bytes": 62559,
+      "modified": "2026-08-21T19:57:31Z"
+    },
+    "PT_Scores/P13_vs_P5_comparison.png": {
+      "bytes": 217475,
+      "modified": "2026-08-21T19:57:46Z"
+    },
+    "PT_Scores/P14_clinician_mas.csv": {
+      "bytes": 120,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:57:56Z",
+      "rows": 1,
+      "sha256_16": "58066df259265dbf"
+    },
+    "PT_Scores/P14_full_report.png": {
+      "bytes": 385437,
+      "modified": "2026-08-21T19:58:01Z"
+    },
+    "PT_Scores/P14_rmse.png": {
+      "bytes": 59267,
+      "modified": "2026-08-21T19:58:03Z"
+    },
+    "PT_Scores/P14_vs_P13_comparison.png": {
+      "bytes": 198555,
+      "modified": "2026-08-21T19:58:20Z"
+    },
+    "PT_Scores/P14_vs_P5_comparison.png": {
+      "bytes": 192244,
+      "modified": "2026-08-21T19:58:14Z"
+    },
+    "PT_Scores/P15_clinician_mas.csv": {
+      "bytes": 106,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:58:38Z",
+      "rows": 1,
+      "sha256_16": "83370b7d45e4c6f6"
+    },
+    "PT_Scores/P15_full_report.png": {
+      "bytes": 596598,
+      "modified": "2026-08-21T19:58:45Z"
+    },
+    "PT_Scores/P15_rmse.png": {
+      "bytes": 71128,
+      "modified": "2026-08-21T19:58:50Z"
+    },
+    "PT_Scores/P15_vs_P13_comparison.png": {
+      "bytes": 215973,
+      "modified": "2026-08-21T19:59:01Z"
+    },
+    "PT_Scores/P15_vs_P5_comparison.png": {
+      "bytes": 216905,
+      "modified": "2026-08-21T19:58:57Z"
+    },
+    "PT_Scores/P16_clinician_mas.csv": {
+      "bytes": 110,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:59:06Z",
+      "rows": 1,
+      "sha256_16": "1a36af87e168b14a"
+    },
+    "PT_Scores/P16_full_report.png": {
+      "bytes": 389922,
+      "modified": "2026-08-21T19:59:09Z"
+    },
+    "PT_Scores/P16_rmse.png": {
+      "bytes": 61500,
+      "modified": "2026-08-21T19:59:11Z"
+    },
+    "PT_Scores/P16_vs_P13_comparison.png": {
+      "bytes": 199945,
+      "modified": "2026-08-21T19:59:23Z"
+    },
+    "PT_Scores/P16_vs_P5_comparison.png": {
+      "bytes": 190676,
+      "modified": "2026-08-21T19:59:19Z"
+    },
+    "PT_Scores/P17_clinician_mas.csv": {
+      "bytes": 136,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-28T20:30:51Z",
+      "rows": 2,
+      "sha256_16": "784438daef510477"
+    },
+    "PT_Scores/P17_full_report.png": {
+      "bytes": 438522,
+      "modified": "2026-08-28T20:30:54Z"
+    },
+    "PT_Scores/P17_rmse.png": {
+      "bytes": 58589,
+      "modified": "2026-08-28T20:30:55Z"
+    },
+    "PT_Scores/P17_vs_P13_comparison.png": {
+      "bytes": 198584,
+      "modified": "2026-08-28T20:31:09Z"
+    },
+    "PT_Scores/P17_vs_P5_comparison.png": {
+      "bytes": 192664,
+      "modified": "2026-08-28T20:31:03Z"
+    },
+    "PT_Scores/P18_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:59:28Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P18_full_report.png": {
+      "bytes": 346830,
+      "modified": "2026-08-21T19:59:30Z"
+    },
+    "PT_Scores/P18_rmse.png": {
+      "bytes": 59349,
+      "modified": "2026-08-21T19:59:32Z"
+    },
+    "PT_Scores/P18_vs_P13_comparison.png": {
+      "bytes": 197727,
+      "modified": "2026-08-21T19:59:43Z"
+    },
+    "PT_Scores/P18_vs_P5_comparison.png": {
+      "bytes": 189092,
+      "modified": "2026-08-21T19:59:39Z"
+    },
+    "PT_Scores/P19_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-26T17:05:14Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P19_full_report.png": {
+      "bytes": 398132,
+      "modified": "2026-08-26T17:05:17Z"
+    },
+    "PT_Scores/P19_rmse.png": {
+      "bytes": 58155,
+      "modified": "2026-08-26T17:05:19Z"
+    },
+    "PT_Scores/P19_vs_P13_comparison.png": {
+      "bytes": 189286,
+      "modified": "2026-08-26T17:05:27Z"
+    },
+    "PT_Scores/P19_vs_P5_comparison.png": {
+      "bytes": 190650,
+      "modified": "2026-08-26T17:05:24Z"
+    },
+    "PT_Scores/P1_Pos2_T1_pt_score.png": {
+      "bytes": 321930,
+      "modified": "2026-07-02T16:29:22Z"
+    },
+    "PT_Scores/P1_Pos2_T2_pt_score.png": {
+      "bytes": 256471,
+      "modified": "2026-07-02T16:29:24Z"
+    },
+    "PT_Scores/P1_control_Pos2_T1_pt_score.png": {
+      "bytes": 460848,
+      "modified": "2026-07-17T16:55:27Z"
+    },
+    "PT_Scores/P1_control_Pos2_T2_pt_score.png": {
+      "bytes": 354831,
+      "modified": "2026-07-17T16:55:33Z"
+    },
+    "PT_Scores/P20_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-26T17:06:04Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P20_full_report.png": {
+      "bytes": 351453,
+      "modified": "2026-08-26T17:06:07Z"
+    },
+    "PT_Scores/P20_rmse.png": {
+      "bytes": 61109,
+      "modified": "2026-08-26T17:06:08Z"
+    },
+    "PT_Scores/P20_vs_P13_comparison.png": {
+      "bytes": 193138,
+      "modified": "2026-08-26T17:06:17Z"
+    },
+    "PT_Scores/P20_vs_P5_comparison.png": {
+      "bytes": 190702,
+      "modified": "2026-08-26T17:06:13Z"
+    },
+    "PT_Scores/P21_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-31T18:48:48Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P21_full_report.png": {
+      "bytes": 359235,
+      "modified": "2026-08-31T18:48:53Z"
+    },
+    "PT_Scores/P21_rmse.png": {
+      "bytes": 47207,
+      "modified": "2026-08-31T18:48:55Z"
+    },
+    "PT_Scores/P21_vs_P13_comparison.png": {
+      "bytes": 175458,
+      "modified": "2026-08-31T18:49:32Z"
+    },
+    "PT_Scores/P21_vs_P5_comparison.png": {
+      "bytes": 159211,
+      "modified": "2026-08-31T18:49:10Z"
+    },
+    "PT_Scores/P22_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-26T17:07:45Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P22_full_report.png": {
+      "bytes": 347135,
+      "modified": "2026-08-26T17:07:48Z"
+    },
+    "PT_Scores/P22_rmse.png": {
+      "bytes": 59526,
+      "modified": "2026-08-26T17:07:49Z"
+    },
+    "PT_Scores/P22_vs_P13_comparison.png": {
+      "bytes": 191195,
+      "modified": "2026-08-26T17:07:58Z"
+    },
+    "PT_Scores/P22_vs_P5_comparison.png": {
+      "bytes": 196816,
+      "modified": "2026-08-26T17:07:54Z"
+    },
+    "PT_Scores/P23_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-26T17:09:30Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P23_full_report.png": {
+      "bytes": 349204,
+      "modified": "2026-08-26T17:09:33Z"
+    },
+    "PT_Scores/P23_rmse.png": {
+      "bytes": 56009,
+      "modified": "2026-08-26T17:09:34Z"
+    },
+    "PT_Scores/P23_vs_P13_comparison.png": {
+      "bytes": 191722,
+      "modified": "2026-08-26T17:09:43Z"
+    },
+    "PT_Scores/P23_vs_P5_comparison.png": {
+      "bytes": 201509,
+      "modified": "2026-08-26T17:09:39Z"
+    },
+    "PT_Scores/P24_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-31T02:07:58Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/P24_full_report.png": {
+      "bytes": 424913,
+      "modified": "2026-08-31T02:08:03Z"
+    },
+    "PT_Scores/P24_rmse.png": {
+      "bytes": 58940,
+      "modified": "2026-08-31T02:08:05Z"
+    },
+    "PT_Scores/P24_vs_P13_comparison.png": {
+      "bytes": 202690,
+      "modified": "2026-08-31T02:08:30Z"
+    },
+    "PT_Scores/P24_vs_P5_comparison.png": {
+      "bytes": 192779,
+      "modified": "2026-08-31T02:08:19Z"
+    },
+    "PT_Scores/P2_clinician_mas.csv": {
+      "bytes": 146,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:51:11Z",
+      "rows": 2,
+      "sha256_16": "379f7420847a7049"
+    },
+    "PT_Scores/P2_full_report.png": {
+      "bytes": 494203,
+      "modified": "2026-08-21T19:51:34Z"
+    },
+    "PT_Scores/P2_left_duo_Pos1_T1_pt_score.png": {
+      "bytes": 412958,
+      "modified": "2026-07-02T16:29:26Z"
+    },
+    "PT_Scores/P2_left_duo_Pos1_T2_pt_score.png": {
+      "bytes": 439102,
+      "modified": "2026-07-17T16:55:40Z"
+    },
+    "PT_Scores/P2_left_duo_Pos2_T2_pt_score.png": {
+      "bytes": 436585,
+      "modified": "2026-07-17T16:55:47Z"
+    },
+    "PT_Scores/P2_left_solo_Pos2_T1_pt_score.png": {
+      "bytes": 394305,
+      "modified": "2026-07-17T16:55:53Z"
+    },
+    "PT_Scores/P2_left_solo_Pos2_T2_pt_score.png": {
+      "bytes": 482483,
+      "modified": "2026-07-17T16:55:59Z"
+    },
+    "PT_Scores/P2_left_solo_Pos2_T3_pt_score.png": {
+      "bytes": 492576,
+      "modified": "2026-07-17T16:56:05Z"
+    },
+    "PT_Scores/P2_right_duo_Pos2_T2_pt_score.png": {
+      "bytes": 533540,
+      "modified": "2026-07-17T16:56:11Z"
+    },
+    "PT_Scores/P2_right_duo_Pos2_T3_pt_score.png": {
+      "bytes": 324481,
+      "modified": "2026-07-02T16:29:39Z"
+    },
+    "PT_Scores/P2_right_solo_Pos2_T2_pt_score.png": {
+      "bytes": 445029,
+      "modified": "2026-07-17T16:56:17Z"
+    },
+    "PT_Scores/P2_right_solo_Pos2_T3_pt_score.png": {
+      "bytes": 449073,
+      "modified": "2026-07-17T16:56:24Z"
+    },
+    "PT_Scores/P2_right_solo_Pos2_T4_pt_score.png": {
+      "bytes": 334953,
+      "modified": "2026-07-02T16:29:45Z"
+    },
+    "PT_Scores/P2_right_solo_Pos2_T5_pt_score.png": {
+      "bytes": 337093,
+      "modified": "2026-07-02T16:29:46Z"
+    },
+    "PT_Scores/P2_rmse.png": {
+      "bytes": 65883,
+      "modified": "2026-08-21T19:51:36Z"
+    },
+    "PT_Scores/P2_vs_P13_comparison.png": {
+      "bytes": 222089,
+      "modified": "2026-08-21T19:52:21Z"
+    },
+    "PT_Scores/P2_vs_P4_comparison.png": {
+      "bytes": 184786,
+      "modified": "2026-08-05T21:49:56Z"
+    },
+    "PT_Scores/P2_vs_P5_comparison.png": {
+      "bytes": 202312,
+      "modified": "2026-08-21T19:52:04Z"
+    },
+    "PT_Scores/P4_clinician_mas.csv": {
+      "bytes": 111,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:52:26Z",
+      "rows": 1,
+      "sha256_16": "bdc0a0af7bde2846"
+    },
+    "PT_Scores/P4_full_report.png": {
+      "bytes": 361655,
+      "modified": "2026-08-21T19:52:34Z"
+    },
+    "PT_Scores/P4_left_Pos1_T2_pt_score.png": {
+      "bytes": 302370,
+      "modified": "2026-07-17T16:56:31Z"
+    },
+    "PT_Scores/P4_left_Pos1_T3_pt_score.png": {
+      "bytes": 297431,
+      "modified": "2026-07-17T16:56:37Z"
+    },
+    "PT_Scores/P4_left_Pos1_T5_pt_score.png": {
+      "bytes": 412404,
+      "modified": "2026-07-17T16:56:42Z"
+    },
+    "PT_Scores/P4_right_Pos1_T1_pt_score.png": {
+      "bytes": 364015,
+      "modified": "2026-07-17T16:56:47Z"
+    },
+    "PT_Scores/P4_right_Pos1_T2_pt_score.png": {
+      "bytes": 259249,
+      "modified": "2026-07-17T16:56:52Z"
+    },
+    "PT_Scores/P4_right_Pos1_T3_pt_score.png": {
+      "bytes": 249519,
+      "modified": "2026-07-17T16:56:56Z"
+    },
+    "PT_Scores/P4_right_Pos1_T4_pt_score.png": {
+      "bytes": 200446,
+      "modified": "2026-07-17T16:57:01Z"
+    },
+    "PT_Scores/P4_right_Pos1_T5_pt_score.png": {
+      "bytes": 280638,
+      "modified": "2026-07-17T16:57:06Z"
+    },
+    "PT_Scores/P4_rmse.png": {
+      "bytes": 56717,
+      "modified": "2026-08-21T19:52:35Z"
+    },
+    "PT_Scores/P4_vs_P13_comparison.png": {
+      "bytes": 197196,
+      "modified": "2026-08-21T19:53:08Z"
+    },
+    "PT_Scores/P4_vs_P5_comparison.png": {
+      "bytes": 192185,
+      "modified": "2026-08-21T19:52:57Z"
+    },
+    "PT_Scores/P5_clinician_mas.csv": {
+      "bytes": 196,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-25T17:58:56Z",
+      "rows": 3,
+      "sha256_16": "11eaa2ea09879c7c"
+    },
+    "PT_Scores/P5_full_report.png": {
+      "bytes": 629714,
+      "modified": "2026-08-21T19:53:42Z"
+    },
+    "PT_Scores/P5_left_post_Pos1_T1_pt_score.png": {
+      "bytes": 209331,
+      "modified": "2026-07-17T16:57:11Z"
+    },
+    "PT_Scores/P5_left_post_Pos1_T2_pt_score.png": {
+      "bytes": 208821,
+      "modified": "2026-07-17T16:57:14Z"
+    },
+    "PT_Scores/P5_left_post_Pos1_T3_pt_score.png": {
+      "bytes": 210251,
+      "modified": "2026-07-17T16:57:18Z"
+    },
+    "PT_Scores/P5_left_post_Pos1_T4_pt_score.png": {
+      "bytes": 218903,
+      "modified": "2026-07-17T16:57:21Z"
+    },
+    "PT_Scores/P5_left_post_Pos1_T5_pt_score.png": {
+      "bytes": 212910,
+      "modified": "2026-07-17T16:57:25Z"
+    },
+    "PT_Scores/P5_left_side_Pos1_T1_pt_score.png": {
+      "bytes": 284104,
+      "modified": "2026-07-17T16:57:29Z"
+    },
+    "PT_Scores/P5_left_side_Pos1_T2_pt_score.png": {
+      "bytes": 303566,
+      "modified": "2026-07-17T16:57:34Z"
+    },
+    "PT_Scores/P5_left_side_Pos1_T3_pt_score.png": {
+      "bytes": 277785,
+      "modified": "2026-07-17T16:57:39Z"
+    },
+    "PT_Scores/P5_left_side_Pos1_T5_pt_score.png": {
+      "bytes": 356635,
+      "modified": "2026-07-17T16:57:44Z"
+    },
+    "PT_Scores/P5_right_post_Pos1_T1_pt_score.png": {
+      "bytes": 217812,
+      "modified": "2026-07-17T16:57:49Z"
+    },
+    "PT_Scores/P5_right_post_Pos1_T2_pt_score.png": {
+      "bytes": 222342,
+      "modified": "2026-07-17T16:57:52Z"
+    },
+    "PT_Scores/P5_right_post_Pos1_T3_pt_score.png": {
+      "bytes": 219246,
+      "modified": "2026-07-17T16:57:56Z"
+    },
+    "PT_Scores/P5_right_post_Pos1_T4_pt_score.png": {
+      "bytes": 206799,
+      "modified": "2026-07-17T16:57:59Z"
+    },
+    "PT_Scores/P5_right_post_Pos1_T5_pt_score.png": {
+      "bytes": 209094,
+      "modified": "2026-07-17T16:58:03Z"
+    },
+    "PT_Scores/P5_right_side_Pos1_T1_pt_score.png": {
+      "bytes": 252540,
+      "modified": "2026-07-17T16:58:07Z"
+    },
+    "PT_Scores/P5_right_side_Pos1_T3_pt_score.png": {
+      "bytes": 258473,
+      "modified": "2026-07-17T16:58:13Z"
+    },
+    "PT_Scores/P5_right_side_Pos1_T4_pt_score.png": {
+      "bytes": 270306,
+      "modified": "2026-07-17T16:58:18Z"
+    },
+    "PT_Scores/P5_right_side_Pos1_T5_pt_score.png": {
+      "bytes": 269984,
+      "modified": "2026-07-17T16:58:25Z"
+    },
+    "PT_Scores/P5_rmse.png": {
+      "bytes": 77382,
+      "modified": "2026-08-21T19:53:46Z"
+    },
+    "PT_Scores/P5_vs_P13_comparison.png": {
+      "bytes": 218178,
+      "modified": "2026-08-21T19:53:52Z"
+    },
+    "PT_Scores/P6_clinician_mas.csv": {
+      "bytes": 105,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:53:54Z",
+      "rows": 1,
+      "sha256_16": "6ebe3e0865a4b4ee"
+    },
+    "PT_Scores/P6_full_report.png": {
+      "bytes": 376990,
+      "modified": "2026-08-21T19:53:59Z"
+    },
+    "PT_Scores/P6_left_control_Pos1_T1_pt_score.png": {
+      "bytes": 387746,
+      "modified": "2026-07-17T16:58:31Z"
+    },
+    "PT_Scores/P6_left_control_Pos1_T3_pt_score.png": {
+      "bytes": 404667,
+      "modified": "2026-07-17T16:58:40Z"
+    },
+    "PT_Scores/P6_left_control_Pos1_T4_pt_score.png": {
+      "bytes": 401344,
+      "modified": "2026-07-17T16:58:48Z"
+    },
+    "PT_Scores/P6_right_control_Pos1_T1_pt_score.png": {
+      "bytes": 373425,
+      "modified": "2026-07-17T16:58:59Z"
+    },
+    "PT_Scores/P6_right_control_Pos1_T2_pt_score.png": {
+      "bytes": 419223,
+      "modified": "2026-07-17T16:59:12Z"
+    },
+    "PT_Scores/P6_right_control_Pos1_T3_pt_score.png": {
+      "bytes": 390492,
+      "modified": "2026-07-17T16:59:24Z"
+    },
+    "PT_Scores/P6_right_control_Pos1_T5_pt_score.png": {
+      "bytes": 383637,
+      "modified": "2026-07-17T16:59:37Z"
+    },
+    "PT_Scores/P6_rmse.png": {
+      "bytes": 59045,
+      "modified": "2026-08-21T19:54:00Z"
+    },
+    "PT_Scores/P6_vs_P13_comparison.png": {
+      "bytes": 199140,
+      "modified": "2026-08-21T19:54:17Z"
+    },
+    "PT_Scores/P6_vs_P5_comparison.png": {
+      "bytes": 188640,
+      "modified": "2026-08-21T19:54:10Z"
+    },
+    "PT_Scores/P7_clinician_mas.csv": {
+      "bytes": 105,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:54:19Z",
+      "rows": 1,
+      "sha256_16": "f0692d804b88dd9f"
+    },
+    "PT_Scores/P7_full_report.png": {
+      "bytes": 324395,
+      "modified": "2026-08-21T19:54:22Z"
+    },
+    "PT_Scores/P7_right_control_Pos1_T1_pt_score.png": {
+      "bytes": 306370,
+      "modified": "2026-07-17T16:59:51Z"
+    },
+    "PT_Scores/P7_right_control_Pos1_T2_pt_score.png": {
+      "bytes": 183006,
+      "modified": "2026-07-17T17:00:05Z"
+    },
+    "PT_Scores/P7_right_control_Pos1_T3_pt_score.png": {
+      "bytes": 436773,
+      "modified": "2026-07-17T17:00:17Z"
+    },
+    "PT_Scores/P7_right_control_Pos1_T4_pt_score.png": {
+      "bytes": 466509,
+      "modified": "2026-07-17T17:00:38Z"
+    },
+    "PT_Scores/P7_right_control_Pos1_T5_pt_score.png": {
+      "bytes": 385321,
+      "modified": "2026-07-17T17:00:45Z"
+    },
+    "PT_Scores/P7_rmse.png": {
+      "bytes": 59225,
+      "modified": "2026-08-21T19:54:22Z"
+    },
+    "PT_Scores/P7_vs_P13_comparison.png": {
+      "bytes": 194661,
+      "modified": "2026-08-21T19:54:38Z"
+    },
+    "PT_Scores/P7_vs_P5_comparison.png": {
+      "bytes": 192072,
+      "modified": "2026-08-21T19:54:32Z"
+    },
+    "PT_Scores/P8_clinician_mas.csv": {
+      "bytes": 105,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:54:40Z",
+      "rows": 1,
+      "sha256_16": "7e3eec7b3446e736"
+    },
+    "PT_Scores/P8_full_report.png": {
+      "bytes": 388806,
+      "modified": "2026-08-21T19:54:44Z"
+    },
+    "PT_Scores/P8_left_control_Pos1_T1_pt_score.png": {
+      "bytes": 432374,
+      "modified": "2026-07-17T17:00:52Z"
+    },
+    "PT_Scores/P8_left_control_Pos1_T2_pt_score.png": {
+      "bytes": 423923,
+      "modified": "2026-07-17T17:00:57Z"
+    },
+    "PT_Scores/P8_left_control_Pos1_T3_pt_score.png": {
+      "bytes": 472379,
+      "modified": "2026-07-17T17:01:02Z"
+    },
+    "PT_Scores/P8_left_control_Pos1_T4_pt_score.png": {
+      "bytes": 462206,
+      "modified": "2026-07-17T17:01:06Z"
+    },
+    "PT_Scores/P8_right_control_Pos1_T1_pt_score.png": {
+      "bytes": 452579,
+      "modified": "2026-07-17T17:01:09Z"
+    },
+    "PT_Scores/P8_right_control_Pos1_T2_pt_score.png": {
+      "bytes": 461954,
+      "modified": "2026-07-17T17:01:12Z"
+    },
+    "PT_Scores/P8_right_control_Pos1_T3_pt_score.png": {
+      "bytes": 486185,
+      "modified": "2026-07-17T17:01:15Z"
+    },
+    "PT_Scores/P8_right_control_Pos1_T4_pt_score.png": {
+      "bytes": 512895,
+      "modified": "2026-07-17T17:01:18Z"
+    },
+    "PT_Scores/P8_rmse.png": {
+      "bytes": 59037,
+      "modified": "2026-08-21T19:54:44Z"
+    },
+    "PT_Scores/P8_vs_P13_comparison.png": {
+      "bytes": 198570,
+      "modified": "2026-08-21T19:54:57Z"
+    },
+    "PT_Scores/P8_vs_P5_comparison.png": {
+      "bytes": 189035,
+      "modified": "2026-08-21T19:54:52Z"
+    },
+    "PT_Scores/P9_clinician_mas.csv": {
+      "bytes": 105,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T19:55:00Z",
+      "rows": 1,
+      "sha256_16": "fbe25372efc6e39c"
+    },
+    "PT_Scores/P9_full_report.png": {
+      "bytes": 395021,
+      "modified": "2026-08-21T19:55:05Z"
+    },
+    "PT_Scores/P9_left_Pos1_T1_pt_score.png": {
+      "bytes": 380413,
+      "modified": "2026-07-17T17:01:21Z"
+    },
+    "PT_Scores/P9_left_Pos1_T2_pt_score.png": {
+      "bytes": 437632,
+      "modified": "2026-07-17T17:01:24Z"
+    },
+    "PT_Scores/P9_left_Pos1_T3_pt_score.png": {
+      "bytes": 422463,
+      "modified": "2026-07-17T17:01:27Z"
+    },
+    "PT_Scores/P9_left_Pos1_T4_pt_score.png": {
+      "bytes": 475892,
+      "modified": "2026-07-17T17:01:30Z"
+    },
+    "PT_Scores/P9_left_Pos1_T5_pt_score.png": {
+      "bytes": 425151,
+      "modified": "2026-07-17T17:01:33Z"
+    },
+    "PT_Scores/P9_rmse.png": {
+      "bytes": 60256,
+      "modified": "2026-08-21T19:55:05Z"
+    },
+    "PT_Scores/P9_vs_P13_comparison.png": {
+      "bytes": 197994,
+      "modified": "2026-08-21T19:55:19Z"
+    },
+    "PT_Scores/P9_vs_P5_comparison.png": {
+      "bytes": 188034,
+      "modified": "2026-08-21T19:55:14Z"
+    },
+    "PT_Scores/PTScore_Literature.pdf": {
+      "bytes": 435052,
+      "modified": "2026-07-01T15:28:19Z"
+    },
+    "PT_Scores/Participant 15_clinician_mas.csv": {
+      "bytes": 73,
+      "columns": [
+        "participant",
+        "leg",
+        "condition",
+        "diagnosis",
+        "mas_grade",
+        "assessed_by",
+        "assessed_date"
+      ],
+      "modified": "2026-08-21T15:58:58Z",
+      "rows": 0,
+      "sha256_16": "5377ab2ea6e0d136"
+    },
+    "PT_Scores/TEST_P13_generic.png": {
+      "bytes": 271799,
+      "modified": "2026-08-05T21:19:23Z"
+    },
+    "PT_Scores/TEST_P13_rmse_generic.png": {
+      "bytes": 69796,
+      "modified": "2026-08-05T21:19:25Z"
+    },
+    "PT_Scores/TEST_P13_vs_P5_generic.png": {
+      "bytes": 201027,
+      "modified": "2026-08-05T21:19:24Z"
+    },
+    "PT_Scores/hpe_all/P0_Pos1_T1_hpe_all.png": {
+      "bytes": 277754,
+      "modified": "2026-07-02T16:29:13Z"
+    },
+    "PT_Scores/hpe_all/P0_Pos1_T2_hpe_all.png": {
+      "bytes": 185946,
+      "modified": "2026-07-02T16:29:17Z"
+    },
+    "PT_Scores/hpe_all/P0_Pos2_T1_hpe_all.png": {
+      "bytes": 232385,
+      "modified": "2026-07-02T16:29:19Z"
+    },
+    "PT_Scores/hpe_all/P0_Pos2_T2_hpe_all.png": {
+      "bytes": 239136,
+      "modified": "2026-07-02T16:29:21Z"
+    },
+    "PT_Scores/hpe_all/P0_control_Pos1_T1_hpe_all.png": {
+      "bytes": 282930,
+      "modified": "2026-07-17T16:54:14Z"
+    },
+    "PT_Scores/hpe_all/P0_control_Pos1_T2_hpe_all.png": {
+      "bytes": 200955,
+      "modified": "2026-07-17T16:54:17Z"
+    },
+    "PT_Scores/hpe_all/P0_control_Pos2_T1_hpe_all.png": {
+      "bytes": 266616,
+      "modified": "2026-07-17T16:54:21Z"
+    },
+    "PT_Scores/hpe_all/P0_control_Pos2_T2_hpe_all.png": {
+      "bytes": 243285,
+      "modified": "2026-07-17T16:54:25Z"
+    },
+    "PT_Scores/hpe_all/P10_left_Pos1_T1_hpe_all.png": {
+      "bytes": 208493,
+      "modified": "2026-07-17T16:54:28Z"
+    },
+    "PT_Scores/hpe_all/P10_left_Pos1_T2_hpe_all.png": {
+      "bytes": 178383,
+      "modified": "2026-07-17T16:54:32Z"
+    },
+    "PT_Scores/hpe_all/P10_left_Pos1_T3_hpe_all.png": {
+      "bytes": 202658,
+      "modified": "2026-07-17T16:54:34Z"
+    },
+    "PT_Scores/hpe_all/P10_left_Pos1_T4_hpe_all.png": {
+      "bytes": 196642,
+      "modified": "2026-07-17T16:54:37Z"
+    },
+    "PT_Scores/hpe_all/P10_right_Pos1_T1_hpe_all.png": {
+      "bytes": 253446,
+      "modified": "2026-07-17T16:54:40Z"
+    },
+    "PT_Scores/hpe_all/P10_right_Pos1_T2_hpe_all.png": {
+      "bytes": 191930,
+      "modified": "2026-07-17T16:54:43Z"
+    },
+    "PT_Scores/hpe_all/P10_right_Pos1_T4_hpe_all.png": {
+      "bytes": 212022,
+      "modified": "2026-07-17T16:54:46Z"
+    },
+    "PT_Scores/hpe_all/P13_left_post_Pos1_T3_hpe_all.png": {
+      "bytes": 89412,
+      "modified": "2026-08-05T18:02:38Z"
+    },
+    "PT_Scores/hpe_all/P13_left_post_Pos1_T4_hpe_all.png": {
+      "bytes": 80913,
+      "modified": "2026-08-05T18:02:41Z"
+    },
+    "PT_Scores/hpe_all/P13_left_pre_Pos1_T1_hpe_all.png": {
+      "bytes": 96910,
+      "modified": "2026-08-05T18:02:45Z"
+    },
+    "PT_Scores/hpe_all/P13_left_pre_Pos1_T2_hpe_all.png": {
+      "bytes": 105334,
+      "modified": "2026-08-05T18:02:48Z"
+    },
+    "PT_Scores/hpe_all/P13_left_pre_Pos1_T4_hpe_all.png": {
+      "bytes": 103086,
+      "modified": "2026-08-05T18:02:51Z"
+    },
+    "PT_Scores/hpe_all/P13_right_post_Pos1_T1_hpe_all.png": {
+      "bytes": 117648,
+      "modified": "2026-08-05T18:02:55Z"
+    },
+    "PT_Scores/hpe_all/P13_right_post_Pos1_T3_hpe_all.png": {
+      "bytes": 104196,
+      "modified": "2026-08-05T18:02:59Z"
+    },
+    "PT_Scores/hpe_all/P13_right_post_Pos1_T4_hpe_all.png": {
+      "bytes": 99470,
+      "modified": "2026-08-05T18:03:02Z"
+    },
+    "PT_Scores/hpe_all/P13_right_post_Pos1_T5_hpe_all.png": {
+      "bytes": 108500,
+      "modified": "2026-08-05T18:03:06Z"
+    },
+    "PT_Scores/hpe_all/P13_right_pre_Pos1_T1_hpe_all.png": {
+      "bytes": 111414,
+      "modified": "2026-08-05T18:03:09Z"
+    },
+    "PT_Scores/hpe_all/P13_right_pre_Pos1_T2_hpe_all.png": {
+      "bytes": 106789,
+      "modified": "2026-08-05T18:03:12Z"
+    },
+    "PT_Scores/hpe_all/P13_right_pre_Pos1_T3_hpe_all.png": {
+      "bytes": 103581,
+      "modified": "2026-08-05T18:03:16Z"
+    },
+    "PT_Scores/hpe_all/P13_right_pre_Pos1_T4_hpe_all.png": {
+      "bytes": 104883,
+      "modified": "2026-08-05T18:03:19Z"
+    },
+    "PT_Scores/hpe_all/P13_right_pre_Pos1_T5_hpe_all.png": {
+      "bytes": 106146,
+      "modified": "2026-08-05T18:03:22Z"
+    },
+    "PT_Scores/hpe_all/P1_Pos2_T1_hpe_all.png": {
+      "bytes": 159752,
+      "modified": "2026-07-02T16:29:23Z"
+    },
+    "PT_Scores/hpe_all/P1_Pos2_T2_hpe_all.png": {
+      "bytes": 102563,
+      "modified": "2026-07-02T16:29:25Z"
+    },
+    "PT_Scores/hpe_all/P1_control_Pos2_T1_hpe_all.png": {
+      "bytes": 265944,
+      "modified": "2026-07-17T16:55:31Z"
+    },
+    "PT_Scores/hpe_all/P1_control_Pos2_T2_hpe_all.png": {
+      "bytes": 199325,
+      "modified": "2026-07-17T16:55:37Z"
+    },
+    "PT_Scores/hpe_all/P2_left_duo_Pos1_T1_hpe_all.png": {
+      "bytes": 202122,
+      "modified": "2026-07-02T16:29:27Z"
+    },
+    "PT_Scores/hpe_all/P2_left_duo_Pos1_T2_hpe_all.png": {
+      "bytes": 236648,
+      "modified": "2026-07-17T16:55:43Z"
+    },
+    "PT_Scores/hpe_all/P2_left_duo_Pos2_T1_hpe_all.png": {
+      "bytes": 119116,
+      "modified": "2026-07-01T19:28:11Z"
+    },
+    "PT_Scores/hpe_all/P2_left_duo_Pos2_T2_hpe_all.png": {
+      "bytes": 224665,
+      "modified": "2026-07-17T16:55:50Z"
+    },
+    "PT_Scores/hpe_all/P2_left_duo_Pos2_T3_hpe_all.png": {
+      "bytes": 196427,
+      "modified": "2026-07-01T19:28:17Z"
+    },
+    "PT_Scores/hpe_all/P2_left_solo_Pos2_T1_hpe_all.png": {
+      "bytes": 227002,
+      "modified": "2026-07-17T16:55:56Z"
+    },
+    "PT_Scores/hpe_all/P2_left_solo_Pos2_T2_hpe_all.png": {
+      "bytes": 306985,
+      "modified": "2026-07-17T16:56:02Z"
+    },
+    "PT_Scores/hpe_all/P2_left_solo_Pos2_T3_hpe_all.png": {
+      "bytes": 311916,
+      "modified": "2026-07-17T16:56:08Z"
+    },
+    "PT_Scores/hpe_all/P2_right_duo_Pos2_T1_hpe_all.png": {
+      "bytes": 182223,
+      "modified": "2026-07-01T19:28:27Z"
+    },
+    "PT_Scores/hpe_all/P2_right_duo_Pos2_T2_hpe_all.png": {
+      "bytes": 324483,
+      "modified": "2026-07-17T16:56:14Z"
+    },
+    "PT_Scores/hpe_all/P2_right_duo_Pos2_T3_hpe_all.png": {
+      "bytes": 158059,
+      "modified": "2026-07-02T16:29:40Z"
+    },
+    "PT_Scores/hpe_all/P2_right_solo_Pos2_T1_hpe_all.png": {
+      "bytes": 148549,
+      "modified": "2026-07-01T19:28:34Z"
+    },
+    "PT_Scores/hpe_all/P2_right_solo_Pos2_T2_hpe_all.png": {
+      "bytes": 252757,
+      "modified": "2026-07-17T16:56:21Z"
+    },
+    "PT_Scores/hpe_all/P2_right_solo_Pos2_T3_hpe_all.png": {
+      "bytes": 255256,
+      "modified": "2026-07-17T16:56:27Z"
+    },
+    "PT_Scores/hpe_all/P2_right_solo_Pos2_T4_hpe_all.png": {
+      "bytes": 162170,
+      "modified": "2026-07-02T16:29:46Z"
+    },
+    "PT_Scores/hpe_all/P2_right_solo_Pos2_T5_hpe_all.png": {
+      "bytes": 175446,
+      "modified": "2026-07-02T16:29:47Z"
+    },
+    "PT_Scores/hpe_all/P4_left_Pos1_T2_hpe_all.png": {
+      "bytes": 161716,
+      "modified": "2026-07-17T16:56:34Z"
+    },
+    "PT_Scores/hpe_all/P4_left_Pos1_T3_hpe_all.png": {
+      "bytes": 129645,
+      "modified": "2026-07-17T16:56:40Z"
+    },
+    "PT_Scores/hpe_all/P4_left_Pos1_T5_hpe_all.png": {
+      "bytes": 254607,
+      "modified": "2026-07-17T16:56:45Z"
+    },
+    "PT_Scores/hpe_all/P4_right_Pos1_T1_hpe_all.png": {
+      "bytes": 183795,
+      "modified": "2026-07-17T16:56:50Z"
+    },
+    "PT_Scores/hpe_all/P4_right_Pos1_T2_hpe_all.png": {
+      "bytes": 137033,
+      "modified": "2026-07-17T16:56:55Z"
+    },
+    "PT_Scores/hpe_all/P4_right_Pos1_T3_hpe_all.png": {
+      "bytes": 124796,
+      "modified": "2026-07-17T16:56:59Z"
+    },
+    "PT_Scores/hpe_all/P4_right_Pos1_T4_hpe_all.png": {
+      "bytes": 97236,
+      "modified": "2026-07-17T16:57:04Z"
+    },
+    "PT_Scores/hpe_all/P4_right_Pos1_T5_hpe_all.png": {
+      "bytes": 168720,
+      "modified": "2026-07-17T16:57:09Z"
+    },
+    "PT_Scores/hpe_all/P5_left_side_Pos1_T1_hpe_all.png": {
+      "bytes": 127772,
+      "modified": "2026-07-17T16:57:32Z"
+    },
+    "PT_Scores/hpe_all/P5_left_side_Pos1_T2_hpe_all.png": {
+      "bytes": 141529,
+      "modified": "2026-07-17T16:57:37Z"
+    },
+    "PT_Scores/hpe_all/P5_left_side_Pos1_T3_hpe_all.png": {
+      "bytes": 125808,
+      "modified": "2026-07-17T16:57:42Z"
+    },
+    "PT_Scores/hpe_all/P5_left_side_Pos1_T5_hpe_all.png": {
+      "bytes": 180194,
+      "modified": "2026-07-17T16:57:47Z"
+    },
+    "PT_Scores/hpe_all/P5_right_side_Pos1_T1_hpe_all.png": {
+      "bytes": 95319,
+      "modified": "2026-07-17T16:58:09Z"
+    },
+    "PT_Scores/hpe_all/P5_right_side_Pos1_T3_hpe_all.png": {
+      "bytes": 110078,
+      "modified": "2026-07-17T16:58:15Z"
+    },
+    "PT_Scores/hpe_all/P5_right_side_Pos1_T4_hpe_all.png": {
+      "bytes": 107141,
+      "modified": "2026-07-17T16:58:22Z"
+    },
+    "PT_Scores/hpe_all/P5_right_side_Pos1_T5_hpe_all.png": {
+      "bytes": 106768,
+      "modified": "2026-07-17T16:58:28Z"
+    },
+    "PT_Scores/hpe_all/P6_left_control_Pos1_T1_hpe_all.png": {
+      "bytes": 227365,
+      "modified": "2026-07-17T16:58:36Z"
+    },
+    "PT_Scores/hpe_all/P6_left_control_Pos1_T3_hpe_all.png": {
+      "bytes": 243123,
+      "modified": "2026-07-17T16:58:45Z"
+    },
+    "PT_Scores/hpe_all/P6_left_control_Pos1_T4_hpe_all.png": {
+      "bytes": 266041,
+      "modified": "2026-07-17T16:58:54Z"
+    },
+    "PT_Scores/hpe_all/P6_right_control_Pos1_T1_hpe_all.png": {
+      "bytes": 211918,
+      "modified": "2026-07-17T16:59:06Z"
+    },
+    "PT_Scores/hpe_all/P6_right_control_Pos1_T2_hpe_all.png": {
+      "bytes": 255649,
+      "modified": "2026-07-17T16:59:19Z"
+    },
+    "PT_Scores/hpe_all/P6_right_control_Pos1_T3_hpe_all.png": {
+      "bytes": 218400,
+      "modified": "2026-07-17T16:59:32Z"
+    },
+    "PT_Scores/hpe_all/P6_right_control_Pos1_T5_hpe_all.png": {
+      "bytes": 218765,
+      "modified": "2026-07-17T16:59:46Z"
+    },
+    "PT_Scores/hpe_all/P7_right_control_Pos1_T1_hpe_all.png": {
+      "bytes": 160706,
+      "modified": "2026-07-17T16:59:59Z"
+    },
+    "PT_Scores/hpe_all/P7_right_control_Pos1_T3_hpe_all.png": {
+      "bytes": 246887,
+      "modified": "2026-07-17T17:00:27Z"
+    },
+    "PT_Scores/hpe_all/P7_right_control_Pos1_T4_hpe_all.png": {
+      "bytes": 278407,
+      "modified": "2026-07-17T17:00:43Z"
+    },
+    "PT_Scores/hpe_all/P7_right_control_Pos1_T5_hpe_all.png": {
+      "bytes": 235342,
+      "modified": "2026-07-17T17:00:49Z"
+    },
+    "PT_Scores/hpe_all/P8_left_control_Pos1_T1_hpe_all.png": {
+      "bytes": 224365,
+      "modified": "2026-07-17T17:00:55Z"
+    },
+    "PT_Scores/hpe_all/P8_left_control_Pos1_T2_hpe_all.png": {
+      "bytes": 239411,
+      "modified": "2026-07-17T17:01:00Z"
+    },
+    "PT_Scores/hpe_all/P8_left_control_Pos1_T3_hpe_all.png": {
+      "bytes": 261359,
+      "modified": "2026-07-17T17:01:05Z"
+    },
+    "PT_Scores/hpe_all/P8_left_control_Pos1_T4_hpe_all.png": {
+      "bytes": 259753,
+      "modified": "2026-07-17T17:01:08Z"
+    },
+    "PT_Scores/hpe_all/P8_right_control_Pos1_T1_hpe_all.png": {
+      "bytes": 273840,
+      "modified": "2026-07-17T17:01:11Z"
+    },
+    "PT_Scores/hpe_all/P8_right_control_Pos1_T2_hpe_all.png": {
+      "bytes": 279235,
+      "modified": "2026-07-17T17:01:14Z"
+    },
+    "PT_Scores/hpe_all/P8_right_control_Pos1_T3_hpe_all.png": {
+      "bytes": 280632,
+      "modified": "2026-07-17T17:01:17Z"
+    },
+    "PT_Scores/hpe_all/P8_right_control_Pos1_T4_hpe_all.png": {
+      "bytes": 292413,
+      "modified": "2026-07-17T17:01:20Z"
+    },
+    "PT_Scores/hpe_all/P9_left_Pos1_T1_hpe_all.png": {
+      "bytes": 250634,
+      "modified": "2026-07-17T17:01:23Z"
+    },
+    "PT_Scores/hpe_all/P9_left_Pos1_T2_hpe_all.png": {
+      "bytes": 232463,
+      "modified": "2026-07-17T17:01:26Z"
+    },
+    "PT_Scores/hpe_all/P9_left_Pos1_T3_hpe_all.png": {
+      "bytes": 231339,
+      "modified": "2026-07-17T17:01:29Z"
+    },
+    "PT_Scores/hpe_all/P9_left_Pos1_T4_hpe_all.png": {
+      "bytes": 258946,
+      "modified": "2026-07-17T17:01:32Z"
+    },
+    "PT_Scores/hpe_all/P9_left_Pos1_T5_hpe_all.png": {
+      "bytes": 226989,
+      "modified": "2026-07-17T17:01:35Z"
+    },
+    "PT_Scores/optitrack_solo/P0_Pos1_T1_optitrack.png": {
+      "bytes": 243652,
+      "modified": "2026-07-02T16:29:11Z"
+    },
+    "PT_Scores/optitrack_solo/P0_Pos1_T2_optitrack.png": {
+      "bytes": 233985,
+      "modified": "2026-07-02T16:29:16Z"
+    },
+    "PT_Scores/optitrack_solo/P0_Pos2_T1_optitrack.png": {
+      "bytes": 247690,
+      "modified": "2026-07-02T16:29:19Z"
+    },
+    "PT_Scores/optitrack_solo/P0_Pos2_T2_optitrack.png": {
+      "bytes": 243812,
+      "modified": "2026-07-02T16:29:21Z"
+    },
+    "PT_Scores/optitrack_solo/P0_control_Pos1_T1_optitrack.png": {
+      "bytes": 243890,
+      "modified": "2026-07-17T16:54:13Z"
+    },
+    "PT_Scores/optitrack_solo/P0_control_Pos1_T2_optitrack.png": {
+      "bytes": 232131,
+      "modified": "2026-07-17T16:54:16Z"
+    },
+    "PT_Scores/optitrack_solo/P0_control_Pos2_T1_optitrack.png": {
+      "bytes": 250733,
+      "modified": "2026-07-17T16:54:20Z"
+    },
+    "PT_Scores/optitrack_solo/P0_control_Pos2_T2_optitrack.png": {
+      "bytes": 245587,
+      "modified": "2026-07-17T16:54:24Z"
+    },
+    "PT_Scores/optitrack_solo/P10_left_Pos1_T1_optitrack.png": {
+      "bytes": 210056,
+      "modified": "2026-07-17T16:54:27Z"
+    },
+    "PT_Scores/optitrack_solo/P10_left_Pos1_T2_optitrack.png": {
+      "bytes": 210133,
+      "modified": "2026-07-17T16:54:31Z"
+    },
+    "PT_Scores/optitrack_solo/P10_left_Pos1_T3_optitrack.png": {
+      "bytes": 218440,
+      "modified": "2026-07-17T16:54:34Z"
+    },
+    "PT_Scores/optitrack_solo/P10_left_Pos1_T4_optitrack.png": {
+      "bytes": 215402,
+      "modified": "2026-07-17T16:54:37Z"
+    },
+    "PT_Scores/optitrack_solo/P10_right_Pos1_T1_optitrack.png": {
+      "bytes": 196343,
+      "modified": "2026-07-17T16:54:39Z"
+    },
+    "PT_Scores/optitrack_solo/P10_right_Pos1_T2_optitrack.png": {
+      "bytes": 206035,
+      "modified": "2026-07-17T16:54:42Z"
+    },
+    "PT_Scores/optitrack_solo/P10_right_Pos1_T4_optitrack.png": {
+      "bytes": 218118,
+      "modified": "2026-07-17T16:54:46Z"
+    },
+    "PT_Scores/optitrack_solo/P11_left_Pos1_T1_optitrack.png": {
+      "bytes": 193451,
+      "modified": "2026-07-17T16:54:48Z"
+    },
+    "PT_Scores/optitrack_solo/P11_left_Pos1_T2_optitrack.png": {
+      "bytes": 201863,
+      "modified": "2026-07-17T16:54:50Z"
+    },
+    "PT_Scores/optitrack_solo/P11_left_Pos1_T3_optitrack.png": {
+      "bytes": 199603,
+      "modified": "2026-07-17T16:54:52Z"
+    },
+    "PT_Scores/optitrack_solo/P11_left_Pos1_T4_optitrack.png": {
+      "bytes": 205668,
+      "modified": "2026-07-17T16:54:54Z"
+    },
+    "PT_Scores/optitrack_solo/P11_right_Pos1_T1_optitrack.png": {
+      "bytes": 222620,
+      "modified": "2026-07-17T16:54:56Z"
+    },
+    "PT_Scores/optitrack_solo/P11_right_Pos1_T2_optitrack.png": {
+      "bytes": 230472,
+      "modified": "2026-07-17T16:54:58Z"
+    },
+    "PT_Scores/optitrack_solo/P11_right_Pos1_T3_optitrack.png": {
+      "bytes": 222422,
+      "modified": "2026-07-17T16:55:01Z"
+    },
+    "PT_Scores/optitrack_solo/P11_right_Pos1_T4_optitrack.png": {
+      "bytes": 219469,
+      "modified": "2026-07-17T16:55:04Z"
+    },
+    "PT_Scores/optitrack_solo/P12_left_Pos1_T1_optitrack.png": {
+      "bytes": 227370,
+      "modified": "2026-07-17T16:55:06Z"
+    },
+    "PT_Scores/optitrack_solo/P12_left_Pos1_T2_optitrack.png": {
+      "bytes": 222524,
+      "modified": "2026-07-17T16:55:08Z"
+    },
+    "PT_Scores/optitrack_solo/P12_left_Pos1_T3_optitrack.png": {
+      "bytes": 227197,
+      "modified": "2026-07-17T16:55:10Z"
+    },
+    "PT_Scores/optitrack_solo/P12_left_Pos1_T4_optitrack.png": {
+      "bytes": 225590,
+      "modified": "2026-07-17T16:55:12Z"
+    },
+    "PT_Scores/optitrack_solo/P12_right_Pos1_T1_optitrack.png": {
+      "bytes": 211862,
+      "modified": "2026-07-17T16:55:14Z"
+    },
+    "PT_Scores/optitrack_solo/P12_right_Pos1_T2_optitrack.png": {
+      "bytes": 221558,
+      "modified": "2026-07-17T16:55:16Z"
+    },
+    "PT_Scores/optitrack_solo/P12_right_Pos1_T3_optitrack.png": {
+      "bytes": 219051,
+      "modified": "2026-07-17T16:55:19Z"
+    },
+    "PT_Scores/optitrack_solo/P12_right_Pos1_T4_optitrack.png": {
+      "bytes": 218043,
+      "modified": "2026-07-17T16:55:23Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_post_Pos1_T1_optitrack.png": {
+      "bytes": 205700,
+      "modified": "2026-08-10T21:28:38Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_post_Pos1_T2_optitrack.png": {
+      "bytes": 210194,
+      "modified": "2026-08-10T21:28:40Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_post_Pos1_T3_optitrack.png": {
+      "bytes": 212025,
+      "modified": "2026-08-10T21:28:42Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_post_Pos1_T4_optitrack.png": {
+      "bytes": 218370,
+      "modified": "2026-08-10T21:28:43Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_pre_Pos1_T1_optitrack.png": {
+      "bytes": 193925,
+      "modified": "2026-08-10T21:28:45Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_pre_Pos1_T2_optitrack.png": {
+      "bytes": 203759,
+      "modified": "2026-08-10T21:28:47Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_pre_Pos1_T3_optitrack.png": {
+      "bytes": 199681,
+      "modified": "2026-08-10T21:28:48Z"
+    },
+    "PT_Scores/optitrack_solo/P13_left_pre_Pos1_T4_optitrack.png": {
+      "bytes": 205767,
+      "modified": "2026-08-10T21:28:50Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_post_Pos1_T1_optitrack.png": {
+      "bytes": 210095,
+      "modified": "2026-08-10T21:28:52Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_post_Pos1_T3_optitrack.png": {
+      "bytes": 210067,
+      "modified": "2026-08-10T21:28:54Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_post_Pos1_T4_optitrack.png": {
+      "bytes": 217847,
+      "modified": "2026-08-10T21:28:56Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_post_Pos1_T5_optitrack.png": {
+      "bytes": 214945,
+      "modified": "2026-08-10T21:28:57Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_pre_Pos1_T1_optitrack.png": {
+      "bytes": 210316,
+      "modified": "2026-08-10T21:28:59Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_pre_Pos1_T2_optitrack.png": {
+      "bytes": 207268,
+      "modified": "2026-08-10T21:29:00Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_pre_Pos1_T3_optitrack.png": {
+      "bytes": 210734,
+      "modified": "2026-08-10T21:29:02Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_pre_Pos1_T4_optitrack.png": {
+      "bytes": 205677,
+      "modified": "2026-08-10T21:29:04Z"
+    },
+    "PT_Scores/optitrack_solo/P13_right_pre_Pos1_T5_optitrack.png": {
+      "bytes": 211958,
+      "modified": "2026-08-10T21:29:05Z"
+    },
+    "PT_Scores/optitrack_solo/P1_Pos2_T1_optitrack.png": {
+      "bytes": 227072,
+      "modified": "2026-07-02T16:29:23Z"
+    },
+    "PT_Scores/optitrack_solo/P1_Pos2_T2_optitrack.png": {
+      "bytes": 217121,
+      "modified": "2026-07-02T16:29:25Z"
+    },
+    "PT_Scores/optitrack_solo/P1_control_Pos2_T1_optitrack.png": {
+      "bytes": 227878,
+      "modified": "2026-07-17T16:55:29Z"
+    },
+    "PT_Scores/optitrack_solo/P1_control_Pos2_T2_optitrack.png": {
+      "bytes": 215241,
+      "modified": "2026-07-17T16:55:35Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_duo_Pos1_T1_optitrack.png": {
+      "bytes": 228322,
+      "modified": "2026-07-02T16:29:27Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_duo_Pos1_T2_optitrack.png": {
+      "bytes": 199058,
+      "modified": "2026-07-17T16:55:42Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_duo_Pos2_T1_optitrack.png": {
+      "bytes": 187839,
+      "modified": "2026-07-01T19:28:08Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_duo_Pos2_T2_optitrack.png": {
+      "bytes": 197547,
+      "modified": "2026-07-17T16:55:49Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_duo_Pos2_T3_optitrack.png": {
+      "bytes": 221219,
+      "modified": "2026-07-01T19:28:17Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_solo_Pos2_T1_optitrack.png": {
+      "bytes": 234252,
+      "modified": "2026-07-17T16:55:55Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_solo_Pos2_T2_optitrack.png": {
+      "bytes": 234217,
+      "modified": "2026-07-17T16:56:01Z"
+    },
+    "PT_Scores/optitrack_solo/P2_left_solo_Pos2_T3_optitrack.png": {
+      "bytes": 233411,
+      "modified": "2026-07-17T16:56:06Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_duo_Pos2_T1_optitrack.png": {
+      "bytes": 196004,
+      "modified": "2026-07-01T19:28:27Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_duo_Pos2_T2_optitrack.png": {
+      "bytes": 194691,
+      "modified": "2026-07-17T16:56:13Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_duo_Pos2_T3_optitrack.png": {
+      "bytes": 215842,
+      "modified": "2026-07-02T16:29:40Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_solo_Pos2_T1_optitrack.png": {
+      "bytes": 213252,
+      "modified": "2026-07-01T19:28:34Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_solo_Pos2_T2_optitrack.png": {
+      "bytes": 206335,
+      "modified": "2026-07-17T16:56:19Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_solo_Pos2_T3_optitrack.png": {
+      "bytes": 230436,
+      "modified": "2026-07-17T16:56:26Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_solo_Pos2_T4_optitrack.png": {
+      "bytes": 229183,
+      "modified": "2026-07-02T16:29:45Z"
+    },
+    "PT_Scores/optitrack_solo/P2_right_solo_Pos2_T5_optitrack.png": {
+      "bytes": 232170,
+      "modified": "2026-07-02T16:29:47Z"
+    },
+    "PT_Scores/optitrack_solo/P4_left_Pos1_T2_optitrack.png": {
+      "bytes": 198516,
+      "modified": "2026-07-17T16:56:33Z"
+    },
+    "PT_Scores/optitrack_solo/P4_left_Pos1_T3_optitrack.png": {
+      "bytes": 197371,
+      "modified": "2026-07-17T16:56:38Z"
+    },
+    "PT_Scores/optitrack_solo/P4_left_Pos1_T5_optitrack.png": {
+      "bytes": 204878,
+      "modified": "2026-07-17T16:56:44Z"
+    },
+    "PT_Scores/optitrack_solo/P4_right_Pos1_T1_optitrack.png": {
+      "bytes": 189259,
+      "modified": "2026-07-17T16:56:49Z"
+    },
+    "PT_Scores/optitrack_solo/P4_right_Pos1_T2_optitrack.png": {
+      "bytes": 187553,
+      "modified": "2026-07-17T16:56:54Z"
+    },
+    "PT_Scores/optitrack_solo/P4_right_Pos1_T3_optitrack.png": {
+      "bytes": 180895,
+      "modified": "2026-07-17T16:56:58Z"
+    },
+    "PT_Scores/optitrack_solo/P4_right_Pos1_T4_optitrack.png": {
+      "bytes": 183621,
+      "modified": "2026-07-17T16:57:02Z"
+    },
+    "PT_Scores/optitrack_solo/P4_right_Pos1_T5_optitrack.png": {
+      "bytes": 181825,
+      "modified": "2026-07-17T16:57:08Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_post_Pos1_T1_optitrack.png": {
+      "bytes": 209331,
+      "modified": "2026-07-17T16:57:12Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_post_Pos1_T2_optitrack.png": {
+      "bytes": 208821,
+      "modified": "2026-07-17T16:57:16Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_post_Pos1_T3_optitrack.png": {
+      "bytes": 210251,
+      "modified": "2026-07-17T16:57:19Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_post_Pos1_T4_optitrack.png": {
+      "bytes": 218903,
+      "modified": "2026-07-17T16:57:23Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_post_Pos1_T5_optitrack.png": {
+      "bytes": 212910,
+      "modified": "2026-07-17T16:57:26Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_side_Pos1_T1_optitrack.png": {
+      "bytes": 211006,
+      "modified": "2026-07-17T16:57:31Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_side_Pos1_T2_optitrack.png": {
+      "bytes": 216356,
+      "modified": "2026-07-17T16:57:36Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_side_Pos1_T3_optitrack.png": {
+      "bytes": 213006,
+      "modified": "2026-07-17T16:57:41Z"
+    },
+    "PT_Scores/optitrack_solo/P5_left_side_Pos1_T5_optitrack.png": {
+      "bytes": 217216,
+      "modified": "2026-07-17T16:57:46Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_post_Pos1_T1_optitrack.png": {
+      "bytes": 217812,
+      "modified": "2026-07-17T16:57:51Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_post_Pos1_T2_optitrack.png": {
+      "bytes": 222342,
+      "modified": "2026-07-17T16:57:54Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_post_Pos1_T3_optitrack.png": {
+      "bytes": 219246,
+      "modified": "2026-07-17T16:57:57Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_post_Pos1_T4_optitrack.png": {
+      "bytes": 206799,
+      "modified": "2026-07-17T16:58:01Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_post_Pos1_T5_optitrack.png": {
+      "bytes": 209094,
+      "modified": "2026-07-17T16:58:04Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_side_Pos1_T1_optitrack.png": {
+      "bytes": 208594,
+      "modified": "2026-07-17T16:58:08Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_side_Pos1_T3_optitrack.png": {
+      "bytes": 210131,
+      "modified": "2026-07-17T16:58:14Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_side_Pos1_T4_optitrack.png": {
+      "bytes": 215952,
+      "modified": "2026-07-17T16:58:21Z"
+    },
+    "PT_Scores/optitrack_solo/P5_right_side_Pos1_T5_optitrack.png": {
+      "bytes": 212464,
+      "modified": "2026-07-17T16:58:27Z"
+    },
+    "PT_Scores/optitrack_solo/P6_left_control_Pos1_T1_optitrack.png": {
+      "bytes": 203992,
+      "modified": "2026-07-17T16:58:34Z"
+    },
+    "PT_Scores/optitrack_solo/P6_left_control_Pos1_T3_optitrack.png": {
+      "bytes": 215629,
+      "modified": "2026-07-17T16:58:43Z"
+    },
+    "PT_Scores/optitrack_solo/P6_left_control_Pos1_T4_optitrack.png": {
+      "bytes": 200083,
+      "modified": "2026-07-17T16:58:51Z"
+    },
+    "PT_Scores/optitrack_solo/P6_right_control_Pos1_T1_optitrack.png": {
+      "bytes": 198942,
+      "modified": "2026-07-17T16:59:04Z"
+    },
+    "PT_Scores/optitrack_solo/P6_right_control_Pos1_T2_optitrack.png": {
+      "bytes": 205771,
+      "modified": "2026-07-17T16:59:16Z"
+    },
+    "PT_Scores/optitrack_solo/P6_right_control_Pos1_T3_optitrack.png": {
+      "bytes": 204958,
+      "modified": "2026-07-17T16:59:28Z"
+    },
+    "PT_Scores/optitrack_solo/P6_right_control_Pos1_T5_optitrack.png": {
+      "bytes": 209518,
+      "modified": "2026-07-17T16:59:42Z"
+    },
+    "PT_Scores/optitrack_solo/P7_right_control_Pos1_T1_optitrack.png": {
+      "bytes": 200567,
+      "modified": "2026-07-17T16:59:55Z"
+    },
+    "PT_Scores/optitrack_solo/P7_right_control_Pos1_T2_optitrack.png": {
+      "bytes": 183006,
+      "modified": "2026-07-17T17:00:09Z"
+    },
+    "PT_Scores/optitrack_solo/P7_right_control_Pos1_T3_optitrack.png": {
+      "bytes": 203315,
+      "modified": "2026-07-17T17:00:23Z"
+    },
+    "PT_Scores/optitrack_solo/P7_right_control_Pos1_T4_optitrack.png": {
+      "bytes": 200009,
+      "modified": "2026-07-17T17:00:41Z"
+    },
+    "PT_Scores/optitrack_solo/P7_right_control_Pos1_T5_optitrack.png": {
+      "bytes": 204391,
+      "modified": "2026-07-17T17:00:48Z"
+    },
+    "PT_Scores/optitrack_solo/P8_left_control_Pos1_T1_optitrack.png": {
+      "bytes": 217847,
+      "modified": "2026-07-17T17:00:53Z"
+    },
+    "PT_Scores/optitrack_solo/P8_left_control_Pos1_T2_optitrack.png": {
+      "bytes": 211501,
+      "modified": "2026-07-17T17:00:59Z"
+    },
+    "PT_Scores/optitrack_solo/P8_left_control_Pos1_T3_optitrack.png": {
+      "bytes": 212981,
+      "modified": "2026-07-17T17:01:03Z"
+    },
+    "PT_Scores/optitrack_solo/P8_left_control_Pos1_T4_optitrack.png": {
+      "bytes": 214820,
+      "modified": "2026-07-17T17:01:07Z"
+    },
+    "PT_Scores/optitrack_solo/P8_right_control_Pos1_T1_optitrack.png": {
+      "bytes": 207775,
+      "modified": "2026-07-17T17:01:10Z"
+    },
+    "PT_Scores/optitrack_solo/P8_right_control_Pos1_T2_optitrack.png": {
+      "bytes": 217211,
+      "modified": "2026-07-17T17:01:13Z"
+    },
+    "PT_Scores/optitrack_solo/P8_right_control_Pos1_T3_optitrack.png": {
+      "bytes": 213994,
+      "modified": "2026-07-17T17:01:16Z"
+    },
+    "PT_Scores/optitrack_solo/P8_right_control_Pos1_T4_optitrack.png": {
+      "bytes": 215076,
+      "modified": "2026-07-17T17:01:19Z"
+    },
+    "PT_Scores/optitrack_solo/P9_left_Pos1_T1_optitrack.png": {
+      "bytes": 189433,
+      "modified": "2026-07-17T17:01:22Z"
+    },
+    "PT_Scores/optitrack_solo/P9_left_Pos1_T2_optitrack.png": {
+      "bytes": 220839,
+      "modified": "2026-07-17T17:01:25Z"
+    },
+    "PT_Scores/optitrack_solo/P9_left_Pos1_T3_optitrack.png": {
+      "bytes": 210498,
+      "modified": "2026-07-17T17:01:28Z"
+    },
+    "PT_Scores/optitrack_solo/P9_left_Pos1_T4_optitrack.png": {
+      "bytes": 214092,
+      "modified": "2026-07-17T17:01:31Z"
+    },
+    "PT_Scores/optitrack_solo/P9_left_Pos1_T5_optitrack.png": {
+      "bytes": 208749,
+      "modified": "2026-07-17T17:01:34Z"
+    },
+    "PT_Scores/pendulum_test_scores.csv": {
+      "bytes": 2302,
+      "columns": [
+        "pid",
+        "pos",
+        "trial",
+        "pt_score_4param",
+        "est_MAS_4param",
+        "pt_score_6param",
+        "est_MAS_6param",
+        "spasticity_type",
+        "R2n",
+        "N",
+        "phi_max_ratio",
+        "omega_max_n",
+        "omega_min_n",
+        "omega_peak_deg_s",
+        "f_hz",
+        "area_ratio",
+        "A0_deg",
+        "A1_deg",
+        "neutral_deg",
+        "quality_warn",
+        "hpe_model_MAS",
+        "hpe_curve_MAS",
+        "error"
+      ],
+      "modified": "2026-08-10T21:29:06Z",
+      "rows": 17,
+      "sha256_16": "0512827c55692c28"
+    },
+    "PT_Scores/pendulum_test_scores_new.csv": {
+      "bytes": 6785,
+      "columns": [
+        "pid",
+        "pos",
+        "trial",
+        "pt_score_4param",
+        "est_MAS_4param",
+        "pt_score_6param",
+        "est_MAS_6param",
+        "spasticity_type",
+        "R2n",
+        "N",
+        "phi_max_ratio",
+        "omega_max_n",
+        "omega_min_n",
+        "f_hz",
+        "area_ratio",
+        "A0_deg",
+        "A1_deg",
+        "neutral_deg",
+        "quality_warn",
+        "hpe_model_MAS",
+        "hpe_curve_MAS",
+        "error",
+        "path"
+      ],
+      "modified": "2026-07-01T18:11:23Z",
+      "rows": 30,
+      "sha256_16": "47bd73d3b649ddac"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_All-Models.csv": {
+      "bytes": 20341,
+      "columns": [
+        "Time_Sec",
+        "mediapipe",
+        "rtmpose",
+        "mmpose",
+        "fremocap"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 592,
+      "sha256_16": "001ffbffba7670f6"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_Graph.png": {
+      "bytes": 406863,
+      "modified": "2026-06-17T14:06:31Z"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_fremocap.csv": {
+      "bytes": 8451,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 592,
+      "sha256_16": "4b8f225654b2fa52"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_mediapipe.csv": {
+      "bytes": 8464,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 592,
+      "sha256_16": "62168bbe6e2eb44e"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_mmpose.csv": {
+      "bytes": 8311,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 592,
+      "sha256_16": "a7e40ee37710ab6c"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_1_rtmpose.csv": {
+      "bytes": 8473,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 592,
+      "sha256_16": "67bff924b4ad277d"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_All-Models.csv": {
+      "bytes": 20386,
+      "columns": [
+        "Time_Sec",
+        "mediapipe",
+        "rtmpose",
+        "mmpose",
+        "fremocap"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 601,
+      "sha256_16": "9faa66340f4c83a6"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_Graph.png": {
+      "bytes": 424341,
+      "modified": "2026-06-17T14:06:31Z"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_fremocap.csv": {
+      "bytes": 8599,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 601,
+      "sha256_16": "4e34899aabc40701"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_mediapipe.csv": {
+      "bytes": 8578,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 601,
+      "sha256_16": "87609da0e85a9927"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_mmpose.csv": {
+      "bytes": 8381,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 601,
+      "sha256_16": "8bb46090ef5d91b1"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_1_Position_2_rtmpose.csv": {
+      "bytes": 8402,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 601,
+      "sha256_16": "65cda20959bcb351"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_All-Models.csv": {
+      "bytes": 18584,
+      "columns": [
+        "Time_Sec",
+        "mediapipe",
+        "rtmpose",
+        "mmpose",
+        "fremocap"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 543,
+      "sha256_16": "d47fcffa53b0676c"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_Graph.png": {
+      "bytes": 396353,
+      "modified": "2026-06-17T14:06:31Z"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_fremocap.csv": {
+      "bytes": 7719,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 543,
+      "sha256_16": "65d3b8553f0b2e4c"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_mediapipe.csv": {
+      "bytes": 7736,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 543,
+      "sha256_16": "2e791a0f742369fb"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_mmpose.csv": {
+      "bytes": 7569,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 543,
+      "sha256_16": "20a56526015afab4"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_1_rtmpose.csv": {
+      "bytes": 7748,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 543,
+      "sha256_16": "9b206c81f9048e16"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_All-Models.csv": {
+      "bytes": 17573,
+      "columns": [
+        "Time_Sec",
+        "mediapipe",
+        "rtmpose",
+        "mmpose",
+        "fremocap"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 518,
+      "sha256_16": "40973fb570d08d65"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_Graph.png": {
+      "bytes": 394085,
+      "modified": "2026-06-17T14:06:31Z"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_fremocap.csv": {
+      "bytes": 7354,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 518,
+      "sha256_16": "4ed67fc659d1479a"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_mediapipe.csv": {
+      "bytes": 7346,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 518,
+      "sha256_16": "0377b11a9e7f4923"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_mmpose.csv": {
+      "bytes": 7232,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 518,
+      "sha256_16": "3c59cff0458b503a"
+    },
+    "Participant_0/Participant_0_Height_Joint-Level_Trial_2_Position_2_rtmpose.csv": {
+      "bytes": 7226,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 518,
+      "sha256_16": "808a57ca3d0924b6"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_All-Models.csv": {
+      "bytes": 28065,
+      "columns": [
+        "Time_Sec",
+        "mediapipe",
+        "rtmpose",
+        "mmpose",
+        "fremocap"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 1207,
+      "sha256_16": "ea6d61f8fcdb65ab"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_Graph.png": {
+      "bytes": 672342,
+      "modified": "2026-06-17T14:06:31Z"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_fremocap.csv": {
+      "bytes": 17489,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 1207,
+      "sha256_16": "d499308ab1aab24c"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_mediapipe.csv": {
+      "bytes": 17522,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 1207,
+      "sha256_16": "73e5bd1046856d69"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_mmpose.csv": {
+      "bytes": 10586,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 1207,
+      "sha256_16": "f0082f7135a6bd17"
+    },
+    "Participant_0/Participant_0_Height_Low_Trial_2_Position_3_rtmpose.csv": {
+      "bytes": 10586,
+      "columns": [
+        "Time_Sec",
+        "Knee_Angle_Deg"
+      ],
+      "modified": "2026-06-17T14:06:31Z",
+      "rows": 1207,
+      "sha256_16": "f0082f7135a6bd17"
+    },
+    "Pendulastic 45-Minute Expanded Deck.pptx": {
+      "bytes": 86189,
+      "modified": "2026-08-20T13:57:16Z"
+    },
+    "Pendulastic Progress Update.pptx": {
+      "bytes": 1740828,
+      "modified": "2026-08-20T13:49:07Z"
+    },
+    "Pendulastic_All_Figures_Deck.pptx": {
+      "bytes": 1761620,
+      "modified": "2026-08-20T21:26:22Z"
+    },
+    "Pendulastic_All_Figures_Deck_v2.pptx": {
+      "bytes": 2749649,
+      "modified": "2026-08-20T19:58:00Z"
+    },
+    "Pendulastic_All_Figures_Deck_v3.pptx": {
+      "bytes": 2556907,
+      "modified": "2026-08-20T21:26:34Z"
+    },
+    "Pendulastic_All_Figures_Deck_v4.pptx": {
+      "bytes": 2471289,
+      "modified": "2026-08-20T20:08:16Z"
+    },
+    "Pendulastic_Results_Section.pdf": {
+      "bytes": 934277,
+      "modified": "2026-08-20T13:47:42Z"
+    },
+    "Pendulastic_Results_Section.pptx": {
+      "bytes": 683485,
+      "modified": "2026-08-20T20:07:55Z"
+    },
+    "Pendulastic_Results_Section_v2.pptx": {
+      "bytes": 640958,
+      "modified": "2026-08-20T20:07:56Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Left_week_1_post_Trial_1_imu_raw.jsonl": {
+      "bytes": 269127,
+      "modified": "2026-08-06T21:15:50Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Left_week_1_post_Trial_2_imu_raw.jsonl": {
+      "bytes": 245883,
+      "modified": "2026-08-06T21:15:50Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Left_week_1_post_Trial_3_imu_raw.jsonl": {
+      "bytes": 287166,
+      "modified": "2026-08-06T21:15:51Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Left_week_1_post_Trial_4_imu_raw.jsonl": {
+      "bytes": 221539,
+      "modified": "2026-08-06T21:15:51Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Right_week_1_post_Trial_1_imu_raw.jsonl": {
+      "bytes": 214871,
+      "modified": "2026-08-06T21:15:51Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Right_week_1_post_Trial_2_imu_raw.jsonl": {
+      "bytes": 258372,
+      "modified": "2026-08-06T21:15:52Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Right_week_1_post_Trial_3_imu_raw.jsonl": {
+      "bytes": 247075,
+      "modified": "2026-08-06T21:15:52Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Right_week_1_post_Trial_4_imu_raw.jsonl": {
+      "bytes": 236147,
+      "modified": "2026-08-06T21:15:52Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_Right_week_1_post_Trial_5_imu_raw.jsonl": {
+      "bytes": 247022,
+      "modified": "2026-08-06T21:15:52Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_left_post_Session_post_Position_1_Height_Joint-Level_Trial_1_imu_raw.jsonl": {
+      "bytes": 491601,
+      "modified": "2026-08-06T21:15:53Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_left_post_Session_post_Position_1_Height_Joint-Level_Trial_2_imu_raw.jsonl": {
+      "bytes": 442620,
+      "modified": "2026-08-06T21:15:53Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_left_post_Session_post_Position_1_Height_Joint-Level_Trial_3_imu_raw.jsonl": {
+      "bytes": 409991,
+      "modified": "2026-08-06T21:15:53Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_left_post_Session_post_Position_1_Height_Joint-Level_Trial_4_imu_raw.jsonl": {
+      "bytes": 399500,
+      "modified": "2026-08-06T21:15:54Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_right_post_Session_post_Position_1_Height_Joint-Level_Trial_1_imu_raw.jsonl": {
+      "bytes": 440663,
+      "modified": "2026-08-06T21:15:54Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_right_post_Session_post_Position_1_Height_Joint-Level_Trial_2_imu_raw.jsonl": {
+      "bytes": 466416,
+      "modified": "2026-08-06T21:15:54Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_right_post_Session_post_Position_1_Height_Joint-Level_Trial_3_imu_raw.jsonl": {
+      "bytes": 486150,
+      "modified": "2026-08-06T21:15:54Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_right_post_Session_post_Position_1_Height_Joint-Level_Trial_4_imu_raw.jsonl": {
+      "bytes": 442822,
+      "modified": "2026-08-06T21:15:55Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_13_right_post_Session_post_Position_1_Height_Joint-Level_Trial_5_imu_raw.jsonl": {
+      "bytes": 451647,
+      "modified": "2026-08-06T21:15:55Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Left_pre_Trial_1_imu_raw.jsonl": {
+      "bytes": 477832,
+      "modified": "2026-08-06T21:15:55Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Left_pre_Trial_2_imu_raw.jsonl": {
+      "bytes": 793109,
+      "modified": "2026-08-06T21:15:55Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Left_pre_Trial_3_imu_raw.jsonl": {
+      "bytes": 383652,
+      "modified": "2026-08-06T21:15:55Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Left_pre_Trial_4_imu_raw.jsonl": {
+      "bytes": 515300,
+      "modified": "2026-08-06T21:15:56Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Right_pre_Trial_1_imu_raw.jsonl": {
+      "bytes": 354148,
+      "modified": "2026-08-06T21:15:56Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Right_pre_Trial_2_imu_raw.jsonl": {
+      "bytes": 478040,
+      "modified": "2026-08-06T21:15:56Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Right_pre_Trial_3_imu_raw.jsonl": {
+      "bytes": 465634,
+      "modified": "2026-08-06T21:15:56Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_14_Right_pre_Trial_4_imu_raw.jsonl": {
+      "bytes": 1195094,
+      "modified": "2026-08-06T21:15:57Z"
+    },
+    "Reconstructed_IMU_Raw_Logs/Participant_test_Right_week_1_post_Trial_1_imu_raw.jsonl": {
+      "bytes": 197849,
+      "modified": "2026-08-06T21:15:57Z"
+    },
+    "Spasticity_Stratified/leg_labels.csv": {
+      "bytes": 5671,
+      "columns": [
+        "participant",
+        "leg",
+        "spasticity",
+        "source",
+        "detail",
+        "pt_data_modality",
+        "imu_purpose",
+        "n_tak",
+        "condition"
+      ],
+      "modified": "2026-09-02T16:45:00Z",
+      "rows": 44,
+      "sha256_16": "5209cca37770ecc5"
+    },
+    "Spasticity_Stratified/spasticity_boxplots.png": {
+      "bytes": 134611,
+      "modified": "2026-09-02T16:45:02Z"
+    },
+    "Spasticity_Stratified/spasticity_stats.csv": {
+      "bytes": 1236,
+      "columns": [
+        "subset",
+        "parameter",
+        "n_non_spastic",
+        "n_spastic",
+        "median_non_spastic",
+        "median_spastic",
+        "mann_whitney_u",
+        "p_value",
+        "cliffs_delta",
+        "effect"
+      ],
+      "modified": "2026-09-02T16:45:00Z",
+      "rows": 18,
+      "sha256_16": "c35b3da048327599"
+    },
+    "Viewer_Comparison/viewer_vs_hpe_summary.csv": {
+      "bytes": 767,
+      "columns": [
+        "model_family",
+        "n_trials",
+        "n_healthy",
+        "n_spastic",
+        "exact_MAS_agree_%",
+        "adj_MAS_agree_%",
+        "healthy_MAS0_%",
+        "spastic_MAS1+_%",
+        "PT_correlation",
+        "PT_MAE"
+      ],
+      "modified": "2026-07-20T03:40:38Z",
+      "rows": 12,
+      "sha256_16": "be5b4442c8b44679"
+    },
+    "Viewer_Comparison/viewer_vs_optitrack.csv": {
+      "bytes": 4905,
+      "columns": [
+        "participant",
+        "leg",
+        "trial",
+        "diagnosis",
+        "quality_warn",
+        "opti_pt4",
+        "opti_mas",
+        "opti_R2n",
+        "opti_N",
+        "opti_phi",
+        "opti_omega",
+        "opti_A0",
+        "viewer_pt4",
+        "viewer_mas",
+        "viewer_R2n",
+        "viewer_N",
+        "viewer_phi",
+        "viewer_omega",
+        "viewer_A0",
+        "hpe_pt4",
+        "hpe_mas",
+        "viewer_mas_match",
+        "hpe_mas_match",
+        "viewer_pt_diff",
+        "hpe_pt_diff"
+      ],
+      "modified": "2026-07-20T03:40:38Z",
+      "rows": 36,
+      "sha256_16": "ba92ee396e64a374"
+    },
+    "Viewer_Comparison/viewer_vs_optitrack_mas.png": {
+      "bytes": 119323,
+      "modified": "2026-07-20T03:40:41Z"
+    },
+    "Viewer_Comparison/viewer_vs_optitrack_params.png": {
+      "bytes": 110233,
+      "modified": "2026-07-20T03:40:42Z"
+    },
+    "Viewer_Comparison/viewer_vs_optitrack_scatter.png": {
+      "bytes": 105105,
+      "modified": "2026-07-20T03:40:39Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P10_Left_T3_ctrl_best.pdf": {
+      "bytes": 58248,
+      "modified": "2026-07-22T16:15:01Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P10_Left_T3_ctrl_best.png": {
+      "bytes": 898956,
+      "modified": "2026-07-22T16:15:02Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P10_Right_T2_ctrl_best.pdf": {
+      "bytes": 77644,
+      "modified": "2026-07-22T16:15:04Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P10_Right_T2_ctrl_best.png": {
+      "bytes": 1057767,
+      "modified": "2026-07-22T16:15:05Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P4_Left_T2_MS_best.pdf": {
+      "bytes": 52750,
+      "modified": "2026-07-22T16:14:32Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P4_Left_T2_MS_best.png": {
+      "bytes": 729884,
+      "modified": "2026-07-22T16:14:33Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P4_Right_T1_MS_best.pdf": {
+      "bytes": 55399,
+      "modified": "2026-07-22T16:14:35Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P4_Right_T1_MS_best.png": {
+      "bytes": 927774,
+      "modified": "2026-07-22T16:14:36Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P5_Right_T4_MS_best.pdf": {
+      "bytes": 57155,
+      "modified": "2026-07-22T16:14:39Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P5_Right_T4_MS_best.png": {
+      "bytes": 756169,
+      "modified": "2026-07-22T16:14:40Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P6_Left_T4_ctrl_best.pdf": {
+      "bytes": 83721,
+      "modified": "2026-07-22T16:14:42Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P6_Left_T4_ctrl_best.png": {
+      "bytes": 1123893,
+      "modified": "2026-07-22T16:14:43Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P6_Right_T3_ctrl_best.pdf": {
+      "bytes": 82929,
+      "modified": "2026-07-22T16:14:46Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P6_Right_T3_ctrl_best.png": {
+      "bytes": 1185529,
+      "modified": "2026-07-22T16:14:48Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P7_Right_T1_ctrl_best.pdf": {
+      "bytes": 58771,
+      "modified": "2026-07-22T16:14:50Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P7_Right_T1_ctrl_best.png": {
+      "bytes": 903136,
+      "modified": "2026-07-22T16:14:51Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P8_Left_T2_ctrl_best.pdf": {
+      "bytes": 83307,
+      "modified": "2026-07-22T16:14:54Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P8_Left_T2_ctrl_best.png": {
+      "bytes": 1155025,
+      "modified": "2026-07-22T16:14:55Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P8_Right_T3_ctrl_best.pdf": {
+      "bytes": 62792,
+      "modified": "2026-07-22T16:14:57Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_P8_Right_T3_ctrl_best.png": {
+      "bytes": 1150181,
+      "modified": "2026-07-22T16:14:58Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram.pdf": {
+      "bytes": 72746,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram.png": {
+      "bytes": 303091,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_P4_allmodels.pdf": {
+      "bytes": 75710,
+      "modified": "2026-07-22T13:06:56Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_P4_allmodels.png": {
+      "bytes": 814512,
+      "modified": "2026-07-22T13:06:58Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_P6_allmodels.pdf": {
+      "bytes": 74263,
+      "modified": "2026-07-22T13:07:06Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_P6_allmodels.png": {
+      "bytes": 965939,
+      "modified": "2026-07-22T13:07:07Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_2_left_duo_T1.pdf": {
+      "bytes": 64767,
+      "modified": "2026-07-21T02:47:17Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_2_left_duo_T1.png": {
+      "bytes": 1258132,
+      "modified": "2026-07-21T02:47:18Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T2.pdf": {
+      "bytes": 71113,
+      "modified": "2026-07-22T13:06:59Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T2.png": {
+      "bytes": 1314031,
+      "modified": "2026-07-22T13:07:01Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T3.pdf": {
+      "bytes": 85181,
+      "modified": "2026-07-22T13:06:57Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T3.png": {
+      "bytes": 1223085,
+      "modified": "2026-07-22T13:06:59Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T5.pdf": {
+      "bytes": 83635,
+      "modified": "2026-07-22T13:07:02Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_left_T5.png": {
+      "bytes": 1181360,
+      "modified": "2026-07-22T13:07:03Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T1.pdf": {
+      "bytes": 73309,
+      "modified": "2026-07-22T13:07:04Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T1.png": {
+      "bytes": 791940,
+      "modified": "2026-07-22T13:07:05Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T2.pdf": {
+      "bytes": 57928,
+      "modified": "2026-07-22T13:06:56Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T2.png": {
+      "bytes": 656091,
+      "modified": "2026-07-22T13:06:58Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T4.pdf": {
+      "bytes": 51214,
+      "modified": "2026-07-22T13:07:02Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_4_right_T4.png": {
+      "bytes": 540448,
+      "modified": "2026-07-22T13:07:04Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_5_right_side_T3.pdf": {
+      "bytes": 70630,
+      "modified": "2026-07-22T13:07:07Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_5_right_side_T3.png": {
+      "bytes": 651848,
+      "modified": "2026-07-22T13:07:08Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T1.pdf": {
+      "bytes": 77197,
+      "modified": "2026-07-22T13:07:09Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T1.png": {
+      "bytes": 982031,
+      "modified": "2026-07-22T13:07:10Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T2.pdf": {
+      "bytes": 56815,
+      "modified": "2026-07-21T02:47:37Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T2.png": {
+      "bytes": 1087441,
+      "modified": "2026-07-21T02:47:38Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T3.pdf": {
+      "bytes": 72161,
+      "modified": "2026-07-22T13:07:12Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T3.png": {
+      "bytes": 704132,
+      "modified": "2026-07-22T13:07:13Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T4.pdf": {
+      "bytes": 76170,
+      "modified": "2026-07-22T13:07:14Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_left_control_T4.png": {
+      "bytes": 966399,
+      "modified": "2026-07-22T13:07:15Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T1.pdf": {
+      "bytes": 73162,
+      "modified": "2026-07-22T13:07:16Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T1.png": {
+      "bytes": 977064,
+      "modified": "2026-07-22T13:07:17Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T2.pdf": {
+      "bytes": 77164,
+      "modified": "2026-07-22T13:07:19Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T2.png": {
+      "bytes": 1114612,
+      "modified": "2026-07-22T13:07:20Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T3.pdf": {
+      "bytes": 76414,
+      "modified": "2026-07-22T13:07:23Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T3.png": {
+      "bytes": 1089743,
+      "modified": "2026-07-22T13:07:24Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T5.pdf": {
+      "bytes": 76197,
+      "modified": "2026-07-22T13:07:25Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_6_right_control_T5.png": {
+      "bytes": 1049169,
+      "modified": "2026-07-22T13:07:26Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T1.pdf": {
+      "bytes": 57908,
+      "modified": "2026-07-21T02:47:54Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T1.png": {
+      "bytes": 1101274,
+      "modified": "2026-07-21T02:47:55Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T2.pdf": {
+      "bytes": 58794,
+      "modified": "2026-07-21T02:47:56Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T2.png": {
+      "bytes": 1091168,
+      "modified": "2026-07-21T02:47:57Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T3.pdf": {
+      "bytes": 51518,
+      "modified": "2026-07-21T02:47:59Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T3.png": {
+      "bytes": 877876,
+      "modified": "2026-07-21T02:48:00Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T4.pdf": {
+      "bytes": 58120,
+      "modified": "2026-07-21T02:48:01Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_left_control_T4.png": {
+      "bytes": 969822,
+      "modified": "2026-07-21T02:48:02Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_right_control_T1.pdf": {
+      "bytes": 70780,
+      "modified": "2026-07-22T13:07:27Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_goniogram_Participant_7_right_control_T1.png": {
+      "bytes": 846986,
+      "modified": "2026-07-22T13:07:28Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_pt_equation_explainer.pdf": {
+      "bytes": 79679,
+      "modified": "2026-07-21T21:51:21Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_A_pt_equation_explainer.png": {
+      "bytes": 1000754,
+      "modified": "2026-07-21T21:51:22Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_B_rmse_accuracy.pdf": {
+      "bytes": 38352,
+      "modified": "2026-07-20T06:44:16Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_B_rmse_accuracy.png": {
+      "bytes": 342556,
+      "modified": "2026-07-20T06:44:17Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_C_param_delta.pdf": {
+      "bytes": 45025,
+      "modified": "2026-07-20T06:44:17Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_C_param_delta.png": {
+      "bytes": 243896,
+      "modified": "2026-07-20T06:44:18Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_D_scatter.pdf": {
+      "bytes": 40009,
+      "modified": "2026-07-20T06:44:18Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_D_scatter.png": {
+      "bytes": 720102,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_E_annotation_comparison.pdf": {
+      "bytes": 45486,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_E_annotation_comparison.png": {
+      "bytes": 269112,
+      "modified": "2026-07-20T06:44:19Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_F_small_multiples.pdf": {
+      "bytes": 65685,
+      "modified": "2026-07-20T06:44:23Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_F_small_multiples.png": {
+      "bytes": 847192,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_Flow_pipeline.pdf": {
+      "bytes": 43779,
+      "modified": "2026-07-20T06:44:15Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_Flow_pipeline.png": {
+      "bytes": 142882,
+      "modified": "2026-07-20T06:44:16Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_G_velocity.pdf": {
+      "bytes": 39347,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_G_velocity.png": {
+      "bytes": 249149,
+      "modified": "2026-07-20T06:44:24Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_H_healthy_vs_ms.pdf": {
+      "bytes": 41158,
+      "modified": "2026-07-20T06:44:25Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_H_healthy_vs_ms.png": {
+      "bytes": 296618,
+      "modified": "2026-07-20T06:44:25Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_I_7param_comparison.pdf": {
+      "bytes": 56962,
+      "modified": "2026-07-20T06:44:26Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_I_7param_comparison.png": {
+      "bytes": 331448,
+      "modified": "2026-07-20T06:44:27Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P10_Left_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 54732,
+      "modified": "2026-07-22T16:15:03Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P10_Left_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 701022,
+      "modified": "2026-07-22T16:15:03Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P10_Right_T2_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 51353,
+      "modified": "2026-07-22T16:15:06Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P10_Right_T2_ctrl_mediapipe_cmp.png": {
+      "bytes": 789423,
+      "modified": "2026-07-22T16:15:07Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P4_Left_T2_MS_mediapipe_cmp.pdf": {
+      "bytes": 46165,
+      "modified": "2026-07-22T16:14:34Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P4_Left_T2_MS_mediapipe_cmp.png": {
+      "bytes": 542741,
+      "modified": "2026-07-22T16:14:35Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P4_Right_T1_MS_mediapipe_cmp.pdf": {
+      "bytes": 47568,
+      "modified": "2026-07-22T16:14:37Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P4_Right_T1_MS_mediapipe_cmp.png": {
+      "bytes": 506974,
+      "modified": "2026-07-22T16:14:38Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P5_Right_T4_MS_mediapipe_cmp.pdf": {
+      "bytes": 45654,
+      "modified": "2026-07-22T16:14:41Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P5_Right_T4_MS_mediapipe_cmp.png": {
+      "bytes": 419721,
+      "modified": "2026-07-22T16:14:42Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P6_Left_T4_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 43703,
+      "modified": "2026-07-22T16:14:44Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P6_Left_T4_ctrl_mediapipe_cmp.png": {
+      "bytes": 388086,
+      "modified": "2026-07-22T16:14:45Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P6_Right_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 48136,
+      "modified": "2026-07-22T16:14:48Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P6_Right_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 504493,
+      "modified": "2026-07-22T16:14:49Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P7_Right_T1_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 45807,
+      "modified": "2026-07-22T16:14:52Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P7_Right_T1_ctrl_mediapipe_cmp.png": {
+      "bytes": 470379,
+      "modified": "2026-07-22T16:14:53Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P8_Left_T2_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 48711,
+      "modified": "2026-07-22T16:14:56Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P8_Left_T2_ctrl_mediapipe_cmp.png": {
+      "bytes": 683483,
+      "modified": "2026-07-22T16:14:56Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P8_Right_T3_ctrl_mediapipe_cmp.pdf": {
+      "bytes": 50806,
+      "modified": "2026-07-22T16:14:59Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_MP_P8_Right_T3_ctrl_mediapipe_cmp.png": {
+      "bytes": 712301,
+      "modified": "2026-07-22T16:15:00Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_control_validation.pdf": {
+      "bytes": 84613,
+      "modified": "2026-07-21T15:01:44Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_control_validation.png": {
+      "bytes": 647157,
+      "modified": "2026-07-21T15:01:52Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_derivation_pipeline.pdf": {
+      "bytes": 86661,
+      "modified": "2026-07-21T22:21:01Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_derivation_pipeline.png": {
+      "bytes": 588055,
+      "modified": "2026-07-21T22:20:59Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_model_accuracy_comparison.pdf": {
+      "bytes": 56515,
+      "modified": "2026-07-22T13:34:00Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_model_accuracy_comparison.png": {
+      "bytes": 539872,
+      "modified": "2026-07-22T13:34:02Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_pt_equation_explainer.pdf": {
+      "bytes": 200235,
+      "modified": "2026-07-23T00:22:30Z"
+    },
+    "_pre_2026-08-28_lagfix/Figures/Fig_pt_equation_explainer.png": {
+      "bytes": 842283,
+      "modified": "2026-07-23T00:22:28Z"
+    },
+    "_pre_2026-08-28_lagfix/control_validation_stats.csv": {
+      "bytes": 1089,
+      "columns": [
+        "metric",
+        "value",
+        "unit",
+        "note"
+      ],
+      "modified": "2026-07-21T15:01:52Z",
+      "rows": 32,
+      "sha256_16": "d4ef94021effbe3f"
+    },
+    "_pre_2026-08-28_lagfix/control_validation_trials.csv": {
+      "bytes": 889,
+      "columns": [
+        "pnum",
+        "side",
+        "trial_n",
+        "pt_opti",
+        "pt_ann",
+        "diff",
+        "rmse_deg"
+      ],
+      "modified": "2026-07-21T15:01:52Z",
+      "rows": 22,
+      "sha256_16": "bd14992db18cf289"
+    },
+    "_pre_2026-08-28_lagfix/imu_vs_optitrack_rmse.csv": {
+      "bytes": 17889,
+      "columns": [
+        "participant",
+        "trial_key",
+        "position",
+        "trial",
+        "imu_path",
+        "optitrack_path",
+        "status",
+        "rmse_deg",
+        "mae_deg",
+        "bias_deg",
+        "lag_sec",
+        "n_samples",
+        "optitrack_method",
+        "error"
+      ],
+      "modified": "2026-08-17T21:52:59Z",
+      "rows": 53,
+      "sha256_16": "804e2ed995842de8"
+    },
+    "_pre_2026-08-28_lagfix/longitudinal_trials.csv": {
+      "bytes": 18798,
+      "columns": [
+        "pid",
+        "leg",
+        "condition",
+        "raw_condition",
+        "trial_number",
+        "trial_key",
+        "group",
+        "mas",
+        "opti_R2n",
+        "opti_N",
+        "opti_phi_max_ratio",
+        "opti_omega_max_n",
+        "opti_f",
+        "opti_area_ratio",
+        "opti_omega_min_n",
+        "imu_R2n",
+        "imu_N",
+        "imu_phi_max_ratio",
+        "imu_omega_max_n",
+        "imu_f",
+        "imu_area_ratio",
+        "imu_omega_min_n",
+        "mp_R2n",
+        "mp_N",
+        "mp_phi_max_ratio",
+        "mp_omega_max_n",
+        "mp_f",
+        "mp_area_ratio",
+        "mp_omega_min_n"
+      ],
+      "modified": "2026-08-20T19:40:07Z",
+      "rows": 49,
+      "sha256_16": "71d7417af4d921c2"
+    },
+    "_pre_2026-08-28_lagfix/multimetric_trials.csv": {
+      "bytes": 17653,
+      "columns": [
+        "pid",
+        "trial_key",
+        "group",
+        "mas",
+        "opti_R2n",
+        "opti_N",
+        "opti_phi_max_ratio",
+        "opti_omega_max_n",
+        "opti_f",
+        "opti_area_ratio",
+        "opti_omega_min_n",
+        "imu_R2n",
+        "imu_N",
+        "imu_phi_max_ratio",
+        "imu_omega_max_n",
+        "imu_f",
+        "imu_area_ratio",
+        "imu_omega_min_n",
+        "mp_R2n",
+        "mp_N",
+        "mp_phi_max_ratio",
+        "mp_omega_max_n",
+        "mp_f",
+        "mp_area_ratio",
+        "mp_omega_min_n"
+      ],
+      "modified": "2026-08-19T20:22:29Z",
+      "rows": 49,
+      "sha256_16": "aee98a78f447a12f"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig10_param_correlation.png": {
+      "bytes": 114611,
+      "modified": "2026-08-19T21:14:28Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig11_rmse_distribution.png": {
+      "bytes": 55639,
+      "modified": "2026-08-20T19:18:05Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig12_rmse_by_participant.png": {
+      "bytes": 54569,
+      "modified": "2026-08-20T19:18:05Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig13_bias_vs_rmse.png": {
+      "bytes": 84887,
+      "modified": "2026-08-20T19:18:05Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig14_lag_distribution.png": {
+      "bytes": 49359,
+      "modified": "2026-08-20T19:18:06Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig15_ft_ratio_sweep.png": {
+      "bytes": 91072,
+      "modified": "2026-08-20T19:18:06Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig16_mag_toggle_paired.png": {
+      "bytes": 72907,
+      "modified": "2026-08-20T19:18:07Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig17_method_comparison.png": {
+      "bytes": 73876,
+      "modified": "2026-08-20T19:18:07Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig18_beta_sensitivity.png": {
+      "bytes": 83582,
+      "modified": "2026-08-20T19:18:07Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig19_mas_distribution.png": {
+      "bytes": 54796,
+      "modified": "2026-08-20T19:18:08Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig1_bland_altman.png": {
+      "bytes": 57018,
+      "modified": "2026-08-19T19:57:00Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig20_data_availability.png": {
+      "bytes": 48102,
+      "modified": "2026-08-20T19:18:09Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig21_pt_params_small_multiples.png": {
+      "bytes": 126389,
+      "modified": "2026-08-20T19:19:07Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig22_grid_search_convergence.png": {
+      "bytes": 57362,
+      "modified": "2026-08-20T19:18:09Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig23_rmse_vs_trial_length.png": {
+      "bytes": 59290,
+      "modified": "2026-08-20T19:18:10Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig24_pt_params_small_multiples_opti.png": {
+      "bytes": 131649,
+      "modified": "2026-08-20T19:40:02Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig25_pt_params_small_multiples_mp.png": {
+      "bytes": 134674,
+      "modified": "2026-08-20T19:40:03Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig26_longitudinal_all_params.png": {
+      "bytes": 281648,
+      "modified": "2026-08-20T19:40:04Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig27_r2n_longitudinal_detail.png": {
+      "bytes": 99298,
+      "modified": "2026-08-20T19:40:05Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig28_score_by_modality.png": {
+      "bytes": 82612,
+      "modified": "2026-08-20T19:40:05Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig29_score_correlation.png": {
+      "bytes": 141047,
+      "modified": "2026-08-20T19:40:06Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig2_metrics_by_mas.png": {
+      "bytes": 78475,
+      "modified": "2026-08-19T19:59:03Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig30_mas_scorecard.png": {
+      "bytes": 119056,
+      "modified": "2026-08-20T19:40:07Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig31_mp_trajectory_example.png": {
+      "bytes": 89625,
+      "modified": "2026-08-20T20:05:27Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig3_trajectory_example.png": {
+      "bytes": 100041,
+      "modified": "2026-08-19T19:57:03Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig4_metrics_by_group.png": {
+      "bytes": 101322,
+      "modified": "2026-08-19T20:07:02Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig5_pre_post.png": {
+      "bytes": 50188,
+      "modified": "2026-08-19T20:07:02Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig6_metric_effect_heatmap.png": {
+      "bytes": 83058,
+      "modified": "2026-08-19T20:22:29Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig7_single_vs_combined_auc.png": {
+      "bytes": 77830,
+      "modified": "2026-08-19T20:22:29Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_figures/fig8_score_naive_vs_logocv.png": {
+      "bytes": 118140,
+      "modified": "2026-08-19T21:14:27Z"
+    },
+    "_pre_2026-08-28_lagfix/paper_results_analysis_trials.csv": {
+      "bytes": 15636,
+      "columns": [
+        "pid",
+        "trial_key",
+        "group",
+        "age",
+        "sex",
+        "imu_R2n",
+        "opti_R2n",
+        "imu_N",
+        "opti_N",
+        "imu_phi_max_ratio",
+        "opti_phi_max_ratio",
+        "imu_omega_max_n",
+        "opti_omega_max_n",
+        "imu_f",
+        "opti_f",
+        "imu_area_ratio",
+        "opti_area_ratio",
+        "imu_omega_min_n",
+        "opti_omega_min_n"
+      ],
+      "modified": "2026-08-19T19:51:02Z",
+      "rows": 61,
+      "sha256_16": "004c5f4e0383347d"
+    },
+    "control_validation_stats.csv": {
+      "bytes": 1089,
+      "columns": [
+        "metric",
+        "value",
+        "unit",
+        "note"
+      ],
+      "modified": "2026-07-21T15:01:52Z",
+      "rows": 32,
+      "sha256_16": "d4ef94021effbe3f"
+    },
+    "control_validation_trials.csv": {
+      "bytes": 889,
+      "columns": [
+        "pnum",
+        "side",
+        "trial_n",
+        "pt_opti",
+        "pt_ann",
+        "diff",
+        "rmse_deg"
+      ],
+      "modified": "2026-07-21T15:01:52Z",
+      "rows": 22,
+      "sha256_16": "bd14992db18cf289"
+    },
+    "data_purpose_manifest.csv": {
+      "bytes": 2240,
+      "columns": [
+        "participant",
+        "n_tak",
+        "has_optitrack_csv",
+        "has_imu",
+        "imu_purpose",
+        "optical_purpose",
+        "reason"
+      ],
+      "modified": "2026-08-28T20:47:14Z",
+      "rows": 22,
+      "sha256_16": "2f99ecfaf1aa4966"
+    },
+    "imu_vs_optitrack_rmse.csv": {
+      "bytes": 44879,
+      "columns": [
+        "participant",
+        "trial_key",
+        "position",
+        "trial",
+        "imu_path",
+        "optitrack_path",
+        "status",
+        "rmse_deg",
+        "mae_deg",
+        "bias_deg",
+        "lag_sec",
+        "n_samples",
+        "optitrack_method",
+        "error"
+      ],
+      "modified": "2026-08-28T20:45:27Z",
+      "rows": 133,
+      "sha256_16": "22ac9e95e8a6651a"
+    },
+    "imu_vs_optitrack_rmse_POSTFIX.csv": {
+      "bytes": 3186,
+      "columns": [
+        "participant",
+        "position",
+        "trial",
+        "imu_path",
+        "optitrack_path",
+        "status",
+        "rmse_deg",
+        "mae_deg",
+        "bias_deg",
+        "lag_sec",
+        "n_samples",
+        "optitrack_method",
+        "error"
+      ],
+      "modified": "2026-08-05T18:55:35Z",
+      "rows": 8,
+      "sha256_16": "19fc6c34f8f1b6a6"
+    },
+    "imu_vs_optitrack_rmse_PREFIX.csv": {
+      "bytes": 3181,
+      "columns": [
+        "participant",
+        "position",
+        "trial",
+        "imu_path",
+        "optitrack_path",
+        "status",
+        "rmse_deg",
+        "mae_deg",
+        "bias_deg",
+        "lag_sec",
+        "n_samples",
+        "optitrack_method",
+        "error"
+      ],
+      "modified": "2026-08-05T18:55:35Z",
+      "rows": 8,
+      "sha256_16": "098b8df679e5d646"
+    },
+    "longitudinal_trials.csv": {
+      "bytes": 18798,
+      "columns": [
+        "pid",
+        "leg",
+        "condition",
+        "raw_condition",
+        "trial_number",
+        "trial_key",
+        "group",
+        "mas",
+        "opti_R2n",
+        "opti_N",
+        "opti_phi_max_ratio",
+        "opti_omega_max_n",
+        "opti_f",
+        "opti_area_ratio",
+        "opti_omega_min_n",
+        "imu_R2n",
+        "imu_N",
+        "imu_phi_max_ratio",
+        "imu_omega_max_n",
+        "imu_f",
+        "imu_area_ratio",
+        "imu_omega_min_n",
+        "mp_R2n",
+        "mp_N",
+        "mp_phi_max_ratio",
+        "mp_omega_max_n",
+        "mp_f",
+        "mp_area_ratio",
+        "mp_omega_min_n"
+      ],
+      "modified": "2026-08-20T19:40:07Z",
+      "rows": 49,
+      "sha256_16": "71d7417af4d921c2"
+    },
+    "multimetric_trials.csv": {
+      "bytes": 33980,
+      "columns": [
+        "pid",
+        "trial_key",
+        "group",
+        "mas",
+        "opti_R2n",
+        "opti_N",
+        "opti_phi_max_ratio",
+        "opti_omega_max_n",
+        "opti_f",
+        "opti_area_ratio",
+        "opti_omega_min_n",
+        "imu_R2n",
+        "imu_N",
+        "imu_phi_max_ratio",
+        "imu_omega_max_n",
+        "imu_f",
+        "imu_area_ratio",
+        "imu_omega_min_n",
+        "mp_R2n",
+        "mp_N",
+        "mp_phi_max_ratio",
+        "mp_omega_max_n",
+        "mp_f",
+        "mp_area_ratio",
+        "mp_omega_min_n"
+      ],
+      "modified": "2026-09-02T19:58:27Z",
+      "rows": 79,
+      "sha256_16": "003947e0524a971f"
+    },
+    "paper_figures/fig10_param_correlation.png": {
+      "bytes": 114611,
+      "modified": "2026-08-19T21:14:28Z"
+    },
+    "paper_figures/fig11_rmse_distribution.png": {
+      "bytes": 59147,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig12_rmse_by_participant.png": {
+      "bytes": 73419,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig13_bias_vs_rmse.png": {
+      "bytes": 92319,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig14_lag_distribution.png": {
+      "bytes": 53149,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig15_ft_ratio_sweep.png": {
+      "bytes": 89465,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig16_mag_toggle_paired.png": {
+      "bytes": 76844,
+      "modified": "2026-09-02T19:59:18Z"
+    },
+    "paper_figures/fig17_method_comparison.png": {
+      "bytes": 64316,
+      "modified": "2026-09-02T19:59:19Z"
+    },
+    "paper_figures/fig18_beta_sensitivity.png": {
+      "bytes": 79656,
+      "modified": "2026-09-02T19:59:19Z"
+    },
+    "paper_figures/fig19_mas_distribution.png": {
+      "bytes": 50699,
+      "modified": "2026-09-02T19:59:19Z"
+    },
+    "paper_figures/fig1_bland_altman.png": {
+      "bytes": 50293,
+      "modified": "2026-09-02T19:13:10Z"
+    },
+    "paper_figures/fig20_data_availability.png": {
+      "bytes": 50570,
+      "modified": "2026-09-02T19:59:19Z"
+    },
+    "paper_figures/fig21_pt_params_small_multiples.png": {
+      "bytes": 125102,
+      "modified": "2026-09-02T19:59:20Z"
+    },
+    "paper_figures/fig22_grid_search_convergence.png": {
+      "bytes": 57618,
+      "modified": "2026-09-02T19:59:20Z"
+    },
+    "paper_figures/fig23_rmse_vs_trial_length.png": {
+      "bytes": 64254,
+      "modified": "2026-09-02T19:59:20Z"
+    },
+    "paper_figures/fig24_pt_params_small_multiples_opti.png": {
+      "bytes": 131649,
+      "modified": "2026-08-20T19:40:02Z"
+    },
+    "paper_figures/fig25_pt_params_small_multiples_mp.png": {
+      "bytes": 134674,
+      "modified": "2026-08-20T19:40:03Z"
+    },
+    "paper_figures/fig26_longitudinal_all_params.png": {
+      "bytes": 281648,
+      "modified": "2026-08-20T19:40:04Z"
+    },
+    "paper_figures/fig27_r2n_longitudinal_detail.png": {
+      "bytes": 99298,
+      "modified": "2026-08-20T19:40:05Z"
+    },
+    "paper_figures/fig28_score_by_modality.png": {
+      "bytes": 82612,
+      "modified": "2026-08-20T19:40:05Z"
+    },
+    "paper_figures/fig29_score_correlation.png": {
+      "bytes": 141047,
+      "modified": "2026-08-20T19:40:06Z"
+    },
+    "paper_figures/fig2_metrics_by_mas.png": {
+      "bytes": 78349,
+      "modified": "2026-09-02T19:13:11Z"
+    },
+    "paper_figures/fig30_mas_scorecard.png": {
+      "bytes": 119056,
+      "modified": "2026-08-20T19:40:07Z"
+    },
+    "paper_figures/fig31_mp_trajectory_example.png": {
+      "bytes": 89625,
+      "modified": "2026-08-20T20:05:27Z"
+    },
+    "paper_figures/fig3_trajectory_example.png": {
+      "bytes": 68094,
+      "modified": "2026-09-02T19:13:17Z"
+    },
+    "paper_figures/fig4_metrics_by_group.png": {
+      "bytes": 98831,
+      "modified": "2026-09-02T20:37:55Z"
+    },
+    "paper_figures/fig5_pre_post.png": {
+      "bytes": 50271,
+      "modified": "2026-09-02T20:37:55Z"
+    },
+    "paper_figures/fig6_metric_effect_heatmap.png": {
+      "bytes": 84160,
+      "modified": "2026-09-02T19:58:27Z"
+    },
+    "paper_figures/fig7_single_vs_combined_auc.png": {
+      "bytes": 81325,
+      "modified": "2026-09-02T19:58:27Z"
+    },
+    "paper_figures/fig8_score_naive_vs_logocv.png": {
+      "bytes": 118140,
+      "modified": "2026-08-19T21:14:27Z"
+    },
+    "paper_results_analysis_trials.csv": {
+      "bytes": 38469,
+      "columns": [
+        "pid",
+        "trial_key",
+        "group",
+        "spasticity",
+        "spasticity_source",
+        "age",
+        "sex",
+        "optitrack_method",
+        "opti_coverage",
+        "opti_conditioning",
+        "imu_R2n",
+        "opti_R2n",
+        "imu_N",
+        "opti_N",
+        "imu_phi_max_ratio",
+        "opti_phi_max_ratio",
+        "imu_omega_max_n",
+        "opti_omega_max_n",
+        "imu_f",
+        "opti_f",
+        "imu_area_ratio",
+        "opti_area_ratio",
+        "imu_omega_min_n",
+        "opti_omega_min_n"
+      ],
+      "modified": "2026-09-02T19:02:14Z",
+      "rows": 119,
+      "sha256_16": "58581f22ddbc1071"
+    }
+  },
+  "generated_at": "2026-09-02T20:38:05Z",
+  "git": {
+    "branch": "fix/optitrack-trial-quality",
+    "commit": "8c498a6c0a0f59fa87f462131cc886f939eb75bc",
+    "short": "8c498a6c0a0f",
+    "working_tree_clean": false
+  },
+  "headline_metrics": {
+    "Spasticity_Stratified/leg_labels.csv": {
+      "by_level": {
+        "non-spastic": 24,
+        "spastic": 6,
+        "unknown": 14
+      },
+      "by_source": {
+        "a0-threshold-invalid": 14,
+        "clinical-mas": 10,
+        "control-by-recruitment": 3,
+        "mas-assumed": 15,
+        "mas-operator-set": 2
+      },
+      "n_legs": 44
+    },
+    "_pre_2026-08-28_lagfix/paper_results_analysis_trials.csv": {
+      "n_imu_unmeasurable": 0,
+      "n_measurable_both": 61,
+      "n_opti_unmeasurable": 0,
+      "n_trials": 61
+    },
+    "paper_results_analysis_trials.csv": {
+      "n_imu_unmeasurable": 5,
+      "n_measurable_both": 98,
+      "n_opti_unmeasurable": 17,
+      "n_trials": 119
+    }
+  },
+  "tables_not_readable_by_an_extractor": []
+}

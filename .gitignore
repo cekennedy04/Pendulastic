@@ -57,7 +57,16 @@ rmse_best_config.json
 calibration_coefficients*.json
 
 # Large outputs and scratch
-Model_Analysis_Outputs/
+# Contents, not the directory itself. git cannot re-include a file whose
+# PARENT is excluded, so `Model_Analysis_Outputs/` followed by a negation
+# silently does nothing -- the trailing-slash form has to become /* for the
+# exception below to take effect at all.
+Model_Analysis_Outputs/*
+# ...except the manifest: a small text record of WHAT was generated and from
+# which commit. The directory is ~239 MB of regenerable PNGs and stays out, but
+# leaving it wholly unrecorded cost a real answer once -- a results table was
+# overwritten before it could be diffed against the previous run.
+!Model_Analysis_Outputs/manifest.json
 pendulastic model analysis/
 pendulastic_model_analysis_outputs.zip
 STCFormer-main.zip
