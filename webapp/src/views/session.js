@@ -49,7 +49,9 @@ export function nextParticipantState(state, action) {
 // The view itself. Everything it needs is injected, so this module stays
 // import-safe under `node --test` and the pure reducer above can be tested
 // without a DOM.
-export function createSessionView({ el, context, listPatients, addPatient, selectPatient, selectSide }) {
+export function createSessionView({
+  el, context, listPatients, addPatient, selectPatient, selectSide, countPending,
+}) {
   let ready = false;
 
   function initOnce() {
@@ -113,6 +115,18 @@ export function createSessionView({ el, context, listPatients, addPatient, selec
     const errEl = el('participant-error');
     errEl.textContent = error || '';
     errEl.hidden = !error;
+
+    // A notice, never a block. A pending row is legitimate and the desktop
+    // ingests it; the failure this guards against is forgetting one, not
+    // exporting one.
+    const pending = countPending ? await countPending() : 0;
+    const pendEl = el('mas-pending-count');
+    if (pendEl) {
+      pendEl.textContent = pending
+        ? `${pending} MAS assessment${pending === 1 ? '' : 's'} still marked "not yet assessed".`
+        : '';
+      pendEl.hidden = pending === 0;
+    }
   }
 
   return {

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from '../src/export.js';
 import { PARAM_FIELDS } from '../src/session-store.js';
+import { MAS_FIELDS } from '../src/mas-store.js';
 
 const params = Object.fromEntries(PARAM_FIELDS.map((k, i) => [k, i]));
 const trial = (id, raw) => ({
@@ -224,4 +225,70 @@ test('shareFiles prefers the share sheet and never touches the download path whe
   assert.equal(result, 'shared');
   assert.equal(shared.files.length, 1);
   assert.deepEqual(calls, [], 'the anchor fallback must not run when the share sheet handled it');
+});
+
+// ---- MAS export (task 11) -------------------------------------------------
+const masSession = { id: 's-1', timestamp: Date.UTC(2026, 7, 31, 12, 0, 0) };
+const masPatient = { clinic_patient_id: 'P-014' };
+const masTrials = [{
+  raw_jsonl: '{}\n', side: 'left', timestamp: 1, algorithm_version: '0.1.0',
+  capture_quality: 'clean', release_idx: 0, unmeasured: [],
+  release_override_idx: null, params: {},
+}];
+const masRecords = [{
+  participant: 'P-014', leg: 'left', condition: 'rest', diagnosis: '',
+  mas_grade: '1+', assessed_by: 'CK', assessed_date: '2026-08-31',
+  stronger_leg: '', notes: 'settled, no catch', mas_flexion: '2', mas_extension: '',
+}];
+
+test('the manifest schema is v2', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.equal(manifest.schema, 'pendulastic/session-export/v2');
+});
+
+test('a mas csv is emitted beside the trials', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
+  const csv = files.find((f) => f.name.endsWith('-mas.csv'));
+  assert.ok(csv, 'expected a -mas.csv file');
+  assert.equal(csv.type, 'text/csv');
+  assert.equal(csv.text.split('\r\n')[0], MAS_FIELDS.join(','));
+});
+
+test('the csv and the manifest block agree row for row', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  const csvRows = files.find((f) => f.name.endsWith('-mas.csv')).text
+    .trim().split('\r\n').slice(1);
+  assert.equal(manifest.mas.length, csvRows.length);
+  assert.equal(manifest.mas[0].mas_grade, '1+');
+});
+
+// No MAS entered is the common case for a capture-only session; it must not
+// produce a header-only file the desktop would append nothing from.
+test('no mas records means no mas csv at all', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords: [] });
+  assert.equal(files.find((f) => f.name.endsWith('-mas.csv')), undefined);
+});
+
+test('an omitted masRecords argument behaves like an empty one', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
+  assert.equal(files.find((f) => f.name.endsWith('-mas.csv')), undefined);
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.deepEqual(manifest.mas, []);
+});
+
+test('the mas csv shares the trial files stem', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
+  const csv = files.find((f) => f.name.endsWith('-mas.csv'));
+  assert.ok(csv.name.startsWith('pendulastic-P-014-'));
+});
+
+test('a notes field with a comma does not shift the csv columns', () => {
+  const files = buildExportFiles({
+    session: masSession, patient: masPatient, trials: masTrials,
+    masRecords: [{ ...masRecords[0], notes: 'catch, then release' }],
+  });
+  const row = files.find((f) => f.name.endsWith('-mas.csv')).text.trim().split('\r\n')[1];
+  assert.ok(row.includes('"catch, then release"'));
 });

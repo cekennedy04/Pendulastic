@@ -13,6 +13,7 @@ import { createCaptureView } from './views/capture.js';
 import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
+import { isPending } from './mas-store.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -669,7 +670,10 @@ if (typeof document !== 'undefined') {
       const trials = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
       const patients = await getAll(db, STORES.patients);
       const patient = patients.find((p) => p.id === currentSession.patient_id);
-      const files = buildExportFiles({ session: currentSession, patient, trials });
+      const masRecords = currentPatient
+        ? await getAll(db, STORES.mas, 'by_patient', currentPatient.id)
+        : [];
+      const files = buildExportFiles({ session: currentSession, patient, trials, masRecords });
       // Belt-and-suspenders with shareFiles' own guard (task-6 dispatch,
       // correction 3): a session with no trials must never reach the share
       // sheet, and must never be marked exported.
@@ -1154,6 +1158,9 @@ if (typeof document !== 'undefined') {
     },
     selectPatient: (patient) => applyParticipantAction({ type: 'select', patient }),
     selectSide: (side) => applyParticipantAction({ type: 'side', side }),
+    countPending: async () => (currentPatient
+      ? (await getAll(db, STORES.mas, 'by_patient', currentPatient.id)).filter(isPending).length
+      : 0),
   }));
 
   // One funnel for both actions so the "cannot switch mid-session" rule lives

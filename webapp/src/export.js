@@ -7,6 +7,8 @@
 // would have to be extracted first.
 
 import { PARAM_FIELDS } from './session-store.js';
+import { buildMasCsv } from './mas-csv.js';
+import { MAS_FIELDS } from './mas-store.js';
 
 function stamp(ms) {
   return new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\..+/, '');
@@ -26,7 +28,7 @@ function sanitizeForFilename(raw) {
   return cleaned || 'unknown-patient';
 }
 
-export function buildExportFiles({ session, patient, trials }) {
+export function buildExportFiles({ session, patient, trials, masRecords = [] }) {
   if (!trials || trials.length === 0) return [];
   const patientPart = sanitizeForFilename(patient.clinic_patient_id);
   const base = `pendulastic-${patientPart}-${stamp(session.timestamp)}`;
@@ -39,8 +41,21 @@ export function buildExportFiles({ session, patient, trials }) {
     text: t.raw_jsonl,
   }));
 
+  // Emitted only when there is at least one assessment. A header-only file
+  // is not harmless: append_mas_score() would read it, find no rows, and the
+  // clinician would have an empty artifact suggesting MAS was collected.
+  if (masRecords.length > 0) {
+    files.push({
+      name: `${base}-mas.csv`,
+      type: 'text/csv',
+      text: buildMasCsv(masRecords),
+    });
+  }
+
   const manifest = {
-    schema: 'pendulastic/session-export/v1',
+    // v2 adds `mas`. Bumped rather than widened in place: a v1 consumer must
+    // not be handed a different shape under an unchanged version string.
+    schema: 'pendulastic/session-export/v2',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
@@ -65,6 +80,9 @@ export function buildExportFiles({ session, patient, trials }) {
       // recalibrated -- exporting one would freeze a moving reference.
       params: Object.fromEntries(PARAM_FIELDS.map((k) => [k, t.params[k]])),
     })),
+    // The same rows as the CSV, projected through MAS_FIELDS so the two are
+    // generated from one source in one pass and cannot disagree.
+    mas: masRecords.map((r) => Object.fromEntries(MAS_FIELDS.map((k) => [k, r[k] ?? '']))),
   };
   files.push({ name: `${base}-manifest.json`, type: 'application/json', text: JSON.stringify(manifest, null, 2) });
   return files;
