@@ -200,3 +200,39 @@ impl WasmPtScalars {
     #[wasm_bindgen(getter)]
     pub fn healthy_ref_id(&self) -> String { self.inner.healthy_ref_id.clone() }
 }
+
+
+/// Score a STORED trial's params against the current [`HEALTHY_REF`].
+///
+/// This is what makes a longitudinal view possible. The composite score is not
+/// persisted with a trial -- `webapp/src/session-store.js`: "derived at read
+/// time because HEALTHY_REF moves" -- so a trend line has to recompute every
+/// point it draws. The alternative, replaying each trial's raw log through the
+/// AHRS, costs seconds per trial and is not available to a view that redraws on
+/// load.
+///
+/// Takes the JSON `params_to_json` wrote, which is exactly what the trial
+/// record stores. Returns `None` if the record cannot be parsed rather than
+/// scoring a partially-understood one: `params_from_json` requires every field,
+/// because a defaulted `first_trough_depth` would mark `r2n` and
+/// `phi_max_ratio` unmeasured on a trial that measured them.
+///
+/// The returned scalars carry `healthy_ref_id`, so a caller can tell a point
+/// recomputed against today's reference from one recorded under an older one --
+/// which is the whole reason a redrawn history is honest rather than merely
+/// consistent.
+#[wasm_bindgen]
+pub fn pt_scalars_from_params(params_json_str: &str) -> Option<WasmPtScalars> {
+    let p = params_json::params_from_json(params_json_str).ok()?;
+    Some(WasmPtScalars { inner: pt_scalars(&p, &HEALTHY_REF) })
+}
+
+/// Identity of the reference `pt_scalars_from_params` scores against.
+///
+/// Exposed so a caller can ask "which reference is current?" without scoring a
+/// trial first -- a trend view needs it to label the axis and to decide which
+/// stored points were recorded under a different one.
+#[wasm_bindgen]
+pub fn active_healthy_ref_id() -> String {
+    crate::pt_score::healthy_ref_id(&HEALTHY_REF)
+}
