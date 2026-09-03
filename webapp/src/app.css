@@ -28,7 +28,23 @@
   /* SAFETY-CRITICAL -- DO NOT RETUNE. Each is documented below at the rule
      that uses it: read at arm's length under outdoor glare, always paired
      with an independent glyph and text label. */
-  --banner-bg: #7a0d0d;
+
+  /* RETUNED 2026-09-03, deliberately and on the record, by user decision:
+     the banner moved from #7a0d0d (red) to amber. It is still a WARNING
+     colour -- the banner states the instrument is not validated, and this
+     app is an adjunct to a clinician's judgement, so it has to stay loud
+     about what it has not established.
+     Blue was asked for first and rejected here: --accent is #2563EB and the
+     released capture state is #1d4ed8, so a blue banner would share its
+     colour language with buttons and a healthy state and stop reading as a
+     warning at all.
+     #92400E rather than reusing --holding-bg #b45309, for two measured
+     reasons: white-on-#92400E is 7.09:1 against WCAG AA's 4.5 (reusing the
+     holding amber would have been 5.02:1, a large drop from red's 11.11:1
+     on a surface that must survive outdoor glare), and an identical value
+     would make the persistent banner and a transient HOLDING state the same
+     colour on screen at the same time. */
+  --banner-bg: #92400E;
   --banner-fg: #ffffff;
   --moving-bg: #6b7280;
   --holding-bg: #b45309;
@@ -49,7 +65,13 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Segoe UI leads to match workbench_style's FONT_BODY, so the phone and the
+     desktop app read as one product on Windows. This is a no-op on iOS: Segoe
+     UI is not installed there, so the stack falls through to -apple-system
+     (San Francisco) exactly as before -- which is also the right face on a
+     phone. The ordering therefore changes the desktop and leaves the device
+     the app actually ships on untouched. */
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
   /* Prevent iOS Safari from letting a long word or long number blow out
      layout width on a narrow phone screen. */
   width: 100%;
