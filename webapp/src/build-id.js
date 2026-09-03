@@ -6,10 +6,10 @@
 // params (spec 3.2) and tracks the wasm alone, NOT the shell.
 // COMMIT and BUILT_AT identify the build a device is running; they are
 // shown in the UI so a preview test can name what it tested.
-export const BUILD_ID = 'cce50fa8925c';
-export const ALGORITHM_VERSION = '0.1.0+1711dcaa01b8.acf3447a3bb9';
-export const COMMIT = '1711dcaa01b8';
-export const BUILT_AT = '2026-09-02T19:47:34Z';
+export const BUILD_ID = '98ab50905a9f';
+export const ALGORITHM_VERSION = '0.1.0+edaa2223838f.6108f197a1f0';
+export const COMMIT = 'edaa2223838f';
+export const BUILT_AT = '2026-09-03T17:05:06Z';
 export const SHELL = [
   './',
   './index.html',
@@ -21,6 +21,7 @@ export const SHELL = [
   './src/export.js',
   './src/install-gate.js',
   './src/session-store.js',
+  './src/trends.js',
   './src/worker.js',
   './src/build-id.js',
   './src/wasm/mobile_imu_core.js',
