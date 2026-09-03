@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::export_jsonl;
 use crate::params_json;
-use crate::pt_score::{pt_score_to_json, HEALTHY_REF};
+use crate::pt_score::{pt_scalars, pt_score_to_json, PtScalars, HEALTHY_REF};
 use crate::replay::{RawSample, ReplayConfig, Sensor};
 use crate::session::{HoldState, TrialSession};
 use crate::trajectory_json;
@@ -127,7 +127,76 @@ impl WasmSession {
         Some(pt_score_to_json(&p, &HEALTHY_REF))
     }
 
+    /// The same numbers as `finish_pt_score`, as scalars rather than JSON.
+    ///
+    /// Provided for BOTH conventions, mirroring the two JSON accessors above,
+    /// because a caller that can only reach one would have to choose between
+    /// the on-screen number and the one the cohort reports agree with -- and a
+    /// longitudinal view that mixed them would be comparing incomparable
+    /// values. `webapp/src/session-store.js` persists `drift_correction` for
+    /// exactly this reason: the two disagree on the MAS grade for 63 of 197
+    /// real trials.
+    pub fn finish_pt_scalars(&self) -> Option<WasmPtScalars> {
+        let (_, p) = self.inner.finish(None).ok()?;
+        Some(WasmPtScalars { inner: pt_scalars(&p, &HEALTHY_REF) })
+    }
+
+    /// Scalars under the analysis convention (`detrend=true`).
+    pub fn finish_pt_scalars_detrended(&self) -> Option<WasmPtScalars> {
+        let (_, p) = self.inner.finish_with(None, true).ok()?;
+        Some(WasmPtScalars { inner: pt_scalars(&p, &HEALTHY_REF) })
+    }
+
     pub fn export_jsonl(&self) -> String {
         export_jsonl::export_jsonl(self.inner.samples())
     }
+}
+
+
+/// [`PtScalars`] across the wasm boundary: getters only, no arithmetic.
+///
+/// Exists because `pt_score_to_json` hands JS a string. That is right for one
+/// trial -- the capture screen parses it once -- and wrong for a longitudinal
+/// view, which redraws every trial a patient has and would parse a string per
+/// point to reach seven floats. Getters return `f64` directly.
+///
+/// `healthy_ref_id` is on this object rather than a separate export, so a
+/// caller cannot pair this run's scores with a previously fetched reference.
+/// The score and the reference it was computed against are one fact; the
+/// composite score is not persisted with a trial (see
+/// webapp/src/session-store.js: "derived at read time because HEALTHY_REF
+/// moves"), so this stamp is the only thing that says which reference a
+/// redrawn history was scored against.
+#[wasm_bindgen]
+pub struct WasmPtScalars {
+    inner: PtScalars,
+}
+
+#[wasm_bindgen]
+impl WasmPtScalars {
+    #[wasm_bindgen(getter)]
+    pub fn r2n(&self) -> f64 { self.inner.r2n }
+    #[wasm_bindgen(getter)]
+    pub fn n(&self) -> f64 { self.inner.n }
+    #[wasm_bindgen(getter)]
+    pub fn phi_max_ratio(&self) -> f64 { self.inner.phi_max_ratio }
+    #[wasm_bindgen(getter)]
+    pub fn omega_max_n(&self) -> f64 { self.inner.omega_max_n }
+    #[wasm_bindgen(getter)]
+    pub fn omega_min_n(&self) -> f64 { self.inner.omega_min_n }
+    #[wasm_bindgen(getter)]
+    pub fn f(&self) -> f64 { self.inner.f }
+    #[wasm_bindgen(getter)]
+    pub fn area_ratio(&self) -> f64 { self.inner.area_ratio }
+    #[wasm_bindgen(getter)]
+    pub fn total(&self) -> f64 { self.inner.total }
+    #[wasm_bindgen(getter)]
+    pub fn simple(&self) -> f64 { self.inner.simple }
+    #[wasm_bindgen(getter)]
+    pub fn unmeasured_count(&self) -> u32 { self.inner.unmeasured_count }
+    /// Identity of the [`HEALTHY_REF`] these were scored against. A `String`
+    /// crosses the boundary as a JS string; it is 12 hex chars, and the one
+    /// non-numeric field here on purpose -- see the struct doc.
+    #[wasm_bindgen(getter)]
+    pub fn healthy_ref_id(&self) -> String { self.inner.healthy_ref_id.clone() }
 }

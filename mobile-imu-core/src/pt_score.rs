@@ -353,6 +353,101 @@ pub fn unmeasured_params(params: &PtParams) -> Vec<&'static str> {
     out
 }
 
+/// Short stable identity for a [`HealthyRef`], derived from its VALUES.
+///
+/// Not a version string, deliberately. `HealthyRef` is caller-supplied -- the
+/// type exists so a test or a recalibration can pass its own -- so a hardcoded
+/// version would be a lie the moment anyone does. A digest of the seven fields
+/// is true for every reference, including ones that do not exist yet.
+///
+/// Why this is needed at all: the composite score is NOT persisted with a
+/// trial. `webapp/src/session-store.js` says why -- "derived at read time
+/// because HEALTHY_REF moves" -- so every score a longitudinal view draws is
+/// recomputed against whatever reference is current. Without this stamp, a
+/// patient's whole history shifts when the reference is recalibrated and
+/// nothing on screen says so. That is not hypothetical: HEALTHY_REF's own
+/// doc comment calls itself PROVISIONAL and expects to move again.
+///
+/// FNV-1a over the IEEE-754 bit patterns. Hand-rolled because native
+/// `cargo test` for this crate is dependency-free by design (Cargo.toml gates
+/// every dependency to wasm32) and one identity string is not worth breaking
+/// that. `to_bits` rather than the float, so the digest is byte-identical
+/// across platforms; not cryptographic and not trying to be -- it detects a
+/// changed reference, it does not defend against a forged one.
+pub fn healthy_ref_id(healthy: &HealthyRef) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in [
+        healthy.r2n,
+        healthy.n,
+        healthy.phi_max_ratio,
+        healthy.omega_max_n,
+        healthy.omega_min_n,
+        healthy.f,
+        healthy.area_ratio,
+    ] {
+        for byte in value.to_bits().to_be_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    // 12 hex chars, matching the width webapp/src/build-id.js uses for
+    // BUILD_ID, so the two read as the same kind of thing in a UI.
+    format!("{:012x}", hash & 0xffff_ffff_ffff)
+}
+
+/// Every scalar a caller needs for one trial, with the reference that produced
+/// them.
+///
+/// Exists so the wasm boundary can be crossed without a `Vec` or a JSON parse:
+/// `pt_score_to_json` is kept for existing callers, but a longitudinal view
+/// redraws hundreds of trials and parsing a string per point to reach seven
+/// floats is the wrong shape for that.
+///
+/// `healthy_ref_id` travels WITH the numbers rather than being fetched
+/// separately, because a score and the reference it was scored against are one
+/// fact. Splitting them across two calls is how a caller ends up pairing this
+/// run's scores with last run's reference.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PtScalars {
+    pub r2n: f64,
+    pub n: f64,
+    pub phi_max_ratio: f64,
+    pub omega_max_n: f64,
+    pub omega_min_n: f64,
+    pub f: f64,
+    pub area_ratio: f64,
+    pub total: f64,
+    pub simple: f64,
+    /// How many of the seven were placeholders rather than measurements.
+    /// A count, not the names: the names cross the boundary as a `Vec`, and a
+    /// caller that needs them can still call `unmeasured_params`.
+    pub unmeasured_count: u32,
+    pub healthy_ref_id: String,
+}
+
+/// [`PtScalars`] for one trial. Delegates to [`pt_score_breakdown`],
+/// [`pt_score_simple`] and [`unmeasured_params`] -- no arithmetic of its own,
+/// so it cannot drift from the score it claims to report.
+pub fn pt_scalars(params: &PtParams, healthy: &HealthyRef) -> PtScalars {
+    let b = pt_score_breakdown(params, healthy);
+    PtScalars {
+        r2n: b.r2n,
+        n: b.n,
+        phi_max_ratio: b.phi_max_ratio,
+        omega_max_n: b.omega_max_n,
+        omega_min_n: b.omega_min_n,
+        f: b.f,
+        area_ratio: b.area_ratio,
+        // b.total(), not a fresh sum: PtScoreBreakdown::total sums in
+        // _PARAM_KEYS order to match the Python reference bit-for-bit, and
+        // re-adding these fields in declaration order would not.
+        total: b.total(),
+        simple: pt_score_simple(params, healthy),
+        unmeasured_count: unmeasured_params(params).len() as u32,
+        healthy_ref_id: healthy_ref_id(healthy),
+    }
+}
+
 pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
     let breakdown = pt_score_breakdown(params, healthy);
     let total = breakdown.total();
@@ -864,6 +959,111 @@ mod tests {
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.655_718_986_385_898_98_f64).abs() < 1e-15, "simple={simple:.17}");
         assert!((full - 1.612_125_135_077_656_2_f64).abs() < 1e-15, "full={full:.17}");
+    }
+
+    // ---- PtScalars ------------------------------------------------------
+
+    #[test]
+    fn scalars_total_is_bit_identical_to_pt_score() {
+        // The reason this is asserted at bit level rather than approximately:
+        // PtScoreBreakdown::total sums in _PARAM_KEYS order specifically to
+        // match the Python reference, and re-adding the same seven fields in
+        // struct-declaration order does NOT give the same float. A veneer that
+        // re-summed would pass a tolerance test and still be wrong.
+        for case in [0.42_f64, 0.0, 1.9] {
+            let p = params(|p| {
+                p.r2n = case;
+                p.n = 1.5;
+                p.phi_max_ratio = 0.11;
+                p.omega_max_n = 2.5;
+                p.omega_min_n = 0.004;
+                p.f = 0.9;
+                p.area_ratio = 0.94;
+            });
+            let s = pt_scalars(&p, &HEALTHY_REF);
+            assert_eq!(s.total.to_bits(), pt_score(&p, &HEALTHY_REF).to_bits(),
+                       "total drifted from pt_score at r2n={case}");
+            assert_eq!(s.simple.to_bits(),
+                       pt_score_simple(&p, &HEALTHY_REF).to_bits(),
+                       "simple drifted from pt_score_simple at r2n={case}");
+        }
+    }
+
+    #[test]
+    fn scalars_contributions_are_the_breakdown_unchanged() {
+        let p = params(|p| {
+            p.r2n = 0.42;
+            p.n = 1.5;
+            p.phi_max_ratio = 0.11;
+            p.omega_max_n = 2.5;
+            p.omega_min_n = 0.004;
+            p.f = 0.9;
+            p.area_ratio = 0.94;
+        });
+        let b = pt_score_breakdown(&p, &HEALTHY_REF);
+        let s = pt_scalars(&p, &HEALTHY_REF);
+        assert_eq!(s.r2n.to_bits(), b.r2n.to_bits());
+        assert_eq!(s.n.to_bits(), b.n.to_bits());
+        assert_eq!(s.phi_max_ratio.to_bits(), b.phi_max_ratio.to_bits());
+        assert_eq!(s.omega_max_n.to_bits(), b.omega_max_n.to_bits());
+        assert_eq!(s.omega_min_n.to_bits(), b.omega_min_n.to_bits());
+        assert_eq!(s.f.to_bits(), b.f.to_bits());
+        assert_eq!(s.area_ratio.to_bits(), b.area_ratio.to_bits());
+    }
+
+    #[test]
+    fn scalars_count_unmeasured_without_returning_their_names() {
+        // first_trough_depth <= 0 makes r2n and phi_max_ratio placeholders.
+        let p = params(|p| {
+            p.first_trough_depth = 0.0;
+            p.f = 0.9;
+            p.n = 3.0;
+        });
+        let s = pt_scalars(&p, &HEALTHY_REF);
+        assert_eq!(s.unmeasured_count as usize, unmeasured_params(&p).len());
+        assert_eq!(s.unmeasured_count, 2);
+    }
+
+    // ---- healthy_ref_id -------------------------------------------------
+
+    #[test]
+    fn a_reference_identity_is_stable_and_twelve_hex_chars() {
+        let a = healthy_ref_id(&HEALTHY_REF);
+        assert_eq!(a, healthy_ref_id(&HEALTHY_REF), "not deterministic");
+        assert_eq!(a.len(), 12, "id={a}");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "id={a}");
+    }
+
+    #[test]
+    fn changing_any_reference_field_changes_its_identity() {
+        // The whole point: a recomputed score must be distinguishable from one
+        // scored against a different reference. If a field could move without
+        // moving the id, a longitudinal view would silently mix them.
+        let base = healthy_ref_id(&HEALTHY_REF);
+        let mutate: [(&str, fn(&mut HealthyRef)); 7] = [
+            ("r2n", |h| h.r2n += 0.001),
+            ("n", |h| h.n += 0.001),
+            ("phi_max_ratio", |h| h.phi_max_ratio += 0.001),
+            ("omega_max_n", |h| h.omega_max_n += 0.001),
+            ("omega_min_n", |h| h.omega_min_n += 0.001),
+            ("f", |h| h.f += 0.001),
+            ("area_ratio", |h| h.area_ratio += 0.001),
+        ];
+        for (name, f) in mutate {
+            let mut h = HEALTHY_REF;
+            f(&mut h);
+            assert_ne!(healthy_ref_id(&h), base,
+                       "{name} moved without changing the reference id");
+        }
+    }
+
+    #[test]
+    fn the_identity_travels_with_the_scalars() {
+        let p = params(|p| { p.f = 0.9; p.n = 3.0; });
+        let mut other = HEALTHY_REF;
+        other.r2n += 0.5;
+        assert_ne!(pt_scalars(&p, &HEALTHY_REF).healthy_ref_id,
+                   pt_scalars(&p, &other).healthy_ref_id);
     }
 
 }
