@@ -6,10 +6,10 @@
 // params (spec 3.2) and tracks the wasm alone, NOT the shell.
 // COMMIT and BUILT_AT identify the build a device is running; they are
 // shown in the UI so a preview test can name what it tested.
-export const BUILD_ID = 'f6facc4a1971';
-export const ALGORITHM_VERSION = '0.1.0+a195cff888b3.6108f197a1f0';
-export const COMMIT = 'a195cff888b3';
-export const BUILT_AT = '2026-09-03T18:37:31Z';
+export const BUILD_ID = 'f9bc63fadbe6';
+export const ALGORITHM_VERSION = '0.1.0+5d5e8c9d36e8.6108f197a1f0';
+export const COMMIT = '5d5e8c9d36e8';
+export const BUILT_AT = '2026-09-03T18:50:07Z';
 export const SHELL = [
   './',
   './index.html',
@@ -23,6 +23,7 @@ export const SHELL = [
   './src/session-store.js',
   './src/trends-chart.js',
   './src/trends-loader.js',
+  './src/trends-view.js',
   './src/trends.js',
   './src/worker.js',
   './src/build-id.js',

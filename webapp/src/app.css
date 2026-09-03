@@ -550,3 +550,32 @@ body {
   text-align: center;
   user-select: all;   /* so a tester can select and paste it into a report */
 }
+
+/* Longitudinal trends. The canvas sizes itself from this CSS box and redraws
+   at device pixel ratio (see trends-chart.drawTrends), the same way the
+   result waveform does -- a fixed bitmap is blurry on any real phone. */
+#trends {
+  margin: 1.25rem 0;
+}
+#trends-header {
+  font-size: 0.8rem;
+  color: #555;
+  margin: 0 0 0.4rem;
+}
+#trends-canvas {
+  width: 100%;
+  height: 200px;
+  display: block;
+  touch-action: manipulation;   /* taps select a point; the page still scrolls */
+}
+#trends-tooltip {
+  /* pre-line: tooltipLines() joins with newlines so each fact is its own line,
+     and the reference sentence is long enough to need wrapping. */
+  white-space: pre-line;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.6rem;
+  background: #f4f7f9;
+  border-left: 3px solid #1d6fa5;
+}

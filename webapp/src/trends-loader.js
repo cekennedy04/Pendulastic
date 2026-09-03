@@ -99,5 +99,10 @@ export async function loadTrendSeries(db, patientId, { convention = 'analysis', 
     createScorer({ wasmSource }),
     loadPatientTrials(db, patientId),
   ]);
-  return buildTrendSeries(trials, { convention, scoreParams, activeRefId });
+  // activeRefId is returned alongside the series rather than left for the
+  // caller to re-derive. buildTrendSeries only needs it to compare, so it does
+  // not report it; a view that wants to LABEL the reference would otherwise
+  // have to infer it from a point that happens not to be flagged -- which is
+  // unavailable exactly when every trial predates the current reference.
+  return { ...buildTrendSeries(trials, { convention, scoreParams, activeRefId }), activeRefId };
 }

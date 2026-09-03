@@ -94,6 +94,23 @@
     <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
     <p id="session-status"></p>
   </div>
+  <!-- Longitudinal trends. Hidden until asked for, following the same
+       show/hide pattern the rest of this page uses -- there is no router, and
+       one view does not justify introducing one.
+
+       The y axis is the PT score's own continuous scale. It is deliberately
+       NOT a 0-5 MAS axis: the score is unbounded above (see the disclaimer in
+       #pt-score), this app does not map scores onto clinical bands at all, and
+       PT7 is non-monotonic in severity so score-to-grade is not even
+       order-preserving. A clinician-entered MAS could be annotated on a point;
+       nothing derived from a score will be. -->
+  <div id="trends" hidden>
+    <h2 id="trends-title">Trend</h2>
+    <p id="trends-header">&mdash;</p>
+    <canvas id="trends-canvas" width="320" height="200"></canvas>
+    <p id="trends-tooltip" hidden></p>
+  </div>
+
   <!-- Which build this device is actually running. Filled in by app.js from
        the generated build-id.js. It is here, in the page rather than a
        console log or an About dialog, because its whole job is to be readable
