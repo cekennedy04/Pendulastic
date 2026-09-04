@@ -82,3 +82,29 @@ export function masSeries(masRecords) {
     })
     .sort((a, b) => a.date - b.date);
 }
+
+// Maps a value onto a canvas y coordinate. Canvas y grows downward, so the
+// largest value maps to the smallest y.
+//
+// A flat series is widened by half a unit either side rather than left as a
+// zero-height range: dividing by (max - min) === 0 puts every point at NaN,
+// and a canvas draws nothing at NaN without erroring -- a leg whose A0 never
+// moved would silently vanish instead of showing as flat, which is itself the
+// clinically interesting case.
+//
+// The default padding keeps the extreme points off the axis lines, where a
+// half-clipped marker reads as a rendering fault rather than a data point.
+export function chartScale(values, { height, pad = 0.05 } = {}) {
+  const xs = (values || []).filter((v) => Number.isFinite(v));
+  let min = xs.length ? Math.min(...xs) : 0;
+  let max = xs.length ? Math.max(...xs) : 1;
+  if (min === max) { min -= 0.5; max += 0.5; }
+  const span = max - min;
+  min -= span * pad;
+  max += span * pad;
+  return {
+    min,
+    max,
+    toY: (v) => height - ((v - min) / (max - min)) * height,
+  };
+}

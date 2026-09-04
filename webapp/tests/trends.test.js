@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { median, sessionSeries, masSeries } from '../src/views/trends.js';
+import { median, sessionSeries, masSeries, chartScale } from '../src/views/trends.js';
 
 test('median of an odd count is the middle value', () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -161,4 +161,51 @@ test('a mas row with no leg groups as unset', () => {
   const s = masSeries([{ assessed_date: '2026-08-10', mas_grade: '2' }]);
   assert.equal(s[0].leg, 'unset');
   assert.equal(masSeries([{ leg: '', assessed_date: '2026-08-10', mas_grade: '2' }])[0].leg, 'unset');
+});
+
+// ---- axis scaling ---------------------------------------------------------
+test('the scale spans the data', () => {
+  const s = chartScale([10, 20], { height: 100, pad: 0 });
+  assert.equal(s.min, 10);
+  assert.equal(s.max, 20);
+});
+
+// Canvas y grows downward: the largest value must map to the smallest y.
+test('larger values map to smaller y', () => {
+  const s = chartScale([0, 10], { height: 100, pad: 0 });
+  assert.ok(s.toY(10) < s.toY(0));
+});
+
+test('the extremes map to the edges of the height', () => {
+  const s = chartScale([0, 10], { height: 100, pad: 0 });
+  assert.equal(s.toY(10), 0);
+  assert.equal(s.toY(0), 100);
+});
+
+// Without widening, (max - min) is 0, every point maps to NaN, and a canvas
+// silently draws nothing at NaN -- a flat series would vanish rather than
+// showing as flat.
+test('a flat series still produces a usable scale', () => {
+  const s = chartScale([5, 5, 5], { height: 100, pad: 0 });
+  assert.ok(Number.isFinite(s.toY(5)));
+  assert.notEqual(s.min, s.max);
+});
+
+test('non-finite values are ignored when finding the range', () => {
+  const s = chartScale([1, NaN, 9, null], { height: 100, pad: 0 });
+  assert.equal(s.min, 1);
+  assert.equal(s.max, 9);
+});
+
+test('an empty series produces a scale rather than throwing', () => {
+  const s = chartScale([], { height: 100, pad: 0 });
+  assert.ok(Number.isFinite(s.toY(0)));
+});
+
+// Padding keeps a point from being drawn exactly on the axis line, where it
+// is half-clipped and reads as a rendering fault.
+test('padding widens the range beyond the data', () => {
+  const s = chartScale([0, 10], { height: 100 });
+  assert.ok(s.min < 0);
+  assert.ok(s.max > 10);
 });
