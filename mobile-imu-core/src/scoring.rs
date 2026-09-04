@@ -167,23 +167,6 @@ pub struct PtParams {
     pub tr_i: Vec<usize>,
 }
 
-/// `_sg`: Savitzky-Golay with the reference's window-shrinking guard, so a
-/// short series degrades to a copy instead of raising.
-fn sg(sig: &[f64], w: usize, p: usize) -> Vec<f64> {
-    let n = sig.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut w = w.min(if n.is_multiple_of(2) { n - 1 } else { n });
-    if w.is_multiple_of(2) {
-        w -= 1;
-    }
-    if w >= p + 2 {
-        savgol_filter(sig, w, p)
-    } else {
-        sig.to_vec()
-    }
-}
 
 // The reference sizes its smoothing by DURATION (0.10 s through each trial's own
 // dt), not by a sample count. This port used fixed counts, which agree with the
