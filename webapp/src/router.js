@@ -14,7 +14,7 @@
 // 0x0. Refusing the transition is the only outcome that neither discards a
 // trial in progress nor orphans one.
 
-export const VIEWS = ['home', 'capture', 'trials', 'mas', 'session'];
+export const VIEWS = ['home', 'capture', 'trials', 'mas', 'session', 'trends'];
 
 // An unknown name lands on home rather than hiding every section and
 // leaving a blank page under the banner.

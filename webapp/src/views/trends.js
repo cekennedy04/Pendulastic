@@ -1,4 +1,5 @@
 import { MAS_ORDER, isPending } from '../mas-store.js';
+import { renderCharts } from '../trend-charts.js';
 
 // A participant's history over time. This is the app's first cross-session
 // read: every other trial query in the app is scoped to one session.
@@ -83,28 +84,65 @@ export function masSeries(masRecords) {
     .sort((a, b) => a.date - b.date);
 }
 
-// Maps a value onto a canvas y coordinate. Canvas y grows downward, so the
-// largest value maps to the smallest y.
-//
-// A flat series is widened by half a unit either side rather than left as a
-// zero-height range: dividing by (max - min) === 0 puts every point at NaN,
-// and a canvas draws nothing at NaN without erroring -- a leg whose A0 never
-// moved would silently vanish instead of showing as flat, which is itself the
-// clinically interesting case.
-//
-// The default padding keeps the extreme points off the axis lines, where a
-// half-clipped marker reads as a rendering fault rather than a data point.
-export function chartScale(values, { height, pad = 0.05 } = {}) {
-  const xs = (values || []).filter((v) => Number.isFinite(v));
-  let min = xs.length ? Math.min(...xs) : 0;
-  let max = xs.length ? Math.max(...xs) : 1;
-  if (min === max) { min -= 0.5; max += 0.5; }
-  const span = max - min;
-  min -= span * pad;
-  max += span * pad;
+// The view. Every dependency is injected, so this module stays import-safe
+// under `node --test` and the pure functions above can be tested with plain
+// objects.
+export function createTrendsView({ el, context, loadHistory, importBundle, exportFigure }) {
+  let ready = false;
+  let latest = null;
+
+  function initOnce() {
+    if (ready) return;
+    el('trend-import').addEventListener('change', async (e) => {
+      const files = [...e.target.files];
+      if (files.length === 0) return;
+      el('trend-import-status').textContent = 'Importing…';
+      el('trend-import-status').textContent = await importBundle(files);
+      // Cleared so re-selecting the same file fires `change` again; without
+      // this a retry after a failed import looks like nothing happened.
+      e.target.value = '';
+      await render();
+    });
+    for (const btn of document.querySelectorAll('.chart-export')) {
+      btn.addEventListener('click', () => exportFigure(btn.dataset.figure, latest));
+    }
+    ready = true;
+  }
+
+  async function render() {
+    const { participantLabel } = context();
+    const history = await loadHistory();
+    latest = history;
+    const empty = el('trend-empty');
+
+    // Three distinct empty states, because they have three distinct remedies:
+    // choose a participant, record something, or import history from another
+    // device. One generic "no data" message would leave the operator guessing
+    // which of the three applies.
+    if (!history) {
+      empty.textContent = 'No participant selected. Choose one in Session first.';
+      empty.hidden = false;
+    } else if (history.points.length === 0 && history.mas.length === 0) {
+      empty.textContent = `Nothing recorded for ${participantLabel} on this device yet. Record a trial, enter a MAS assessment, or import a session bundle below.`;
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+    }
+
+    // Always states its provenance. A history assembled from one device is
+    // partial by construction, and a partial clinical series that does not
+    // say so is worse than an empty one.
+    el('trend-source').textContent = history
+      ? `${history.deviceSessions} session(s) on this device · ${history.importedSessions} imported`
+      : '';
+
+    if (history) renderCharts(el, history);
+  }
+
   return {
-    min,
-    max,
-    toY: (v) => height - ((v - min) / (max - min)) * height,
+    async onEnter() {
+      initOnce();
+      await render();
+    },
   };
 }

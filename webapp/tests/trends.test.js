@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { median, sessionSeries, masSeries, chartScale } from '../src/views/trends.js';
+import { median, sessionSeries, masSeries } from '../src/views/trends.js';
+import { chartScale, wrapText, captionHeight, PT7_CAPTIONS } from '../src/trend-charts.js';
 
 test('median of an odd count is the middle value', () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -208,4 +209,46 @@ test('padding widens the range beyond the data', () => {
   const s = chartScale([0, 10], { height: 100 });
   assert.ok(s.min < 0);
   assert.ok(s.max > 10);
+});
+
+// ---- caption wrapping -----------------------------------------------------
+// The PT7 captions are mandatory, and at phone width a single line of that
+// text overruns the canvas -- the browser then clips it silently, truncating
+// a caveat the spec requires. Measured, not guessed at a character count,
+// because the PNG export renders the same text into a much wider canvas.
+const fakeCtx = { measureText: (t) => ({ width: t.length * 5 }) };
+
+test('a line that fits is not wrapped', () => {
+  assert.deepEqual(wrapText(fakeCtx, 'short line', 1000), ['short line']);
+});
+
+test('a long line wraps on word boundaries', () => {
+  const lines = wrapText(fakeCtx, 'aaa bbb ccc ddd', 40);
+  assert.ok(lines.length > 1);
+  assert.equal(lines.join(' '), 'aaa bbb ccc ddd');
+});
+
+// A word longer than the whole width must still be emitted, not dropped and
+// not loop forever.
+test('an unbreakable word is emitted rather than dropped', () => {
+  const lines = wrapText(fakeCtx, 'HEALTHY_REFERENCE_CONSTANT', 10);
+  assert.deepEqual(lines, ['HEALTHY_REFERENCE_CONSTANT']);
+});
+
+test('caption height grows with the number of wrapped lines', () => {
+  const one = captionHeight(fakeCtx, ['aaa'], 1000);
+  const many = captionHeight(fakeCtx, ['aaa bbb ccc ddd eee fff'], 40);
+  assert.ok(many > one);
+});
+
+test('no captions reserve no height', () => {
+  assert.equal(captionHeight(fakeCtx, [], 100), 0);
+});
+
+// The real PT7 captions must wrap to something readable at phone width.
+test('the mandatory PT7 captions wrap rather than clip at phone width', () => {
+  const lines = PT7_CAPTIONS.flatMap((c) => wrapText(fakeCtx, c, 320));
+  assert.ok(lines.length >= 2);
+  for (const l of lines) assert.ok(fakeCtx.measureText(l).width <= 320, `overruns: ${l}`);
+  assert.ok(lines.join(' ').includes('whole curve'), 'the caption must not lose its ending');
 });

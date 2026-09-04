@@ -738,3 +738,12 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* ---- Trends charts -------------------------------------------------------
+   Fixed height so the three charts stack predictably on a phone; the canvas
+   is re-fitted to its CSS box at device pixel ratio on every render, so this
+   is the layout size, not the bitmap size. */
+.chart { display: block; width: 100%; height: 200px; }
+.chart-export { margin-top: 8px; width: 100%; }
+#trend-source { font-family: var(--mono); }
+#trend-import { font: inherit; width: 100%; }

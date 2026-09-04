@@ -13,6 +13,7 @@ import { createCaptureView } from './views/capture.js';
 import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, initialView, resolveActivePatient, buildInfoText } from './views/session.js';
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
+import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
 import { isPending } from './mas-store.js';
 
 const el = (id) => document.getElementById(id);
@@ -1113,6 +1114,89 @@ if (typeof document !== 'undefined') {
     },
   });
   router.register('capture', captureView);
+
+  // ---- Trends (unit B) ----------------------------------------------------
+  router.register('trends', createTrendsView({
+    el,
+    context: () => ({
+      patientId: currentPatient?.id ?? null,
+      participantLabel: currentPatient?.clinic_patient_id ?? '',
+    }),
+    loadHistory: async () => {
+      await ensureSessionReady();
+      await ensureWasm();
+      if (!currentPatient) return null;
+      const sessions = await getAll(db, STORES.sessions, 'by_patient', currentPatient.id);
+      // N+1 by design: trials carry no patient_id, and N is the number of
+      // visits for one participant. The alternative was a second one-way
+      // IndexedDB migration, which buys nothing an in-memory join does not.
+      const trialsBySession = {};
+      for (const s of sessions) {
+        trialsBySession[s.id] = await getAll(db, STORES.trials, 'by_session', s.id);
+      }
+      const mas = await getAll(db, STORES.mas, 'by_patient', currentPatient.id);
+      // Counted over sessions that actually CONTRIBUTED a point, not over
+      // every session row. ensureSessionReady always has an open session for
+      // the current participant, and an empty one would otherwise inflate the
+      // count -- this line exists to tell the operator how much history backs
+      // the chart, so overstating it is the one thing it must not do.
+      const withTrials = sessions.filter((s) => (trialsBySession[s.id] || []).length > 0);
+      return {
+        points: sessionSeries(sessions, trialsBySession, { scoreOf: scoreStoredTrial }),
+        mas: masSeries(mas),
+        deviceSessions: withTrials.filter((s) => !s.imported).length,
+        importedSessions: withTrials.filter((s) => s.imported).length,
+      };
+    },
+    // Tasks 7-9 replace these. Until then they say so rather than failing
+    // silently, so a tap on Import or Export is never mistaken for a bug.
+    importBundle: async () => 'Import is not wired up yet.',
+    exportFigure: async () => {},
+  }));
+
+  // The main thread has never needed the wasm before -- capture runs it in a
+  // worker. Scoring stored trials does need it here, so it is loaded LAZILY,
+  // on first entry to the trends view, rather than at startup: the capture
+  // path must not pay ~134 KB of fetch and compile for a view the operator
+  // may never open. Follows worker.js's `init({ module_or_path })` form, not
+  // the deprecated positional one.
+  let wasmApi = null;
+  let wasmReady = null;
+  async function ensureWasm() {
+    wasmReady ??= (async () => {
+      const m = await import('./wasm/mobile_imu_core.js');
+      await m.default({ module_or_path: undefined });
+      wasmApi = m;
+    })().catch((err) => {
+      // A trends view with no composite is still useful -- MAS and A0 are
+      // stored values and need no wasm -- so this degrades rather than throws.
+      console.warn('wasm load failed; PT7 will be unavailable', err);
+      wasmApi = null;
+    });
+    return wasmReady;
+  }
+
+  // Scores a STORED trial. The composite is deliberately never persisted --
+  // HEALTHY_REF moves, so a stored score would go stale -- and it is
+  // recomputed here through the wasm entry point added for exactly this,
+  // never reimplemented in JS.
+  //
+  // Returns null rather than a number when any input the scoring path reads
+  // is missing, so median() skips the trial instead of averaging a zero in.
+  function scoreStoredTrial(trial) {
+    const p = (trial && trial.params) || {};
+    const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg'];
+    if (!wasmApi || need.some((k) => !Number.isFinite(p[k]))) return null;
+    try {
+      return JSON.parse(wasmApi.pt_score_from_params(
+        p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg,
+      )).score;
+    } catch {
+      return null;
+    }
+  }
 
   // ---- MAS entry (task 10) ------------------------------------------------
   router.register('mas', createMasView({

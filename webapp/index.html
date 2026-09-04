@@ -95,6 +95,16 @@
             <span class="tile-sub">Participant &amp; export</span>
           </span>
         </button>
+        <button class="tile" data-nav="trends">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19V5M4 19h16M7 15l4-5 3 3 5-7" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Trends</span>
+            <span class="tile-sub">Over time &amp; figures</span>
+          </span>
+        </button>
       </div>
     </section>
 
@@ -250,6 +260,37 @@
       </div>
       <p id="build-info" class="build-info"></p>
     </section>
+    <section class="view" id="view-trends">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Trends</h2></div>
+      <p id="trend-source" class="field-status"></p>
+      <p id="trend-empty" class="empty" hidden></p>
+
+      <div class="card">
+        <p class="card-label">MAS grade</p>
+        <canvas id="chart-mas" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="mas">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">A0 &mdash; first-flexion amplitude (deg)</p>
+        <canvas id="chart-a0" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="a0">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">PT7 composite</p>
+        <canvas id="chart-pt7" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="pt7">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">Import a session bundle</p>
+        <input id="trend-import" type="file" accept=".json,.csv" multiple>
+        <p id="trend-import-status" class="field-status"></p>
+      </div>
+    </section>
+
   </main>
   <script type="module" src="./src/app.js"></script>
   <script>
