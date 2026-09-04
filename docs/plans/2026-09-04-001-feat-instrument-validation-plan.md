@@ -4,7 +4,7 @@ type: feat
 date: 2026-09-04
 topic: instrument-validation
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: requirements-only
+artifact_readiness: implementation-ready
 product_contract_source: ce-brainstorm
 execution: code
 ---
@@ -156,10 +156,192 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - `mobile-imu-core/src/pt_score.rs` — `HEALTHY_REF`, `PT_HEALTHY_MAX`, and the seven scored parameters.
 - `tests/fixtures/pendulum_sim.py` — the simulator the non-monotonicity was established on.
 - Supervisor notes, 2026-09-04 — the rig, blind clinician assessment, drift-during-hold invalidity, lateral-motion hinge lock, and IMU-only direction.
+- `docs/reports/2026-09-04-mediapipe-coverage-and-accuracy.md`, with per-trial data in `Model_Analysis_Outputs/HPE_Comparison/mediapipe_pt_metrics.csv` - the corpus-wide HPE measurement behind KD6 and R12. On 284 trials the excursion gate passes 166 for the MediaPipe 2D angle and 156 for OptiTrack; where both are gradeable, n=92, exact MAS agreement is 31.5 percent and adjacent 44.6 percent, with PT7 at r=0.364. Those agreement figures are restricted to trials both instruments can grade, which is stricter than the 83.3 percent in `hpe_accuracy_summary.csv`, computed on a different subset without the gate. The same pass tested the world-angle column corpus-wide for the first time, n=178: PT7 r=0.236 against 0.364 for the 2D angle, so world landmarks are not a rescue. Gate pass rate by detection-rate bucket is non-monotonic - 24 percent below 25 percent detection, then 74, 59 and 67 - so the failure is in the derivation, not the tracking.
 - Grid re-measurement, 2026-09-04, 130 trials replayed at both grids on the production path. A0 rose: median 50.02 to 56.46 degrees, ratio 1.1185, p10 1.0363, p90 1.2346, down on only 7 of 130. One trial changed side of the gate, from refused to scored; none went the other way. The lowest new A0 among trials the old floor passed is 31.58, so a floor of 28.0 refuses the same three trials that 25.0 does. Ceiling headroom fell rather than grew: max A0 79.8 to 91.5 against the 120 ceiling, p99 85.5, nothing above 100.
 - Gate re-derivation, 2026-09-04, 124 optical trials joined to leg labels. The constraint the floor is documented as hanging off has collapsed: the lowest spastic leg was 28.7 degrees when the gate was set and is 6.76 today (13_right_month_post_T2, clinician-examined), with 10 of 39 spastic trials now below 25. Under the filter the shipped constants name -- coverage at or above 80 percent, no area-ratio warning -- the non-spastic reference is mean 31.0, sd 9.9, n 18, against the shipped 46.6, 11.1, 53; 27 of 45 non-spastic trials now fail that coverage filter. Two SD below the new mean is 11.2, so the floor no longer sits near any dispersion bound. Measured by scratch scripts spastic_minimum.py and excursion_ref.py, caches under Model_Analysis_Outputs/_cache/.
 
 ---
+
+
+---
+
+## Planning Contract
+
+### Approach
+
+The work splits along a line the codebase already draws but does not enforce: `mas_estimate()` is the gated entry point and `pt_to_mas()` is the raw mapping beneath it, and the module's own docstring says "Prefer this over calling `pt_to_mas(compute_pt_score(params))` directly." Fourteen call sites across eight modules do exactly that. U1 makes the preference a rule where a grade reaches a person, and leaves it a choice where the caller is doing analysis.
+
+Everything downstream depends on the two languages agreeing on four constants that are currently independent literals with no test between them, so the parity test in U2 comes before any constant is touched in U3.
+
+The rig-dependent requirements (R1-R5, R15) are not codeable until hardware exists and are carried as plan scope without units.
+
+### Product Contract preservation
+
+Product Contract restructured, no scope change. R18 was rewritten in place after measurement invalidated its original instruction, and R19, R20 were split out of it as their own concerns; KD11 and KD12 record why. No requirement was weakened or dropped.
+
+---
+
+## Implementation Units
+
+### U1. One gate in front of every rendered grade
+
+- **Goal.** No path that shows a MAS grade to a person can bypass the excursion gate, and no module carries its own copy of the zone thresholds.
+- **Requirements.** R8, R18, R20. Instantiates KD4 and KD12.
+- **Dependencies.** None.
+- **Files.**
+  - `pendulastic_viewer.py` - delete the fallback `PT_HEALTHY_MAX = 0.09` / `PT_BORDERLINE_MAX = 0.20` at lines 77-78; route the grade at line 4275 and the comparison table at lines 8806-8807 through `mas_estimate`
+  - `pendulastic_workbench.py` - line 668, the live metrics panel
+  - `web/api/services/pt_score_bridge.py` - `compute()`, whose response field is already named `mas_estimate`
+  - `pendulastic_pt_score.py` - the gated helper the callers move onto
+  - `tests/test_pt_score.py`, `tests/test_pendulastic_workbench.py`
+  - `tests/test_pt_score_bridge.py` (new - no test file covers this module today)
+- **Approach.**
+  1. Separate the two populations of caller. A grade rendered to a person must be gated. A grade computed for analysis - `fit_mas_thresholds.py`, `mas_validation.py`, `hpe_mas_evaluation.py`, `model_vs_optitrack_eval.py`, `p13_leg_session_comparison.py` - must not be silently gated, because gating changes which trials enter a correlation and that interacts with R14 and R17. Leave the analysis callers alone in this unit and record the question in Open Questions.
+  2. Move the three viewer/workbench sites onto `mas_estimate`, rendering the returned `reason` where the grade used to appear rather than a blank or a dash.
+  3. Fix `pt_score_bridge.compute()`. Its response field is `mas_estimate` but it calls `pt_to_mas` - the contract already claims the gated function's output, so this is a correctness fix, not a behaviour change to negotiate.
+  4. Delete the viewer's fallback constants. They are only live when the import fails, but lines 2753, 2754, 2879 and 2880 use them with no `_PT_AVAIL` guard, so a failed import silently redraws the gauge boundaries and prints a legend claiming healthy means PT <= 0.09. If the import fails the viewer cannot score anything, so the honest behaviour is to draw no zones at all.
+- **Patterns to follow.** `pendulastic_app.py:1806-1807` is the one call site that already does this correctly, including the comment explaining the `mas=None` contract. `mediapipe_pt_metrics.py:195` is a second, newer example.
+- **Test scenarios.**
+  - A trial whose A0 is below the floor renders the refusal reason, not a grade, in the viewer's score label.
+  - A trial whose A0 is below the floor renders no grade in the comparison table, and the cell says why rather than showing an em dash indistinguishable from missing data.
+  - `pt_score_bridge.compute()` on a collapsed-swing trial returns no grade in `mas_estimate` and carries the refusal reason.
+  - `pt_score_bridge.compute()` on a normal trial returns the same grade it returned before, so the fix is proven not to move interpretable results.
+  - A trial above the ceiling is refused by the same path as one below the floor.
+  - Importing `pendulastic_viewer` with `pendulastic_pt_score` unavailable does not define zone thresholds, and the gauge draws no zone bands.
+  - No module other than `pendulastic_pt_score` defines `PT_HEALTHY_MAX` or `PT_BORDERLINE_MAX` - asserted by grep in the test, so a future copy fails.
+- **Verification.** Every user-facing grade path shows a refusal where the gate refuses. The analysis callers are untouched and their outputs are byte-identical.
+
+### U2. Pin the four constants across the language boundary
+
+- **Goal.** Python and Rust cannot silently disagree about the gate or the zones.
+- **Requirements.** R18, R19.
+- **Dependencies.** None. Must land before U3.
+- **Files.** `mobile-imu-core/tests/fixtures/gen_fixtures.py`, `mobile-imu-core/tests/fixtures/golden.rs`, `mobile-imu-core/tests/pt_score_test.rs`
+- **Approach.** The golden-fixture mechanism already generates Rust constants from the live Python module for numeric parity, but emits none of `MIN_INTERPRETABLE_A0_DEG`, `MAX_INTERPRETABLE_A0_DEG`, `PT_HEALTHY_MAX`, `PT_BORDERLINE_MAX`. Add them to the generator's output and assert equality in the Rust test. The port's own doc comment claims byte-identical parity confirmed manually with `diff` at port time - this converts a one-time claim into a standing check.
+- **Execution note.** Write the failing assertion first with a deliberately wrong value, to prove the generator is actually feeding the test rather than the test asserting a Rust literal against itself.
+- **Test scenarios.**
+  - Each of the four constants matches between the generated fixture and the Rust literal.
+  - Changing the Python value without regenerating fails the Rust test rather than passing quietly.
+- **Verification.** `cargo test` fails when the two languages disagree.
+
+### U3. Re-derive the reference statistics the operator is shown
+
+- **Goal.** The refusal message quotes statistics measured on the reconstruction that produced the number being refused.
+- **Requirements.** R18. Instantiates KD12.
+- **Dependencies.** U2.
+- **Files.** `pendulastic_pt_score.py` (the constant block at 458-460 and the provenance comment above it), `mobile-imu-core/src/pt_score.rs`, `tests/test_pt_score.py`, `excursion_ref.py`
+- **Approach.** `MIN_INTERPRETABLE_A0_DEG` stays at 25.0 - KD12. What changes is `EXCURSION_REF_MEAN_DEG` 46.6 to 31.0, `EXCURSION_REF_SD_DEG` 11.1 to 9.9, `EXCURSION_REF_N` 53 to 18, and the provenance comment, which currently justifies the floor by a clearance over the lowest spastic leg that no longer exists. Correct `MAX_INTERPRETABLE_A0_DEG`'s claim of "~34% headroom" and its citation of 89.8 as the largest measured value. `excursion_ref.py` is the script that produces these and applies the coverage filter the comment names; keep it as the reproduction path.
+- **Test scenarios.**
+  - The refusal message renders the current constants.
+  - A test asserts the reference n against the count `excursion_ref.py` produces under the documented filter, so the two cannot drift apart again.
+  - The floor is unchanged at 25.0, asserted explicitly so a future edit has to be deliberate.
+- **Verification.** An operator reading a refusal sees the corpus it was measured against.
+
+### U4. Establish whether the two instruments are on one scale
+
+- **Goal.** Settle whether one gate constant can serve both modalities.
+- **Requirements.** R19. Instantiates KD11.
+- **Dependencies.** U2.
+- **Files.** `gate_regrid.py`, `tests/test_pt_score.py`, `docs/reports/` (a new measurement report)
+- **Approach.** The 100 Hz move raised IMU A0 by 7-12 percent depending on method and left optical A0 untouched, and `mas_estimate` applies one floor to both. Measure paired trials that have IMU and OptiTrack for the same swing and report the agreement. The plan does not presume the outcome: if the two agree within a stated tolerance, one constant is defensible and this unit ends with the evidence recorded; if they do not, the gate takes a per-modality constant.
+- **Execution note.** This is a measurement whose result determines the code change. Do not write the per-modality branch before the measurement says it is needed.
+- **Test scenarios.**
+  - Paired IMU and optical A0 for the same trial are compared and the spread reported.
+  - If a per-modality constant is introduced, a trial scored from each modality is gated by its own constant.
+- **Verification.** A recorded answer either way, with the evidence.
+
+### U5. Refuse a drifting hold rather than correcting it
+
+- **Goal.** A trial whose pre-release hold cannot be trusted is marked invalid and keeps its drift on the record.
+- **Requirements.** R10. Instantiates KD5.
+- **Dependencies.** None.
+- **Files.** `pendulastic_pt_score.py` (`_baseline_drift_slope`, `_credible_drift_slope`, `compute_pt_params`), `pt_report_common.py` (the quality-tag registry), `tests/test_drift_correction_bounds.py`, `tests/test_pt_report_common.py`
+- **Approach.** Today both estimators return `None` on an untrustworthy hold, which means no correction is applied and the trial scores anyway - it is never flagged. The change is to record the refusal rather than swallow it. Follow the project's standing rule that code flags and never drops: the trial gains a quality tag carrying the measured drift, and only `excluded_trials.json` removes anything. The `calibration_hold` category already exists in `QUALITY_TAG_CATEGORIES`.
+- **Test scenarios.**
+  - A hold that drifts beyond the threshold produces a quality tag naming the measured drift.
+  - The trial remains discoverable and is not removed from `discover_trials()`.
+  - A clean hold produces no tag.
+  - A trial with no usable hold at all is distinguished from one whose hold drifted.
+- **Verification.** Drift becomes visible evidence rather than a silent non-correction.
+
+### U6. Derive and plot lateral motion
+
+- **Goal.** Out-of-plane motion is visible per trial.
+- **Requirements.** R11.
+- **Dependencies.** None.
+- **Files.** `plot_multisource_trials.py` (`make_trial_figure`), `pendulastic_pt_score.py`, `tests/` (new)
+- **Approach.** The signal already exists and is discarded. The IMU writes `hip_roll_deg` into every trial CSV and nothing downstream reads it; OptiTrack derives `pc2_series`, the out-of-hinge-plane rotation, inside `optitrack_knee_axis.hinge_axis()` and throws it away after `low_freq_ratio()` reduces it to a scalar. Surface both: return `pc2_series` rather than discarding it, and add a lateral-motion row to the existing two-row gridspec in `make_trial_figure`.
+- **Test scenarios.**
+  - A trial with known out-of-plane motion produces a non-flat lateral trace.
+  - A trial with none produces a flat one.
+  - A trial missing the roll column plots the remaining rows rather than failing.
+- **Verification.** Every per-trial figure shows what the limb did outside the swing plane.
+
+### U7. The A0 severity index, built but not shown
+
+- **Goal.** The index exists, is tested against its anchors, and displays nothing until rig data supplies them.
+- **Requirements.** R6, R7, R9, R16. Instantiates KD2, KD3, KD8.
+- **Dependencies.** U3.
+- **Files.** `pendulastic_pt_score.py`, `mobile-imu-core/src/pt_score.rs`, `webapp/src/app.js`, `tests/test_pt_score.py`, `mobile-imu-core` inline tests, `webapp/tests/app.test.js`
+- **Approach.** A linear map from A0 onto the index with two injected anchors: the amplitude scoring zero and the amplitude scoring one. Floored at zero, unbounded above. The anchors are parameters with no default - absent anchors mean the index is unavailable, which is R16's state until the rig exists, rather than a silently-defaulted number. Follow the suppression pattern already in `webapp/src/app.js:298`, where `ZONE_CLASSIFICATION_CALIBRATED = false` withholds the PT7 band with its reasoning recorded beside it.
+- **Test scenarios.**
+  - Amplitude at the healthy anchor scores exactly zero.
+  - Amplitude above the healthy anchor scores zero, not a negative number.
+  - Amplitude at the boundary anchor scores exactly one.
+  - Amplitude below the boundary anchor scores above one and is not clamped.
+  - The index falls monotonically as amplitude rises across the full range.
+  - With no anchors configured, no index value and no zone label is produced.
+  - The webapp renders excursion and kinematic parameters while the index is unavailable.
+- **Verification.** The index is correct and invisible, and becomes visible only when anchors arrive.
+
+### U8. Report MAS correlation at two tiers
+
+- **Goal.** A construct-validity claim rests on examined grades, and any wider figure is labelled.
+- **Requirements.** R13, R14, R17. Instantiates KD7.
+- **Dependencies.** None.
+- **Files.** `mas_validation.py`, `src/pendulastic/stats.py`, `spasticity_grouping.py`, `tests/test_mas_validation.py`, `tests/test_spasticity_grouping.py`
+- **Approach.** The provenance already exists in `spasticity_grouping.py` as `SRC_CLINICAL`, `SRC_MAS_ASSUMED`, `SRC_MAS_OPERATOR` and the rest, and `CLINICIAN_ASSESSED_SOURCES` already names the examined set. The correlation path does not use any of it - `mas_validation.py` and `src/pendulastic/stats.py` read `mas_scores.csv` directly and know nothing about how a grade was obtained. Join the provenance in and report both tiers with their counts, the examined tier as the claim.
+- **Test scenarios.**
+  - A correlation over a mixed population reports the examined-only figure and the pooled figure with distinct counts.
+  - The pooled figure carries its composition, naming the assumed and operator-set legs.
+  - A population with no examined grades reports no primary claim rather than falling back to the pooled figure.
+- **Verification.** No reported correlation is ambiguous about which grades produced it.
+
+### U9. State the dual-variable model where it is read
+
+- **Goal.** A refused grade reads as a suppressed classification, not a failed measurement.
+- **Requirements.** R12, R20. Instantiates KD12.
+- **Dependencies.** U1, U7.
+- **Files.** `pendulastic_pt_score.py` (the `INSUFFICIENT_EXCURSION` template), `webapp/index.html`, `docs/`
+- **Approach.** The refusal message currently explains that PT7 cannot be interpreted and advises repeating the trial. That is right for a positioning failure and wrong for a genuinely collapsed limb, which is a measurement the instrument made correctly. Distinguish the two, and say that A0 continues to carry severity where PT7 does not.
+- **Test scenarios.**
+  - A refusal names A0 as the severity variable rather than implying nothing was measured.
+  - The HPE negative result is recorded where a reader would look for it, with its measured values, rather than left as an absence.
+  - The existing advice about positioning and release survives for the cases it fits.
+- **Verification.** A clinician reading a refusal knows whether to repeat the trial.
+
+---
+
+## Verification Contract
+
+- `cargo test --manifest-path mobile-imu-core/Cargo.toml` - includes the new cross-language parity assertions from U2.
+- `cargo clippy --manifest-path mobile-imu-core/Cargo.toml --all-targets` - the crate is kept at zero warnings deliberately; a32c9f2 removed the first one it had picked up.
+- `pytest tests/test_pt_score.py tests/test_drift_correction_bounds.py tests/test_pt_report_common.py tests/test_mas_validation.py tests/test_spasticity_grouping.py`
+- `npm test` in `webapp/`, against the discovery floor rather than the exact count.
+- `pytest tests/test_web_export_contract.py -q` - the only Python file CI gates today.
+
+CI runs one Python test file. Every Python change in this plan lands outside that gate, so the Python suite must be run locally and the result stated in the change that makes it.
+
+## Definition of Done
+
+- No path that renders a MAS grade to a person bypasses the excursion gate, and only `pendulastic_pt_score` defines the zone thresholds.
+- The four shared constants are asserted equal across Python and Rust by a test that fails when one side moves.
+- The refusal message quotes statistics measured on the current reconstruction under the filter it names, and the floor is still 25.0.
+- Whether one gate constant can serve both modalities is answered with evidence, either way.
+- A drifting hold produces a quality tag carrying its drift, and removes no trial.
+- Every per-trial figure carries a lateral-motion trace.
+- The severity index is implemented, tested against both anchors, and produces nothing while anchors are absent.
+- Every reported MAS correlation names the provenance of the grades behind it.
 
 <!-- ce-section: work-relationships -->
 ## How This Work Fits Together
