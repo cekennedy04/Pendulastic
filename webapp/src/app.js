@@ -14,6 +14,7 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
+import { captureQualityOf, SETTLE_TARGET_S } from './capture-feedback.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
@@ -661,6 +662,16 @@ if (typeof document !== 'undefined') {
     const record = makeTrialRecord({
       sessionId: currentSession.id,
       side: currentSide,
+      // How much settled tail this trial actually has. neutral_deg is the
+      // tail median and every angle is expressed relative to it, so this is
+      // a property of the measurement, not of the workflow. Read from the
+      // values endTrial captured, because `session` was nulled synchronously
+      // before this result arrived.
+      captureQuality: captureQualityOf({
+        settleS: lastSettleS,
+        settleTargetS: SETTLE_TARGET_S,
+        endedManually: lastEndedManually,
+      }),
       unmeasured: (storedScore && storedScore.unmeasured) || [],
       driftCorrection: useDetrended ? 'analysis' : 'live',
       params: storedParams,
