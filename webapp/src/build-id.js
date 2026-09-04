@@ -5,7 +5,7 @@
 // ALGORITHM_VERSION identifies the source revision that produced a trial's
 // params (spec 3.2) and tracks the wasm alone, NOT the shell.
 export const BUILD_ID = '5856100b7728';
-export const ALGORITHM_VERSION = '0.1.0+95d93450005a.04a1633bd80b';
+export const ALGORITHM_VERSION = '0.1.0+d6ddee5120d9.04a1633bd80b';
 export const SHELL = [
   './',
   './index.html',
