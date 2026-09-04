@@ -192,11 +192,14 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - `pendulastic_viewer.py` - delete the fallback `PT_HEALTHY_MAX = 0.09` / `PT_BORDERLINE_MAX = 0.20` at lines 77-78; route the grade at line 4275 and the comparison table at lines 8806-8807 through `mas_estimate`
   - `pendulastic_workbench.py` - line 668, the live metrics panel
   - `web/api/services/pt_score_bridge.py` - `compute()`, whose response field is already named `mas_estimate`
+  - `web/api/models/trial.py` line 92 - `mas_estimate: float`, annotated "integer MAS value returned by pt_to_mas()". `pt_to_mas` returns `str`, and one of its labels is `"1+"`, which is not coercible to a float at all
+  - `pt_report_common.py` line 658 - the no-A0 fallback, which returns a grade in exactly the case `excursion_ok` documents as not ok
   - `pendulastic_pt_score.py` - the gated helper the callers move onto
   - `tests/test_pt_score.py`, `tests/test_pendulastic_workbench.py`
   - `tests/test_pt_score_bridge.py` (new - no test file covers this module today)
 - **Approach.**
-  1. Separate the two populations of caller. A grade rendered to a person must be gated. A grade computed for analysis - `fit_mas_thresholds.py`, `mas_validation.py`, `hpe_mas_evaluation.py`, `model_vs_optitrack_eval.py`, `p13_leg_session_comparison.py` - must not be silently gated, because gating changes which trials enter a correlation and that interacts with R14 and R17. Leave the analysis callers alone in this unit and record the question in Open Questions.
+  0. Two of the sites are defects rather than gating gaps and are fixed as such: the API response model types a string label as a float, and `pt_report_common`'s no-A0 branch emits a grade where the gate cannot be evaluated, which `excursion_ok`'s own contract calls not ok.
+    1. Separate the two populations of caller. A grade rendered to a person must be gated. A grade computed for analysis - `fit_mas_thresholds.py`, `mas_validation.py`, `hpe_mas_evaluation.py`, `model_vs_optitrack_eval.py`, `p13_leg_session_comparison.py` - must not be silently gated, because gating changes which trials enter a correlation and that interacts with R14 and R17. Leave the analysis callers alone in this unit and record the question in Open Questions.
   2. Move the three viewer/workbench sites onto `mas_estimate`, rendering the returned `reason` where the grade used to appear rather than a blank or a dash.
   3. Fix `pt_score_bridge.compute()`. Its response field is `mas_estimate` but it calls `pt_to_mas` - the contract already claims the gated function's output, so this is a correctness fix, not a behaviour change to negotiate.
   4. Delete the viewer's fallback constants. They are only live when the import fails, but lines 2753, 2754, 2879 and 2880 use them with no `_PT_AVAIL` guard, so a failed import silently redraws the gauge boundaries and prints a legend claiming healthy means PT <= 0.09. If the import fails the viewer cannot score anything, so the honest behaviour is to draw no zones at all.
@@ -207,6 +210,8 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - `pt_score_bridge.compute()` on a collapsed-swing trial returns no grade in `mas_estimate` and carries the refusal reason.
   - `pt_score_bridge.compute()` on a normal trial returns the same grade it returned before, so the fix is proven not to move interpretable results.
   - A trial above the ceiling is refused by the same path as one below the floor.
+  - A trial grading "1+" survives the API response model rather than failing validation on a type that cannot hold it.
+  - A trial with no usable A0 is refused a grade rather than being graded off the score alone.
   - Importing `pendulastic_viewer` with `pendulastic_pt_score` unavailable does not define zone thresholds, and the gauge draws no zone bands.
   - No module other than `pendulastic_pt_score` defines `PT_HEALTHY_MAX` or `PT_BORDERLINE_MAX` - asserted by grep in the test, so a future copy fails.
 - **Verification.** Every user-facing grade path shows a refusal where the gate refuses. The analysis callers are untouched and their outputs are byte-identical.
