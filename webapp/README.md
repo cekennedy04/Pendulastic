@@ -26,6 +26,65 @@ Recording requires a participant and a leg. Both are entered in **session**
 and persist in the `settings` store across a reload and a relaunch; there is
 no longer a hardcoded test participant.
 
+## Ending a trial
+
+A trial ends when the limb has been still for five seconds. There is
+deliberately **no maximum trial length**: a limb with sustained clonus never
+settles and never self-terminates, so the clinician ends it. That is a
+clinical finding, not a fault. After 30 seconds without settling the app
+prompts, but the prompt never stops anything.
+
+Five seconds because `neutral_deg` is the settled-tail median and `scoring.rs`
+expresses every angle relative to it, so a short tail shifts the whole
+waveform including `a0_deg`. The opposite failure -- an over-long tail
+fabricating oscillations -- is already guarded by `ACTIVE_WINDOW_CAP_SEC`.
+
+Stillness is the per-sample gyro magnitude against `ZERO_CAPTURE_GUARD_RAD_S`,
+**not** `is_stationary_window`. `stillness.rs` records that the stricter
+gyro+accel bound never fires for a meaningful fraction of genuinely fine
+trials, because strapped-sensor accel noise exceeds its 0.18 m/s² bound even
+at rest -- with no time cap, using it would leave those trials recording
+indefinitely.
+
+## Capture quality
+
+Every trial records what its tail is actually worth:
+
+| `capture_quality` | Meaning |
+| --- | --- |
+| `clean` | self-terminated after the full five seconds |
+| `short` | stopped after settling began but before the target |
+| `unsettled` | stopped while the limb was still moving |
+
+Flagged, never rejected. `short` and `unsettled` stay distinct because their
+`neutral_deg` estimates fail differently: one has a partial settled tail, the
+other none.
+
+`capture_protocol_version: 2` marks trials recorded under this rule.
+Everything earlier is protocol 1 **by absence** -- a consumer must read a
+missing field as 1, never as an error. This exists so a longitudinal analysis
+cannot silently mix operator-terminated recordings with settle-terminated
+ones, since tail length is exactly what `neutral_deg` is computed from.
+
+## Guidance
+
+The guide carries a progress bar: toward the hold target while HOLDING, toward
+the settle target while RELEASED, and nothing in MOVING or READY. A reset
+shows as an empty bar rather than an animated shrink, so a lost hold does not
+read as a slow one.
+
+Audio is **additive only**. One blip per completed second of stability, and a
+longer lower tone on completion. Every cue has a visual counterpart, so a
+muted phone, a phone in a pocket, or a clinician who is deaf loses no
+information, and nothing in capture is gated on audio succeeding. iOS requires
+a user gesture to start an `AudioContext`, so the Start tap unlocks it; if
+that fails the app records normally and silently.
+
+The "How to hold the leg" block is **static instruction, not feedback** -- the
+phone is on the shank and cannot sense where the clinician's hands are.
+**Its wording is not yet confirmed against the study protocol** and says so on
+screen; confirm before clinical use.
+
 ## MAS export
 
 A session with assessments exports `<base>-mas.csv` alongside the trial
