@@ -34,6 +34,12 @@
      colour -- the banner states the instrument is not validated, and this
      app is an adjunct to a clinician's judgement, so it has to stay loud
      about what it has not established.
+     Amber is the CORRECT register here, not a watered-down red. ANSI Z535
+     and ISO 7010 reserve red for DANGER -- a hazard that will cause harm --
+     and orange for WARNING, one that could. "Not validated" is a caution
+     about how to read a number, not an imminent physical hazard, so red was
+     arguably over-signalling and spending the strongest colour the app has
+     on its most permanent element.
      Blue was asked for first and rejected here: --accent is #2563EB and the
      released capture state is #1d4ed8, so a blue banner would share its
      colour language with buttons and a healthy state and stop reading as a
