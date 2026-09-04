@@ -52,6 +52,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD11. **The gate floor is not rescaled by a measurement-grid ratio.** 25.0 was never a control-derived bound; the provenance in `pendulastic_pt_score.py` states it is a conservative floor set as high as it could go while clearing the lowest observed spastic leg at 28.7 degrees, with roughly 13 percent of margin. Scaling it by an IMU grid ratio would have cut that margin to 2.4 percent and brought the gate to the edge of refusing a grade on a study case. Governs R18, R19.
 - KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 8.57 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
 - KD13. **A grade assessed in one condition is not evidence about another.** Carrying a leg label across pre, post and month-post is what put a 6.76 degree month-post trial forward as the lowest spastic reading when its MAS was assessed at pre; the condition-matched value is 9.85. Tone changes over an intervention, which is the point of measuring it more than once. Governs R21.
+- KD13b. **A cross-modality agreement figure is meaningless without its convention pairing.** Measured over 129 paired trials, detrending moves optical PT7 by 0.050 and phone PT7 by 0.363; the production-to-production comparison reads 0.447 against 0.247 when conventions are matched. At 0.447 the IMU looks barely better than MediaPipe 2D at 0.460, which would undercut KD6 on an artefact. Governs R22.
 
 ### Requirements
 
@@ -71,7 +72,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R8. The app displays no healthy, borderline or impaired classification derived from PT7.
 - R9. A reading beyond the normative boundary is displayed as measured rather than clamped to the boundary.
 - R16. Until rig-derived anchors exist, no severity index and no categorical zone is displayed. The app reports excursion and the continuous kinematic parameters as measured.
-- R18. The excursion floor holds at 25 degrees, and its stated rationale is rewritten to the one that survives measurement: no single threshold both clears every spastic leg and prevents PT7 renormalising on a collapsed swing, and the floor exists to suppress a PT7 grade in the regime where A0 carries the severity instead. The reference statistics quoted to the operator are re-derived under the filter they name, and the ceiling's stale headroom claim is corrected with them.
+- R18. The excursion floor holds at 25 degrees and the ceiling at 120. Their derivation is recorded in the source as void, alongside the measured values that void it, rather than left looking valid. The reference statistics are left unchanged for the same reason the floor is: no re-derivation this corpus can support would be truer than the one it replaces. A real derivation waits for the rig.
 - R20. Documentation states the dual-variable model plainly: A0 reports severity continuously across the whole range, and PT7 classification applies only above the floor. A refused grade is a suppressed classification, never a missing measurement.
 - R19. A0 measured from the IMU and A0 measured from OptiTrack are shown to be on the same scale, or the gate stops applying one constant to both. The 100 Hz move raised IMU A0 while leaving optical A0 untouched, so a trial's verdict currently depends in part on which instrument measured it.
 
@@ -87,6 +88,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R14. Any correlation against human MAS reports the provenance of those grades, distinguishing clinician examinations from assumed and operator-set values.
 - R17. Construct validity against human MAS is claimed only on the clinician-examined cohort. A figure computed over a wider pool is labelled exploratory, and the assumed and operator-set legs it contains are named where it appears.
 - R21. A MAS grade is applied only to trials recorded in the condition it was assessed in, or the carry across conditions is stated wherever the grade is used. Of 39 clinician-examined spastic trials, only 9 were recorded in the condition their grade was assessed in.
+- R22. Any figure comparing the IMU and optical channels states which detrend convention each side was scored under. The production pairing scores the phone undetrended against optical detrended, and that choice moves PT7 more than the sensor difference does.
 
 ### Key Flows
 
@@ -112,9 +114,9 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE6. **Covers R15.** Given the rig set to its passive profile with no active torque, when a swing is recorded and compared against human healthy-control trials, then the envelope comparison is reported whether or not it matches.
 - AE7. **Covers R16.** Given no rig-derived anchor exists, when a trial is scored in the app, then excursion and kinematic parameters are shown and no index value or zone label appears.
 - AE8. **Covers R17.** Given a construct-validity claim against human MAS, when it is stated, then it rests on the clinician-examined cohort, and any wider figure alongside it is marked exploratory.
-- AE9. **Covers R18.** Given the re-derived floor, when it is compared against the lowest observed spastic leg, then it sits below that leg by a stated margin, and the refusal message quotes reference statistics measured on the same reconstruction as the floor.
+- AE9. **Covers R18.** Given the gate constants, when a reader consults the derivation beside them, then it names which of its own reasoning measurement has since falsified, and the constants are unchanged.
 - AE10. **Covers R19.** Given the same physical swing measured by both instruments, when each is scored, then the two A0 values agree within a stated tolerance, or the gate applies a separate constant per modality.
-- AE11. **Covers R18.** Given a refused trial, when the operator reads the refusal, then the reference statistics it quotes are those of the current reconstruction under the filter the message names.
+- AE11. **Covers R18.** Given a refused trial, when the operator reads the refusal, then it does not present reference statistics measured on a superseded reconstruction as though they described the current one.
 - AE12. **Covers R20.** Given a leg whose swing has collapsed below the floor, when its result is presented, then a severity value derived from A0 is shown and the absence of a PT7 grade is stated as a suppression rather than a failure to measure.
 - AE13. **Covers R21.** Given a MAS grade assessed in one condition and a trial recorded in another, when the pair is used in any reported figure, then the carry is stated rather than presented as a matched observation.
 
@@ -232,18 +234,19 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - Changing the Python value without regenerating fails the Rust test rather than passing quietly.
 - **Verification.** `cargo test` fails when the two languages disagree.
 
-### U3. Re-derive the reference statistics the operator is shown
+### U3. Stop the refusal message asserting a superseded reference
 
-- **Goal.** The refusal message quotes statistics measured on the reconstruction that produced the number being refused.
+- **Goal.** A clinician reading a refusal is not told something measurement has shown to be false.
 - **Requirements.** R18. Instantiates KD12.
 - **Dependencies.** U2.
-- **Files.** `pendulastic_pt_score.py` (the constant block at 458-460 and the provenance comment above it), `mobile-imu-core/src/pt_score.rs`, `tests/test_pt_score.py`, `excursion_ref.py`
-- **Approach.** `MIN_INTERPRETABLE_A0_DEG` stays at 25.0 - KD12. What changes is `EXCURSION_REF_MEAN_DEG` 46.6 to 31.0, `EXCURSION_REF_SD_DEG` 11.1 to 9.9, `EXCURSION_REF_N` 53 to 18, and the provenance comment, which currently justifies the floor by a clearance over the lowest spastic leg that no longer exists. Correct `MAX_INTERPRETABLE_A0_DEG`'s claim of "~34% headroom" and its citation of 89.8 as the largest measured value. `excursion_ref.py` is the script that produces these and applies the coverage filter the comment names; keep it as the reproduction path.
+- **Files.** `pendulastic_pt_score.py` (`INSUFFICIENT_EXCURSION` and the constants it formats), `mobile-imu-core/src/pt_score.rs`, `tests/test_pt_score.py`
+- **Approach.** The comment half of this landed in b995cfa: both derivations now record what measurement falsified, and no value moved. What remains is the message itself. `INSUFFICIENT_EXCURSION` renders "control mean 46.6, sd 11.1, n=53" as a plain statement of fact, and those statistics describe a reconstruction that no longer exists - the same filter now yields 31.0, 9.9 and n=18. Under KD12 the numbers are not updated, because a re-derivation this corpus can support is not truer than the one it replaces. So the clause either goes, or it says which corpus it came from. Dropping it is the smaller change and loses little: the sentence's work is done by the floor and the measured A0, not by a control mean the reader cannot act on.
+- **Execution note.** This changes text a clinician reads. Decide between dropping and dating the clause before writing either, rather than picking in the edit.
 - **Test scenarios.**
-  - The refusal message renders the current constants.
-  - A test asserts the reference n against the count `excursion_ref.py` produces under the documented filter, so the two cannot drift apart again.
-  - The floor is unchanged at 25.0, asserted explicitly so a future edit has to be deliberate.
-- **Verification.** An operator reading a refusal sees the corpus it was measured against.
+  - A refusal message states the floor and the measured excursion without asserting a control statistic as current.
+  - The refusal still distinguishes a swing below the floor from one above the ceiling.
+  - The floor is unchanged at 25.0 and the ceiling at 120, asserted explicitly so a future edit has to be deliberate.
+- **Verification.** Nothing in the refusal claims to describe the current corpus unless it does.
 
 ### U4. Establish whether the two instruments are on one scale
 
@@ -319,13 +322,14 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
 ### U9. State the dual-variable model where it is read
 
 - **Goal.** A refused grade reads as a suppressed classification, not a failed measurement.
-- **Requirements.** R12, R20. Instantiates KD12.
+- **Requirements.** R12, R20, R22. Instantiates KD6, KD12 and KD13b. Instantiates KD12.
 - **Dependencies.** U1, U7.
 - **Files.** `pendulastic_pt_score.py` (the `INSUFFICIENT_EXCURSION` template), `webapp/index.html`, `docs/`
 - **Approach.** The refusal message currently explains that PT7 cannot be interpreted and advises repeating the trial. That is right for a positioning failure and wrong for a genuinely collapsed limb, which is a measurement the instrument made correctly. Distinguish the two, and say that A0 continues to carry severity where PT7 does not.
 - **Test scenarios.**
   - A refusal names A0 as the severity variable rather than implying nothing was measured.
   - The HPE negative result is recorded where a reader would look for it, with its measured values, rather than left as an absence.
+  - A published IMU-versus-optical agreement figure names the detrend convention on each side.
   - The existing advice about positioning and release survives for the cases it fits.
 - **Verification.** A clinician reading a refusal knows whether to repeat the trial.
 
