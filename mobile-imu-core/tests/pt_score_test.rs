@@ -13,7 +13,10 @@
 #[path = "fixtures/golden.rs"]
 mod golden;
 
-use mobile_imu_core::pt_score::{pt_score, pt_score_breakdown, HEALTHY_REF};
+use mobile_imu_core::pt_score::{
+    pt_score, pt_score_breakdown, HEALTHY_REF, MAX_INTERPRETABLE_A0_DEG,
+    MIN_INTERPRETABLE_A0_DEG, PT_BORDERLINE_MAX, PT_HEALTHY_MAX,
+};
 use mobile_imu_core::scoring::compute_pt_params;
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -162,5 +165,51 @@ fn end_to_end_replayed_trial_matches_the_python_reference() {
         golden::TRIAL_E2E_PT_SCORE_F,
         golden::TRIAL_E2E_PT_SCORE_AREA_RATIO,
         golden::TRIAL_E2E_PT_SCORE_TOTAL,
+    );
+}
+
+// ── U2: the four constants, pinned across the language boundary ─────────────
+
+/// The gate bounds and zone edges must match the Python module they were
+/// ported from.
+///
+/// `pt_score.rs`'s own doc comment claims byte-identical parity "confirmed
+/// manually with `diff` at port time". A one-time manual check does not
+/// survive either side being edited, and these four are exactly the constants
+/// most likely to move: `MIN_INTERPRETABLE_A0_DEG`'s derivation was found void
+/// on 2026-09-04, and the zone edges are calibrated on a MAS axis that is
+/// itself under revision.
+///
+/// The golden values come from the live module via `gen_fixtures.py`, so
+/// changing Python without regenerating fails here rather than drifting
+/// quietly. Verified to actually be wired: perturbing
+/// `MIN_INTERPRETABLE_A0_DEG` to 26.0 in Python and regenerating made this
+/// fail with 26 vs 25, so the assertion reads the generator's output and not
+/// a Rust literal compared against itself.
+#[test]
+fn the_gate_and_zone_constants_match_the_python_reference() {
+    close(
+        MIN_INTERPRETABLE_A0_DEG,
+        golden::GATE_MIN_INTERPRETABLE_A0_DEG,
+        0.0,
+        "MIN_INTERPRETABLE_A0_DEG",
+    );
+    close(
+        MAX_INTERPRETABLE_A0_DEG,
+        golden::GATE_MAX_INTERPRETABLE_A0_DEG,
+        0.0,
+        "MAX_INTERPRETABLE_A0_DEG",
+    );
+    close(
+        PT_HEALTHY_MAX,
+        golden::ZONE_PT_HEALTHY_MAX,
+        0.0,
+        "PT_HEALTHY_MAX",
+    );
+    close(
+        PT_BORDERLINE_MAX,
+        golden::ZONE_PT_BORDERLINE_MAX,
+        0.0,
+        "PT_BORDERLINE_MAX",
     );
 }

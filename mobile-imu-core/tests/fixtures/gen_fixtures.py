@@ -225,6 +225,21 @@ def main():
                 sm[i] = ema
         parts.append(f64_slice(f"EMA_A{str(alpha).replace('.', '_')}", sm, f"EMA of TICK_OUT_HELD, alpha={alpha}."))
 
+    import pendulastic_pt_score as pts
+    # ---- the four gate/zone constants, emitted from the live module -------
+    # U2: the port's doc comment claimed byte-identical parity "confirmed
+    # manually with diff at port time". These turn that one-time claim into a
+    # standing check -- change a Python value without regenerating and the
+    # Rust test fails instead of the two languages drifting quietly.
+    parts.append(f64_const("GATE_MIN_INTERPRETABLE_A0_DEG", pts.MIN_INTERPRETABLE_A0_DEG,
+                           "pendulastic_pt_score.MIN_INTERPRETABLE_A0_DEG."))
+    parts.append(f64_const("GATE_MAX_INTERPRETABLE_A0_DEG", pts.MAX_INTERPRETABLE_A0_DEG,
+                           "pendulastic_pt_score.MAX_INTERPRETABLE_A0_DEG."))
+    parts.append(f64_const("ZONE_PT_HEALTHY_MAX", pts.PT_HEALTHY_MAX,
+                           "pendulastic_pt_score.PT_HEALTHY_MAX."))
+    parts.append(f64_const("ZONE_PT_BORDERLINE_MAX", pts.PT_BORDERLINE_MAX,
+                           "pendulastic_pt_score.PT_BORDERLINE_MAX."))
+
     # ---- compute_pt_params / score_waveform -------------------------------
     from imu_calibration_tuner import score_waveform
     from pendulastic_pt_score import (
