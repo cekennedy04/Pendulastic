@@ -126,6 +126,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - Clinician time is required for R2 and R4, and the mapping's strength is bounded by how many assessors are available.
 - The rig's stiffness range is assumed to map onto human MAS closely enough for the mapping to transfer. R15 tests the passive end of that assumption directly; the actuated end remains assumed, because no human above MAS 1 has been measured to compare against.
 - Assumed: the corrected flex-axis reconstruction is the one all rig data is captured under. Amplitude moved 1.52 times its previous median when that changed, so data spanning both conventions would not be comparable.
+- Assumed: rig data is captured on the 100 Hz analysis grid. Scoring moved off the 20 Hz display poll on 2026-09-04, which changed A0's filtered scale, so this is a second convention boundary that rig data must sit wholly on one side of.
 
 ### Outstanding Questions
 
@@ -133,6 +134,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 
 - The passive stiffness and damping the rig is set to for R15. Supervisor notes cite 0.5 Nm/rad and 0.5 Nms/rad from the Popovic and Stein pendulum literature; neither constant appears anywhere in this repository, so both need confirming against the primary source before the rig is dialled to them.
 - Which human control trials R15 compares against, given that the same provenance rule that produced KD8 leaves 4 examined MAS-0 legs across 3 participants.
+- Whether the 25 degree excursion gate still sits where it was intended. `MIN_INTERPRETABLE_A0_DEG` is an absolute threshold fixed on 2026-08-30, and the move to the 100 Hz analysis grid changed A0's filtered scale beneath it without the gate being re-derived. The boundary is populated: 19 of 313 trials fall between 25 and 28 degrees, and 35 below 30. The shift's direction is fixture-dependent and unsettled by synthetic trials, so this needs measuring on the corpus rather than reasoning about.
 - The drift threshold that makes a hold invalid, and whether it is expressed as degrees, degrees per second, or a fraction of the swing.
 - The lateral-motion threshold, and whether exceeding it invalidates a trial or only annotates it.
 - How many assessors and repetitions the mapping needs to be worth reporting.
