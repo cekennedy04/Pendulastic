@@ -180,9 +180,16 @@ fn full_pipeline_reproduces_the_python_score() {
         1e-5,
         "neutral_deg",
     );
+    // Read from the golden rather than pinned to a literal. This assertion
+    // hardcoded `Extension`, which was what the fixture produced back when it
+    // was replayed on the 20 Hz display grid; on the 100 Hz analysis grid the
+    // reference reports `balanced` (P+ 13.87 / P- 11.84 = 1.172, under the
+    // 1.25 threshold) and the literal silently became a stale expectation.
+    // Every numeric assertion above passes at 1e-6..1e-9, so the two engines
+    // agree -- only this hand-written constant had drifted.
     assert_eq!(
         p.spasticity_type,
-        SpasticityType::Extension,
+        spasticity_from_golden(golden::TRIAL_E2E_SPASTICITY_TYPE),
         "spasticity_type"
     );
     assert_eq!(
@@ -210,13 +217,32 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
         1.5,
         "recovered resting angle",
     );
-    // A0 lags the true amplitude slightly — EMA smoothing and the fusion's
-    // own response both cost a little peak — but not by much.
-    close(
+    // A0 does not come back at full height, and that is the pipeline's real
+    // transfer function rather than a defect: the EMA and the fusion's own
+    // response each cost a little peak. Measured end to end, 45 deg of input
+    // returns as ~40.2 (Python reference 40.383, this port 39.973) -- about
+    // 10.7% attenuation.
+    //
+    // This used to assert the raw 45 within +-2, which only ever passed
+    // because the port smoothed on a fixed 9-sample window where the
+    // reference used 0.10 s; that divergence happened to push the port's A0
+    // nearer the unfiltered truth while moving it AWAY from the reference it
+    // is supposed to mirror. With both engines on the 100 Hz analysis grid and
+    // the same duration-based smoothing they now agree to 0.41 deg, and the
+    // honest expectation is the filtered value, held to a TIGHTER bound than
+    // before.
+    const A0_FILTERED_DEG: f64 = 40.18;
+    close(p.a0_deg, A0_FILTERED_DEG, 1.0, "recovered first-swing amplitude");
+
+    // The attenuation itself, asserted as a system invariant rather than left
+    // as an unexplained gap. If a future change to the fusion or the EMA moves
+    // the pipeline's gain, this is what says so.
+    let attenuation = p.a0_deg / golden::E2E_TRUE_A0_DEG;
+    assert!(
+        (0.87..=0.91).contains(&attenuation),
+        "pipeline amplitude gain {attenuation:.4} outside the documented          0.87-0.91 band (A0 {} deg from a {} deg input)",
         p.a0_deg,
-        golden::E2E_TRUE_A0_DEG,
-        2.0,
-        "recovered first-swing amplitude",
+        golden::E2E_TRUE_A0_DEG
     );
 }
 
@@ -250,4 +276,18 @@ fn the_magnetometer_stream_is_present_and_deliberately_unused() {
         diff > ANGLE_TOL_DEG,
         "mag stream changed nothing (max delta {diff:.3e}) - the fixture's mag samples carry no signal"
     );
+}
+
+
+/// The reference names these in lower case (`pendulastic_pt_score`'s own
+/// strings); `params_json` parses the capitalised wire form. The golden
+/// carries the reference's spelling, so the test maps it here rather than
+/// duplicating a literal that can drift.
+fn spasticity_from_golden(s: &str) -> SpasticityType {
+    match s {
+        "extension" => SpasticityType::Extension,
+        "flexion" => SpasticityType::Flexion,
+        "balanced" => SpasticityType::Balanced,
+        other => panic!("golden carries an unknown spasticity_type: {other:?}"),
+    }
 }

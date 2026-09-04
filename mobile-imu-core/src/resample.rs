@@ -12,6 +12,46 @@
 /// Display/scoring cadence, in seconds — `imu_calibration_tuner.TICK_S`.
 pub const TICK_S: f64 = 0.05;
 
+/// Grid the ANALYSIS path derives parameters on -- 100 Hz, the phone's own
+/// sensor cadence (measured 100.6/100.7/100.7 Hz across the corpus).
+///
+/// 20 Hz was never a sensor limit: it is [`TICK_S`], the app's display poll,
+/// and resampling to it before deriving parameters pushed
+/// `compute_pt_params`' 0.10 s smoothing window below savgol's floor, leaving
+/// IMU parameters filtered over 0.25 s against the 120 Hz optical reference's
+/// 0.10 s.
+///
+/// The reference moved its analysis here and measured the result over 46
+/// trials scored against their own OptiTrack reference: omega_peak 29.1% ->
+/// 19.6%, omega_max_n 41.9% -> 32.6%, A0_deg 25.8% -> 20.9%, R2n 10.8% ->
+/// 10.2%; N unchanged at 15.5%; phi_max_ratio (24.9% -> 25.5%) and f (2.7% ->
+/// 3.8%) marginally worse. Angle accuracy is untouched, as it must be -- the
+/// AHRS is identical and only its output grid moves.
+///
+/// This port kept scoring on `TICK_S` after that change, which is the whole of
+/// the phone-vs-desktop divergence in N. Mirrors
+/// `imu_calibration_tuner.ANALYSIS_TICK_S`.
+pub const ANALYSIS_TICK_S: f64 = 0.01;
+
+/// The EMA coefficient reproducing `alpha`'s time constant on a `tick_s` grid.
+///
+/// An EMA's smoothing is set by alpha AND the interval it steps at: one step
+/// retains `1 - alpha`, so over a fixed duration retention is
+/// `(1 - alpha)^(duration / step)`. Replaying on the 100 Hz grid while reusing
+/// an alpha tuned for 50 ms steps would make it a five-times LIGHTER filter
+/// and let through exactly the jitter that value was chosen to reject -- a
+/// change to the signal dressed up as a change to the sampling.
+///
+/// `alpha = 1.0` means "no smoothing" and stays 1.0 at every rate. Mirrors
+/// `imu_calibration_tuner._rescale_ema_alpha`.
+pub fn rescale_ema_alpha(alpha: f64, tick_s: f64) -> f64 {
+    let a = alpha.clamp(0.0, 1.0);
+    if (tick_s - TICK_S).abs() < f64::EPSILON || a >= 1.0 {
+        return a;
+    }
+    1.0 - (1.0 - a).powf(tick_s / TICK_S)
+}
+
 /// Resample `(t, value)` onto a fixed `tick_s` grid starting at `t[0]`, using
 /// `replay_trial`'s zero-order hold: each tick carries the state as of just
 /// *before* the first source sample at or after that tick's time.

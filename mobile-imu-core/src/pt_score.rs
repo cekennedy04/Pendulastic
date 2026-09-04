@@ -52,7 +52,11 @@ pub struct HealthyRef {
 /// PROVISIONAL and expected to move again (validation task V0.4).
 pub const HEALTHY_REF: HealthyRef = HealthyRef {
     r2n: 1.0321,
-    n: 3.5,
+    // Recalibrated 2026-09-04. Was 3.5, which was the old 4 s counting cap
+    // itself rather than a physiological value. 5.50 is the Control-arm median
+    // across 63 optical trials on the production path under the 10 s window.
+    // Mirrors `pendulastic_pt_score.HEALTHY_REF["N"]`.
+    n: 5.50,
     phi_max_ratio: 0.6386,
     omega_max_n: 6.7684,
     omega_min_n: 0.0010,
@@ -512,14 +516,18 @@ mod tests {
     use super::*;
 
     fn params(overrides: impl FnOnce(&mut PtParams)) -> PtParams {
+        // Derived from HEALTHY_REF rather than duplicating its literals: this
+        // helper silently went stale when the reference's N was recalibrated,
+        // and four tests asserting "exactly the reference scores zero" started
+        // failing on a value they were supposed to track.
         let mut p = PtParams {
-            r2n: 1.0321,
-            n: 3.5,
-            phi_max_ratio: 0.6386,
-            omega_max_n: 6.7684,
-            omega_min_n: 0.0010,
-            f: 0.9137,
-            area_ratio: 0.0768,
+            r2n: HEALTHY_REF.r2n,
+            n: HEALTHY_REF.n,
+            phi_max_ratio: HEALTHY_REF.phi_max_ratio,
+            omega_max_n: HEALTHY_REF.omega_max_n,
+            omega_min_n: HEALTHY_REF.omega_min_n,
+            f: HEALTHY_REF.f,
+            area_ratio: HEALTHY_REF.area_ratio,
             omega_peak_deg_s: 0.0,
             a0_deg: 0.0,
             a1_deg: 0.0,
@@ -617,7 +625,7 @@ mod tests {
         let p = params(|p| {
             p.r2n = 0.0;      // large penalty (below reference)
             p.area_ratio = 5.0; // large penalty (above reference)
-            p.n = 3.5;        // no penalty
+            p.n = HEALTHY_REF.n;        // no penalty
         });
         let ordered = pt_score_breakdown(&p, &HEALTHY_REF).ordered();
         for w in ordered.windows(2) {
@@ -694,7 +702,7 @@ mod tests {
         let p = params(|p| {
             p.first_trough_depth = 39.0;
             p.f = 0.9;
-            p.n = 3.5;
+            p.n = HEALTHY_REF.n;
         });
         assert!(unmeasured_params(&p).is_empty());
     }
@@ -708,7 +716,7 @@ mod tests {
             p.r2n = 0.0;
             p.phi_max_ratio = 0.0;
             p.f = 0.9;
-            p.n = 3.5;
+            p.n = HEALTHY_REF.n;
         });
         let u = unmeasured_params(&p);
         assert!(u.contains(&"r2n"), "{u:?}");
@@ -731,7 +739,7 @@ mod tests {
         let p = params(|p| {
             p.first_trough_depth = 39.0;
             p.f = 0.0;
-            p.n = 3.5;
+            p.n = HEALTHY_REF.n;
         });
         assert_eq!(unmeasured_params(&p), vec!["f"]);
     }
@@ -766,7 +774,7 @@ mod tests {
         let p = params(|p| {
             p.first_trough_depth = 39.0;
             p.f = 0.9;
-            p.n = 3.5;
+            p.n = HEALTHY_REF.n;
         });
         assert!(pt_score_to_json(&p, &HEALTHY_REF).contains("\"unmeasured\":[]"));
     }
@@ -944,7 +952,8 @@ mod tests {
     fn both_scores_match_the_python_reference_bit_for_bit() {
         // Values produced by pendulastic_pt_score.compute_pt_score_simple /
         // compute_pt_score on this exact params dict, printed at 17 significant
-        // digits. A structural test would pass on a port that got the formula
+        // digits. Re-derived 2026-09-04 after HEALTHY_REF['N'] moved 3.5 -> 5.50;
+        // the port already agreed, only these pins were stale. A structural test would pass on a port that got the formula
         // subtly wrong; this one cannot.
         let p = params(|p| {
             p.r2n = 0.42;
@@ -957,8 +966,8 @@ mod tests {
         });
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
-        assert!((simple - 0.655_718_986_385_898_98_f64).abs() < 1e-15, "simple={simple:.17}");
-        assert!((full - 1.612_125_135_077_656_2_f64).abs() < 1e-15, "full={full:.17}");
+        assert!((simple - 0.694_680_025_346_937_85_f64).abs() < 1e-15, "simple={simple:.17}");
+        assert!((full - 1.634_388_585_912_535_8_f64).abs() < 1e-15, "full={full:.17}");
     }
 
     // ---- PtScalars ------------------------------------------------------

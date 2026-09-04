@@ -9,16 +9,90 @@
 //! over with them — several encode findings from real trials that are not
 //! recoverable by reading the formulas.
 
-use crate::signal::{find_peaks, gradient, nanmedian, nanpercentile, polyfit1, savgol_filter};
+use crate::signal::{
+    find_peaks, gradient, nanmedian, nanpercentile, polyfit1, savgol_filter,
+    savgol_filter_deriv,
+};
 
 /// `pendulastic_pt_score.AREA_RATIO_WARN` — above this asymmetry, the trial is
 /// flagged for review.
 pub const AREA_RATIO_WARN: f64 = 0.55;
 
-/// Matches `score_waveform`'s own continuity-check window cap. A real pendulum
-/// swing settles well within this, so an extremum past it is tail noise, not
-/// real oscillation.
-const ACTIVE_WINDOW_CAP_SEC: f64 = 4.0;
+/// End of the oscillation-counting window, in seconds past release. Also the
+/// cap `score_waveform`'s continuity check uses.
+///
+/// Was 4.0, which truncated the measurement rather than bounding it: against
+/// known ground truth N reported 3.5 for true cycle counts of 4, 6 and 8
+/// alike, and both cohort arms sat at ~91% of their own `4 * f` ceiling --
+/// making N a reading of frequency x window rather than of damping, and
+/// redundant with `f`. Published healthy legs oscillate ~9 times, which 4 s
+/// cannot represent at ~1 Hz.
+///
+/// 10.0 recovers the count exactly on synthetic swings of 2, 4, 6 and 8
+/// cycles, and is where the corpus stops supporting more (80.8% of recordings
+/// exceed 10 s, only 19.8% exceed 15 s). The tail-noise miscounting this cap
+/// used to mask is handled at source by the noise-aware `min_amp` below.
+///
+/// Mirrors `pendulastic_pt_score._ACTIVE_WINDOW_CAP_SEC`.
+const ACTIVE_WINDOW_CAP_SEC: f64 = 10.0;
+
+/// Multiple of the settled-tail noise SD an excursion must clear to count as a
+/// real oscillation. Mirrors `pendulastic_pt_score._NOISE_FLOOR_K`.
+const NOISE_FLOOR_K: f64 = 3.0;
+
+/// Detrended SD of the settled tail, or `None` if there isn't enough of one.
+///
+/// Detrended because slow baseline drift is not noise: a least-squares line
+/// through the tail removes it, leaving the sample-to-sample scatter that is
+/// what actually crosses an amplitude threshold.
+///
+/// Mirrors `pendulastic_pt_score._settled_tail_noise_sd`.
+fn settled_tail_noise_sd(phi: &[f64]) -> Option<f64> {
+    // The minimums are deliberately low. An earlier draft required 100 finite
+    // samples and a 30-sample tail, which made this a CLIFF: the reference and
+    // this port replay the same trial to slightly different lengths, and a
+    // 137-sample trial (21-sample tail) fell on opposite sides of the gate in
+    // the two languages -- one guarded, one not, and R2n differed by 0.09 on
+    // identical motion. An amplitude floor that flips on a handful of samples
+    // is worse than no floor. At 30/10 every trial long enough to score at all
+    // gets an estimate, so the floor is continuous in practice.
+    let fin: Vec<f64> = phi.iter().copied().filter(|v| v.is_finite()).collect();
+    if fin.len() < 30 {
+        return None;
+    }
+    let start = (0.85 * fin.len() as f64) as usize;
+    let tail = &fin[start..];
+    if tail.len() < 10 {
+        return None;
+    }
+    let n = tail.len() as f64;
+    let mean_x = (n - 1.0) / 2.0;
+    let mean_y = tail.iter().sum::<f64>() / n;
+    let mut sxx = 0.0;
+    let mut sxy = 0.0;
+    for (i, &y) in tail.iter().enumerate() {
+        let dx = i as f64 - mean_x;
+        sxx += dx * dx;
+        sxy += dx * (y - mean_y);
+    }
+    let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+    let icpt = mean_y - slope * mean_x;
+    let var = tail
+        .iter()
+        .enumerate()
+        .map(|(i, &y)| {
+            let r = y - (slope * i as f64 + icpt);
+            r * r
+        })
+        .sum::<f64>()
+        / n;
+    let sd = var.sqrt();
+    if sd.is_finite() {
+        Some(sd)
+    } else {
+        None
+    }
+}
 
 /// Which direction the swing is unbalanced in — Popović 2018 Fig 7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +180,141 @@ fn sg(sig: &[f64], w: usize, p: usize) -> Vec<f64> {
     }
     if w >= p + 2 {
         savgol_filter(sig, w, p)
+    } else {
+        sig.to_vec()
+    }
+}
+
+// The reference sizes its smoothing by DURATION (0.10 s through each trial's own
+// dt), not by a sample count. This port used fixed counts, which agree with the
+// reference only near 100 Hz -- and while scoring ran on the 50 ms display grid
+// that meant the phone smoothed roughly twice as hard as the desktop at the very
+// rate it scored at. Now that scoring runs on the 100 Hz analysis grid the two
+// definitions nearly coincide, and matching the reference exactly is safe.
+/// Velocity window as a fraction of the SWING'S OWN PERIOD.
+///
+/// A fixed duration cannot be right at both ends of the corpus: measured
+/// against a closed-form damped cosine over 0.6-1.8 Hz, 0.20 s held bias to
+/// +-2.3% but degraded to +7.0% at 2 deg of trace noise, while 0.40 s was flat
+/// to -0.5% against noise yet attenuated -8.2% at 1.8 Hz. Scaling with the
+/// period fixes both, because the span being averaged over is then the
+/// signal's own timescale. Mirrors `_SG_VEL_PERIOD_FRAC`.
+const SG_VEL_PERIOD_FRAC: f64 = 0.35;
+/// Mirrors `_SG_VEL_POLYORDER`. A quadratic is not enough over a window this
+/// wide -- it mis-fits the curvature and bias blows out to tens of percent.
+const SG_VEL_POLYORDER: usize = 3;
+/// Used only when the trace yields too few extrema to measure a period.
+const SG_VEL_FALLBACK_S: f64 = 0.20;
+/// A knee pendulum cannot swing outside this; clamps a period estimate taken
+/// from noise-driven extrema before it can pick an absurd window.
+const SG_VEL_F_MIN: f64 = 0.3;
+const SG_VEL_F_MAX: f64 = 3.0;
+
+/// Swing period from the detected extrema, or `None` if there are too few.
+///
+/// Consecutive extrema of an oscillation are half a period apart, so the
+/// median gap doubled is the period -- steadier on a decaying trace than an
+/// FFT, which the changing amplitude pulls around. Mirrors `_swing_period_s`.
+fn swing_period_s(t_r: &[f64], pk_i: &[usize], tr_i: &[usize]) -> Option<f64> {
+    let mut idx: Vec<usize> = pk_i.iter().chain(tr_i).copied().collect();
+    if idx.len() < 2 {
+        return None;
+    }
+    idx.sort_unstable();
+    let mut gaps: Vec<f64> = idx
+        .windows(2)
+        .map(|w| t_r[w[1]] - t_r[w[0]])
+        .filter(|g| g.is_finite() && *g > 0.0)
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = gaps.len() / 2;
+    let med = if gaps.len().is_multiple_of(2) {
+        (gaps[mid - 1] + gaps[mid]) / 2.0
+    } else {
+        gaps[mid]
+    };
+    Some((2.0 * med).clamp(1.0 / SG_VEL_F_MAX, 1.0 / SG_VEL_F_MIN))
+}
+
+/// d(sig)/dt via a Savitzky-Golay analytic derivative, in units per second.
+/// Mirrors `_sg_derivative`.
+fn sg_derivative_seconds(sig: &[f64], dt: f64, win_s: f64, p: usize) -> Vec<f64> {
+    let n = sig.len();
+    if n < 3 || dt <= 0.0 {
+        return vec![0.0; n];
+    }
+    let mut w = (win_s / dt).round() as i64;
+    if w % 2 == 0 {
+        w += 1;
+    }
+    let pmin = p as i64 + 2;
+    if w < pmin {
+        w = if pmin % 2 == 1 { pmin } else { pmin + 1 };
+    }
+    let cap = if n.is_multiple_of(2) { n as i64 - 1 } else { n as i64 };
+    w = w.min(cap);
+    if w % 2 == 0 {
+        w -= 1;
+    }
+    if w < pmin || w <= 0 {
+        return gradient(sig, &(0..n).map(|i| i as f64 * dt).collect::<Vec<_>>());
+    }
+    savgol_filter_deriv(sig, w as usize, p, dt)
+}
+
+/// `_SG_WINDOW_S` — the smoothing window as a physical DURATION.
+const SG_WINDOW_S: f64 = 0.10;
+
+/// `_median_dt`: sample interval of a time base, robust to the dropped frames
+/// and duplicate timestamps both streams carry.
+fn median_dt(t: &[f64]) -> f64 {
+    if t.len() < 2 {
+        return 1.0 / 30.0;
+    }
+    let mut d: Vec<f64> = t.windows(2).map(|w| w[1] - w[0]).collect();
+    d.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = d.len() / 2;
+    let dt = if d.len().is_multiple_of(2) {
+        (d[mid - 1] + d[mid]) / 2.0
+    } else {
+        d[mid]
+    };
+    if dt > 0.0 { dt } else { 1.0 / 30.0 }
+}
+
+/// `_sg`: Savitzky-Golay over a window of `win_s` SECONDS, so the same
+/// physical filter applies whatever rate the trial was captured at.
+///
+/// This used to be a fixed 9-sample window here while the reference used
+/// 0.10 s. Those agree only near 100 Hz. The scoring path resamples to a
+/// 50 ms grid first (`resample::TICK_S`), where the reference's window is
+/// ~5 samples and this port's was 9 — so the phone smoothed roughly twice as
+/// hard as the desktop on the very rate it actually scores at. The divergence
+/// stayed hidden while the counting window was capped at 4 s, and surfaced as
+/// an R2n mismatch of 0.09 once it widened.
+fn sg_seconds(sig: &[f64], dt: f64, win_s: f64, p: usize) -> Vec<f64> {
+    let n = sig.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut w = (win_s / dt).round() as i64;
+    if w % 2 == 0 {
+        w += 1;
+    }
+    let pmin = p as i64 + 2;
+    if w < pmin {
+        w = if pmin % 2 == 1 { pmin } else { pmin + 1 };
+    }
+    let cap = if n.is_multiple_of(2) { n as i64 - 1 } else { n as i64 };
+    w = w.min(cap);
+    if w % 2 == 0 {
+        w -= 1;
+    }
+    if w >= pmin && w > 0 {
+        savgol_filter(sig, w as usize, p)
     } else {
         sig.to_vec()
     }
@@ -326,7 +535,7 @@ pub fn compute_pt_params(
     // detrending the whole trial before detecting release injects a spurious
     // slope into that flat region, which can cross the adaptive threshold
     // seconds before the leg actually moves.
-    let ang_s_raw = sg(&ang_c_raw, 15, 3);
+    let ang_s_raw = sg_seconds(&ang_c_raw, median_dt(&t_c), SG_WINDOW_S, 3);
     let rel_i = match release_idx {
         Some(idx) => finite_indices
             .partition_point(|&fi| fi < idx)
@@ -373,7 +582,7 @@ pub fn compute_pt_params(
             .collect(),
         None => ang_c_raw.clone(),
     };
-    let ang_s = sg(&ang_c, 15, 3);
+    let ang_s = sg_seconds(&ang_c, median_dt(&t_c), SG_WINDOW_S, 3);
 
     // Pre-release angle: median of the window just before release — the held
     // leg position, shown as "Rest" on the report.
@@ -424,7 +633,7 @@ pub fn compute_pt_params(
         a0_raw = a0_raw.abs();
     }
 
-    let phi_s = sg(&phi, 9, 2);
+    let phi_s = sg_seconds(&phi, median_dt(&t_r), SG_WINDOW_S, 2);
 
     // A0: maximum of smoothed phi in the first 20% after release (a wider
     // window tolerates a late trigger), floored at the first post-release
@@ -444,7 +653,20 @@ pub fn compute_pt_params(
     // clears the bar and ordinary noise riding on the trend gets counted as
     // dozens of "significant peaks". The reference measured 144 height-only
     // peaks vs 0 with prominence on a monotonic 180->60 degree descent.
-    let min_amp = 1.0_f64.max(0.05 * a0);
+    // The floor is noise-aware, not derived from A0 alone. 0.05*A0 is ~2.3 deg
+    // on a typical 47 deg swing, which a trace whose settled tail carries
+    // 2.5 deg of noise crosses constantly: on synthetic no-rebound trials
+    // (true N = 0) the count read 8-12 once the counting window widened past
+    // 4 s. The old 4 s cap hid that instead of fixing it, at the cost of
+    // truncating real oscillations too.
+    //
+    // Bounded above by 0.25*A0 so the floor can never swallow a real swing: a
+    // trial that never settles has no quiet region, so its "noise" estimate is
+    // contaminated by genuine motion.
+    let noise_amp = settled_tail_noise_sd(&phi)
+        .map(|sd| (NOISE_FLOOR_K * sd).min(0.25 * a0))
+        .unwrap_or(0.0);
+    let min_amp = 1.0_f64.max(0.05 * a0).max(noise_amp);
     let neg_phi_s: Vec<f64> = phi_s.iter().map(|v| -v).collect();
     let mut pk_i = find_peaks(&phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
     let mut tr_i = find_peaks(&neg_phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
@@ -522,7 +744,10 @@ pub fn compute_pt_params(
     };
 
     // ---- 4 & 5. omega max/min, normalised by A0 ---------------------------
-    let omega_s = sg(&gradient(&phi, &t_r), 7, 2);
+    let vel_win_s = swing_period_s(&t_r, &pk_i, &tr_i)
+        .map(|per| SG_VEL_PERIOD_FRAC * per)
+        .unwrap_or(SG_VEL_FALLBACK_S);
+    let omega_s = sg_derivative_seconds(&phi, median_dt(&t_r), vel_win_s, SG_VEL_POLYORDER);
     let omega_abs: Vec<f64> = omega_s.iter().map(|v| v.abs()).collect();
     let omega_peak_deg_s = omega_abs
         .iter()

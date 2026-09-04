@@ -14,7 +14,7 @@
 use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
 use crate::calibration::{calibrate_accel_bias, calibrate_gyro_bias, ReleaseDetector};
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
-use crate::resample::{ema_smooth, tick_resample, TICK_S};
+use crate::resample::{ema_smooth, rescale_ema_alpha, tick_resample, ANALYSIS_TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -203,10 +203,13 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         })
         .collect();
 
-    let (t, held) = tick_resample(&sample_t, &angle_raw, TICK_S);
+    // Parameters are derived on the 100 Hz analysis grid, not the 20 Hz
+    // display poll -- see `resample::ANALYSIS_TICK_S`. The EMA coefficient is
+    // rescaled with it so only the grid moves and the filter stays put.
+    let (t, held) = tick_resample(&sample_t, &angle_raw, ANALYSIS_TICK_S);
     Ok(TrialResult {
         t,
-        angle_deg: ema_smooth(&held, cfg.ema_alpha),
+        angle_deg: ema_smooth(&held, rescale_ema_alpha(cfg.ema_alpha, ANALYSIS_TICK_S)),
         release_quat,
         release_idx,
     })

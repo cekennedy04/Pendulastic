@@ -104,7 +104,18 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # One-directional penalties: only penalise deviations in the impaired direction.
 HEALTHY_REF = {
     "R2n":           1.0321,  # control median n=4 (2026-08-21 recalibration)
-    "N":             3.5,     # control median n=4 -- was 5.5 pre-fix (see note above)
+    # RECALIBRATED 2026-09-04. Was 3.5, which was not a physiological value at
+    # all: it was the old 4 s counting cap itself (at ~0.9 Hz, 4 s admits ~3.5
+    # cycles), so the "healthy reference" was the ceiling every trial pressed
+    # against. Both cohort arms sat at ~91% of their own 4*f ceiling.
+    #
+    # 5.50 is the Control-arm median across 63 optical trials scored on the
+    # production path under the 10 s window and the noise-aware amplitude
+    # floor. Caveat carried forward: the Control arm is DIAGNOSIS-based, not
+    # MAS-examined, so this shares HEALTHY_REF's standing weakness -- it is a
+    # better number, not yet a validated one. Published healthy legs oscillate
+    # ~9 times, so 5.50 is still low; see the note on recording length.
+    "N":             5.50,
     "phi_max_ratio": 0.6386,  # control median n=4
     "omega_max_n":   6.7684,  # control median n=4
     "omega_min_n":   0.0010,  # control median n=4
@@ -1892,6 +1903,87 @@ def _sg(sig: np.ndarray, dt: float, win_s: float = _SG_WINDOW_S,
     return savgol_filter(sig, w, p) if w >= p + 2 else sig.copy()
 
 
+# ── angular velocity ──────────────────────────────────────────────────────────
+# omega_max_n and omega_min_n are a max and a min of |omega|, and an extremum
+# over a noisy trace is biased AWAY from the truth -- upward for the max. So the
+# estimator's job is not to preserve the largest number it can find; it is to
+# not manufacture one.
+#
+# The previous estimator was `_sg(np.gradient(phi, t_r), ...)`: a finite
+# difference, then a smoother trying to clean up the noise the difference had
+# just amplified. Measured against a closed-form damped cosine through the full
+# pipeline, its peak ran +0.95% high at 0.25 deg of trace noise, +6.4% at 1 deg
+# and +14.7% at 2 deg. Optical trials carry a settled-tail SD of 2.26 deg at
+# p90, so the worst row is where a tenth of the reference corpus actually sits.
+#
+# A Savitzky-Golay analytic derivative fits a local polynomial to the angle and
+# differentiates that polynomial exactly, so noise is never differentiated at
+# all. A wider window (0.20 s) and a cubic are affordable here precisely because
+# the derivative is analytic: the extra span buys variance reduction without the
+# peak-flattening a wider smoothing window would cost.
+# The window is a fraction of the SWING'S OWN PERIOD, not a fixed duration. A
+# fixed window cannot be right at both ends of the corpus: measured against the
+# closed-form truth across 0.6-1.8 Hz, 0.20 s held bias to +-2.3% but degraded
+# to +7.0% at 2 deg of noise, while 0.40 s was flat to -0.5% against noise yet
+# attenuated -8.2% at 1.8 Hz. Scaling with the period fixes both at once,
+# because the thing being smoothed over is the signal's own timescale.
+#
+# 0.35 of a period, cubic: worst |bias| 0.52% at 0.5 deg noise and 1.33% at
+# 2 deg, across the whole frequency range. The old finite-difference estimator
+# was +2.67% and +14.67% on the same signals.
+_SG_VEL_PERIOD_FRAC = 0.35
+_SG_VEL_POLYORDER   = 3
+# Used only when the trace yields too few extrema to measure a period at all.
+_SG_VEL_FALLBACK_S  = 0.20
+# A knee pendulum cannot swing outside this; clamps a period estimate taken
+# from noise-driven extrema before it can pick an absurd window.
+_SG_VEL_F_BOUNDS    = (0.3, 3.0)
+
+
+def _swing_period_s(t_r: np.ndarray, pk_i, tr_i) -> Optional[float]:
+    """Swing period in seconds from the detected extrema, or None.
+
+    Consecutive extrema of an oscillation are half a period apart, so the
+    median gap doubled is the period -- more robust on a decaying trace than
+    an FFT, which is pulled by the changing amplitude.
+    """
+    idx = np.sort(np.concatenate([np.asarray(pk_i, dtype=int),
+                                  np.asarray(tr_i, dtype=int)]))
+    if idx.size < 2:
+        return None
+    gaps = np.diff(np.asarray(t_r, dtype=float)[idx])
+    gaps = gaps[np.isfinite(gaps) & (gaps > 0)]
+    if gaps.size == 0:
+        return None
+    period = 2.0 * float(np.median(gaps))
+    lo, hi = 1.0 / _SG_VEL_F_BOUNDS[1], 1.0 / _SG_VEL_F_BOUNDS[0]
+    return float(np.clip(period, lo, hi))
+
+
+def _sg_derivative(sig: np.ndarray, dt: float,
+                   win_s: float = _SG_VEL_FALLBACK_S,
+                   p: int = _SG_VEL_POLYORDER) -> np.ndarray:
+    """d(sig)/dt via a Savitzky-Golay analytic derivative, in units per second.
+
+    Falls back to a plain gradient when the series is too short to host a
+    window, which matches `_sg`'s own degrade-rather-than-raise contract.
+    """
+    sig = np.asarray(sig, dtype=float)
+    n = len(sig)
+    if n < 3 or dt <= 0:
+        return np.gradient(sig) / dt if (n > 1 and dt > 0) else np.zeros(n)
+    w = int(round(win_s / dt))
+    if w % 2 == 0:
+        w += 1
+    if w < p + 2:
+        w = p + 2 if (p + 2) % 2 == 1 else p + 3
+    w = min(w, n - 1 if n % 2 == 0 else n)
+    w = w if w % 2 == 1 else w - 1
+    if w < p + 2:
+        return np.gradient(sig, dt)
+    return savgol_filter(sig, w, p, deriv=1, delta=dt)
+
+
 # Drift estimation is anchored on the settled tail rather than the pre-release
 # hold -- see the long note at the call site in compute_pt_params for why the
 # hold cannot show the drift.
@@ -2195,7 +2287,60 @@ def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
 # Matches imu_calibration_tuner.score_waveform's own Continuity-check window
 # cap -- a real pendulum swing settles well within this, so a stray extremum
 # past it is tail noise, not real oscillation.
-_ACTIVE_WINDOW_CAP_SEC = 4.0
+# Multiple of the settled-tail noise SD that an excursion must clear to count
+# as a real oscillation. At 3x, a clean phone trace (settled-tail SD 0.09-0.38
+# deg across the corpus) yields 0.3-1.1 deg, well under the 0.05*A0 floor, so
+# the guard is inert on ordinary data and only engages where the trace is
+# genuinely noisy.
+_NOISE_FLOOR_K = 3.0
+
+
+def _settled_tail_noise_sd(t_r: np.ndarray, phi: np.ndarray) -> Optional[float]:
+    """Detrended SD of the settled tail, or None if there isn't enough of one.
+
+    Detrended because slow baseline drift is not noise -- a least-squares line
+    through the tail removes it, leaving the sample-to-sample scatter that is
+    what actually crosses an amplitude threshold.
+    """
+    # The minimums are deliberately low. An earlier draft required 100 finite
+    # samples and a 30-sample tail, which made this a CLIFF: the reference and
+    # the Rust port replay the same trial to slightly different lengths, and a
+    # 137-sample trial (21-sample tail) fell on opposite sides of the gate in
+    # the two languages -- one guarded, one not, and R2n differed by 0.09 on
+    # identical motion. An amplitude floor that flips on a handful of samples
+    # is worse than no floor. At 30/10 every trial long enough to score at all
+    # gets an estimate, so the floor is continuous in practice.
+    phi = np.asarray(phi, dtype=float)
+    finite = phi[np.isfinite(phi)]
+    if finite.size < 30:
+        return None
+    tail = finite[int(0.85 * finite.size):]
+    if tail.size < 10:
+        return None
+    x = np.arange(tail.size, dtype=float)
+    try:
+        slope, icpt = np.polyfit(x, tail, 1)
+        resid = tail - (slope * x + icpt)
+    except Exception:
+        resid = tail - np.median(tail)
+    sd = float(np.std(resid))
+    return sd if np.isfinite(sd) else None
+
+
+# End of the oscillation-counting window, in seconds past release.
+#
+# Was 4.0, which truncated the measurement rather than bounding it: against
+# known ground truth N reported 3.5 for true cycle counts of 4, 6 and 8 alike,
+# and both cohort arms sat at ~91% of their own `4 * f` ceiling -- making N a
+# reading of frequency x window rather than of damping, and redundant with `f`.
+# Published healthy legs oscillate ~9 times, unreachable in 4 s at ~1 Hz.
+#
+# 10.0 recovers the count (verified exact against synthetic swings of 2, 4, 6
+# and 8 cycles) and is where the corpus stops supporting more: 80.8% of
+# recordings exceed 10 s but only 19.8% exceed 15 s, and measured N saturates
+# past 10 s. The tail-noise miscounting this cap used to mask is now handled at
+# source by the noise-aware `min_amp` above.
+_ACTIVE_WINDOW_CAP_SEC = 10.0
 
 
 def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
@@ -2562,7 +2707,21 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # once prominence is required; a genuine ~1Hz decaying-cosine synthetic
     # oscillation is unaffected (N=5 either way, correctly matching 5 true
     # cycles) since real oscillation peaks have real local prominence.
-    min_amp  = max(1.0, 0.05 * A0)
+    # The amplitude floor is noise-aware, not derived from A0 alone. A floor of
+    # 0.05*A0 is ~2.3 deg on a typical 47 deg swing, which a trace whose settled
+    # tail carries 2.5 deg of noise crosses constantly: measured on synthetic
+    # no-rebound trials (true N = 0) the count read 8-12 once the counting
+    # window was widened past 4 s. The old 4 s cap hid that rather than fixing
+    # it -- it truncated the window before the noise could accumulate, at the
+    # cost of also truncating real oscillations (N reported 3.5 for true counts
+    # of 4, 6 and 8 alike).
+    #
+    # Bounded above by 0.25*A0 so the floor can never swallow a real swing: a
+    # trial that never settles has no quiet region to measure, and its "noise"
+    # estimate is contaminated by genuine motion.
+    _noise_sd  = _settled_tail_noise_sd(t_r, phi)
+    _noise_amp = min(_NOISE_FLOOR_K * _noise_sd, 0.25 * A0) if _noise_sd else 0.0
+    min_amp  = max(1.0, 0.05 * A0, _noise_amp)
     pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
     tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
 
@@ -2631,7 +2790,9 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         phi_max_ratio = 0.0
 
     # ── 4 & 5. omega max/min (normalised by A0) ───────────────────────────────
-    omega_s        = _sg(np.gradient(phi, t_r), dt=_median_dt(t_r), p=2)
+    _period        = _swing_period_s(t_r, pk_i2, tr_i2)
+    _vel_win_s     = (_SG_VEL_PERIOD_FRAC * _period) if _period else _SG_VEL_FALLBACK_S
+    omega_s        = _sg_derivative(phi, dt=_median_dt(t_r), win_s=_vel_win_s)
     omega_abs      = np.abs(omega_s)
     omega_peak_dps = float(np.nanmax(omega_abs))      # deg/s  (raw, not normalised)
     omega_max_n    = omega_peak_dps / A0               # normalised by A0

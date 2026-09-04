@@ -197,3 +197,43 @@ fn find_peaks_applies_distance_before_prominence_not_the_reverse() {
         "got the result that prominence-before-distance would produce"
     );
 }
+
+
+// ── Savitzky-Golay analytic derivative ───────────────────────────────────────
+
+/// Pinned against `scipy.signal.savgol_filter(x, 9, 3, deriv=1, delta=0.05)`.
+///
+/// A structural test would pass on an implementation that got the edge
+/// handling or the per-`delta` scaling wrong, and both are easy to get wrong:
+/// scipy evaluates the DERIVATIVE of the edge polynomial at the first and last
+/// `halflen` samples rather than its value, and the coefficients carry a
+/// `1/delta` that turns per-sample into per-second.
+#[test]
+fn savgol_derivative_matches_scipy() {
+    let x: &[f64] = &[5.0, 3.730877878718461, 3.0473479212278947, 2.9365883939231585, 3.3887751605453253, 4.398163183100706, 5.963718970730272, 8.08923435269533, 10.782909050654325, 14.056448003223945, 17.923772814849805, 22.39948918056466, 27.497279001876826, 33.22839419949169, 39.60041803316083, 46.616430290134744, 54.274668243372965, 62.56872070330227, 71.48823380072042, 81.02005080395287, 91.14966049222849, 101.8627946394875, 113.1469987478475, 124.99300311479455, 137.39574329864936];
+    let want: &[f64] = &[-30.91456070265707, -19.437157775680515, -8.021852359290458, 3.3313555465131017, 14.622465941730173, 25.7467043736938, 36.898827135171445, 48.172173730880104, 59.64673860550577, 71.38036486667663, 83.40237656240606, 95.7103505107947, 108.27038305869283, 121.0208224029015, 133.87905559719923, 146.75060309000946, 159.53951961046025, 172.15895640977485, 184.54072210195474, 196.64278958802004, 208.45392265574077, 220.04667827058194, 231.3946293461257, 242.49777588237245, 253.35611787932223];
+    let got = mobile_imu_core::signal::savgol_filter_deriv(x, 9, 3, 0.05);
+    assert_eq!(got.len(), want.len());
+    for (i, (g, w)) in got.iter().zip(want).enumerate() {
+        assert!((g - w).abs() < 1e-9, "sample {i}: got {g}, want {w}");
+    }
+}
+
+/// A cubic SG derivative reproduces a quadratic's slope exactly:
+/// d/dt (3t^2 - 2t + 7) = 6t - 2, at the edges as well as the interior.
+#[test]
+fn savgol_derivative_is_exact_on_a_polynomial() {
+    let dt = 0.02_f64;
+    let x: Vec<f64> = (0..40)
+        .map(|i| {
+            let t = i as f64 * dt;
+            3.0 * t * t - 2.0 * t + 7.0
+        })
+        .collect();
+    let got = mobile_imu_core::signal::savgol_filter_deriv(&x, 11, 3, dt);
+    for (i, g) in got.iter().enumerate() {
+        let t = i as f64 * dt;
+        let want = 6.0 * t - 2.0;
+        assert!((g - want).abs() < 1e-6, "sample {i}: got {g}, want {want}");
+    }
+}

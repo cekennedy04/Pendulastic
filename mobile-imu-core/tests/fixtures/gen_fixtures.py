@@ -349,7 +349,7 @@ def main():
     # output very little while making the fixture much harder to reason
     # about. Deterministic throughout -- ripple is a fixed sinusoid, never
     # an RNG.
-    from imu_calibration_tuner import replay_trial
+    from imu_calibration_tuner import ANALYSIS_TICK_S, replay_trial
     from pendulastic_imu_server import ROLE_DISTAL
 
     e2e_fs = 100.0          # Hz, the phone streams' nominal cadence
@@ -447,7 +447,12 @@ def main():
     parts.append(f64_const("E2E_EMA_ALPHA", e2e_params["ema_alpha"],
                            "EMA alpha used for the replay."))
 
-    t_e2e, ang_e2e = replay_trial(e2e_raw, e2e_params)
+    # The production scoring path replays on the 100 Hz analysis grid, not
+    # the 20 Hz display poll -- see imu_calibration_tuner.ANALYSIS_TICK_S.
+    # Pinning the fixture to the display cadence would pin the port to a
+    # grid neither side scores on.
+    t_e2e, ang_e2e = replay_trial(e2e_raw, e2e_params,
+                                  tick_s=ANALYSIS_TICK_S)
     assert len(t_e2e) > 0, "e2e log never zeroed - release detection did not fire"
     emit_trial("TRIAL_E2E", t_e2e, ang_e2e,
                "End-to-end: synthetic raw log replayed through the full pipeline")
@@ -458,7 +463,8 @@ def main():
     # 0 deg rather than 180, so score_waveform's horizontal-start check
     # rejects it by construction and its verdict would say nothing about the
     # port.
-    _, ang_ock = replay_trial(e2e_raw, dict(e2e_params, method="ockendon"))
+    _, ang_ock = replay_trial(e2e_raw, dict(e2e_params, method="ockendon"),
+                              tick_s=ANALYSIS_TICK_S)
     parts.append(f64_slice("E2E_OCK_ANG", ang_ock,
                            "Same log, method='ockendon' - exercises ockendon_deg in situ."))
 
