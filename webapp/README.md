@@ -10,9 +10,10 @@ dismiss control.
 
 ## Views
 
-The app is five sections toggled by `src/router.js`: **home** (tiles),
+The app is six sections toggled by `src/router.js`: **home** (tiles),
 **capture**, **trials** (this session's history), **mas** (assessment entry),
-and **session** (participant, leg, export, close).
+**session** (participant, leg, export, close), and **trends** (history over
+time, and figure export).
 
 Views use `.view` / `.view.active`, never the `hidden` attribute -- see the
 note above the `.view` rule in `src/app.css` for why.
@@ -38,6 +39,66 @@ A half-filled MAS form is saved as a draft in the `settings` store (not
 `sessionStorage`, which is cleared exactly when a standalone app is
 terminated). Drafts are keyed per participant and leg, and the most recently
 saved one is resumed.
+
+## Trends
+
+`view-trends` shows one point per session per leg: MAS grade, A0, and the PT7
+composite. Points are the **median** of that session's trials -- single-trial
+discrimination for this instrument has been measured at worse than chance, so
+a per-trial scatter would plot noise while looking like signal. A session with
+fewer than two trials, or with unmeasured parameters, draws a hollow point so
+a thin session reads as thin.
+
+The MAS axis is **ordinal with a fixed 0..5 domain**. `1+` is a position
+between `1` and `2`, not the number 1.5, and fixing the domain stops a
+participant who only ever scored 1 and 2 being drawn as though those two
+grades were the whole scale of spasticity. A pending (`-1`) assessment leaves
+a **gap**, never a point at zero -- zero means "no spasticity", the opposite
+of "not yet assessed".
+
+The PT7 chart carries two captions drawn **into the canvas**, so they survive
+export: the score is non-monotonic in severity, and it is recomputed against
+the current `HEALTHY_REF`, so recalibrating that reference moves the whole
+historical curve. There is deliberately no fitted trend line, no zone shading
+and no improving/worsening indicator -- each would assert an interpretation
+the app suppresses everywhere else (see `ZONE_CLASSIFICATION_CALIBRATED`).
+
+The composite is not stored -- it would go stale as `HEALTHY_REF` moves -- so
+it is recomputed from each trial's stored scalars through
+`pt_score_from_params`, a wasm entry point added for exactly this.
+`WasmSession::finish_pt_score` only works on a live session with samples
+pushed into it. The wasm is loaded lazily on first entry to this view, so the
+capture path does not pay for it; if that load fails, MAS and A0 still render
+because both are stored values.
+
+The source line above the charts always states provenance -- how many sessions
+came from this device and how many were imported. A history assembled on one
+phone is partial by construction, and a partial clinical series that does not
+say so is worse than an empty one.
+
+## Importing a session bundle
+
+Trends ingests a `-manifest.json` (v1 or v2) plus its optional `-mas.csv` --
+the same artifacts this app exports.
+
+Import is **additive**: it never deletes or overwrites. Trials dedupe on `id`,
+assessments on `(leg, condition, assessed_date)`, so re-importing the same
+bundle reports "nothing new" rather than duplicating. A bundle whose
+`clinic_patient_id` does not match the selected participant is **refused**,
+not re-attributed -- silently filing another person's trials under the
+selected participant is unrecoverable once the ids are rewritten. An
+unrecognised schema is refused by name, so an old export is distinguishable
+from a corrupt file.
+
+## Exporting a figure
+
+Each chart exports as a PNG rendered at 3x through the same renderer used on
+screen, so a figure cannot drift from what was displayed. Filenames share the
+session-export stem (`pendulastic-<id>-<stamp>-trend-<chart>.png`). The
+background is painted explicitly: a canvas starts transparent, and a
+transparent PNG on a dark slide would render the axis labels and the PT7
+captions invisible.
+
 
 ## Build step (required before serving or testing)
 
