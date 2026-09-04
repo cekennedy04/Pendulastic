@@ -18,10 +18,18 @@ function uuid() {
   return crypto.randomUUID();
 }
 
+/// The capture protocol a trial was physically recorded under.
+///
+/// 1 is every recording made before settle-based termination existed, and is
+/// signalled BY ABSENCE -- those records carry no such field. Bump this
+/// whenever a change alters what a trial physically IS, not merely how it is
+/// scored; algorithm_version already covers the latter.
+export const CAPTURE_PROTOCOL_VERSION = 2;
+
 export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
-  unmeasured = [], driftCorrection = 'live',
+  unmeasured = [], driftCorrection = 'live', settleTargetS = 5.0,
 }) {
   // Copy only the known fields. Anything else the caller passes -- notably a
   // composite score -- is dropped rather than persisted.
@@ -34,6 +42,15 @@ export function makeTrialRecord({
     timestamp: Date.now(),
     algorithm_version: algorithmVersion,
     capture_quality: captureQuality,
+    // Which capture protocol physically produced this trial -- distinct from
+    // algorithm_version, which says how it was SCORED. Trials terminated by
+    // the settle rule are not directly comparable with the earlier
+    // operator-terminated ones, because tail length is exactly what
+    // neutral_deg is computed from. Absent means 1: everything recorded
+    // before this existed carries no such field, and a consumer must read
+    // that as version 1 rather than as an error.
+    capture_protocol_version: CAPTURE_PROTOCOL_VERSION,
+    settle_target_s: settleTargetS,
     release_idx: releaseIdx,
     // Which of the seven scored parameters were placeholders rather than
     // measurements, straight from mobile-imu-core's unmeasured_params(). The

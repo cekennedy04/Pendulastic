@@ -53,13 +53,18 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
   }
 
   const manifest = {
-    // v2 adds `mas`. Bumped rather than widened in place: a v1 consumer must
+    // v3 adds capture_protocol_version and settle_target_s to each trial.
+    // Bumped rather than widened in place: a consumer must
     // not be handed a different shape under an unchanged version string.
-    schema: 'pendulastic/session-export/v2',
+    schema: 'pendulastic/session-export/v3',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
     algorithm_version: trials[0].algorithm_version,
+    // Session-level default, exactly as algorithm_version above: the
+    // per-trial value below is the one that is true if the app updated
+    // mid-session.
+    capture_protocol_version: trials[0].capture_protocol_version ?? 1,
     patient: { clinic_patient_id: patient.clinic_patient_id },
     session: { id: session.id, timestamp: session.timestamp },
     trials: trials.map((t, i) => ({
@@ -71,6 +76,10 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       // not be assumed to match the session-level field above.
       algorithm_version: t.algorithm_version,
       capture_quality: t.capture_quality,
+      // Absent means 1: a trial recorded before this field existed must keep
+      // protocol 1 rather than being relabelled on its way out.
+      capture_protocol_version: t.capture_protocol_version ?? 1,
+      settle_target_s: t.settle_target_s ?? null,
       release_idx: t.release_idx,
       unmeasured: t.unmeasured || [],
       drift_correction: t.drift_correction || 'live',

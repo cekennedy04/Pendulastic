@@ -152,3 +152,17 @@ test('the last csv column survives CRLF line endings', () => {
   assert.equal(back[0].mas_extension, '3');
   assert.deepEqual(back[0], row);
 });
+
+// ---- v3 bundles -----------------------------------------------------------
+test('a v3 manifest parses', () => {
+  const v3 = JSON.stringify({ ...JSON.parse(manifestV2), schema: 'pendulastic/session-export/v3' });
+  assert.equal(parseManifest(v3).schema, 'pendulastic/session-export/v3');
+});
+
+// Everything captured before the settle rule is protocol 1 BY ABSENCE. A
+// consumer must read a missing field as 1, never as an error, or every older
+// bundle becomes unimportable.
+test('a trial with no protocol version reads as version 1', () => {
+  const m = parseManifest(manifestV2);
+  assert.equal(m.trials[0].capture_protocol_version ?? 1, 1);
+});

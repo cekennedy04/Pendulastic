@@ -90,3 +90,26 @@ test('the convention defaults to live rather than claiming analysis', () => {
   });
   assert.equal(r.drift_correction, 'live');
 });
+
+// ---- capture protocol versioning ------------------------------------------
+// Trials captured under the settle rule are not directly comparable with the
+// earlier operator-terminated recordings: tail length is exactly what
+// neutral_deg is computed from. Without this tag a future longitudinal
+// analysis would silently mix the two cohorts.
+test('a trial records the capture protocol it was captured under', () => {
+  const r = makeTrialRecord({
+    sessionId: 's', side: 'left', params: {}, trajectory: {},
+    rawJsonl: '', algorithmVersion: 'x',
+  });
+  assert.equal(r.capture_protocol_version, 2);
+  assert.equal(r.settle_target_s, 5.0);
+});
+
+// Everything recorded before this change is protocol 1 BY ABSENCE.
+test('the protocol version is a number, not a string', () => {
+  const r = makeTrialRecord({
+    sessionId: 's', side: 'left', params: {}, trajectory: {},
+    rawJsonl: '', algorithmVersion: 'x',
+  });
+  assert.equal(typeof r.capture_protocol_version, 'number');
+});

@@ -241,11 +241,8 @@ const masRecords = [{
   stronger_leg: '', notes: 'settled, no catch', mas_flexion: '2', mas_extension: '',
 }];
 
-test('the manifest schema is v2', () => {
-  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
-  const manifest = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(manifest.schema, 'pendulastic/session-export/v2');
-});
+// The schema string is asserted by 'the manifest schema is v3' further down;
+// this one moved with the bump rather than being duplicated at two versions.
 
 test('a mas csv is emitted beside the trials', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials, masRecords });
@@ -335,4 +332,44 @@ test('a text-backed file is unaffected by the blob support', () => {
   const documentRef = { createElement: () => anchor, body: { appendChild: () => {} } };
   downloadViaAnchor({ name: 'f.csv', type: 'text/csv', text: 'a,b\r\n' }, { documentRef, urlRef });
   assert.equal(captured.size, 5);
+});
+
+// ---- capture protocol in the manifest -------------------------------------
+// Adding fields to the trial entries changes the manifest SHAPE, and the v2
+// spec's own rule was that a consumer must not be handed a different shape
+// under an unchanged version string.
+test('the manifest schema is v3', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
+  const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.equal(m.schema, 'pendulastic/session-export/v3');
+});
+
+// The shared masTrials fixture is deliberately legacy-shaped, to exercise the
+// `?? 1` passthrough; these two need a trial that actually carries the fields.
+const protocolTrials = [{ ...masTrials[0], capture_protocol_version: 2, settle_target_s: 5.0 }];
+
+test('each manifest trial carries its capture protocol and settle target', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: protocolTrials });
+  const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.equal(m.trials[0].capture_protocol_version, 2);
+  assert.equal(m.trials[0].settle_target_s, 5.0);
+});
+
+// A session-level default beside algorithm_version, which already works this
+// way: the per-trial value is the one that is true if the app updated
+// mid-session.
+test('the manifest carries a session-level protocol default', () => {
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: protocolTrials });
+  const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.equal(m.capture_protocol_version, 2);
+});
+
+// A trial exported from a device that predates the field must not be
+// relabelled as protocol 2 on its way out.
+test('a legacy trial keeps protocol 1 rather than being relabelled', () => {
+  const legacy = [{ ...masTrials[0] }];
+  delete legacy[0].capture_protocol_version;
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials: legacy });
+  const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.equal(m.trials[0].capture_protocol_version, 1);
 });

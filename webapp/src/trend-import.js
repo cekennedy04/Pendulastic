@@ -8,6 +8,7 @@
 import { MAS_FIELDS } from './mas-store.js';
 
 const ACCEPTED = new Set([
+  'pendulastic/session-export/v3',
   'pendulastic/session-export/v2',
   // v1 predates the mas block. Its trials are still importable, and refusing
   // them would strand every session exported before MAS entry existed.
