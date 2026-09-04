@@ -231,6 +231,13 @@ body {
 #guide.fired { background: var(--fired-bg); }
 #guide.fired::before { content: "↓"; }
 
+/* The limb settled and the trial self-terminated. Reuses --ready-bg because
+   this is the same kind of event: the protocol was satisfied. Carries its own
+   glyph like every other state, so the meaning never rests on colour alone --
+   the rule the whole state palette is built on. */
+#guide.settled { background: var(--ready-bg); }
+#guide.settled::before { content: "✓"; }
+
 /* An expected clinical outcome (no usable swing), not a fault -- deliberately
    neutral, not alarming, distinct from both Moving's gray and the true
    fault color below. */

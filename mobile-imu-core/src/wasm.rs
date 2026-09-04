@@ -44,6 +44,7 @@ impl WasmSession {
             HoldState::Holding { .. } => 1,
             HoldState::Ready => 2,
             HoldState::Released => 3,
+            HoldState::Settled => 4,
         }
     }
 
@@ -53,6 +54,13 @@ impl WasmSession {
             HoldState::Ready => 0.95,
             _ => 0.0,
         }
+    }
+
+    /// Seconds of continuous post-release stillness. Drives the settle
+    /// progress bar; the termination decision itself is made in `session`,
+    /// so there is one home for the rule.
+    pub fn settle_s(&self) -> f64 {
+        self.inner.settle_s()
     }
 
     pub fn drift_deg(&self) -> f64 {

@@ -28,8 +28,11 @@ const el = (id) => document.getElementById(id);
 // code 0..3 from onState, per capture.js's doc comment: 0 Moving, 1 Holding,
 // 2 Ready, 3 Released. Both arrays are indexed by that same code, matching
 // mobile-imu-core's HoldState (see progress.md conflict #5).
-const STATES = ['MOVING\nhold still', 'HOLDING', 'READY\nrelease now', 'RELEASED\nlet it settle'];
-const CLASSES = ['moving', 'holding', 'ready', 'fired'];
+// Indexed by state_code(). Both arrays MUST stay the same length as
+// mobile-imu-core's HoldState -- a short array renders `undefined` into the
+// guide rather than throwing, so nothing else would catch a mismatch.
+export const STATES = ['MOVING\nhold still', 'HOLDING', 'READY\nrelease now', 'RELEASED\nlet it settle', 'SETTLED\ntrial complete'];
+export const CLASSES = ['moving', 'holding', 'ready', 'fired', 'settled'];
 
 // The result table renders PARAM_FIELDS (imported from session-store.js) in
 // that module's order -- exactly the field names PtParams' JSON serialiser
@@ -803,6 +806,12 @@ if (typeof document !== 'undefined') {
   // trajectory at the new canvas size instead of leaving a stretched bitmap
   // on screen until the next trial.
   let lastTrajectory = null;
+  // Read by endTrial at the moment a trial finishes. Kept outside the session
+  // handle because that handle is nulled synchronously on stop, before the
+  // worker's result arrives -- the same trap the C1 comment describes.
+  let latestSettleS = 0;
+  let lastSettleS = 0;
+  let lastEndedManually = true;
   // The just-finished capture handle, kept alive for Export after `session`
   // itself is nulled below (onResult/onError null `session` unconditionally
   // -- that is what makes tapping Start immediately after a result safe).
@@ -1448,10 +1457,18 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  function onState({ code, calm_s, drift_deg }) {
+  function onState({ code, calm_s, drift_deg, settle_s = 0 }) {
+    latestSettleS = settle_s;
     const g = el('guide');
     g.className = CLASSES[code];
     g.textContent = code === 1 ? `HOLDING ${calm_s.toFixed(1)}s` : STATES[code];
+    // The limb has been still for SETTLE_TARGET_S and the core has decided
+    // the trial is done. Ending it here rather than in the worker keeps the
+    // decision in one place (session.rs) and its DOM effects in another.
+    if (code === 4) {
+      endTrial({ endedManually: false });
+      return;
+    }
     // Both gates are surfaced separately: the corrective action for motion
     // and for drift differ, so "it failed" is not enough for the clinician
     // (task-6 dispatch, requirement 2).
@@ -1608,20 +1625,32 @@ if (typeof document !== 'undefined') {
     session = await startCapture({ onState, onResult, onError });
   });
 
-  el('stop').addEventListener('click', () => {
+  // Ends the trial. Called by the Stop button AND by the settle auto-stop --
+  // ONE implementation, because two paths that both finish a trial would
+  // drift, and this one carries the C1 ordering below.
+  //
+  // `endedManually` is recorded for the capture-quality classification: a
+  // trial the operator ended and one that self-terminated are different
+  // clinical artefacts even when the waveforms look alike.
+  function endTrial({ endedManually }) {
+    if (el('stop').hidden) return; // no trial in flight
+    lastEndedManually = endedManually;
+    lastSettleS = latestSettleS;
     // THE fix for C1, and the half that actually recovers the handle.
     //
-    // Stop is the normal -- and only -- way a trial completes: it posts
-    // `finish` to the worker, whose `result` reply arrives one task later and
-    // drives onResult. But this handler nulls `session` SYNCHRONOUSLY, so
-    // onResult ran with `session === null` and had nothing left to capture.
-    // Capturing here, before the nulling, is what gives onResult a handle to
-    // retain -- and `retainExportHandle` up there is what stops onResult's
-    // later `null` from undoing it. Neither half works alone.
+    // This is the normal way a trial completes: it posts `finish` to the
+    // worker, whose `result` reply arrives one task later and drives
+    // onResult. But this nulls `session` SYNCHRONOUSLY, so onResult ran with
+    // `session === null` and had nothing left to capture. Capturing here,
+    // before the nulling, is what gives onResult a handle to retain -- and
+    // `retainExportHandle` up there is what stops onResult's later `null`
+    // from undoing it. Neither half works alone.
     exportSession = retainExportHandle(exportSession, session);
     session?.stop();
     session = null;
     el('stop').hidden = true;
     el('start').hidden = false;
-  });
+  }
+
+  el('stop').addEventListener('click', () => endTrial({ endedManually: true }));
 }

@@ -9,6 +9,7 @@ import { createCaptureView } from '../src/views/capture.js';
 import {
   patientLabel, nextParticipantState, SETTING_KEYS, initialView, resolveActivePatient, buildInfoText,
 } from '../src/views/session.js';
+import { STATES, CLASSES } from '../src/app.js';
 import { trialSummary } from '../src/views/trials.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
@@ -802,4 +803,18 @@ test('missing values read as unknown rather than undefined', () => {
   assert.ok(!s.includes('undefined'), s);
   assert.match(s, /unknown/);
   assert.ok(!buildInfoText().includes('undefined'));
+});
+
+// ---- settle state wiring (unit A) ----------------------------------------
+// STATES and CLASSES are indexed by state_code(), which now reaches 4 for
+// Settled. A short array renders `undefined` into the guide rather than
+// throwing, so nothing else would catch a mismatch.
+test('the state arrays cover every HoldState code including Settled', () => {
+  assert.equal(STATES.length, 5);
+  assert.equal(CLASSES.length, 5);
+  assert.match(STATES[4], /complete|settled|done/i);
+});
+
+test('every state class is a distinct name', () => {
+  assert.equal(new Set(CLASSES).size, CLASSES.length);
 });
