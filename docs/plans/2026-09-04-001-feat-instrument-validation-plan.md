@@ -68,7 +68,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R8. The app displays no healthy, borderline or impaired classification derived from PT7.
 - R9. A reading beyond the normative boundary is displayed as measured rather than clamped to the boundary.
 - R16. Until rig-derived anchors exist, no severity index and no categorical zone is displayed. The app reports excursion and the continuous kinematic parameters as measured.
-- R18. The excursion gate threshold is re-derived against the 100 Hz analysis grid, measured across the trial corpus rather than synthetic fixtures, before R6 computes an index or R16 is lifted. The count of trials that change side is reported.
+- R18. The excursion gate floor is restored to the strictness it was set at, against A0 as the 100 Hz grid now measures it. Measured on the corpus, that point is 28.0 degrees; the floor moves there in both language implementations, and the stale headroom claim in the ceiling's comment is corrected with it.
 
 **Capture validity**
 
@@ -106,7 +106,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE6. **Covers R15.** Given the rig set to its passive profile with no active torque, when a swing is recorded and compared against human healthy-control trials, then the envelope comparison is reported whether or not it matches.
 - AE7. **Covers R16.** Given no rig-derived anchor exists, when a trial is scored in the app, then excursion and kinematic parameters are shown and no index value or zone label appears.
 - AE8. **Covers R17.** Given a construct-validity claim against human MAS, when it is stated, then it rests on the clinician-examined cohort, and any wider figure alongside it is marked exploratory.
-- AE9. **Covers R18.** Given the gate re-derived on the 100 Hz grid, when it is applied to the corpus, then the number of trials moving from scored to refused, and from refused to scored, is stated.
+- AE9. **Covers R18.** Given the floor moved to 28.0 degrees, when it is applied to the corpus, then it refuses the same three trials the 25 degree floor refused, and no trial that was being scored becomes refused.
 
 ### Scope Boundaries
 
@@ -149,6 +149,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - `mobile-imu-core/src/pt_score.rs` — `HEALTHY_REF`, `PT_HEALTHY_MAX`, and the seven scored parameters.
 - `tests/fixtures/pendulum_sim.py` — the simulator the non-monotonicity was established on.
 - Supervisor notes, 2026-09-04 — the rig, blind clinician assessment, drift-during-hold invalidity, lateral-motion hinge lock, and IMU-only direction.
+- Grid re-measurement, 2026-09-04, 130 trials replayed at both grids on the production path. A0 rose: median 50.02 to 56.46 degrees, ratio 1.1185, p10 1.0363, p90 1.2346, down on only 7 of 130. One trial changed side of the gate, from refused to scored; none went the other way. The lowest new A0 among trials the old floor passed is 31.58, so a floor of 28.0 refuses the same three trials that 25.0 does. Ceiling headroom fell rather than grew: max A0 79.8 to 91.5 against the 120 ceiling, p99 85.5, nothing above 100.
 
 ---
 
