@@ -328,9 +328,14 @@ pub fn excursion_reason(params: &PtParams) -> Option<String> {
             params.a0_deg, MAX_INTERPRETABLE_A0_DEG
         ));
     }
+    // The "(control mean 46.6, sd 11.1, n=53)" clause was dropped here to match
+    // the Python message. It stated a superseded corpus as current fact: the
+    // same filter now yields 31.0, 9.9, n=18. The floor, the reason the ratios
+    // stop tracking, and the instruction to repeat the trial are the parts a
+    // clinician can act on, and they all still hold.
     Some(format!(
         "Insufficient excursion: the leg moved {:.1} deg, below the {:.0} deg floor for \
-         interpreting PT7 (control mean 46.6, sd 11.1, n=53). PT7's parameters are ratios \
+         interpreting PT7. PT7's parameters are ratios \
          normalised on the swing, so they stop tracking severity once the swing collapses. \
          Repeat the trial and check positioning, release and sensor placement.",
         params.a0_deg, MIN_INTERPRETABLE_A0_DEG

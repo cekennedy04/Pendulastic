@@ -1380,3 +1380,43 @@ def test_pt_to_mas_can_return_a_label_that_is_not_a_number():
     labels = {lbl for _thresh, lbl in p._MAS}
     assert "1+" in labels
     assert isinstance(p.pt_to_mas(0.30), str)
+
+
+# ── U3: a refusal must not assert a superseded corpus ────────────────────────
+
+
+def test_a_refusal_states_no_corpus_statistic_it_cannot_stand_behind():
+    # The message used to read "(control mean 46.6, sd 11.1, n=53)" as plain
+    # fact. Under the filter those constants name, the corpus now reads 31.0,
+    # 9.9, n=18 -- and KD12 says no re-derivation this corpus supports would be
+    # truer, so the clause was dropped rather than updated. A clinician reading
+    # a refusal should not be handed a number we cannot stand behind.
+    import pendulastic_pt_score as p
+    for msg in (p.INSUFFICIENT_EXCURSION, p.IMPOSSIBLE_EXCURSION):
+        assert "46.6" not in msg
+        assert "11.1" not in msg
+        assert "n=53" not in msg
+        assert "89.8" not in msg
+        assert "{mean" not in msg and "{sd" not in msg and "{n}" not in msg
+
+
+def test_the_refusal_still_carries_what_the_clinician_can_act_on():
+    # Dropping the clause must not gut the message. The floor, the reason the
+    # ratios stop tracking, and the instruction to repeat the trial all stand.
+    import pendulastic_pt_score as p
+    est = p.mas_estimate({"A0_deg": 9.0})
+    assert est["mas"] is None
+    r = est["reason"]
+    assert "9.0 deg" in r
+    assert f"{p.MIN_INTERPRETABLE_A0_DEG:.0f} deg" in r
+    assert "ratios" in r
+    assert "Repeat the trial" in r
+
+
+def test_the_retired_reference_constants_are_gone_not_merely_unused():
+    # Leaving them defined would put 46.6/11.1/53 back within one import of a
+    # caller, as data rather than as history.
+    import pendulastic_pt_score as p
+    for name in ("EXCURSION_REF_MEAN_DEG", "EXCURSION_REF_SD_DEG",
+                 "EXCURSION_REF_N"):
+        assert not hasattr(p, name), f"{name} should have been removed with the clause"

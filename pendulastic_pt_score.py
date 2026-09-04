@@ -499,9 +499,13 @@ def pt_to_mas(pt: float) -> str:
 #
 # Evidence: optical_recheck.py, spastic_minimum.py, excursion_ref.py, and
 # docs/plans/2026-09-04-001-feat-instrument-validation-plan.md (R18-R21).
-EXCURSION_REF_MEAN_DEG = 46.6
-EXCURSION_REF_SD_DEG = 11.1
-EXCURSION_REF_N = 53
+# EXCURSION_REF_MEAN_DEG / _SD_DEG / _N are gone. They held 46.6, 11.1 and 53
+# and existed only to format the refusal message, which told a clinician the
+# control mean as a plain statement of fact. Under the same filter that corpus
+# now reads 31.0, 9.9 and n=18, and under the reasoning above no re-derivation
+# this corpus supports would be truer than the one it replaces -- so the
+# honest move was to stop asserting it rather than to assert a newer version.
+# The numbers survive above as history, which is what they are.
 MIN_INTERPRETABLE_A0_DEG = 25.0
 
 # Upper bound on a believable excursion. The floor above catches a swing that
@@ -532,15 +536,14 @@ MAX_INTERPRETABLE_A0_DEG = 120.0
 IMPOSSIBLE_EXCURSION = (
     "Impossible excursion: the leg moved {a0:.1f} deg, above the {gate:.0f} deg "
     "ceiling. A0 is the initial extension of an interior knee angle, which "
-    "cannot exceed 180 deg at all, and the largest value measured across this "
-    "corpus is 89.8 deg. A number this size means the reconstruction failed, "
-    "not that the leg swung far -- check the trial's anatomical reference "
-    "before reading anything into the score."
+    "cannot exceed 180 deg at all. A number this size means the reconstruction "
+    "failed, not that the leg swung far -- check the trial's anatomical "
+    "reference before reading anything into the score."
 )
 
 INSUFFICIENT_EXCURSION = (
     "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
-    "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
+    "floor for interpreting PT7. "
     "PT7's parameters are ratios normalised on the swing, so they stop tracking "
     "severity once the swing collapses. Repeat the trial and check positioning, "
     "release and sensor placement before reading anything into the score."
@@ -587,8 +590,7 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
         return {"mas": None, "pt7": score, "interpretable": False,
                 "reason": INSUFFICIENT_EXCURSION.format(
                     a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),
-                    gate=MIN_INTERPRETABLE_A0_DEG, mean=EXCURSION_REF_MEAN_DEG,
-                    sd=EXCURSION_REF_SD_DEG, n=EXCURSION_REF_N)}
+                    gate=MIN_INTERPRETABLE_A0_DEG)}
     return {"mas": pt_to_mas(score), "pt7": score, "interpretable": True, "reason": ""}
 
 # Ordinal MAS scale, single source of truth for anything that needs a numeric
