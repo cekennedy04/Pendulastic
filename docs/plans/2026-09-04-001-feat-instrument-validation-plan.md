@@ -48,6 +48,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD7. **Human MAS correlation is reported at two tiers, and only the examined tier carries a clinical claim.** Correlating against a clinical scale requires that a clinician performed the examination; 15 of the 44 legs carry assumed grades and 2 are operator-set. The pooled figure is retained as an exploratory sensitivity analysis with its composition disclosed. (session-settled: user-directed - chosen over reporting the larger pool as a single number.) Governs R14, R17.
 - KD8. **No interim cohort anchor is derived. The rig's lowest profile is the zero point.** Restricting to examined grades leaves 4 MAS-0 legs across 3 participants, which cannot carry a dispersion-based boundary; widening the pool to 21 legs reintroduces exactly the assumed grades KD7 excludes. A provisional anchor would be discarded the moment rig data lands, after having rewritten every historical score once. (session-settled: user-directed.) Governs R7, R16.
 - KD9. **The rig's passive behaviour is validated against human controls before any active torque is layered on.** Otherwise the rig could mimic tone without mimicking a limb, and the instrument would be validated against the wrong thing. Governs R15.
+- KD10. **The excursion gate is re-derived on the corpus before the index is built, not assumed to have survived the grid change.** The gate decides whether a trial is scored at all, so an unverified threshold on A0 puts every downstream severity value on a moving baseline. (session-settled: user-directed - chosen over carrying it as a deferred question.) Governs R18.
 
 ### Requirements
 
@@ -67,6 +68,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R8. The app displays no healthy, borderline or impaired classification derived from PT7.
 - R9. A reading beyond the normative boundary is displayed as measured rather than clamped to the boundary.
 - R16. Until rig-derived anchors exist, no severity index and no categorical zone is displayed. The app reports excursion and the continuous kinematic parameters as measured.
+- R18. The excursion gate threshold is re-derived against the 100 Hz analysis grid, measured across the trial corpus rather than synthetic fixtures, before R6 computes an index or R16 is lifted. The count of trials that change side is reported.
 
 **Capture validity**
 
@@ -104,6 +106,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE6. **Covers R15.** Given the rig set to its passive profile with no active torque, when a swing is recorded and compared against human healthy-control trials, then the envelope comparison is reported whether or not it matches.
 - AE7. **Covers R16.** Given no rig-derived anchor exists, when a trial is scored in the app, then excursion and kinematic parameters are shown and no index value or zone label appears.
 - AE8. **Covers R17.** Given a construct-validity claim against human MAS, when it is stated, then it rests on the clinician-examined cohort, and any wider figure alongside it is marked exploratory.
+- AE9. **Covers R18.** Given the gate re-derived on the 100 Hz grid, when it is applied to the corpus, then the number of trials moving from scored to refused, and from refused to scored, is stated.
 
 ### Scope Boundaries
 
@@ -134,7 +137,6 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 
 - The passive stiffness and damping the rig is set to for R15. Supervisor notes cite 0.5 Nm/rad and 0.5 Nms/rad from the Popovic and Stein pendulum literature; neither constant appears anywhere in this repository, so both need confirming against the primary source before the rig is dialled to them.
 - Which human control trials R15 compares against, given that the same provenance rule that produced KD8 leaves 4 examined MAS-0 legs across 3 participants.
-- Whether the 25 degree excursion gate still sits where it was intended. `MIN_INTERPRETABLE_A0_DEG` is an absolute threshold fixed on 2026-08-30, and the move to the 100 Hz analysis grid changed A0's filtered scale beneath it without the gate being re-derived. The boundary is populated: 19 of 313 trials fall between 25 and 28 degrees, and 35 below 30. The shift's direction is fixture-dependent and unsettled by synthetic trials, so this needs measuring on the corpus rather than reasoning about.
 - The drift threshold that makes a hold invalid, and whether it is expressed as degrees, degrees per second, or a fraction of the swing.
 - The lateral-motion threshold, and whether exceeding it invalidates a trial or only annotates it.
 - How many assessors and repetitions the mapping needs to be worth reporting.
