@@ -131,3 +131,39 @@ impl WasmSession {
         export_jsonl::export_jsonl(self.inner.samples())
     }
 }
+
+/// The composite score for a trial's STORED parameters, for the trends view.
+///
+/// [`WasmSession::finish_pt_score`] only works on a live session with samples
+/// pushed into it; a stored trial has scalars and nothing else, because the
+/// composite is deliberately never persisted (`HEALTHY_REF` moves, so a
+/// stored score would go stale).
+///
+/// Logic-free, per this module's contract: the construction and the
+/// argument audit live in `pt_score::pt_score_from_scalars`, where
+/// `cargo test` can see them.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn pt_score_from_params(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+) -> String {
+    crate::pt_score::pt_score_from_scalars(
+        r2n,
+        n,
+        phi_max_ratio,
+        omega_max_n,
+        omega_min_n,
+        f,
+        area_ratio,
+        first_trough_depth,
+        a0_deg,
+    )
+}

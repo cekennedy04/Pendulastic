@@ -412,6 +412,70 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
     )
 }
 
+/// The composite score for a trial reconstructed from its STORED scalars.
+///
+/// Stored trials keep the scalar parameters but not the trajectory vectors,
+/// so a full [`PtParams`] cannot be rebuilt from one. It does not need to be:
+/// the whole scoring path reads only these nine scalars and touches no vector
+/// field --
+///
+///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, omega_max_n,
+///                            omega_min_n, f, area_ratio
+///   [`unmeasured_params`]  : f, first_trough_depth, n
+///   [`excursion_reason`]   : a0_deg
+///
+/// -- so the remaining fields are filled with values that cannot influence the
+/// result, and `scalar_path_matches_the_full_params_path` pins that claim
+/// against the full path rather than leaving it as a comment.
+///
+/// Arguments are NAMED rather than a positional slice on purpose: a
+/// mis-ordered call must be a compile error, not a silently wrong score on
+/// every historical trial.
+#[allow(clippy::too_many_arguments)]
+pub fn pt_score_from_scalars(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+) -> String {
+    let params = PtParams {
+        r2n,
+        n,
+        phi_max_ratio,
+        omega_max_n,
+        omega_min_n,
+        f,
+        area_ratio,
+        first_trough_depth,
+        a0_deg,
+        // Unread by every function the scoring path calls -- see this
+        // function's doc comment, and `trajectory_vectors_do_not_affect_the_score`.
+        omega_peak_deg_s: 0.0,
+        a1_deg: 0.0,
+        neutral_deg: 0.0,
+        neutral_deg_raw: 0.0,
+        pre_release_deg: 0.0,
+        quality_warn: false,
+        phi_negated: false,
+        spasticity_type: crate::scoring::SpasticityType::Balanced,
+        p_plus: 0.0,
+        p_minus: 0.0,
+        p_total: 0.0,
+        phi: Vec::new(),
+        ang_r: Vec::new(),
+        t_r: Vec::new(),
+        omega_s: Vec::new(),
+        pk_i: Vec::new(),
+        tr_i: Vec::new(),
+    };
+    pt_score_to_json(&params, &HEALTHY_REF)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +511,72 @@ mod tests {
         };
         overrides(&mut p);
         p
+    }
+
+    // ---- scoring a trial from its STORED scalars (trends view) ----------
+    // Stored trials keep the scalar parameters but not the trajectory
+    // vectors, so the trends view cannot rebuild a full PtParams. This pins
+    // that it does not need to: the scalar path must produce byte-identical
+    // JSON to the full path for the same trial, so the two can never drift
+    // into scoring one trial two ways.
+    #[test]
+    fn scalar_path_matches_the_full_params_path() {
+        let full = params(|p| {
+            p.first_trough_depth = 7.4;
+            p.a0_deg = 41.2;
+            // Deliberately populated: these must not reach the score.
+            p.omega_peak_deg_s = 210.0;
+            p.a1_deg = 33.0;
+            p.neutral_deg = 2.1;
+            p.p_total = 1.8;
+            p.phi = vec![1.0, 2.0];
+            p.t_r = vec![0.0, 0.1];
+            p.pk_i = vec![1];
+        });
+        let from_scalars = pt_score_from_scalars(
+            full.r2n, full.n, full.phi_max_ratio, full.omega_max_n,
+            full.omega_min_n, full.f, full.area_ratio,
+            full.first_trough_depth, full.a0_deg,
+        );
+        assert_eq!(pt_score_to_json(&full, &HEALTHY_REF), from_scalars);
+    }
+
+    // The vectors are provably unread by pt_score_breakdown,
+    // unmeasured_params and excursion_reason. This pins that claim, so a
+    // future change which starts reading one fails here rather than silently
+    // mis-scoring every stored trial in the trends view.
+    #[test]
+    fn trajectory_vectors_do_not_affect_the_score() {
+        let empty = params(|p| {
+            p.a0_deg = 45.0;
+        });
+        let filled = params(|p| {
+            p.a0_deg = 45.0;
+            p.phi = vec![9.0; 50];
+            p.ang_r = vec![9.0; 50];
+            p.t_r = vec![9.0; 50];
+            p.omega_s = vec![9.0; 50];
+            p.pk_i = vec![7; 5];
+            p.tr_i = vec![3; 5];
+        });
+        assert_eq!(
+            pt_score_to_json(&empty, &HEALTHY_REF),
+            pt_score_to_json(&filled, &HEALTHY_REF)
+        );
+    }
+
+    // The excursion gate reads a0_deg, so the scalar path must carry it --
+    // otherwise every stored trial would be scored as though its swing were
+    // 0 degrees and the gate would refuse a band on every one of them.
+    #[test]
+    fn the_scalar_path_carries_a0_into_the_excursion_gate() {
+        let good = pt_score_from_scalars(
+            1.0321, 3.5, 0.6386, 6.7684, 0.0010, 0.9137, 0.0768, 0.0, 45.0,
+        );
+        let collapsed = pt_score_from_scalars(
+            1.0321, 3.5, 0.6386, 6.7684, 0.0010, 0.9137, 0.0768, 0.0, 5.0,
+        );
+        assert_ne!(good, collapsed, "a0_deg must reach excursion_reason");
     }
 
     #[test]
