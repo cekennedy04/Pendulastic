@@ -95,11 +95,45 @@ button fires today. `Stop` remains live and usable at every moment.
 
 ### 3.2 Stillness test
 
-Reuses `is_stationary_window(gyro_buf, accel_buf, now)` with the existing
-`GYRO_STATIONARY_MAX_RAD_S` (0.9) and `ACCEL_STATIONARY_MAX_MPS2` (0.18)
-bounds. **No new threshold is introduced.** The same test that decides a hold
-is genuine decides a settle is genuine; a second, differently-tuned notion of
-"still" in the same file would be a defect waiting to happen.
+**Amended 2026-09-04, before implementation.** The original text specified
+`is_stationary_window(gyro_buf, accel_buf, now)`. That would have been a
+serious defect, for two independent reasons found while planning.
+
+**It would not fire.** `ZERO_CAPTURE_GUARD_RAD_S`'s own doc comment records
+that `is_stationary_window` is
+
+> tuned for bias-grade stillness and, verified empirically across the full
+> real trial corpus, never fires at all for a meaningful fraction of genuinely
+> fine trials (real accel noise from a handheld/strapped sensor commonly
+> exceeds its 0.18 m/s² bound even at rest)
+
+Using it as the settle test would mean a large fraction of trials never reach
+`Settled`. Combined with the no-cap decision in §1.3, those trials would
+record **indefinitely** — the worst available outcome, and one that only shows
+up on real hardware.
+
+**The session has no accel buffer.** `TrialSession` keeps `gyro_hold:
+SampleBuf` and nothing else; accel samples are appended to `samples` but never
+buffered for analysis. `is_stationary_window` needs both.
+
+**Resolution:** use the gyro-magnitude-only test the codebase already uses for
+exactly this class of decision —
+
+```rust
+recently_calm(&self.gyro_settle, t)   // all samples < ZERO_CAPTURE_GUARD_RAD_S
+```
+
+`ZERO_CAPTURE_GUARD_RAD_S` (0.3 rad/s) is documented as "empirically derived
+from the reference corpus, not guessed". No new threshold is introduced and no
+new sensor buffer is needed.
+
+**One new buffer is required regardless.** `push()` only calls `advance_hold`
+while `state != Released`, and `gyro_hold` is maintained inside it — so after
+release the existing buffer stops being updated. Settling therefore needs its
+own trailing buffer, `gyro_settle`, maintained by a new `advance_settle`.
+Keeping it separate from `gyro_hold` also avoids entangling settle detection
+with the release detector's ordering contract, which reads that buffer as of
+just *before* the current sample.
 
 ### 3.3 State machine
 
@@ -335,7 +369,7 @@ The device test for this change specifically must confirm:
 
 | Risk | Mitigation |
 | --- | --- |
-| 5 s of stillness is unreachable with a real strapped phone | Verify first on device; the constant is one line and named |
+| 5 s of stillness is unreachable with a real strapped phone | Uses the gyro-only ZERO_CAPTURE_GUARD_RAD_S bound, which is empirically derived from the real corpus, precisely because the stricter gyro+accel test is documented as not firing for many genuinely fine trials (§3.2). Verify first on device; the constant is one line and named |
 | A spastic limb records indefinitely | Accepted by decision; the 30 s alert prompts, and `Stop` is always live |
 | Audio becomes the sole carrier of a cue | Every cue has a visual counterpart; muted must lose nothing |
 | Protocol change silently confounds longitudinal analysis | `capture_protocol_version` on every trial and in the manifest |
