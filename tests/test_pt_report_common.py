@@ -1293,3 +1293,39 @@ def test_row5_source_mas_still_grades_when_no_excursion_is_available():
     measure and is out of scope for what it cannot."""
     assert common._row5_source_mas(1.9, []) is not None
     assert common._row5_source_mas(1.9, [{"A0_deg": None}]) is not None
+
+
+# -- MediaPipe is advisory, never graded (2026-09-04) -----------------------
+# The excursion gate asks whether THIS curve carries a swing. Whether a
+# channel's grades track ground truth at all is a separate question, and the
+# gate cannot answer it: an optical trial can pass the gate cleanly and still be
+# graded wrongly. Over the 92 trials where both MediaPipe and OptiTrack pass the
+# gate, MediaPipe-derived MAS agrees exactly on 31.5% and within one grade on
+# 44.6% -- close enough to chance on a six-point ordinal scale that printing it
+# on a clinician-facing surface would be misleading.
+# See docs/reports/2026-09-04-mediapipe-coverage-and-accuracy.md.
+
+
+def test_row5_source_mas_suppresses_the_grade_for_mediapipe():
+    """A swing good enough to grade is still not graded when it came from
+    MediaPipe -- the suppression is channel-level, not trial-level."""
+    healthy = [{"A0_deg": 48.0}, {"A0_deg": 52.0}]
+    assert common._row5_source_mas(0.278, healthy, "MediaPipe") is None
+
+
+def test_row5_source_mas_still_grades_the_imu():
+    """Suppression must be specific. The IMU is the claim path and keeps its
+    grade, on exactly the input MediaPipe is refused for."""
+    healthy = [{"A0_deg": 48.0}, {"A0_deg": 52.0}]
+    assert common._row5_source_mas(0.278, healthy, "IMU") == common.pt.pt_to_mas(0.278)
+
+
+def test_row5_source_mas_unlabelled_caller_keeps_previous_behaviour():
+    """source_label defaults to None so every existing call site is unchanged."""
+    healthy = [{"A0_deg": 48.0}, {"A0_deg": 52.0}]
+    assert common._row5_source_mas(0.278, healthy) == common.pt.pt_to_mas(0.278)
+
+
+def test_mediapipe_is_the_suppressed_source():
+    assert "MediaPipe" in common._MAS_SUPPRESSED_SOURCES
+    assert "IMU" not in common._MAS_SUPPRESSED_SOURCES
