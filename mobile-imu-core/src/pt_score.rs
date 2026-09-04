@@ -276,6 +276,16 @@ pub fn pt_score_simple(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// it. Low excursion also comes from poor positioning, an incomplete release,
 /// guarding, pain, mechanical obstruction and sensor failure, so the refusal
 /// is phrased about the MEASUREMENT, never about the patient.
+///
+/// 2026-09-04: the derivation this value rests on is VOID, and the value is
+/// deliberately unchanged. Measured on the current optical reconstruction, the
+/// lowest condition-matched clinician-examined spastic trial is 9.85 deg, not
+/// the 28.7 the floor was set to clear, and the control reference is 31.0/9.9
+/// over n=18 rather than 46.6/11.1 over n=53. Re-deriving would rest on one
+/// condition-matched trial out of nine across three participants, which cannot
+/// carry a diagnostic cutoff -- a thinner number, not a better one. The
+/// benchtop rig is what supplies a real severity reference. Full reasoning is
+/// in the Python constant's comment block, which is the canonical copy.
 pub const MIN_INTERPRETABLE_A0_DEG: f64 = 25.0;
 
 /// `pendulastic_pt_score.MAX_INTERPRETABLE_A0_DEG` — the ceiling above which a
@@ -286,6 +296,11 @@ pub const MIN_INTERPRETABLE_A0_DEG: f64 = 25.0;
 /// value). Not hypothetical: a seed-window bug produced A0 = 418.1 deg on P9
 /// Left/Right trial_3 at 97.3% coverage and a MAS grade was printed off it. A
 /// floor-only gate guards one failure direction out of two.
+///
+/// 2026-09-04: "above the data" is stale -- the largest A0 on the current
+/// optical reconstruction is 141.21, above this ceiling. The ceiling is still
+/// working: p99 is 63.88, and the one value above it is a control trial, where
+/// a 141 deg initial extension is not a plausible knee. Caught, not refused.
 pub const MAX_INTERPRETABLE_A0_DEG: f64 = 120.0;
 
 /// `pendulastic_pt_score.excursion_ok` — false when the swing is too small, or

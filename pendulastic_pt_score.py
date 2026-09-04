@@ -455,6 +455,50 @@ def pt_to_mas(pt: float) -> str:
 # excursion also comes from poor positioning, an incomplete release, guarding
 # or pain, mechanical obstruction, and sensor failure. Reporting "severe
 # spasticity" on those would trade one wrong answer for another.
+# ── 2026-09-04: THE DERIVATION ABOVE IS VOID. THE VALUES ARE UNCHANGED. ──────
+#
+# Every number the block above reasons from has moved, because the optical
+# reconstruction changed after 2026-08-30 and nothing re-derived these against
+# it. Measured on 124 kept optical trials through load_optitrack ->
+# compute_pt_params, and independently reproduced by a second pass over 253
+# trials that reached the same trial by a different join:
+#
+#   quantity                          note said    measured 2026-09-04
+#   lowest spastic leg                28.7         9.85  (14_left_pre_T4)
+#   control mean / sd / n             48.0/8.3/51  31.0/9.9/18
+#   largest A0 ever measured          89.8         141.21 (16_left_control_T4)
+#
+# So the floor's stated justification -- "as high as it can go while staying
+# clear of the lowest observed spastic leg (28.7, ~13% margin)" -- no longer
+# describes anything. That clearance is gone: 25.0 now sits ABOVE the lowest
+# examined spastic trial, and refuses a grade on 27% of kept optical trials.
+#
+# 9.85 is the lowest CONDITION-MATCHED one, i.e. the lowest trial whose MAS was
+# assessed in the same condition the trial was recorded in. Without that rule
+# the raw minimum is 6.76, but that trial is month_post carrying a pre grade.
+# Only 9 of 39 clinician-examined spastic trials are condition-matched at all.
+#
+# WHY THE VALUES ARE NOT CHANGED ANYWAY. A floor keeping the documented margin
+# below 9.85 lands at 8.57, which is not the same instrument -- it would stop
+# being a bound that protects study cases and become something else needing its
+# own justification. And it would rest on ONE condition-matched trial; the whole
+# condition-matched examined spastic set is 9 trials across 3 participants.
+# Neither supports a diagnostic cutoff. Re-deriving here would replace a stale
+# number with a thinner one. The benchtop rig exists to supply a severity
+# reference that is not fitted to 9 trials; this waits for it.
+#
+# EXCURSION_REF_* below are stale in the same way and are likewise left alone:
+# they only format the refusal message, and moving them without a defensible
+# derivation would make the message more precise and no more true.
+#
+# What is NOT in question: the grid move to ANALYSIS_TICK_S did not cause any
+# of this. It appears once in this module, inside the IMU reconstruction, and
+# the optical path never resamples. IMU A0 rose ~12% on that change; optical
+# A0 did not move. A single absolute floor therefore means slightly different
+# things on the two modalities, which is recorded but not yet acted on.
+#
+# Evidence: optical_recheck.py, spastic_minimum.py, excursion_ref.py, and
+# docs/plans/2026-09-04-001-feat-instrument-validation-plan.md (R18-R21).
 EXCURSION_REF_MEAN_DEG = 46.6
 EXCURSION_REF_SD_DEG = 11.1
 EXCURSION_REF_N = 53
@@ -469,6 +513,15 @@ MIN_INTERPRETABLE_A0_DEG = 25.0
 # across 218 scored optical trials the 99th percentile is 89.8 deg and the
 # largest genuine value is also 89.8, so the gate has ~34% headroom over the
 # real maximum and rejects nothing that was ever measured.
+#
+# 2026-09-04: the headroom claim is stale, but the ceiling is doing its job.
+# On 124 kept optical trials the largest A0 is now 141.21 (16_left_control_T4),
+# ABOVE this gate, so "rejects nothing that was ever measured" is no longer
+# true. It does not follow that the ceiling is wrong. p99 is 63.88, so 141.21
+# is a lone outlier -- on a CONTROL trial, where a 141 deg initial extension is
+# not a plausible knee. That reads as a reconstruction failure the ceiling
+# caught, which is exactly the case the paragraph below describes. Value left
+# at 120.
 #
 # It is not hypothetical. The seed-window bug documented in
 # the old seeded reconstruction produced A0 = 418.1 deg on P9 Left/Right trial_3
