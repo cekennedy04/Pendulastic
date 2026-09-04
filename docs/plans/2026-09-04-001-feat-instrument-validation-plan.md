@@ -50,7 +50,8 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD9. **The rig's passive behaviour is validated against human controls before any active torque is layered on.** Otherwise the rig could mimic tone without mimicking a limb, and the instrument would be validated against the wrong thing. Governs R15.
 - KD10. **The excursion gate is re-derived on the corpus before the index is built, not assumed to have survived the grid change.** The gate decides whether a trial is scored at all, so an unverified threshold on A0 puts every downstream severity value on a moving baseline. (session-settled: user-directed - chosen over carrying it as a deferred question.) Governs R18.
 - KD11. **The gate floor is not rescaled by a measurement-grid ratio.** 25.0 was never a control-derived bound; the provenance in `pendulastic_pt_score.py` states it is a conservative floor set as high as it could go while clearing the lowest observed spastic leg at 28.7 degrees, with roughly 13 percent of margin. Scaling it by an IMU grid ratio would have cut that margin to 2.4 percent and brought the gate to the edge of refusing a grade on a study case. Governs R18, R19.
-- KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 5.88 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
+- KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 8.57 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
+- KD13. **A grade assessed in one condition is not evidence about another.** Carrying a leg label across pre, post and month-post is what put a 6.76 degree month-post trial forward as the lowest spastic reading when its MAS was assessed at pre; the condition-matched value is 9.85. Tone changes over an intervention, which is the point of measuring it more than once. Governs R21.
 
 ### Requirements
 
@@ -85,6 +86,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R13. Every claim about the instrument states the MAS range over which it was measured.
 - R14. Any correlation against human MAS reports the provenance of those grades, distinguishing clinician examinations from assumed and operator-set values.
 - R17. Construct validity against human MAS is claimed only on the clinician-examined cohort. A figure computed over a wider pool is labelled exploratory, and the assumed and operator-set legs it contains are named where it appears.
+- R21. A MAS grade is applied only to trials recorded in the condition it was assessed in, or the carry across conditions is stated wherever the grade is used. Of 39 clinician-examined spastic trials, only 9 were recorded in the condition their grade was assessed in.
 
 ### Key Flows
 
@@ -114,6 +116,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE10. **Covers R19.** Given the same physical swing measured by both instruments, when each is scored, then the two A0 values agree within a stated tolerance, or the gate applies a separate constant per modality.
 - AE11. **Covers R18.** Given a refused trial, when the operator reads the refusal, then the reference statistics it quotes are those of the current reconstruction under the filter the message names.
 - AE12. **Covers R20.** Given a leg whose swing has collapsed below the floor, when its result is presented, then a severity value derived from A0 is shown and the absence of a PT7 grade is stated as a suppression rather than a failure to measure.
+- AE13. **Covers R21.** Given a MAS grade assessed in one condition and a trial recorded in another, when the pair is used in any reported figure, then the carry is stated rather than presented as a matched observation.
 
 ### Scope Boundaries
 
@@ -158,7 +161,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - Supervisor notes, 2026-09-04 — the rig, blind clinician assessment, drift-during-hold invalidity, lateral-motion hinge lock, and IMU-only direction.
 - `docs/reports/2026-09-04-mediapipe-coverage-and-accuracy.md`, with per-trial data in `Model_Analysis_Outputs/HPE_Comparison/mediapipe_pt_metrics.csv` - the corpus-wide HPE measurement behind KD6 and R12. On 284 trials the excursion gate passes 166 for the MediaPipe 2D angle and 156 for OptiTrack; where both are gradeable, n=92, exact MAS agreement is 31.5 percent and adjacent 44.6 percent, with PT7 at r=0.364. Those agreement figures are restricted to trials both instruments can grade, which is stricter than the 83.3 percent in `hpe_accuracy_summary.csv`, computed on a different subset without the gate. The same pass tested the world-angle column corpus-wide for the first time, n=178: PT7 r=0.236 against 0.364 for the 2D angle, so world landmarks are not a rescue. Gate pass rate by detection-rate bucket is non-monotonic - 24 percent below 25 percent detection, then 74, 59 and 67 - so the failure is in the derivation, not the tracking.
 - Grid re-measurement, 2026-09-04, 130 trials replayed at both grids on the production path. A0 rose: median 50.02 to 56.46 degrees, ratio 1.1185, p10 1.0363, p90 1.2346, down on only 7 of 130. One trial changed side of the gate, from refused to scored; none went the other way. The lowest new A0 among trials the old floor passed is 31.58, so a floor of 28.0 refuses the same three trials that 25.0 does. Ceiling headroom fell rather than grew: max A0 79.8 to 91.5 against the 120 ceiling, p99 85.5, nothing above 100.
-- Gate re-derivation, 2026-09-04, 124 optical trials joined to leg labels. The constraint the floor is documented as hanging off has collapsed: the lowest spastic leg was 28.7 degrees when the gate was set and is 6.76 today (13_right_month_post_T2, clinician-examined), with 10 of 39 spastic trials now below 25. Under the filter the shipped constants name -- coverage at or above 80 percent, no area-ratio warning -- the non-spastic reference is mean 31.0, sd 9.9, n 18, against the shipped 46.6, 11.1, 53; 27 of 45 non-spastic trials now fail that coverage filter. Two SD below the new mean is 11.2, so the floor no longer sits near any dispersion bound. Measured by scratch scripts spastic_minimum.py and excursion_ref.py, caches under Model_Analysis_Outputs/_cache/.
+- Gate re-derivation, 2026-09-04, 124 kept optical trials on the scorer own path, cross-checked against an independent 253-trial pass by a parallel session that reached the same trial by a different route. Both bounds in the derivation block are void. The floor is documented as clearing the lowest observed spastic leg at 28.7 degrees by roughly 13 percent; the lowest clinician-examined spastic trial whose MAS was assessed in the same condition as the trial is 9.85 (14_left_pre_T4), and a floor keeping the documented margin below it would sit at 8.57. The ceiling comment claims 89.8 as the largest value ever measured with ~34 percent of headroom; the largest is 141.21 (16_left_control_T4), above the 120 ceiling, though p99 is 63.88 so the ceiling is catching one apparent reconstruction failure rather than routinely refusing real swings. Under the filter the shipped constants name, the non-spastic reference is mean 31.0, sd 9.9, n 18 against the shipped 46.6, 11.1, 53. The workbench and scorer loaders were checked against each other and agree exactly: all 137 trials take marker_pca and the 124 paired A0 values are identical to zero decimal places.
 
 ---
 
@@ -302,7 +305,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
 ### U8. Report MAS correlation at two tiers
 
 - **Goal.** A construct-validity claim rests on examined grades, and any wider figure is labelled.
-- **Requirements.** R13, R14, R17. Instantiates KD7.
+- **Requirements.** R13, R14, R17, R21. Instantiates KD7 and KD13.
 - **Dependencies.** None.
 - **Files.** `mas_validation.py`, `src/pendulastic/stats.py`, `spasticity_grouping.py`, `tests/test_mas_validation.py`, `tests/test_spasticity_grouping.py`
 - **Approach.** The provenance already exists in `spasticity_grouping.py` as `SRC_CLINICAL`, `SRC_MAS_ASSUMED`, `SRC_MAS_OPERATOR` and the rest, and `CLINICIAN_ASSESSED_SOURCES` already names the examined set. The correlation path does not use any of it - `mas_validation.py` and `src/pendulastic/stats.py` read `mas_scores.csv` directly and know nothing about how a grade was obtained. Join the provenance in and report both tiers with their counts, the examined tier as the claim.
@@ -310,6 +313,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - A correlation over a mixed population reports the examined-only figure and the pooled figure with distinct counts.
   - The pooled figure carries its composition, naming the assumed and operator-set legs.
   - A population with no examined grades reports no primary claim rather than falling back to the pooled figure.
+  - A grade assessed in one condition and applied to a trial from another is reported as a carry, not a matched observation.
 - **Verification.** No reported correlation is ambiguous about which grades produced it.
 
 ### U9. State the dual-variable model where it is read
