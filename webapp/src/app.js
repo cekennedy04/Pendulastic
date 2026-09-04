@@ -14,7 +14,8 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
-import { captureQualityOf, SETTLE_TARGET_S, progressOf } from './capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds } from './capture-feedback.js';
+import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
@@ -847,6 +848,13 @@ if (typeof document !== 'undefined') {
   // Cleared on every state that is not Released, so a second trial cannot
   // inherit the first one's clock.
   let releasedAt = null;
+  // Completed seconds already beeped for the current hold or settle, so a
+  // 50ms tick cannot re-fire one it has already played.
+  let beepedSeconds = 0;
+  // Audio is additive: every cue has a visual counterpart, so a phone that
+  // cannot play sound loses no information. Unlocked from the Start gesture
+  // because iOS refuses to start an AudioContext outside one.
+  const cues = createAudioCues();
   // The just-finished capture handle, kept alive for Export after `session`
   // itself is nulled below (onResult/onError null `session` unconditionally
   // -- that is what makes tapping Start immediately after a result safe).
@@ -1526,12 +1534,28 @@ if (typeof document !== 'undefined') {
       plabel.textContent = prog.label;
     }
 
+    // One beep per completed second of stability, during hold and settle
+    // alike. Purely additive: the progress bar above already carries the same
+    // information, so a muted phone loses nothing.
+    const stability = code === 1 ? calm_s : (code === 3 ? settle_s : 0);
+    if (code === 1 || code === 3) {
+      for (let i = 0; i < beepsDue(beepedSeconds, stability); i += 1) cues.tick();
+      beepedSeconds = wholeSeconds(stability);
+    } else {
+      beepedSeconds = 0;
+    }
+
     // The limb has been still for SETTLE_TARGET_S and the core has decided
     // the trial is done. Ending it here rather than in the worker keeps the
     // decision in one place (session.rs) and its DOM effects in another.
     if (code === 4) {
       releasedAt = null;
+      beepedSeconds = 0;
       el('settle-alert').hidden = true;
+      // Longer and lower than a tick, so completion is distinguishable
+      // without counting -- the one cue the operator may act on while looking
+      // at the patient rather than the screen.
+      cues.complete();
       endTrial({ endedManually: false });
       return;
     }
@@ -1687,6 +1711,11 @@ if (typeof document !== 'undefined') {
       el('guide').textContent = 'Set a participant and leg\nin Session first';
       return;
     }
+    // Synchronous, and before every `await` below: iOS only permits an
+    // AudioContext to start inside a user gesture, and the first await ends
+    // that window. It sits after the participant gate on purpose -- that path
+    // returns without starting a trial, so there is nothing to cue.
+    cues.unlock();
     faulted = false; // fresh trial: the previous trial's latch must not carry over
     el('start').hidden = true;
     el('stop').hidden = false;

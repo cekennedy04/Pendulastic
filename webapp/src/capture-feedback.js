@@ -42,3 +42,17 @@ export function progressOf({ stateCode, calmS = 0, settleS = 0 } = {}) {
   if (stateCode === 4) return { fraction: 1, label: 'trial complete' };
   return null;
 }
+
+// Whole completed seconds of a stability counter. Floors at zero so a reset
+// or a stray negative cannot produce a negative beep count.
+export function wholeSeconds(value) {
+  return Math.floor(Math.max(0, value));
+}
+
+// How many beeps are owed since the last tick: one per completed second of
+// stability. Never negative -- when the counter resets the audio simply falls
+// silent, carrying the same reset the progress bar shows rather than chirping
+// at the operator for losing the hold.
+export function beepsDue(prevWholeSeconds, nextValue) {
+  return Math.max(0, wholeSeconds(nextValue) - prevWholeSeconds);
+}

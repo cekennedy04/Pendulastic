@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf } from '../src/capture-feedback.js';
+import { createAudioCues } from '../src/audio-cues.js';
+import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf, beepsDue, wholeSeconds } from '../src/capture-feedback.js';
 
 const T = 5.0;
 
@@ -95,4 +96,62 @@ test('the hold target mirrors the Rust ready threshold', async () => {
   const m = rs.match(/pub const GYRO_BIAS_WINDOW_S: f64 = ([0-9.]+);/);
   assert.ok(m, 'GYRO_BIAS_WINDOW_S not found');
   assert.ok(Math.abs(HOLD_TARGET_S - 0.95 * Number(m[1])) < 1e-9);
+});
+
+// ---- beep scheduling ------------------------------------------------------
+// One beep per completed second of stability, during hold and settle alike.
+test('crossing a second boundary is due one beep', () => {
+  assert.equal(beepsDue(0, 1.02), 1);
+});
+
+test('no boundary crossed is due none', () => {
+  assert.equal(beepsDue(1, 1.9), 0);
+});
+
+// Sample batches arrive every 50ms but can jump; the count must not swallow
+// seconds when it does.
+test('a jump across two boundaries is due two beeps', () => {
+  assert.equal(beepsDue(1, 3.05), 2);
+});
+
+// A reset must not fire a beep and must not go negative -- the audio has to
+// carry the same reset the bar shows, by falling silent rather than chirping.
+test('a reset to zero is due no beeps', () => {
+  assert.equal(beepsDue(3, 0), 0);
+});
+
+test('the whole-second counter tracks the value it was given', () => {
+  assert.equal(wholeSeconds(0), 0);
+  assert.equal(wholeSeconds(0.99), 0);
+  assert.equal(wholeSeconds(1.0), 1);
+  assert.equal(wholeSeconds(4.999), 4);
+  assert.equal(wholeSeconds(-1), 0);
+});
+
+// ---- audio is additive, never load-bearing --------------------------------
+test('a failing AudioContext does not throw out of unlock', () => {
+  const cues = createAudioCues({ ctxFactory: () => { throw new Error('blocked'); } });
+  assert.doesNotThrow(() => cues.unlock());
+  assert.equal(cues.available, false);
+});
+
+// Every cue must be a no-op when audio never started, so no caller can be
+// written that depends on it having worked.
+test('cues are silent no-ops when audio is unavailable', () => {
+  const cues = createAudioCues({ ctxFactory: () => { throw new Error('blocked'); } });
+  cues.unlock();
+  assert.doesNotThrow(() => { cues.tick(); cues.complete(); });
+});
+
+test('cues do not throw before unlock is ever called', () => {
+  const cues = createAudioCues({ ctxFactory: () => { throw new Error('unused'); } });
+  assert.doesNotThrow(() => { cues.tick(); cues.complete(); });
+});
+
+test('a suspended context is resumed, since iOS starts them suspended', () => {
+  let resumed = false;
+  const fake = { state: 'suspended', resume: () => { resumed = true; }, currentTime: 0 };
+  const cues = createAudioCues({ ctxFactory: () => fake });
+  cues.unlock();
+  assert.equal(resumed, true);
 });
