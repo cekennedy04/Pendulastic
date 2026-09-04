@@ -14,6 +14,19 @@ use crate::stillness::{SampleBuf, GYRO_BIAS_WINDOW_S, ZERO_CAPTURE_GUARD_RAD_S};
 /// derived from shadow-study data, not chosen here (spec §4.2).
 pub const MAX_HOLD_DRIFT_DEG: f64 = 5.0;
 
+/// Continuous post-release stillness required before a trial self-terminates.
+///
+/// Five seconds because `neutral_deg` is the settled-tail median and
+/// `scoring.rs` expresses every angle in the trial relative to it, so a short
+/// tail shifts the whole waveform -- including `a0_deg`, the spasticity
+/// grouping variable. The opposite failure, an over-long tail fabricating
+/// oscillations, is already guarded by `ACTIVE_WINDOW_CAP_SEC`.
+///
+/// There is deliberately NO maximum trial length. A limb with sustained
+/// clonus never reaches this and never self-terminates; the operator ends it.
+/// That is a clinical finding, not a fault.
+pub const SETTLE_TARGET_S: f64 = 5.0;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HoldState {
     /// Rate gate unsatisfied, or drift exceeded and the hold was revoked.
@@ -26,6 +39,9 @@ pub enum HoldState {
     Ready,
     /// Release fired.
     Released,
+    /// Post-release stillness held for `SETTLE_TARGET_S`. Terminal: further
+    /// samples are still logged, but cannot walk the state back.
+    Settled,
 }
 
 pub struct TrialSession {
@@ -40,6 +56,8 @@ pub struct TrialSession {
     /// type, so this duplicates usage, never logic.
     detector: ReleaseDetector,
     gyro_hold: SampleBuf,
+    settle_since: Option<f64>,
+    settle_s: f64,
 }
 
 fn norm3(v: [f64; 3]) -> f64 {
@@ -57,7 +75,16 @@ impl TrialSession {
             last_gyro_t: None,
             detector: ReleaseDetector::new(),
             gyro_hold: Vec::new(),
+            settle_since: None,
+            settle_s: 0.0,
         }
+    }
+
+    /// Seconds of continuous post-release stillness accumulated so far. Drives
+    /// the settle progress bar; the termination decision itself is made below,
+    /// so there is one home for the rule.
+    pub fn settle_s(&self) -> f64 {
+        self.settle_s
     }
 
     pub fn state(&self) -> HoldState {
@@ -77,10 +104,51 @@ impl TrialSession {
     }
 
     pub fn push(&mut self, s: RawSample) {
-        if s.sensor == Sensor::Gyro && self.state != HoldState::Released {
-            self.advance_hold(s.v, s.t);
+        if s.sensor == Sensor::Gyro {
+            match self.state {
+                // Post-release: accumulate stillness toward self-termination.
+                HoldState::Released => self.advance_settle(s.v, s.t),
+                // Terminal. Samples are still logged below -- the log is the
+                // archive -- but no state transition can follow.
+                HoldState::Settled => {}
+                _ => self.advance_hold(s.v, s.t),
+            }
         }
         self.samples.push(s);
+    }
+
+    /// Post-release settling. Deliberately the same shape as `advance_hold`:
+    /// accumulate while calm, reset to zero on movement, so `TrialSession` has
+    /// one settling idiom rather than two.
+    ///
+    /// Gates on the per-sample gyro magnitude against
+    /// `ZERO_CAPTURE_GUARD_RAD_S` -- the same bound and the same shape
+    /// `advance_hold` uses -- and NOT on `is_stationary_window`. That stricter
+    /// gyro+accel bound is documented in `stillness.rs` as never firing for a
+    /// meaningful fraction of genuinely fine trials, because real accel noise
+    /// from a strapped sensor exceeds its 0.18 m/s² bound even at rest. Since
+    /// there is no maximum trial length, using it here would leave those
+    /// trials recording indefinitely.
+    ///
+    /// Per-sample rather than `recently_calm`'s trailing window, deliberately.
+    /// `recently_calm` reports false until it has 0.95 s of history, so
+    /// starting the accumulator from it would have measured 0.95 + 5.0 = 5.95 s
+    /// of stillness while claiming five. The requirement is "not moving for
+    /// five seconds", so the clock starts at the first still sample. Requiring
+    /// five CONTINUOUS seconds already supplies the noise robustness a trailing
+    /// window would have added, which is why no buffer is needed here.
+    fn advance_settle(&mut self, omega: [f64; 3], t: f64) {
+        if norm3(omega) >= ZERO_CAPTURE_GUARD_RAD_S {
+            self.settle_since = None;
+            self.settle_s = 0.0;
+            return;
+        }
+
+        let start = *self.settle_since.get_or_insert(t);
+        self.settle_s = t - start;
+        if self.settle_s >= SETTLE_TARGET_S {
+            self.state = HoldState::Settled;
+        }
     }
 
     fn advance_hold(&mut self, omega: [f64; 3], t: f64) {
