@@ -1316,3 +1316,67 @@ def test_trial_quality_carries_the_axis_conditioning_number():
     assert "conditioning" in p.TrialQuality._fields
     q = p.TrialQuality(coverage=1.0, warnings=())
     assert math.isnan(q.conditioning), "must default to NaN, not 0.0"
+
+
+# ── U1: one gate in front of every rendered grade ────────────────────────────
+#
+# pendulastic_pt_score's own docstring says to prefer mas_estimate over
+# pt_to_mas, and fourteen call sites across eight modules did not. These pin
+# the rule where a grade reaches a person; analysis callers stay free to use
+# the raw mapping.
+
+
+def _collapsed_params():
+    """Params whose swing is too small for PT7 to mean anything."""
+    import pendulastic_pt_score as p
+    return {"A0_deg": p.MIN_INTERPRETABLE_A0_DEG - 5.0}
+
+
+def test_only_the_scorer_defines_the_zone_thresholds():
+    # pendulastic_viewer used to carry PT_HEALTHY_MAX = 0.09 / 0.20 "if import
+    # fails", against a canonical 0.1709 / 0.3528, and used them in the gauge
+    # with no availability guard. A grep, not an import check: the failure mode
+    # is a second DEFINITION appearing, which importing the module cannot see.
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    assign = re.compile(r"^\s*PT_(?:HEALTHY|BORDERLINE)_MAX\s*=\s*[0-9]", re.M)
+    offenders = []
+    for py in root.glob("*.py"):
+        if py.name == "pendulastic_pt_score.py":
+            continue
+        if assign.search(py.read_text(encoding="utf-8", errors="ignore")):
+            offenders.append(py.name)
+    assert not offenders, (
+        f"zone thresholds defined outside the scorer: {offenders}. "
+        "There is one definition; import it.")
+
+
+def test_mas_estimate_refuses_a_collapsed_swing_and_says_why():
+    import pendulastic_pt_score as p
+    est = p.mas_estimate(_collapsed_params())
+    assert est["mas"] is None
+    assert "Insufficient excursion" in est["reason"]
+
+
+def test_mas_estimate_refuses_an_impossible_swing_by_the_same_path():
+    import pendulastic_pt_score as p
+    est = p.mas_estimate({"A0_deg": p.MAX_INTERPRETABLE_A0_DEG + 50.0})
+    assert est["mas"] is None
+    assert "Impossible excursion" in est["reason"]
+
+
+def test_a_missing_a0_is_refused_not_graded():
+    # excursion_ok's contract: "None params, or a missing A0, count as NOT ok."
+    import pendulastic_pt_score as p
+    assert p.mas_estimate({})["mas"] is None
+    assert p.mas_estimate(None)["mas"] is None
+
+
+def test_pt_to_mas_can_return_a_label_that_is_not_a_number():
+    # web/api/models/trial.py typed mas_estimate as float. "1+" is not
+    # coercible to one, so any trial grading 1+ failed response validation.
+    import pendulastic_pt_score as p
+    labels = {lbl for _thresh, lbl in p._MAS}
+    assert "1+" in labels
+    assert isinstance(p.pt_to_mas(0.30), str)

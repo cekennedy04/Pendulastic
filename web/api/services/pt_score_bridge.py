@@ -36,15 +36,18 @@ def _load_hpe_csv(csv_path: str) -> tuple[np.ndarray, np.ndarray]:
 
 class PTScoreBridge:
     """
-    Wraps the existing compute_pt_params / pt_to_mas pipeline.
+    Wraps the existing compute_pt_params / mas_estimate pipeline.
     Returns a dict that maps 1:1 onto AnalysisResponse.
+
+    mas_estimate, not pt_to_mas: the latter is the raw mapping with no
+    excursion gate, and a grade served from this endpoint reaches a person.
     """
 
     def compute(self, csv_path: str, trial_meta: dict) -> dict[str, Any]:
         from pendulastic_pt_score import (
             compute_pt_params,
             compute_pt_score_simple,
-            pt_to_mas,
+            mas_estimate,
         )
 
         t, angle = _load_hpe_csv(csv_path)
@@ -54,7 +57,12 @@ class PTScoreBridge:
             raise ValueError("Insufficient oscillation data — trial cannot be scored.")
 
         pt_simple = compute_pt_score_simple(params)
-        mas       = pt_to_mas(pt_simple)
+        # The response field has always been called mas_estimate; it just did
+        # not call it. pt_to_mas is the raw mapping with no excursion gate, so
+        # this endpoint was serving grades on swings too collapsed to support
+        # one. `mas` is None on a refusal and the reason travels with it.
+        est       = mas_estimate(params)
+        mas       = est["mas"]
 
         def _safe(v: float) -> float:
             return float(v) if math.isfinite(v) else 0.0
@@ -62,6 +70,7 @@ class PTScoreBridge:
         return {
             "trial_id":    trial_meta["id"],
             "mas_estimate": mas,
+            "mas_refusal_reason": est["reason"],
             "pt_score":    round(pt_simple, 4),
             "parameters": {
                 "R2n":              _safe(params["R2n"]),

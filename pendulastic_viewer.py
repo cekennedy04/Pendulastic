@@ -74,16 +74,23 @@ except ImportError:
     print("matplotlib required: .venv\\Scripts\\pip install matplotlib")
     sys.exit(1)
 
-PT_HEALTHY_MAX    = 0.09   # fallback if import fails
-PT_BORDERLINE_MAX = 0.20
+# No fallback zone thresholds. This used to define PT_HEALTHY_MAX = 0.09 and
+# PT_BORDERLINE_MAX = 0.20 "if import fails", against a canonical 0.1709 and
+# 0.3528 -- so a failed import silently redrew the gauge boundaries and printed
+# a legend claiming healthy meant PT <= 0.09. Without the import this viewer
+# cannot score anything anyway, so the honest behaviour is to draw no zones.
+# pendulastic_pt_score is the single definition; see the U1 unit in
+# docs/plans/2026-09-04-001-feat-instrument-validation-plan.md.
 try:
     from pendulastic_pt_score import (compute_pt_params, compute_pt_score,
-                                      compute_pt_score_simple, HEALTHY_REF, pt_to_mas,
+                                      compute_pt_score_simple, HEALTHY_REF,
+                                      mas_estimate,
                                       PT_HEALTHY_MAX, PT_BORDERLINE_MAX,
                                       load_optitrack, draw_pt_annotations)
     _PT_AVAIL = True
 except Exception:
     _PT_AVAIL = False
+    PT_HEALTHY_MAX = PT_BORDERLINE_MAX = None
 
 _MP_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "mediapipe")
 _MP_MODEL = next(
@@ -2750,19 +2757,24 @@ class PendulaticViewer(tk.Tk):
         self._gauge_w   = _GW
         self._gauge_top = _PTOP
         self._gauge_h   = _GH
-        _g_end = int(_GW * PT_HEALTHY_MAX)    # green → amber boundary
-        _a_end = int(_GW * PT_BORDERLINE_MAX)  # amber → red boundary
         gauge_row = tk.Frame(pt_wrap, bg=_PB)
         gauge_row.pack(fill="x", pady=(6, 2))
         self._pt_gauge = tk.Canvas(gauge_row, width=_GW, height=_PTOP + _GH + 20,
                                     bg=_PB, highlightthickness=0)
         self._pt_gauge.pack(anchor="w")
-        self._pt_gauge.create_rectangle(0,      _PTOP, _g_end, _PTOP + _GH,
-                                         fill="#16A34A", outline="")
-        self._pt_gauge.create_rectangle(_g_end, _PTOP, _a_end, _PTOP + _GH,
-                                         fill="#D97706", outline="")
-        self._pt_gauge.create_rectangle(_a_end, _PTOP, _GW,    _PTOP + _GH,
-                                         fill="#DC2626", outline="")
+        if _PT_AVAIL:
+            _g_end = int(_GW * PT_HEALTHY_MAX)     # green → amber boundary
+            _a_end = int(_GW * PT_BORDERLINE_MAX)  # amber → red boundary
+            self._pt_gauge.create_rectangle(0,      _PTOP, _g_end, _PTOP + _GH,
+                                             fill="#16A34A", outline="")
+            self._pt_gauge.create_rectangle(_g_end, _PTOP, _a_end, _PTOP + _GH,
+                                             fill="#D97706", outline="")
+            self._pt_gauge.create_rectangle(_a_end, _PTOP, _GW,    _PTOP + _GH,
+                                             fill="#DC2626", outline="")
+        else:
+            # Thresholds unavailable: an unbanded track, not guessed bands.
+            self._pt_gauge.create_rectangle(0, _PTOP, _GW, _PTOP + _GH,
+                                             fill="#374151", outline="")
         # Zone labels spread across full canvas width to avoid overlap —
         # the healthy and borderline zones (9 % and 20 % of width) are too
         # narrow to center text in them.
@@ -2876,8 +2888,10 @@ class PendulaticViewer(tk.Tk):
              "Composite of 4 Popovic parameters calibrated on n=13 control / n=8 MS "
              "participants (ASU study).\n"
              "0.0 = perfectly healthy swing  ·  scores above 0.20 = strong spastic signal",
-             f"Healthy  (PT ≤ {PT_HEALTHY_MAX:.2f})",
-             f"Spastic signal  (PT > {PT_BORDERLINE_MAX:.2f})"),
+             (f"Healthy  (PT ≤ {PT_HEALTHY_MAX:.2f})" if _PT_AVAIL
+              else "Healthy  (thresholds unavailable)"),
+             (f"Spastic signal  (PT > {PT_BORDERLINE_MAX:.2f})" if _PT_AVAIL
+              else "Spastic signal  (thresholds unavailable)")),
         ]
         _gtxt = tk.Text(guide_frame, height=9, wrap="word",
                         bg=PANEL, fg=FG2, font=("Segoe UI", 8),
@@ -4270,9 +4284,16 @@ class PendulaticViewer(tk.Tk):
         pt_s = compute_pt_score_simple(params)
         pt_f = compute_pt_score(params)
 
-        # Custom score from user-selected parameters
+        # Custom score from user-selected parameters.
+        #
+        # The grade goes through mas_estimate, not pt_to_mas: the excursion gate
+        # is a property of the swing (A0), not of which parameters the operator
+        # ticked, so it applies to the custom score exactly as it does to PT7.
+        # `mas` is None when the gate refuses, and `_gate_reason` carries why.
         pt_custom = self._custom_pt_score(params)
-        mas = pt_to_mas(pt_custom)
+        _est = mas_estimate(params)
+        mas = _est["mas"]
+        self._gate_reason = _est["reason"]
 
         # Resolve release frame index (manual > pre-detected > auto from params)
         if self._manual_release_fi is not None:
@@ -4304,8 +4325,12 @@ class PendulaticViewer(tk.Tk):
         self._pt_score_key_lbl.config(
             text=f"PT score ({n_sel} param{'s' if n_sel != 1 else ''} selected):")
 
-        # Colour score label by zone
-        if pt_custom <= PT_HEALTHY_MAX:
+        # Colour score label by zone -- but only when the swing supports a
+        # verdict. A refused trial keeps its number and loses its colour: the
+        # score is still a measurement, the ZONE is what the gate withholds.
+        if mas is None:
+            _zone_col = "#9CA3AF"   # neutral: no verdict
+        elif pt_custom <= PT_HEALTHY_MAX:
             _zone_col = "#16A34A"   # green
         elif pt_custom <= PT_BORDERLINE_MAX:
             _zone_col = "#D97706"   # amber
@@ -8617,7 +8642,7 @@ class ValidationWindow(tk.Toplevel):
 
         try:
             from pendulastic_pt_score import (
-                compute_pt_params, compute_pt_score_simple, pt_to_mas,
+                compute_pt_params, compute_pt_score_simple, mas_estimate,
                 load_optitrack, HEALTHY_REF,
             )
         except ImportError as e:
@@ -8803,8 +8828,16 @@ class ValidationWindow(tk.Toplevel):
         bias   = float(np.mean(diff))
         r      = float(np.corrcoef(a_m_i[ok], a_o_i[ok])[0, 1])
 
-        mas_m = pt_to_mas(compute_pt_score_simple(params_m)) if params_m else "—"
-        mas_o = pt_to_mas(compute_pt_score_simple(params_o)) if params_o else "—"
+        # "refused" is not the same as "—". An em dash here means the trial
+        # would not score at all; a refusal means it scored and the swing was
+        # too small or too large for the grade to mean anything.
+        def _graded(p):
+            if not p:
+                return "—"
+            return mas_estimate(p)["mas"] or "refused"
+
+        mas_m = _graded(params_m)
+        mas_o = _graded(params_o)
 
         self._status(f"RMSE = {rmse:.2f}°  |  r = {r:.3f}  |  bias = {bias:+.2f}°"
                      f"  |  MAS model = {mas_m}  |  MAS optitrack = {mas_o}")

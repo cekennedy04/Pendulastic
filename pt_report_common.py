@@ -634,7 +634,18 @@ def write_clinician_mas_sidecar(participant_id, matches_by_leg_condition, out_di
     return out_path
 
 
-def _row5_source_mas(source_mean, source_params):
+#: Sources whose PT7 is shown but never converted to a printed MAS grade.
+#: MediaPipe-derived MAS agrees with the OptiTrack reference on 31.5% of trials
+#: exactly and 44.6% within one grade, over the 92 trials where both channels
+#: pass the excursion gate (2026-09-04, docs/reports/2026-09-04-mediapipe-
+#: coverage-and-accuracy.md). Adjacent agreement that close to chance on a
+#: six-point ordinal scale is not a grade, and this table is clinician-facing.
+#: The PT7 number and the waveform stay -- they are useful for review; only the
+#: MAS label, which reads as a clinical verdict, is withheld.
+_MAS_SUPPRESSED_SOURCES = frozenset({"MediaPipe"})
+
+
+def _row5_source_mas(source_mean, source_params, source_label=None):
     """MAS label for a source's mean PT7, or None when the swing cannot carry one.
 
     PT7's parameters are all ratios normalised on the swing, so once the swing
@@ -648,13 +659,29 @@ def _row5_source_mas(source_mean, source_params):
     Falls back to grading whenever excursion cannot be established at all --
     a source with no A0 (e.g. a test double) keeps its previous behaviour
     rather than silently losing its label.
+
+    `source_label` in _MAS_SUPPRESSED_SOURCES returns None unconditionally: the
+    excursion gate asks whether THIS curve carries a swing, which is a different
+    question from whether the channel's grades track ground truth at all. An
+    optical trial can pass the gate cleanly and still be graded wrongly, so the
+    gate cannot stand in for a channel-level judgement.
     """
     if source_mean is None:
+        return None
+    if source_label in _MAS_SUPPRESSED_SOURCES:
         return None
     a0s = [p["A0_deg"] for p in (source_params or [])
            if isinstance(p, dict) and p.get("A0_deg") is not None
            and np.isfinite(p["A0_deg"])]
     if not a0s:
+        # Deliberately NOT gated, and it is not the loophole it looks like.
+        # excursion_ok's "a missing A0 counts as NOT ok" is about a trial whose
+        # A0 failed to compute -- a measurement failure. This branch is about a
+        # SOURCE that never carries A0 at all, and stripping its label would
+        # discard a grade over evidence that was never expected to exist.
+        # test_row5_source_mas_falls_back_when_excursion_is_unknown pins it:
+        # absent evidence is not evidence. Gating this was tried in U1 and
+        # reverted.
         return pt.pt_to_mas(source_mean)
     # Delegate to the reference predicate rather than restating its bound. This
     # used to compare against MIN_INTERPRETABLE_A0_DEG only, and
@@ -777,7 +804,8 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
             rows.append({
                 "timepoint": tp_label, "source": source_label,
                 "opti_paired_pt7": opti_paired_mean, "opti_paired_n": len(paired_opti),
-                "source_pt7": source_mean, "source_mas": _row5_source_mas(source_mean, source_params),
+                "source_pt7": source_mean,
+                "source_mas": _row5_source_mas(source_mean, source_params, source_label),
                 "delta": delta, "top_contributor": top_contributor,
                 "n_candidate": n_candidate, "n_passed_gate": n_passed_gate,
                 "n_total": len(trials), "n_scored": n_scored,
@@ -810,7 +838,9 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
 
     caveat = ("Algorithm agreement, not independent clinical scores — PT7 computed identically "
              "across sources but on curves with different sampling, smoothing, and cleaning "
-             "characteristics.")
+             "characteristics. MediaPipe is marked [advisory]: its PT7 is shown for review, but "
+             "no MAS grade is printed (31.5% exact / 44.6% adjacent agreement with OptiTrack, "
+             "n=92).")
     ax.text(0.0, 1.0, caveat, transform=ax.transAxes, fontsize=6.5, style="italic",
            color="#666666", ha="left", va="top", wrap=True)
 
@@ -824,7 +854,12 @@ def _draw_row5_table(ax, leg, by_leg_tp, timepoints, participant_id):
         table_rows.append([
             r["timepoint"], r["source"],
             f"{_fmt_pt7(r['opti_paired_pt7'])} (n={r['opti_paired_n']})",
-            f"{_fmt_pt7(r['source_pt7'])}" + (f" [{r['source_mas']}]" if r["source_mas"] else ""),
+            # An empty bracket would read as "no grade available for this
+            # trial", which is the excursion gate's meaning, not this one.
+            # Say why the grade is absent instead.
+            f"{_fmt_pt7(r['source_pt7'])}" + (
+                f" [{r['source_mas']}]" if r["source_mas"]
+                else (" [advisory]" if r["source"] in _MAS_SUPPRESSED_SOURCES else "")),
             _fmt_delta(r["delta"]),
             _fmt_top_contributor(r["top_contributor"]),
             f"{r['n_candidate']}/{r['n_total']} had candidate, "

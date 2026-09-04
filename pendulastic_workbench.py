@@ -664,11 +664,18 @@ class WorkbenchView(tk.Frame):
             params = engine.windowed_pt_params(t, y)
             full_params = pendulastic_pt_score.compute_pt_params(t, y)
             if full_params is not None:
-                params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
-                params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+                # mas_estimate, not pt_to_mas: this panel is read by an operator
+                # deciding whether a trace is usable, so a grade the excursion
+                # gate cannot support must not appear here. `mas` is None on a
+                # refusal and `mas_reason` says which bound it crossed.
+                est = pendulastic_pt_score.mas_estimate(full_params)
+                params["pt_score"] = est["pt7"]
+                params["mas"] = est["mas"]
+                params["mas_reason"] = est["reason"]
             else:
                 params["pt_score"] = None
                 params["mas"] = None
+                params["mas_reason"] = ""
             out["per_trace"][label] = params
 
         ref_t, ref_y = self._traces[ref_label]
