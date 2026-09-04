@@ -14,7 +14,8 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
-import { isPending } from './mas-store.js';
+import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
+import { isPending, makeMasRecord } from './mas-store.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1148,11 +1149,70 @@ if (typeof document !== 'undefined') {
         importedSessions: withTrials.filter((s) => s.imported).length,
       };
     },
-    // Tasks 7-9 replace these. Until then they say so rather than failing
-    // silently, so a tap on Import or Export is never mistaken for a bug.
-    importBundle: async () => 'Import is not wired up yet.',
+    importBundle: (files) => importBundleFiles(files),
+    // Task 9 replaces this. Until then it says so rather than failing
+    // silently, so a tap on Export is never mistaken for a bug.
     exportFigure: async () => {},
   }));
+
+  // Ingests a previously exported bundle: the -manifest.json, optionally with
+  // its -mas.csv. Returns a human summary rather than throwing, because this
+  // runs from a file input where an exception would leave the operator with a
+  // spinner and no explanation.
+  async function importBundleFiles(files) {
+    await ensureSessionReady();
+    if (!currentPatient) return 'Select a participant in Session before importing.';
+    try {
+      const texts = await Promise.all(files.map((f) => f.text()));
+      const manifestText = texts.find((t) => t.trimStart().startsWith('{'));
+      const csvText = texts.find((t) => t.startsWith('participant,'));
+      if (!manifestText) {
+        return 'No manifest found. Select the -manifest.json file (and optionally the -mas.csv alongside it).';
+      }
+
+      const bundle = parseManifest(manifestText);
+      if (csvText) bundle.mas = parseMasCsv(csvText);
+
+      // Refused rather than re-attributed. Silently filing another person's
+      // trials under the selected participant is the one failure this import
+      // path must never have -- it is unrecoverable once the ids are rewritten.
+      const bundleId = bundle.patient && bundle.patient.clinic_patient_id;
+      if (bundleId && bundleId !== currentPatient.clinic_patient_id) {
+        return `That bundle is for ${bundleId}, but ${currentPatient.clinic_patient_id} is selected. Switch participant first.`;
+      }
+
+      const sessions = await getAll(db, STORES.sessions, 'by_patient', currentPatient.id);
+      const trialIds = new Set();
+      for (const s of sessions) {
+        for (const t of await getAll(db, STORES.trials, 'by_session', s.id)) trialIds.add(t.id);
+      }
+      const masRows = await getAll(db, STORES.mas, 'by_patient', currentPatient.id);
+      const plan = planImport(bundle, {
+        trialIds,
+        sessionIds: new Set(sessions.map((s) => s.id)),
+        masIdentities: new Set(masRows.map(masIdentityKey)),
+      });
+
+      // `imported: true` is what lets the trends view say how much of a
+      // history came from elsewhere. `exported_at` is carried across so an
+      // imported session is never mistaken for unexported local work that
+      // still needs saving.
+      for (const s of plan.sessions) {
+        await put(db, STORES.sessions, {
+          ...s, patient_id: currentPatient.id, imported: true, exported_at: s.exported_at ?? Date.now(),
+        });
+      }
+      for (const t of plan.trials) {
+        await put(db, STORES.trials, { ...t, id: t.id ?? crypto.randomUUID(), session_id: bundle.session.id });
+      }
+      for (const r of plan.mas) {
+        await put(db, STORES.mas, makeMasRecord({ patientId: currentPatient.id, form: r }));
+      }
+      return importSummary({ trials: plan.trials.length, mas: plan.mas.length, skipped: plan.skipped });
+    } catch (err) {
+      return `Import failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
 
   // The main thread has never needed the wasm before -- capture runs it in a
   // worker. Scoring stored trials does need it here, so it is loaded LAZILY,
