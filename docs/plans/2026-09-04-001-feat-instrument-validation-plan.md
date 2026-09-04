@@ -49,6 +49,8 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD8. **No interim cohort anchor is derived. The rig's lowest profile is the zero point.** Restricting to examined grades leaves 4 MAS-0 legs across 3 participants, which cannot carry a dispersion-based boundary; widening the pool to 21 legs reintroduces exactly the assumed grades KD7 excludes. A provisional anchor would be discarded the moment rig data lands, after having rewritten every historical score once. (session-settled: user-directed.) Governs R7, R16.
 - KD9. **The rig's passive behaviour is validated against human controls before any active torque is layered on.** Otherwise the rig could mimic tone without mimicking a limb, and the instrument would be validated against the wrong thing. Governs R15.
 - KD10. **The excursion gate is re-derived on the corpus before the index is built, not assumed to have survived the grid change.** The gate decides whether a trial is scored at all, so an unverified threshold on A0 puts every downstream severity value on a moving baseline. (session-settled: user-directed - chosen over carrying it as a deferred question.) Governs R18.
+- KD11. **The gate floor is not rescaled by a measurement-grid ratio.** 25.0 was never a control-derived bound; the provenance in `pendulastic_pt_score.py` states it is a conservative floor set as high as it could go while clearing the lowest observed spastic leg at 28.7 degrees, with roughly 13 percent of margin. Scaling it by an IMU grid ratio would have cut that margin to 2.4 percent and brought the gate to the edge of refusing a grade on a study case. Governs R18, R19.
+- KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 5.88 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
 
 ### Requirements
 
@@ -68,7 +70,9 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R8. The app displays no healthy, borderline or impaired classification derived from PT7.
 - R9. A reading beyond the normative boundary is displayed as measured rather than clamped to the boundary.
 - R16. Until rig-derived anchors exist, no severity index and no categorical zone is displayed. The app reports excursion and the continuous kinematic parameters as measured.
-- R18. The excursion gate floor is restored to the strictness it was set at, against A0 as the 100 Hz grid now measures it. Measured on the corpus, that point is 28.0 degrees; the floor moves there in both language implementations, and the stale headroom claim in the ceiling's comment is corrected with it.
+- R18. The excursion floor holds at 25 degrees, and its stated rationale is rewritten to the one that survives measurement: no single threshold both clears every spastic leg and prevents PT7 renormalising on a collapsed swing, and the floor exists to suppress a PT7 grade in the regime where A0 carries the severity instead. The reference statistics quoted to the operator are re-derived under the filter they name, and the ceiling's stale headroom claim is corrected with them.
+- R20. Documentation states the dual-variable model plainly: A0 reports severity continuously across the whole range, and PT7 classification applies only above the floor. A refused grade is a suppressed classification, never a missing measurement.
+- R19. A0 measured from the IMU and A0 measured from OptiTrack are shown to be on the same scale, or the gate stops applying one constant to both. The 100 Hz move raised IMU A0 while leaving optical A0 untouched, so a trial's verdict currently depends in part on which instrument measured it.
 
 **Capture validity**
 
@@ -106,7 +110,10 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE6. **Covers R15.** Given the rig set to its passive profile with no active torque, when a swing is recorded and compared against human healthy-control trials, then the envelope comparison is reported whether or not it matches.
 - AE7. **Covers R16.** Given no rig-derived anchor exists, when a trial is scored in the app, then excursion and kinematic parameters are shown and no index value or zone label appears.
 - AE8. **Covers R17.** Given a construct-validity claim against human MAS, when it is stated, then it rests on the clinician-examined cohort, and any wider figure alongside it is marked exploratory.
-- AE9. **Covers R18.** Given the floor moved to 28.0 degrees, when it is applied to the corpus, then it refuses the same three trials the 25 degree floor refused, and no trial that was being scored becomes refused.
+- AE9. **Covers R18.** Given the re-derived floor, when it is compared against the lowest observed spastic leg, then it sits below that leg by a stated margin, and the refusal message quotes reference statistics measured on the same reconstruction as the floor.
+- AE10. **Covers R19.** Given the same physical swing measured by both instruments, when each is scored, then the two A0 values agree within a stated tolerance, or the gate applies a separate constant per modality.
+- AE11. **Covers R18.** Given a refused trial, when the operator reads the refusal, then the reference statistics it quotes are those of the current reconstruction under the filter the message names.
+- AE12. **Covers R20.** Given a leg whose swing has collapsed below the floor, when its result is presented, then a severity value derived from A0 is shown and the absence of a PT7 grade is stated as a suppression rather than a failure to measure.
 
 ### Scope Boundaries
 
@@ -150,6 +157,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - `tests/fixtures/pendulum_sim.py` — the simulator the non-monotonicity was established on.
 - Supervisor notes, 2026-09-04 — the rig, blind clinician assessment, drift-during-hold invalidity, lateral-motion hinge lock, and IMU-only direction.
 - Grid re-measurement, 2026-09-04, 130 trials replayed at both grids on the production path. A0 rose: median 50.02 to 56.46 degrees, ratio 1.1185, p10 1.0363, p90 1.2346, down on only 7 of 130. One trial changed side of the gate, from refused to scored; none went the other way. The lowest new A0 among trials the old floor passed is 31.58, so a floor of 28.0 refuses the same three trials that 25.0 does. Ceiling headroom fell rather than grew: max A0 79.8 to 91.5 against the 120 ceiling, p99 85.5, nothing above 100.
+- Gate re-derivation, 2026-09-04, 124 optical trials joined to leg labels. The constraint the floor is documented as hanging off has collapsed: the lowest spastic leg was 28.7 degrees when the gate was set and is 6.76 today (13_right_month_post_T2, clinician-examined), with 10 of 39 spastic trials now below 25. Under the filter the shipped constants name -- coverage at or above 80 percent, no area-ratio warning -- the non-spastic reference is mean 31.0, sd 9.9, n 18, against the shipped 46.6, 11.1, 53; 27 of 45 non-spastic trials now fail that coverage filter. Two SD below the new mean is 11.2, so the floor no longer sits near any dispersion bound. Measured by scratch scripts spastic_minimum.py and excursion_ref.py, caches under Model_Analysis_Outputs/_cache/.
 
 ---
 
