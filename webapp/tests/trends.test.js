@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { median, sessionSeries } from '../src/views/trends.js';
+import { median, sessionSeries, masSeries } from '../src/views/trends.js';
 
 test('median of an odd count is the middle value', () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -99,4 +99,66 @@ test('a trial with no side is grouped as unset, not dropped and not guessed', ()
   );
   assert.equal(s.length, 1);
   assert.equal(s[0].leg, 'unset');
+});
+
+// ---- MAS grades over time -------------------------------------------------
+const masRows = [
+  { leg: 'left', condition: 'rest', assessed_date: '2026-08-20', mas_grade: '2' },
+  { leg: 'left', condition: 'rest', assessed_date: '2026-08-10', mas_grade: '1+' },
+  { leg: 'right', condition: 'rest', assessed_date: '2026-08-10', mas_grade: '-1' },
+];
+
+test('mas rows are ordered oldest first', () => {
+  assert.deepEqual(masSeries(masRows).map((p) => p.assessed_date),
+    ['2026-08-10', '2026-08-10', '2026-08-20']);
+});
+
+// The ordinal position, not the label, is what a y-axis can plot. '1+' sits
+// between '1' and '2' -- it is not 1.5 and it is not a number.
+test('a grade carries its ordinal rank', () => {
+  const s = masSeries([{ leg: 'left', assessed_date: '2026-08-10', mas_grade: '1+' }]);
+  assert.equal(s[0].rank, 2);
+  assert.equal(s[0].grade, '1+');
+});
+
+// A pending assessment is an owed observation, not a grade of zero. Plotting
+// it at 0 would read as "no spasticity", the opposite of what it means.
+test('a pending grade is marked pending and carries no rank', () => {
+  const s = masSeries([{ leg: 'right', assessed_date: '2026-08-10', mas_grade: '-1' }]);
+  assert.equal(s[0].pending, true);
+  assert.equal(s[0].rank, null);
+});
+
+// Grade 0 is a real, meaningful assessment -- no spasticity. It must carry
+// rank 0, not be mistaken for "absent" by a falsy check somewhere downstream.
+test('grade 0 carries rank 0 and is not treated as missing', () => {
+  const s = masSeries([{ leg: 'left', assessed_date: '2026-08-10', mas_grade: '0' }]);
+  assert.equal(s[0].rank, 0);
+  assert.equal(s[0].pending, false);
+});
+
+// A grade the app does not know must not silently plot at the bottom of the
+// scale as though it were 0.
+test('an unrecognised grade carries no rank rather than plotting as zero', () => {
+  const s = masSeries([{ leg: 'left', assessed_date: '2026-08-10', mas_grade: '1.5' }]);
+  assert.equal(s[0].rank, null);
+});
+
+test('legs are kept distinct', () => {
+  assert.deepEqual([...new Set(masSeries(masRows).map((p) => p.leg))].sort(), ['left', 'right']);
+});
+
+test('no rows produce no series rather than throwing', () => {
+  assert.deepEqual(masSeries([]), []);
+  assert.deepEqual(masSeries(undefined), []);
+});
+
+// validateMasForm requires a leg, so a row SAVED by this app always has one.
+// An IMPORTED row need not: a hand-edited or third-party mas_scores.csv can
+// carry a blank. It must group as 'unset' like a trial does, not as the
+// string "undefined" and not silently under a real leg.
+test('a mas row with no leg groups as unset', () => {
+  const s = masSeries([{ assessed_date: '2026-08-10', mas_grade: '2' }]);
+  assert.equal(s[0].leg, 'unset');
+  assert.equal(masSeries([{ leg: '', assessed_date: '2026-08-10', mas_grade: '2' }])[0].leg, 'unset');
 });

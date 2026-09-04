@@ -1,3 +1,5 @@
+import { MAS_ORDER, isPending } from '../mas-store.js';
+
 // A participant's history over time. This is the app's first cross-session
 // read: every other trial query in the app is scoped to one session.
 
@@ -50,4 +52,33 @@ export function sessionSeries(sessions, trialsBySession, { scoreOf }) {
     }
   }
   return out;
+}
+
+// Clinician assessments over time.
+//
+// `rank` is the grade's ORDINAL POSITION in MAS_ORDER, not a numeric reading
+// of the label: '1+' sits between '1' and '2' and is neither 1.5 nor a
+// number. Plotting the label as a number is exactly the mistake the desktop's
+// MAS_ORDER exists to prevent.
+//
+// A pending row and an unrecognised grade both carry rank null so the chart
+// leaves a GAP. Plotting either at zero would read as "no spasticity" -- the
+// opposite of "not yet assessed", and a fabricated observation in the
+// unrecognised case. Grade '0' is a real assessment and correctly ranks 0,
+// which is why the lookup checks for -1 rather than relying on truthiness.
+export function masSeries(masRecords) {
+  return [...(masRecords || [])]
+    .map((r) => {
+      const i = MAS_ORDER.indexOf(r.mas_grade);
+      const pending = isPending(r);
+      return {
+        date: Date.parse(`${r.assessed_date}T00:00:00Z`),
+        assessed_date: r.assessed_date,
+        leg: r.leg || 'unset',
+        grade: r.mas_grade,
+        rank: pending || i === -1 ? null : i,
+        pending,
+      };
+    })
+    .sort((a, b) => a.date - b.date);
 }
