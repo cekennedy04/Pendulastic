@@ -754,3 +754,42 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chart-export { margin-top: 8px; width: 100%; }
 #trend-source { font-family: var(--mono); }
 #trend-import { font: inherit; width: 100%; }
+
+/* ---- Capture progress ----------------------------------------------------
+   Answers "how much longer", which the state label alone cannot. The fill
+   uses currentColor so the bar inherits whatever the guide's state colour is
+   -- one colour vocabulary, not two that can disagree. */
+#guide-progress {
+  height: 8px;
+  margin: 8px 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface);
+}
+#guide-progress[hidden] { display: none; }
+#guide-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  /* Short enough to read as immediate, long enough not to strobe at the 50ms
+     batch cadence. A reset must still look like a reset, so this never
+     animates a shrink -- see app.js. */
+  transition: width 120ms linear;
+}
+#guide-progress-label { margin: 4px 16px 0; text-align: center; }
+
+/* Static instruction, not feedback: the phone is on the shank and cannot
+   sense where the clinician's hands are. */
+#hold-guide {
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#hold-guide summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+#hold-guide p { margin: 8px 0 0; line-height: 1.45; }

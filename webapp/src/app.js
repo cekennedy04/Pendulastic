@@ -14,7 +14,7 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
-import { captureQualityOf, SETTLE_TARGET_S } from './capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, progressOf } from './capture-feedback.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
@@ -943,6 +943,15 @@ if (typeof document !== 'undefined') {
   function resetToIdle() {
     el('start').hidden = false;
     el('stop').hidden = true;
+    // The guidance belongs to the trial that just ended. Leaving a full bar
+    // and a stale alert on screen would read as the state of the NEXT trial,
+    // which has not started.
+    el('guide-progress').hidden = true;
+    el('guide-progress-label').hidden = true;
+    el('guide-progress-fill').dataset.fraction = '0';
+    el('guide-progress-fill').style.width = '0%';
+    el('settle-alert').hidden = true;
+    releasedAt = null;
   }
 
   // Draws `trajectory` (mobile-imu-core's finish_trajectory() payload, via
@@ -1497,6 +1506,26 @@ if (typeof document !== 'undefined') {
     const g = el('guide');
     g.className = CLASSES[code];
     g.textContent = code === 1 ? `HOLDING ${calm_s.toFixed(1)}s` : STATES[code];
+    // Drawn BEFORE the Settled early-return below, so a completed trial ends
+    // on a full bar rather than frozen at whatever the last tick showed.
+    // How much longer, which the state label alone cannot say.
+    const prog = progressOf({ stateCode: code, calmS: calm_s, settleS: settle_s });
+    const bar = el('guide-progress');
+    const fill = el('guide-progress-fill');
+    const plabel = el('guide-progress-label');
+    bar.hidden = prog === null;
+    plabel.hidden = prog === null;
+    if (prog) {
+      // A reset must READ as a reset. Animating a shrink would make a lost
+      // hold look like a slow one, which is the opposite of the feedback the
+      // operator needs, so the transition is suppressed when the bar falls.
+      const prev = parseFloat(fill.dataset.fraction || '0');
+      fill.style.transition = prog.fraction < prev ? 'none' : '';
+      fill.dataset.fraction = String(prog.fraction);
+      fill.style.width = `${(prog.fraction * 100).toFixed(1)}%`;
+      plabel.textContent = prog.label;
+    }
+
     // The limb has been still for SETTLE_TARGET_S and the core has decided
     // the trial is done. Ending it here rather than in the worker keeps the
     // decision in one place (session.rs) and its DOM effects in another.
