@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { median, sessionSeries, masSeries } from '../src/views/trends.js';
-import { chartScale, wrapText, captionHeight, PT7_CAPTIONS } from '../src/trend-charts.js';
+import { chartScale, wrapText, captionHeight, PT7_CAPTIONS, figureName } from '../src/trend-charts.js';
 
 test('median of an odd count is the middle value', () => {
   assert.equal(median([3, 1, 2]), 2);
@@ -251,4 +251,20 @@ test('the mandatory PT7 captions wrap rather than clip at phone width', () => {
   assert.ok(lines.length >= 2);
   for (const l of lines) assert.ok(fakeCtx.measureText(l).width <= 320, `overruns: ${l}`);
   assert.ok(lines.join(' ').includes('whole curve'), 'the caption must not lose its ending');
+});
+
+// ---- figure naming --------------------------------------------------------
+test('a figure filename shares the session export stem', () => {
+  const n = figureName('P-014', 'mas', new Date(Date.UTC(2026, 8, 4)));
+  assert.equal(n, 'pendulastic-P-014-20260904-trend-mas.png');
+});
+
+// A clinician types the participant id freehand; it reaches a filename.
+test('a participant id with unsafe characters is sanitised for the filename', () => {
+  const n = figureName('P 014/left', 'a0', new Date(Date.UTC(2026, 8, 4)));
+  assert.ok(!/[^A-Za-z0-9_.-]/.test(n.replace('.png', '')), n);
+});
+
+test('a missing participant id still yields a usable filename', () => {
+  assert.match(figureName(null, 'pt7', new Date(Date.UTC(2026, 8, 4))), /unknown-patient/);
 });

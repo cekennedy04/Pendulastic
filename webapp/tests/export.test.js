@@ -292,3 +292,47 @@ test('a notes field with a comma does not shift the csv columns', () => {
   const row = files.find((f) => f.name.endsWith('-mas.csv')).text.trim().split('\r\n')[1];
   assert.ok(row.includes('"catch, then release"'));
 });
+
+// ---- binary payloads (trend figures) --------------------------------------
+// A file may carry `blob` instead of `text`. One accessor serves both paths,
+// so the PNG export reuses the share/download implementation that the trial
+// export already depends on rather than growing a second one.
+test('a blob-backed file reaches the share sheet', async () => {
+  const shared = [];
+  const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' });
+  const res = await shareFiles(
+    [{ name: 'trend-mas.png', type: 'image/png', blob }],
+    {
+      navigatorRef: {
+        canShare: () => true,
+        share: async ({ files }) => { shared.push(...files); },
+      },
+    },
+  );
+  assert.equal(res, 'shared');
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0].name, 'trend-mas.png');
+  assert.equal(shared[0].type, 'image/png');
+  assert.ok(shared[0].size > 0, 'the blob must carry its bytes, not become an empty file');
+});
+
+test('a blob-backed file falls back to the download anchor with its bytes', () => {
+  const blob = new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'image/png' });
+  let captured = null;
+  const urlRef = { createObjectURL: (b) => { captured = b; return 'blob:x'; }, revokeObjectURL: () => {} };
+  const anchor = { click: () => {}, remove: () => {} };
+  const documentRef = { createElement: () => anchor, body: { appendChild: () => {} } };
+  downloadViaAnchor({ name: 'f.png', type: 'image/png', blob }, { documentRef, urlRef });
+  assert.ok(captured, 'an object URL must be created');
+  assert.equal(captured.size, 5, 'the anchor must carry the blob bytes, not stringify it');
+});
+
+// Regression: a text-backed file must still work exactly as before.
+test('a text-backed file is unaffected by the blob support', () => {
+  let captured = null;
+  const urlRef = { createObjectURL: (b) => { captured = b; return 'blob:x'; }, revokeObjectURL: () => {} };
+  const anchor = { click: () => {}, remove: () => {} };
+  const documentRef = { createElement: () => anchor, body: { appendChild: () => {} } };
+  downloadViaAnchor({ name: 'f.csv', type: 'text/csv', text: 'a,b\r\n' }, { documentRef, urlRef });
+  assert.equal(captured.size, 5);
+});

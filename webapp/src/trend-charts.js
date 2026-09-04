@@ -206,3 +206,35 @@ export function renderCharts(el, history) {
     drawChart(ctx, { series, width, height, kind, captions });
   }
 }
+
+// Re-runs the SAME renderer into an offscreen canvas at print scale, so an
+// exported figure cannot drift from what was on screen.
+//
+// 3x because a phone screenshot of a 200px-tall chart is unusable in a slide
+// or a paper. The background is painted explicitly: a canvas starts
+// transparent, and a transparent PNG dropped on a dark slide would render the
+// axis labels and the mandatory PT7 captions invisible.
+export function renderFigure(history, which, { scale = 3, width = 900, height = 420 } = {}) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#FFFFFF';
+  ctx.fillRect(0, 0, width, height);
+
+  const spec = chartSpecs(history).find(([id]) => id === `chart-${which}`);
+  if (!spec) throw new Error(`unknown figure "${which}"`);
+  const [, series, kind, captions] = spec;
+
+  drawChart(ctx, { series, width, height, kind, captions });
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+// The figure's filename, sharing the session export's stem so a trend PNG
+// files alongside the trials it was derived from.
+export function figureName(clinicPatientId, which, now = new Date()) {
+  const id = String(clinicPatientId ?? '').replace(/[^A-Za-z0-9_-]+/g, '_') || 'unknown-patient';
+  const stamp = now.toISOString().slice(0, 10).replace(/-/g, '');
+  return `pendulastic-${id}-${stamp}-trend-${which}.png`;
+}

@@ -15,6 +15,7 @@ import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
+import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
 
 const el = (id) => document.getElementById(id);
@@ -1150,10 +1151,32 @@ if (typeof document !== 'undefined') {
       };
     },
     importBundle: (files) => importBundleFiles(files),
-    // Task 9 replaces this. Until then it says so rather than failing
-    // silently, so a tap on Export is never mistaken for a bug.
-    exportFigure: async () => {},
+    exportFigure: (which, history) => exportTrendFigure(which, history),
   }));
+
+  // Renders one chart at print scale and hands it to the same share sheet the
+  // trial export uses. Reports through #trend-import-status rather than
+  // throwing: this runs from a button, and a rejected promise would leave the
+  // operator with no idea whether a file was produced.
+  async function exportTrendFigure(which, history) {
+    const status = el('trend-import-status');
+    if (!history) {
+      status.textContent = 'Nothing to export yet.';
+      return;
+    }
+    try {
+      const blob = await renderFigure(history, which);
+      if (!blob) throw new Error('the browser produced no image');
+      await shareFiles([{
+        name: figureName(currentPatient?.clinic_patient_id, which),
+        type: 'image/png',
+        blob,
+      }]);
+      status.textContent = `Exported the ${which.toUpperCase()} figure.`;
+    } catch (err) {
+      status.textContent = `Figure export failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
 
   // Ingests a previously exported bundle: the -manifest.json, optionally with
   // its -mas.csv. Returns a human summary rather than throwing, because this

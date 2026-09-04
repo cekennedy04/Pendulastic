@@ -107,10 +107,18 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
 //
 // `documentRef`/`urlRef` are injectable purely so the ordering above can be
 // pinned by a test under `node --test`, which has no DOM.
+// A file is { name, type } plus EITHER `text` (a string) or `blob` (binary,
+// e.g. a rendered PNG). One accessor for both so the share and download paths
+// cannot diverge -- a second sharing implementation is exactly the duplication
+// that let an export silently no-op before.
+function partsOf(file) {
+  return [file.blob ?? file.text];
+}
+
 export function downloadViaAnchor(file, { documentRef, urlRef } = {}) {
   const doc = documentRef ?? globalThis.document;
   const urls = urlRef ?? globalThis.URL;
-  const url = urls.createObjectURL(new Blob([file.text], { type: file.type }));
+  const url = urls.createObjectURL(new Blob(partsOf(file), { type: file.type }));
   const a = doc.createElement('a');
   a.href = url;
   a.download = file.name;
@@ -130,7 +138,7 @@ export async function shareFiles(files, { navigatorRef = navigator, documentRef,
   if (!files || files.length === 0) {
     throw new Error('shareFiles called with no files to share');
   }
-  const fileObjs = files.map((f) => new File([f.text], f.name, { type: f.type }));
+  const fileObjs = files.map((f) => new File(partsOf(f), f.name, { type: f.type }));
   if (navigatorRef.canShare && navigatorRef.canShare({ files: fileObjs })) {
     await navigatorRef.share({ files: fileObjs, title: 'Pendulastic session' });
     return 'shared';
