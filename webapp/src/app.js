@@ -28,6 +28,26 @@ const el = (id) => document.getElementById(id);
 // code 0..3 from onState, per capture.js's doc comment: 0 Moving, 1 Holding,
 // 2 Ready, 3 Released. Both arrays are indexed by that same code, matching
 // mobile-imu-core's HoldState (see progress.md conflict #5).
+/// How long a limb may go without settling before the app prompts.
+///
+/// UI ONLY. It has no protocol meaning, changes no stored value, and must
+/// never end a trial. A limb with sustained clonus never settles, and that is
+/// a clinical finding rather than a fault -- which is exactly why there is no
+/// maximum trial length. Thirty seconds is well past a normal trial and short
+/// enough to catch a recording the operator has forgotten.
+export const NO_SETTLE_ALERT_S = 30;
+
+/// The prompt to show, or null for none. Pure, so the rule is tested without
+/// a DOM or a timer.
+///
+/// A limb that IS settling is on its way to auto-stop, so it is never nagged
+/// however long the trial has run.
+export function noSettleAlert({ sinceReleaseS = 0, settleS = 0 } = {}) {
+  if (settleS > 0) return null;
+  if (sinceReleaseS < NO_SETTLE_ALERT_S) return null;
+  return 'The leg is still moving. Tap Stop when you are ready to end the trial.';
+}
+
 // Indexed by state_code(). Both arrays MUST stay the same length as
 // mobile-imu-core's HoldState -- a short array renders `undefined` into the
 // guide rather than throwing, so nothing else would catch a mismatch.
@@ -812,6 +832,10 @@ if (typeof document !== 'undefined') {
   let latestSettleS = 0;
   let lastSettleS = 0;
   let lastEndedManually = true;
+  // When the current trial entered Released, for the advisory alert only.
+  // Cleared on every state that is not Released, so a second trial cannot
+  // inherit the first one's clock.
+  let releasedAt = null;
   // The just-finished capture handle, kept alive for Export after `session`
   // itself is nulled below (onResult/onError null `session` unconditionally
   // -- that is what makes tapping Start immediately after a result safe).
@@ -1466,8 +1490,26 @@ if (typeof document !== 'undefined') {
     // the trial is done. Ending it here rather than in the worker keeps the
     // decision in one place (session.rs) and its DOM effects in another.
     if (code === 4) {
+      releasedAt = null;
+      el('settle-alert').hidden = true;
       endTrial({ endedManually: false });
       return;
+    }
+
+    // Advisory prompt for a limb that will not settle. Timed in JS rather
+    // than the core because it has no protocol meaning -- putting it in
+    // session.rs would imply it were part of the measurement.
+    if (code === 3) {
+      releasedAt ??= Date.now();
+      const alert = noSettleAlert({
+        sinceReleaseS: (Date.now() - releasedAt) / 1000,
+        settleS: settle_s,
+      });
+      el('settle-alert').textContent = alert ?? '';
+      el('settle-alert').hidden = alert === null;
+    } else {
+      releasedAt = null;
+      el('settle-alert').hidden = true;
     }
     // Both gates are surfaced separately: the corrective action for motion
     // and for drift differ, so "it failed" is not enough for the clinician

@@ -9,7 +9,7 @@ import { createCaptureView } from '../src/views/capture.js';
 import {
   patientLabel, nextParticipantState, SETTING_KEYS, initialView, resolveActivePatient, buildInfoText,
 } from '../src/views/session.js';
-import { STATES, CLASSES } from '../src/app.js';
+import { STATES, CLASSES, noSettleAlert, NO_SETTLE_ALERT_S } from '../src/app.js';
 import { trialSummary } from '../src/views/trials.js';
 
 // nextOutcome is app.js's pure fault-latch reducer over the onResult/onError
@@ -817,4 +817,29 @@ test('the state arrays cover every HoldState code including Settled', () => {
 
 test('every state class is a distinct name', () => {
   assert.equal(new Set(CLASSES).size, CLASSES.length);
+});
+
+// ---- the no-settle alert --------------------------------------------------
+// Advisory ONLY. This must never end a trial: a limb with sustained clonus is
+// a real clinical finding, not a fault, and the decision to stop stays with
+// the clinician. There is deliberately no maximum trial length.
+test('no alert before the threshold', () => {
+  assert.equal(noSettleAlert({ sinceReleaseS: 20, settleS: 0 }), null);
+});
+
+test('an alert once a limb has not settled for the threshold', () => {
+  assert.match(noSettleAlert({ sinceReleaseS: 31, settleS: 0 }), /stop/i);
+});
+
+// A limb that IS settling is on its way to auto-stop; nagging would be wrong.
+test('no alert while settling is in progress', () => {
+  assert.equal(noSettleAlert({ sinceReleaseS: 31, settleS: 2.5 }), null);
+});
+
+test('the alert fires exactly at the threshold, not one tick late', () => {
+  assert.ok(noSettleAlert({ sinceReleaseS: NO_SETTLE_ALERT_S, settleS: 0 }));
+});
+
+test('missing arguments do not fabricate an alert', () => {
+  assert.equal(noSettleAlert({}), null);
 });
