@@ -52,6 +52,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD11. **The gate floor is not rescaled by a measurement-grid ratio.** 25.0 was never a control-derived bound; the provenance in `pendulastic_pt_score.py` states it is a conservative floor set as high as it could go while clearing the lowest observed spastic leg at 28.7 degrees, with roughly 13 percent of margin. Scaling it by an IMU grid ratio would have cut that margin to 2.4 percent and brought the gate to the edge of refusing a grade on a study case. Governs R18, R19.
 - KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 8.57 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
 - KD13. **A grade assessed in one condition is not evidence about another.** Carrying a leg label across pre, post and month-post is what put a 6.76 degree month-post trial forward as the lowest spastic reading when its MAS was assessed at pre; the condition-matched value is 9.85. Tone changes over an intervention, which is the point of measuring it more than once. Governs R21.
+- KD14. **No cross-modality figure generated on or after 2026-09-01 is usable until the datum is reconciled.** 87d7645 moved the optical angle to a relative datum centred near zero; MediaPipe`s knee angle and the IMU replay still emit absolute interior angles, and `compare_pair` does not reconcile them, so it measures a ~150 degree datum gap rather than disagreement. Subtracting each curve`s own settled-tail median first moves MediaPipe from 142.4 to 22.9 and the IMU from 149.3 to 35.2 - still unexplained against a stored 9.2, so the datum is a necessary correction, not a sufficient one. `imu_vs_optitrack_rmse.csv` reads cleanly only because it was generated three days before that change. Governs R22, R23.
 - KD13b. **A cross-modality agreement figure is meaningless without its convention pairing.** Measured over 129 paired trials, detrending moves optical PT7 by 0.050 and phone PT7 by 0.363 - a within-sensor comparison, same curve at two flag values, so it does not depend on any cross-modality alignment. The cross-modality figures it was first reported with (0.447 production against 0.247 convention-matched, and 0.460 for MediaPipe 2D) are PROVISIONAL: they were produced through a hand-rolled comparator rather than compare_pair, and are being re-derived. The decision does not rest on their exact values. Governs R22.
 
 ### Requirements
@@ -89,6 +90,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R17. Construct validity against human MAS is claimed only on the clinician-examined cohort. A figure computed over a wider pool is labelled exploratory, and the assumed and operator-set legs it contains are named where it appears.
 - R21. A MAS grade is applied only to trials recorded in the condition it was assessed in, or the carry across conditions is stated wherever the grade is used. Of 39 clinician-examined spastic trials, only 9 were recorded in the condition their grade was assessed in.
 - R22. Any figure comparing the IMU and optical channels states which detrend convention each side was scored under, and is produced through the production comparator rather than a hand-rolled alignment. The production pairing scores the phone undetrended against optical detrended, and that choice moves PT7 more than the sensor difference does.
+- R23. The optical reference curve is shown to be free of discontinuity before any accuracy figure is computed against it. A curve containing a jump no knee can make between consecutive samples is not a reference.
 
 ### Key Flows
 
@@ -119,6 +121,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE11. **Covers R18.** Given a refused trial, when the operator reads the refusal, then it does not present reference statistics measured on a superseded reconstruction as though they described the current one.
 - AE12. **Covers R20.** Given a leg whose swing has collapsed below the floor, when its result is presented, then a severity value derived from A0 is shown and the absence of a PT7 grade is stated as a suppression rather than a failure to measure.
 - AE13. **Covers R21.** Given a MAS grade assessed in one condition and a trial recorded in another, when the pair is used in any reported figure, then the carry is stated rather than presented as a matched observation.
+- AE14. **Covers R23.** Given an optical reference curve, when it is used as ground truth, then it contains no sample-to-sample jump beyond what the joint can physically move at the capture rate, or it is excluded from the comparison and reported.
 
 ### Scope Boundaries
 
@@ -252,13 +255,13 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
 - **Requirements.** R19, R22.
 - **Dependencies.** None. Blocks U4.
 - **Files.** `workbench_engine.py` (`compare_pair`), `tests/test_workbench_engine.py`
-- **Approach.** Since 87d7645 the optical angle is relative and its sign is effectively arbitrary per trial - a real trial reads min -169.95, median -10.92, max 2.72. `windowed_pt_params` handles this at line 426 with `inverted = A0 < 0.0`; `compare_pair` does not handle it at all. A comparison between a positive-going and a negative-going curve for the same swing reports roughly twice the amplitude as error, which is how a hand-rolled comparison produced a ~145 degree median RMSE on curves whose span is 50 to 90. Normalise both sides to the same release direction before aligning, mirroring the rule `windowed_pt_params` already applies rather than inventing a second one.
+- **Approach.** Since 87d7645 the optical angle is relative and its sign is effectively arbitrary per trial: across 60 trials OptiTrack runs 26 negative and 34 positive, MediaPipe 38 and 22, the IMU 59 and 1, so OptiTrack disagrees with MediaPipe on 26 of 60 and with the IMU on 25 of 60. `windowed_pt_params` normalises this at line 426 with `inverted = A0 < 0.0`; `compare_pair` does not handle it at all. Normalise both sides to the same release direction before aligning, mirroring the rule `windowed_pt_params` already applies rather than inventing a second one. This is a real inconsistency to close, NOT an explanation for any observed error: normalising was measured against the cross-modality RMSE and moved MediaPipe 142.4 to 141.0 and the IMU 149.3 to 163.3, so it explains none of it.
 - **Test scenarios.**
   - A curve and its exact negation compare as identical after normalisation, not as maximally different.
   - Two genuinely different curves of the same polarity are unaffected.
   - A curve with no detectable release direction is refused rather than assigned one.
   - The normalisation matches `windowed_pt_params`, so the two cannot disagree about which way up a trial is.
-- **Verification.** No cross-modality RMSE is explicable by sign alone.
+- **Verification.** The two functions agree about which way up a trial is.
 
 ### U4. Establish whether the two instruments are on one scale
 
