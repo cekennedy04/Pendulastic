@@ -542,11 +542,16 @@ IMPOSSIBLE_EXCURSION = (
 )
 
 INSUFFICIENT_EXCURSION = (
-    "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
-    "floor for interpreting PT7. "
+    "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg floor "
+    "for interpreting PT7. The excursion itself was measured and is the number "
+    "above -- what is withheld is the GRADE, not the measurement. "
     "PT7's parameters are ratios normalised on the swing, so they stop tracking "
-    "severity once the swing collapses. Repeat the trial and check positioning, "
-    "release and sensor placement before reading anything into the score."
+    "severity once the swing collapses and a barely-moving leg scores healthy. "
+    "A small excursion is therefore not a failed trial: it can be a genuinely "
+    "restricted limb, which is a real finding, or a positioning, release or "
+    "sensor-placement problem, which is not. Those look identical here. "
+    "Repeat the trial if positioning, release or sensor placement was at "
+    "fault; if it was not, the small excursion is itself the finding."
 )
 
 

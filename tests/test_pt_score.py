@@ -1420,3 +1420,52 @@ def test_the_retired_reference_constants_are_gone_not_merely_unused():
     for name in ("EXCURSION_REF_MEAN_DEG", "EXCURSION_REF_SD_DEG",
                  "EXCURSION_REF_N"):
         assert not hasattr(p, name), f"{name} should have been removed with the clause"
+
+
+# ── U9: a refused grade reads as a suppression, not a failure ───────────────
+#
+# R20/KD12. "Insufficient excursion ... repeat the trial" told a clinician the
+# trial had gone wrong. For a positioning or release problem that is right; for
+# a genuinely restricted limb it is exactly backwards, because that is the
+# measurement succeeding. The two look identical at this point in the pipeline,
+# so the message has to say so rather than assume one.
+
+
+def test_a_refusal_says_the_excursion_was_measured():
+    import pendulastic_pt_score as p
+    est = p.mas_estimate({"A0_deg": 9.0})
+    r = est["reason"]
+    assert est["mas"] is None
+    assert "9.0 deg" in r, "the measured excursion must appear"
+    assert "GRADE" in r and "not the measurement" in r
+
+
+def test_a_refusal_does_not_assert_the_trial_failed():
+    """A restricted limb is a real finding, not a botched capture."""
+    import pendulastic_pt_score as p
+    r = p.mas_estimate({"A0_deg": 9.0})["reason"]
+    assert "not a failed trial" in r
+    assert "restricted limb" in r
+
+
+def test_the_setup_advice_survives_for_the_cases_it_fits():
+    import pendulastic_pt_score as p
+    r = p.mas_estimate({"A0_deg": 9.0})["reason"]
+    for cue in ("positioning", "release", "sensor"):
+        assert cue in r
+
+
+def test_the_two_languages_still_tell_the_same_story():
+    """The Rust message is a hand-mirror of the Python one and nothing checks
+    them mechanically, so at least the load-bearing phrases must match."""
+    import pathlib as _pl
+    raw = (_pl.Path(__file__).resolve().parent.parent
+           / "mobile-imu-core" / "src" / "pt_score.rs").read_text(encoding="utf-8")
+    # Rust string literals wrap with a trailing backslash and re-indent, so a
+    # phrase that spans a line break is not contiguous in the source.
+    rs = " ".join(raw.replace("\\", " ").split())
+    import pendulastic_pt_score as p
+    for phrase in ("Insufficient excursion", "not the measurement", "not a failed trial",
+                   "restricted limb"):
+        assert phrase in p.INSUFFICIENT_EXCURSION, f"missing in Python: {phrase}"
+        assert phrase in rs, f"missing in Rust: {phrase}"
