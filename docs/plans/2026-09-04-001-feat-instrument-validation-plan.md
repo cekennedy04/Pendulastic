@@ -52,6 +52,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - KD11. **The gate floor is not rescaled by a measurement-grid ratio.** 25.0 was never a control-derived bound; the provenance in `pendulastic_pt_score.py` states it is a conservative floor set as high as it could go while clearing the lowest observed spastic leg at 28.7 degrees, with roughly 13 percent of margin. Scaling it by an IMU grid ratio would have cut that margin to 2.4 percent and brought the gate to the edge of refusing a grade on a study case. Governs R18, R19.
 - KD12. **The floor holds at 25 degrees; only its justification changes.** Every proposed move is worse than standing still: 28.0 and 26.7 refuse more viable trials, and a floor clearing the new spastic minimum by the documented margin would sit at 8.57 and catch nothing. Refusing a PT7 grade on a collapsed swing is the gate working, not failing, because KD2 puts severity on A0. (session-settled: user-directed - chosen over moving the floor in either direction.) Governs R18, R20.
 - KD13. **A grade assessed in one condition is not evidence about another.** Carrying a leg label across pre, post and month-post is what put a 6.76 degree month-post trial forward as the lowest spastic reading when its MAS was assessed at pre; the condition-matched value is 9.85. Tone changes over an intervention, which is the point of measuring it more than once. Governs R21.
+- KD18. **KD6 stands: the IMU remains the claim path, with the evidence against it recorded rather than acted on.** The first clinical anchor says phone-derived grades do not work - 1 of 10 exact against a clinician where OptiTrack managed 6 of 7, over-graded on 9, with a named mechanism in area_ratio rather than sensor noise. The product description does not change on it. What changes is what the product SAYS: every phone-derived grade now carries the measured disagreement and its cause, and R25 already refuses a phone-only severity index. The evidence is one participant, one timepoint, at MAS 0 only, which tests the healthy end and cannot separate a channel that over-grades from one that is miscalibrated; the rig is what settles it. (session-settled: user-directed - chosen over re-scoping the claim path to OptiTrack-validated parameters.) Governs R12, R26.
 - KD17. **The two instruments do not agree on A0, and not by a factor a constant could absorb.** Measured on 100 paired trials with corrupt references and operator exclusions dropped: IMU median 54.72 degrees against optical 34.04, ratio 1.489, and correlation essentially absent - Pearson 0.024, Spearman 0.053 at p 0.60. A gain would preserve rank; this does not. The curves themselves disagree, not just the extraction: on 15_left_post_T4 the optical span is 28.4 degrees and the IMU span 98.7. Against the 25 degree floor the two verdicts differ on 34 of 100 trials, with 32 refused optically that pass on the IMU. So the answer to R19 is that one constant cannot serve both - and a per-modality constant is not sufficient either, because a constant cannot be calibrated against a signal that does not correlate. Governs R19, R25.
 - KD16. **87d7645 is a fix, settled against ground truth.** The bisect could only say the shape moved, not which side was right, because both were measured against each other. Scored against the synthetic trials in `tests/test_optitrack_marker_angle.py`, which carry a known knee angle, the new reconstruction is better on 3 cases, worse on 0, tied on 3 - and it wins exactly where the seed bug bit: mid-swing 0.86 to 0.00, a drifting hold 4.49 to 0.00, mid-swing out of plane 0.85 to 0.11. Its two apparent failures are a principled refusal on a stationary cluster, where the old loader only answered by inventing an axis. The reference stays as it is. Governs R23, R24.
 - KD15. **87d7645 changed the optical reference SHAPE, not only its datum, so offset-removal does not neutralise it.** Bisected across the loader revisions with the offset removed: flat at 0.00 through 6ddf649, then 8.84 degrees median at 87d7645 and unchanged after. Its own message argues nothing is lost because every scored parameter is invariant to a constant offset and to a mirror - but allowing a sign flip changes nothing on 12 of 12 trials, so this is neither. Any figure calibrated against OptiTrack before 2026-09-01 is not comparable with one calibrated after, including the stored `imu_vs_optitrack_rmse.csv`. Governs R23, R24.
@@ -80,6 +81,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R20. Documentation states the dual-variable model plainly: A0 reports severity continuously across the whole range, and PT7 classification applies only above the floor. A refused grade is a suppressed classification, never a missing measurement.
 - R19. A0 measured from the IMU and A0 measured from OptiTrack are shown to be on the same scale, or the gate stops applying one constant to both. The 100 Hz move raised IMU A0 while leaving optical A0 untouched, so a trial's verdict currently depends in part on which instrument measured it.
 - R25. No A0-derived severity value is reported from a phone-only capture until phone A0 is shown to track a reference. The index in R6 is defined on A0, and an A0 that does not correlate with the reference is not the quantity the index is specified against.
+- R26. Every phone-derived MAS grade is presented with the measured disagreement against a clinician and its cause. A grade the instrument cannot support is marked wherever it reaches a person, including over an API where its on-screen context does not travel with it.
 
 **Capture validity**
 
@@ -129,6 +131,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - AE14. **Covers R23.** Given an optical reference curve, when it is used as ground truth, then it contains no sample-to-sample jump beyond what the joint can physically move at the capture rate, or it is excluded from the comparison and reported.
 - AE15. **Covers R24.** Given two accuracy figures calibrated against OptiTrack, when they are compared, then either both references postdate 87d7645 or the comparison is refused.
 - AE16. **Covers R25.** Given a capture from the phone alone, when a severity index is requested, then it is refused with the reason that phone A0 is not yet validated against a reference, rather than computed from an unvalidated amplitude.
+- AE17. **Covers R26.** Given a MAS grade derived from the phone, when it is shown or returned, then the caveat naming the measured disagreement accompanies it; and given the same grade derived from OptiTrack, then it does not.
 
 ### Scope Boundaries
 
@@ -154,10 +157,6 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - Assumed: rig data is captured on the 100 Hz analysis grid. Scoring moved off the 20 Hz display poll on 2026-09-04, which changed A0's filtered scale, so this is a second convention boundary that rig data must sit wholly on one side of.
 
 ### Outstanding Questions
-
-**Resolve before further work on the claim path**
-
-- Does KD6 survive? It names the IMU the sole claim path. The first clinical anchor says its GRADES do not work: on the 2026-09-08 single-day session, against a clinician who graded both legs MAS 0, OptiTrack agreed exactly on 6 of 7 trials and within one grade on 7 of 7, while the phone IMU agreed on 1 of 10 and over-graded 9, returning MAS 4 on a leg called normal. MediaPipe agreed on 0 of 8. The mechanism is identified and is an artefact, not sensor noise: area_ratio supplies 67.6 percent of IMU PT7 measured over 25 trials here and 84.7 percent on that session, because area_ratio is asymmetry about `neutral_deg`, `neutral_deg` is the settled-tail median, and the phone is still drifting through that tail - a 19 degree error in where the leg rests on a 57 degree swing puts the whole oscillation on one side. Neither `detrend=True` nor `compute_pt_score_simple` recovers it. So the claim path may need to be OptiTrack-validated parameters rather than IMU-derived MAS, which is a different product than the plan currently describes. n=1 participant, one timepoint, one grade level - MAS 0 tests only the healthy end.
 
 **Deferred to planning**
 
@@ -351,7 +350,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
 ### U9. State the dual-variable model where it is read
 
 - **Goal.** A refused grade reads as a suppressed classification, not a failed measurement.
-- **Requirements.** R12, R20, R22. Instantiates KD6, KD12 and KD13b. Instantiates KD12.
+- **Requirements.** R12, R20, R22, R26. Instantiates KD6, KD12, KD13b and KD18. Instantiates KD12.
 - **Dependencies.** U1, U7.
 - **Files.** `pendulastic_pt_score.py` (the `INSUFFICIENT_EXCURSION` template), `webapp/index.html`, `docs/`
 - **Approach.** The refusal message currently explains that PT7 cannot be interpreted and advises repeating the trial. That is right for a positioning failure and wrong for a genuinely collapsed limb, which is a measurement the instrument made correctly. Distinguish the two, and say that A0 continues to carry severity where PT7 does not.
@@ -359,6 +358,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - A refusal names A0 as the severity variable rather than implying nothing was measured.
   - The HPE negative result is recorded where a reader would look for it, with its measured values, rather than left as an absence.
   - A published IMU-versus-optical agreement figure names the detrend convention on each side.
+  - A phone-derived grade carries the caveat; the same grade derived from OptiTrack does not.
   - The existing advice about positioning and release survives for the cases it fits.
 - **Verification.** A clinician reading a refusal knows whether to repeat the trial.
 
