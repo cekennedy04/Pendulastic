@@ -138,6 +138,10 @@ def pair_pt_and_mas(mas_rows, pt_lookup):
         paired = dict(row)
         paired["pt_score"] = pt_score
         paired["predicted_mas"] = pt.pt_to_mas(pt_score)
+        # How this grade was obtained, carried alongside it. The correlation
+        # path used to know only the grade, so an assumed control zero and a
+        # clinician's examination entered the same number identically.
+        paired["mas_source"] = _mas_source_of(row)
         out.append(paired)
     return out
 
@@ -190,6 +194,90 @@ def pair_pt_and_mas_by_direction(mas_rows, pt_lookup_flexion, pt_lookup_extensio
     flexion_records = _pair_one_side("flexion", "mas_flexion", pt_lookup_flexion)
     extension_records = _pair_one_side("extension", "mas_extension", pt_lookup_extension)
     return flexion_records, extension_records
+
+
+def _mas_source_of(row):
+    """Provenance for one mas_scores.csv row: examined, assumed, or operator-set.
+
+    Delegates to spasticity_grouping rather than re-deriving the rule, so the
+    two cannot drift into disagreeing about what counts as an examination.
+    """
+    try:
+        import spasticity_grouping as _sg
+        return _sg.source_for_assessor(row.get("assessed_by"))
+    except Exception:
+        by = (row.get("assessed_by") or "").strip()
+        if not by:
+            return "mas-operator-set"
+        return "mas-assumed" if by.lower() == "assumed" else "clinical-mas"
+
+
+def _is_examined(source):
+    try:
+        import spasticity_grouping as _sg
+        return source in _sg.CLINICIAN_ASSESSED_SOURCES
+    except Exception:
+        return source == "clinical-mas"
+
+
+def compute_two_tier_stats(pairs):
+    """Construct validity at two tiers, with the composition of each stated.
+
+    Correlating an instrument against a clinical scale requires that a
+    clinician performed the examination. This corpus does not only contain
+    those: of 44 legs, 15 carry grades nobody examined -- assumed zeros for
+    controls, which is the same claim recruitment already makes -- and 2 were
+    set by the operator after the fact. Pooling them and reporting one rho
+    presents assumed values as clinician-derived, which is the flaw this
+    exists to prevent.
+
+    Returns {"examined": stats|None, "pooled": stats, "composition": {...},
+    "primary": "examined"|None}. The examined tier is the only one that
+    carries a claim; the pooled tier is an exploratory sensitivity analysis
+    and must be labelled as one wherever it appears.
+    """
+    pooled = [p for p in pairs if "_skip_reason" not in p]
+    examined = [p for p in pooled if _is_examined(p.get("mas_source"))]
+
+    composition = {}
+    for p in pooled:
+        src = p.get("mas_source") or "unknown"
+        composition[src] = composition.get(src, 0) + 1
+
+    return {
+        "examined": compute_validation_stats(examined) if len(examined) >= 2 else None,
+        "pooled": compute_validation_stats(pooled),
+        "composition": composition,
+        "n_examined": len(examined),
+        "n_pooled": len(pooled),
+        # None when no examined grade exists: there is then no primary claim to
+        # make, and falling back to the pooled figure would be exactly the
+        # substitution this function prevents.
+        "primary": "examined" if len(examined) >= 2 else None,
+    }
+
+
+def describe_two_tier(two_tier):
+    """One-line-per-tier summary for a report or a log.
+
+    Always names the composition. A rho without its denominator is the thing
+    that goes into a paper and cannot be defended afterwards.
+    """
+    lines = []
+    ex, po = two_tier.get("examined"), two_tier.get("pooled")
+    if ex and ex.get("spearman_rho") is not None:
+        lines.append(
+            f"Clinician-examined (primary claim): rho = {ex['spearman_rho']:+.3f}, "
+            f"p = {ex['spearman_p']:.4g}, n = {ex['n']}")
+    else:
+        lines.append("Clinician-examined (primary claim): not computable -- "
+                     f"{two_tier.get('n_examined', 0)} examined grades available")
+    if po and po.get("spearman_rho") is not None:
+        comp = ", ".join(f"{k} {v}" for k, v in sorted(two_tier["composition"].items()))
+        lines.append(
+            f"Pooled (EXPLORATORY, not a clinical claim): rho = {po['spearman_rho']:+.3f}, "
+            f"p = {po['spearman_p']:.4g}, n = {po['n']} [{comp}]")
+    return lines
 
 
 def compute_validation_stats(pairs):

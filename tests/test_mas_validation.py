@@ -803,3 +803,88 @@ def test_direction_pairs_work_unmodified_with_fit_mas_thresholds():
     thresholds, kappa = fmt.fit_thresholds(valid)
     assert thresholds is not None
     assert kappa == pytest.approx(1.0)
+
+
+# ── U8: construct validity is claimed at two tiers ──────────────────────────
+#
+# KD7/R14/R17. Correlating an instrument against a clinical scale requires that
+# a clinician performed the examination. This corpus does not only contain
+# those: of 44 legs, 15 carry grades nobody examined -- assumed zeros for
+# controls, which is the same claim recruitment already makes -- and 2 were set
+# by the operator afterwards. The correlation path knew only the grade, so all
+# three entered the same number identically.
+
+
+def _pair(pid, leg, grade, assessed_by, pt_score):
+    row = {"participant": pid, "leg": leg, "condition": "pre",
+           "mas_grade": grade, "assessed_by": assessed_by}
+    return dict(row, pt_score=pt_score,
+                predicted_mas=mv.pt.pt_to_mas(pt_score),
+                mas_source=mv._mas_source_of(row))
+
+
+def test_provenance_separates_examined_from_assumed_and_operator_set():
+    assert mv._mas_source_of({"assessed_by": "VL"}) == "clinical-mas"
+    assert mv._mas_source_of({"assessed_by": "ASSUMED"}) == "mas-assumed"
+    assert mv._mas_source_of({"assessed_by": ""}) == "mas-operator-set"
+    assert mv._mas_source_of({}) == "mas-operator-set"
+    assert mv._is_examined("clinical-mas")
+    assert not mv._is_examined("mas-assumed")
+    assert not mv._is_examined("mas-operator-set")
+
+
+def test_the_two_tiers_report_different_populations_with_their_counts():
+    pairs = [
+        _pair("4", "left", "0", "WD", 0.10),
+        _pair("5", "left", "0", "WD", 0.12),
+        _pair("13", "left", "1", "VL", 0.30),
+        _pair("14", "left", "1", "VL", 0.35),
+        _pair("90", "left", "0", "ASSUMED", 0.55),   # unexamined control
+        _pair("91", "left", "0", "ASSUMED", 0.58),
+        _pair("92", "left", "0", "", 0.60),          # operator-set
+    ]
+    tt = mv.compute_two_tier_stats(pairs)
+    assert tt["n_examined"] == 4
+    assert tt["n_pooled"] == 7
+    assert tt["composition"] == {"clinical-mas": 4, "mas-assumed": 2,
+                                 "mas-operator-set": 1}
+    assert tt["primary"] == "examined"
+    # The assumed rows here carry grade 0 with the HIGHEST scores, so pooling
+    # drags the correlation the wrong way. The point is not which is larger --
+    # it is that they are different numbers and must not be reported as one.
+    assert tt["examined"]["n"] == 4 and tt["pooled"]["n"] == 7
+    assert tt["examined"]["spearman_rho"] != tt["pooled"]["spearman_rho"]
+
+
+def test_no_examined_grade_means_no_primary_claim_not_a_fallback():
+    """Falling back to the pooled figure is exactly the substitution this
+    prevents: it would present assumed values as clinician-derived."""
+    pairs = [_pair("90", "left", "0", "ASSUMED", 0.2),
+             _pair("91", "left", "0", "ASSUMED", 0.3),
+             _pair("92", "left", "1", "", 0.4)]
+    tt = mv.compute_two_tier_stats(pairs)
+    assert tt["primary"] is None
+    assert tt["examined"] is None
+    assert tt["pooled"]["n"] == 3
+
+
+def test_the_summary_always_names_the_composition_and_labels_the_pooled_tier():
+    """A rho without its denominator is the thing that goes into a paper and
+    cannot be defended afterwards."""
+    pairs = [_pair("4", "left", "0", "WD", 0.10),
+             _pair("13", "left", "1", "VL", 0.30),
+             _pair("90", "left", "0", "ASSUMED", 0.50)]
+    lines = mv.describe_two_tier(mv.compute_two_tier_stats(pairs))
+    joined = "\n".join(lines)
+    assert "primary claim" in joined
+    assert "EXPLORATORY" in joined and "not a clinical claim" in joined
+    assert "clinical-mas 2" in joined and "mas-assumed 1" in joined
+
+
+def test_skipped_rows_never_enter_either_tier():
+    pairs = [_pair("4", "left", "0", "WD", 0.10),
+             _pair("5", "left", "0", "WD", 0.12),
+             {"participant": "9", "leg": "left", "mas_grade": "?",
+              "_skip_reason": "invalid mas_grade"}]
+    tt = mv.compute_two_tier_stats(pairs)
+    assert tt["n_pooled"] == 2 and tt["n_examined"] == 2

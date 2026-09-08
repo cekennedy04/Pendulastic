@@ -141,14 +141,56 @@ def test_load_mas_by_leg_missing_file_is_empty_not_an_error():
 
 
 def test_real_mas_csv_parses_and_finds_the_known_split_leg():
-    """P4 is MAS 0 left / 1+ right -- the case that forces per-LEG grouping."""
-    by_leg = sg.load_mas_by_leg()
+    """P4 is MAS 0 left / 1+ right -- the case that forces per-LEG grouping.
+
+    Scoped to june_pre, and that scoping is the point. P4 now carries two
+    timepoints with DIFFERENT grades: june_pre is 0/1+ examined by WD, and pre
+    is 0/0 operator-reported with the assessor deliberately left blank. A
+    grade is evidence about the condition it was recorded in and not about any
+    other (KD13/R21), so "what is P4's MAS" has no answer without naming a
+    timepoint. This asserted the default prefix and started failing the day
+    the second timepoint was entered -- which is the defect working as
+    intended, not a broken test.
+    """
+    by_leg = sg.load_mas_by_leg(condition_prefix="june_pre")
     if not by_leg:
         pytest.skip("mas_scores.csv not present in this checkout")
     assert by_leg.get(("4", "left")) == "0"
     assert by_leg.get(("4", "right")) == "1+"
     assert sg.classify_leg("4", "left", arm="MS", mas_by_leg=by_leg).level == sg.NON_SPASTIC
     assert sg.classify_leg("4", "right", arm="MS", mas_by_leg=by_leg).level == sg.SPASTIC
+
+
+def test_the_same_leg_can_hold_different_grades_at_different_timepoints():
+    """The reason the test above must name its timepoint. Reading P4 at `pre`
+    and at `june_pre` gives different answers, and neither is wrong."""
+    at_pre = sg.load_mas_by_leg(condition_prefix="pre")
+    at_june = sg.load_mas_by_leg(condition_prefix="june_pre")
+    if not at_pre or not at_june:
+        pytest.skip("mas_scores.csv not present in this checkout")
+    assert at_june.get(("4", "right")) == "1+"
+    assert at_pre.get(("4", "right")) == "0"
+
+
+def test_two_grades_for_one_leg_under_one_prefix_do_not_overwrite_silently(tmp_path):
+    """Last-write-wins made which grade a leg "has" depend on row order, so a
+    grade nobody examined could displace one a clinician recorded, invisibly."""
+    import warnings
+    csv_path = tmp_path / "mas.csv"
+    csv_path.write_text(
+        "\n".join([
+            "participant,leg,condition,diagnosis,mas_grade,assessed_by",
+            "7,left,pre,ms,1+,WD",
+            "7,left,pre_followup,ms,0,",
+        ]) + "\n",
+        encoding="utf-8")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        out = sg.load_mas_by_leg(str(csv_path), condition_prefix="pre")
+    assert out[("7", "left")] == "0", "documented behaviour is last row wins"
+    assert any(issubclass(x.category, RuntimeWarning) for x in w), (
+        "a collision must be reported, not swallowed")
+    assert "collision" in str(w[0].message)
 
 
 # ── both legs are always enumerated ──────────────────────────────────────────

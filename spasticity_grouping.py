@@ -100,6 +100,7 @@ for the P17-P24 range, an IMU threshold becomes derivable and this can change.
 from __future__ import annotations
 
 import csv
+import warnings
 import os
 from typing import NamedTuple, Optional
 
@@ -330,6 +331,7 @@ def load_mas_by_leg(path: str = None, condition_prefix: str = "pre") -> dict:
     """
     path = path or MAS_CSV
     out = {}
+    seen = {}
     if not os.path.exists(path):
         return out
     with open(path, encoding="utf-8-sig", newline="") as fh:
@@ -341,8 +343,25 @@ def load_mas_by_leg(path: str = None, condition_prefix: str = "pre") -> dict:
                 continue
             pid = (row.get("participant") or "").strip()
             leg = (row.get("leg") or "").strip().lower()
-            if pid and leg:
-                out[(pid, leg)] = (row.get("mas_grade") or "").strip()
+            if not (pid and leg):
+                continue
+            grade = (row.get("mas_grade") or "").strip()
+            key = (pid, leg)
+            # A leg with two grades under one prefix is a real situation, not a
+            # malformed file: P4 carries an examined 1+ at june_pre and an
+            # operator-set 0 at pre. This used to overwrite silently, so which
+            # grade a leg "has" depended on row order, and a grade nobody
+            # examined could quietly displace one a clinician recorded.
+            if key in out and out[key] != grade:
+                prev_cond, prev_grade = seen[key]
+                warnings.warn(
+                    f"MAS grade collision for participant {pid} {leg}: "
+                    f"{prev_cond}={prev_grade!r} then {cond}={grade!r} under "
+                    f"prefix {condition_prefix!r}. Keeping {grade!r} (last row "
+                    "wins). Pass a narrower condition_prefix to disambiguate.",
+                    RuntimeWarning, stacklevel=2)
+            out[key] = grade
+            seen[key] = (cond, grade)
     return out
 
 
