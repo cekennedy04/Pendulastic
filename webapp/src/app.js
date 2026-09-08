@@ -851,6 +851,9 @@ if (typeof document !== 'undefined') {
   // Completed seconds already beeped for the current hold or settle, so a
   // 50ms tick cannot re-fire one it has already played.
   let beepedSeconds = 0;
+  // Previous state code, so hold and ready cues are EDGE-triggered. Without
+  // it a 50ms tick would re-fire them for as long as the state persisted.
+  let lastCode = -1;
   // Audio is additive: every cue has a visual counterpart, so a phone that
   // cannot play sound loses no information. Unlocked from the Start gesture
   // because iOS refuses to start an AudioContext outside one.
@@ -1534,16 +1537,26 @@ if (typeof document !== 'undefined') {
       plabel.textContent = prog.label;
     }
 
-    // One beep per completed second of stability, during hold and settle
-    // alike. Purely additive: the progress bar above already carries the same
+    // Audio. Purely additive: the progress bar above already carries the same
     // information, so a muted phone loses nothing.
-    const stability = code === 1 ? calm_s : (code === 3 ? settle_s : 0);
-    if (code === 1 || code === 3) {
-      for (let i = 0; i < beepsDue(beepedSeconds, stability); i += 1) cues.tick();
-      beepedSeconds = wholeSeconds(stability);
+    //
+    // The hold and the settle need DIFFERENT cues, which the first version of
+    // this got wrong. A per-second beep cannot fire during the hold at all:
+    // calm_s tops out at 0.95 before the state becomes Ready, so
+    // Math.floor(calm_s) is always 0 and no second is ever completed. The
+    // hold is edge-signalled instead -- it is under a second long, so what the
+    // operator needs is "it started counting" and "release now", not a count.
+    if (code === 1 && lastCode !== 1) cues.tick();          // hold began or restarted
+    if (code === 2 && lastCode !== 2) cues.ready();          // ready to release
+
+    // Settling IS longer than a second, so it counts.
+    if (code === 3) {
+      for (let i = 0; i < beepsDue(beepedSeconds, settle_s); i += 1) cues.tick();
+      beepedSeconds = wholeSeconds(settle_s);
     } else {
       beepedSeconds = 0;
     }
+    lastCode = code;
 
     // The limb has been still for SETTLE_TARGET_S and the core has decided
     // the trial is done. Ending it here rather than in the worker keeps the

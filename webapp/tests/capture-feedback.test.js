@@ -155,3 +155,24 @@ test('a suspended context is resumed, since iOS starts them suspended', () => {
   cues.unlock();
   assert.equal(resumed, true);
 });
+
+// ---- the hold cue must not depend on a whole second ------------------------
+// REGRESSION. The first version beeped once per completed second during the
+// hold as well as the settle. calm_s tops out at 0.95 before the state turns
+// Ready, so Math.floor(calm_s) is always 0 and the hold could never fire a
+// single beep -- the operator heard nothing until settling. This pins the
+// arithmetic that made it impossible.
+test('the hold never completes a whole second, so it cannot be beeped per second', () => {
+  // Every value calm_s can actually take, up to and including its ceiling.
+  for (const calmS of [0, 0.2, 0.5, 0.94, HOLD_TARGET_S]) {
+    assert.equal(beepsDue(0, calmS), 0,
+      `calm_s=${calmS} would need a whole second to beep, and cannot reach one`);
+  }
+});
+
+// Settling is longer than a second, which is why it CAN be counted.
+test('settling does complete whole seconds', () => {
+  assert.ok(SETTLE_TARGET_S >= 1, 'a per-second count needs at least one second');
+  assert.equal(beepsDue(0, 1.0), 1);
+  assert.equal(beepsDue(0, SETTLE_TARGET_S), 5);
+});

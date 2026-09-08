@@ -53,6 +53,10 @@ export function createAudioCues({ ctxFactory = () => new (window.AudioContext ||
     unlock,
     /// One short blip per completed second of stability.
     tick: () => tone({ freq: 880, seconds: 0.06, gain: 0.15 }),
+    /// Ready to release: a short rise, distinct from both the flat tick and
+    /// the low completion tone. This is the cue the operator most needs
+    /// without looking -- their eyes are on the leg, not the screen.
+    ready: () => { tone({ freq: 660, seconds: 0.09, gain: 0.18 }); setTimeout(() => tone({ freq: 990, seconds: 0.12, gain: 0.18 }), 90); },
     /// Longer and lower, so completion is distinguishable from a tick without
     /// counting -- the one cue the operator may act on while not looking.
     complete: () => tone({ freq: 440, seconds: 0.45, gain: 0.2 }),
