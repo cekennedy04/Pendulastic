@@ -156,6 +156,18 @@ impl WasmSession {
     }
 }
 
+/// The healthy reference each scored parameter is compared against, plus the
+/// entries WITHDRAWN as references, which must be shown without a comparison.
+/// Exposed so the result screen can print the reference as a visible number
+/// rather than asserting an in-range verdict off a value the clinician never
+/// sees.
+///
+/// Pure delegation, per this module's logic-free rule.
+#[wasm_bindgen]
+pub fn healthy_reference() -> String {
+    crate::pt_score::healthy_ref_to_json(&HEALTHY_REF)
+}
+
 /// The composite score for a trial's STORED parameters, for the trends view.
 ///
 /// [`WasmSession::finish_pt_score`] only works on a live session with samples

@@ -997,3 +997,44 @@ mod tests {
     }
 
 }
+
+/// Parameters whose `HEALTHY_REF` entry is no longer defensible as a
+/// reference, and must not be shown as one.
+///
+/// `n` is here because of what its value actually is. The comment beside
+/// `HEALTHY_REF["N"] = 3.5` calls it a control median, but the 4-second
+/// active-oscillation cap that was in force when it was measured returned
+/// N = 4.0 for ANY leg still swinging after four seconds. 3.5 is therefore a
+/// measurement of the cap, not of control legs, and the cap has since been
+/// removed. Showing it beside an uncapped N would invite a clinician to read
+/// a large, meaningless distance as a large clinical finding.
+///
+/// The measured VALUE is still shown for these parameters. It is only the
+/// comparison that is withheld -- the same split the composite already makes,
+/// where the score is reported and the zone withheld.
+pub const WITHDRAWN_REFS: &[&str] = &["n"];
+
+/// `HEALTHY_REF` as JSON, with the withdrawn entries named so a display can
+/// show the measured value without inventing a comparison for it.
+pub fn healthy_ref_to_json(h: &HealthyRef) -> String {
+    let withdrawn = WITHDRAWN_REFS
+        .iter()
+        .map(|k| format!("\"{k}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        concat!(
+            "{{\"reference\":{{\"r2n\":{},\"n\":{},\"phi_max_ratio\":{},",
+            "\"omega_max_n\":{},\"omega_min_n\":{},\"f\":{},\"area_ratio\":{}}},",
+            "\"withdrawn\":[{}]}}"
+        ),
+        fmt_f64(h.r2n),
+        fmt_f64(h.n),
+        fmt_f64(h.phi_max_ratio),
+        fmt_f64(h.omega_max_n),
+        fmt_f64(h.omega_min_n),
+        fmt_f64(h.f),
+        fmt_f64(h.area_ratio),
+        withdrawn
+    )
+}

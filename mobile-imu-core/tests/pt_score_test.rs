@@ -13,7 +13,7 @@
 #[path = "fixtures/golden.rs"]
 mod golden;
 
-use mobile_imu_core::pt_score::{pt_score, pt_score_breakdown, HEALTHY_REF};
+use mobile_imu_core::pt_score::{pt_score, pt_score_breakdown, HEALTHY_REF, healthy_ref_to_json, WITHDRAWN_REFS};
 use mobile_imu_core::scoring::compute_pt_params;
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -163,4 +163,32 @@ fn end_to_end_replayed_trial_matches_the_python_reference() {
         golden::TRIAL_E2E_PT_SCORE_AREA_RATIO,
         golden::TRIAL_E2E_PT_SCORE_TOTAL,
     );
+}
+
+#[test]
+fn the_healthy_reference_names_its_withdrawn_entries() {
+    // N's reference is 3.5, labelled a "control median". It is not one: the
+    // 4-second active-oscillation cap in force when it was measured returned
+    // N = 4.0 for any leg still swinging after four seconds, so 3.5 measures
+    // the cap. The cap is gone; the number must not be shown as a reference.
+    let j = healthy_ref_to_json(&HEALTHY_REF);
+    assert!(j.contains("\"withdrawn\":[\"n\"]"), "withdrawn list missing from {j}");
+    // The value itself is still carried -- callers show the measured number
+    // and withhold only the comparison.
+    assert!(j.contains("\"n\":3.5"), "reference value dropped from {j}");
+    for k in ["r2n", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"] {
+        assert!(j.contains(&format!("\"{k}\":")), "missing {k} in {j}");
+    }
+}
+
+#[test]
+fn every_withdrawn_key_is_a_real_scored_parameter() {
+    // A typo here would silently withhold nothing, and the display would go
+    // back to asserting a comparison this crate says it cannot defend.
+    const KEYS: [&str; 7] = [
+        "r2n", "n", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio",
+    ];
+    for w in WITHDRAWN_REFS {
+        assert!(KEYS.contains(w), "WITHDRAWN_REFS names {w}, which is not a scored parameter");
+    }
 }

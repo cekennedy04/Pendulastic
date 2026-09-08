@@ -954,3 +954,54 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   margin: 8px 0 0;
   line-height: 1.45;
 }
+
+/* ---- reference comparison (Unit C item 8) ------------------------------
+   Numbers, not a verdict. No red/green anywhere in this block: the reference
+   is provisional and the app suppresses the composite zone for the same
+   reason, so per-parameter colour would re-instate exactly the
+   classification being withheld. */
+#reference-block {
+  margin: 10px 16px 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#reference-block summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+
+#reference-table {
+  width: 100%;
+  margin: 8px 0 0;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+#reference-table th {
+  text-align: right;
+  font-size: clamp(11px, 3vw, 12px);
+  font-weight: 600;
+  color: var(--fg3);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+#reference-table th:first-child,
+#reference-table td:first-child { text-align: left; }
+#reference-table td {
+  text-align: right;
+  padding: 5px 6px;
+  font-family: var(--mono);
+  font-size: clamp(12px, 3.2vw, 13px);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+#reference-table td:first-child { font-family: inherit; color: var(--fg2); }
+
+/* A withdrawn reference is de-emphasised, NOT flagged. It is an absence of a
+   comparison, not a bad result, and colouring it as a warning would say the
+   opposite. */
+.ref-withdrawn td { color: var(--fg3); }
+
+#reference-withdrawn { margin: 8px 0 0; line-height: 1.45; }

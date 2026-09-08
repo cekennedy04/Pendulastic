@@ -11,6 +11,11 @@
 // exact artifact that ships is also the one under test, without a second
 // `--target nodejs` build.
 import init, { WasmSession } from './wasm/mobile_imu_core.js';
+// Namespace import so a wasm build that predates `healthy_reference` still
+// LOADS. A named static import of a missing export is a module-level
+// SyntaxError, which would take the whole worker down -- every capture,
+// not just the comparison table.
+import * as wasmExports from './wasm/mobile_imu_core.js';
 
 let ready = null;
 
@@ -164,6 +169,24 @@ export function createWorkerHandler() {
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion() }
           : { type: 'error', reason: 'unscorable' });
+      } else if (m.type === 'reference') {
+        // The healthy reference the result screen shows BESIDE each measured
+        // value. A message rather than a constant copied into the UI: the
+        // numbers live in mobile-imu-core next to their provenance note, and
+        // a second copy here would go stale the next time HEALTHY_REF moves
+        // -- which it has, three times in one week.
+        // Tolerant on purpose: a reference request can arrive before any
+        // session has initialised the wasm module. null means 'not
+        // available', and the UI hides the comparison rather than showing
+        // seven rows of dashes.
+        await starting;
+        let payload = null;
+        try {
+          payload = typeof wasmExports.healthy_reference === 'function'
+            ? JSON.parse(wasmExports.healthy_reference())
+            : null;
+        } catch { payload = null; }
+        post({ type: 'reference', payload });
       } else if (m.type === 'export') {
         // Deliberately does not `await starting`+require a result the way
         // `finish` does: the raw log is what an operator needs to diagnose

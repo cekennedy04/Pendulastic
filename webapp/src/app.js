@@ -19,6 +19,7 @@ import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
 import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds , lateralNote } from './capture-feedback.js';
+import { referenceRows, withdrawnNote, formatCell, formatDelta } from './reference-rows.js';
 import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
@@ -1000,6 +1001,43 @@ if (typeof document !== 'undefined') {
   // describes the RECORDING, not the limb. Hidden entirely when the trial
   // carries no lateral field at all (every trial recorded before this
   // existed), so old records do not sprout an empty row.
+  // Item 8: measured value, the reference as a visible number, and the
+  // signed distance. No colour and no in-range language -- see
+  // reference-rows.js for why that is a deliberate refusal, not an omission.
+  let healthyReference = null;
+
+  function renderReferenceTable(params) {
+    const block = el('reference-block');
+    const table = el('reference-table');
+    if (!block || !table) return;
+    const rows = referenceRows(params, healthyReference);
+    block.hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    table.textContent = '';
+    const head = document.createElement('tr');
+    for (const h of ['metric', 'measured', 'reference', 'distance']) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      head.append(th);
+    }
+    table.append(head);
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      for (const cell of [r.key, formatCell(r.measured), formatCell(r.reference), formatDelta(r.delta)]) {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        tr.append(td);
+      }
+      if (r.withdrawn) tr.className = 'ref-withdrawn';
+      table.append(tr);
+    }
+    const note = withdrawnNote(rows);
+    const noteEl = el('reference-withdrawn');
+    if (noteEl) {
+      noteEl.hidden = note === null;
+      noteEl.textContent = note || '';
+    }
+  }
   function renderLateral(lateral) {
     const node = el('lateral-note');
     if (!node) return;
@@ -1418,6 +1456,7 @@ if (typeof document !== 'undefined') {
       lastTrajectory = t.trajectory;
       renderResult(t.params);
       renderLateral(t.lateral_motion);
+      renderReferenceTable(t.params);
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
@@ -1664,6 +1703,15 @@ if (typeof document !== 'undefined') {
     renderPtScore(action.ptScore);
     renderResult(p);
     renderLateral(action.lateralMotion);
+    // Fetched once and cached: HEALTHY_REF is a constant in the wasm, and
+    // asking again per trial would be pure round-trips.
+    if (healthyReference === null && exportSession) {
+      exportSession.requestReference().then((ref) => {
+        healthyReference = ref;
+        renderReferenceTable(p);
+      }).catch(() => {});
+    }
+    renderReferenceTable(p);
     showExportControls();
     resetToIdle();
 

@@ -59,6 +59,7 @@ export function neverStartedHandle(reason) {
   return {
     stop() {},
     exportJsonl: () => Promise.reject(new Error(reason)),
+    requestReference: () => Promise.resolve(null),
   };
 }
 
@@ -83,6 +84,7 @@ export async function startCapture({ onState, onResult, onError }) {
   // (app.js awaits each call before starting another), so a simple queue is
   // enough to route each reply to its promise without a per-message id.
   const exportWaiters = [];
+  const referenceWaiters = [];
 
   const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
@@ -90,6 +92,7 @@ export async function startCapture({ onState, onResult, onError }) {
     if (m.type === 'state') onState(m);
     else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
     else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
+    else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
     else if (m.type === 'error') {
       // A failed `export` request also comes back as `{type:'error'}`
       // (worker.js's generic catch) -- route it to the waiting promise
@@ -143,6 +146,16 @@ export async function startCapture({ onState, onResult, onError }) {
       return new Promise((resolve, reject) => {
         exportWaiters.push({ resolve, reject });
         worker.postMessage({ type: 'export' });
+      });
+    },
+    // Ask the worker for the healthy reference the result screen shows
+    // beside each measured value. Fire-and-forget: the answer arrives as a
+    // normal `{type:"reference"}` message, and until it does the comparison
+    // table stays hidden rather than showing dashes.
+    requestReference() {
+      return new Promise((resolve) => {
+        referenceWaiters.push({ resolve });
+        worker.postMessage({ type: 'reference' });
       });
     },
   };
