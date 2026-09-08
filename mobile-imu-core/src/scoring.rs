@@ -15,10 +15,32 @@ use crate::signal::{find_peaks, gradient, nanmedian, nanpercentile, polyfit1, sa
 /// flagged for review.
 pub const AREA_RATIO_WARN: f64 = 0.55;
 
-/// Matches `score_waveform`'s own continuity-check window cap. A real pendulum
-/// swing settles well within this, so an extremum past it is tail noise, not
-/// real oscillation.
-const ACTIVE_WINDOW_CAP_SEC: f64 = 4.0;
+// The 4.0 s active-window cap was REMOVED 2026-09-08, by user decision: a leg
+// may swing as many times as it needs. It read as a noise guard but behaved as
+// a ceiling on N -- at a ~1 Hz swing, 4 s is four cycles, so N returned 4.0 for
+// any leg still oscillating after four seconds, which is any healthy leg.
+// Measured at 20 Hz with only damping varied, 12, 9 and 6 true cycles all
+// scored 4.0. It also explains HEALTHY_REF["N"] = 3.5: that "control median"
+// was the cap, not a property of control legs.
+//
+// The tail-noise failure it was documented as preventing is real and
+// reproduces exactly (evaluate_peak_detection.py), but it needs the detector
+// as it stood BEFORE a1ca2b5, which had no prominence gate. a1ca2b5 shipped
+// the cap and prominence=min_amp together and prominence is what does the
+// work: the same signals give N = 0.0 with the window and without it.
+//
+// The constant is deleted rather than widened so nothing can quietly read it
+// back into a bound.
+//
+// What replaces it is a CONTIGUITY rule, not a second cap. Removing the bound
+// outright reinstated the failure on this crate's own TRIAL_NOISY_TAIL fixture
+// -- a single drop with a 3.5 deg, 0.9 Hz tremor on its resting tail, counted
+// as 8 oscillation cycles. A pendulum starts oscillating when it is RELEASED;
+// a tail tremor starts after the limb has come to rest, separated from the
+// release by a stretch with no extrema. Judging that separation against the
+// run's OWN median extremum spacing keeps the rule free of any absolute time
+// constant, so it never limits how many times a leg may swing.
+const OSCILLATION_GAP_FACTOR: f64 = 2.5;
 
 /// Which direction the swing is unbalanced in — Popović 2018 Fig 7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,17 +278,44 @@ fn active_oscillation_window_end(
     neutral: f64,
     a0: f64,
 ) -> f64 {
-    let last_extremum = pk_i.iter().chain(tr_i).max().copied();
-    if let Some(max_i) = last_extremum {
-        let last_t = t_r[max_i];
-        return t_r[0] + ACTIVE_WINDOW_CAP_SEC.min((last_t - t_r[0]).max(0.0));
+    let mut extrema: Vec<usize> = pk_i.iter().chain(tr_i).copied().collect();
+    if !extrema.is_empty() {
+        extrema.sort_unstable();
+        let times: Vec<f64> = extrema.iter().map(|&i| t_r[i]).collect();
+        if times.len() == 1 {
+            // One extremum carries no spacing to judge against. Accepted: the
+            // worst case is N = 0.5 on a lone tail bump, a bounded error
+            // rather than a fabricated oscillation.
+            return times[0];
+        }
+        let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+        let med = nanmedian(&gaps);
+        if !(med > 0.0) {
+            return times[times.len() - 1];
+        }
+        let limit = OSCILLATION_GAP_FACTOR * med;
+
+        // Anchored at RELEASE. A pendulum starts oscillating when it is let
+        // go, so its first extremum follows release by about a half period. A
+        // tail tremor does not: it begins after the limb has come to rest,
+        // separated from the release by a stretch with no extrema in it.
+        if times[0] - t_r[0] > limit {
+            return t_r[0];
+        }
+        // Then stop at the first interior gap -- the run of real oscillation
+        // ends where the extrema stop arriving on schedule.
+        for (i, &gap) in gaps.iter().enumerate() {
+            if gap > limit {
+                return times[i];
+            }
+        }
+        return times[times.len() - 1];
     }
     // No oscillation at all — a genuine single drop with no rebound. Bound at
     // the point the signal permanently reaches its resting value, which is
     // robust to the drop taking one second or five.
     let tol = 2.0_f64.max(0.05 * a0);
-    let settle_t = t_r[permanent_settle_idx(ang_r, neutral, tol)];
-    (t_r[0] + ACTIVE_WINDOW_CAP_SEC).min(settle_t)
+    t_r[permanent_settle_idx(ang_r, neutral, tol)]
 }
 
 /// `pendulastic_pt_score._TAIL_FRAC` and friends — the settled-tail drift

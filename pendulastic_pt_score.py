@@ -2157,10 +2157,55 @@ def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
     return t - t0
 
 
-# Matches imu_calibration_tuner.score_waveform's own Continuity-check window
-# cap -- a real pendulum swing settles well within this, so a stray extremum
-# past it is tail noise, not real oscillation.
-_ACTIVE_WINDOW_CAP_SEC = 4.0
+# REMOVED 2026-09-08, by user decision: "I don't want to cap the number of
+# swings, they can swing as many times as they need."
+#
+# This was 4.0 s, matched to score_waveform's Continuity-check window on the
+# reasoning that "a real pendulum swing settles well within this". It does not.
+# At a ~1 Hz swing, 4 s is four cycles, so N read 4.0 for ANY leg still
+# oscillating after four seconds -- which is any healthy leg. Measured at 20 Hz
+# with A0 = 45 deg and only the damping varied, N was identical (4.0) across a
+# 2x range in how many oscillations physically occurred: 12, 9 and 6 true
+# cycles all scored 4.0. In that regime N carried no damping information at
+# all, and N is the parameter this project's own findings call the best in the
+# set. It also explains HEALTHY_REF["N"] = 3.5: that "control median" is the
+# cap, not a property of control legs.
+#
+# What the cap was protecting is real but is not what it was documented as.
+# evaluate_peak_detection.py reproduces the tail-noise failure the docstring
+# cites (N = 0.5 at a 3 s tail, 28.5 at 30 s) exactly -- and shows it needs the
+# PRE-a1ca2b5 detector, which had no prominence gate. a1ca2b5 shipped the cap
+# and prominence=min_amp together, and it is prominence that does the work:
+# under the current detector those same signals give N = 0.0 with the window
+# and 0.0 without it.
+#
+# The residual exposure, stated plainly rather than waved away: above roughly
+# min_amp of white noise, or ~8 deg of tremor, an unbounded resting tail can
+# still be over-counted, and no window rule tested contains it -- a
+# settle-bounded window scores identically to no window on every such row. On
+# phone captures the tail is bounded by capture instead: settle-termination
+# ends the recording a few seconds after the limb settles. Long-tailed desktop
+# and OptiTrack trials keep the exposure, and a trial whose N looks
+# implausibly high should be read as a noisy tail, not a lively leg.
+#
+# The constant is gone rather than set to infinity so no caller can quietly
+# reintroduce a cap by reading it.
+#
+# What replaces it is a CONTIGUITY rule, not a second cap. Removing the bound
+# outright was tried and reinstated the failure on the repo's own
+# TRIAL_NOISY_TAIL fixture -- a single drop with a 3.5 deg, 0.9 Hz tremor added
+# to its resting tail, which was counted as 8 oscillation cycles. That fixture
+# exists precisely to catch this, and its comment is explicit that the
+# prominence gate alone does not suppress that ripple.
+#
+# The distinction the rule uses is that a pendulum starts oscillating when it
+# is RELEASED, so its extrema begin about a half period after release and keep
+# arriving on schedule; a tail tremor begins after the limb has come to rest,
+# separated from the release by a stretch containing no extrema at all. Judging
+# that separation against the run's OWN median extremum spacing keeps the rule
+# free of any absolute time constant, so it never limits how many times a leg
+# may swing -- which is the property that made the 4 s cap wrong.
+_OSCILLATION_GAP_FACTOR = 2.5
 
 
 def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
@@ -2189,10 +2234,37 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
         case never finds one): find the first point after which the signal
         is PERMANENTLY within tolerance of neutral, capped the same way.
     """
-    extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
+    extrema = np.sort(np.concatenate([
+        np.asarray(pk_i, dtype=int), np.asarray(tr_i, dtype=int)]))
     if len(extrema):
-        last_extremum_t = float(t_r[int(extrema.max())])
-        return t_r[0] + min(_ACTIVE_WINDOW_CAP_SEC, max(0.0, last_extremum_t - t_r[0]))
+        times = t_r[extrema].astype(float)
+        if len(times) == 1:
+            # One extremum carries no spacing to judge against. Accepted: the
+            # worst case is N = 0.5 on a lone tail bump, which is a bounded
+            # error, not a fabricated oscillation.
+            return float(times[0])
+        gaps = np.diff(times)
+        med = float(np.median(gaps))
+        if med <= 0:
+            return float(times[-1])
+        limit = _OSCILLATION_GAP_FACTOR * med
+
+        # Anchored at RELEASE. A pendulum starts oscillating when it is let go:
+        # its first extremum follows release by about a half period. A tail
+        # tremor does not -- it begins after the limb has already come to rest,
+        # separated from the release by a stretch with no extrema in it. That
+        # separation is what distinguishes the two, and it is independent of
+        # how many times the leg subsequently swings.
+        if times[0] - t_r[0] > limit:
+            return float(t_r[0])
+
+        # Then stop at the first interior gap: the run of real oscillation ends
+        # where the extrema stop arriving on schedule. Anything after that gap
+        # is a separate disturbance, however periodic it looks.
+        for i, gap in enumerate(gaps):
+            if gap > limit:
+                return float(times[i])
+        return float(times[-1])
     tol = max(2.0, 0.05 * A0)
     near_neutral = np.abs(ang_r - neutral) <= tol
     settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
@@ -2200,8 +2272,7 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
         if np.all(near_neutral[i:]):
             settle_idx = i
             break
-    settle_t = float(t_r[settle_idx])
-    return min(t_r[0] + _ACTIVE_WINDOW_CAP_SEC, settle_t)
+    return float(t_r[settle_idx])
 
 
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,

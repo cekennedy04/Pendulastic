@@ -355,3 +355,47 @@ fn min_amps_absolute_floor_binds_on_a_low_amplitude_swing() {
         "trough indices"
     );
 }
+
+#[test]
+fn n_counts_every_swing_rather_than_capping_at_a_clock() {
+    // The property the removed 4 s active-window cap destroyed. Under it, N
+    // returned 4.0 for a 12-cycle swing, a 9-cycle swing and a 6-cycle swing
+    // alike -- one number across a 2x range in what physically happened, on
+    // the parameter this project's own findings call the best in the set.
+    //
+    // No golden fixture covers this: every one of them settles inside four
+    // seconds, which is exactly why the cap went unnoticed. Built here instead.
+    let fs = 20.0_f64;
+    let dt = 1.0 / fs;
+    let mut got = Vec::new();
+
+    for lam in [0.25_f64, 0.5, 1.0] {
+        let hold_n = (1.2 / dt) as usize;
+        let swing_n = (12.0 / dt) as usize;
+        let mut t = Vec::with_capacity(hold_n + swing_n);
+        let mut ang = Vec::with_capacity(hold_n + swing_n);
+        for i in 0..hold_n {
+            t.push(i as f64 * dt);
+            ang.push(180.0);
+        }
+        for i in 0..swing_n {
+            let ts = i as f64 * dt;
+            t.push((hold_n + i) as f64 * dt);
+            ang.push(135.0 + 45.0 * (-lam * ts).exp() * (2.0 * std::f64::consts::PI * ts).cos());
+        }
+        let p = compute_pt_params(&t, &ang, None, false).expect("a decaying swing is scorable");
+        got.push(p.n);
+    }
+
+    // Strictly monotone: more damping, fewer counted cycles.
+    assert!(
+        got[0] > got[1] && got[1] > got[2],
+        "N does not track damping: {got:?}"
+    );
+    assert!(
+        got[0] - got[2] > 3.0,
+        "N is nearly constant across damping: {got:?}"
+    );
+    // And the lightly damped leg must not sit near the old 4.0 ceiling.
+    assert!(got[0] > 8.0, "N still looks capped: {}", got[0]);
+}

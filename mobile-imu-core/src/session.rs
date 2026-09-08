@@ -20,7 +20,9 @@ pub const MAX_HOLD_DRIFT_DEG: f64 = 5.0;
 /// `scoring.rs` expresses every angle in the trial relative to it, so a short
 /// tail shifts the whole waveform -- including `a0_deg`, the spasticity
 /// grouping variable. The opposite failure, an over-long tail fabricating
-/// oscillations, is already guarded by `ACTIVE_WINDOW_CAP_SEC`.
+/// oscillations, is guarded by the prominence gate in `find_peaks`, not by a
+/// window cap -- the 4 s cap that used to be cited here was removed because it
+/// bounded N itself rather than the noise.
 ///
 /// There is deliberately NO maximum trial length. A limb with sustained
 /// clonus never reaches this and never self-terminates; the operator ends it.

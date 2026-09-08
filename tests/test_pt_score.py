@@ -1330,3 +1330,67 @@ def test_a0_is_recovered_at_every_capture_rate():
         assert abs(got - a0_true) < 1.0, f"A0 {got:.2f} at {fps} Hz, want {a0_true}"
         recovered.append(got)
     assert max(recovered) - min(recovered) < 1.0, f"A0 varies by rate: {recovered}"
+
+
+def test_n_tracks_damping_rather_than_the_clock():
+    """N must measure the leg, not how long we were willing to look.
+
+    This is the property the 4 s active-window cap destroyed. Under it, N read
+    4.0 for a 12-cycle swing, a 9-cycle swing and a 6-cycle swing alike -- one
+    number across a 2x range in what physically happened, on the parameter this
+    project's own findings call the best in the set. Asserted as a SPREAD as
+    well as per-case, because the failure mode was not inaccuracy, it was
+    constancy.
+    """
+    import pendulastic_pt_score as p
+    neutral, a0, freq, fs = 135.0, 45.0, 1.0, 20.0
+    dt = 1.0 / fs
+    got = []
+    for lam in (0.25, 0.5, 1.0):
+        hold = np.full(int(1.2 / dt), neutral + a0)
+        ts = np.arange(0.0, 12.0, dt)
+        ang = np.concatenate([hold, neutral + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)])
+        t = np.arange(len(ang)) * dt
+        got.append(p.compute_pt_params(t, ang, None, False)["N"])
+
+    # More damping must mean fewer counted cycles, strictly.
+    assert got[0] > got[1] > got[2], f"N does not track damping: {got}"
+    assert max(got) - min(got) > 3.0, f"N is nearly constant across damping: {got}"
+    # And the lightly damped leg must not be pinned near the old 4.0 cap.
+    assert got[0] > 8.0, f"N still looks capped: {got[0]}"
+
+
+def test_a_resting_tail_is_not_counted_as_oscillation():
+    """The failure the removed cap was documented as preventing.
+
+    evaluate_peak_detection.py establishes that the docstring's N = 0.5 / 28.5
+    needed the PRE-a1ca2b5 detector, which had no prominence gate: a1ca2b5
+    shipped the cap and prominence=min_amp together, and prominence is what
+    does the work. This pins that, so removing the cap cannot silently become
+    removing the guard -- if someone drops prominence from find_peaks, this
+    fails.
+
+    Uses the exact synthetic that reproduces the documented numbers under the
+    old detector: a single drop with no rebound, so the true cycle count is 0
+    however long the tail runs.
+    """
+    import pendulastic_pt_score as p
+    rng = np.random.default_rng(7)
+    fs, dt = 120.0, 1.0 / 120.0
+    counts = []
+    for tail_s in (3.0, 30.0):
+        hold = np.full(int(0.6 / dt), 180.0)
+        ramp = np.concatenate([
+            np.linspace(180.0, 106.0, int(0.5 / dt)),
+            np.linspace(106.0, 60.0, int(0.5 / dt)),
+        ])
+        tail = np.full(int(tail_s / dt), 60.0)
+        ang = np.concatenate([hold, ramp, tail])
+        ang = ang + rng.normal(0.0, 2.0, len(ang))
+        t = np.arange(len(ang)) * dt
+        r = p.compute_pt_params(t, ang, None, True)
+        counts.append(0.0 if r is None else r["N"])
+
+    # A 10x longer tail must not manufacture cycles out of nothing.
+    assert counts[0] < 1.0, f"short tail already over-counting: {counts[0]}"
+    assert counts[1] < 1.0, f"long resting tail counted as oscillation: {counts[1]}"
