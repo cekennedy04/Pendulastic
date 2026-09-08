@@ -48,6 +48,7 @@ class PTScoreBridge:
             compute_pt_params,
             compute_pt_score_simple,
             mas_estimate,
+            MAS_GRADE_IMU_CAVEAT,
         )
 
         t, angle = _load_hpe_csv(csv_path)
@@ -71,6 +72,10 @@ class PTScoreBridge:
             "trial_id":    trial_meta["id"],
             "mas_estimate": mas,
             "mas_refusal_reason": est["reason"],
+            # A grade served over the wire loses whatever context surrounded it
+            # on screen, so the caveat travels with it. Empty when there is no
+            # grade to qualify.
+            "mas_caveat": MAS_GRADE_IMU_CAVEAT if mas is not None else "",
             "pt_score":    round(pt_simple, 4),
             "parameters": {
                 "R2n":              _safe(params["R2n"]),

@@ -1805,15 +1805,25 @@ class PostProcessingPanel(tk.Frame):
             # shown as MAS "4". The SCORE stays visible either way, matching
             # mas_estimate's contract of returning pt7 alongside mas=None.
             mas = pt_to_mas(score) if (excursion_ok is None or excursion_ok(p)) else None
-            self._metrics_frame.config(
-                text=f"Popović PT Metrics (source: {src.upper()})")
+            # The grade stays visible on the phone path -- the instrument is in
+            # validation and no clinician reads this -- but it is marked, because
+            # on the only clinical case available it matched 1 of 10 while
+            # OptiTrack matched 6 of 7. See MAS_GRADE_IMU_CAVEAT for the
+            # mechanism, which is an area_ratio artefact rather than noise.
+            _imu_src = str(src).lower().startswith("imu")
+            _title = f"Popović PT Metrics (source: {src.upper()})"
+            if _imu_src and mas is not None:
+                _title += "  —  MAS UNVALIDATED on this source"
+            self._metrics_frame.config(text=_title)
             self.a1_var.set(f"{p['A1_deg']:.1f}")
             self.omega_var.set(f"{p['omega_peak_deg_s']:.1f}")
             self.n_var.set(f"{p['N']:.1f}")
             self.f_var.set(f"{p['f']:.2f}")
             self.r2n_var.set(f"{p['R2n']:.3f}")
-            self.mas_var.set(str(mas) if mas is not None
-                             else f"not interpretable (A0 {p['A0_deg']:.1f} deg)")
+            self.mas_var.set(
+                (f"{mas}  (unvalidated)" if _imu_src else str(mas))
+                if mas is not None
+                else f"not interpretable (A0 {p['A0_deg']:.1f} deg)")
             self.score_var.set(f"{score:.3f}")
 
             self._last_pt_params = p

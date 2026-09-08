@@ -1469,3 +1469,25 @@ def test_the_two_languages_still_tell_the_same_story():
                    "restricted limb"):
         assert phrase in p.INSUFFICIENT_EXCURSION, f"missing in Python: {phrase}"
         assert phrase in rs, f"missing in Rust: {phrase}"
+
+
+def test_the_imu_grade_caveat_names_the_evidence_and_the_mechanism():
+    """Option B: the grade stays and is marked, because the instrument is in
+    validation and no clinician reads it. A warning that only says
+    "provisional" would not let a reader judge how far to trust the number, so
+    this one carries the measured disagreement AND the named cause."""
+    import pendulastic_pt_score as p
+    c = p.MAS_GRADE_IMU_CAVEAT
+    assert "UNVALIDATED" in c
+    assert "1 of 10" in c and "6 of 7" in c, "must carry the measured comparison"
+    assert "area_ratio" in c and "resting angle" in c, "must name the mechanism"
+    assert "not" in c.lower() and "clinical finding" in c
+
+
+def test_the_caveat_travels_with_a_grade_served_over_the_wire():
+    """On screen the grade sits next to its context. Over the API it does not,
+    so the caveat has to be part of the payload."""
+    from web.api.models.trial import AnalysisResponse
+    fields = getattr(AnalysisResponse, "model_fields", None) or \
+        getattr(AnalysisResponse, "__fields__")
+    assert "mas_caveat" in fields

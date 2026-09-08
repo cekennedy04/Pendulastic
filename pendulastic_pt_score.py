@@ -555,6 +555,39 @@ INSUFFICIENT_EXCURSION = (
 )
 
 
+#: Shown next to any MAS grade derived from the phone IMU.
+#:
+#: The grade is left in place deliberately -- the instrument is in validation
+#: and no clinician is reading it -- but it must not be presented as though it
+#: were trustworthy, because on the only clinical case that exists it is not.
+#: 2026-09-08 single-day session, clinician graded both legs MAS 0:
+#:
+#:     OptiTrack     6/7  exact (86%), 7/7 within one grade
+#:     phone IMU     1/10 exact,       over-graded 9/10, MAS "4" on nine
+#:     MediaPipe 2D  0/8  exact
+#:
+#: The mechanism is an artefact with a named chain, not sensor noise.
+#: area_ratio supplies 67.6% of IMU PT7 across 25 trials and 84.7% on that
+#: session. area_ratio is asymmetry about `neutral_deg`; `neutral_deg` is the
+#: settled-tail median; and the phone is still drifting through that tail. A
+#: 19 deg error in where the leg rests, on a 57 deg swing, puts the whole
+#: oscillation on one side and saturates the parameter. Neither detrend=True
+#: nor compute_pt_score_simple recovers it.
+#:
+#: Evidence is thin -- one participant, one timepoint, MAS 0 only, which tests
+#: the healthy end and cannot separate a channel that over-grades from one
+#: that is miscalibrated. The mechanism does not depend on that thinness.
+MAS_GRADE_IMU_CAVEAT = (
+    "UNVALIDATED on this source. Against the one clinical case available, "
+    "phone-IMU grades matched the clinician on 1 of 10 trials and over-graded "
+    "9, returning MAS 4 on a leg graded 0, while OptiTrack matched 6 of 7. "
+    "Cause is known: area_ratio is ~68-85% of the phone's PT7, it measures "
+    "asymmetry about the resting angle, and the phone drifts through the "
+    "settled tail it estimates that angle from. Do not read this grade as a "
+    "clinical finding."
+)
+
+
 def excursion_ok(params: Optional[dict]) -> bool:
     """False when the swing is too small -- or too large -- to mean anything.
 
