@@ -1347,3 +1347,92 @@ def test_orientation_matches_the_rule_windowed_pt_params_uses():
         expected = float(np.median(curve[:len(curve) // 20])
                          - np.median(curve[int(len(curve) * 0.75):])) < 0
         assert inverted == expected
+
+
+# ── U6: out-of-plane motion (R11) ───────────────────────────────────────────
+#
+# The pendulum test assumes a sagittal swing, and nothing measured whether it
+# got one. hip_roll_deg looked like the answer -- written into every trial CSV,
+# read by nothing -- and is not: it is a Euler angle, ill-conditioned near the
+# pitch extremes a swing reaches, and its range on 40 real trials has a median
+# of 90.5 deg against a 69.3 deg swing. Rotation off the flexion axis has no
+# such problem and mirrors what optitrack_knee_axis already does optically.
+
+
+def _gyro_csv(tmp_path, name, w_xyz, fs=100.0, n=400):
+    """A gyro CSV in the recorded format, including the '#' metadata block."""
+    lines = ["# participant,99", "# leg,Left",
+             "timestamp_ms,phone_ts_ms,role,sensor_name,x,y,z"]
+    for i in range(n):
+        x, y, z = w_xyz(i / fs)
+        lines.append(f"{1000.0 * i / fs:.3f},0,proximal,Gyroscope,{x:.6f},{y:.6f},{z:.6f}")
+    p = tmp_path / name
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(p)
+
+
+def test_a_purely_sagittal_swing_reports_almost_no_out_of_plane_motion():
+    import tempfile, pathlib
+    d = pathlib.Path(tempfile.mkdtemp())
+    # All rotation about one axis: the definition of staying in plane.
+    p = _gyro_csv(d, "sag.csv", lambda s: (0.0, 3.0 * np.cos(2 * np.pi * 0.9 * s), 0.0))
+    lm = engine.lateral_motion(p)
+    assert lm["status"] == "ok"
+    assert lm["out_of_plane_ratio"] < 0.05, (
+        f"a single-axis rotation reported {100 * lm['out_of_plane_ratio']:.0f}% off-axis")
+
+
+def test_a_tilted_but_fixed_axis_is_still_in_plane():
+    """Specificity, and the case that caught a wrong test: two components
+    sharing one phase still describe a single fixed rotation axis, merely
+    tilted. A tilted plane is a plane -- this must read as in-plane, or the
+    metric would flag every trial whose sensor is not perfectly aligned."""
+    import tempfile, pathlib
+    d = pathlib.Path(tempfile.mkdtemp())
+    p = _gyro_csv(d, "tilt.csv",
+                  lambda s: (1.5 * np.cos(2 * np.pi * 0.9 * s),
+                             3.0 * np.cos(2 * np.pi * 0.9 * s), 0.0))
+    lm = engine.lateral_motion(p)
+    assert lm["status"] == "ok"
+    assert lm["out_of_plane_ratio"] < 0.05
+
+
+def test_a_swing_whose_axis_wobbles_reports_out_of_plane_motion():
+    """Real out-of-plane motion means the axis DIRECTION changes during the
+    swing, which needs a phase difference, not just a second component."""
+    import tempfile, pathlib
+    d = pathlib.Path(tempfile.mkdtemp())
+    p = _gyro_csv(d, "oop.csv",
+                  lambda s: (1.5 * np.sin(2 * np.pi * 0.9 * s),
+                             3.0 * np.cos(2 * np.pi * 0.9 * s), 0.0))
+    lm = engine.lateral_motion(p)
+    assert lm["status"] == "ok"
+    assert lm["out_of_plane_ratio"] > 0.05, (
+        f"an axis that wobbles reported {100 * lm['out_of_plane_ratio']:.1f}% off-axis")
+    assert np.isfinite(lm["peak_perp_deg_s"])
+
+
+def test_the_metadata_block_does_not_become_the_header():
+    """These files open with '#' lines. Feeding them straight to DictReader
+    takes '# participant,99' as the columns and every lookup then misses --
+    which is exactly how the first version reported 'no column' on all 163
+    trials while the column was there."""
+    import tempfile, pathlib
+    d = pathlib.Path(tempfile.mkdtemp())
+    p = _gyro_csv(d, "hdr.csv", lambda s: (0.0, 2.0 * np.cos(6 * s), 0.0))
+    assert engine.lateral_motion(p)["status"] == "ok"
+
+
+def test_a_trial_with_no_rotation_reports_no_axis_rather_than_a_ratio():
+    import tempfile, pathlib
+    d = pathlib.Path(tempfile.mkdtemp())
+    p = _gyro_csv(d, "still.csv", lambda s: (0.0, 0.0, 0.0))
+    lm = engine.lateral_motion(p)
+    assert lm["status"] == "empty"
+    assert lm["detail"]
+
+
+def test_a_missing_file_is_absent_not_a_crash():
+    lm = engine.lateral_motion("no_such_trial_gyro.csv")
+    assert lm["status"] == "absent"
+    assert lm["detail"]

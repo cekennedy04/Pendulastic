@@ -20,6 +20,7 @@ import numpy as np
 from scipy.signal import find_peaks, savgol_filter, butter, filtfilt
 
 import analysis_pipeline
+import imu_flex_axis
 import imu_calibration_config
 import imu_calibration_tuner
 import pendulastic_pt_score
@@ -1237,3 +1238,109 @@ def release_marks_to_csv_rows(release_marks: dict, participant_id: str,
             "source": mark["source"],
         })
     return fieldnames, rows
+
+
+# ── Lateral (out-of-plane) motion ────────────────────────────────────────────
+#
+# The signal has been on disk since the IMU server was written and read by
+# nothing. pendulastic_imu_server logs hip_roll_deg into every trial CSV
+# (header at :1097), ahrs.rs documents roll as the abduction/adduction
+# component, and the only consumer anywhere is an operator-selectable overlay
+# in the viewer. No report, no metric, no per-trial plot.
+#
+# It matters because the pendulum test assumes a sagittal swing. A leg that
+# swings out of plane is not a worse measurement of the same thing -- it is a
+# measurement of something else, and nothing downstream could see it happen.
+
+#: Below this, out-of-plane travel is indistinguishable from sensor noise on a
+#: clean trial. Not a validity threshold -- U6 reports, it does not judge; the
+#: threshold that would invalidate a trial is deferred in the plan.
+LATERAL_NOISE_FLOOR_DEG = 2.0
+
+
+def lateral_motion(gyro_csv_path: str) -> dict:
+    """Out-of-plane motion for one trial: rotation NOT about the flexion axis.
+
+    Returns {"t", "perp_deg_s", "in_plane_deg_s", "out_of_plane_ratio",
+    "peak_perp_deg_s", "status", "detail"}. status is "ok", "absent" or
+    "empty".
+
+    NOT hip_roll_deg, which is what this first tried. That column is written
+    into every trial CSV and read by nothing, so it looked like the obvious
+    source -- but it is a Euler angle, and Euler roll is ill-conditioned near
+    the pitch extremes a pendulum swing reaches. Measured on 40 trials: the
+    roll channel's range has a median of 90.5 deg, LARGER than the 69.3 deg
+    swing it is supposed to be perpendicular to, with peak pitch at 73.8 deg
+    against a gimbal lock at 90. Its range measures the parameterisation, not
+    the limb. It also wraps at +/-180: before unwrapping, 40 of 40 trials
+    reported motion and the maximum was exactly 360.0.
+
+    The angular-velocity form has no such problem and mirrors what the optical
+    path already does -- optitrack_knee_axis projects onto a hinge axis and
+    treats the second principal component as out-of-plane. A pure sagittal
+    swing puts all of omega on the flexion axis; whatever is perpendicular to
+    it is the leg leaving the plane.
+    """
+    out = {"t": np.array([]), "perp_deg_s": np.array([]),
+           "in_plane_deg_s": np.array([]), "out_of_plane_ratio": float("nan"),
+           "peak_perp_deg_s": float("nan"), "status": "absent", "detail": ""}
+    try:
+        import csv as _csv
+        with open(gyro_csv_path, newline="", encoding="utf-8-sig") as fh:
+            body = [ln for ln in fh if not ln.lstrip().startswith("#")]
+        rows = list(_csv.DictReader(body))
+    except (OSError, UnicodeDecodeError) as e:
+        out["detail"] = f"{type(e).__name__} reading {os.path.basename(gyro_csv_path)}"
+        return out
+    if not rows or not {"x", "y", "z"}.issubset(rows[0]):
+        out["detail"] = "no gyro x/y/z columns"
+        return out
+
+    t, w = [], []
+    for row in rows:
+        if (row.get("role") or "proximal") != "proximal":
+            continue
+        try:
+            ms = float(row["timestamp_ms"])
+            v = [float(row["x"]), float(row["y"]), float(row["z"])]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if np.isfinite(ms) and all(np.isfinite(v)):
+            t.append(ms / 1000.0)
+            w.append(v)
+    if len(t) < 20:
+        out["status"] = "empty"
+        out["detail"] = f"{len(t)} usable gyro samples"
+        return out
+
+    t = np.asarray(t, dtype=float) - t[0]
+    w = np.asarray(w, dtype=float)
+
+    axis = imu_flex_axis.principal_axis(w)
+    if axis is None:
+        out["status"] = "empty"
+        out["detail"] = "no flexion axis: the trial carries too little rotation"
+        return out
+
+    along = w @ axis
+    perp = np.linalg.norm(w - np.outer(along, axis), axis=1)
+    in_plane = np.abs(along)
+    mag = np.linalg.norm(w, axis=1)
+
+    # Ratio over the moving part only. Including the resting tail averages in
+    # noise-on-noise, where the ratio is meaningless and near 1.
+    moving = mag > max(0.1, 0.1 * float(np.nanmax(mag)))
+    ratio = (float(np.median(perp[moving]) / np.median(mag[moving]))
+             if moving.sum() > 5 and np.median(mag[moving]) > 0 else float("nan"))
+
+    out.update({
+        "t": t,
+        "perp_deg_s": np.degrees(perp),
+        "in_plane_deg_s": np.degrees(in_plane),
+        "out_of_plane_ratio": ratio,
+        "peak_perp_deg_s": float(np.degrees(np.nanmax(perp))),
+        "status": "ok",
+    })
+    out["detail"] = (f"{100 * ratio:.0f}% of rotation is off the flexion axis"
+                     if np.isfinite(ratio) else "out-of-plane ratio unavailable")
+    return out

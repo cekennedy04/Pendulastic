@@ -115,6 +115,7 @@ def discover_multisource_trials():
             condition=rec["condition"], trial=rec["trial"],
             opti_t=t, opti_ang=ang, opti_params=opti_params, opti_score=opti_score,
             modalities=modalities,
+            lateral=_lateral_for(rec),
         ))
     return out
 
@@ -123,9 +124,44 @@ def discover_multisource_trials():
 # Per-trial figure
 # ══════════════════════════════════════════════════════════════════════════
 
+_GYRO_INDEX = None
+
+
+def _gyro_path_for(participant, leg, condition, trial):
+    """The gyro CSV for one trial, or None.
+
+    common.discover_all_trials() carries only the OptiTrack path, so the raw
+    component paths are looked up from the IMU-side discovery, which does. Built
+    once: that discovery walks the whole corpus.
+    """
+    global _GYRO_INDEX
+    if _GYRO_INDEX is None:
+        try:
+            import batch_imu_vs_optitrack_rmse as _batch
+            _GYRO_INDEX = {t["trial_key"]: t.get("gyro") for t in _batch.discover_trials()}
+        except Exception:
+            _GYRO_INDEX = {}
+    return _GYRO_INDEX.get(f"{participant}_{str(leg).lower()}_{condition}_T{trial}")
+
+
+def _lateral_for(rec):
+    """Out-of-plane motion for one discovery record, or None when unavailable."""
+    g = _gyro_path_for(rec["participant"], rec["leg"], rec["condition"], rec["trial"])
+    if not g:
+        return None
+    try:
+        import workbench_engine as _engine
+        return _engine.lateral_motion(g)
+    except Exception:
+        return None
+
+
 def make_trial_figure(trial, out_path):
-    fig = plt.figure(figsize=(13, 9.5), facecolor="white")
-    gs = fig.add_gridspec(2, 1, height_ratios=[2, 1.3], hspace=0.4)
+    lateral = trial.get("lateral")
+    n_rows = 3 if (lateral and lateral.get("status") == "ok") else 2
+    fig = plt.figure(figsize=(13, 9.5 if n_rows == 2 else 11.5), facecolor="white")
+    ratios = [2, 1.3] if n_rows == 2 else [2, 1.0, 1.3]
+    gs = fig.add_gridspec(n_rows, 1, height_ratios=ratios, hspace=0.45)
 
     # ── Waveform overlay ─────────────────────────────────────────────────
     ax = fig.add_subplot(gs[0])
@@ -147,6 +183,27 @@ def make_trial_figure(trial, out_path):
                 f"— Waveform Comparison", fontsize=11, fontweight="bold")
     ax.tick_params(labelsize=8)
     ax.legend(loc="best", fontsize=8, framealpha=0.9)
+
+    # ── Out-of-plane motion ──────────────────────────────────────────────
+    # The pendulum test assumes a sagittal swing. A leg that leaves the plane
+    # is not a noisier measurement of the same thing, and until now nothing
+    # downstream could see it happen.
+    if n_rows == 3:
+        axl = fig.add_subplot(gs[1])
+        axl.set_facecolor("#f8f9fa")
+        axl.grid(True, color=common.BG_GRID, linestyle="-", linewidth=0.8)
+        axl.plot(lateral["t"], lateral["in_plane_deg_s"], color="#9CA3AF",
+                 linewidth=1.0, label="about the flexion axis", zorder=3)
+        axl.plot(lateral["t"], lateral["perp_deg_s"], color="#DC2626",
+                 linewidth=1.3, label="off-axis (out of plane)", zorder=4)
+        axl.set_xlabel("Time (s)", fontsize=9)
+        axl.set_ylabel("|angular velocity| (deg/s)", fontsize=9)
+        pct = lateral.get("out_of_plane_ratio")
+        pct_txt = f"{100 * pct:.0f}%" if pct == pct else "n/a"
+        axl.set_title(f"Out-of-plane motion — {pct_txt} of rotation is off the "
+                      "flexion axis", fontsize=10, fontweight="bold")
+        axl.tick_params(labelsize=8)
+        axl.legend(loc="best", fontsize=8, framealpha=0.9)
 
     # ── Parameter / PT-score / RMSE table ───────────────────────────────
     ax2 = fig.add_subplot(gs[1])
