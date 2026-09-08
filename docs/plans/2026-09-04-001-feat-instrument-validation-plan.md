@@ -265,7 +265,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
 - **Test scenarios.**
   - A curve and its exact negation compare as identical after normalisation, not as maximally different.
   - Two genuinely different curves of the same polarity are unaffected.
-  - A curve with no detectable release direction is refused rather than assigned one.
+  - A curve with no detectable release direction is left as it is, rather than flipped on the sign of noise. Not a refusal: a trace that flat compares meaninglessly whichever way up it is, and the caller can see that in the amplitude.
   - The normalisation matches `windowed_pt_params`, so the two cannot disagree about which way up a trial is.
 - **Verification.** The two functions agree about which way up a trial is.
 

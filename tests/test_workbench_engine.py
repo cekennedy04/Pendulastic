@@ -671,12 +671,22 @@ def test_compare_pair_no_overlap_returns_error():
     assert result["status"] == "error"
 
 
-def test_windowed_pt_params_zero_for_flat_signal():
+def test_windowed_pt_params_is_nan_not_zero_for_flat_signal():
+    """A flat trace has no swing, and that is a failure to measure -- NaN --
+    not a measurement of zero.
+
+    This asserted 0.0 until 2026-09-04. Zeros were being averaged into
+    IMU-vs-OptiTrack ICC as though they were observations: 70 of 119 optical
+    trials in the 2026-09-02 paper table came back all-zero from an inverted
+    curve, and returning zero made them indistinguishable from real agreement.
+    """
     t = np.arange(0, 3.0, 1 / 60)
     angle = np.full_like(t, 180.0)
     result = engine.windowed_pt_params(t, angle)
-    assert result["area_ratio"] == 0.0
-    assert result["N"] == 0.0
+    assert np.isnan(result["area_ratio"])
+    assert np.isnan(result["N"])
+    assert all(np.isnan(v) for v in result.values()), (
+        "a trace with no swing must not report any parameter as measured")
 
 
 def test_windowed_pt_params_area_ratio_lower_than_naive_unwindowed_calc():
@@ -855,10 +865,16 @@ def test_load_optitrack_trial_prefers_rigid_body_when_available(monkeypatch):
 def test_load_optitrack_trial_falls_back_to_marker_pca_on_value_error(monkeypatch):
     def fake_rigid_body_fails(path):
         raise ValueError("Could not find both a Thigh-like and a Shank-like body with rotation data")
-    def fake_pca(path):
-        return np.array([0.0, 1.0]), np.array([180.0, 160.0])
+    # load_optitrack_DETAILED, not load_optitrack. load_optitrack_trial now
+    # delegates to load_optitrack_trial_detailed, whose fallback calls the
+    # detailed loader for the TrialQuality record. Patching the old name
+    # intercepted nothing, so the real loader ran and this test failed on a
+    # missing dummy.csv rather than on the behaviour it is about -- which
+    # meant the fallback path was silently untested.
+    def fake_pca_detailed(path):
+        return np.array([0.0, 1.0]), np.array([180.0, 160.0]), None
     monkeypatch.setattr(engine.analysis_pipeline, "_optitrack_knee_angle_series", fake_rigid_body_fails)
-    monkeypatch.setattr(engine.pendulastic_pt_score, "load_optitrack", fake_pca)
+    monkeypatch.setattr(engine.pendulastic_pt_score, "load_optitrack_detailed", fake_pca_detailed)
     t, angle, method = engine.load_optitrack_trial("dummy.csv")
     assert method == "marker_pca"
     assert list(angle) == [180.0, 160.0]
@@ -1267,3 +1283,67 @@ def test_replay_samples_uses_the_native_analysis_grid():
     assert len(t) > 50
     assert float(np.median(np.diff(t))) == pytest.approx(
         tuner.ANALYSIS_TICK_S, rel=1e-6)
+
+
+# ── U4a: compare_pair must orient both curves before aligning ────────────────
+#
+# Since 87d7645 the optical loader returns a relative curve whose sense comes
+# from a hinge eigenvector, so half the trials arrive inverted -- across 60
+# trials OptiTrack runs 26 negative / 34 positive while the IMU runs 59 / 1.
+# windowed_pt_params normalised this; compare_pair did not, and a mirrored
+# curve corrupts both steps that follow: release detection looks for a
+# directional departure, and cross-correlation against a mirror peaks
+# negatively rather than at the true shift.
+
+
+def _decaying_swing(n=360, fs=60.0, a0=45.0, f=0.9, tau=1.6):
+    t = np.arange(n) / fs
+    return t, a0 * np.exp(-t / tau) * np.cos(2 * np.pi * f * t)
+
+
+def test_a_curve_and_its_mirror_compare_as_identical():
+    """The optical sign carries no information, so it must not become error."""
+    t, y = _decaying_swing()
+    same = engine.compare_pair(t, y, t, y)
+    mirrored = engine.compare_pair(t, y, t, -y)
+    assert same["status"] != "error" and mirrored["status"] != "error"
+    assert mirrored["rmse_deg"] == pytest.approx(same["rmse_deg"], abs=1e-6), (
+        f"mirror scored {mirrored['rmse_deg']:.3f} against {same['rmse_deg']:.3f} "
+        "-- a sign flip is being reported as disagreement")
+    assert mirrored["test_inverted"] is True
+    assert same["test_inverted"] is False
+
+
+def test_orienting_does_not_disturb_two_curves_of_the_same_polarity():
+    """Specificity: the fix must not touch comparisons that were already fine."""
+    t, y = _decaying_swing()
+    _t2, y2 = _decaying_swing(a0=40.0, f=0.95)
+    r = engine.compare_pair(t, y, t, y2)
+    assert r["status"] != "error"
+    assert r["ref_inverted"] is False and r["test_inverted"] is False
+    assert r["rmse_deg"] > 0.5, "genuinely different curves must still disagree"
+
+
+def test_a_flat_trace_is_not_assigned_a_direction_it_does_not_have():
+    """No release means no orientation to infer, so leave it alone rather than
+    flip on the sign of noise."""
+    t = np.arange(240) / 60.0
+    flat = np.full_like(t, 180.0)
+    y, inverted = engine._orient_release_positive(flat)
+    assert inverted is False
+    assert np.allclose(y, flat)
+
+
+def test_orientation_matches_the_rule_windowed_pt_params_uses():
+    """One rule, not two. If these ever disagree, the two halves of the
+    pipeline hold opposite opinions about which way up a trial is."""
+    t, y = _decaying_swing()
+    for curve in (y, -y):
+        _oriented, inverted = engine._orient_release_positive(curve)
+        params = engine.windowed_pt_params(t, curve)
+        # windowed_pt_params reports usable parameters either way precisely
+        # because it orients internally; the orientation decision must agree.
+        assert np.isfinite(params["R2n"]), "windowed_pt_params should have oriented this"
+        expected = float(np.median(curve[:len(curve) // 20])
+                         - np.median(curve[int(len(curve) * 0.75):])) < 0
+        assert inverted == expected
