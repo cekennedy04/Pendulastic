@@ -568,6 +568,13 @@ class MasterApp:
         illegal = set('<>:"/\\|?*')
         if any(ch in illegal for ch in pid):
             raise ValueError('Participant ID contains illegal characters: < > : " / \\ | ? *')
+        # An id that already carries its study prefix builds MINT_MINT_25, which
+        # resolves to no participant -- so the session is not corrupted, it is
+        # unreachable, and nothing downstream can report what it cannot see.
+        # Refused at entry because that is the only point where it is cheap.
+        prefix_warning = participant_paths.check_participant_id(pid)
+        if prefix_warning:
+            raise ValueError(prefix_warning)
 
         age = self.entry_age.get().strip()
         if age and not age.isdigit():

@@ -240,3 +240,47 @@ def participant_glob_for(root, pid, *tail, **kwargs):
     if not base:
         return []
     return sorted(_glob.glob(os.path.join(base, *tail), recursive=recursive))
+
+
+def strip_group_prefix(pid):
+    """``"MINT_25"`` -> ``("25", "MINT")``.  ``"25"`` -> ``("25", None)``.
+
+    An id that already carries a study prefix, given to ``participant_dir``,
+    produces a doubly-prefixed folder: ``MINT_MINT_25``. ``pid_from_dir_name``
+    then returns ``"MINT_25"``, which is not a participant id, so the folder
+    resolves to nobody and every discovery path skips it silently.
+
+    That is not hypothetical. The 2026-09-08 session -- the only capture in this
+    project where a clinician graded the same legs the instrument measured --
+    landed in ``Recordings/MINT_MINT_25`` and was invisible to the whole
+    pipeline until someone went looking by hand. Nothing downstream could have
+    flagged it, because nothing downstream could see it.
+    """
+    text = str(pid).strip()
+    for prefix in ALL_PREFIXES:
+        head = prefix.rstrip("_")
+        if text.upper().startswith(head.upper() + "_"):
+            return text[len(head) + 1:].strip(), head
+    return text, None
+
+
+def check_participant_id(pid):
+    """Return a warning string when `pid` would build an unreachable folder.
+
+    Returns None when the id is fine. Deliberately a check rather than a silent
+    repair: the operator typed something, and rewriting it without saying so
+    would fix this session while leaving them doing the same thing next time.
+    """
+    bare, prefix = strip_group_prefix(pid)
+    if prefix is None:
+        return None
+    if not bare:
+        return (f"Participant ID {pid!r} is only a study prefix with no id "
+                "after it.")
+    return (
+        f"Participant ID {pid!r} already carries the study prefix {prefix!r}. "
+        f"The study prefix is added automatically from the diagnosis, so this "
+        f"would create a folder named {prefix}_{pid} -- which resolves to no "
+        f"participant and would be skipped by every analysis path. "
+        f"Enter {bare!r} instead."
+    )

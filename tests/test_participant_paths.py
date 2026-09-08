@@ -233,3 +233,49 @@ def test_participant_glob_for_scopes_to_one_participant(tmp_path):
 
 def test_participant_glob_for_an_absent_participant_is_empty(tmp_path):
     assert pp.participant_glob_for(str(tmp_path), "99", "*.csv") == []
+
+
+# ── The double-prefix bug ────────────────────────────────────────────────────
+#
+# The 2026-09-08 session -- the only capture where a clinician graded the same
+# legs the instrument measured -- landed in Recordings/MINT_MINT_25 because the
+# recorder prefixed an already-prefixed id. pid_from_dir_name returns "MINT_25"
+# for that folder, which is not a participant id, so every discovery path
+# skipped it and nothing could report a session it could not see. It surfaced
+# only because someone went looking by hand.
+
+
+def test_an_id_carrying_its_own_study_prefix_is_refused():
+    for bad in ("MINT_25", "Control_16", "CHAT_4", "mint_4"):
+        msg = pp.check_participant_id(bad)
+        assert msg, f"{bad!r} should have been refused"
+        assert "already carries" in msg
+        assert "skipped by every analysis path" in msg
+
+
+def test_the_refusal_says_what_to_type_instead():
+    """An operator mid-session needs the fix, not a diagnosis."""
+    msg = pp.check_participant_id("MINT_25")
+    assert "'25'" in msg
+
+
+def test_a_bare_id_is_accepted():
+    for good in ("25", "16", "P001", "5_left_side"):
+        assert pp.check_participant_id(good) is None, good
+
+
+def test_a_prefix_with_no_id_is_refused_too():
+    assert "only a study prefix" in pp.check_participant_id("MINT_")
+
+
+def test_strip_group_prefix_round_trips():
+    assert pp.strip_group_prefix("MINT_25") == ("25", "MINT")
+    assert pp.strip_group_prefix("25") == ("25", None)
+    assert pp.strip_group_prefix("Control_16") == ("16", "Control")
+
+
+def test_the_folder_the_bug_produced_still_resolves_to_a_non_participant():
+    """The reason the guard is at entry: once the folder exists, the id it
+    yields is silently wrong rather than absent, and no later stage can tell."""
+    assert pp.pid_from_dir_name("MINT_MINT_25") == "MINT_25"
+    assert pp.pid_from_dir_name("MINT_25") == "25"
