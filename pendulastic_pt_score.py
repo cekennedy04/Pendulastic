@@ -2036,26 +2036,50 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
 # motion, and omega_max_n and phi_max_ratio inherited it because both
 # normalise by A0.
 #
-# Pinned to what the old constant meant at 120 Hz, OptiTrack's capture rate:
-# the reference instrument barely moves and every other rate comes to it.
-# Over the rates where compute_pt_params' 0.10 s window is realisable
-# (>= 50 Hz) this takes the A0 spread from 7.8% to 1.7%.
+# This was 2.0/120 -- "what the old two-sample constant meant at 120 Hz" --
+# and that pinning was wrong, because the quantity it converts is a physical
+# lag, not a sample count. The duration still quantises to whole samples, so
+# 2/120 rounds to ZERO at every rate at or below 40 Hz. The 20 Hz phone
+# stream therefore got no back-off at all, and A0 is read at the release
+# sample (A0_raw = phi[0]), so it was sampled after the leg had already
+# fallen. On the E2E replay fixture, whose forward-simulated swing has a
+# known 45 deg amplitude, A0 came out at 35.3 deg -- a 9.7 deg under-read,
+# against 1.3 deg before the rate-independence work.
 #
-# The back-off compensates a real lag -- smoothing plus the 8%-of-range
-# threshold mean detection fires after motion starts -- but it is NOT tuned
-# to cancel it. On the synthetic above a 0.080 s back-off would drive the
-# error to zero, and that is a trap: the lag scales with how fast the leg is
-# released, so a value fitted to one signal would be wrong for others, and
-# too large a back-off lands inside the pre-release hold, where A0 reads the
-# flat plateau instead of the swing. Removing the rate dependence and
-# re-tuning the lag are separate questions; this is only the first.
+# The previous note here rejected re-tuning this value, on the grounds that
+# the lag scales with release speed so a constant fitted to one signal would
+# be wrong for others, and that too large a back-off lands inside the
+# pre-release hold where A0 reads the plateau instead of the swing. Both are
+# testable, and both were tested: 243 synthetics spanning capture rate
+# (20/60/120 Hz), amplitude (20/45/70 deg), frequency (0.5/1.0/1.5 Hz),
+# damping (0.5/0.9/1.5) and release ramp (instant, 0.10 s, 0.25 s), scored
+# against their own known A0.
 #
-# The duration still quantises to whole samples, so below ~60 Hz it rounds
-# to zero: 30 fps video gets no back-off where it previously got 0.067 s.
-# That is the intended direction -- two samples at 30 fps overshot by four
-# times in time -- but it is a floor, not an exact conversion, the same way
-# the 0.10 s smoothing window floors at savgol's polyorder+2.
-_RELEASE_BACKOFF_S = 2.0 / 120.0
+#   back-off   mean|err|   max|err|   signed bias   trials worse than 2 deg
+#    0.0167      4.92        20.46       -4.92               194 / 243
+#    0.0800      0.41         2.43       -0.00                 4
+#    0.1000      0.36         2.43       +0.11                 3
+#    0.1500      0.35         3.50       +0.34                10
+#
+# The first objection does not survive: 0.10 s is best across the whole grid,
+# slow releases included, not merely on one signal. The second one does, and
+# is what bounds the value from above -- at 0.15 s the bias turns positive
+# and the failures triple, which is the back-off reaching into the plateau.
+# 0.10 s sits at the minimum with a bias of +0.11 deg.
+#
+# It is also not a free parameter. Smoothing is a 0.10 s window (_SG_WINDOW_S),
+# so the release edge is smeared by about half of it and the 8%-of-range
+# threshold then fires late by the same order. Back-off and smoothing are the
+# same physical duration because they are the same physical effect, which is
+# why the residual error goes flat across rates instead of trading one rate
+# off against another.
+#
+# What this replaces was a systematic -4.92 deg bias: A0 under-read on nearly
+# every synthetic, in the same direction. A0 is the spasticity grouping
+# variable wherever a clinical MAS grade is absent, and a one-directional
+# error is the worst shape for comparing a participant against themselves
+# over time.
+_RELEASE_BACKOFF_S = 0.10
 
 
 def _detect_release(t: np.ndarray, ang: np.ndarray,

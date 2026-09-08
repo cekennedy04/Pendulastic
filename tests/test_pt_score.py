@@ -258,7 +258,16 @@ def test_imu_and_optitrack_trials_overlay_after_independent_t0_alignment():
     n_imu = 400
     t_imu = 5.0 + np.arange(n_imu) / fps_imu
     hold_imu = int(1.5 * fps_imu)
-    tilt = np.zeros(n_imu)
+    # Hold at the pre-release value, not at zero. This used to be np.zeros,
+    # which made the IMU half step discontinuously from 0.0 to 0.4 at the
+    # release index while its OptiTrack twin below holds at 180.0 and starts
+    # its swing at 180.0 -- continuous, as a real limb is. A step is not what
+    # this test says it is testing ("a smooth (non-step) onset", below), and
+    # it inverts the thing being measured: smoothing spreads a step
+    # symmetrically, so detection fires BEFORE the true release and backing
+    # off makes the answer worse instead of better. On the corrected,
+    # physical onset the detected release lands +0.01 s from truth.
+    tilt = np.full(n_imu, 0.4)
     for i in range(hold_imu, n_imu):
         ti = (i - hold_imu) / fps_imu
         tilt[i] = 0.4 * math.exp(-0.3 * ti) * math.cos(2 * math.pi * 0.9 * ti)
@@ -1284,9 +1293,40 @@ def test_release_detection_backoff_is_a_duration_not_a_sample_count():
     assert max(times) - min(times) < 0.02, times
 
 
-def test_release_backoff_matches_what_two_samples_meant_at_120_hz():
-    # The duration is pinned to what the old constant meant at OptiTrack's
-    # capture rate -- the reference instrument -- so the modality every other
-    # one is validated against barely moves, and the rest come to it.
+def test_release_backoff_survives_quantisation_at_clinical_capture_rates():
+    # This replaces a pin on 2.0/120, which was the old two-sample constant
+    # converted at OptiTrack's rate. That value quantises to ZERO back-off at
+    # every rate at or below 40 Hz, including the 20 Hz phone stream, which is
+    # what the assertion below exists to prevent recurring.
     import pendulastic_pt_score as p
-    assert p._RELEASE_BACKOFF_S == pytest.approx(2.0 / 120.0)
+    assert p._RELEASE_BACKOFF_S == pytest.approx(0.10)
+    for fps in (20.0, 30.0, 50.0, 60.0, 100.0, 120.0):
+        back = max(0, int(round(p._RELEASE_BACKOFF_S * fps)))
+        assert back >= 1, f"back-off vanishes at {fps} Hz"
+
+
+def test_a0_is_recovered_at_every_capture_rate():
+    """A0 must not depend on how fast the trial was sampled.
+
+    The property the back-off constant exists to provide, asserted directly
+    rather than by pinning the constant's value. A0 is read at the release
+    sample, so a back-off that quantises away leaves A0 sampled after the limb
+    has already fallen -- which under-read a known 45 deg swing as 35.3 deg at
+    20 Hz, with a systematic -4.9 deg bias across 243 synthetics. A one-
+    directional error is the worst shape for comparing a participant against
+    themselves over time, so this is asserted per rate AND as a spread.
+    """
+    import pendulastic_pt_score as p
+    neutral, a0_true, freq, lam, hold_s = 135.0, 45.0, 1.0, 0.9, 1.2
+    recovered = []
+    for fps in (20.0, 60.0, 120.0):
+        dt = 1.0 / fps
+        hold = np.full(int(hold_s / dt), neutral + a0_true)
+        ts = np.arange(0.0, 9.0, dt)
+        swing = neutral + a0_true * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)
+        ang = np.concatenate([hold, swing])
+        t = np.arange(len(ang)) * dt
+        got = p.compute_pt_params(t, ang, None, False)["A0_deg"]
+        assert abs(got - a0_true) < 1.0, f"A0 {got:.2f} at {fps} Hz, want {a0_true}"
+        recovered.append(got)
+    assert max(recovered) - min(recovered) < 1.0, f"A0 varies by rate: {recovered}"
