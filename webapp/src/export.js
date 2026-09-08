@@ -93,6 +93,8 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       excluded_at: t.excluded_at ?? null,
       excluded_reason: t.excluded_reason ?? null,
       quick_test: Boolean(t.quick_test),
+      // null = not measured; never defaulted to zeros.
+      lateral_motion: t.lateral_motion ?? null,
       // The 20 scalars only. The composite score and zone are derived at read
       // time against the current HEALTHY_REF, which is still being
       // recalibrated -- exporting one would freeze a moving reference.

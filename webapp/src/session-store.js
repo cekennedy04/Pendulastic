@@ -91,6 +91,7 @@ export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
   unmeasured = [], driftCorrection = 'live', settleTargetS = 5.0,
+  lateralMotion = null,
   quickTest = false,
 }) {
   // Copy only the known fields. Anything else the caller passes -- notably a
@@ -139,6 +140,12 @@ export function makeTrialRecord({
     // derivable from patient_id, because an exported bundle is read without
     // the patient row beside it.
     quick_test: Boolean(quickTest),
+    // Capture quality, NOT a scored parameter: how much of the trial
+    // happened out of the flexion plane. null means NOT MEASURED (no axis
+    // committed, or nothing above the rate threshold), which is a different
+    // claim from 0 ("measured, and perfectly planar") and must not be
+    // collapsed into it by a reader.
+    lateral_motion: lateralMotion,
     params: kept,
     // Plain object `{t, angle_deg, release_idx, peak_idx, trough_idx,
     // neutral_deg}` from worker.js's `result` message -- not an ArrayBuffer

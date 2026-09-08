@@ -18,7 +18,7 @@ import { patientLabel, nextParticipantState, createSessionView, SETTING_KEYS, in
 import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
-import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds } from './capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds , lateralNote } from './capture-feedback.js';
 import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
@@ -108,6 +108,7 @@ export function nextOutcome(latched, event) {
     // The analysis-convention pair rides alongside, same only-when-present rule.
     if ('paramsDetrended' in event) action.paramsDetrended = event.paramsDetrended;
     if ('ptScoreDetrended' in event) action.ptScoreDetrended = event.ptScoreDetrended;
+    if ('lateralMotion' in event) action.lateralMotion = event.lateralMotion;
     return { latched: false, action };
   }
   if (event.reason === 'unscorable') {
@@ -653,7 +654,7 @@ if (typeof document !== 'undefined') {
   // split between here and there. persistTrial is only ever invoked from
   // that one call site.
   async function persistTrial(params, trajectory, rawJsonl, ptScore,
-                              paramsDetrended, ptScoreDetrended) {
+                              paramsDetrended, ptScoreDetrended, lateralMotion) {
     // The STORED record uses the analysis convention (detrend=true) so it
     // agrees with the cohort reports it will be compared against; the live
     // screen keeps the capture app's convention. Which one produced a stored
@@ -685,6 +686,8 @@ if (typeof document !== 'undefined') {
       }),
       unmeasured: (storedScore && storedScore.unmeasured) || [],
       driftCorrection: useDetrended ? 'analysis' : 'live',
+      // null means NOT MEASURED and is stored as such -- see makeTrialRecord.
+      lateralMotion: lateralMotion ?? null,
       params: storedParams,
       trajectory,
       rawJsonl,
@@ -993,6 +996,17 @@ if (typeof document !== 'undefined') {
   // table is exactly the kind of duplicate that drifts -- session-store.js's
   // PARAM_FIELDS note records what happened last time a param list was kept
   // in two places.
+  // Capture quality, shown beside the params rather than among them: it
+  // describes the RECORDING, not the limb. Hidden entirely when the trial
+  // carries no lateral field at all (every trial recorded before this
+  // existed), so old records do not sprout an empty row.
+  function renderLateral(lateral) {
+    const node = el('lateral-note');
+    if (!node) return;
+    const text = lateralNote(lateral);
+    node.hidden = text === null;
+    node.textContent = text || '';
+  }
   function renderResult(params) {
     el('result').hidden = false;
     el('result').innerHTML = PARAM_FIELDS
@@ -1403,6 +1417,7 @@ if (typeof document !== 'undefined') {
     showTrial: (t) => {
       lastTrajectory = t.trajectory;
       renderResult(t.params);
+      renderLateral(t.lateral_motion);
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
@@ -1648,6 +1663,7 @@ if (typeof document !== 'undefined') {
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
     renderResult(p);
+    renderLateral(action.lateralMotion);
     showExportControls();
     resetToIdle();
 
@@ -1700,7 +1716,7 @@ if (typeof document !== 'undefined') {
       Promise.resolve()
         .then(() => capture.exportJsonl())
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore,
-                                         action.paramsDetrended, action.ptScoreDetrended))
+                                         action.paramsDetrended, action.ptScoreDetrended, action.lateralMotion))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;

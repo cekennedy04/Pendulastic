@@ -55,6 +55,16 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       const json = inner.finish_pt_score();
       return json === undefined ? undefined : JSON.parse(json);
     },
+    // Capture quality: how much of the trial happened OUT of the flexion
+    // plane. Parses to `null` when it could not be measured -- no axis
+    // committed, or nothing above the rate threshold -- which is NOT the
+    // same as {lateral_fraction: 0} ("measured, and perfectly planar").
+    // Older wasm builds lack this export, so the call is guarded: a stale
+    // cached worker must degrade to "not measured", not throw on finish.
+    lateralMotion: () => {
+      if (typeof inner.lateral_motion !== "function") return null;
+      return JSON.parse(inner.lateral_motion());
+    },
     // Newline-delimited JSON of the raw accel/gyro/mag log (mobile-imu-core's
     // export_jsonl(), the contract `tests/test_web_export_contract.py` pins).
     // Unlike `finish`/`finishTrajectory`/`finishPtScore`, this has no
@@ -149,7 +159,10 @@ export function createWorkerHandler() {
               // Null rather than absent when unavailable, so the far end can
               // tell "not computed" from "dropped by structured clone".
               paramsDetrended: session.finishDetrended() ?? null,
-              ptScoreDetrended: session.finishPtScoreDetrended() ?? null }
+              ptScoreDetrended: session.finishPtScoreDetrended() ?? null,
+              // Null here means NOT MEASURED, and the record keeps that
+              // distinction rather than defaulting it to zero.
+              lateralMotion: session.lateralMotion() }
           : { type: 'error', reason: 'unscorable' });
       } else if (m.type === 'export') {
         // Deliberately does not `await starting`+require a result the way

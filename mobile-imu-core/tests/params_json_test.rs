@@ -9,7 +9,8 @@
 mod golden;
 
 use mobile_imu_core::ahrs::Vec3;
-use mobile_imu_core::params_json::params_to_json;
+use mobile_imu_core::flex_axis::LateralMotion;
+use mobile_imu_core::params_json::{lateral_motion_to_json, params_to_json};
 use mobile_imu_core::replay::{replay, Method, RawSample, ReplayConfig, Sensor};
 use mobile_imu_core::scoring::{compute_pt_params, PtParams, SpasticityType};
 
@@ -188,4 +189,21 @@ fn non_finite_fields_serialise_as_json_null_not_as_illegal_tokens() {
         let needle = format!("\"{key}\":");
         assert!(json.contains(&needle), "missing key {key:?} with non-finite fields present: {json}");
     }
+}
+
+#[test]
+fn not_measured_lateral_motion_serialises_as_null_not_zeros() {
+    // A consumer reading {"lateral_fraction":0.0} would take "measured, and
+    // perfectly planar" from a trial that could not be assessed at all. The
+    // two must not share a wire representation.
+    assert_eq!(lateral_motion_to_json(None), "null");
+}
+
+#[test]
+fn lateral_motion_serialises_both_fields() {
+    let j = lateral_motion_to_json(Some(LateralMotion {
+        fraction: 0.25,
+        peak_deg_s: 42.5,
+    }));
+    assert_eq!(j, "{\"lateral_fraction\":0.25,\"lateral_peak_deg_s\":42.5}");
 }

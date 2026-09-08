@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createAudioCues } from '../src/audio-cues.js';
-import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf, beepsDue, wholeSeconds } from '../src/capture-feedback.js';
+import { captureQualityOf, SETTLE_TARGET_S, HOLD_TARGET_S, progressOf, beepsDue, wholeSeconds, lateralNote } from '../src/capture-feedback.js';
 
 const T = 5.0;
 
@@ -175,4 +175,32 @@ test('settling does complete whole seconds', () => {
   assert.ok(SETTLE_TARGET_S >= 1, 'a per-second count needs at least one second');
   assert.equal(beepsDue(0, 1.0), 1);
   assert.equal(beepsDue(0, SETTLE_TARGET_S), 5);
+});
+
+test('lateral note reports the value and asserts no verdict', () => {
+  const s = lateralNote({ lateral_fraction: 0.183, lateral_peak_deg_s: 34.2 });
+  assert.match(s, /18% of the swing/);
+  assert.match(s, /peak 34°\/s/);
+  // No classification language: there is no calibrated cutoff to back one.
+  assert.doesNotMatch(s, /poor|bad|fail|good|clean|acceptable/i);
+});
+
+test('not measured is said out loud, never shown as zero', () => {
+  // 0 means "measured, and perfectly planar". Borrowing that number for
+  // "could not assess" would report an unassessable trial as a clean one.
+  const s = lateralNote(null);
+  assert.match(s, /not measured/i);
+  assert.doesNotMatch(s, /0%/);
+});
+
+test('a trial with no lateral field at all renders nothing', () => {
+  assert.equal(lateralNote(undefined), null);
+});
+
+test('a planar trial is reported as zero, not hidden', () => {
+  assert.match(lateralNote({ lateral_fraction: 0, lateral_peak_deg_s: 0 }), /0% of the swing/);
+});
+
+test('a non-finite fraction renders nothing rather than NaN%', () => {
+  assert.equal(lateralNote({ lateral_fraction: NaN, lateral_peak_deg_s: 1 }), null);
 });

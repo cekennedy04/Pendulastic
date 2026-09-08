@@ -224,10 +224,18 @@ def lateral_motion(vectors, axis, threshold: float = DEFAULT_THRESHOLD) -> Optio
     """How much of the swing happened OUT of the flexion plane.
 
     A Wartenberg pendulum test assumes the shank swings in one plane. It often
-    does not: the limb rolls, the phone is strapped on askew, or the clinician
-    releases with a sideways nudge. That contaminates every scored parameter,
-    because the swing angle is the gyro projected onto a single axis and
-    whatever rotation happened off that axis is simply discarded.
+    does not: the limb rolls during the swing, or the clinician releases with a
+    sideways nudge. That contaminates every scored parameter, because the swing
+    angle is the gyro projected onto a single axis and whatever rotation
+    happened off that axis is simply discarded.
+
+    READ THIS BEFORE INTERPRETING THE NUMBER. What it detects is rotation whose
+    AXIS MOVES during the trial, not a swing about the wrong axis. A limb
+    swinging cleanly about a tilted axis -- a phone strapped on rotated, a
+    participant seated at an angle -- is still perfectly planar, and correctly
+    reads 0.0 here when measured against the axis the estimator committed. A
+    misaligned sensor is a real problem and this metric does not find it; that
+    is what the axis itself is for. This finds wobble.
 
     Given the committed flexion `axis`, each gyro sample splits into a
     component along it and a component perpendicular to it. Returns:

@@ -56,3 +56,32 @@ export function wholeSeconds(value) {
 export function beepsDue(prevWholeSeconds, nextValue) {
   return Math.max(0, wholeSeconds(nextValue) - prevWholeSeconds);
 }
+
+/// One line describing how much of a trial happened out of the flexion plane.
+///
+/// Returns null when there is nothing to say -- the trial has no lateral
+/// measurement at all -- so the caller hides the row rather than printing
+/// "unknown" next to every other number.
+///
+/// Deliberately reports the VALUE and no verdict. There is no calibrated
+/// threshold for how much out-of-plane motion makes a trial unusable, and the
+/// app's standing rule is not to assert a classification it cannot defend --
+/// the same reason ZONE_CLASSIFICATION_CALIBRATED is false and the PT zone is
+/// suppressed. A clinician reading "18% of the swing was out of plane" can
+/// judge it; a red "POOR" badge would be inventing a cutoff.
+export function lateralNote(lateral) {
+  if (lateral === undefined) return null;
+  if (lateral === null) {
+    // Measured-and-planar is 0, so "not measured" has to say so out loud
+    // rather than borrow that number.
+    return 'Out-of-plane motion: not measured (the swing axis never settled).';
+  }
+  const frac = lateral.lateral_fraction;
+  const peak = lateral.lateral_peak_deg_s;
+  if (typeof frac !== 'number' || !Number.isFinite(frac)) return null;
+  const pct = (frac * 100).toFixed(0);
+  const peakBit = typeof peak === 'number' && Number.isFinite(peak)
+    ? `, peak ${peak.toFixed(0)}°/s`
+    : '';
+  return `Out-of-plane motion: ${pct}% of the swing${peakBit}.`;
+}

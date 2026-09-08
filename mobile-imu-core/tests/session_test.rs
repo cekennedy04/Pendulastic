@@ -189,3 +189,92 @@ fn settle_s_freezes_once_settled() {
     feed(&mut s, secs(2.0), [1.5, 0.0, 0.0], t);
     assert_eq!(s.settle_s(), at_completion, "a completed trial must not un-settle");
 }
+
+// ---- lateral motion: capture quality, not a scored parameter -------------
+
+/// Feed a swing whose rotation is `off` times as large perpendicular to the
+/// flexion axis as along it.
+fn feed_swing(sess: &mut TrialSession, off: f64, n: usize) {
+    let mut t = 0.0_f64;
+    for i in 0..n {
+        let ts_ms = (t * 1000.0).round() as i64;
+        let phase = 2.0 * std::f64::consts::PI * (i as f64) / 60.0;
+        let along = 3.0 * phase.sin();
+        sess.push(RawSample { t, ts_ms, sensor: Sensor::Accel, v: [0.0, 0.0, 9.81] });
+        sess.push(RawSample {
+            t,
+            ts_ms,
+            sensor: Sensor::Gyro,
+            v: [along, off * along, 0.0],
+        });
+        t += 1.0 / FS;
+    }
+}
+
+#[test]
+fn a_planar_swing_reports_no_lateral_motion() {
+    let mut sess = TrialSession::new(ReplayConfig::default());
+    feed_swing(&mut sess, 0.0, 240);
+    let lm = sess.lateral_motion().expect("a real swing must be measurable");
+    assert!(
+        lm.fraction < 1e-9,
+        "a planar swing reported {} lateral",
+        lm.fraction
+    );
+}
+
+#[test]
+fn a_swing_whose_axis_wobbles_is_reported_as_lateral() {
+    // NOT simply "some off-axis component": a gyro pointing in a FIXED
+    // direction is a planar rotation about that direction, and the estimator
+    // correctly finds it, so lateral reads 0 however tilted it is. What this
+    // metric detects is an axis that MOVES during the swing. Modelled by
+    // driving the perpendicular component at a different frequency from the
+    // in-plane one, so the instantaneous axis wanders.
+    let mut sess = TrialSession::new(ReplayConfig::default());
+    let mut t = 0.0_f64;
+    for i in 0..400 {
+        let ts_ms = (t * 1000.0).round() as i64;
+        let phase = 2.0 * std::f64::consts::PI * (i as f64) / 60.0;
+        sess.push(RawSample { t, ts_ms, sensor: Sensor::Accel, v: [0.0, 0.0, 9.81] });
+        sess.push(RawSample {
+            t,
+            ts_ms,
+            sensor: Sensor::Gyro,
+            v: [3.0 * phase.sin(), 1.2 * (2.7 * phase).sin(), 0.0],
+        });
+        t += 1.0 / FS;
+    }
+    let lm = sess.lateral_motion().expect("a real swing must be measurable");
+    assert!(lm.fraction > 0.1, "a wobbling axis reported only {} lateral", lm.fraction);
+    assert!(lm.peak_deg_s > 0.0, "a contaminated swing has a nonzero peak");
+}
+
+#[test]
+fn lateral_motion_is_not_measured_when_nothing_moved() {
+    // None ("could not be assessed") must not be reported as 0.0 ("assessed,
+    // and perfectly clean"). A still limb commits no axis.
+    let mut sess = TrialSession::new(ReplayConfig::default());
+    feed(&mut sess, 120, [0.0, 0.0, 0.0], 0.0);
+    assert_eq!(sess.lateral_motion(), None);
+}
+
+#[test]
+fn lateral_motion_does_not_disturb_the_scored_path() {
+    // The whole safety argument for adding this: it is derived from samples
+    // already stored, and reads nothing the scorer writes. Computing it must
+    // leave every scored parameter byte-identical.
+    let mut sess = TrialSession::new(ReplayConfig::default());
+    feed_swing(&mut sess, 0.3, 400);
+    let before = sess.finish(None).map(|(_, p)| (p.n, p.a0_deg, p.r2n));
+    let _ = sess.lateral_motion();
+    let after = sess.finish(None).map(|(_, p)| (p.n, p.a0_deg, p.r2n));
+    assert_eq!(
+        before.is_ok(),
+        after.is_ok(),
+        "scorability changed after measuring lateral motion"
+    );
+    if let (Ok(b), Ok(a)) = (before, after) {
+        assert_eq!(b, a, "scored parameters moved after measuring lateral motion");
+    }
+}

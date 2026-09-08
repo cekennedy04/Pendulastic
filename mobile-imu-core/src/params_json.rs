@@ -11,6 +11,7 @@
 //! deliberately excluded: they're for plotting/downstream checks, not the
 //! summary payload this call returns.
 
+use crate::flex_axis::LateralMotion;
 use crate::scoring::{PtParams, SpasticityType};
 
 fn spasticity_type_str(t: SpasticityType) -> &'static str {
@@ -71,4 +72,20 @@ pub fn params_to_json(p: &PtParams) -> String {
         fmt_f64(p.p_minus),
         fmt_f64(p.p_total),
     )
+}
+
+/// Capture-quality JSON for one trial's lateral motion.
+///
+/// `None` (not measured) serialises as the JSON literal `null`, NOT as zeros.
+/// A consumer that saw `{"lateral_fraction":0.0}` would read "measured, and
+/// perfectly planar" from a trial that could not be assessed at all.
+pub fn lateral_motion_to_json(lm: Option<LateralMotion>) -> String {
+    match lm {
+        None => "null".to_string(),
+        Some(l) => format!(
+            "{{\"lateral_fraction\":{},\"lateral_peak_deg_s\":{}}}",
+            fmt_f64(l.fraction),
+            fmt_f64(l.peak_deg_s)
+        ),
+    }
 }

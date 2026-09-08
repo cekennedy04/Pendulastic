@@ -1,7 +1,9 @@
 //! Live capture session: accumulates a raw log while reporting the hold state
 //! the UI needs, then scores through `replay` when the trial ends.
 
+use crate::ahrs::Vec3;
 use crate::calibration::ReleaseDetector;
+use crate::flex_axis::{lateral_motion, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
 use crate::replay::{replay, RawSample, ReplayConfig, Sensor, TrialError, TrialResult};
 use crate::scoring::{compute_pt_params, PtParams};
 use crate::stillness::{SampleBuf, GYRO_BIAS_WINDOW_S, ZERO_CAPTURE_GUARD_RAD_S};
@@ -234,5 +236,35 @@ impl TrialSession {
         let p = compute_pt_params(&r.t, &r.angle_deg, None, detrend)
             .ok_or(TrialError::InsufficientSamples)?;
         Ok((r, p))
+    }
+
+    /// Capture quality: how much of this trial happened OUT of the flexion
+    /// plane. `None` means NOT MEASURED -- the axis never committed, or no
+    /// sample cleared the rate threshold -- which is a different claim from
+    /// `Some(0.0)`, "measured, and perfectly planar".
+    ///
+    /// Deliberately does NOT touch the scored path. The swing angle is still
+    /// computed exactly as before; this only reports how much rotation that
+    /// projection discarded, so turning it on cannot move a single scored
+    /// parameter.
+    ///
+    /// The axis comes from the ONLINE estimator fed the trial's gyro stream in
+    /// order, not from a batch fit. Batch wins by 2.6pp on axis accuracy but
+    /// cannot run live, and the project settled on the online estimator for
+    /// the angle -- reporting quality against a different axis than the one
+    /// the angle used would describe a trial that was never scored.
+    pub fn lateral_motion(&self) -> Option<LateralMotion> {
+        let gyro: Vec<Vec3> = self
+            .samples
+            .iter()
+            .filter(|s| s.sensor == Sensor::Gyro)
+            .map(|s| s.v)
+            .collect();
+
+        let mut est = FlexAxisEstimator::default();
+        for &v in &gyro {
+            est.update(v, None);
+        }
+        lateral_motion(&gyro, est.axis(), DEFAULT_THRESHOLD)
     }
 }

@@ -138,6 +138,22 @@ impl WasmSession {
     pub fn export_jsonl(&self) -> String {
         export_jsonl::export_jsonl(self.inner.samples())
     }
+
+    /// Capture quality: how much of this trial happened out of the flexion
+    /// plane, as `{"lateral_fraction":..,"lateral_peak_deg_s":..}`. Returns
+    /// the JSON literal `null` when it could not be measured -- no axis
+    /// committed, or nothing above the rate threshold -- which a consumer must
+    /// NOT read as "perfectly planar".
+    ///
+    /// A separate call rather than fields on `finish`, matching
+    /// `finish_trajectory` and `finish_pt_score`: this is a property of the
+    /// CAPTURE, not one of the seven scored parameters, and folding it into
+    /// that payload would invite it being stored as one.
+    ///
+    /// Pure delegation, per this module's logic-free rule.
+    pub fn lateral_motion(&self) -> String {
+        params_json::lateral_motion_to_json(self.inner.lateral_motion())
+    }
 }
 
 /// The composite score for a trial's STORED parameters, for the trends view.
