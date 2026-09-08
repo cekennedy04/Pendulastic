@@ -120,6 +120,58 @@
           the shank horizontal, wait for READY, then release cleanly and let
           go completely &mdash; do not follow the leg down.
         </p>
+        <!-- Schematic, NOT anatomical: a labelled line drawing, deliberately
+             not an illustration that would imply clinical authority it does
+             not have. Inline SVG rather than a raster asset so it costs no
+             file, scales on any screen, and themes with the palette. -->
+        <figure id="placement-figure">
+          <svg id="placement-diagram" viewBox="0 0 280 178" role="img"
+               aria-labelledby="placement-title placement-desc">
+            <title id="placement-title">Phone and hand placement for the pendulum test</title>
+            <desc id="placement-desc">
+              Side view. The participant sits with the thigh supported on the
+              plinth and the knee at its edge. The shank hangs from the knee
+              and is held horizontal. The phone is strapped to the front of
+              the shank, mid-way between knee and ankle. The clinician
+              supports the leg at the ankle.
+            </desc>
+            <!-- Plinth first, so the thigh draws on top of it and reads as
+                 resting ON the surface rather than floating above it. -->
+            <rect x="10" y="68" width="120" height="8" rx="2" class="pd-plinth" />
+            <line x1="24" y1="76" x2="24" y2="152" class="pd-plinth-leg" />
+            <line x1="116" y1="76" x2="116" y2="152" class="pd-plinth-leg" />
+            <text x="34" y="92" class="pd-label">plinth</text>
+
+            <!-- Thigh and shank are collinear in the start position, so they
+                 are told apart by WEIGHT, not by angle: the thigh is drawn
+                 lighter (supported, not measured) and the shank darkest (the
+                 segment that swings and the one the phone rides on). -->
+            <line x1="34" y1="64" x2="130" y2="64" class="pd-thigh" />
+            <text x="36" y="54" class="pd-label">thigh (supported)</text>
+
+            <line x1="130" y1="64" x2="216" y2="64" class="pd-shank" />
+            <text x="150" y="90" class="pd-label">shank</text>
+
+            <!-- Knee last of the three, so the joint sits over both segments
+                 and marks the plinth edge unambiguously. -->
+            <circle cx="130" cy="64" r="7" class="pd-joint" />
+            <text x="106" y="90" class="pd-label">knee</text>
+
+            <!-- Where it goes after release: a hint, not an instruction. -->
+            <path d="M216 64 A 86 86 0 0 1 130 150" class="pd-swing" />
+            <text x="134" y="168" class="pd-label pd-label-muted">swings down</text>
+
+            <rect x="161" y="49" width="24" height="12" rx="2" class="pd-phone" />
+            <text x="156" y="43" class="pd-label pd-label-accent">phone</text>
+
+            <circle cx="216" cy="64" r="10" class="pd-hand" />
+            <text x="230" y="60" class="pd-label pd-label-accent">hold here</text>
+          </svg>
+          <figcaption>
+            Phone on the shank, midway between knee and ankle. Support the leg
+            at the ankle and release from there.
+          </figcaption>
+        </figure>
         <p class="install-note">
           Wording not yet confirmed against the study protocol &mdash; review
           before clinical use.
@@ -137,6 +189,29 @@
           <dt>drift (pose)</dt><dd id="drift">&mdash;</dd>
         </div>
       </dl>
+      <!-- Collapsed by default, and deliberately so: the two numbers above are
+           read one-handed mid-procedure, and permanent help text would push
+           them off a phone screen. The two gates get separate explanations
+           because the CORRECTIVE ACTION differs, which is the whole reason the
+           app surfaces them as two numbers rather than one. -->
+      <details id="gate-help">
+        <summary>What are these two numbers?</summary>
+        <dl id="gate-help-list">
+          <dt>hold (motion)</dt>
+          <dd data-gate="calm">
+            How long the limb has been still. It resets to zero the moment the
+            leg moves. <strong>If it will not climb: stop moving the leg.</strong>
+          </dd>
+          <dt>drift (pose)</dt>
+          <dd data-gate="drift">
+            How far the limb has rotated away from where the hold started, even
+            if it moved too slowly to reset the timer above. Past 5&deg; it
+            restarts the hold.
+            <strong>If it keeps growing: bring the leg back to its starting
+            position.</strong>
+          </dd>
+        </dl>
+      </details>
       <button id="stop" hidden>Stop</button>
       <div id="waveform-wrap" hidden>
         <canvas id="waveform"></canvas>

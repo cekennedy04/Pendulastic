@@ -793,3 +793,89 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 }
 #hold-guide summary { font-weight: 700; color: var(--fg); cursor: pointer; }
 #hold-guide p { margin: 8px 0 0; line-height: 1.45; }
+
+/* ---- placement diagram (capture view) ----------------------------------
+   Schematic, not anatomical. Stroke widths are set in absolute px rather
+   than scaled with the viewBox so the lines stay legible at phone width,
+   where the SVG renders around 260 CSS px wide. */
+#placement-figure { margin: 10px 0 0; }
+
+#placement-diagram {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  margin: 0 auto;
+}
+
+#placement-figure figcaption {
+  margin: 6px 0 0;
+  font-size: clamp(12px, 3.2vw, 13px);
+  line-height: 1.4;
+  color: var(--fg3);
+}
+
+.pd-plinth { fill: var(--accent-soft); stroke: var(--border); stroke-width: 1; }
+.pd-plinth-leg { stroke: var(--border); stroke-width: 2; }
+.pd-thigh {
+  stroke: var(--fg3);
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+.pd-shank {
+  stroke: var(--fg);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+.pd-joint { fill: var(--surface); stroke: var(--fg2); stroke-width: 2.5; }
+
+/* The fall path is a hint about what happens next, not part of the setup
+   instruction, so it is dashed and de-emphasised rather than drawn as limb. */
+.pd-swing {
+  fill: none;
+  stroke: var(--fg3);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.55;
+}
+
+/* The two things the clinician actually has to place. Accent-filled so they
+   read first, and each is ALSO labelled in text -- colour alone must not be
+   what carries the instruction. */
+.pd-phone { fill: var(--accent); stroke: var(--accent); stroke-width: 1; }
+.pd-hand { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+
+.pd-label {
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
+  fill: var(--fg2);
+}
+.pd-label-muted { fill: var(--fg3); font-weight: 500; }
+.pd-label-accent { fill: var(--accent); }
+
+/* ---- gate help ---------------------------------------------------------
+   Same shell as #hold-guide so the two collapsibles on this view read as one
+   pattern rather than two. */
+#gate-help {
+  margin: 0 16px 16px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#gate-help summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+#gate-help-list { margin: 8px 0 0; }
+#gate-help-list dt {
+  font-weight: 700;
+  color: var(--fg);
+  font-size: clamp(12px, 3.2vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 10px;
+}
+#gate-help-list dt:first-child { margin-top: 0; }
+#gate-help-list dd { margin: 4px 0 0; line-height: 1.45; }
+#gate-help-list strong { color: var(--fg); }
