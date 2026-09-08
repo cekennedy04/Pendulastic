@@ -93,14 +93,93 @@ pub struct PtParams {
     pub tr_i: Vec<usize>,
 }
 
-/// `_sg`: Savitzky-Golay with the reference's window-shrinking guard, so a
-/// short series degrades to a copy instead of raising.
-fn sg(sig: &[f64], w: usize, p: usize) -> Vec<f64> {
+/// `_SG_WINDOW_S`: the smoothing window as a PHYSICAL DURATION.
+///
+/// This was a fixed sample count until the reference fixed it. A 15-sample
+/// window spans 0.750 s of a 20 Hz phone stream but 0.125 s of 120 Hz
+/// OptiTrack — 75% of a ~1 Hz swing period against 12% of it — so the same
+/// nominal filter was six different filters depending on the capture rate,
+/// and the phone got by far the most aggressive one.
+const SG_WINDOW_S: f64 = 0.10;
+
+/// `_RELEASE_BACKOFF_S`: how far back from the threshold crossing the reported
+/// release is placed, as a duration rather than a sample count.
+///
+/// A0 is read AT the release sample (`a0_raw = phi[0]`), so this constant sets
+/// whether A0 is the held amplitude or an angle the limb has already fallen
+/// through. The reference briefly used `2.0 / 120.0` — the old two-sample
+/// constant converted at OptiTrack's rate — which quantises to a back-off of
+/// ZERO at every rate at or below 40 Hz, the 20 Hz phone stream included.
+///
+/// 0.10 s is not a free parameter: [`SG_WINDOW_S`] is also 0.10 s, so the
+/// release edge is smeared by about half a window and the 8%-of-range
+/// threshold fires late by the same order. Both are the same physical effect,
+/// which is why the residual A0 error goes flat across capture rates rather
+/// than trading one rate against another. Measured over 243 synthetics
+/// spanning rate, amplitude, frequency, damping and release ramp, this takes
+/// A0 from a systematic -4.92 deg bias to +0.11 deg.
+const RELEASE_BACKOFF_S: f64 = 0.10;
+
+/// Python's `round()` is round-half-to-EVEN, while Rust's `f64::round` is
+/// round-half-away-from-zero. They disagree on exact halves, and both call
+/// sites here hit one at a real capture rate: `RELEASE_BACKOFF_S / dt` is
+/// exactly 0.5 at 30 fps, where the reference yields a back-off of 0 and a
+/// naive port would yield 1. Defined for non-negative inputs, which is all
+/// either call site produces.
+fn round_half_even(x: f64) -> f64 {
+    let f = x.floor();
+    let frac = x - f;
+    if frac > 0.5 {
+        f + 1.0
+    } else if frac < 0.5 {
+        f
+    } else if (f as i64) % 2 == 0 {
+        f
+    } else {
+        f + 1.0
+    }
+}
+
+/// `_median_dt`: sample interval of a time base, robust to the dropped frames
+/// and duplicate timestamps both the optical and the phone streams contain.
+/// Falls back to 30 fps only for a series too short to measure.
+///
+/// `nanmedian` rather than a plain median because every caller here passes an
+/// already finite-masked time base, so the two agree; this only avoids a NaN
+/// poisoning the interval if that ever stops being true.
+fn median_dt(t: &[f64]) -> f64 {
+    if t.len() < 2 {
+        return 1.0 / 30.0;
+    }
+    let diffs: Vec<f64> = t.windows(2).map(|w| w[1] - w[0]).collect();
+    let dt = nanmedian(&diffs);
+    if dt > 0.0 { dt } else { 1.0 / 30.0 }
+}
+
+/// `_sg`: Savitzky-Golay smoothing over a window of `win_s` SECONDS, with the
+/// reference's window-shrinking guard so a short series degrades to a copy
+/// instead of raising.
+///
+/// `dt` is the series' own sample interval, so the same physical filter is
+/// applied whatever rate the trial was captured at. Where the rate is too low
+/// to realise `win_s` — 0.10 s is only 3 samples at 30 fps, below savgol's
+/// polyorder+2 floor — the window widens to that floor rather than failing.
+/// A 30 fps trace is therefore smoothed over 0.167 s and is NOT strictly
+/// comparable to a 100 Hz one; that residual is bounded, and far smaller than
+/// the 6x spread the sample-count window had.
+fn sg(sig: &[f64], dt: f64, win_s: f64, p: usize) -> Vec<f64> {
     let n = sig.len();
     if n == 0 {
         return Vec::new();
     }
-    let mut w = w.min(if n.is_multiple_of(2) { n - 1 } else { n });
+    let mut w = round_half_even(win_s / dt) as usize;
+    if w.is_multiple_of(2) {
+        w += 1;
+    }
+    if w < p + 2 {
+        w = if (p + 2).is_multiple_of(2) { p + 3 } else { p + 2 };
+    }
+    w = w.min(if n.is_multiple_of(2) { n - 1 } else { n });
     if w.is_multiple_of(2) {
         w -= 1;
     }
@@ -112,12 +191,14 @@ fn sg(sig: &[f64], w: usize, p: usize) -> Vec<f64> {
 }
 
 /// `_detect_release`: first sample whose deviation from the pre-release
-/// baseline exceeds an adaptive threshold, backed off by two samples.
+/// baseline exceeds an adaptive threshold, backed off by a fixed duration.
 ///
 /// The threshold is a pure fraction of the signal's own 97th-to-3rd percentile
 /// range, with no absolute floor, so detection stays unit-agnostic — the same
 /// function works on degrees, radians, or a normalised tilt magnitude. Falls
 /// back to the baseline window's end when the threshold is never crossed.
+///
+/// The back-off is a duration (`RELEASE_BACKOFF_S`), not a fixed two samples.
 fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let n = t.len();
     let mut bi = t.partition_point(|&x| x < t[0] + baseline_sec).max(3);
@@ -125,9 +206,10 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let baseline = nanmedian(&ang[..bi]);
     let signal_range = nanpercentile(ang, 97.0) - nanpercentile(ang, 3.0);
     let thresh = 0.08 * signal_range;
+    let back = round_half_even(RELEASE_BACKOFF_S / median_dt(t)) as usize;
     for (offset, &a) in ang[bi..].iter().enumerate() {
         if a.is_finite() && (a - baseline).abs() > thresh {
-            return (bi + offset).saturating_sub(2);
+            return (bi + offset).saturating_sub(back);
         }
     }
     bi
@@ -326,7 +408,7 @@ pub fn compute_pt_params(
     // detrending the whole trial before detecting release injects a spurious
     // slope into that flat region, which can cross the adaptive threshold
     // seconds before the leg actually moves.
-    let ang_s_raw = sg(&ang_c_raw, 15, 3);
+    let ang_s_raw = sg(&ang_c_raw, median_dt(&t_c), SG_WINDOW_S, 3);
     let rel_i = match release_idx {
         Some(idx) => finite_indices
             .partition_point(|&fi| fi < idx)
@@ -373,7 +455,7 @@ pub fn compute_pt_params(
             .collect(),
         None => ang_c_raw.clone(),
     };
-    let ang_s = sg(&ang_c, 15, 3);
+    let ang_s = sg(&ang_c, median_dt(&t_c), SG_WINDOW_S, 3);
 
     // Pre-release angle: median of the window just before release — the held
     // leg position, shown as "Rest" on the report.
@@ -424,7 +506,7 @@ pub fn compute_pt_params(
         a0_raw = a0_raw.abs();
     }
 
-    let phi_s = sg(&phi, 9, 2);
+    let phi_s = sg(&phi, median_dt(&t_r), SG_WINDOW_S, 2);
 
     // A0: maximum of smoothed phi in the first 20% after release (a wider
     // window tolerates a late trigger), floored at the first post-release
@@ -522,7 +604,7 @@ pub fn compute_pt_params(
     };
 
     // ---- 4 & 5. omega max/min, normalised by A0 ---------------------------
-    let omega_s = sg(&gradient(&phi, &t_r), 7, 2);
+    let omega_s = sg(&gradient(&phi, &t_r), median_dt(&t_r), SG_WINDOW_S, 2);
     let omega_abs: Vec<f64> = omega_s.iter().map(|v| v.abs()).collect();
     let omega_peak_deg_s = omega_abs
         .iter()

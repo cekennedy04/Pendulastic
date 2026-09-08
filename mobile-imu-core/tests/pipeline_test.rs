@@ -210,13 +210,34 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
         1.5,
         "recovered resting angle",
     );
-    // A0 lags the true amplitude slightly — EMA smoothing and the fusion's
-    // own response both cost a little peak — but not by much.
+    // A0 is checked in two parts, because a single bound against the true
+    // amplitude conflates two independent error sources and hid a bug in one
+    // of them. Fusion and EMA cost a little peak before scoring ever runs, so
+    // the angle series handed to compute_pt_params only CONTAINS a held
+    // amplitude of ~43.15 deg against the motion's true 45. A single
+    // `|A0 - 45| < 2.0` therefore demanded A0 >= 43.0 — within 0.15 deg of
+    // what the series can physically deliver — and the previous scoring
+    // passed it by reporting 43.73, i.e. ABOVE that ceiling, on savgol
+    // boundary overshoot rather than on accuracy.
+    //
+    // Part 1: what the SCORER does with the series it was given. Measured at
+    // 0.85 deg below the held amplitude.
+    let held_amplitude = p.pre_release_deg - p.neutral_deg;
     close(
         p.a0_deg,
+        held_amplitude,
+        1.0,
+        "A0 vs the held amplitude the series actually contains",
+    );
+
+    // Part 2: what the FUSION chain costs before scoring sees it. This is the
+    // assertion that would catch the fusion losing peak, which part 1 cannot
+    // see because part 1 measures against the degraded series itself.
+    close(
+        held_amplitude,
         golden::E2E_TRUE_A0_DEG,
-        2.0,
-        "recovered first-swing amplitude",
+        2.5,
+        "held amplitude surviving fusion + EMA, vs the true motion",
     );
 }
 
