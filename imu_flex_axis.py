@@ -218,3 +218,73 @@ def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np
     axis = np.asarray(vt[0], dtype=float)
     n = float(np.linalg.norm(axis))
     return axis / n if n > 1e-12 else None
+
+
+def lateral_motion(vectors, axis, threshold: float = DEFAULT_THRESHOLD) -> Optional[dict]:
+    """How much of the swing happened OUT of the flexion plane.
+
+    A Wartenberg pendulum test assumes the shank swings in one plane. It often
+    does not: the limb rolls, the phone is strapped on askew, or the clinician
+    releases with a sideways nudge. That contaminates every scored parameter,
+    because the swing angle is the gyro projected onto a single axis and
+    whatever rotation happened off that axis is simply discarded.
+
+    Given the committed flexion `axis`, each gyro sample splits into a
+    component along it and a component perpendicular to it. Returns:
+
+        lateral_fraction    perpendicular share of the total angular rate,
+                            0.0 = perfectly planar, 1.0 = entirely off-axis
+        lateral_peak_deg_s  the largest single perpendicular component
+
+    This is CAPTURE QUALITY, not a clinical finding. It answers "was this trial
+    clean", meaning did the limb swing in one plane -- not anything about the
+    patient. A high value means the trial's scored parameters rest on a
+    projection that threw away real motion.
+
+    Returns None when there is nothing to measure -- no axis was committed, or
+    no sample cleared `threshold`. None means "not measured", which is NOT the
+    same as 0.0 ("measured, and perfectly planar"), and the two must not be
+    collapsed by a caller.
+
+    The fraction is magnitude-weighted -- sum of perpendicular magnitudes over
+    sum of total magnitudes -- rather than the mean of each sample's own ratio.
+    A plain mean is dominated by near-stationary samples, where the ratio is
+    numerically unstable and physically meaningless: at rest the gyro reads
+    noise, whose direction is uniformly random, so every resting sample
+    contributes a ratio near 1.0 and drags the answer toward "all lateral"
+    however cleanly the leg actually swung. `threshold` excludes rest, and the
+    weighting makes the samples that carry the swing dominate what remains.
+    """
+    if axis is None:
+        return None
+    a = np.asarray(axis, dtype=float)
+    if a.shape != (3,) or not np.isfinite(a).all():
+        return None
+    n_a = float(np.linalg.norm(a))
+    if n_a <= 1e-12:
+        return None
+    a = a / n_a
+
+    arr = np.asarray(vectors, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        return None
+    arr = arr[np.isfinite(arr).all(axis=1)]
+    if arr.size == 0:
+        return None
+    mag = np.linalg.norm(arr, axis=1)
+    arr = arr[mag >= threshold]
+    if arr.shape[0] == 0:
+        return None
+
+    along = arr @ a                              # signed component on the axis
+    perp = arr - np.outer(along, a)
+    perp_mag = np.linalg.norm(perp, axis=1)
+    total_mag = np.linalg.norm(arr, axis=1)
+
+    denom = float(total_mag.sum())
+    if denom <= 1e-12:
+        return None
+    return {
+        "lateral_fraction": float(perp_mag.sum() / denom),
+        "lateral_peak_deg_s": float(np.degrees(perp_mag.max())),
+    }

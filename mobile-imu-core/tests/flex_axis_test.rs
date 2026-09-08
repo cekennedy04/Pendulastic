@@ -4,7 +4,8 @@
 
 use mobile_imu_core::ahrs::Vec3;
 use mobile_imu_core::flex_axis::{
-    dominant_eigenvector_sym3, principal_axis, FlexAxisEstimator, DEFAULT_THRESHOLD,
+    dominant_eigenvector_sym3, lateral_motion, principal_axis, FlexAxisEstimator,
+    DEFAULT_THRESHOLD, LateralMotion,
     MAX_GRAVITY_TILT_COS, MIN_COMMIT_SAMPLES,
 };
 
@@ -684,4 +685,101 @@ fn the_batch_and_online_axes_agree_in_direction() {
     let online = opt_axis(golden::FA_PLAIN_AXIS).expect("committed");
     let d = (batch[0] * online[0] + batch[1] * online[1] + batch[2] * online[2]).abs();
     assert!(d > 0.99, "batch and online axes diverged: |dot| = {d}");
+}
+
+// ---- lateral_motion: capture quality -------------------------------------
+
+fn lm_in(flat: &[f64]) -> Vec<Vec3> {
+    flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+fn assert_lm(got: Option<LateralMotion>, want: Option<(f64, f64)>, what: &str) {
+    match (got, want) {
+        (None, None) => {}
+        (Some(g), Some((wf, wp))) => {
+            assert!(
+                (g.fraction - wf).abs() < 1e-12,
+                "{what}: fraction {} != {wf}",
+                g.fraction
+            );
+            assert!(
+                (g.peak_deg_s - wp).abs() < 1e-9,
+                "{what}: peak {} != {wp}",
+                g.peak_deg_s
+            );
+        }
+        // Never silently tolerated: None and Some(0.0) are different claims.
+        _ => panic!("{what}: got {got:?}, want {want:?}"),
+    }
+}
+
+#[test]
+fn lateral_motion_matches_the_python_reference() {
+    for (name, input, want) in [
+        ("planar", golden::LM_PLANAR_IN, golden::LM_PLANAR_OUT),
+        ("tilted", golden::LM_TILTED_IN, golden::LM_TILTED_OUT),
+        ("orthogonal", golden::LM_ORTHOGONAL_IN, golden::LM_ORTHOGONAL_OUT),
+        ("all below threshold", golden::LM_ALL_BELOW_IN, golden::LM_ALL_BELOW_OUT),
+    ] {
+        let axis = Some([1.0, 0.0, 0.0]);
+        assert_lm(lateral_motion(&lm_in(input), axis, DEFAULT_THRESHOLD), want, name);
+    }
+}
+
+#[test]
+fn the_axis_sign_does_not_change_lateral_motion() {
+    // principal_axis reports its axis up to sign. A metric that flipped with
+    // it would be reporting the estimator's arbitrary convention as anatomy.
+    let v = lm_in(golden::LM_FLIPPED_IN);
+    assert_lm(
+        lateral_motion(&v, Some([-1.0, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        golden::LM_FLIPPED_OUT,
+        "axis sign flipped",
+    );
+}
+
+#[test]
+fn an_unnormalised_axis_is_normalised_rather_than_believed() {
+    let v = lm_in(golden::LM_UNNORMALISED_IN);
+    assert_lm(
+        lateral_motion(&v, Some([17.0, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        golden::LM_UNNORMALISED_OUT,
+        "unnormalised axis",
+    );
+}
+
+#[test]
+fn not_measured_is_none_and_is_never_reported_as_planar() {
+    // None ("no axis was committed") and Some(0.0) ("measured, perfectly
+    // planar") are different claims. Collapsing them would report a trial
+    // nobody could assess as a clean one.
+    let v = lm_in(golden::LM_TILTED_IN);
+    assert_eq!(lateral_motion(&v, None, DEFAULT_THRESHOLD), None, "no axis");
+    assert_eq!(
+        lateral_motion(&v, Some([0.0, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        None,
+        "degenerate axis"
+    );
+    assert_eq!(
+        lateral_motion(&[], Some([1.0, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        None,
+        "no samples"
+    );
+    assert_eq!(
+        lateral_motion(&v, Some([f64::NAN, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        None,
+        "non-finite axis"
+    );
+}
+
+#[test]
+fn a_non_finite_sample_is_skipped_rather_than_poisoning_the_sum() {
+    let mut v = lm_in(golden::LM_PLANAR_IN);
+    v.push([f64::NAN, 1.0, 1.0]);
+    v.push([f64::INFINITY, 1.0, 1.0]);
+    assert_lm(
+        lateral_motion(&v, Some([1.0, 0.0, 0.0]), DEFAULT_THRESHOLD),
+        golden::LM_PLANAR_OUT,
+        "non-finite rows must not change a planar answer",
+    );
 }

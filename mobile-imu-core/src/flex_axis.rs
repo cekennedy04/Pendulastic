@@ -598,3 +598,81 @@ fn norm3(v: Vec3) -> f64 {
 fn is_finite3(v: Vec3) -> bool {
     v[0].is_finite() && v[1].is_finite() && v[2].is_finite()
 }
+
+/// How much of the swing happened OUT of the flexion plane.
+///
+/// A Wartenberg pendulum test assumes the shank swings in one plane. It often
+/// does not: the limb rolls, the phone is strapped on askew, or the clinician
+/// releases with a sideways nudge. That contaminates every scored parameter,
+/// because the swing angle is the gyro projected onto a single axis and
+/// whatever rotation happened off that axis is simply discarded.
+///
+/// This is CAPTURE QUALITY, not a clinical finding. It answers "was this trial
+/// clean" -- did the limb swing in one plane -- not anything about the patient.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LateralMotion {
+    /// Perpendicular share of the total angular rate: 0.0 is perfectly
+    /// planar, 1.0 is entirely off-axis.
+    pub fraction: f64,
+    /// The largest single perpendicular component, in deg/s.
+    pub peak_deg_s: f64,
+}
+
+/// `imu_flex_axis.lateral_motion`.
+///
+/// Returns `None` when there is nothing to measure -- no axis was committed,
+/// or no sample cleared `threshold`. `None` means "not measured", which is NOT
+/// the same as `Some(0.0)` ("measured, and perfectly planar"), and a caller
+/// must not collapse the two.
+///
+/// The fraction is magnitude-weighted -- summed perpendicular magnitudes over
+/// summed totals -- rather than the mean of each sample's own ratio. A plain
+/// mean is dominated by near-stationary samples, where the ratio is unstable
+/// and physically meaningless: at rest the gyro reads noise whose direction is
+/// uniformly random, so every resting sample contributes a ratio near 1.0 and
+/// drags the answer toward "all lateral" however cleanly the leg swung.
+pub fn lateral_motion(vectors: &[Vec3], axis: Option<Vec3>, threshold: f64) -> Option<LateralMotion> {
+    let a = axis?;
+    if !a.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let n_a = norm3(a);
+    if n_a <= 1e-12 {
+        return None;
+    }
+    let a = [a[0] / n_a, a[1] / n_a, a[2] / n_a];
+
+    let mut perp_sum = 0.0;
+    let mut total_sum = 0.0;
+    let mut peak = 0.0_f64;
+    let mut used = 0usize;
+
+    for &v in vectors {
+        if !v.iter().all(|x| x.is_finite()) {
+            continue;
+        }
+        let mag = norm3(v);
+        if mag < threshold {
+            continue;
+        }
+        let along = dot3(v, a);
+        let perp = [
+            v[0] - along * a[0],
+            v[1] - along * a[1],
+            v[2] - along * a[2],
+        ];
+        let pm = norm3(perp);
+        perp_sum += pm;
+        total_sum += mag;
+        peak = peak.max(pm);
+        used += 1;
+    }
+
+    if used == 0 || total_sum <= 1e-12 {
+        return None;
+    }
+    Some(LateralMotion {
+        fraction: perp_sum / total_sum,
+        peak_deg_s: peak.to_degrees(),
+    })
+}

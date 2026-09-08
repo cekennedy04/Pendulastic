@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from imu_flex_axis import FlexAxisEstimator, principal_axis, MIN_COMMIT_SAMPLES
+from imu_flex_axis import FlexAxisEstimator, principal_axis, lateral_motion, MIN_COMMIT_SAMPLES
 
 
 def _unit(v):
@@ -244,3 +244,79 @@ def test_malformed_gravity_is_ignored():
         est.update(v, gravity=gravity_bad)
     assert est.committed and not est.leveled
     assert _angle_between(est.axis, axis) < 5.0
+
+
+def _swing(off_axis_frac=0.0, amp=3.0, n=400):
+    """A planar swing about +x, optionally contaminated out of plane."""
+    t = np.linspace(0.0, 4.0, n)
+    w = np.zeros((n, 3))
+    w[:, 0] = amp * np.sin(2 * np.pi * t)
+    w[:, 1] = off_axis_frac * amp * np.sin(2 * np.pi * t)
+    return w
+
+
+def test_a_planar_swing_reports_no_lateral_motion():
+    r = lateral_motion(_swing(0.0), [1.0, 0.0, 0.0])
+    assert r["lateral_fraction"] == pytest.approx(0.0, abs=1e-12)
+    assert r["lateral_peak_deg_s"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_lateral_fraction_matches_the_geometry_it_claims_to_measure():
+    # A constant off-axis share f gives perp/total = f / sqrt(1 + f^2) exactly.
+    for f in (0.1, 0.2, 0.5):
+        r = lateral_motion(_swing(f), [1.0, 0.0, 0.0])
+        assert r["lateral_fraction"] == pytest.approx(f / math.sqrt(1.0 + f * f), rel=1e-6)
+
+
+def test_lateral_fraction_is_scale_free():
+    # Doubling the swing rate must not change the SHARE that is off-plane.
+    slow = lateral_motion(_swing(0.25, amp=2.0), [1.0, 0.0, 0.0])
+    fast = lateral_motion(_swing(0.25, amp=8.0), [1.0, 0.0, 0.0])
+    assert slow["lateral_fraction"] == pytest.approx(fast["lateral_fraction"], rel=1e-6)
+    # The PEAK is a rate, so it does scale -- that is the point of reporting both.
+    assert fast["lateral_peak_deg_s"] > 3.0 * slow["lateral_peak_deg_s"]
+
+
+def test_the_axis_sign_does_not_change_the_answer():
+    # principal_axis reports its axis up to sign; a metric that flipped with it
+    # would be reporting the estimator's arbitrary convention as anatomy.
+    pos = lateral_motion(_swing(0.3), [1.0, 0.0, 0.0])
+    neg = lateral_motion(_swing(0.3), [-1.0, 0.0, 0.0])
+    assert pos["lateral_fraction"] == pytest.approx(neg["lateral_fraction"], rel=1e-12)
+
+
+def test_an_unnormalised_axis_is_normalised_rather_than_believed():
+    unit = lateral_motion(_swing(0.3), [1.0, 0.0, 0.0])
+    long = lateral_motion(_swing(0.3), [17.0, 0.0, 0.0])
+    assert unit["lateral_fraction"] == pytest.approx(long["lateral_fraction"], rel=1e-12)
+
+
+def test_not_measured_is_none_and_never_zero():
+    # None ("no axis was committed") and 0.0 ("measured, perfectly planar") are
+    # different claims. Collapsing them would report a trial nobody could
+    # assess as a clean one.
+    assert lateral_motion(_swing(0.3), None) is None
+    assert lateral_motion(np.zeros((50, 3)), [1.0, 0.0, 0.0]) is None   # all below threshold
+    assert lateral_motion(np.empty((0, 3)), [1.0, 0.0, 0.0]) is None
+    assert lateral_motion(_swing(0.3), [0.0, 0.0, 0.0]) is None         # degenerate axis
+
+
+def test_resting_noise_is_excluded_rather_than_counted_as_lateral():
+    # At rest the gyro reads noise whose direction is uniformly random, so
+    # every resting sample looks almost entirely "off-axis". Without the
+    # threshold those samples dominate and a clean swing reads as contaminated.
+    rng = np.random.default_rng(3)
+    swing = _swing(0.0)
+    rest = rng.normal(0.0, 0.02, (2000, 3))      # long, quiet tail
+    both = np.vstack([swing, rest])
+    r = lateral_motion(both, [1.0, 0.0, 0.0])
+    assert r["lateral_fraction"] == pytest.approx(0.0, abs=1e-9), (
+        "resting noise leaked into the lateral fraction"
+    )
+
+
+def test_a_swing_entirely_off_the_axis_reads_as_fully_lateral():
+    w = np.zeros((400, 3))
+    w[:, 1] = 3.0 * np.sin(2 * np.pi * np.linspace(0, 4, 400))
+    r = lateral_motion(w, [1.0, 0.0, 0.0])
+    assert r["lateral_fraction"] == pytest.approx(1.0, rel=1e-9)

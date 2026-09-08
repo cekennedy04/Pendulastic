@@ -39,6 +39,7 @@ from imu_flex_axis import (  # noqa: E402
     MAX_GRAVITY_TILT_COS,
     MIN_COMMIT_SAMPLES,
     FlexAxisEstimator,
+    lateral_motion,
     principal_axis,
 )
 
@@ -369,6 +370,35 @@ def main():
     parts.append(f64_slice("PA_MIXED_IN", mixed, "The stream plus one inf row and one NaN row."))
     parts.append(opt_axis("PA_MIXED_OUT", principal_axis(mixed),
                           "principal_axis(PA_MIXED_IN) - must equal PA_OUT's direction."))
+
+    # ---- lateral_motion --------------------------------------------------
+    # Capture quality: how much of the swing happened OUT of the flexion plane.
+    def lat(name, vecs, axis, note):
+        r = lateral_motion(vecs, axis)
+        parts.append(f64_slice(f"{name}_IN", np.asarray(vecs, dtype=float), note))
+        if r is None:
+            parts.append(
+                f"/// {note} -> None (not measured).\n"
+                f"pub const {name}_OUT: Option<(f64, f64)> = None;\n\n")
+        else:
+            parts.append(
+                f"/// {note} -> (lateral_fraction, lateral_peak_deg_s).\n"
+                f"pub const {name}_OUT: Option<(f64, f64)> = "
+                f"Some(({r['lateral_fraction']!r}, {r['lateral_peak_deg_s']!r}));\n\n")
+
+    def swing(off, amp=3.0, n=400):
+        t = np.linspace(0.0, 4.0, n)
+        w = np.zeros((n, 3))
+        w[:, 0] = amp * np.sin(2 * np.pi * t)
+        w[:, 1] = off * amp * np.sin(2 * np.pi * t)
+        return w
+
+    lat("LM_PLANAR", swing(0.0), [1.0, 0.0, 0.0], "A perfectly planar swing about +x")
+    lat("LM_TILTED", swing(0.3), [1.0, 0.0, 0.0], "A swing 30% contaminated out of plane")
+    lat("LM_FLIPPED", swing(0.3), [-1.0, 0.0, 0.0], "Same swing, axis sign flipped")
+    lat("LM_UNNORMALISED", swing(0.3), [17.0, 0.0, 0.0], "Same swing, axis unnormalised")
+    lat("LM_ORTHOGONAL", swing(0.0)[:, [1, 0, 2]], [1.0, 0.0, 0.0], "A swing entirely off the axis")
+    lat("LM_ALL_BELOW", np.zeros((50, 3)), [1.0, 0.0, 0.0], "Every sample below the rate threshold")
 
     with open(OUT, "w", encoding="utf-8", newline="\r\n") as fh:
         fh.write("".join(parts))
