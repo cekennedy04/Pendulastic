@@ -112,16 +112,66 @@ the signal is permanently within tolerance of neutral" — in **both** branches
 instead of the fixed cap. It recovers the true cycle count across the whole
 damping range above.
 
-It was not adopted, for a stated reason: **the 0.5-vs-28.5 pathology could not
-be reproduced.** A single-drop synthetic with tails from 3 s to 30 s and noise
-from 0.3° to 1.0° returns `N = 0.0` under both the current and the candidate
-window. The regression the cap exists to prevent is therefore the one the
-candidate is *untested* against, and adopting it on that evidence would be
-trading a known-wrong constant for an unknown one.
+> **Updated 2026-09-08, later the same day.** The paragraph below said the
+> pathology could not be reproduced. It can be — the earlier attempt was
+> looking in the wrong place. `evaluate_peak_detection.py` reproduces it and
+> bakes off six detectors; findings are in §2.4. The conclusion changes from
+> "untestable" to "testable, and the answer is a clinical judgement".
 
-Reproducing that pathology is the prerequisite for revisiting this. Until
-then `N` is wrong but stable, which is the safer of the two for a metric
-already recorded against existing trials.
+It was not adopted at first, for a stated reason: the 0.5-vs-28.5 pathology
+could not be reproduced. A single-drop synthetic with tails from 3 s to 30 s
+and noise from 0.3° to 1.0° returns `N = 0.0` under both the current and the
+candidate window.
+
+### 2.4 The pathology, reproduced — and what it actually shows
+
+The docstring's numbers were measured against the code as it stood **before
+`a1ca2b5`**, which shipped the window cap and the `prominence=min_amp` gate
+together in one commit. Reproducing the failure needs three ingredients at
+once:
+
+1. the pre-`a1ca2b5` detector (height only, no prominence);
+2. `detrend=True` with a **short** pre-release hold — the drift slope is fit
+   on that short noisy baseline and extrapolated across the whole trial, so a
+   30 s tail receives tens of degrees of injected ramp, dragging it off
+   `neutral` until the height gate is satisfied everywhere in the tail;
+3. white noise around 2°.
+
+Exact repro: `fs=120`, hold 0.6 s, descent 180°→106°→60°, white noise sd 2.0,
+seed 7, `detrend=True` → **N = 0.5 at a 3 s tail and 28.5 at 30 s**, the
+docstring's figures to the decimal. The 0.5 floor is not noise: it is the
+descent's own 106° shoulder counted as a single height-only peak, and it
+disappears once prominence is required.
+
+**So the prominence gate is what fixed this, not the cap.** Under the current
+detector those same signals give `N = 0.0` with the window and without it. The
+A1 half of the claim does not reproduce at all (`A1 = 0.00` either way).
+
+The cap is not thereby useless, and this is what keeps the question open
+rather than closing it. Once tail noise grows — white noise at around
+`min_amp`, or tremor from roughly 8° — the current detector does over-count a
+resting tail, and there the 4 s cap is the only bound that contains it. A
+settle-bounded window does **not**: on every such row it scores identically to
+no window at all. So the candidate in §2.3 is not the fix.
+
+Bake-off results (six detectors, `evaluate_peak_detection.py part2`):
+
+- **Dropping the window entirely** is the most accurate option on real
+  oscillation — MAE 0.63 / 0.11 / 0.25 cycles at 20 / 60 / 120 Hz, against
+  1.76 / 1.54 / 1.62 for the current cap, whose error reaches **7.31 cycles**
+  on a lightly damped leg. A settle-bounded window is worse than no window.
+- **The velocity / differentiation approach is worse here, not better.** The
+  ω Schmitt-trigger detector and AMPD both reinstate the pathology outright,
+  scoring 27.5 and 28.0 where every amplitude-gated method scores 0.0.
+  `omega_s` is a *differentiated* angle, so it amplifies precisely the tail
+  noise the gate exists to reject. Using the directly measured gyro instead
+  is untested and is the one avenue that might change this.
+
+What remains is not a measurement question. It is whether a settled spastic
+limb actually shows ≥5° of tail noise or ≥8° of tremor. Above that the cap
+earns its keep; below it, the cap is costing up to 7 cycles of accuracy on
+every healthy leg to guard a regime that does not occur. Note the phone runs
+`detrend=False`, which removes ingredient 2 outright.
 
 **Scope note.** Changing extremum detection changes scored values on every
 trial, and `N` feeds PT7, the `HEALTHY_REF` comparison and the MAS grade. It
@@ -331,7 +381,7 @@ already stamped into every trial and manifest.
 
 | Risk | Mitigation |
 | --- | --- |
-| A window change reopens the noise-counted-as-cycles failure | Not taken: the 0.5-vs-28.5 pathology could not be reproduced, so the guard is untestable today and the change is deferred (§2.3) |
+| A window change reopens the noise-counted-as-cycles failure | Reproduced (§2.4): the prominence gate, not the cap, is what fixed the documented case. The cap still bounds large-noise and tremor tails, and a settle-bounded window does not, so that candidate is dead |
 | The Rust flex-axis port drifts from the Python | Golden fixtures generated from the Python, as the scoring port already does |
 | Lateral motion read as a clinical finding | Reported under capture quality, worded as trial cleanliness |
 | Quick-test trials pollute real data | Separate participant id, `quick_test` flag, excluded from trends, labelled in the export |
