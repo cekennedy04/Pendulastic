@@ -6,6 +6,7 @@
 // testable without a DOM.
 
 import { LEG_OPTIONS } from '../mas-store.js';
+import { isQuickTest } from '../session-store.js';
 
 export const SETTING_KEYS = {
   activePatient: 'active-patient',
@@ -18,6 +19,7 @@ export const SETTING_KEYS = {
 export function patientLabel(patient) {
   const id = patient && patient.clinic_patient_id;
   if (!id) return 'no participant set';
+  if (isQuickTest(patient)) return `${id} (not a participant)`;
   return patient.legacy === true ? `${id} (legacy)` : id;
 }
 
@@ -98,6 +100,7 @@ export function nextParticipantState(state, action) {
 // without a DOM.
 export function createSessionView({
   el, context, listPatients, addPatient, selectPatient, selectSide, countPending,
+  startQuickTest,
 }) {
   let ready = false;
 
@@ -124,6 +127,16 @@ export function createSessionView({
       el('participant-new').value = '';
       await render();
     });
+
+    // Guarded, so a build without the button wired does not throw on entry.
+    const quickBtn = el('participant-quick-test');
+    if (quickBtn && typeof startQuickTest === 'function') {
+      quickBtn.addEventListener('click', async () => {
+        el('participant-error').hidden = true;
+        await startQuickTest();
+        await render();
+      });
+    }
 
     el('side-select').addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-side]');
@@ -167,6 +180,11 @@ export function createSessionView({
     // error, so it uses .field-status rather than .field-error.
     const needEl = el('participant-required');
     if (needEl) needEl.hidden = Boolean(patient);
+
+    // Stated on the screen that records them, not one tap away: a quick test
+    // looks exactly like a real capture until you read where it went.
+    const quickNote = el('quick-test-note');
+    if (quickNote) quickNote.hidden = !isQuickTest(patient);
 
     // A notice, never a block. A pending row is legitimate and the desktop
     // ingests it; the failure this guards against is forgetting one, not

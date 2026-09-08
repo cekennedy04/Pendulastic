@@ -4,7 +4,11 @@
 import { startCapture } from './capture.js';
 import { installState, installInstructions } from './install-gate.js';
 import { openDb, put, getAll, getOne, STORES } from './db.js';
-import { makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS } from './session-store.js';
+import {
+  makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS,
+  activeTrials, excludeTrial, includeTrial,
+  makeQuickTestPatient, isQuickTest,
+} from './session-store.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
 import { ALGORITHM_VERSION, BUILD_ID } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
@@ -590,7 +594,10 @@ if (typeof document !== 'undefined') {
     currentSession = resumeOrCreateSession(sessions, currentPatient.id);
     await put(db, STORES.sessions, currentSession); // no-op if resumed and already stored; creates it otherwise
     const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
-    currentTrialCount = trials.length;
+    // Excluded trials do not count toward the export gate. They are
+    // still stored and still export -- they just stop standing in for a
+    // capture the clinician has said was no good.
+    currentTrialCount = activeTrials(trials).length;
     refreshExportLock();
   }
 
@@ -663,6 +670,9 @@ if (typeof document !== 'undefined') {
     const record = makeTrialRecord({
       sessionId: currentSession.id,
       side: currentSide,
+      // Marked on the trial itself rather than re-derived from the
+      // participant row, because an exported bundle is read without it.
+      quickTest: isQuickTest(currentPatient),
       // How much settled tail this trial actually has. neutral_deg is the
       // tail median and every angle is expressed relative to it, so this is
       // a property of the measurement, not of the workflow. Read from the
@@ -1396,6 +1406,21 @@ if (typeof document !== 'undefined') {
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
+    // Excluding is a WRITE to a trial that may already have been exported, so
+    // it invalidates the export the same way recording a new trial does --
+    // the bundle on the clinician's disk no longer matches what is on the
+    // device, and the gate has to notice that.
+    setExcluded: async (t, excluded, reason) => {
+      const updated = excluded ? excludeTrial(t, reason) : includeTrial(t);
+      await put(db, STORES.trials, updated);
+      if (currentSession) {
+        currentSession = invalidateExport(currentSession);
+        await put(db, STORES.sessions, currentSession);
+        const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
+        currentTrialCount = activeTrials(trials).length;
+        refreshExportLock();
+      }
+    },
   }));
 
   // ---- Session view: participant + side (task 8) --------------------------
@@ -1414,6 +1439,14 @@ if (typeof document !== 'undefined') {
       await applyParticipantAction({ type: 'select', patient });
     },
     selectPatient: (patient) => applyParticipantAction({ type: 'select', patient }),
+    // Goes through the SAME reducer as every other participant change, so the
+    // "cannot switch mid-session" rule applies to it too -- a quick test must
+    // not be a side door out of a session that already has trials in it.
+    startQuickTest: async () => {
+      const patient = makeQuickTestPatient();
+      await put(db, STORES.patients, patient);
+      await applyParticipantAction({ type: 'select', patient });
+    },
     selectSide: (side) => applyParticipantAction({ type: 'side', side }),
     countPending: async () => (currentPatient
       ? (await getAll(db, STORES.mas, 'by_patient', currentPatient.id)).filter(isPending).length

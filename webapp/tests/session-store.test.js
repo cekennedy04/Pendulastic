@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeTrialRecord, canCloseSession, markExported, PARAM_FIELDS } from '../src/session-store.js';
+import {
+  makeTrialRecord, canCloseSession, markExported, PARAM_FIELDS,
+  isExcluded, excludeTrial, includeTrial, activeTrials, trendEligible,
+  isQuickTest, QUICK_TEST_PATIENT_ID,
+} from '../src/session-store.js';
 
 const params = Object.fromEntries(PARAM_FIELDS.map((k, i) => [k, i]));
 
@@ -112,4 +116,106 @@ test('the protocol version is a number, not a string', () => {
     rawJsonl: '', algorithmVersion: 'x',
   });
   assert.equal(typeof r.capture_protocol_version, 'number');
+});
+
+// ---- exclusion (Unit B item 4) ------------------------------------------
+
+const trial = (over = {}) => ({
+  ...makeTrialRecord({
+    sessionId: 's1', side: 'left', params, trajectory: {}, rawJsonl: 'x',
+    algorithmVersion: '0.1.0',
+  }),
+  ...over,
+});
+
+test('a new trial is not excluded and is not a quick test', () => {
+  const t = trial();
+  assert.equal(t.excluded_at, null);
+  assert.equal(t.excluded_reason, null);
+  assert.equal(t.quick_test, false);
+  assert.equal(isExcluded(t), false);
+  assert.equal(isQuickTest(t), false);
+});
+
+test('excluding keeps every byte of the trial and only adds the mark', () => {
+  const t = trial();
+  const x = excludeTrial(t, 'leg slipped', 1234);
+  // The whole point: this is not a delete. params, the raw log and the
+  // trajectory all survive, because on a phone this is the only copy.
+  assert.deepEqual(x.params, t.params);
+  assert.equal(x.raw_jsonl, t.raw_jsonl);
+  assert.equal(x.id, t.id);
+  assert.equal(x.excluded_at, 1234);
+  assert.equal(x.excluded_reason, 'leg slipped');
+  assert.equal(isExcluded(x), true);
+});
+
+test('excluding does not mutate the trial it was given', () => {
+  const t = trial();
+  excludeTrial(t, 'oops', 1);
+  assert.equal(t.excluded_at, null, 'the original record was mutated');
+});
+
+test('a missing reason is stored as an empty string, never undefined', () => {
+  // undefined would vanish through JSON.stringify on export, turning "excluded
+  // with no reason given" into "field absent", which reads as a v1 record.
+  const x = excludeTrial(trial());
+  assert.equal(x.excluded_reason, '');
+  assert.equal('excluded_reason' in JSON.parse(JSON.stringify(x)), true);
+});
+
+test('un-excluding clears the mark and restores the count', () => {
+  const back = includeTrial(excludeTrial(trial(), 'mistake', 7));
+  assert.equal(isExcluded(back), false);
+  assert.equal(back.excluded_at, null);
+  assert.equal(activeTrials([back]).length, 1);
+});
+
+test('excluded trials stop counting but are still there', () => {
+  const a = trial();
+  const b = excludeTrial(trial(), 'noisy');
+  const all = [a, b];
+  assert.equal(activeTrials(all).length, 1, 'excluded trial still counted');
+  assert.equal(all.length, 2, 'the trial was removed from the list');
+});
+
+test('activeTrials tolerates an empty or absent list', () => {
+  assert.deepEqual(activeTrials([]), []);
+  assert.deepEqual(activeTrials(undefined), []);
+});
+
+// ---- quick test (Unit B item 6) -----------------------------------------
+
+test('a quick-test trial is flagged on the record, not just inferred', () => {
+  const t = trial({ quick_test: true });
+  assert.equal(isQuickTest(t), true);
+});
+
+test('a quick test is recognised from the participant id alone', () => {
+  // An exported bundle is read without the patient row beside it, so either
+  // signal on its own has to be enough.
+  assert.equal(isQuickTest({ patient_id: QUICK_TEST_PATIENT_ID }), true);
+  assert.equal(isQuickTest({ patient_id: 'REAL-01' }), false);
+});
+
+test('quick tests never reach a trend, even when not excluded', () => {
+  const real = trial();
+  const quick = trial({ quick_test: true });
+  assert.equal(activeTrials([real, quick]).length, 2, 'a quick test still counts in-session');
+  assert.equal(trendEligible([real, quick]).length, 1, 'a quick test leaked into a trend');
+});
+
+test('un-excluding a quick test does not make it trend-eligible', () => {
+  // The two filters are deliberately not the same rule: exclusion is
+  // reversible, "was never recorded against a real participant" is not.
+  const quick = includeTrial(excludeTrial(trial({ quick_test: true }), 'x'));
+  assert.equal(isExcluded(quick), false);
+  assert.equal(trendEligible([quick]).length, 0);
+});
+
+test('isQuickTest and isExcluded are safe on junk input', () => {
+  for (const junk of [null, undefined, {}]) {
+    assert.equal(isQuickTest(junk), false);
+    assert.equal(isExcluded(junk), false);
+  }
 });

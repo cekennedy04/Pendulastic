@@ -268,3 +268,32 @@ test('a participant id with unsafe characters is sanitised for the filename', ()
 test('a missing participant id still yields a usable filename', () => {
   assert.match(figureName(null, 'pt7', new Date(Date.UTC(2026, 8, 4))), /unknown-patient/);
 });
+
+test('excluded trials and quick tests never reach a series point', () => {
+  // A trend is the one place a number is read as a claim about a person over
+  // time. A capture the clinician disowned, or one recorded against no
+  // participant, must not move the curve.
+  const s = sessionSeries(
+    [{ id: 'sx', timestamp: 10 }],
+    {
+      sx: [
+        { id: 'a', side: 'left', params: { ...P, a0_deg: 40 } },
+        { id: 'b', side: 'left', params: { ...P, a0_deg: 90 }, excluded_at: 5 },
+        { id: 'c', side: 'left', params: { ...P, a0_deg: 90 }, quick_test: true },
+      ],
+    },
+    { scoreOf },
+  );
+  assert.equal(s.length, 1);
+  assert.equal(s[0].n, 1, 'an excluded or quick-test trial was counted');
+  assert.equal(s[0].a0, 40, 'a disowned trial moved the median');
+});
+
+test('a session whose only trials are excluded yields no point at all', () => {
+  const s = sessionSeries(
+    [{ id: 'sx', timestamp: 10 }],
+    { sx: [{ id: 'a', side: 'left', params: { ...P, a0_deg: 40 }, excluded_at: 5 }] },
+    { scoreOf },
+  );
+  assert.deepEqual(s, [], 'an all-excluded session still plotted');
+});

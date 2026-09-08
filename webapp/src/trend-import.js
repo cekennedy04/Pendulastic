@@ -8,6 +8,8 @@
 import { MAS_FIELDS } from './mas-store.js';
 
 const ACCEPTED = new Set([
+  // v4 carries each trial's exclusion and quick-test flag.
+  'pendulastic/session-export/v4',
   'pendulastic/session-export/v3',
   'pendulastic/session-export/v2',
   // v1 predates the mas block. Its trials are still importable, and refusing
@@ -25,7 +27,7 @@ export function parseManifest(text) {
   if (!ACCEPTED.has(m && m.schema)) {
     // Named, not generic: the operator needs to tell an old export from a
     // corrupt file, and only the version string distinguishes them.
-    throw new Error(`Unsupported export schema "${m && m.schema}". This app reads v1 and v2.`);
+    throw new Error(`Unsupported export schema "${m && m.schema}". This app reads v1 to v4.`);
   }
   return {
     schema: m.schema,

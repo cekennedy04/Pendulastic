@@ -879,3 +879,78 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 #gate-help-list dt:first-child { margin-top: 0; }
 #gate-help-list dd { margin: 4px 0 0; line-height: 1.45; }
 #gate-help-list strong { color: var(--fg); }
+
+/* ---- trial exclusion (Unit B item 4) -----------------------------------
+   An excluded trial is struck through, NOT hidden. It keeps its row, its
+   params and its raw log, and it still exports -- it only stops counting.
+   Nothing in this app deletes trial data. */
+.trial-entry { display: block; }
+
+.trial-excluded .tile-title,
+/* NOT :first-of-type -- .tile-title is a <span> too, so .tile-sub is never
+   the first span among its siblings and the rule silently did nothing. */
+.trial-excluded .tile-sub:not(.trial-exclusion-note) {
+  text-decoration: line-through;
+  color: var(--fg3);
+}
+
+/* The reason is NOT struck through: it is the one line on the row that has to
+   stay readable, since it says why the strike-through is there. */
+.trial-exclusion-note {
+  text-decoration: none;
+  color: var(--fg2);
+  font-style: italic;
+}
+
+.trial-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 0 4px;
+}
+
+.trial-exclude-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.trial-exclude-reason {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* A text-weight action, deliberately not a .btn: excluding sits beside a
+   full-width tile and must not compete with it for the tap. */
+.link-btn {
+  padding: 6px 4px;
+  font: inherit;
+  font-size: clamp(13px, 3.4vw, 14px);
+  font-weight: 600;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  /* 44px of touch target without 44px of ink. */
+  min-height: 44px;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* ---- quick test (Unit B item 6) ---------------------------------------- */
+#participant-quick-test { width: 100%; margin-top: 10px; }
+
+#quick-test-note {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}

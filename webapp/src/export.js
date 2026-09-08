@@ -56,7 +56,10 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
     // v3 adds capture_protocol_version and settle_target_s to each trial.
     // Bumped rather than widened in place: a consumer must
     // not be handed a different shape under an unchanged version string.
-    schema: 'pendulastic/session-export/v3',
+    // v4 adds excluded_at / excluded_reason / quick_test to each trial.
+    // Bumped rather than widened in place: a consumer must not be handed a
+    // different shape under an unchanged version string.
+    schema: 'pendulastic/session-export/v4',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
@@ -84,6 +87,12 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       unmeasured: t.unmeasured || [],
       drift_correction: t.drift_correction || 'live',
       release_override_idx: t.release_override_idx,
+      // The exclusion travels WITH the trial rather than removing it. A
+      // reader that wants the clinician's own count filters on this; a
+      // reader auditing what was captured still sees everything that was.
+      excluded_at: t.excluded_at ?? null,
+      excluded_reason: t.excluded_reason ?? null,
+      quick_test: Boolean(t.quick_test),
       // The 20 scalars only. The composite score and zone are derived at read
       // time against the current HEALTHY_REF, which is still being
       // recalibrated -- exporting one would freeze a moving reference.

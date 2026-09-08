@@ -331,6 +331,18 @@
           <button class="btn btn--secondary" id="participant-add">Add</button>
         </div>
         <p id="participant-error" class="field-error" hidden></p>
+        <!-- A labelled path, not a way around the participant gate. Quick-test
+             trials record against a built-in participant with a fixed id, are
+             marked on every trial, never reach a trend, and export under the
+             name QUICK-TEST rather than a clinic id. -->
+        <button class="btn btn--secondary" id="participant-quick-test">
+          Quick test &mdash; no participant
+        </button>
+        <p id="quick-test-note" class="field-status" hidden>
+          Recording as <strong>QUICK-TEST</strong>. These trials are kept and
+          exported, but they are excluded from trends and are not attributed to
+          any participant.
+        </p>
       </div>
 
       <div class="card">

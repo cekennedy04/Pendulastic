@@ -1,3 +1,4 @@
+import { trendEligible } from '../session-store.js';
 import { MAS_ORDER, isPending } from '../mas-store.js';
 import { renderCharts } from '../trend-charts.js';
 
@@ -32,7 +33,12 @@ export function sessionSeries(sessions, trialsBySession, { scoreOf }) {
   const ordered = [...(sessions || [])].sort((a, b) => a.timestamp - b.timestamp);
 
   for (const session of ordered) {
-    const trials = (trialsBySession || {})[session.id] || [];
+    // Excluded trials and quick tests never reach a trend. A trend is the
+    // one place a number is read as a claim about a PERSON over time, so a
+    // capture the clinician disowned, or one recorded against no
+    // participant at all, must not shift the curve. Both are still stored
+    // and still export -- they are filtered here, not dropped upstream.
+    const trials = trendEligible((trialsBySession || {})[session.id] || []);
     const byLeg = new Map();
     for (const t of trials) {
       const leg = t.side || 'unset';

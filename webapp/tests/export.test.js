@@ -341,7 +341,7 @@ test('a text-backed file is unaffected by the blob support', () => {
 test('the manifest schema is v3', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(m.schema, 'pendulastic/session-export/v3');
+  assert.equal(m.schema, 'pendulastic/session-export/v4');
 });
 
 // The shared masTrials fixture is deliberately legacy-shaped, to exercise the
@@ -372,4 +372,38 @@ test('a legacy trial keeps protocol 1 rather than being relabelled', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: legacy });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
   assert.equal(m.trials[0].capture_protocol_version, 1);
+});
+
+test('an excluded trial still exports, carrying its exclusion', () => {
+  // The whole point of exclude-not-delete: the bundle a clinician hands to
+  // analysis must contain what was captured, and separately say which of it
+  // the clinician disowned. Dropping the trial here would make the exclusion
+  // indistinguishable from a capture that never happened.
+  const kept = trial('t1', 'a\n');
+  const dropped = { ...trial('t2', 'b\n'), excluded_at: 999, excluded_reason: 'leg slipped' };
+  const files = buildExportFiles({
+    session: { id: 's1', timestamp: 1 },
+    patient: { clinic_patient_id: 'ANON-7' },
+    trials: [kept, dropped],
+  });
+  assert.equal(files.filter((f) => f.name.endsWith('.jsonl')).length, 2, 'the excluded trial lost its raw log');
+  const m = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
+  assert.equal(m.trials.length, 2);
+  assert.equal(m.trials[0].excluded_at, null);
+  assert.equal(m.trials[1].excluded_at, 999);
+  assert.equal(m.trials[1].excluded_reason, 'leg slipped');
+});
+
+test('a trial recorded before exclusion existed exports as not-excluded', () => {
+  // Absent must read as "never excluded", not as undefined dropped by
+  // JSON.stringify, which a consumer cannot tell from a missing field.
+  const files = buildExportFiles({
+    session: { id: 's1', timestamp: 1 },
+    patient: { clinic_patient_id: 'ANON-7' },
+    trials: [trial('t1', 'a\n')],
+  });
+  const m = JSON.parse(files.find((f) => f.name.endsWith('.json')).text);
+  assert.equal('excluded_at' in m.trials[0], true);
+  assert.equal(m.trials[0].excluded_at, null);
+  assert.equal(m.trials[0].quick_test, false);
 });
