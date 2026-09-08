@@ -1080,3 +1080,63 @@ def test_p9_left_trial3_no_longer_reports_an_impossible_excursion():
         assert a0 < 120.0 or flagged, (
             f"A0={a0:.1f} deg and not flagged as unreliable; "
             f"warnings={quality.warnings}")
+
+
+# ── 87d7645 is a fix, and this is what stops it being undone ─────────────────
+#
+# A loader bisect on 2026-09-06 found the optical reference curve's SHAPE moved
+# at 87d7645 -- flat at 0.00 through 6ddf649, then 8.84 deg median on real
+# trials, unchanged after. That raised a real question, because the commit
+# argued nothing was lost: "every scored PT parameter is invariant to a constant
+# offset AND to a mirror". Both true, and neither covers a shape change --
+# allowing a sign flip moved nothing on 12 of 12 trials.
+#
+# Measured against ground truth rather than against the old curve, the change
+# is an improvement, and it improves exactly where the seed bug bit: a trial
+# that does NOT start held and extended. The old code seeded the anatomical
+# axis from the first 60 frames, so a trial starting mid-swing anchored
+# "straight" to whatever pose happened to fill them.
+#
+#     case                        6ddf649   87d7645
+#     held, extended and still       0.00      0.00
+#     starts mid-swing               0.86      0.00
+#     held, hold drifts 8 deg        4.49      0.00
+#     mid-swing, out of plane        0.85      0.11
+#
+# This pins that. It is a regression guard on the fix, not a re-derivation.
+
+
+def test_reconstruction_is_accurate_when_the_trial_does_not_start_held(tmp_path):
+    """The seed bug's blast radius: every start state that is not "held".
+
+    The old suite could only generate a held, extended, stationary leg, which
+    is the one case the seeded axis got right -- which is why the defect
+    survived it. Each of these was wrong before 87d7645.
+    """
+    for name, kw in (
+        ("mid_motion", dict(start_state="mid_motion")),
+        ("mid_motion, out of plane", dict(start_state="mid_motion",
+                                          out_of_plane_deg=10.0)),
+        ("held but drifting", dict(start_state="held", hold_drift_deg=8.0)),
+        ("held, opposite sign", dict(start_state="held", sign=+1.0)),
+    ):
+        rows, truth = _build_trial(**kw)
+        p = _write_csv(str(tmp_path / f"{name.replace(' ', '_').replace(',', '')}.csv"),
+                       rows)
+        t, ang = pts.load_optitrack(p)
+        err = _shape_err(np.asarray(ang, float), np.asarray(truth, float))
+        assert err < 1.0, f"{name}: shape error {err:.2f} deg against ground truth"
+
+
+def test_a_trial_with_no_rotation_is_refused_rather_than_invented(tmp_path):
+    """A stationary cluster has no hinge axis, and saying so is the fix.
+
+    The pre-87d7645 loader returned a clean-looking curve here by seeding the
+    axis from the first 60 frames -- an answer it had not earned. Refusing is
+    the honest outcome, and it must stay a refusal: if this ever starts
+    returning a curve again, the seed bug is back.
+    """
+    rows, _truth = _build_trial(start_state="rest")
+    p = _write_csv(str(tmp_path / "rest.csv"), rows)
+    with pytest.raises(ValueError, match="no rotation|no hinge axis"):
+        pts.load_optitrack(p)
