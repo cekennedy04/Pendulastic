@@ -245,3 +245,93 @@ def test_the_correction_is_a_no_op_on_these_optical_curves():
     assert p is not None
     assert abs(p["neutral_deg"] - p["neutral_deg_raw"]) < 1.0, (
         "the drift correction is still moving an optical curve")
+
+
+# ── U5: a drifting hold becomes evidence instead of silence ─────────────────
+#
+# Both drift estimators return None on an untrustworthy hold, no correction is
+# applied, and the trial then scores exactly as though the hold had been
+# steady. Three different situations -- steady, unassessable, badly drifting --
+# were indistinguishable downstream, because all three produced "no
+# correction" and said nothing. KD5/R10.
+
+
+def _held_then_swing(hold_s=2.0, drift_deg_s=0.0, fs=120.0, a0=45.0, tau=1.6):
+    """A hold at a constant angle, optionally drifting, then a decaying swing."""
+    n_hold = int(hold_s * fs)
+    t_hold = np.arange(n_hold) / fs
+    hold = 180.0 + drift_deg_s * t_hold
+    t_sw = np.arange(int(8.0 * fs)) / fs
+    swing = hold[-1] - a0 * (1.0 - np.exp(-t_sw / tau) * np.cos(2 * np.pi * 0.9 * t_sw))
+    t = np.concatenate([t_hold, t_hold[-1] + 1.0 / fs + t_sw])
+    return t, np.concatenate([hold, swing])
+
+
+def test_a_steady_hold_reports_steady():
+    t, ang = _held_then_swing(drift_deg_s=0.0)
+    ev = pts.hold_drift_evidence(t, ang, int(2.0 * 120))
+    assert ev["status"] == "steady"
+    assert abs(ev["slope_deg_s"]) < 0.5
+
+
+def test_a_badly_drifting_hold_is_reported_with_its_number():
+    """A held leg is at rest, so 8 deg/s is not the leg -- it is the sensor or
+    a hold that was not held. Either way the operator needs to see it."""
+    t, ang = _held_then_swing(drift_deg_s=8.0)
+    ev = pts.hold_drift_evidence(t, ang, int(2.0 * 120))
+    assert ev["status"] == "drifting"
+    assert ev["slope_deg_s"] == pytest.approx(8.0, abs=0.5)
+    assert "8" in ev["detail"] and "deg/s" in ev["detail"]
+
+
+def test_an_unassessable_hold_is_not_reported_as_steady():
+    """Absence of evidence is its own state. A hold too short to call steady
+    must not read the same as one measured and found steady."""
+    t, ang = _held_then_swing(hold_s=0.05)
+    ev = pts.hold_drift_evidence(t, ang, 6)
+    assert ev["status"] == "unassessable"
+    assert ev["detail"], "an unassessable hold must say why"
+
+
+def test_the_worst_drift_does_not_hide_behind_a_shortened_hold():
+    """Release detection fires on a drifting hold, so the worse the drift the
+    less hold survives to measure it on. Guarding the DRIFTING branch by
+    duration made the check blind exactly where it mattered: a 4.5 deg/s ramp
+    left 1.29 s and was caught, while 8 and 12 deg/s left 0.82 s and 0.61 s and
+    reported "unassessable". A short window cannot prove steadiness but it can
+    certainly prove motion."""
+    for drift in (4.5, 8.0, 12.0):
+        t, ang = _held_then_swing(hold_s=4.0, drift_deg_s=drift)
+        p = pts.compute_pt_params(t, ang)
+        h = p["hold_drift"]
+        assert h["status"] == "drifting", (
+            f"{drift} deg/s reported {h['status']} over {h['seconds']:.2f}s")
+        assert h["slope_deg_s"] == pytest.approx(drift, abs=0.5)
+
+
+def test_compute_pt_params_carries_the_hold_evidence():
+    t, ang = _held_then_swing(hold_s=4.0, drift_deg_s=8.0)
+    p = pts.compute_pt_params(t, ang)
+    assert p is not None
+    assert p["hold_drift"]["status"] == "drifting"
+
+
+def test_a_drifting_hold_is_flagged_and_the_trial_survives():
+    """Flag, never drop. The tag is evidence for the operator; only
+    excluded_trials.json removes anything, and only they write it."""
+    import pt_report_common as common
+    t, ang = _held_then_swing(hold_s=4.0, drift_deg_s=8.0)
+    p = pts.compute_pt_params(t, ang)
+    written = {}
+    orig = common.save_quality_tag
+    try:
+        common.save_quality_tag = lambda k, c, d="", timestamp=None: written.update(
+            {"key": k, "category": c, "details": d})
+        common.load_quality_tags = lambda: {}
+        assert common.tag_drifting_hold("p9_left_pre_T1", p) == "calibration_hold"
+    finally:
+        common.save_quality_tag = orig
+    assert written["category"] == "calibration_hold"
+    assert "deg/s" in written["details"]
+    # and the trial still scored
+    assert np.isfinite(p["A0_deg"])

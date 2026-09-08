@@ -1732,3 +1732,27 @@ def make_rmse_figure(participant_label, by_leg_tp, timepoints, out_filename,
         return out_path, fig
     plt.close(fig)
     return out_path, any_bars
+
+
+def tag_drifting_hold(trial_key, params, overwrite=False):
+    """Record a `calibration_hold` tag when a trial's pre-release hold drifted.
+
+    The drift was always measurable and was never reported: both drift
+    estimators return None on an untrustworthy hold, no correction is applied,
+    and the trial then scores exactly as though the hold had been steady. An
+    operator deciding whether to keep it could not see the difference.
+
+    Flags, never drops -- `excluded_trials.json` remains the only thing that
+    removes a trial, and only the operator writes it. Returns the category
+    written, or None when there was nothing to record.
+
+    `overwrite` is False by default so this cannot silently replace a tag an
+    operator wrote by hand; an existing tag on the key is left alone.
+    """
+    hold = (params or {}).get("hold_drift") or {}
+    if hold.get("status") != "drifting":
+        return None
+    if not overwrite and trial_key in load_quality_tags():
+        return None
+    save_quality_tag(trial_key, "calibration_hold", hold.get("detail", ""))
+    return "calibration_hold"

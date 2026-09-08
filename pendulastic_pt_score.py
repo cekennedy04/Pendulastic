@@ -2475,6 +2475,84 @@ def _baseline_drift_slope(t: np.ndarray, ang: np.ndarray,
     return slope
 
 
+def hold_drift_evidence(t: np.ndarray, ang: np.ndarray,
+                        baseline_end: int) -> dict:
+    """What the pre-release hold did, whether or not it is used to correct.
+
+    `_baseline_drift_slope` answers "may I correct by this?" and says None for
+    several different reasons -- too few samples, too short a lever arm, a
+    slope past the cap. That None is then swallowed: no correction is applied
+    and the trial scores as if the hold were fine. A hold carrying 12.8 deg/s
+    is not fine, and an operator deciding whether to keep the trial has no way
+    to see it.
+
+    So this measures the hold and reports it, separating "the hold is steady"
+    from "the hold could not be assessed" from "the hold drifted too much to
+    trust". Nothing here excludes anything -- that is the operator's call via
+    excluded_trials.json, per the standing rule that code flags and never
+    drops.
+
+    Returns {"slope_deg_s", "seconds", "n", "status", "detail"} where status is
+    one of "steady", "drifting", "unassessable".
+    """
+    out = {"slope_deg_s": float("nan"), "seconds": 0.0, "n": 0,
+           "status": "unassessable", "detail": ""}
+    if baseline_end < _MIN_BASELINE:
+        out["detail"] = (f"hold has {int(baseline_end)} samples, below the "
+                         f"{_MIN_BASELINE} needed to fit a slope")
+        return out
+    seg_t = np.asarray(t[:baseline_end], dtype=float)
+    seg_a = np.asarray(ang[:baseline_end], dtype=float)
+    ok = np.isfinite(seg_t) & np.isfinite(seg_a)
+    seg_t, seg_a = seg_t[ok], seg_a[ok]
+    out["n"] = int(len(seg_t))
+    if len(seg_t) < _MIN_BASELINE:
+        out["detail"] = (f"hold has {len(seg_t)} finite samples, below the "
+                         f"{_MIN_BASELINE} needed to fit a slope")
+        return out
+    span = float(seg_t[-1] - seg_t[0])
+    out["seconds"] = span
+    slope = float(np.polyfit(seg_t, seg_a, 1)[0])
+    out["slope_deg_s"] = slope
+    if not np.isfinite(slope):
+        out["detail"] = "hold slope did not resolve"
+        return out
+
+    # A short window can PROVE motion but cannot PROVE steadiness, so the
+    # duration guard applies to one branch and not the other.
+    #
+    # _BASELINE_MIN_SECONDS exists to stop a noisy sliver being EXTRAPOLATED
+    # across the whole trial. Reporting has no such problem: a 0.8 s hold
+    # sitting on a clean 8 deg/s ramp is drifting, whatever the fit is trusted
+    # for afterwards.
+    #
+    # Applying the guard to both branches made this blind exactly where it
+    # mattered. Release detection fires on a drifting hold, so the worse the
+    # drift the shorter the surviving hold -- measured on a synthetic ramp:
+    # 2 deg/s left 2.66 s, 4.5 left 1.29 s, 8 left 0.82 s and 12 left 0.61 s.
+    # The two worst cases fell under the guard and reported "unassessable",
+    # i.e. the drift hid itself.
+    if abs(slope) > _MAX_DRIFT_DEG_S:
+        out["status"] = "drifting"
+        short = "" if span >= _BASELINE_MIN_SECONDS else (
+            f" The hold only survived {span:.2f} s before release was detected,"
+            " which is itself a sign it was not held.")
+        out["detail"] = (f"the pre-release hold moved {slope:+.2f} deg/s over "
+                         f"{span:.2f} s, past the {_MAX_DRIFT_DEG_S:.1f} deg/s "
+                         "limit. A held leg is at rest, so this is sensor "
+                         "drift or a hold that was not held -- check the trial "
+                         f"before reading anything into its amplitude.{short}")
+        return out
+    if span < _BASELINE_MIN_SECONDS:
+        out["detail"] = (f"hold spans {span:.2f} s, below the "
+                         f"{_BASELINE_MIN_SECONDS:.2f} s needed to call it "
+                         "steady with any confidence")
+        return out
+    out["status"] = "steady"
+    out["detail"] = f"hold moved {slope:+.2f} deg/s over {span:.2f} s"
+    return out
+
+
 def _credible_drift_slope(slope: Optional[float], t: np.ndarray,
                           ang: np.ndarray) -> Optional[float]:
     """The slope, or None if applying it across the trial would rewrite it.
@@ -2677,6 +2755,13 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
             slope = _credible_drift_slope(
                 _baseline_drift_slope(t_c, ang_c_raw, baseline_end),
                 t_c, ang_c_raw)
+    # Measure the hold regardless of whether it was used to correct. The
+    # estimators above return None for several different reasons and that None
+    # was being swallowed -- a trial with a 12.8 deg/s hold scored as though the
+    # hold were fine, and nothing downstream could see otherwise. This does not
+    # change what is corrected; it makes the refusal visible.
+    hold = hold_drift_evidence(t_c, ang_c_raw, baseline_end)
+
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
@@ -2904,6 +2989,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         P_plus=P_plus, P_minus=P_minus, P_total=P_total,
         pk_i=pk_i2, tr_i=tr_i2,
         spasticity_type=spasticity_type,
+        # Evidence, not a verdict. See hold_drift_evidence: a hold that could
+        # not be assessed and a hold that drifted badly used to be
+        # indistinguishable from a steady one, because both produced "no
+        # correction" and said nothing.
+        hold_drift=hold,
     )
 
 
