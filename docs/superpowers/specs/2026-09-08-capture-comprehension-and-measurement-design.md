@@ -20,7 +20,7 @@ changed three of them and closed one before any design was done.
 | 4 | Delete trials | Unit B, as **exclude** not delete |
 | 5 | Choose which metrics feed the PT score | Unit C, as **contribution** not subsetting |
 | 6 | Record without a participant ID | Unit B, as a labelled quick-test mode |
-| 7 | Misses the last peak before settling | Unit D — **cause found**, §2 |
+| 7 | Misses the last peak before settling | Unit D — **cause found (§2.2), deferred (§2.3)** |
 | 8 | Healthy range per metric, coloured | Unit C, as **distance** not a verdict |
 | 9 | Lateral motion present, and how much | Unit D — requires a Rust port |
 
@@ -59,42 +59,75 @@ toward the option that does not overstate what the instrument knows.
 
 ## 2. Item 7 — the missed last peak, diagnosed
 
-`scoring.rs`:
+> **Corrected 2026-09-08.** The original diagnosis below blamed `min_amp`.
+> That was measured and is **wrong**. The binding gate is the
+> active-oscillation window's fixed 4-second cap. The corrected finding is
+> §2.2; the superseded reasoning is kept as §2.1 because the fix it proposed
+> was designed against the wrong cause and should not be revived from the
+> summary table alone.
+
+### 2.1 Superseded: the `min_amp` hypothesis
+
+`scoring.rs` gates every extremum on height and prominence:
 
 ```rust
 let min_amp = 1.0_f64.max(0.05 * a0);
-let mut pk_i = find_peaks(&phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
 ```
 
-A peak must clear **5% of the initial swing** in both height and prominence.
-At A0 = 45° that is 2.25°. The last peak of a decaying oscillation is by
-definition the smallest, so it fails the gate — systematically, on every
-trial. That is the reported symptom exactly.
+At A0 = 45° that is 2.25°, and the last peak of a decaying oscillation is by
+definition the smallest, so it looked like the obvious culprit. It is not.
+Measured against three synthetic swings, `min_amp` would have admitted 6, 9
+and 12 peaks respectively — it is not the constraint that binds.
 
-It is a deliberate trade-off, not an oversight. The same threshold is what
-stops settled-tail noise being counted, and the file records `N` reading
-**0.5 with a 3 s tail and 28.5 with a 30 s tail on the same motion**.
-Lowering `min_amp` globally reinstates that failure.
+### 2.2 The actual cause: the 4-second window cap
 
-**What has changed is that settling is now detected.** Since the
-settle-termination work, the app knows when the tail begins. That permits a
-threshold that is strict where noise lives and permissive where real
-oscillation lives:
+`_active_oscillation_window_end` bounds extremum counting at
+`min(_ACTIVE_WINDOW_CAP_SEC, last_extremum)` past release, and
+`_ACTIVE_WINDOW_CAP_SEC` is 4.0 s. At a ~1 Hz swing that is four cycles, so
+`N` reads 4.0 for any leg still oscillating after four seconds — which is any
+healthy leg. Measured at 20 Hz, A0 = 45°, 1 Hz, varying only damping:
 
-- Before settle onset, gate on a fraction of the **local envelope** rather
-  than of A0, so a genuine small peak late in the decay still qualifies.
-- From settle onset, keep the existing A0-relative gate, which is what the
-  noise guard is for.
+| damping | true cycles above `min_amp` | `N` today | `N` with the window disabled |
+| --- | --- | --- | --- |
+| 0.25 | 12 | **4.0** | 11.5 |
+| 0.35 | 9 | **4.0** | 8.5 |
+| 0.50 | 6 | **4.0** | 5.5 |
 
-This matters beyond tidiness: `N` is a scored parameter, and the project's own
-findings call it the best metric in the set. Missing the final peak biases it
-low on every trial, in the same direction, which is the worst shape of error
-for a longitudinal comparison.
+`N` is identical across a 2x range in how many oscillations physically occur.
+It is reporting the cap, not the patient. This is worse than a dropped final
+peak: in that regime `N` carries **no damping information at all**, and the
+project's own findings call `N` the best metric in the set. It also matches
+the standing finding that `HEALTHY_REF["N"] = 3.5` *is* the cap.
 
-**Scope limit.** Changing extremum detection changes scored values. This is an
-`algorithm_version` change, which already tracks the wasm and is stamped into
-every trial. It is NOT a `capture_protocol_version` change: what a trial
-physically is does not change, only how it is scored.
+### 2.3 Why this is not being fixed here
+
+The cap exists for a real reason: without it a long resting tail lets sensor
+noise cross `min_amp` repeatedly and be counted as oscillation, and the file
+records `N` reading **0.5 with a 3 s tail and 28.5 with a 30 s tail on the
+same motion**.
+
+A candidate fix was built and measured: use the permanent-settle bound the
+function's *second* branch already implements — "the first point after which
+the signal is permanently within tolerance of neutral" — in **both** branches
+instead of the fixed cap. It recovers the true cycle count across the whole
+damping range above.
+
+It was not adopted, for a stated reason: **the 0.5-vs-28.5 pathology could not
+be reproduced.** A single-drop synthetic with tails from 3 s to 30 s and noise
+from 0.3° to 1.0° returns `N = 0.0` under both the current and the candidate
+window. The regression the cap exists to prevent is therefore the one the
+candidate is *untested* against, and adopting it on that evidence would be
+trading a known-wrong constant for an unknown one.
+
+Reproducing that pathology is the prerequisite for revisiting this. Until
+then `N` is wrong but stable, which is the safer of the two for a metric
+already recorded against existing trials.
+
+**Scope note.** Changing extremum detection changes scored values on every
+trial, and `N` feeds PT7, the `HEALTHY_REF` comparison and the MAS grade. It
+would be an `algorithm_version` change — already tracked against the wasm and
+stamped into every trial — and NOT a `capture_protocol_version` change: what a
+trial physically is would not change, only how it is scored.
 
 ---
 
@@ -200,13 +233,37 @@ qualifies is a caveat that will not be read.
 Heaviest unit, and the only one that changes measured values. It should be
 its own implementation cycle.
 
-### 6.1 Last-peak recovery (item 7)
+### 6.1 Last-peak recovery (item 7) — DEFERRED
 
-Per §2: an envelope-relative threshold before settle onset, the existing
-A0-relative threshold from settle onset. Validated against the existing
-fixture corpus — the `N = 0.5 vs 28.5` case is the regression that must not
-return, and the fixtures already in `mobile-imu-core/tests/fixtures` are the
-evidence.
+The envelope-relative threshold this section originally specified was designed
+against a cause that measurement disproved. See §2.2: the binding gate is the
+4-second window cap, not `min_amp`, so an amplitude-threshold change would not
+have fixed the reported symptom. Deferred per §2.3, pending a reproduction of
+the `N = 0.5 vs 28.5` tail pathology.
+
+### 6.1a Rate-dependent scoring — LANDED
+
+Not in the original spec; found while investigating §2 and fixed because it
+was a live accuracy defect rather than a design choice.
+
+`golden.rs` was generated at `f56a5fe` (2026-08-25) and the Rust core had
+since drifted two deliberate Python fixes behind — the phone and the desktop
+were scoring differently. Porting them surfaced a defect in the reference
+itself: `_RELEASE_BACKOFF_S = 2.0/120` still quantises to whole samples, so it
+rounded to **zero back-off at every rate at or below 40 Hz**, the 20 Hz phone
+stream included. A0 is read at the release sample, so A0 was being sampled
+after the limb had already fallen — a 9.7° under-read of a known 45° swing,
+with a systematic −4.92° bias across 243 synthetics.
+
+Fixed to 0.10 s, which is the same physical duration as the smoothing window
+because it compensates the same physical effect. `golden.rs` regenerated: 106
+constants moved, all of them `TRIAL_*`, the other 127 byte-identical.
+
+The `full_pipeline_recovers_the_motion_it_was_given` ground-truth test is what
+caught the reference defect, and it now asserts in two parts — the scorer
+against the series it was given, and the fusion chain against the true motion
+— because a single bound conflated them and the previous scoring had been
+passing it by overshooting the series' own physical ceiling.
 
 ### 6.2 Flex axis and lateral motion (item 9)
 
@@ -274,7 +331,7 @@ already stamped into every trial and manifest.
 
 | Risk | Mitigation |
 | --- | --- |
-| Envelope-relative threshold reopens the noise-counted-as-cycles failure | Settle onset bounds where it applies; the 0.5-vs-28.5 case is an explicit regression test |
+| A window change reopens the noise-counted-as-cycles failure | Not taken: the 0.5-vs-28.5 pathology could not be reproduced, so the guard is untestable today and the change is deferred (§2.3) |
 | The Rust flex-axis port drifts from the Python | Golden fixtures generated from the Python, as the scoring port already does |
 | Lateral motion read as a clinical finding | Reported under capture quality, worded as trial cleanliness |
 | Quick-test trials pollute real data | Separate participant id, `quick_test` flag, excluded from trends, labelled in the export |
@@ -290,8 +347,9 @@ already stamped into every trial and manifest.
 - Colour-coded healthy/impaired bands, until `HEALTHY_REF` is recalibrated
   (validation task V0.4).
 - Recalibrating `HEALTHY_REF` itself.
-- Any change to how the seven parameters are computed, beyond the extremum
-  detection fix in §6.1.
+- Any change to how the seven parameters are computed. The extremum-detection
+  fix this section used to carve out is deferred (§2.3); the rate-dependence
+  fix that did land (§6.1a) was a defect, not a redesign.
 
 ---
 
