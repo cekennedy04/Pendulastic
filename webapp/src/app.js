@@ -171,8 +171,16 @@ export function resumeOrCreateSession(sessions, patientId) {
 // warning an operator who hasn't recorded anything yet that they have
 // "unexported trials" is actively misleading. The warning should appear
 // only once there is something on the session that could actually be lost.
-export function sessionLockState(session, trialCount) {
-  if (!session || !trialCount) return { closable: false, warningVisible: false };
+export function sessionLockState(session, trialCount, storedCount = trialCount) {
+  // `storedCount` is every trial on the session, excluded ones included;
+  // `trialCount` counts only the active ones. They differ the moment a
+  // clinician excludes something, and the difference matters: excluding
+  // ALL of a session's trials used to drive trialCount to 0, which took
+  // this early return and left Close Session disabled FOREVER -- the
+  // session still held unexported data, `canCloseSession` still wanted
+  // `exported_at`, and no amount of re-exporting could reach it. The gate
+  // is 'is there anything here at all', which is the stored count.
+  if (!session || !storedCount) return { closable: false, warningVisible: false };
   const closable = canCloseSession(session);
   return { closable, warningVisible: !closable };
 }
@@ -202,8 +210,8 @@ export function sessionLockState(session, trialCount) {
 // which an in-flight mutation does not change -- an export is not finished
 // until markExported runs. Blanking it while busy would make it flicker off
 // and back on around every trial save.
-export function exportLockState({ busyCount = 0, session = null, trialCount = 0 } = {}) {
-  const { closable, warningVisible } = sessionLockState(session, trialCount);
+export function exportLockState({ busyCount = 0, session = null, trialCount = 0, storedCount = trialCount } = {}) {
+  const { closable, warningVisible } = sessionLockState(session, trialCount, storedCount);
   const busy = busyCount !== 0;
   return { exportDisabled: busy, closeDisabled: busy || !closable, warningVisible };
 }
@@ -400,7 +408,14 @@ export function canMarkExported(exported, live) {
   if (exported.trialIds.length !== live.trialIds.length) return false;
   const a = [...exported.trialIds].sort();
   const b = [...live.trialIds].sort();
-  return a.every((id, i) => id === b[i]);
+  if (!a.every((id, i) => id === b[i])) return false;
+  // Same trials is not the same BUNDLE. Excluding one rewrites what the
+  // manifest says about it, so a bundle built before the exclusion no
+  // longer matches the device and must not be stamped as exported.
+  const ea = [...(exported.excluded || [])].sort();
+  const eb = [...(live.excluded || [])].sort();
+  if (ea.length !== eb.length) return false;
+  return ea.every((id, i) => id === eb[i]);
 }
 
 // Renders a single scored value. quality_warn/phi_negated are booleans,
@@ -486,6 +501,9 @@ if (typeof document !== 'undefined') {
         participantLabel: currentPatient?.clinic_patient_id ?? '',
         side: currentSide,
         trialCount: currentTrialCount,
+      storedCount: currentStoredCount,
+        storedCount: currentStoredCount,
+        storedCount: currentStoredCount,
       };
     }
     return {};
@@ -505,6 +523,7 @@ if (typeof document !== 'undefined') {
   // every render (see that function's doc comment for why the distinction
   // matters).
   let currentTrialCount = 0;
+  let currentStoredCount = 0;
   // Set by Task 8's session view; read here only to label the home tiles.
   let currentPatient = null;
   let currentSide = null;
@@ -600,6 +619,7 @@ if (typeof document !== 'undefined') {
     // still stored and still export -- they just stop standing in for a
     // capture the clinician has said was no good.
     currentTrialCount = activeTrials(trials).length;
+    currentStoredCount = trials.length;
     refreshExportLock();
   }
 
@@ -701,6 +721,7 @@ if (typeof document !== 'undefined') {
     });
     await put(db, STORES.trials, record);
     currentTrialCount += 1;
+    currentStoredCount += 1;
     // A newly recorded trial invalidates any earlier export: the session
     // now holds data that has never left the device. See invalidateExport's
     // doc comment above for why this one line is the whole point of the
@@ -745,7 +766,17 @@ if (typeof document !== 'undefined') {
         el('session-status').textContent = 'Nothing to export yet -- record a trial first.';
         return;
       }
-      const exportedSnapshot = { sessionId: sessionIdAtExport, trialIds: trials.map((t) => t.id) };
+      // `excluded` rides along because the bundle's CONTENT depends on it:
+      // an exclusion changes neither the session id nor the trial ids, so a
+      // CAS on those alone happily stamped exported_at over a bundle built
+      // BEFORE the exclusion -- reporting "exported" for a file on disk that
+      // does not carry it. The Trials view is not busy-locked, so a
+      // clinician can exclude while the share sheet is still open.
+      const exportedSnapshot = {
+        sessionId: sessionIdAtExport,
+        trialIds: trials.map((t) => t.id),
+        excluded: trials.filter((t) => t.excluded_at != null).map((t) => t.id),
+      };
 
       await shareFiles(files); // user-paced -- the share sheet can stay open for a long time
 
@@ -774,7 +805,11 @@ if (typeof document !== 'undefined') {
       // prevent, silently reopened, with no test that would catch it. If you
       // genuinely need to await something here, do it BEFORE the re-read.
       const trialsNow = await getAll(db, STORES.trials, 'by_session', sessionIdAtExport);
-      const liveSnapshot = { sessionId: currentSession.id, trialIds: trialsNow.map((t) => t.id) };
+      const liveSnapshot = {
+        sessionId: currentSession.id,
+        trialIds: trialsNow.map((t) => t.id),
+        excluded: trialsNow.filter((t) => t.excluded_at != null).map((t) => t.id),
+      };
       if (!canMarkExported(exportedSnapshot, liveSnapshot)) {
         el('session-status').textContent =
           'A trial was recorded while exporting. This session has NOT been marked exported -- export again to include it.';
@@ -1006,7 +1041,24 @@ if (typeof document !== 'undefined') {
   // reference-rows.js for why that is a deliberate refusal, not an omission.
   let healthyReference = null;
 
+  // Fetched at most once per session. Requested from BOTH the live-result
+  // path and the stored-trial path: opening Trials after a fresh load
+  // never runs onResult, so gating the fetch on a capture left every
+  // stored trial with no comparison at all. `pending` stops a null answer
+  // (a wasm build without the export) from re-requesting on every trial.
+  let referencePending = false;
+  function ensureReference(then) {
+    if (healthyReference !== null || referencePending) return;
+    const capture = exportSession;
+    if (!capture || typeof capture.requestReference !== 'function') return;
+    referencePending = true;
+    capture.requestReference()
+      .then((ref) => { healthyReference = ref; then(); })
+      .catch(() => {});
+  }
+
   function renderReferenceTable(params) {
+    ensureReference(() => renderReferenceTable(params));
     const block = el('reference-block');
     const table = el('reference-table');
     if (!block || !table) return;
@@ -1472,6 +1524,7 @@ if (typeof document !== 'undefined') {
         await put(db, STORES.sessions, currentSession);
         const trials = await getAll(db, STORES.trials, 'by_session', currentSession.id);
         currentTrialCount = activeTrials(trials).length;
+        currentStoredCount = trials.length;
         refreshExportLock();
       }
     },
@@ -1703,14 +1756,6 @@ if (typeof document !== 'undefined') {
     renderPtScore(action.ptScore);
     renderResult(p);
     renderLateral(action.lateralMotion);
-    // Fetched once and cached: HEALTHY_REF is a constant in the wasm, and
-    // asking again per trial would be pure round-trips.
-    if (healthyReference === null && exportSession) {
-      exportSession.requestReference().then((ref) => {
-        healthyReference = ref;
-        renderReferenceTable(p);
-      }).catch(() => {});
-    }
     renderReferenceTable(p);
     showExportControls();
     resetToIdle();

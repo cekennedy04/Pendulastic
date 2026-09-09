@@ -254,16 +254,29 @@ impl TrialSession {
     /// the angle -- reporting quality against a different axis than the one
     /// the angle used would describe a trial that was never scored.
     pub fn lateral_motion(&self) -> Option<LateralMotion> {
-        let gyro: Vec<Vec3> = self
-            .samples
-            .iter()
-            .filter(|s| s.sensor == Sensor::Gyro)
-            .map(|s| s.v)
-            .collect();
-
+        // Gravity is passed, not omitted. Both Python call sites
+        // (pendulastic_imu_server and imu_calibration_tuner) hand the
+        // current accel in as `gravity=`, which is what lets the estimator
+        // level the axis; passing None here left the Rust axis unlevelled
+        // and the two implementations disagreeing on identical data. This
+        // repo has already been bitten once by silent phone/desktop scoring
+        // drift -- not again for the sake of one argument.
+        //
+        // The accel that accompanies a gyro sample is the most recent one
+        // before it: push() stores accel first for each tick, which is the
+        // same ordering the live path sees.
+        let mut gravity: Option<Vec3> = None;
+        let mut gyro: Vec<Vec3> = Vec::new();
         let mut est = FlexAxisEstimator::default();
-        for &v in &gyro {
-            est.update(v, None);
+        for s in &self.samples {
+            match s.sensor {
+                Sensor::Accel => gravity = Some(s.v),
+                Sensor::Gyro => {
+                    est.update(s.v, gravity);
+                    gyro.push(s.v);
+                }
+                _ => {}
+            }
         }
         lateral_motion(&gyro, est.axis(), DEFAULT_THRESHOLD)
     }

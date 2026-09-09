@@ -98,7 +98,16 @@ export async function startCapture({ onState, onResult, onError }) {
       // (worker.js's generic catch) -- route it to the waiting promise
       // instead of the trial fault-latch, which an export failure has
       // nothing to do with.
-      if (exportWaiters.length > 0) exportWaiters.shift().reject(new Error(m.reason));
+      //
+      // Reference requests are settled FIRST, and resolved rather than
+      // rejected. There are two request queues now, and the worker's error
+      // reply says nothing about which one it belongs to; draining the
+      // export queue first meant a failed reference request rejected an
+      // unrelated in-flight export, surfacing as a spurious "trial was
+      // scored but NOT saved". A reference that cannot be fetched is not an
+      // error the operator can act on -- it just means no comparison table.
+      if (referenceWaiters.length > 0) referenceWaiters.shift().resolve(null);
+      else if (exportWaiters.length > 0) exportWaiters.shift().reject(new Error(m.reason));
       else onError(m.reason);
     }
   };
@@ -154,8 +163,17 @@ export async function startCapture({ onState, onResult, onError }) {
     // table stays hidden rather than showing dashes.
     requestReference() {
       return new Promise((resolve) => {
-        referenceWaiters.push({ resolve });
+        // Settled either way. A cached worker.js from before this message
+        // type existed falls through every branch of its handler and posts
+        // NOTHING, so without this the promise hangs forever, the caller
+        // keeps re-requesting, and referenceWaiters grows for the life of
+        // the session. Resolving null means "no comparison available",
+        // which the UI already renders as a hidden table.
+        let settled = false;
+        const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+        referenceWaiters.push({ resolve: done });
         worker.postMessage({ type: 'reference' });
+        setTimeout(() => done(null), 3000);
       });
     },
   };

@@ -2222,17 +2222,17 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
 
     Same two-branch logic imu_calibration_tuner.score_waveform's own
     Continuity check already uses on this exact class of problem:
-      - an oscillation was detected (pk_i/tr_i non-empty): window ends at
-        the last detected extremum, capped at _ACTIVE_WINDOW_CAP_SEC past
-        release. The cap matters even though pk_i/tr_i here are the
-        PRE-filter (possibly noise-contaminated) detections -- once any
-        extremum lands past the cap, the cap alone determines the window
-        regardless of how much later a noisier extremum might be.
+      - an oscillation was detected (pk_i/tr_i non-empty): the window ends
+        where the extrema stop arriving on schedule -- at the first gap,
+        from release or between consecutive extrema, larger than
+        _OSCILLATION_GAP_FACTOR times their own median spacing. There is NO
+        time cap: a leg may swing as many times as it swings, and the 4 s
+        cap that used to live here bounded N itself rather than the noise.
       - no oscillation at all (a genuine single drop with no rebound, the
         severe-spasticity end of the spectrum -- find_peaks needs the
         signal to go down AND back up to register any extremum, so this
         case never finds one): find the first point after which the signal
-        is PERMANENTLY within tolerance of neutral, capped the same way.
+        is PERMANENTLY within tolerance of neutral, Also uncapped.
     """
     extrema = np.sort(np.concatenate([
         np.asarray(pk_i, dtype=int), np.asarray(tr_i, dtype=int)]))
@@ -2247,6 +2247,33 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
         med = float(np.median(gaps))
         if med <= 0:
             return float(times[-1])
+        limit = _OSCILLATION_GAP_FACTOR * med
+
+        # Anchored at RELEASE. A pendulum starts oscillating when it is let
+        # go: its first extremum follows release by about a half period. A
+        # tail tremor does not -- it begins after the limb has come to rest,
+        # separated from the release by a stretch with no extrema in it. That
+        # separation is what distinguishes the two, and it is independent of
+        # how many times the leg subsequently swings.
+        #
+        # KNOWN LIMIT, measured rather than assumed. The median is taken over
+        # ALL gaps, so a long regular tremor can outvote a handful of real
+        # swing extrema and set the limit to its own cadence. Anchoring on a
+        # RUNNING median of the accepted run instead was tried and is worse:
+        # on a heavily damped swing that yields only one or two extrema, the
+        # first gap IS the quiet stretch before the tremor, so it anchors the
+        # threshold wide open and a 4 deg tail tremor scored N = 20.5 where
+        # this version scores 0.0. Neither rule is right in general; this one
+        # fails safe on the case that actually occurs.
+        if times[0] - t_r[0] > limit:
+            return float(t_r[0])
+
+        # Then stop at the first interior gap: the run of real oscillation
+        # ends where the extrema stop arriving on schedule.
+        for i, gap in enumerate(gaps):
+            if gap > limit:
+                return float(times[i])
+        return float(times[-1])
         limit = _OSCILLATION_GAP_FACTOR * med
 
         # Anchored at RELEASE. A pendulum starts oscillating when it is let go:

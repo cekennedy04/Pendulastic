@@ -1012,6 +1012,17 @@ mod tests {
 /// The measured VALUE is still shown for these parameters. It is only the
 /// comparison that is withheld -- the same split the composite already makes,
 /// where the score is reported and the zone withheld.
+///
+/// SCOPE, stated plainly because it is narrower than the name suggests: this
+/// is DISPLAY-ONLY. `pt_score_breakdown` still scores `n` against
+/// `HEALTHY_REF.n`, and the composite total IS shown to the clinician (only
+/// the zone is withheld). Because the `n` term penalises only values BELOW
+/// the reference, and removing the 4 s cap moved essentially every
+/// non-severe leg above it, that term now contributes ~0 across the cohort
+/// -- a real shift in the composite, computed against a reference this very
+/// constant declares undefensible. Dropping `n` from the composite while its
+/// reference is withdrawn is the consistent fix and is NOT taken here: it
+/// changes PT7 on every trial and is a scoring decision, not a display one.
 pub const WITHDRAWN_REFS: &[&str] = &["n"];
 
 /// `HEALTHY_REF` as JSON, with the withdrawn entries named so a display can

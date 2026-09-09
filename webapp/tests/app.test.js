@@ -843,3 +843,56 @@ test('the alert fires exactly at the threshold, not one tick late', () => {
 test('missing arguments do not fabricate an alert', () => {
   assert.equal(noSettleAlert({}), null);
 });
+
+test('a session whose trials are ALL excluded can still be closed', () => {
+  // Regression: currentTrialCount counts only ACTIVE trials, so excluding
+  // every trial drove it to 0 and took sessionLockState's early return --
+  // which reports closable:false. The session still held unexported data,
+  // canCloseSession still wanted exported_at, and Close Session was
+  // unreachable forever. No amount of re-exporting recovered it.
+  const exported = { id: 's1', exported_at: 123 };
+  const s = sessionLockState(exported, 0, 3);
+  assert.equal(s.closable, true, 'an exported session with all trials excluded must close');
+  assert.equal(s.warningVisible, false);
+});
+
+test('all-excluded but unexported still warns rather than going quiet', () => {
+  const unexported = { id: 's1', exported_at: null };
+  const s = sessionLockState(unexported, 0, 3);
+  assert.equal(s.closable, false);
+  assert.equal(s.warningVisible, true, 'unexported data must still warn when every trial is excluded');
+});
+
+test('a session with no trials at all stays quiet, as before', () => {
+  // The original intent of the zero check: do not tell an operator who has
+  // recorded nothing that they have unexported trials.
+  const s = sessionLockState({ id: 's1', exported_at: null }, 0, 0);
+  assert.equal(s.closable, false);
+  assert.equal(s.warningVisible, false);
+});
+
+test('excluding a trial mid-export stops the session being marked exported', () => {
+  // The share sheet is user-paced and the Trials view is not busy-locked, so a
+  // clinician can exclude a trial while the bundle is still being shared. The
+  // file on disk was built before that exclusion and does not carry it, so
+  // stamping exported_at would report "exported" for a bundle that no longer
+  // matches the device -- exactly what setExcluded's invalidateExport exists
+  // to prevent.
+  const before = { sessionId: 's1', trialIds: ['a', 'b'], excluded: [] };
+  const after = { sessionId: 's1', trialIds: ['a', 'b'], excluded: ['b'] };
+  assert.equal(canMarkExported(before, after), false, 'an exclusion must invalidate the export');
+  assert.equal(canMarkExported(before, before), true, 'an unchanged session must still mark');
+});
+
+test('un-excluding mid-export also invalidates it', () => {
+  const before = { sessionId: 's1', trialIds: ['a'], excluded: ['a'] };
+  const after = { sessionId: 's1', trialIds: ['a'], excluded: [] };
+  assert.equal(canMarkExported(before, after), false);
+});
+
+test('snapshots without an excluded field still compare, for older callers', () => {
+  assert.equal(
+    canMarkExported({ sessionId: 's1', trialIds: ['a'] }, { sessionId: 's1', trialIds: ['a'] }),
+    true,
+  );
+});

@@ -369,12 +369,12 @@ pub fn dominant_eigenvector_sym3(m: &[[f64; 3]; 3]) -> Option<Vec3> {
 /// Cubic convergence: from a seed already good to ~1e-5 this is done in two.
 const RQI_STEPS: usize = 8;
 
-/// Rayleigh quotient vᵀAv for a unit v — the eigenvalue estimate v implies.
 /// Enough that a λ₂/λ₁ ratio as poor as 0.9 still converges to ~1e-14
 /// (0.9^300 ≈ 2e-14), at a cost of a few microseconds — irrelevant next to the
 /// 25 gyro samples that had to be collected to get here.
 const POWER_ITERATIONS: usize = 300;
 
+/// Rayleigh quotient vᵀAv for a unit v — the eigenvalue estimate v implies.
 fn rayleigh(a: &[[f64; 3]; 3], v: Vec3) -> f64 {
     dot3(v, mat_vec(a, v))
 }
