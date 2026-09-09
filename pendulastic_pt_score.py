@@ -107,6 +107,14 @@ HEALTHY_REF = {
     "omega_max_n":   6.7684,  # control median n=4
     "omega_min_n":   0.0010,  # control median n=4
     "f":             0.9137,  # control median n=4
+    # STALE AS OF 2026-09-09, deliberately not rescaled here. This was
+    # calibrated when area_ratio was integrated about the SETTLED angle. It
+    # is now integrated about the swing centre, which removes a baseline
+    # artefact but leaves a ~0.06 floor on a perfectly symmetric decaying
+    # swing where the old frame read ~0.008. Controls therefore sit nearer
+    # this reference than they did, and the number below is no longer one
+    # that was measured under the scoring that ships. Recalibrating it needs
+    # the cohort, not a constant edit. See evaluate_capture_bias.py.
     "area_ratio":    0.0768,  # control median n=4
 }
 
@@ -2208,6 +2216,37 @@ def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
 _OSCILLATION_GAP_FACTOR = 2.5
 
 
+def _swing_centre(phi: np.ndarray, dt: float, period_s: float) -> np.ndarray:
+    """The slow baseline the oscillation is riding on, as a per-sample series.
+
+    A boxcar average over exactly ONE swing period integrates a sinusoid of
+    that period to zero, so the swing cancels and whatever the centre is doing
+    survives. That matters because `neutral` is the SETTLED angle, and a limb
+    that keeps creeping into flexion after the oscillation dies swung about a
+    higher centre than the angle it finally rests at.
+
+    Measured over synthetics identical but for the post-swing sag, that
+    mismatch took area_ratio from 0.008 to 0.824 and PT7 from 0.0713 to
+    1.2180 -- a 17x false impairment on an unchanged oscillation -- and
+    starved the sub-neutral troughs from 7 to 3. See evaluate_capture_bias.py.
+
+    A boxcar rather than the midpoint of consecutive extrema, which was tried
+    first and is biased by DAMPING: for a decaying oscillation the midpoint of
+    a peak and the following trough sits above the true centre, which
+    regressed A0 on trials with no sag at all.
+    """
+    n = int(round(period_s / dt)) if dt > 0 else 0
+    if n < 3 or n >= len(phi):
+        return np.zeros_like(phi)
+    if n % 2 == 0:
+        n += 1
+    pad = n // 2
+    # Edge-padded rather than zero-padded: zeros would drag the baseline
+    # toward neutral exactly at the release, which is the one place the
+    # first swing needs its own centre.
+    padded = np.concatenate([np.full(pad, phi[0]), phi, np.full(pad, phi[-1])])
+    return np.convolve(padded, np.ones(n) / n, mode="valid")[:len(phi)]
+
 def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
                                    pk_i: np.ndarray, tr_i: np.ndarray,
                                    neutral: float, A0: float) -> float:
@@ -2464,6 +2503,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     min_amp  = max(1.0, 0.05 * A0)
     pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
     tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+    # Second pass, against the swing's own centre rather than the settled
+    # angle. The first pass exists only to estimate the period the boxcar
+    # needs -- extremum spacing is a half period -- so this refines the same
+    # detection rather than being a different detector.
+    #
+    # Only the DETECTION and the symmetry integral move to the centred frame.
+    # A0 and the amplitudes stay relative to `neutral`, because "how far the
+    # limb was from where it rests" is what A0 means; re-basing it would
+    # redefine a Popovic parameter rather than fix an implementation.
+    _dt_c = float(np.median(np.diff(t_r))) if len(t_r) > 1 else 0.0
+    _ext0 = np.sort(np.concatenate([np.asarray(pk_i2, dtype=int),
+                                    np.asarray(tr_i2, dtype=int)]))
+    phi_centre = np.zeros_like(phi_s)
+    if len(_ext0) >= 3 and _dt_c > 0:
+        _half = float(np.median(np.diff(t_r[_ext0])))
+        if _half > 0:
+            phi_centre = _swing_centre(phi_s, _dt_c, 2.0 * _half)
+            _phi_sc = phi_s - phi_centre
+            pk_i2, _ = find_peaks( _phi_sc, height=min_amp, distance=min_dist, prominence=min_amp)
+            tr_i2, _ = find_peaks(-_phi_sc, height=min_amp, distance=min_dist, prominence=min_amp)
+
 
     # Bound to the active-oscillation window before counting anything --
     # see _active_oscillation_window_end's own docstring for why an
@@ -2490,7 +2550,8 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # window; it is not silently covered today and never was.
 
     # ── 1. R2n  (A1 = PEAK-TO-PEAK of first oscillation) ─────────────────────
-    neg_tr = [(i, phi[i]) for i in tr_i2 if phi[i] < -min_amp]
+    _phi_g = phi - phi_centre
+    neg_tr = [(i, phi[i]) for i in tr_i2 if _phi_g[i] < -min_amp]
     if neg_tr:
         first_trough_depth = abs(neg_tr[0][1])
         A1 = A0 + first_trough_depth          # peak-to-peak (Bajd & Bowman)
@@ -2499,8 +2560,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     R2n = A1 / (1.6 * A0) if A0 > 1e-3 else 0.0
 
     # ── 2. N  (count significant full oscillation cycles) ────────────────────
-    n_pos = sum(1 for i in pk_i2 if phi[i] >  min_amp)
-    n_neg = sum(1 for i in tr_i2 if phi[i] < -min_amp)
+    # Gated in the SAME frame the extrema were found in, or a trough found
+    # about the swing centre is rejected for not clearing a threshold
+    # measured from the settled angle -- which is the starvation this fixes.
+    n_pos = sum(1 for i in pk_i2 if _phi_g[i] >  min_amp)
+    n_neg = sum(1 for i in tr_i2 if _phi_g[i] < -min_amp)
     N = (n_pos + n_neg) / 2.0
 
     # ── 6. f  (computed before phi_max_ratio so window_end can use it) ───────
@@ -2550,7 +2614,12 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     _n_ext    = max(1, int(_EXTEND_S / _dt_mean))
     _phi_rest = float(np.nanmedian(phi[max(int(0.80 * len(phi)), 1):]))
     _t_ar     = np.concatenate([t_r, t_r[-1] + np.arange(1, _n_ext + 1) * _dt_mean])
-    _phi_ar   = np.concatenate([phi, np.full(_n_ext, _phi_rest)])
+    # Integrated about the swing centre: the asymmetry being measured is the
+    # limb's, and a baseline that drifts one way makes a symmetric swing read
+    # as maximally asymmetric (0.008 -> 0.824 across 20 deg of sag).
+    _phi_c_ar = phi - phi_centre
+    _phi_rest_c = float(np.nanmedian(_phi_c_ar[max(int(0.80 * len(_phi_c_ar)), 1):]))
+    _phi_ar   = np.concatenate([_phi_c_ar, np.full(_n_ext, _phi_rest_c)])
     dt        = np.diff(_t_ar)
     phi_mid   = (_phi_ar[:-1] + _phi_ar[1:]) / 2.0
     P_plus    = float(np.sum(dt * np.maximum( phi_mid, 0)))

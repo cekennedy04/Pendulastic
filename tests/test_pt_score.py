@@ -1394,3 +1394,66 @@ def test_a_resting_tail_is_not_counted_as_oscillation():
     # A 10x longer tail must not manufacture cycles out of nothing.
     assert counts[0] < 1.0, f"short tail already over-counting: {counts[0]}"
     assert counts[1] < 1.0, f"long resting tail counted as oscillation: {counts[1]}"
+
+
+def test_a_limb_that_sags_after_the_swing_still_scores_as_it_swung():
+    """PT7 must describe the oscillation, not how the limb settled afterwards.
+
+    `neutral` is the settled-tail median, so a limb that keeps creeping into
+    flexion after the swing dies oscillated about a HIGHER centre than the
+    angle it ends at. Before the centred frame that mismatch took area_ratio
+    from 0.008 to 0.824 and PT7 from 0.0713 to 1.2180 -- a 17x false
+    impairment on an oscillation that never changed -- and starved the
+    sub-neutral troughs from 7 to 3.
+
+    The oscillation below is byte-identical across the sweep; only the sag
+    differs. See evaluate_capture_bias.py for the full measurement.
+    """
+    import pendulastic_pt_score as p
+    rest, a0, freq, lam, mu, fs = 135.0, 45.0, 1.0, 0.45, 0.25, 20.0
+    dt = 1.0 / fs
+    areas, scores, troughs = [], [], []
+
+    for creep in (0.0, 5.0, 20.0):
+        ts = np.arange(0.0, 10.0, dt)
+        hold = np.full(int(1.2 / dt), rest + creep + a0)
+        swing = rest + creep * np.exp(-mu * ts) \
+            + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)
+        tt = np.arange(0.0, 6.0, dt)
+        tail = rest + creep * np.exp(-mu * (ts[-1] + dt + tt))
+        ang = np.concatenate([hold, swing, tail])
+        t = np.arange(len(ang)) * dt
+        r = p.compute_pt_params(t, ang, None, False)
+        areas.append(r["area_ratio"])
+        scores.append(p.compute_pt_score(r))
+        troughs.append(len(r["tr_i"]))
+
+    # The symmetry index is the parameter the baseline shift destroyed; it
+    # must now barely move, because the swing's symmetry never changed.
+    assert max(areas) - min(areas) < 0.05, f"area_ratio still tracks the sag: {areas}"
+    # And the troughs must not be starved away.
+    assert min(troughs) >= 5, f"sub-neutral troughs starved by the sag: {troughs}"
+    # PT7 may still drift a little, because A0 deliberately still measures
+    # release-above-REST and so absorbs the sag. What must not return is the
+    # order-of-magnitude inflation.
+    assert max(scores) - min(scores) < 0.25, f"PT7 still tracks the sag: {scores}"
+
+
+def test_the_centred_frame_leaves_a_clean_swing_alone():
+    """A trial with no sag must be unaffected by the correction."""
+    import pendulastic_pt_score as p
+    rest, a0, freq, lam, fs = 135.0, 45.0, 1.0, 0.45, 20.0
+    dt = 1.0 / fs
+    ts = np.arange(0.0, 10.0, dt)
+    ang = np.concatenate([
+        np.full(int(1.2 / dt), rest + a0),
+        rest + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts),
+        np.full(int(6.0 / dt), rest),
+    ])
+    t = np.arange(len(ang)) * dt
+    r = p.compute_pt_params(t, ang, None, False)
+    # A symmetric decaying cosine: the asymmetry index must stay small, and
+    # A0 must still read the release amplitude it was built with.
+    assert r["area_ratio"] < 0.1, r["area_ratio"]
+    assert abs(r["A0_deg"] - a0) < 1.5, r["A0_deg"]
+    assert r["N"] > 5.0, r["N"]
