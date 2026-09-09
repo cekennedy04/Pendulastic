@@ -55,11 +55,37 @@ def test_edges_are_found_on_a_full_trial_not_just_an_isolated_preamble():
     assert len(mb.find_pulse_edges(t, th)) == 3
 
 
-def test_a_trace_that_starts_mid_pulse_is_refused_not_counted_from_zero():
+def test_a_trace_that_starts_already_high_does_not_count_a_bogus_first_edge():
     """The one failure mode here that fails OPEN: recording t[0] as an edge
     returns the right COUNT with one bogus member, which no downstream check
-    can catch."""
-    t, th = mr.preamble(fs_hz=1000.0)
-    cut = int(mr.LEAD_S * 1000.0) + 10          # begins inside pulse 1
-    with pytest.raises(mb.SyncError):
-        mb.find_pulse_edges(t[cut:] - t[cut], th[cut:])
+    can catch.
+
+    Constructed so it reaches the armed-flag guard. An earlier version simply
+    cut into pulse 1, which made the first 5% of the window all pulse-height,
+    so baseline == max, span == 0, and it exited through "signal never rises"
+    -- a different path entirely. It passed while proving nothing.
+    """
+    fs = 1000.0
+    _t, th = mr.preamble(fs_hz=fs)
+    lead = np.full(30, mr.PULSE_DEG)            # starts high, but only briefly
+    sig = np.concatenate([lead, th])
+    t = np.arange(len(sig)) / fs
+    # Baseline must still resolve low, or this exercises the wrong branch.
+    win = t <= mr.pulse_search_window_s()
+    assert np.median(sig[win][: int(win.sum() * 0.05)]) == 0.0, (
+        "test setup is wrong: baseline is not low, so the armed guard is not reached")
+    assert len(mb.find_pulse_edges(t, sig)) == 3, (
+        "the leading high block must not be counted as a fourth edge")
+
+
+@pytest.mark.parametrize("fs", [1000.0, 500.0, 250.0, 200.0, 104.72, 100.0, 60.0])
+def test_detection_survives_sample_rates_that_are_not_1_khz(fs):
+    """A phone samples near 100-200 Hz and irregularly, not at 1 kHz.
+
+    Deriving the search window from the preamble's nominal length failed here:
+    preamble() rounds each segment per fs, so the real preamble runs short at
+    250 Hz (-0.006 s) and 104.72 Hz (-0.012765 s), the window overran into the
+    swing, and detection failed with "found 1 pulse edges".
+    """
+    t, th, _rel = mr.full_trace(90.0, 0.9, 1.6, duration_s=12.0, fs_hz=fs)
+    assert len(mb.find_pulse_edges(t, th)) == 3

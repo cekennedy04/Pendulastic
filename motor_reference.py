@@ -52,15 +52,29 @@ def preamble(fs_hz=1000.0):
     return t, theta
 
 
-def preamble_duration_s():
-    """How long the sync preamble runs, from the constants that define it.
+def pulse_search_window_s():
+    """How long to look for sync pulses: past the last one, short of the swing.
 
-    Shared so the detector can bound its search to the preamble without
-    re-deriving the geometry in a second place and letting the two drift.
+    NOT the preamble's full length. That was tried and it is fs-dependent in a
+    way that reproduces the bug it was meant to fix: this returns raw seconds
+    while preamble() rounds each segment's sample count per fs, so at rates
+    where the roundings do not cancel the real preamble is SHORTER than the
+    nominal figure. Measured: exact at 1000/500/200/100 Hz, but -0.006 s at
+    250 Hz and -0.012765 s at 104.72 Hz. There the window overran into the
+    swing, span reinflated to the swing amplitude, and detection failed with
+    "found 1 pulse edges". A phone samples near 100-200 Hz and irregularly, so
+    this was going to bite on real data while every 1 kHz test passed.
+
+    Ending halfway through PRE_ROLL_S instead puts the boundary in the middle
+    of guaranteed stillness: the last pulse ends at 0.94 s, the swing starts at
+    2.19 s, and this returns 1.69 s. Roughly 0.7 s of margin on each side, so
+    rounding jitter of a few milliseconds cannot reach either edge at any
+    plausible rate -- and it needs no assumption that the samples are evenly
+    spaced, which a phone's are not.
     """
     return (LEAD_S
             + PULSE_COUNT * (PULSE_WIDTH_S + PULSE_GAP_S)
-            + PRE_ROLL_S)
+            + PRE_ROLL_S / 2.0)
 
 
 def full_trace(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):

@@ -44,7 +44,7 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
     # phone's reconstructed angle without assuming the two agree. Assuming they
     # agree is precisely what this harness exists to test.
     if search_s is None:
-        search_s = mr.preamble_duration_s()
+        search_s = mr.pulse_search_window_s()
     # Strict "<": the preamble and the swing are adjacent with no gap, so the
     # boundary instant belongs to the swing (full commanded amplitude at
     # t_release), not the preamble. On a full trace built from the same
