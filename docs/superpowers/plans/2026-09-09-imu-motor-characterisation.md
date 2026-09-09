@@ -227,14 +227,28 @@ def test_every_run_is_repeated_and_uniquely_identified():
 
 
 def test_the_export_round_trips_through_a_file(tmp_path):
+    """The exported file must carry BOTH the sync pulse and the swing.
+
+    Checked separately on purpose: one max over the whole file conflates them,
+    and the swing is 18x the pulse height on the first run, so a dropped
+    preamble would be invisible.
+    """
     run = mr.sweep_matrix()[0]
     path = mr.export_trace(run, str(tmp_path), fs_hz=1000.0)
     rows = [l.split(",") for l in open(path, encoding="utf-8").read().splitlines()]
     assert rows[0] == ["t_s", "theta_deg"]
+
     t0, th0 = float(rows[1][0]), float(rows[1][1])
     assert t0 == 0.0 and th0 == pytest.approx(0.0), "the trace must start still"
-    peak = max(float(r[1]) for r in rows[1:])
-    assert peak == pytest.approx(mr.PULSE_DEG, abs=1e-6)
+
+    t_rel = mr.full_trace(run["a0_deg"], run["f_hz"], run["tau_s"], fs_hz=1000.0)[2]
+    pre = [float(r[1]) for r in rows[1:] if float(r[0]) < t_rel]
+    assert max(pre) == pytest.approx(mr.PULSE_DEG, abs=1e-6), (
+        "the sync pulse must survive into the exported file")
+
+    peak = max(abs(float(r[1])) for r in rows[1:])
+    assert peak == pytest.approx(run["a0_deg"], abs=1e-6), (
+        "the swing amplitude must survive into the exported file")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
