@@ -378,7 +378,9 @@ test('no zone is shown while the reference is uncalibrated', () => {
   for (const zone of ['healthy', 'borderline', 'impaired', 'unknown']) {
     const badge = zoneDisplay(zone, false);
     assert.equal(badge.className, 'zone-uncalibrated');
-    assert.ok(/recalibration/i.test(badge.text), badge.text);
+    // Wording trimmed after the device test; what matters is that it does
+    // not name a band, which the next test pins directly.
+    assert.ok(badge.text.length > 0, badge.text);
   }
 });
 
@@ -406,9 +408,9 @@ test('the app ships with classification OFF by default', () => {
 test('zones render normally once the reference is recalibrated', () => {
   // The suppression is a flag, not a deletion -- recalibration re-enables it.
   assert.deepEqual(zoneDisplay('healthy', true),
-    { text: 'healthy range (provisional)', className: 'zone-healthy' });
+    { text: 'healthy range', className: 'zone-healthy' });
   assert.deepEqual(zoneDisplay('impaired', true),
-    { text: 'impaired range (provisional)', className: 'zone-impaired' });
+    { text: 'impaired range', className: 'zone-impaired' });
 });
 
 test('an unrecognised zone falls back to unknown rather than throwing', () => {
@@ -417,9 +419,14 @@ test('an unrecognised zone falls back to unknown rather than throwing', () => {
   assert.equal(badge.text, 'zone unknown');
 });
 
-test('every re-enabled label still carries the provisional qualifier', () => {
+test('re-enabled zone labels name the band and nothing else', () => {
+  // The "(provisional)" suffix was removed on request after the device test.
+  // The research-capture banner above the score is what now carries that
+  // caveat, rather than repeating it on every label.
   for (const zone of ['healthy', 'borderline', 'impaired']) {
-    assert.ok(/provisional/.test(zoneDisplay(zone, true).text), zone);
+    const t = zoneDisplay(zone, true).text;
+    assert.ok(t.length > 0, zone);
+    assert.ok(!/provisional/i.test(t), `${zone} still says provisional`);
   }
 });
 

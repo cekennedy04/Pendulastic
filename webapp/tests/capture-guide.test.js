@@ -83,7 +83,7 @@ test('the gate help is collapsed by default', () => {
   assert.ok(!/\bopen\b/.test(details[1]), 'gate help must not start expanded');
 });
 
-test('the lateral note and reference table are not trapped inside #pt-score', () => {
+test('the lateral note and metric list are not trapped inside #pt-score', () => {
   // Regression: both were added inside <div id="pt-score" hidden>, which only
   // renderPtScore ever unhides. showTrial (Trials -> tap a trial) renders them
   // but never calls renderPtScore, so on that path both features were
@@ -92,7 +92,7 @@ test('the lateral note and reference table are not trapped inside #pt-score', ()
   const open = html.indexOf('<div id="pt-score"');
   const close = html.indexOf('</div>', open);
   assert.ok(open > 0 && close > open, '#pt-score container not found');
-  for (const id of ['lateral-note', 'reference-block']) {
+  for (const id of ['lateral-note', 'metric-list']) {
     const at = html.indexOf(`id="${id}"`);
     assert.ok(at > 0, `${id} missing`);
     assert.ok(at > close, `${id} is inside #pt-score, which showTrial never unhides`);

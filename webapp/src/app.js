@@ -19,7 +19,7 @@ import { createTrialsView } from './views/trials.js';
 import { createMasView } from './views/mas.js';
 import { createTrendsView, sessionSeries, masSeries } from './views/trends.js';
 import { captureQualityOf, SETTLE_TARGET_S, progressOf, beepsDue, wholeSeconds , lateralNote } from './capture-feedback.js';
-import { referenceRows, withdrawnNote, formatCell, formatDelta } from './reference-rows.js';
+import { metricRows, directionNote, formatNumber, formatDelta } from './metric-rows.js';
 import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
@@ -285,9 +285,9 @@ export function invalidateExport(session) {
 // tell the clinician to export again. Erring toward "export again" costs a
 // few seconds; erring the other way costs a trial.
 const ZONE_LABEL = {
-  healthy: 'healthy range (provisional)',
-  borderline: 'borderline (provisional)',
-  impaired: 'impaired range (provisional)',
+  healthy: 'healthy range',
+  borderline: 'borderline',
+  impaired: 'impaired range',
   unknown: 'zone unknown',
 };
 
@@ -329,7 +329,7 @@ const ZONE_LABEL = {
 // derivation AND per-trial discrimination beats chance.
 const ZONE_CLASSIFICATION_CALIBRATED = false;
 
-const ZONE_UNCALIBRATED_LABEL = 'not classified — reference under recalibration';
+const ZONE_UNCALIBRATED_LABEL = 'not classified';
 
 // Plain-English names for the scored parameters, for the unmeasured notice.
 // The raw keys are what the breakdown table shows; this is what a clinician
@@ -1057,37 +1057,69 @@ if (typeof document !== 'undefined') {
       .catch(() => {});
   }
 
-  function renderReferenceTable(params) {
-    ensureReference(() => renderReferenceTable(params));
-    const block = el('reference-block');
-    const table = el('reference-table');
-    if (!block || !table) return;
-    const rows = referenceRows(params, healthyReference);
-    block.hidden = rows.length === 0;
+  // One expandable row per metric: colour band for how far off it is, the
+  // measurement, and on tap what the metric means, the reference and the
+  // distance. Built with createElement rather than innerHTML -- these values
+  // reach the DOM from a trial record.
+  function renderMetricList(params, ptScore) {
+    const host = el('metric-list');
+    if (!host) return;
+    ensureReference(() => renderMetricList(params, ptScore));
+    const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown);
+    host.hidden = rows.length === 0;
     if (rows.length === 0) return;
-    table.textContent = '';
-    const head = document.createElement('tr');
-    for (const h of ['metric', 'measured', 'reference', 'distance']) {
-      const th = document.createElement('th');
-      th.textContent = h;
-      head.append(th);
-    }
-    table.append(head);
+    host.textContent = '';
+
     for (const r of rows) {
-      const tr = document.createElement('tr');
-      for (const cell of [r.key, formatCell(r.measured), formatCell(r.reference), formatDelta(r.delta)]) {
-        const td = document.createElement('td');
-        td.textContent = cell;
-        tr.append(td);
+      const item = document.createElement('details');
+      item.className = 'metric';
+
+      const head = document.createElement('summary');
+      head.className = 'metric-head';
+      head.style.background = r.style.background;
+      head.style.color = r.style.color;
+
+      const name = document.createElement('span');
+      name.className = 'metric-name';
+      name.textContent = r.label;
+
+      const value = document.createElement('span');
+      value.className = 'metric-value';
+      value.textContent = formatNumber(r.measured);
+
+      // The words carry the same meaning as the colour, for glare and for
+      // anyone who cannot separate red from green.
+      const sev = document.createElement('span');
+      sev.className = 'metric-sev';
+      sev.textContent = r.style.label;
+
+      head.append(name, value, sev);
+      item.append(head);
+
+      const body = document.createElement('div');
+      body.className = 'metric-body';
+
+      const what = document.createElement('p');
+      what.className = 'metric-what';
+      what.textContent = r.what;
+      body.append(what);
+
+      const dir = directionNote(r.key, r.reference);
+      if (dir) {
+        const d = document.createElement('p');
+        d.className = 'metric-range';
+        d.textContent = dir;
+        body.append(d);
       }
-      if (r.withdrawn) tr.className = 'ref-withdrawn';
-      table.append(tr);
-    }
-    const note = withdrawnNote(rows);
-    const noteEl = el('reference-withdrawn');
-    if (noteEl) {
-      noteEl.hidden = note === null;
-      noteEl.textContent = note || '';
+
+      const dist = document.createElement('p');
+      dist.className = 'metric-range';
+      dist.textContent = `This trial: ${formatNumber(r.measured)} `
+        + `(${formatDelta(r.delta)} from the reference).`;
+      body.append(dist);
+
+      item.append(body);
+      host.append(item);
     }
   }
   function renderLateral(lateral) {
@@ -1444,6 +1476,25 @@ if (typeof document !== 'undefined') {
   //
   // Returns null rather than a number when any input the scoring path reads
   // is missing, so median() skips the trial instead of averaging a zero in.
+  // The FULL composite for a stored trial, breakdown included. The metric
+  // list needs the per-parameter contributions to colour its bands, and a
+  // trial opened from the Trials view has no live session to score from --
+  // without this every stored trial rendered as uniformly healthy.
+  function ptScoreForStoredTrial(trial) {
+    const p = (trial && trial.params) || {};
+    const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg'];
+    if (!wasmApi || need.some((k) => !Number.isFinite(p[k]))) return null;
+    try {
+      return JSON.parse(wasmApi.pt_score_from_params(
+        p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg,
+      ));
+    } catch {
+      return null;
+    }
+  }
+
   function scoreStoredTrial(trial) {
     const p = (trial && trial.params) || {};
     const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
@@ -1508,7 +1559,7 @@ if (typeof document !== 'undefined') {
       lastTrajectory = t.trajectory;
       renderResult(t.params);
       renderLateral(t.lateral_motion);
-      renderReferenceTable(t.params);
+      renderMetricList(t.params, ptScoreForStoredTrial(t));
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
@@ -1625,12 +1676,6 @@ if (typeof document !== 'undefined') {
     // trial and neither says so. It drops area_ratio and f, which are exactly
     // the two that saturate or go unmeasurable on a limb that never swings
     // back, so it runs markedly lower on those trials.
-    const simpleEl = el('pt-score-simple');
-    if (simpleEl) {
-      simpleEl.textContent = typeof ptScore.score_simple === 'number'
-        ? `4-parameter score: ${ptScore.score_simple.toFixed(4)} (what the desktop capture app shows)`
-        : '';
-    }
     el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
       .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
       .join('');
@@ -1756,7 +1801,7 @@ if (typeof document !== 'undefined') {
     renderPtScore(action.ptScore);
     renderResult(p);
     renderLateral(action.lateralMotion);
-    renderReferenceTable(p);
+    renderMetricList(p, action.ptScore);
     showExportControls();
     resetToIdle();
 

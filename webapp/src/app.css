@@ -1005,3 +1005,61 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ref-withdrawn td { color: var(--fg3); }
 
 #reference-withdrawn { margin: 8px 0 0; line-height: 1.45; }
+
+/* ---- per-metric bands --------------------------------------------------
+   Colour shows how far a metric sits from the reference, green through amber
+   to a darker red. Colour is never the only signal: every band also carries
+   a text severity label, because this is read at arm's length under outdoor
+   glare and by people who cannot separate red from green. Both the band
+   colour and its text colour are set inline from metric-rows.js, which picks
+   a foreground with enough contrast for the band it sits on. */
+#metric-list { margin: 10px 16px 0; }
+
+.metric {
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.metric-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: clamp(13px, 3.4vw, 15px);
+  /* The old table overflowed the screen at four fixed columns. A flex row
+     with a wrapping label and a shrink-proof value cannot. */
+  flex-wrap: wrap;
+}
+
+.metric-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  /* Wraps instead of pushing the numbers off the right edge. */
+  overflow-wrap: anywhere;
+}
+
+.metric-value {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.metric-sev {
+  flex: 0 0 100%;
+  font-size: clamp(11px, 3vw, 12px);
+  opacity: 0.85;
+}
+
+.metric-body {
+  padding: 10px 12px;
+  background: var(--surface);
+  font-size: clamp(13px, 3.4vw, 14px);
+  color: var(--fg2);
+}
+.metric-what { margin: 0; line-height: 1.45; }
+.metric-range { margin: 8px 0 0; line-height: 1.45; color: var(--fg3); }
