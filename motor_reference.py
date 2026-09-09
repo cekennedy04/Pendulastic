@@ -7,6 +7,7 @@ this project the most time.
 """
 from __future__ import annotations
 
+import os
 import numpy as np
 
 #: Sync preamble. Three pulses, because two cannot distinguish a missed
@@ -58,3 +59,56 @@ def full_trace(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):
     theta = np.concatenate([thp, ths])
     t = np.arange(len(theta), dtype=float) / fs_hz
     return t, theta, float(len(thp) / fs_hz)
+
+
+#: Amplitudes, dense around MIN_INTERPRETABLE_A0_DEG = 25.0. Finding where
+#: extraction breaks relative to that floor is the experiment's main purpose.
+SWEEP_A0_DEG = (90.0, 70.0, 50.0, 40.0, 30.0, 28.0, 25.0, 22.0, 20.0, 15.0, 10.0, 5.0)
+#: Brackets HEALTHY_REF['f'] = 0.9137 Hz.
+SWEEP_F_HZ = (0.6, 0.9, 1.2)
+#: Roughly 2, 5 and 9 cycles to 3 deg from 45 -- spastic through healthy.
+SWEEP_TAU_S = (0.5, 1.6, 3.2)
+NOMINAL_F_HZ = 0.9
+NOMINAL_TAU_S = 1.6
+#: The three amplitudes at which f and tau are also varied.
+CROSS_A0_DEG = (50.0, 25.0, 10.0)
+REPEATS = 3
+
+
+def sweep_matrix():
+    """Every run of the bench session, in the order to run them.
+
+    Full amplitude sweep at nominal f and tau, then f and tau varied at three
+    amplitudes. Repeats are consecutive so a drifting bench shows up as
+    within-run spread rather than as a trend across the whole session.
+    """
+    combos = [(a0, NOMINAL_F_HZ, NOMINAL_TAU_S) for a0 in SWEEP_A0_DEG]
+    for a0 in CROSS_A0_DEG:
+        for f in SWEEP_F_HZ:
+            if f != NOMINAL_F_HZ:
+                combos.append((a0, f, NOMINAL_TAU_S))
+        for tau in SWEEP_TAU_S:
+            if tau != NOMINAL_TAU_S:
+                combos.append((a0, NOMINAL_F_HZ, tau))
+
+    runs = []
+    for a0, f, tau in combos:
+        for rep in range(1, REPEATS + 1):
+            runs.append({
+                "run_id": f"a{a0:g}_f{f:g}_t{tau:g}_r{rep}",
+                "a0_deg": a0, "f_hz": f, "tau_s": tau, "repeat": rep,
+            })
+    return runs
+
+
+def export_trace(run, out_dir, fs_hz=1000.0, duration_s=12.0):
+    """Write one run's commanded trace as CSV for LabVIEW to stream."""
+    os.makedirs(out_dir, exist_ok=True)
+    t, theta, _rel = full_trace(run["a0_deg"], run["f_hz"], run["tau_s"],
+                                duration_s=duration_s, fs_hz=fs_hz)
+    path = os.path.join(out_dir, f"{run['run_id']}.csv")
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("t_s,theta_deg\n")
+        for a, b in zip(t, theta):
+            fh.write(f"{a:.6f},{b:.6f}\n")
+    return path
