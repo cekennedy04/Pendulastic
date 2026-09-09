@@ -166,19 +166,16 @@ fn end_to_end_replayed_trial_matches_the_python_reference() {
 }
 
 #[test]
-fn the_healthy_reference_names_its_withdrawn_entries() {
-    // N's reference is 3.5, labelled a "control median". It is not one: the
-    // 4-second active-oscillation cap in force when it was measured returned
-    // N = 4.0 for any leg still swinging after four seconds, so 3.5 measures
-    // the cap. The cap is gone; the number must not be shown as a reference.
+fn the_healthy_reference_carries_every_scored_parameter() {
+    // WITHDRAWN_REFS is empty as of the 2026-09-09 recalibration: `n` was its
+    // only entry, withheld while 3.5 was really the old 4-second cap, and it
+    // is now literature-anchored at 6.5 (published healthy 6-7). What still
+    // matters is that every scored parameter reaches the display with a value.
     let j = healthy_ref_to_json(&HEALTHY_REF);
-    assert!(j.contains("\"withdrawn\":[\"n\"]"), "withdrawn list missing from {j}");
-    // The value itself is still carried -- callers show the measured number
-    // and withhold only the comparison.
-    assert!(j.contains("\"n\":3.5"), "reference value dropped from {j}");
-    for k in ["r2n", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"] {
+    for k in ["r2n", "n", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"] {
         assert!(j.contains(&format!("\"{k}\":")), "missing {k} in {j}");
     }
+    assert!(j.contains("\"withdrawn\":[]"), "expected no withdrawn entries: {j}");
 }
 
 #[test]

@@ -51,13 +51,35 @@ pub struct HealthyRef {
 /// recalibration. See that module's own extensive provenance note; this is
 /// PROVISIONAL and expected to move again (validation task V0.4).
 pub const HEALTHY_REF: HealthyRef = HealthyRef {
-    r2n: 1.0321,
-    n: 3.5,
-    phi_max_ratio: 0.6386,
-    omega_max_n: 6.7684,
-    omega_min_n: 0.0010,
-    f: 0.9137,
-    area_ratio: 0.0768,
+    // LITERATURE-ANCHORED. Popovic-Maneski 2017 (the paper whose PT7 formula
+    // this implements): "In healthy subjects, the parameter R2n > 1". A
+    // boundary, not a mean, which reads correctly here because R2n is
+    // penalised only when BELOW the reference.
+    r2n: 1.0,
+    // LITERATURE-ANCHORED: "values of N for healthy subjects range from 6 to
+    // 7". Our own control cohort independently measured 6.5. This replaces
+    // 3.5, which was never a control median -- it was the old 4-second
+    // active-oscillation cap.
+    n: 6.5,
+
+    // DATA-DERIVED. No published value exists for any of these five: the
+    // published quantity is either differently defined (phi-max is an angle
+    // in rad, omega-max is unnormalised rad/s) or was introduced by
+    // Popovic-Maneski with no healthy value given (f, area_ratio). Medians
+    // from 46 OptiTrack control trials, 9 participants, 15 legs. Every
+    // control leg in that cohort is assessed_by=ASSUMED -- no clinician
+    // examined a healthy leg in this dataset.
+    phi_max_ratio: 0.6667,
+    omega_max_n: 9.5672,
+    // NOT Popovic's omega-min despite the name: the published healthy range
+    // is NEGATIVE (-12 to -9 rad/s), the signed minimum. This computes
+    // min(abs(omega))/A0, the near-zero speed at a turning point, which is a
+    // different quantity and is ~0.001 for everyone.
+    omega_min_n: 0.0011,
+    f: 0.8839,
+    // Least trustworthy entry: moves 0.082-0.156 depending purely on which
+    // controls are included, so this cohort cannot pin it.
+    area_ratio: 0.0945,
 };
 
 /// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
@@ -481,14 +503,18 @@ mod tests {
     use super::*;
 
     fn params(overrides: impl FnOnce(&mut PtParams)) -> PtParams {
+        // Derived FROM the reference, not a copy of its numbers. These were
+        // duplicated literals and went stale the moment HEALTHY_REF was
+        // recalibrated -- "a trial exactly at the reference" is a statement
+        // about the reference, so it should be written as one.
         let mut p = PtParams {
-            r2n: 1.0321,
-            n: 3.5,
-            phi_max_ratio: 0.6386,
-            omega_max_n: 6.7684,
-            omega_min_n: 0.0010,
-            f: 0.9137,
-            area_ratio: 0.0768,
+            r2n: HEALTHY_REF.r2n,
+            n: HEALTHY_REF.n,
+            phi_max_ratio: HEALTHY_REF.phi_max_ratio,
+            omega_max_n: HEALTHY_REF.omega_max_n,
+            omega_min_n: HEALTHY_REF.omega_min_n,
+            f: HEALTHY_REF.f,
+            area_ratio: HEALTHY_REF.area_ratio,
             omega_peak_deg_s: 0.0,
             a0_deg: 0.0,
             a1_deg: 0.0,
@@ -571,10 +597,14 @@ mod tests {
     #[test]
     fn the_scalar_path_carries_a0_into_the_excursion_gate() {
         let good = pt_score_from_scalars(
-            1.0321, 3.5, 0.6386, 6.7684, 0.0010, 0.9137, 0.0768, 0.0, 45.0,
+            HEALTHY_REF.r2n, HEALTHY_REF.n, HEALTHY_REF.phi_max_ratio,
+            HEALTHY_REF.omega_max_n, HEALTHY_REF.omega_min_n, HEALTHY_REF.f,
+            HEALTHY_REF.area_ratio, 0.0, 45.0,
         );
         let collapsed = pt_score_from_scalars(
-            1.0321, 3.5, 0.6386, 6.7684, 0.0010, 0.9137, 0.0768, 0.0, 5.0,
+            HEALTHY_REF.r2n, HEALTHY_REF.n, HEALTHY_REF.phi_max_ratio,
+            HEALTHY_REF.omega_max_n, HEALTHY_REF.omega_min_n, HEALTHY_REF.f,
+            HEALTHY_REF.area_ratio, 0.0, 5.0,
         );
         assert_ne!(good, collapsed, "a0_deg must reach excursion_reason");
     }
@@ -992,38 +1022,26 @@ mod tests {
         });
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
-        assert!((simple - 0.655_718_986_385_898_98_f64).abs() < 1e-15, "simple={simple:.17}");
-        assert!((full - 1.612_125_135_077_656_2_f64).abs() < 1e-15, "full={full:.17}");
+        assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
+        assert!((full - 1.629_561_363_540_285_25_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }
 
-/// Parameters whose `HEALTHY_REF` entry is no longer defensible as a
-/// reference, and must not be shown as one.
+/// Parameters whose `HEALTHY_REF` entry is not defensible as a reference and
+/// must not be shown as one. The measured VALUE is still displayed; only the
+/// comparison is withheld.
 ///
-/// `n` is here because of what its value actually is. The comment beside
-/// `HEALTHY_REF["N"] = 3.5` calls it a control median, but the 4-second
-/// active-oscillation cap that was in force when it was measured returned
-/// N = 4.0 for ANY leg still swinging after four seconds. 3.5 is therefore a
-/// measurement of the cap, not of control legs, and the cap has since been
-/// removed. Showing it beside an uncapped N would invite a clinician to read
-/// a large, meaningless distance as a large clinical finding.
+/// EMPTY as of the 2026-09-09 recalibration. `n` was the sole entry, withheld
+/// because its 3.5 was the old 4-second oscillation cap rather than any
+/// measurement of control legs. It is now the best-supported value in the
+/// whole reference: Popovic-Maneski 2017 publishes healthy N as 6 to 7, and
+/// our own 46-trial control cohort independently measured 6.5.
 ///
-/// The measured VALUE is still shown for these parameters. It is only the
-/// comparison that is withheld -- the same split the composite already makes,
-/// where the score is reported and the zone withheld.
-///
-/// SCOPE, stated plainly because it is narrower than the name suggests: this
-/// is DISPLAY-ONLY. `pt_score_breakdown` still scores `n` against
-/// `HEALTHY_REF.n`, and the composite total IS shown to the clinician (only
-/// the zone is withheld). Because the `n` term penalises only values BELOW
-/// the reference, and removing the 4 s cap moved essentially every
-/// non-severe leg above it, that term now contributes ~0 across the cohort
-/// -- a real shift in the composite, computed against a reference this very
-/// constant declares undefensible. Dropping `n` from the composite while its
-/// reference is withdrawn is the consistent fix and is NOT taken here: it
-/// changes PT7 on every trial and is a scoring decision, not a display one.
-pub const WITHDRAWN_REFS: &[&str] = &["n"];
+/// Kept rather than deleted because the mechanism is still needed -- five of
+/// the seven entries have no published counterpart at all, and if any is later
+/// judged indefensible this is where it goes.
+pub const WITHDRAWN_REFS: &[&str] = &[];
 
 /// `HEALTHY_REF` as JSON, with the withdrawn entries named so a display can
 /// show the measured value without inventing a comparison for it.

@@ -100,33 +100,83 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # once available. See scratchpad recalibrate_healthy_ref.py for the
 # derivation.
 # One-directional penalties: only penalise deviations in the impaired direction.
-# STALE AS OF 2026-09-09, and deliberately not rescaled by hand.
+# RECALIBRATED 2026-09-09. Two entries are literature-anchored and five are
+# our own medians, each flagged individually below.
 #
-# These medians were measured while extremum detection and the symmetry
-# integral worked in the SETTLED-ANGLE frame. Both now work in the swing-
-# centred frame (see _swing_centre), which moved SIX of the seven scored
-# parameters on the golden corpus -- area_ratio, phi_max_ratio, R2n, f, N and
-# the P+/P- areas behind them. Only omega_max_n and omega_min_n held still,
-# because they are driven by omega and A0, neither of which changed.
+# This replaces a set measured on n=4 controls (P2, P8, P9, P12) under the
+# settled-angle frame. Three of those four are on record with OptiTrack
+# reconstruction defects -- P9's Left and Right files are byte-identical
+# across all 5 trials, and P2 loses 9 of 16 trials to "rig geometry is
+# unsupported" and "optical coverage 0.0%" -- which is the concrete reason
+# the previous set was flagged invalid.
 #
-# So this is not one stale constant. Every entry below except the two omega
-# terms is a number measured under scoring that no longer ships. The
-# direction is known for area_ratio -- the centred frame leaves a ~0.06 floor
-# where the old read ~0.008, so controls now sit NEARER this reference -- and
-# unmeasured for the rest.
-#
-# Recalibrating needs the cohort and a defensible control set, not a constant
-# edit: the last calibration used n=4 (P2, P8, P9, P12), and those are the
-# same participants whose OptiTrack reconstruction artefacts are on record as
-# having invalidated it. That is validation task V0.4, not a code change.
+# Adopting this moves PT7 on every trial. That is intended: the N entry
+# alone was off by ~3, and being a below-only penalty it meant the N term
+# contributed nothing for anyone, healthy or spastic.
 HEALTHY_REF = {
-    "R2n":           1.0321,  # control median n=4 (2026-08-21 recalibration)
-    "N":             3.5,     # control median n=4 -- was 5.5 pre-fix (see note above)
-    "phi_max_ratio": 0.6386,  # control median n=4
-    "omega_max_n":   6.7684,  # control median n=4
-    "omega_min_n":   0.0010,  # control median n=4
-    "f":             0.9137,  # control median n=4
-    "area_ratio":    0.0768,  # control median n=4
+    # ---- LITERATURE-ANCHORED (Popovic-Maneski 2017, the paper whose PT7
+    #      formula this module implements; see docs/reference/
+    #      2026-08-24-pendulum-test-literature-benchmarks.md section 11) ----
+
+    # Published: "In healthy subjects, the parameter R2n > 1". A BOUNDARY,
+    # not a mean, so 1.0 is the anchor. That reads correctly here because
+    # R2n is penalised only when BELOW the reference: the term becomes "how
+    # far below the healthy boundary", and every healthy value above 1.0
+    # scores zero. Our own n=46 control median is 0.9907 -- marginally on the
+    # spastic side of the published boundary, which is a flag on the control
+    # set rather than on this constant.
+    "R2n":           1.0,
+
+    # Published: "values of N for healthy subjects range from 6 to 7". Our
+    # own V0.4 cohort independently measured 6.5 (robust at 6.0-7.5 across
+    # every control subset), so literature and data agree to within 0.5.
+    # This replaces 3.5, which was never a control median: it was the old
+    # 4-second active-oscillation cap, which returned N = 4.0 for any leg
+    # still swinging after four seconds. See evaluate_healthy_ref_v04.py.
+    "N":             6.5,
+
+    # ---- DATA-DERIVED, no published value exists ----
+    #
+    # Flagged rather than cited. For each of these the published quantity is
+    # either differently defined or was never published at all, so no
+    # literature anchor is available and these are OUR medians. Values are
+    # from evaluate_healthy_ref_v04.py: 46 OptiTrack control trials, 9
+    # participants, 15 legs, scored with the scoring that ships -- against
+    # the n=4 the previous set came from.
+    #
+    # The standing provenance limit applies to all five: every control leg in
+    # mas_scores.csv is assessed_by=ASSUMED, and every clinician-EXAMINED leg
+    # in the dataset is an MS patient. There is no examined healthy leg to
+    # calibrate against, so these describe legs assumed healthy by enrolment.
+
+    # Popovic's phi-max is the first goniogram maximum in RADIANS (published
+    # healthy 0.34-0.61 rad). Ours is A2/A0, a dimensionless ratio. Different
+    # quantity; the published range cannot be used.
+    "phi_max_ratio": 0.6667,
+
+    # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
+    # Ours is divided by A0. Different quantity.
+    "omega_max_n":   9.5672,
+
+    # NOT Popovic's omega-min, despite the name and the framework citation.
+    # The published healthy range is NEGATIVE (-12 to -9 rad/s), so theirs is
+    # the SIGNED minimum -- peak velocity in the extension direction. This
+    # module computes min(abs(omega))/A0, the near-zero speed at a turning
+    # point, which is why the value below is ~0.001 rather than ~-10. It is a
+    # different physical quantity and carries almost no information: it is
+    # ~0.001 for everyone, healthy or spastic. Correcting it changes a scored
+    # parameter and has not been done.
+    "omega_min_n":   0.0011,
+
+    # Popovic-Maneski introduced f themselves ("We introduced two additional
+    # parameters in this study"), and published no healthy value for it.
+    "f":             0.8839,
+
+    # Same: introduced in that study, no published healthy value. ALSO the
+    # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
+    # 90% swing, depending purely on which controls are included. This cohort
+    # cannot pin it, and it is the parameter the swing-centred frame changed.
+    "area_ratio":    0.0945,
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
