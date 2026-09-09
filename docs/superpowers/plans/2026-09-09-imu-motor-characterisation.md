@@ -370,12 +370,22 @@ def test_the_edges_survive_noise():
 
 def test_too_few_pulses_raises_rather_than_guessing():
     """A missed pulse means the alignment is unknown. Guessing it is how a
-    whole session becomes silently wrong."""
-    t, th = mr.preamble(fs_hz=1000.0)
-    half = th.copy()
-    half[len(half) // 2:] = 0.0
+    whole session becomes silently wrong.
+
+    The pulse to erase is derived from the constants, not from a sample index:
+    LEAD_S puts all three pulses inside the first 0.94 s of a 2.19 s preamble,
+    so anything that zeroes "the back half" erases only stillness and the test
+    would pass without ever exercising the refusal.
+    """
+    fs = 1000.0
+    t, th = mr.preamble(fs_hz=fs)
+    maimed = th.copy()
+    start = int(mr.LEAD_S * fs)
+    maimed[start:start + int(mr.PULSE_WIDTH_S * fs)] = 0.0
+    assert (maimed > mr.PULSE_DEG / 2).sum() < (th > mr.PULSE_DEG / 2).sum(), (
+        "the test must actually remove a pulse, or it proves nothing")
     with pytest.raises(mb.SyncError, match="expected 3"):
-        mb.find_pulse_edges(t, half)
+        mb.find_pulse_edges(t, maimed)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
