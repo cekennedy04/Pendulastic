@@ -222,3 +222,60 @@ its MS arm (23 knees) alone exceeds our entire MAS>=1 group.
 6. Consider whether `PT_BORDERLINE_MAX` should exist at all (§4d).
 
 None of these are done. Recorded here so the reasoning is not lost.
+
+---
+
+## 10. Can HEALTHY_REF be sourced from the literature? (2026-09-09)
+
+Asked directly, after V0.4 established that our own cohort cannot supply
+defensible healthy ranges: every control leg in `mas_scores.csv` is
+`assessed_by = ASSUMED`, all 17 of them, and every clinician-EXAMINED leg in
+the dataset is an MS patient. So there is no examined healthy leg to calibrate
+against. See `evaluate_healthy_ref_v04.py`.
+
+The instinct — take the ranges from published work instead — is right. It is
+also **blocked for five of our seven parameters**, and this document already
+says why in §4c and §6.
+
+### What the literature actually provides
+
+The benchmark study (Whelan 2018) reports **discrimination statistics**, not
+healthy normative values: ROC AUCs for separating MAS 0 from MAS > 0. That
+answers "does this metric work", not "what does a healthy leg score". Those
+are different questions and only the second one can populate a reference.
+
+### Parameter-by-parameter
+
+| ours | published counterpart | usable directly? |
+| --- | --- | --- |
+| `N` | `Ncyc` (number of cycles) | **yes** — same physical quantity, no conversion |
+| `f` | oscillation frequency | **probably** — physical, definition-independent |
+| `R2n` | `RI` (relaxation index) | **no** — §4c: their RI is `F1amp / Plateau`, ours is `A1 / (1.6*A0)`. Different formula; §6 says do not compare absolute values without converting |
+| `phi_max_ratio` | loosely `E1amp` / `F1amp` ratios | no — related but not the same construct |
+| `omega_max_n` | — | no published normative located |
+| `omega_min_n` | — | Popovic-specific; no counterpart |
+| `area_ratio` | — | Popovic-specific; no counterpart |
+
+So the literature can anchor at most `N` and `f`. The other five are either
+formula-mismatched or have no published healthy value at all.
+
+### The awkward part
+
+`N` is the one parameter where a literature anchor is available AND our own
+cohort robustly agrees (V0.4 puts it at 6.0–7.5, nowhere near the 3.5 that was
+really the old 4-second cap). But §4a records that Whelan found `Ncyc` the
+WORST discriminator of every metric they tested (AUC 0.665, and 0.590 for
+severity), while our own data has it as the strongest. Both cannot be right,
+and adopting a literature value for `N` does not resolve which.
+
+### What would unblock this
+
+1. **Stillman 1995** (§7) — 77 healthy across three age bands, the only
+   located study whose explicit purpose is a healthy normative reference.
+   Values are not extracted here; the paper has not been read.
+2. **Rahimi 2020** (§6) — the systematic review that exists precisely to
+   reconcile definitions across groups. Needed for any `RI -> R2n` conversion.
+
+Until those are read, no number should be written into `HEALTHY_REF` claiming
+a literature source. Inventing one would be worse than the current provisional
+value, because it would carry a citation that does not support it.
