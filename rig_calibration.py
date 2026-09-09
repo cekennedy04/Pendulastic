@@ -213,3 +213,68 @@ def derive_anchors(session: dict = None, path: str = None) -> Optional[dict]:
         "n_healthy": len(h_trials),
         "n_boundary": len(b_trials),
     }
+
+
+# ── R15: the rig's passive profile ───────────────────────────────────────────
+#
+# Before any active spasticity torque is applied, the rig runs unactuated at the
+# passive properties taken as the healthy human standard, so its swing envelope
+# can be compared against human controls. If the rig mimics tone without
+# mimicking a limb, every later grade validates the instrument against the
+# wrong thing -- and nothing else in the plan would catch it.
+#
+# PROVENANCE. Popović & Bajd (2018), Serbian Journal of Electrical Engineering:
+# "The computational result for the healthy subjects outputs the values for the
+# viscous damping B = 0.5 Nms/rad and elasticity K = 0.5 Nm/rad. These values
+# were used for the determination of the reflexive torque T_h in patients."
+# They attribute the baseline to the linearised model of Bajd & Bowman (1982),
+# Journal of Biomedical Engineering, fitted to healthy control goniograms.
+#
+# The model, for a relaxed limb dropping under gravity with T_h = 0:
+#
+#     J*phi'' + B*phi' + K*phi + (1/2)*m*g*l*phi = 0
+#
+# with the shank-foot complex as a single rod, m = 5 kg, l = 0.6 m,
+# J = (1/3)*m*l^2.
+
+PASSIVE_DAMPING_NMS_PER_RAD = 0.5   #: B
+PASSIVE_STIFFNESS_NM_PER_RAD = 0.5  #: K
+SHANK_MASS_KG = 5.0                 #: m
+SHANK_LENGTH_M = 0.6                #: l
+GRAVITY_M_S2 = 9.81
+
+
+def passive_envelope(B=PASSIVE_DAMPING_NMS_PER_RAD,
+                     K=PASSIVE_STIFFNESS_NM_PER_RAD,
+                     m=SHANK_MASS_KG, l=SHANK_LENGTH_M, g=GRAVITY_M_S2,
+                     start_deg=45.0, stop_deg=3.0):
+    """What the linearised healthy model predicts the rig should do.
+
+    Returns inertia, damping factor, natural and damped frequency, damping
+    ratio, and the number of cycles before the swing falls below `stop_deg` --
+    the field's own stop criterion (Fowler et al.), not this codebase's window.
+
+    This is the target R15 dials the rig to and the prediction its measured
+    envelope is checked against. It is a MODEL, not a measurement: m and l are
+    population averages for a shank-foot complex, so a real limb differing from
+    them moves the frequency without anything being wrong.
+    """
+    J = (1.0 / 3.0) * m * l ** 2
+    beta = B / (2.0 * J)
+    gravity_term = 0.5 * m * g * l
+    w0_sq = (K + gravity_term) / J
+    w0 = w0_sq ** 0.5
+    wd = max(w0_sq - beta ** 2, 0.0) ** 0.5
+    zeta = beta / w0 if w0 else float("nan")
+    import math as _m
+    cycles = (_m.log(start_deg / stop_deg) / (2 * _m.pi * zeta)
+              if zeta > 0 and start_deg > stop_deg > 0 else float("inf"))
+    return {
+        "inertia_kg_m2": J,
+        "damping_factor_per_s": beta,
+        "gravity_term_nm_per_rad": gravity_term,
+        "natural_freq_hz": w0 / (2 * 3.141592653589793),
+        "damped_freq_hz": wd / (2 * 3.141592653589793),
+        "damping_ratio": zeta,
+        "cycles_to_stop": cycles,
+    }

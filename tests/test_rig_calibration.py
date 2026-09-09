@@ -161,3 +161,52 @@ def test_a_refused_excursion_yields_no_index_even_with_anchors():
     r = pts.severity_report({"A0_deg": 9.0}, _A, source="optitrack")
     assert r["available"] is False
     assert "excursion" in r["reason"].lower()
+
+
+# ── R15: the passive profile the rig is dialled to ──────────────────────────
+
+
+def test_the_passive_model_reproduces_the_published_derivation():
+    """Popović & Bajd (2018) give B = 0.5 Nms/rad and K = 0.5 Nm/rad, from
+    Bajd & Bowman's (1982) linearised model with m = 5 kg, l = 0.6 m. Their
+    stated intermediates are J ~ 0.6 kg m^2 and beta ~ 0.417 1/s. If this
+    module cannot reproduce those, the rig would be dialled to the wrong
+    numbers and every profile above them would inherit the error."""
+    e = rc.passive_envelope()
+    assert e["inertia_kg_m2"] == pytest.approx(0.6, abs=1e-6)
+    assert e["damping_factor_per_s"] == pytest.approx(0.417, abs=5e-4)
+
+
+def test_the_predicted_swing_is_underdamped_and_therefore_oscillates():
+    """A pendulum test needs a limb that swings. If the healthy constants
+    predicted critical damping there would be nothing to measure."""
+    e = rc.passive_envelope()
+    assert 0.0 < e["damping_ratio"] < 1.0
+    assert e["damped_freq_hz"] > 0.5
+
+
+def test_the_prediction_lands_near_the_corpus_healthy_reference():
+    """Two independent routes to the same quantity: this is a 1982 model fitted
+    to goniograms, and HEALTHY_REF is a median over this project's own control
+    trials. They should not be far apart, and if they diverge sharply one of
+    them is wrong. Measured: predicted 0.799 Hz against 0.914 measured (14%),
+    and 5.21 predicted cycles against N = 5.50.
+
+    Loose bounds on purpose. m and l are population averages for a shank-foot
+    complex, so a real limb differing from them moves the frequency without
+    anything being wrong. This catches an order-of-magnitude error, not a
+    physiological difference."""
+    e = rc.passive_envelope()
+    assert 0.6 < e["damped_freq_hz"] < 1.2, "predicted frequency is not limb-like"
+    assert 3.0 < e["cycles_to_stop"] < 9.0, "predicted cycle count is not limb-like"
+    assert e["damped_freq_hz"] == pytest.approx(pts.HEALTHY_REF["f"], rel=0.25)
+
+
+def test_stiffer_settings_swing_less_and_stop_sooner():
+    """The rig dials K upward to simulate tone. The direction must be right, or
+    the profiles would be labelled backwards before a clinician ever saw them."""
+    base = rc.passive_envelope()
+    stiff = rc.passive_envelope(K=20.0)
+    damped = rc.passive_envelope(B=3.0)
+    assert stiff["damped_freq_hz"] > base["damped_freq_hz"], "more K, faster"
+    assert damped["cycles_to_stop"] < base["cycles_to_stop"], "more B, fewer cycles"

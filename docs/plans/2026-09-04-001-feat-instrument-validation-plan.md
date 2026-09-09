@@ -68,7 +68,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - R3. The stiffness-to-grade mapping is derived from those blind assessments alone. Instrument output is never an input to the mapping it will be validated against.
 - R4. More than one clinician assesses each profile, and inter-rater agreement is reported alongside the mapping.
 - R5. The instrument's reading is compared against the dialled stiffness and against the clinician grade separately, so a disagreement between the two is visible rather than averaged away.
-- R15. Before any active spasticity torque is applied, the rig runs unactuated at the passive stiffness and damping taken as the healthy human standard, and its swing envelope is compared against human healthy-control trials. The comparison is reported whatever it shows.
+- R15. Before any active spasticity torque is applied, the rig runs unactuated at B = 0.5 Nms/rad and K = 0.5 Nm/rad, the healthy passive values of Bajd and Bowman (1982), and its swing envelope is compared against human healthy-control trials. The comparison is reported whatever it shows.
 
 **The severity index**
 
@@ -160,7 +160,6 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 
 **Deferred to planning**
 
-- The passive stiffness and damping the rig is set to for R15. Supervisor notes cite 0.5 Nm/rad and 0.5 Nms/rad from the Popovic and Stein pendulum literature; neither constant appears anywhere in this repository, so both need confirming against the primary source before the rig is dialled to them.
 - Which human control trials R15 compares against, given that the same provenance rule that produced KD8 leaves 4 examined MAS-0 legs across 3 participants.
 - The drift threshold that makes a hold invalid, and whether it is expressed as degrees, degrees per second, or a fraction of the swing.
 - The lateral-motion threshold, and whether exceeding it invalidates a trial or only annotates it.
@@ -173,6 +172,7 @@ Underneath all three sits one cause: there is no severity data. Only 10 legs acr
 - `Model_Analysis_Outputs/Spasticity_Stratified/leg_labels.csv` — 44 legs across 22 participants, by provenance: 10 clinician-examined across 5 participants, 15 assumed, 14 withheld as a0-derived, 3 control-by-recruitment, 2 operator-set. Of the 21 legs carrying MAS 0, only 4 are clinician-examined, across 3 participants.
 - `mobile-imu-core/src/pt_score.rs` — `HEALTHY_REF`, `PT_HEALTHY_MAX`, and the seven scored parameters.
 - `tests/fixtures/pendulum_sim.py` — the simulator the non-monotonicity was established on.
+- Popovic and Bajd (2018), Serbian Journal of Electrical Engineering, attributing the baseline to Bajd and Bowman (1982), Journal of Biomedical Engineering: viscous damping B = 0.5 Nms/rad and elasticity K = 0.5 Nm/rad for a healthy relaxed limb, fitted to control goniograms under J phi'' + B phi' + K phi + (1/2) m g l phi = 0 with m = 5 kg, l = 0.6 m, J = (1/3) m l squared. Reproduced in `rig_calibration.passive_envelope`: J 0.600 and damping factor 0.4167 against the paper's stated 0.6 and 0.417. It predicts a damped frequency of 0.799 Hz and about 5.21 cycles to the 3 degree stop criterion, against this corpus's own measured HEALTHY_REF f of 0.914 Hz and N of 5.50 - two independent routes agreeing to 14 percent on frequency and 5 percent on cycle count.
 - Supervisor notes, 2026-09-04 — the rig, blind clinician assessment, drift-during-hold invalidity, lateral-motion hinge lock, and IMU-only direction.
 - First clinical anchor, 2026-09-08. A single-day session with all three channels, clinician grading both legs MAS 0. Exact agreement: OptiTrack 6/7, phone IMU 1/10, MediaPipe 0/8; the IMU returned MAS 4 on nine of ten trials. This is the first external validation the optical reference has had, and it retroactively supports 87d7645 being a fix (KD16). It is also the first evidence that IMU-derived grades fail, with a named mechanism rather than an attribution.
 - Coverage-matched channel comparison, 2026-09-06, 108 paired trials on strict-clean references. MediaPipe scored with gaps skipped 20.93 degrees, with gaps filled 21.44, against the phone IMU at 22.14; the IMU is better on 45 percent of trials either way. The detection-rate bands invert - below 50 percent detection the IMU leads 22.33 to 25.60, above 80 percent MediaPipe leads 22.83 to 28.98 - but those bands are different sessions and participants rather than the same trials under different conditions, so the inversion is between-trial and must not be read as good video making the IMU worse.
