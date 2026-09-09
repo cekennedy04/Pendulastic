@@ -43,3 +43,23 @@ def test_too_few_pulses_raises_rather_than_guessing():
         "the test must actually remove a pulse, or it proves nothing")
     with pytest.raises(mb.SyncError, match="expected 3"):
         mb.find_pulse_edges(t, maimed)
+
+
+def test_edges_are_found_on_a_full_trial_not_just_an_isolated_preamble():
+    """The input align() actually passes. Deriving thresholds from the whole
+    trace scales them to the 45 deg swing, so hi lands at 27 deg, the 5 deg
+    pulses never cross it, and the function finds ONE edge and refuses every
+    real trial. Isolated-preamble tests cannot see this: with no swing present,
+    span IS the pulse height."""
+    t, th, _rel = mr.full_trace(45.0, 0.9, 1.6, duration_s=12.0, fs_hz=1000.0)
+    assert len(mb.find_pulse_edges(t, th)) == 3
+
+
+def test_a_trace_that_starts_mid_pulse_is_refused_not_counted_from_zero():
+    """The one failure mode here that fails OPEN: recording t[0] as an edge
+    returns the right COUNT with one bogus member, which no downstream check
+    can catch."""
+    t, th = mr.preamble(fs_hz=1000.0)
+    cut = int(mr.LEAD_S * 1000.0) + 10          # begins inside pulse 1
+    with pytest.raises(mb.SyncError):
+        mb.find_pulse_edges(t[cut:] - t[cut], th[cut:])

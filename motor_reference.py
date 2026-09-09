@@ -52,6 +52,17 @@ def preamble(fs_hz=1000.0):
     return t, theta
 
 
+def preamble_duration_s():
+    """How long the sync preamble runs, from the constants that define it.
+
+    Shared so the detector can bound its search to the preamble without
+    re-deriving the geometry in a second place and letting the two drift.
+    """
+    return (LEAD_S
+            + PULSE_COUNT * (PULSE_WIDTH_S + PULSE_GAP_S)
+            + PRE_ROLL_S)
+
+
 def full_trace(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):
     """Preamble then swing, as one trace. Returns (t, theta_deg, t_release_s)."""
     tp, thp = preamble(fs_hz)
