@@ -279,3 +279,79 @@ and adopting a literature value for `N` does not resolve which.
 Until those are read, no number should be written into `HEALTHY_REF` claiming
 a literature source. Inventing one would be worse than the current provisional
 value, because it would carry a citation that does not support it.
+
+---
+
+## 11. Published healthy values, extracted (2026-09-09)
+
+Source papers read from the local Shirley Ryan collection, not the web:
+
+- **Popović & Bajd (2018)** — `Papers/Journal Club/Popovi-DB_Pendulum-test-...pdf`.
+  Defines the PT score we implement, with the same seven parameters. Contains
+  NO numeric healthy values; it cites refs [20], [21], [24] for them.
+- **Popović-Maneski et al. (2017)**, ref [21] —
+  `Papers/Assessment_of_Spasticity_by_a_Pendulum_Test_in_SCI_Patients...pdf`.
+  Six healthy individuals as group H. **This is where the numbers are.**
+- **Stein et al. (1996)**, ref [24] —
+  `Papers/Journal Club/Estimating_mechanical_parameters_of_leg_segments...pdf`.
+  Cited as the origin of every range below. **Caveat: the numbers do not
+  appear in it.** Searched the extracted text (11 pages, clean extraction) for
+  "0.34", "0.61", "11 to 17" and "6 to 7" — zero hits. So these ranges are
+  verified in [21], which attributes them to [24], and NOT in [24] itself.
+
+### The published ranges, and whether they fit our parameters
+
+| Popović | published healthy | our parameter | our REF | directly usable? |
+| --- | --- | --- | --- | --- |
+| `R2n` | **> 1** | `R2n` = `A1/(1.6*A0)` | 1.0321 | **YES** — [21] states our exact formula |
+| `N` | **6 to 7** | `N` | 3.5 | **YES** — same quantity |
+| `φmax` | 0.34–0.61 **rad** | `phi_max_ratio` = `A2/A0` | 0.6386 | no — theirs is an ANGLE, ours a ratio |
+| `ωmax` | 11–17 **rad/s** | `omega_max_n` = `ω/A0` | 6.7684 | no — theirs unnormalised |
+| `ωmin` | **−12 to −9 rad/s** | `omega_min_n` | 0.0010 | no — see below, different quantity |
+| `f` | none — "introduced in this study" | `f` | 0.9137 | no published value exists |
+| `|P+−P−|` | none — "introduced in this study" | `area_ratio` | 0.0768 | no published value exists |
+
+So the literature anchors exactly **two** of seven: `R2n` and `N`. That
+confirms §10's prediction from the primary framework paper rather than by
+inference.
+
+### `N` — two independent lines agree, and the current value is wrong
+
+Published healthy `N` is **6 to 7**. V0.4 measured **6.5** on our own control
+cohort (`evaluate_healthy_ref_v04.py`), robust at 6.0–7.5 across every subset.
+`HEALTHY_REF["N"] = 3.5` sits far outside both, and is now understood as the
+old 4-second active-window cap rather than any measurement of control legs.
+
+Literature and our own data agreeing to within 0.5 on a parameter where the
+shipped constant is off by ~3 is about as clear as this gets.
+
+### `R2n` — consistent, and worth noting the direction
+
+Published: healthy `R2n > 1`. Ours: 1.0321, just over. V0.4 measured 0.9907 on
+our controls, just under. Our assumed-healthy controls sit marginally on the
+SPASTIC side of the published healthy threshold, which is a mild flag on the
+control set rather than on the constant.
+
+### `omega_min_n` does not implement Popović's ωmin
+
+The published range is **negative** (−12 to −9 rad/s), so ωmin is the signed
+minimum of angular velocity — peak velocity in the extension direction, a
+large quantity. `pendulastic_pt_score.py` computes:
+
+    omega_abs   = np.abs(omega_s)
+    omega_min_n = min(omega_abs[swing_mask]) / A0
+
+the minimum of the ABSOLUTE velocity, which is the near-zero speed at a
+turning point. That is a different physical quantity, and it explains
+`HEALTHY_REF["omega_min_n"] = 0.0010`: a median of near-zero values, not a
+median of ~−10 rad/s.
+
+The consequence is that one of the seven scored parameters carries almost no
+information — it is ~0.001 for everyone — while the docstring and the
+framework citation both claim it is Popović's ωmin. Our own reading of it
+("higher = velocity never fully decelerates = spastic catch") is a coherent
+idea, but it is not the published parameter and should not be presented as
+implementing it.
+
+Not changed here: correcting it alters a scored parameter and is a clinical
+decision, not a code cleanup.
