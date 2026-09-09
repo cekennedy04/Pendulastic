@@ -38,12 +38,20 @@ detrend=True does NOT fix it (1.218 -> 1.088): _settled_tail_drift_slope fits
 a LINEAR slope on the settled tail, but the sag is exponential and most of it
 happens during the swing.
 
-A CANDIDATE FIX, prototyped and measured but NOT adopted here: measure the
-areas about the swing's own midline -- interpolated between successive
-extrema -- instead of about the settled angle. On the same sweep that takes
-area_ratio from 0.277 to 0.031 at 5 deg of sag and 0.511 to 0.103 at 10 deg.
-Adopting it changes area_ratio, and therefore PT7, on every asymmetric trial,
-so it is a scoring decision rather than a bug fix.
+A CANDIDATE FIX, measured but NOT adopted: measure the areas about the swing's
+own midline -- interpolated between successive extrema -- instead of about the
+settled angle. `area_ratio_about_midline` at the foot of this file is that
+prototype, and `compare_midline()` prints the table, so the figures below can
+be re-derived rather than taken on trust:
+
+    sag      area_ratio now    about midline
+    5 deg          0.277           0.031
+    10 deg         0.511           0.103
+    20 deg         0.824           0.356
+
+It is a PROTOTYPE and is wired into nothing. Adopting it changes area_ratio,
+and therefore PT7, on every asymmetric trial in the existing corpus, so it is
+a scoring decision rather than a bug fix.
 
 Usage:
     miniconda3/python.exe evaluate_capture_bias.py
@@ -95,3 +103,57 @@ sweep('RELEASE AMPLITUDE', 'a0', [15.0, 30.0, 45.0, 60.0, 75.0])
 sweep('RECORDING LENGTH (swing window)', 'swing', [4.0, 6.0, 10.0, 20.0])
 sweep('SENSOR NOISE', 'noise', [0.0, 0.1, 0.3, 0.6, 1.0])
 sweep('POST-SWING SAG', 'creep', [0.0, 2.0, 5.0, 10.0, 20.0])
+
+
+# ── The candidate fix, so its numbers are reproducible rather than quoted ────
+#
+# NOT wired into pendulastic_pt_score. This is the prototype the module
+# docstring refers to: measure the swing's asymmetry about its OWN midline
+# instead of about the settled angle. The midline is interpolated between
+# successive extrema, so it follows a drifting centre instead of assuming the
+# limb ends where it swung.
+
+def area_ratio_about_midline(r):
+    """`area_ratio` measured about the swing's own midline.
+
+    Returns None when there are too few extrema to define a midline at all,
+    which is a genuine 'cannot measure' rather than a symmetric result.
+    """
+    t_r = np.asarray(r['t_r'], dtype=float)
+    phi = np.asarray(r['phi'], dtype=float)
+    ex = np.sort(np.concatenate([
+        np.asarray(r['pk_i'], dtype=int), np.asarray(r['tr_i'], dtype=int)]))
+    if len(ex) < 3:
+        return None
+
+    # Midpoint of each consecutive extremum pair: for a decaying oscillation
+    # that is the instantaneous centre, whatever the centre is doing.
+    mid_t = [(t_r[ex[i]] + t_r[ex[i + 1]]) / 2.0 for i in range(len(ex) - 1)]
+    mid_v = [(phi[ex[i]] + phi[ex[i + 1]]) / 2.0 for i in range(len(ex) - 1)]
+    centre = np.interp(t_r, mid_t, mid_v, left=mid_v[0], right=mid_v[-1])
+
+    d = phi - centre
+    # Bounded to the oscillation itself; integrating the tail would re-import
+    # the very baseline problem this is removing.
+    m = (t_r >= t_r[ex[0]]) & (t_r <= t_r[ex[-1]])
+    p_plus = float(np.trapezoid(np.clip(d[m], 0.0, None), t_r[m]))
+    p_minus = float(np.trapezoid(np.clip(-d[m], 0.0, None), t_r[m]))
+    total = p_plus + p_minus
+    return abs(p_plus - p_minus) / total if total > 1e-9 else None
+
+
+def compare_midline():
+    print('\n--- CANDIDATE FIX: asymmetry about the swing midline, not the '
+          'settled angle ---')
+    print(f'{"sag":>6} {"troughs":>8} {"area_ratio now":>15} {"about midline":>14}')
+    for creep in (0.0, 2.0, 5.0, 10.0, 20.0):
+        t, ang = build(creep=creep)
+        r = P.compute_pt_params(t, ang, None, False)
+        fixed = area_ratio_about_midline(r)
+        shown = f'{fixed:.3f}' if fixed is not None else 'not measurable'
+        print(f'{creep:6.1f} {len(r["tr_i"]):8d} {r["area_ratio"]:15.3f} {shown:>14}')
+    print('      The oscillation is identical in every row. Any spread in the')
+    print('      "now" column is baseline, not limb.')
+
+
+compare_midline()
