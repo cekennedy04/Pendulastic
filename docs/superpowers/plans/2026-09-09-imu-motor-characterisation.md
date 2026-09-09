@@ -31,7 +31,7 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `swing(a0_deg, f_hz, tau_s, duration_s, fs_hz) -> (t, theta_deg)`; constants `PULSE_COUNT = 3`, `PULSE_DEG = 5.0`, `PULSE_WIDTH_S = 0.08`, `PULSE_GAP_S = 0.25`, `PRE_ROLL_S = 1.0`
+- Produces: `swing(a0_deg, f_hz, tau_s, duration_s, fs_hz) -> (t, theta_deg)`; constants `PULSE_COUNT = 3`, `PULSE_DEG = 5.0`, `PULSE_WIDTH_S = 0.08`, `PULSE_GAP_S = 0.25`, `PRE_ROLL_S = 1.0`, `LEAD_S = 0.2`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -85,6 +85,10 @@ PULSE_DEG = 5.0
 PULSE_WIDTH_S = 0.08
 PULSE_GAP_S = 0.25
 PRE_ROLL_S = 1.0
+#: Still time BEFORE the first pulse. Without it the trace begins at full
+#: pulse height, so pulse one has no rising edge to detect -- an edge counter
+#: sees two pulses, not three. It is also what the motor physically does.
+LEAD_S = 0.2
 
 
 def swing(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):
@@ -160,7 +164,7 @@ def preamble(fs_hz=1000.0):
     identically. The motor is in position control, so the pulse is small
     enough not to need current the drive cannot deliver.
     """
-    seg = []
+    seg = [np.zeros(int(round(LEAD_S * fs_hz)))]
     for _ in range(PULSE_COUNT):
         seg.append(np.full(int(round(PULSE_WIDTH_S * fs_hz)), PULSE_DEG))
         seg.append(np.zeros(int(round(PULSE_GAP_S * fs_hz))))
@@ -228,7 +232,9 @@ def test_the_export_round_trips_through_a_file(tmp_path):
     rows = [l.split(",") for l in open(path, encoding="utf-8").read().splitlines()]
     assert rows[0] == ["t_s", "theta_deg"]
     t0, th0 = float(rows[1][0]), float(rows[1][1])
-    assert t0 == 0.0 and th0 == pytest.approx(mr.PULSE_DEG)
+    assert t0 == 0.0 and th0 == pytest.approx(0.0), "the trace must start still"
+    peak = max(float(r[1]) for r in rows[1:])
+    assert peak == pytest.approx(mr.PULSE_DEG, abs=1e-6)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -335,7 +341,7 @@ def test_the_three_pulse_edges_are_found_in_a_clean_preamble():
     t, th = mr.preamble(fs_hz=1000.0)
     edges = mb.find_pulse_edges(t, th)
     assert len(edges) == 3
-    assert edges[0] == pytest.approx(0.0, abs=0.005)
+    assert edges[0] == pytest.approx(mr.LEAD_S, abs=0.005)
     gap = mr.PULSE_WIDTH_S + mr.PULSE_GAP_S
     assert edges[1] - edges[0] == pytest.approx(gap, abs=0.01)
 
@@ -530,7 +536,7 @@ git commit -m "feat(bench): align phone to encoder on pulse edges, and check clo
 
 **Interfaces:**
 - Consumes: `align` from Task 5; `pendulastic_pt_score.compute_pt_params`
-- Produces: `score_trial(aligned, run) -> dict` with keys `a0_true, a0_enc, a0_imu, a0_ratio, a0_error_deg, tail_drift_deg_s, rmse_deg`
+- Produces: `score_trial(aligned, run) -> dict` with keys `a0_true, a0_enc, a0_imu, a0_ratio, a0_error_deg, tail_drift_deg_s, rmse_deg`. Trims to `t >= aligned["t_release_s"]` first.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -585,9 +591,19 @@ def _a0_of(t, theta):
 
 
 def score_trial(aligned, run):
-    """One trial against truth. Direction is always imu - truth."""
-    et, eth = aligned["enc_t"], aligned["enc_theta"]
-    it, ith = aligned["imu_t"], aligned["imu_theta"]
+    """One trial against truth. Direction is always imu - truth.
+
+    Both traces are trimmed to post-release BEFORE anything is extracted.
+    compute_pt_params runs its own release detection, and a 5 deg square sync
+    pulse is a sharper transient than the swing -- left in, it can anchor A0 to
+    the preamble and return a plausible-looking wrong number.
+    """
+    rel = float(aligned["t_release_s"])
+    et_all, eth_all = aligned["enc_t"], aligned["enc_theta"]
+    it_all, ith_all = aligned["imu_t"], aligned["imu_theta"]
+    e_keep, i_keep = et_all >= rel, it_all >= rel
+    et, eth = et_all[e_keep], eth_all[e_keep]
+    it, ith = it_all[i_keep], ith_all[i_keep]
 
     a0_true = float(run["a0_deg"])
     a0_enc = _a0_of(et, eth)
