@@ -112,6 +112,18 @@ def test_alignment_puts_the_two_traces_on_one_clock():
     assert np.nanmax(np.abs(diff)) < 0.5, "aligned traces should nearly coincide"
 
 
+def test_the_clock_rate_error_is_reported_even_when_it_passes():
+    """The spread bound only catches a 7.6% rate error over this lever arm, so
+    a 2% clock -- 240 ms of drift across a 12 s trial -- passes. That is
+    acceptable for a crystal-based phone clock, but the number must be VISIBLE
+    rather than merely under a threshold, or nobody can tell a good sync from a
+    barely-passing one."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0)
+    out = mb.align(et, eth, it * 1.02 + 0.3, ith)
+    assert out["clock_rate_error"] == pytest.approx(0.02, abs=0.005)
+    assert out["pulse_offset_spread_s"] > 0.0
+
+
 def test_release_time_is_reported_on_the_common_clock():
     et, eth, it, ith, rel = _rig_pair(lag_s=0.1)
     out = mb.align(et, eth, it, ith)

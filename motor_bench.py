@@ -93,16 +93,39 @@ def align(enc_t, enc_theta, imu_t, imu_theta):
     i_edges = find_pulse_edges(imu_t, imu_theta)
     offsets = [i - e for i, e in zip(i_edges, e_edges)]
     lag = float(np.median(offsets))
-    if float(np.max(offsets) - np.min(offsets)) > 0.05:
+    spread = float(np.max(offsets) - np.min(offsets))
+
+    # Rate error, reported rather than merely bounded.
+    #
+    # KNOW WHAT THIS CAN AND CANNOT SEE. The pulses span 0.66 s, so a clock
+    # running fast by r shows up here as spread r*0.66. The 50 ms bound below
+    # therefore only catches r > 7.6%. Measured: a clock 2% fast passes, having
+    # drifted 240 ms by the end of a 12 s trial. Three edges over two thirds of
+    # a second are barely evidence about RATE at all.
+    #
+    # That is tolerable because a phone clock is crystal-based at 50-100 ppm,
+    # which drifts 0.6-1.2 ms across a trial -- negligible against everything
+    # else measured here -- and the realistic threat is a fixed OFFSET, which
+    # this handles exactly. But the number is reported so a clock that does
+    # misbehave is visible instead of silently passing. If it ever matters, the
+    # fix is a second pulse burst at the END of the trial: a 12 s lever arm
+    # makes the same three-edge test roughly 18x more sensitive.
+    lever = float(e_edges[-1] - e_edges[0])
+    rate_error = (spread / lever) if lever > 0 else float("nan")
+
+    if spread > 0.05:
         raise SyncError(
-            f"pulse offsets disagree by {np.max(offsets) - np.min(offsets):.3f} s; "
-            "the two clocks are not running at the same rate")
+            f"pulse offsets disagree by {spread:.3f} s over a {lever:.2f} s "
+            f"lever arm ({100 * rate_error:.2f}% rate error); the two clocks "
+            "are not running at the same rate")
 
     # Release is one preamble after the encoder's first edge.
     t_release = e_edges[0] + (mr.PULSE_COUNT * (mr.PULSE_WIDTH_S + mr.PULSE_GAP_S)
                               + mr.PRE_ROLL_S)
     return {
         "lag_s": lag,
+        "pulse_offset_spread_s": spread,
+        "clock_rate_error": rate_error,
         "enc_t": np.asarray(enc_t, dtype=float),
         "enc_theta": np.asarray(enc_theta, dtype=float),
         "imu_t": np.asarray(imu_t, dtype=float) - lag,
