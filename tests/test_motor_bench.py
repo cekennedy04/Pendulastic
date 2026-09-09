@@ -89,3 +89,30 @@ def test_detection_survives_sample_rates_that_are_not_1_khz(fs):
     """
     t, th, _rel = mr.full_trace(90.0, 0.9, 1.6, duration_s=12.0, fs_hz=fs)
     assert len(mb.find_pulse_edges(t, th)) == 3
+
+
+def _rig_pair(lag_s=0.37, a0=45.0, fs=1000.0):
+    """An encoder trace and a phone trace of the same motion, offset in time."""
+    t, th, rel = mr.full_trace(a0_deg=a0, f_hz=0.9, tau_s=1.6,
+                               duration_s=8.0, fs_hz=fs)
+    return t, th, t + lag_s, th.copy(), rel
+
+
+def test_alignment_recovers_a_known_clock_offset():
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.37)
+    out = mb.align(et, eth, it, ith)
+    assert out["lag_s"] == pytest.approx(0.37, abs=0.01)
+
+
+def test_alignment_puts_the_two_traces_on_one_clock():
+    et, eth, it, ith, _rel = _rig_pair(lag_s=-0.22)
+    out = mb.align(et, eth, it, ith)
+    n = min(len(out["enc_theta"]), len(out["imu_theta"]))
+    diff = out["imu_theta"][:n] - out["enc_theta"][:n]
+    assert np.nanmax(np.abs(diff)) < 0.5, "aligned traces should nearly coincide"
+
+
+def test_release_time_is_reported_on_the_common_clock():
+    et, eth, it, ith, rel = _rig_pair(lag_s=0.1)
+    out = mb.align(et, eth, it, ith)
+    assert out["t_release_s"] == pytest.approx(rel, abs=0.02)

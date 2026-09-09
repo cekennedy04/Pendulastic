@@ -80,3 +80,32 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
     if len(edges) != expected:
         raise SyncError(f"found {len(edges)} pulse edges, expected {expected}")
     return edges
+
+
+def align(enc_t, enc_theta, imu_t, imu_theta):
+    """Put both traces on the encoder's clock using the pulse edges.
+
+    Lag is the MEDIAN of the per-pulse offsets rather than the first: three
+    edges give a spread, and a spread is the only evidence available that the
+    two clocks are running at the same rate. A single edge cannot show that.
+    """
+    e_edges = find_pulse_edges(enc_t, enc_theta)
+    i_edges = find_pulse_edges(imu_t, imu_theta)
+    offsets = [i - e for i, e in zip(i_edges, e_edges)]
+    lag = float(np.median(offsets))
+    if float(np.max(offsets) - np.min(offsets)) > 0.05:
+        raise SyncError(
+            f"pulse offsets disagree by {np.max(offsets) - np.min(offsets):.3f} s; "
+            "the two clocks are not running at the same rate")
+
+    # Release is one preamble after the encoder's first edge.
+    t_release = e_edges[0] + (mr.PULSE_COUNT * (mr.PULSE_WIDTH_S + mr.PULSE_GAP_S)
+                              + mr.PRE_ROLL_S)
+    return {
+        "lag_s": lag,
+        "enc_t": np.asarray(enc_t, dtype=float),
+        "enc_theta": np.asarray(enc_theta, dtype=float),
+        "imu_t": np.asarray(imu_t, dtype=float) - lag,
+        "imu_theta": np.asarray(imu_theta, dtype=float),
+        "t_release_s": float(t_release),
+    }
