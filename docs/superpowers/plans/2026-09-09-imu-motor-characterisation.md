@@ -332,11 +332,12 @@ git commit -m "feat(bench): the sweep matrix and its LabVIEW export"
 
 **Files:**
 - Create: `motor_bench.py`
+- Modify: `motor_reference.py` (add `preamble_duration_s()`)
 - Test: `tests/test_motor_bench.py`
 
 **Interfaces:**
 - Consumes: `motor_reference.PULSE_COUNT`, `PULSE_DEG`
-- Produces: `find_pulse_edges(t, signal, expected=PULSE_COUNT) -> list[float]`; `SyncError`
+- Produces: `find_pulse_edges(t, signal, expected=PULSE_COUNT, search_s=None) -> list[float]`; `SyncError`. Also adds `motor_reference.preamble_duration_s()`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -415,7 +416,7 @@ class SyncError(ValueError):
     unaligned trial produces numbers that look fine and are not."""
 
 
-def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT):
+def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
     """Rising-edge times of the sync pulses, in seconds.
 
     Threshold at half the pulse height above the pre-pulse baseline, with
@@ -428,19 +429,46 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT):
     if len(t) < 10:
         raise SyncError(f"only {len(t)} finite samples; expected {expected} pulses")
 
-    baseline = float(np.median(x[: max(1, len(x) // 50)]))
-    span = float(np.max(x) - baseline)
+    # Bound the search to the preamble BEFORE measuring anything.
+    #
+    # Without this the thresholds are derived from the whole trace, whose
+    # largest excursion is the swing, not the pulse. On a real run that means
+    # span = 45 deg, hi = 27 deg, and the 5 deg pulses never cross it: the
+    # function found ONE edge (the swing) on every full trial and refused.
+    # Isolated-preamble tests could not see it, because there the swing is
+    # absent and span IS the pulse height.
+    #
+    # The window comes from the shared constants rather than from a magic
+    # number, and baseline and span are computed INSIDE it -- which keeps the
+    # detection scale-free, so it works on the encoder's degrees and on the
+    # phone's reconstructed angle without assuming the two agree. Assuming they
+    # agree is precisely what this harness exists to test.
+    if search_s is None:
+        search_s = mr.preamble_duration_s()
+    win = t <= (t[0] + search_s)
+    if win.sum() < 10:
+        raise SyncError(
+            f"only {int(win.sum())} samples inside the {search_s:.2f} s preamble "
+            f"window; expected {expected} pulses")
+    tw, xw = t[win], x[win]
+
+    baseline = float(np.median(xw[: max(1, int(len(xw) * 0.05))]))
+    span = float(np.max(xw) - baseline)
     if span <= 0:
         raise SyncError(f"signal never rises; expected {expected} pulses")
     hi = baseline + 0.6 * span
     lo = baseline + 0.4 * span
 
-    edges, armed = [], True
-    for i in range(len(x)):
-        if armed and x[i] >= hi:
-            edges.append(float(t[i]))
+    # armed starts False when the trace is ALREADY high at its first sample:
+    # that is not a rising edge, it is a trace that began mid-pulse, and
+    # recording t[0] as an edge would return the right COUNT with one bogus
+    # member -- the one failure mode here that fails open instead of closed.
+    edges, armed = [], not (xw[0] >= hi)
+    for i in range(len(xw)):
+        if armed and xw[i] >= hi:
+            edges.append(float(tw[i]))
             armed = False
-        elif not armed and x[i] <= lo:
+        elif not armed and xw[i] <= lo:
             armed = True
     if len(edges) != expected:
         raise SyncError(f"found {len(edges)} pulse edges, expected {expected}")
@@ -452,10 +480,47 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT):
 Run: `/c/Users/cladi/miniconda3/python.exe -m pytest tests/test_motor_bench.py -q`
 Expected: PASS, 3 passed
 
+Also add to `motor_reference.py`, beside `preamble()`:
+
+```python
+def preamble_duration_s():
+    """How long the sync preamble runs, from the constants that define it.
+
+    Shared so the detector can bound its search to the preamble without
+    re-deriving the geometry in a second place and letting the two drift.
+    """
+    return (LEAD_S
+            + PULSE_COUNT * (PULSE_WIDTH_S + PULSE_GAP_S)
+            + PRE_ROLL_S)
+```
+
+And add these two regression tests to `tests/test_motor_bench.py`:
+
+```python
+def test_edges_are_found_on_a_full_trial_not_just_an_isolated_preamble():
+    """The input align() actually passes. Deriving thresholds from the whole
+    trace scales them to the 45 deg swing, so hi lands at 27 deg, the 5 deg
+    pulses never cross it, and the function finds ONE edge and refuses every
+    real trial. Isolated-preamble tests cannot see this: with no swing present,
+    span IS the pulse height."""
+    t, th, _rel = mr.full_trace(45.0, 0.9, 1.6, duration_s=12.0, fs_hz=1000.0)
+    assert len(mb.find_pulse_edges(t, th)) == 3
+
+
+def test_a_trace_that_starts_mid_pulse_is_refused_not_counted_from_zero():
+    """The one failure mode here that fails OPEN: recording t[0] as an edge
+    returns the right COUNT with one bogus member, which no downstream check
+    can catch."""
+    t, th = mr.preamble(fs_hz=1000.0)
+    cut = int(mr.LEAD_S * 1000.0) + 10          # begins inside pulse 1
+    with pytest.raises(mb.SyncError):
+        mb.find_pulse_edges(t[cut:] - t[cut], th[cut:])
+```
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add motor_bench.py tests/test_motor_bench.py
+git add motor_bench.py motor_reference.py tests/test_motor_bench.py
 git commit -m "feat(bench): sync-pulse edge detection, which refuses rather than guesses"
 ```
 
