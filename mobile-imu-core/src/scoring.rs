@@ -729,7 +729,13 @@ pub fn compute_pt_params(
         .fold(f64::NEG_INFINITY, f64::max);
     let omega_max_n = omega_peak_deg_s / a0;
 
-    let in_swing: Vec<f64> = omega_abs
+    // SIGNED minimum, matching Popovic. This used to take the minimum of
+    // omega_abs -- the near-zero speed at a turning point -- which made the
+    // parameter ~0.001 for every trial and left one of the seven a static
+    // zero-offset in the sum. The published healthy range is NEGATIVE
+    // (-12 to -9 rad/s): omega-min is peak velocity in the return direction,
+    // not the slowest point of the swing.
+    let in_swing: Vec<f64> = omega_s
         .iter()
         .zip(&phi)
         .filter(|(_, p)| p.abs() > min_amp)

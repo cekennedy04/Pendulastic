@@ -158,15 +158,21 @@ HEALTHY_REF = {
     # Ours is divided by A0. Different quantity.
     "omega_max_n":   9.5672,
 
-    # NOT Popovic's omega-min, despite the name and the framework citation.
-    # The published healthy range is NEGATIVE (-12 to -9 rad/s), so theirs is
-    # the SIGNED minimum -- peak velocity in the extension direction. This
-    # module computes min(abs(omega))/A0, the near-zero speed at a turning
-    # point, which is why the value below is ~0.001 rather than ~-10. It is a
-    # different physical quantity and carries almost no information: it is
-    # ~0.001 for everyone, healthy or spastic. Correcting it changes a scored
-    # parameter and has not been done.
-    "omega_min_n":   0.0011,
+    # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
+    # velocity in the return direction. Until 2026-09-09 this module computed
+    # min(abs(omega))/A0 -- the near-zero speed at a turning point -- so the
+    # value sat at ~0.001 for every trial and one of the seven parameters was
+    # a static zero-offset in the sum.
+    #
+    # Median of 46 OptiTrack control trials; all 46 are negative, and it
+    # mirrors omega_max_n (+9.5672) almost exactly, which is what a pendulum
+    # should do. Subset spread -7.26 to -9.82, far tighter than area_ratio's.
+    #
+    # Worth noting but NOT claimed as a match: Popovic's published healthy
+    # range is -12 to -9 rad/s and this lands inside it. Ours is normalised by
+    # A0 (units 1/s) and theirs is not, so the agreement is suggestive rather
+    # than a like-for-like comparison.
+    "omega_min_n":   -9.4152,
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
@@ -633,11 +639,18 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     for k in _PARAM_KEYS:
         pij = params.get(k, 0.0)
         phj = ref.get(k, 0.0)
-        if phj <= 0:
+        # `== 0`, not `<= 0`. A NEGATIVE reference is legitimate:
+        # omega_min_n is a signed velocity whose healthy value is below
+        # zero. Skipping non-positive references would have flatlined it
+        # exactly as min(abs(omega)) did, by a different route. Popovic's
+        # own formula takes the absolute value of the whole term, so a
+        # negative P_H is fine there; this one-sided form needs abs() in
+        # the denominator instead, below.
+        if phj == 0:
             breakdown[k] = 0.0
             continue
         delta = pij - phj
-        denom = _N_PARAMS * max(phj, _DENOM_FLOOR)
+        denom = _N_PARAMS * max(abs(phj), _DENOM_FLOOR)
         if k in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
             dev = max(0.0, -delta) / denom   # penalise only if below healthy
         elif k in ("area_ratio", "omega_min_n"):
@@ -2675,7 +2688,18 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     omega_max_n    = omega_peak_dps / A0               # normalised by A0
 
     swing_mask  = np.abs(phi) > min_amp
-    omega_min_n = (float(np.nanmin(omega_abs[swing_mask])) / A0
+    # SIGNED minimum, matching Popovic. This used to be
+    # min(abs(omega_s)), the near-zero speed at a turning point, which
+    # made the parameter ~0.001 for everyone and left one of the seven a
+    # static zero-offset in the sum. Popovic's published healthy range is
+    # NEGATIVE (-12 to -9 rad/s), so omega-min is the peak velocity in the
+    # extension/return direction, not the slowest point of the swing.
+    #
+    # The 'penalise only if ABOVE reference' direction survives the change
+    # and is now easier to justify: a healthy limb returns fast (large
+    # negative), a restrained one barely returns (closer to zero), so
+    # ABOVE the reference is the impaired side.
+    omega_min_n = (float(np.nanmin(omega_s[swing_mask])) / A0
                    if swing_mask.sum() > 5 else 0.0)
 
     # ── 7. Area ratio  (symmetry index) ──────────────────────────────────────

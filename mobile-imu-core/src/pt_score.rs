@@ -71,11 +71,12 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // examined a healthy leg in this dataset.
     phi_max_ratio: 0.6667,
     omega_max_n: 9.5672,
-    // NOT Popovic's omega-min despite the name: the published healthy range
-    // is NEGATIVE (-12 to -9 rad/s), the signed minimum. This computes
-    // min(abs(omega))/A0, the near-zero speed at a turning point, which is a
-    // different quantity and is ~0.001 for everyone.
-    omega_min_n: 0.0011,
+    // NOW Popovic's omega-min: the SIGNED minimum angular velocity, peak
+    // velocity in the return direction. Until 2026-09-09 this was
+    // min(abs(omega))/A0, the near-zero speed at a turning point, so the
+    // parameter sat at ~0.001 for every trial and contributed nothing.
+    // Median of 46 control trials, all negative, mirroring omega_max_n.
+    omega_min_n: -9.4152,
     f: 0.8839,
     // Least trustworthy entry: moves 0.082-0.156 depending purely on which
     // controls are included, so this cohort cannot pin it.
@@ -201,26 +202,26 @@ fn dev_above(pij: f64, phj: f64, denom: f64) -> f64 {
 /// contribution for that key, matching the reference's `if phj <= 0: ...
 /// continue`.
 pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBreakdown {
-    let denom = |phj: f64| N_PARAMS as f64 * phj.max(DENOM_FLOOR);
+    let denom = |phj: f64| N_PARAMS as f64 * phj.abs().max(DENOM_FLOOR);
 
-    let r2n = if healthy.r2n <= 0.0 { 0.0 } else { dev_below(params.r2n, healthy.r2n, denom(healthy.r2n)) };
-    let n = if healthy.n <= 0.0 { 0.0 } else { dev_below(params.n, healthy.n, denom(healthy.n)) };
-    let phi_max_ratio = if healthy.phi_max_ratio <= 0.0 {
+    let r2n = if healthy.r2n == 0.0 { 0.0 } else { dev_below(params.r2n, healthy.r2n, denom(healthy.r2n)) };
+    let n = if healthy.n == 0.0 { 0.0 } else { dev_below(params.n, healthy.n, denom(healthy.n)) };
+    let phi_max_ratio = if healthy.phi_max_ratio == 0.0 {
         0.0
     } else {
         dev_below(params.phi_max_ratio, healthy.phi_max_ratio, denom(healthy.phi_max_ratio))
     };
-    let omega_max_n = if healthy.omega_max_n <= 0.0 {
+    let omega_max_n = if healthy.omega_max_n == 0.0 {
         0.0
     } else {
         dev_below(params.omega_max_n, healthy.omega_max_n, denom(healthy.omega_max_n))
     };
-    let omega_min_n = if healthy.omega_min_n <= 0.0 {
+    let omega_min_n = if healthy.omega_min_n == 0.0 {
         0.0
     } else {
         dev_above(params.omega_min_n, healthy.omega_min_n, denom(healthy.omega_min_n))
     };
-    let area_ratio = if healthy.area_ratio <= 0.0 {
+    let area_ratio = if healthy.area_ratio == 0.0 {
         0.0
     } else {
         dev_above(params.area_ratio, healthy.area_ratio, denom(healthy.area_ratio))
@@ -272,7 +273,7 @@ pub const N_SIMPLE: usize = 4;
 /// goes unmeasurable on a limb that never swings back, so the simple score is
 /// markedly less inflated than the full one on exactly those trials.
 pub fn pt_score_simple(params: &PtParams, healthy: &HealthyRef) -> f64 {
-    let denom = |phj: f64| N_SIMPLE as f64 * phj.max(DENOM_FLOOR);
+    let denom = |phj: f64| N_SIMPLE as f64 * phj.abs().max(DENOM_FLOOR);
     let mut total = 0.0;
     for (pij, phj) in [
         (params.r2n, healthy.r2n),
@@ -1023,7 +1024,7 @@ mod tests {
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        assert!((full - 1.629_561_363_540_285_25_f64).abs() < 1e-15, "full={full:.17}");
+        assert!((full - 1.768_336_341_387_656_72_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }
