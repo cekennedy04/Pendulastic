@@ -212,6 +212,44 @@ fn sg(sig: &[f64], dt: f64, win_s: f64, p: usize) -> Vec<f64> {
     }
 }
 
+/// `_swing_centre`: the slow baseline the oscillation is riding on.
+///
+/// A boxcar average over exactly ONE swing period integrates a sinusoid of
+/// that period to zero, so the swing cancels and whatever the centre is doing
+/// survives. `neutral` is the SETTLED angle, and a limb that keeps creeping
+/// into flexion after the oscillation dies swung about a higher centre than
+/// the angle it finally rests at -- which starved the sub-neutral troughs and
+/// made a symmetric swing read as maximally asymmetric.
+///
+/// A boxcar rather than the midpoint of consecutive extrema, which was tried
+/// first and is biased by DAMPING: for a decaying oscillation that midpoint
+/// sits above the true centre, regressing A0 on trials with no sag at all.
+fn swing_centre(phi: &[f64], dt: f64, period_s: f64) -> Vec<f64> {
+    if dt <= 0.0 || phi.is_empty() {
+        return vec![0.0; phi.len()];
+    }
+    let mut n = (period_s / dt).round() as usize;
+    if n < 3 || n >= phi.len() {
+        return vec![0.0; phi.len()];
+    }
+    if n.is_multiple_of(2) {
+        n += 1;
+    }
+    let pad = n / 2;
+    // Edge-padded, not zero-padded: zeros would drag the baseline toward
+    // neutral exactly at the release, where the first swing needs its own
+    // centre most.
+    let mut padded = Vec::with_capacity(phi.len() + 2 * pad);
+    padded.extend(std::iter::repeat_n(phi[0], pad));
+    padded.extend_from_slice(phi);
+    padded.extend(std::iter::repeat_n(phi[phi.len() - 1], pad));
+
+    let inv = 1.0 / n as f64;
+    (0..phi.len())
+        .map(|i| padded[i..i + n].iter().sum::<f64>() * inv)
+        .collect()
+}
+
 /// `_detect_release`: first sample whose deviation from the pre-release
 /// baseline exceeds an adaptive threshold, backed off by a fixed duration.
 ///
@@ -579,6 +617,35 @@ pub fn compute_pt_params(
     let neg_phi_s: Vec<f64> = phi_s.iter().map(|v| -v).collect();
     let mut pk_i = find_peaks(&phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
     let mut tr_i = find_peaks(&neg_phi_s, Some(min_amp), Some(min_dist), Some(min_amp));
+    // Second pass, against the swing's own centre rather than the settled
+    // angle. The first pass exists only to estimate the period the boxcar
+    // needs -- extremum spacing is a half period -- so this refines the same
+    // detection rather than being a different detector.
+    //
+    // Only DETECTION and the symmetry integral move to the centred frame. A0
+    // and the amplitudes stay relative to `neutral`: "how far the limb was
+    // from where it rests" is what A0 means, and re-basing it would redefine
+    // a Popovic parameter rather than fix an implementation.
+    let dt_c = median_dt(&t_r);
+    let mut ext0: Vec<usize> = pk_i.iter().chain(tr_i.iter()).copied().collect();
+    ext0.sort_unstable();
+    let mut phi_centre = vec![0.0; phi_s.len()];
+    if ext0.len() >= 3 && dt_c > 0.0 {
+        let gaps: Vec<f64> = ext0.windows(2).map(|w| t_r[w[1]] - t_r[w[0]]).collect();
+        let half = nanmedian(&gaps);
+        if half > 0.0 {
+            phi_centre = swing_centre(&phi_s, dt_c, 2.0 * half);
+            let phi_sc: Vec<f64> = phi_s.iter().zip(&phi_centre).map(|(a, b)| a - b).collect();
+            let neg_sc: Vec<f64> = phi_sc.iter().map(|v| -v).collect();
+            pk_i = find_peaks(&phi_sc, Some(min_amp), Some(min_dist), Some(min_amp));
+            tr_i = find_peaks(&neg_sc, Some(min_amp), Some(min_dist), Some(min_amp));
+        }
+    }
+    // Every later gate reads this frame, or a trough found about the swing
+    // centre gets rejected against a threshold measured from the settled
+    // angle -- which is the starvation this fixes.
+    let phi_g: Vec<f64> = phi.iter().zip(&phi_centre).map(|(a, b)| a - b).collect();
+
 
     // Bound to the active-oscillation window before counting anything.
     let window_end_t = active_oscillation_window_end(&t_r, &ang_r, &pk_i, &tr_i, neutral, a0);
@@ -594,7 +661,7 @@ pub fn compute_pt_params(
     // fact running. Verified behaviour-neutral: all fixtures still pass.
 
     // ---- 1. R2n (A1 = peak-to-peak of the first oscillation) --------------
-    let first_neg_trough = tr_i.iter().copied().find(|&i| phi[i] < -min_amp);
+    let first_neg_trough = tr_i.iter().copied().find(|&i| phi_g[i] < -min_amp);
     let (a1, first_trough_depth) = match first_neg_trough {
         Some(i) => {
             let depth = phi[i].abs();
@@ -605,8 +672,8 @@ pub fn compute_pt_params(
     let r2n = if a0 > 1e-3 { a1 / (1.6 * a0) } else { 0.0 };
 
     // ---- 2. N (significant full oscillation cycles) -----------------------
-    let n_pos = pk_i.iter().filter(|&&i| phi[i] > min_amp).count();
-    let n_neg = tr_i.iter().filter(|&&i| phi[i] < -min_amp).count();
+    let n_pos = pk_i.iter().filter(|&&i| phi_g[i] > min_amp).count();
+    let n_neg = tr_i.iter().filter(|&&i| phi_g[i] < -min_amp).count();
     let n = (n_pos + n_neg) as f64 / 2.0;
 
     // ---- 6. f (computed before phi_max_ratio, which uses it) --------------
@@ -690,11 +757,14 @@ pub fn compute_pt_params(
         1.0 / 30.0
     };
     let n_ext = 1.max((EXTEND_S / dt_mean) as usize);
-    let rest_start = ((0.80 * phi.len() as f64) as usize).max(1);
-    let phi_rest = nanmedian(&phi[rest_start..]);
-
+    // Integrated about the swing centre: the asymmetry being measured is the
+    // limb's, and a baseline drifting one way makes a symmetric swing read as
+    // maximally asymmetric (0.008 -> 0.824 across 20 deg of sag).
+    let phi_c_ar: Vec<f64> = phi.iter().zip(&phi_centre).map(|(a, b)| a - b).collect();
+    let tail_from = ((0.80 * phi_c_ar.len() as f64) as usize).max(1);
+    let phi_rest = nanmedian(&phi_c_ar[tail_from..]);
     let mut t_ar = t_r.clone();
-    let mut phi_ar = phi.clone();
+    let mut phi_ar = phi_c_ar.clone();
     let t_last = t_r[t_r.len() - 1];
     for k in 1..=n_ext {
         t_ar.push(t_last + k as f64 * dt_mean);

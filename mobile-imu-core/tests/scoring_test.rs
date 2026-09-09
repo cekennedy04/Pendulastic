@@ -21,6 +21,15 @@ fn close(got: f64, want: f64, tol: f64, what: &str) {
     );
 }
 
+
+fn spasticity_str(t: SpasticityType) -> &'static str {
+    match t {
+        SpasticityType::Extension => "extension",
+        SpasticityType::Flexion => "flexion",
+        SpasticityType::Balanced => "balanced",
+    }
+}
+
 #[test]
 fn nominal_decaying_swing_matches_the_python_reference() {
     let p = compute_pt_params(golden::TRIAL_SWING_T, golden::TRIAL_SWING_ANG, None, false)
@@ -86,7 +95,10 @@ fn nominal_decaying_swing_matches_the_python_reference() {
     close(p.p_minus, golden::TRIAL_SWING_P_MINUS, 1e-6, "P-");
     close(p.p_total, golden::TRIAL_SWING_P_TOTAL, 1e-6, "P total");
 
-    assert_eq!(p.spasticity_type, SpasticityType::Balanced);
+    // Pinned to the golden, not a literal: this went stale when the symmetry
+    // integral moved to the swing centre. P+ 22.80 vs P- 16.75 is a ratio of
+    // 1.36, past the 1.25 the reference calls extension-dominant.
+    assert_eq!(spasticity_str(p.spasticity_type), golden::TRIAL_SWING_SPASTICITY_TYPE);
     assert_eq!(p.quality_warn, golden::TRIAL_SWING_QUALITY_WARN);
     assert_eq!(p.phi_negated, golden::TRIAL_SWING_PHI_NEGATED);
 

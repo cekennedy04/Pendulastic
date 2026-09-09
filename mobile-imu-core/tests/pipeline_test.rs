@@ -126,6 +126,14 @@ fn assert_series_close(got: &[f64], want: &[f64], tol: f64, what: &str) {
     }
 }
 
+fn spasticity_str(t: SpasticityType) -> &'static str {
+    match t {
+        SpasticityType::Extension => "extension",
+        SpasticityType::Flexion => "flexion",
+        SpasticityType::Balanced => "balanced",
+    }
+}
+
 fn close(got: f64, want: f64, tol: f64, what: &str) {
     assert!(
         (got - want).abs() <= tol,
@@ -180,9 +188,14 @@ fn full_pipeline_reproduces_the_python_score() {
         1e-5,
         "neutral_deg",
     );
+    // Read from the golden rather than hardcoded. This was the one literal in
+    // an otherwise golden-driven test, and it went stale the moment the
+    // symmetry integral moved to the swing centre: a symmetric decaying
+    // oscillation is BALANCED, and the previous "extension" verdict came from
+    // the baseline asymmetry the centred frame removes.
     assert_eq!(
-        p.spasticity_type,
-        SpasticityType::Extension,
+        spasticity_str(p.spasticity_type),
+        golden::TRIAL_E2E_SPASTICITY_TYPE,
         "spasticity_type"
     );
     assert_eq!(
