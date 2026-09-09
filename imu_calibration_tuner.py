@@ -211,7 +211,42 @@ class _RoleState:
         self.accel_bias = mean_accel - gravity
 
 
+class ReplayQuality:
+    """Why a replay produced no angle, in the operator's terms.
+
+    23 of 163 corpus trials returned nothing from the scorer and every one of
+    them reported "compute_pt_params returned None", which was true of none of
+    them: the real causes were a missing accelerometer stream, a zero
+    reference that never latched, and release landing where the leg already
+    sat at neutral. A refusal that cannot say which is indistinguishable from
+    a bug, and sends the operator looking in the wrong place.
+
+    Mirrors `pendulastic_pt_score.TrialQuality` and the evidence-not-silence
+    correction U5 made for the pre-release hold.
+    """
+
+    __slots__ = ("ok", "reason", "detail")
+
+    def __init__(self, ok: bool = True, reason: str = "", detail: str = ""):
+        self.ok = ok
+        self.reason = reason
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return (f"ReplayQuality(ok={self.ok}, reason={self.reason!r}, "
+                f"detail={self.detail!r})")
+
+
 def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
+    """Thin wrapper over `replay_trial_detailed` for the many callers that
+    only want the curve. Use the detailed form wherever the reason a trial
+    produced nothing should reach the operator -- this one drops it."""
+    t, ang, _quality = replay_trial_detailed(raw_samples, params, tick_s)
+    return t, ang
+
+
+def replay_trial_detailed(raw_samples: list, params: dict,
+                          tick_s: float = TICK_S):
     """
     Re-simulate the AHRS + flex-axis + zero-referencing + EMA pipeline over a
     raw trial log, mirroring pendulastic_imu_server.py's on_accel/on_mag/
@@ -240,7 +275,26 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
     arr[np.isfinite(arr)]) rather than assume every tick is a number.
     """
     if not raw_samples:
-        return np.array([]), np.array([])
+        return (np.array([]), np.array([]),
+                ReplayQuality(False, "no_samples",
+                              "the raw log is empty"))
+
+    # A gyro-only log cannot be replayed. Without accelerometer samples the
+    # AHRS has no gravity reference, and what it produces is not a weak
+    # measurement but an all-zero series that looks like one -- measured on
+    # four trials whose accel file was 49 bytes, a header and nothing else,
+    # while gyro and mag recorded normally at 63-141 KB. Those reached
+    # compute_pt_params and failed three stages later wearing the wrong label.
+    _n_accel = sum(1 for _s in raw_samples if _s.get("sensor") == "accel")
+    if _n_accel == 0:
+        return (np.array([]), np.array([]),
+                ReplayQuality(False, "no_accel",
+                              "no accelerometer samples in the log, so the "
+                              "orientation filter has no gravity reference. "
+                              "Gyro and magnetometer alone cannot give an "
+                              "absolute angle -- check the accel file, which "
+                              "is header-only when the stream failed to "
+                              "record."))
 
     beta = params["beta"]
     roles: dict = {}
@@ -258,6 +312,9 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
     flex_est = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
     q_zero: dict = {}
     zero_captured = False
+    # Recorded only so a refusal can say WHICH way it failed --
+    # never armed at all, versus armed and then revoked.
+    _ever_armed = False
 
     # Mirrors on_gyro()'s "only the distal segment (or the solo phone)
     # defines the axis" restriction (pendulastic_imu_server.py's on_gyro,
@@ -350,6 +407,7 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                 # allowed to keep climbing from here to the capture
                 # threshold.
                 st.pending_departure = True
+                _ever_armed = True
 
             if st.pending_departure and is_calm_sample:
                 # The above-guard episode settled back down without ever
@@ -452,7 +510,24 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
         next_tick_i += 1
 
     if not zero_captured:
-        return np.array([]), np.array([])
+        # Distinguish the two ways this happens, because they call for
+        # different things from the operator. Measured across the corpus: 5
+        # trials never armed at all, 10 armed and were revoked by a
+        # sub-threshold wobble before the real swing arrived.
+        if _ever_armed:
+            detail = ("the release gate armed after a calm hold but the swing "
+                      f"never reached {_FLEX_CAPTURE_THRESHOLD:.1f} rad/s "
+                      "while it was open, so no zero reference was taken. A "
+                      "small movement before the release revokes eligibility "
+                      "and a fresh calm hold is then required -- hold still, "
+                      "then release cleanly without repositioning first.")
+        else:
+            detail = ("no calm hold followed by a departure was ever seen, so "
+                      "the release gate never armed and no zero reference "
+                      "could be taken. Hold the leg still for about a second "
+                      "before releasing it.")
+        return (np.array([]), np.array([]),
+                ReplayQuality(False, "no_zero_capture", detail))
 
     def _swing_from_quats(quats: dict) -> float:
         if (ROLE_PROXIMAL in quats and ROLE_DISTAL in quats
@@ -519,7 +594,7 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
             ema = a if ema is None else alpha * a + (1.0 - alpha) * ema
             smoothed[i] = ema
 
-    return t_arr, smoothed
+    return t_arr, smoothed, ReplayQuality(True, "", "")
 
 
 def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
