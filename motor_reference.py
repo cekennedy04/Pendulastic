@@ -31,3 +31,30 @@ def swing(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):
     t = np.arange(n, dtype=float) / fs_hz
     theta = a0_deg * np.exp(-t / tau_s) * np.cos(2.0 * np.pi * f_hz * t)
     return t, theta
+
+
+def preamble(fs_hz=1000.0):
+    """PULSE_COUNT square pulses, then a still pre-roll.
+
+    Square rather than smooth on purpose: the alignment is taken from the
+    edge, and a sharp edge is what both the encoder and the gyro resolve
+    identically. The motor is in position control, so the pulse is small
+    enough not to need current the drive cannot deliver.
+    """
+    seg = [np.zeros(int(round(LEAD_S * fs_hz)))]
+    for _ in range(PULSE_COUNT):
+        seg.append(np.full(int(round(PULSE_WIDTH_S * fs_hz)), PULSE_DEG))
+        seg.append(np.zeros(int(round(PULSE_GAP_S * fs_hz))))
+    seg.append(np.zeros(int(round(PRE_ROLL_S * fs_hz))))
+    theta = np.concatenate(seg)
+    t = np.arange(len(theta), dtype=float) / fs_hz
+    return t, theta
+
+
+def full_trace(a0_deg, f_hz, tau_s, duration_s=12.0, fs_hz=1000.0):
+    """Preamble then swing, as one trace. Returns (t, theta_deg, t_release_s)."""
+    tp, thp = preamble(fs_hz)
+    ts, ths = swing(a0_deg, f_hz, tau_s, duration_s, fs_hz)
+    theta = np.concatenate([thp, ths])
+    t = np.arange(len(theta), dtype=float) / fs_hz
+    return t, theta, float(len(thp) / fs_hz)

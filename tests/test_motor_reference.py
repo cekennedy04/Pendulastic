@@ -37,3 +37,22 @@ def test_the_interior_waveform_matches_the_closed_form():
 
     assert abs(th[int(tau * fs)]) == pytest.approx(
         a0 * np.exp(-1.0) * abs(np.cos(2.0 * np.pi * f * tau)), rel=0.02)
+
+
+def test_the_preamble_has_exactly_three_pulses():
+    t, th = mr.preamble(fs_hz=1000.0)
+    # A pulse is a contiguous run above half height.
+    above = th > (mr.PULSE_DEG / 2.0)
+    edges = np.diff(above.astype(int))
+    assert (edges == 1).sum() == mr.PULSE_COUNT
+    assert (edges == -1).sum() == mr.PULSE_COUNT
+
+
+def test_the_full_trace_reports_where_the_swing_begins():
+    t, th, t_rel = mr.full_trace(a0_deg=45.0, f_hz=0.9, tau_s=1.6,
+                                 duration_s=10.0, fs_hz=1000.0)
+    i = int(round(t_rel * 1000.0))
+    assert th[i] == pytest.approx(45.0, abs=1e-6), (
+        "the swing must start at full amplitude at the reported release time")
+    assert np.all(np.abs(th[:i - 1]) <= mr.PULSE_DEG + 1e-9), (
+        "nothing before release may exceed the pulse height")
