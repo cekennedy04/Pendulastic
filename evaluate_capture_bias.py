@@ -157,3 +157,57 @@ def compare_midline():
 
 
 compare_midline()
+
+
+# ── Why A0 was left measuring release-above-REST ────────────────────────────
+#
+# The centred frame fixed the symmetry integral and the extremum gates, but A0
+# still absorbs post-swing sag, which is the whole residual PT7 spread (0.058).
+# The obvious next step is to re-base A0 too. It was measured, and it is worse.
+
+def compare_a0_definitions():
+    print('\n--- A0: three definitions, and why the current one stays ---')
+    a0_true = 45.0
+
+    def semi_amplitude(r):
+        """Half the first peak-to-trough excursion. A DIFFERENCE of two points
+        on the same curve, so any additive baseline cancels by construction."""
+        phi = np.asarray(r['phi'])
+        tr = r['tr_i']
+        return float((phi[0] - phi[int(tr[0])]) / 2.0) if len(tr) else float('nan')
+
+    print('\n  sensitivity to SAG (damping fixed):')
+    print(f'  {"sag":>6} {"release-rest":>13} {"semi-amplitude":>15}')
+    a, c = [], []
+    for creep in (0.0, 5.0, 10.0, 20.0):
+        t, ang = build(creep=creep)
+        r = P.compute_pt_params(t, ang, None, False)
+        a.append(r['A0_deg']); c.append(semi_amplitude(r))
+        print(f'  {creep:6.1f} {r["A0_deg"]:13.2f} {c[-1]:15.2f}')
+    print(f'  {"spread":>6} {max(a)-min(a):13.2f} {max(c)-min(c):15.2f}')
+
+    print('\n  sensitivity to DAMPING (no sag):')
+    print(f'  {"damping":>7} {"release-rest":>13} {"semi-amplitude":>15}')
+    a, c = [], []
+    for lam in (0.25, 0.45, 0.8, 1.2, 2.0):
+        dt = 1/20.0
+        ts = np.arange(0.0, 10.0, dt)
+        ang = np.concatenate([
+            np.full(int(1.2/dt), REST + a0_true),
+            REST + a0_true*np.exp(-lam*ts)*np.cos(2*np.pi*FREQ*ts),
+            np.full(int(6.0/dt), REST)])
+        t = np.arange(len(ang))*dt
+        r = P.compute_pt_params(t, ang, None, False)
+        a.append(r['A0_deg']); c.append(semi_amplitude(r))
+        print(f'  {lam:7.2f} {r["A0_deg"]:13.2f} {c[-1]:15.2f}')
+    print(f'  {"spread":>7} {max(a)-min(a):13.2f} {max(c)-min(c):15.2f}')
+
+    print('\n  VERDICT: semi-amplitude trades a 19 deg sag sensitivity for an 11 deg')
+    print('  DAMPING sensitivity, and its error grows monotonically with damping.')
+    print('  A0 is the spasticity grouping variable wherever a clinical MAS grade')
+    print('  is absent, and damping IS the spasticity signal -- so that definition')
+    print('  would make A0 partly a restatement of what it must stay independent')
+    print('  of. release-above-rest is damping-invariant and stays.')
+
+
+compare_a0_definitions()

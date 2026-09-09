@@ -100,6 +100,25 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # once available. See scratchpad recalibrate_healthy_ref.py for the
 # derivation.
 # One-directional penalties: only penalise deviations in the impaired direction.
+# STALE AS OF 2026-09-09, and deliberately not rescaled by hand.
+#
+# These medians were measured while extremum detection and the symmetry
+# integral worked in the SETTLED-ANGLE frame. Both now work in the swing-
+# centred frame (see _swing_centre), which moved SIX of the seven scored
+# parameters on the golden corpus -- area_ratio, phi_max_ratio, R2n, f, N and
+# the P+/P- areas behind them. Only omega_max_n and omega_min_n held still,
+# because they are driven by omega and A0, neither of which changed.
+#
+# So this is not one stale constant. Every entry below except the two omega
+# terms is a number measured under scoring that no longer ships. The
+# direction is known for area_ratio -- the centred frame leaves a ~0.06 floor
+# where the old read ~0.008, so controls now sit NEARER this reference -- and
+# unmeasured for the rest.
+#
+# Recalibrating needs the cohort and a defensible control set, not a constant
+# edit: the last calibration used n=4 (P2, P8, P9, P12), and those are the
+# same participants whose OptiTrack reconstruction artefacts are on record as
+# having invalidated it. That is validation task V0.4, not a code change.
 HEALTHY_REF = {
     "R2n":           1.0321,  # control median n=4 (2026-08-21 recalibration)
     "N":             3.5,     # control median n=4 -- was 5.5 pre-fix (see note above)
@@ -107,14 +126,6 @@ HEALTHY_REF = {
     "omega_max_n":   6.7684,  # control median n=4
     "omega_min_n":   0.0010,  # control median n=4
     "f":             0.9137,  # control median n=4
-    # STALE AS OF 2026-09-09, deliberately not rescaled here. This was
-    # calibrated when area_ratio was integrated about the SETTLED angle. It
-    # is now integrated about the swing centre, which removes a baseline
-    # artefact but leaves a ~0.06 floor on a perfectly symmetric decaying
-    # swing where the old frame read ~0.008. Controls therefore sit nearer
-    # this reference than they did, and the number below is no longer one
-    # that was measured under the scoring that ships. Recalibrating it needs
-    # the cohort, not a constant edit. See evaluate_capture_bias.py.
     "area_ratio":    0.0768,  # control median n=4
 }
 
@@ -2481,6 +2492,20 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
     phi_s = _sg(phi, dt=_median_dt(t_r), p=2)
 
+    # A0 deliberately measures release-above-REST, not the oscillation
+    # amplitude, and keeps doing so after the swing-centred frame landed. It
+    # is therefore the whole residual sag sensitivity (PT7 spread 0.058).
+    #
+    # Re-basing it was measured and is worse. Half the first peak-to-trough
+    # excursion is sag-invariant (spread 1.2 deg against 19.4) but its error
+    # grows monotonically with DAMPING -- -2.7 deg at lambda 0.25 rising to
+    # -14.1 deg at lambda 2.0 -- because a more damped swing loses more
+    # amplitude between the peak and the trough being differenced. A0 is the
+    # spasticity grouping variable wherever a clinical MAS grade is absent,
+    # and damping IS the spasticity signal, so that definition would make A0
+    # partly a restatement of what it has to stay independent of.
+    # release-above-rest is damping-invariant (spread 0.9 across an 8x damping
+    # range). See evaluate_capture_bias.compare_a0_definitions.
     # A0: maximum of smoothed phi in first 20% after release (wider window handles late trigger)
     # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
     first_n = max(5, int(0.20 * len(phi)))
