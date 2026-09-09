@@ -331,7 +331,7 @@ Product Contract restructured, no scope change. R18 was rewritten in place after
   - The index falls monotonically as amplitude rises across the full range.
   - With no anchors configured, no index value and no zone label is produced.
   - The webapp renders excursion and kinematic parameters while the index is unavailable.
-- **Verification.** The index is correct and invisible, and becomes visible only when anchors arrive.
+- **Verification.** LANDED 2026-09-09 as the software half. `rig_calibration.py` holds the session record, derives the stiffness-to-grade mapping from blind assessment alone, and produces the anchors; `pendulastic_pt_score.severity_index` and `severity_report` implement the index and its gates. `derive_anchors` returns None today because no rig data exists, which is R16's state and the one that ships. The physical rig, R1 to R5 and R15, remains outstanding.
 
 ### U8. Report MAS correlation at two tiers
 

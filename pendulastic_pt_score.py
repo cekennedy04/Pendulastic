@@ -4238,3 +4238,87 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ── Severity index (U7 / R6, R7, R9, R16, R25) ───────────────────────────────
+#
+# KD2: A0 carries the severity scale, not PT7. A0 falls monotonically from 78.3
+# to 11.2 deg across the full simulated tone range and is not one of the seven
+# scored parameters, so it does not renormalise on the swing the way they do.
+#
+# KD3: floored at zero, unbounded above, with 1 marking the normative boundary.
+# Not clamped to [0, 1] -- clamping turns a reading the instrument cannot
+# support into a confident one, which is the failure the excursion gate exists
+# to prevent at the other end.
+
+def severity_index(a0_deg, anchors):
+    """Position on the severity scale from A0 alone, or None.
+
+    0 sits at the healthy anchor and 1 at the boundary anchor; larger means
+    more affected, without an upper bound. Below zero is impossible by
+    construction -- a leg that swings further than healthy is not
+    negatively spastic, it is healthy -- so the floor is a floor, not a clamp.
+
+    `anchors` has NO default and None returns None. That is R16: until the rig
+    supplies anchors there is no index, and a default would quietly reinstate
+    the calibration this instrument does not have.
+    """
+    if not anchors:
+        return None
+    try:
+        h = float(anchors["healthy_a0_deg"])
+        b = float(anchors["boundary_a0_deg"])
+        a0 = float(a0_deg)
+    except (TypeError, ValueError, KeyError):
+        return None
+    if not (np.isfinite(h) and np.isfinite(b) and np.isfinite(a0)):
+        return None
+    span = h - b
+    if span <= 0:
+        # A0 falls as severity rises, so the healthy anchor must exceed the
+        # boundary one. Anything else is a mis-built calibration and must not
+        # produce a number that looks like an index.
+        return None
+    return max(0.0, (h - a0) / span)
+
+
+def severity_report(params, anchors, *, source=None):
+    """The index with the reasons it may be withheld, for a caller to render.
+
+    Returns {"index", "available", "reason"}. `index` is None whenever
+    `available` is False, and `reason` always says which gate closed:
+
+      no anchors            R16 -- the rig has not been built
+      source not validated  R25 -- phone A0 does not track the reference
+                            (Spearman 0.05, p 0.60 over 100 paired trials),
+                            because one sensor cannot separate thigh movement
+                            from shank movement. An index computed on it would
+                            not be the quantity R6 specifies.
+      excursion refused     the swing is outside the interpretable band, so
+                            neither PT7 nor an amplitude read off it means
+                            anything
+    """
+    out = {"index": None, "available": False, "reason": ""}
+    if not anchors:
+        out["reason"] = ("No severity index: the reference anchors come from "
+                         "the benchtop rig, which has not produced them yet.")
+        return out
+    if source is not None and str(source).lower().startswith(("imu", "phone")):
+        out["reason"] = (
+            "No severity index from a phone-only capture: phone amplitude does "
+            "not track the optical reference (Spearman 0.05 over 100 paired "
+            "trials), because one sensor cannot separate thigh movement from "
+            "shank movement. The excursion is still shown as measured.")
+        return out
+    if not excursion_ok(params):
+        # mas_estimate is where the Python side formats a refusal; there is no
+        # separate excursion_reason() here (that name is the Rust port's).
+        out["reason"] = (mas_estimate(params).get("reason")
+                         or "Excursion outside the interpretable band.")
+        return out
+    idx = severity_index((params or {}).get("A0_deg"), anchors)
+    if idx is None:
+        out["reason"] = "No severity index: the anchors are not usable."
+        return out
+    out.update(index=float(idx), available=True, reason="")
+    return out
