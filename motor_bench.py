@@ -103,6 +103,17 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
     min_hi_s = MIN_DWELL_FRAC * mr.PULSE_WIDTH_S
     min_lo_s = MIN_DWELL_FRAC * mr.PULSE_GAP_S
 
+    # A sample represents dt of signal, so a run of ONE sample is dt of dwell,
+    # not zero. Without this credit the dwell is unsatisfiable on any grid
+    # coarser than min_hi_s: at the phone's own TICK_S = 0.05 s the 0.08 s
+    # pulse lands on one or two samples depending on sampling phase, and the
+    # one-sample case found 3 edges in 0 of 25 phases -- a regression against
+    # the pre-debounce detector, which found them in 25 of 25. The credit
+    # still rejects a 1 kHz single-sample spike, worth 0.001 s against a
+    # 0.032 s dwell; at 20 Hz one sample IS 0.05 s of signal and is not
+    # distinguishable from a real pulse, which is the grid's limit, not a bug.
+    dt = float(np.median(np.diff(tw))) if len(tw) > 1 else 0.0
+
     # armed starts False when the trace is ALREADY high at its first sample:
     # that is not a rising edge, it is a trace that began mid-pulse, and
     # recording t[0] as an edge would return the right COUNT with one bogus
@@ -119,7 +130,7 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
             # The edge is recorded at the START of the confirmed high run, not
             # at the sample that satisfied the dwell -- the dwell is evidence
             # about the run, not a redefinition of when it began.
-            if armed and (tw[i] - tw[hi_start]) >= min_hi_s:
+            if armed and (tw[i] - tw[hi_start] + dt) >= min_hi_s:
                 edges.append(float(tw[hi_start]))
                 armed = False
         elif xw[i] <= lo:
@@ -257,13 +268,18 @@ def _settled_neutral(t, x, run):
     if len(t) < 3:
         return float("nan")
     settle_s = 5.0 * float(run["tau_s"])
+    min_span_s = 2.0 / float(run["f_hz"])
     m = t >= (t[0] + settle_s)
-    if m.sum() < 10:
-        # Too short to have settled; fall back to the last quarter, which is
-        # the best available estimate rather than a good one.
-        m = t >= (t[0] + 0.75 * (t[-1] - t[0]))
-    if m.sum() < 3:
-        m = np.ones(len(t), dtype=bool)
+    # The SAME gate _tail_drift applies, deliberately: the two read the same
+    # settled tail, so they must agree on whether it exists. The fallbacks this
+    # replaced returned a confident wrong neutral in exactly the trials where
+    # _tail_drift refused -- measured against a true 0.0 on a 45 deg run, the
+    # last-quarter fallback gave +1.6511, -1.1187 and -0.6885 deg while
+    # _tail_drift returned NaN on the identical array. A wrong neutral is
+    # subtracted from every RMSE sample and is invisible in the result; NaN
+    # says so, and score_trial already reports NaN rather than a number.
+    if m.sum() < 10 or (t[-1] - t[0] - settle_s) < min_span_s:
+        return float("nan")
     vals = x[m]
     vals = vals[np.isfinite(vals)]
     return float(np.median(vals)) if len(vals) else float("nan")

@@ -652,3 +652,95 @@ def test_the_summary_reports_the_drift_count_and_the_null_control():
     assert s["drift_median_deg_s"] == pytest.approx(0.5)
     assert s["n_drift_enc"] == 4
     assert s["drift_enc_median_deg_s"] == pytest.approx(0.0)
+
+
+# ------------------------------------------- controller fixes after re-review
+
+
+def _resample(t, th, dt, phase):
+    """Put a 1 kHz trace onto a coarser grid at a chosen sampling phase.
+
+    Regenerating the trajectory at a lower fs_hz is NOT the same thing: it
+    rebuilds a perfect square with round(PULSE_WIDTH_S * fs) full-height
+    samples every time. A real phone samples an already-continuous signal, so
+    where the samples LAND relative to a pulse edge varies with phase, and that
+    is the case the dwell got wrong.
+    """
+    grid = np.arange(t[0] + phase * dt, t[-1], dt)
+    return grid, np.interp(grid, t, th)
+
+
+def test_edges_are_found_on_the_phones_own_20_hz_grid_at_every_phase():
+    """The debounce must not make the production grid unalignable.
+
+    imu_calibration_tuner.TICK_S is 0.05 s and PULSE_WIDTH_S is 0.08 s, so a
+    pulse lands on one or two samples depending on phase. Charging a one-sample
+    run zero dwell made this 0 of 25 phases -- a regression against the
+    pre-debounce detector's 25 of 25 -- on the grid the app actually saves.
+    """
+    t, th, _ = mr.full_trace(45.0, 0.9, 1.6)
+    for dt, name in ((0.05, "20 Hz"), (0.02, "50 Hz"), (0.01, "100 Hz")):
+        found = 0
+        for k in range(25):
+            g, x = _resample(t, th, dt, k / 25.0)
+            try:
+                found += len(mb.find_pulse_edges(g, x)) == 3
+            except mb.SyncError:
+                pass
+        assert found == 25, f"{name}: only {found}/25 sampling phases aligned"
+
+
+def test_a_single_sample_spike_is_still_rejected_at_1_khz():
+    """The credit must not undo the debounce where the grid can resolve it.
+
+    Guards the fix above from being "fixed" by dropping the dwell entirely: at
+    1 kHz one sample is 0.001 s against a 0.032 s dwell and must not count.
+    """
+    t, th, _ = mr.full_trace(45.0, 0.9, 1.6)
+    x = th.copy()
+    # INSIDE pulse_search_window_s() (1.69 s) and in the quiet gap after the
+    # third pulse, at pulse height so it does not move the hi/lo thresholds.
+    # An earlier version of this test put the spike at 5.0 s, outside the
+    # search window, where the detector never saw it -- the test passed with
+    # the dwell removed entirely and proved nothing.
+    spike = int(1.20 * 1000.0)
+    assert spike < len(x) and 1.20 < mb.mr.pulse_search_window_s()
+    x[spike] = mr.PULSE_DEG
+    assert len(mb.find_pulse_edges(t, x)) == 3
+
+
+@pytest.mark.parametrize("tau_s,f_hz,frac", [
+    (1.6, 0.6, 0.50), (3.2, 0.6, 0.35), (1.6, 1.2, 0.35), (3.2, 0.9, 0.35)])
+def test_the_neutral_refuses_wherever_the_drift_fit_refuses(tau_s, f_hz, frac):
+    """Two readings of one settled tail must agree that it exists.
+
+    The fallbacks this replaced returned a confident wrong neutral in exactly
+    the trials _tail_drift refused: against a true 0.0 on a 45 deg run they
+    gave +1.6511, -1.1187 and -0.6885 deg. A wrong neutral is subtracted from
+    every RMSE sample and never appears in the result.
+    """
+    run = {"a0_deg": 45.0, "f_hz": f_hz, "tau_s": tau_s}
+    t, th = mr.swing(45.0, f_hz, tau_s, duration_s=mr.run_duration_s(run))
+    n = int(len(t) * frac)
+    tt, xx = t[:n], th[:n]
+    neutral = mb._settled_neutral(tt, xx, run)
+    drift = mb._tail_drift(tt, xx, run)
+    assert not np.isfinite(drift), "fixture no longer truncates past the gate"
+    assert not np.isfinite(neutral), (
+        f"neutral returned {neutral:.4f} where the drift fit refused; a true "
+        f"0.0 tail cannot be established from this trace")
+
+
+def test_a_full_length_trial_still_establishes_its_neutral():
+    """The gate must refuse short traces WITHOUT refusing the designed run.
+
+    run_duration_s guarantees 5*tau + 4/f + 2 s of post-release span precisely
+    so the primary branch always wins; if this ever refuses, the gate is wrong
+    rather than the trial.
+    """
+    run = {"a0_deg": 45.0, **NOMINAL}
+    t, th, _ = mr.full_trace(45.0, 0.9, 1.6)
+    phone = 180.0 - np.abs(th - 45.0)
+    scores = mb.score_trial(mb.align(t, th, t, phone), run)
+    assert np.isfinite(scores["rmse_neutral_deg"])
+    assert scores["rmse_deg"] < 1.0
