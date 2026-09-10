@@ -84,8 +84,13 @@ preceded by three sharp sync pulses.
 | f | 0.6, 0.9, 1.2 Hz | brackets `HEALTHY_REF['f']` = 0.9137 |
 | tau | ~2, ~5, ~9 cycles to 3 deg | spans spastic to healthy decay |
 
-Full A0 sweep at nominal f and tau (12 runs), then f and tau varied at three A0
-levels (18 runs), three repeats each: **90 trials**, ~20 s per run plus reset.
+Full A0 sweep at nominal f and tau (12 combos), then f and tau varied at three
+A0 levels (12 combos, not 18 -- the nominal f/tau pair is already in the sweep),
+three repeats each = 72 runs, plus a 20-repeat repeatability block at
+a0 = 50 deg: **92 runs**, 23.1 min of commanded motion plus reset time.
+
+The count is whatever `motor_reference.sweep_matrix()` returns; this paragraph
+describes it and has been wrong twice. Read the code, not this line.
 
 ## Synchronisation
 
@@ -150,7 +155,9 @@ Specifically:
 
 ## Open questions
 
-- Bench session length: 90 trials at ~20 s is assumed to be a day. Unconfirmed.
+- Bench session length: 92 runs total 23.1 min of COMMANDED MOTION (measured
+  from run_duration_s). Reset, mount and re-arm time between runs is the
+  unknown that decides whether this is an afternoon or a day.
 - Encoder log format: assumed to be a file the analysis can read, with a
   timestamp and an angle column. Not yet specified.
 - Motor model number: notes carry both `JR 14-MCH-1` and `JR16M4CH-1`. This
