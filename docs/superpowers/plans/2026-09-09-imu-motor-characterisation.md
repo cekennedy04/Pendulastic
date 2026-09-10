@@ -874,7 +874,11 @@ def test_all_four_conventions_are_scored():
     assert set(out) == {"20hz_detrend_false", "20hz_detrend_true",
                         "100hz_detrend_false", "100hz_detrend_true"}
     for key, res in out.items():
-        assert "a0_ratio" in res, f"{key} did not score"
+        # Asserting the KEY exists is not a test. An earlier version did
+        # exactly that and passed while all four ratios were NaN.
+        r = res["a0_ratio"]
+        assert np.isfinite(r), f"{key} returned {r}"
+        assert 0.9 < r < 1.1, f"{key} recovered {r:.3f} of a clean known amplitude"
 
 
 def test_the_detrend_flag_changes_the_answer_on_a_drifting_trace():
@@ -899,8 +903,10 @@ Expected: FAIL, `AttributeError: module 'motor_bench' has no attribute 'score_fo
 
 ```python
 def _a0_of_detrended(t, theta, detrend):
+    """A0 under one detrend convention. Same release_idx=0 contract as _a0_of:
+    the CALLER must have trimmed to the release already."""
     p = pts.compute_pt_params(np.asarray(t, float), np.asarray(theta, float),
-                              detrend=detrend)
+                              release_idx=0, detrend=detrend)
     if not p:
         return float("nan")
     v = p.get("A0_deg")
@@ -928,11 +934,21 @@ def score_four_ways(samples, aligned, run):
             t_g = np.arange(t_src.min(), t_src.max(), tick)
             th_g = np.interp(t_g, t_src, th_src)
 
+        # Trim to the release BEFORE re-extracting. score_trial does this
+        # internally, but the line below OVERWRITES its a0_imu, so the trim has
+        # to happen here too. Without it _a0_of_detrended gets an untrimmed
+        # array while passing release_idx=0 -- which asserts index 0 IS the
+        # release -- and every convention returns NaN. Same defect as the one
+        # already fixed in _a0_of, reappearing at a second call site.
+        rel = float(aligned["t_release_s"])
+        keep = t_g >= rel
+        t_rel, th_rel = t_g[keep] - rel, th_g[keep]
+
         for flag in (False, True):
             sub = dict(aligned)
             sub["imu_t"], sub["imu_theta"] = t_g, th_g
             res = score_trial(sub, run)
-            res["a0_imu"] = _a0_of_detrended(t_g, th_g, flag)
+            res["a0_imu"] = _a0_of_detrended(t_rel, th_rel, flag)
             res["a0_ratio"] = (res["a0_imu"] / res["a0_true"]) if res["a0_true"] else float("nan")
             res["a0_error_deg"] = res["a0_imu"] - res["a0_true"]
             out[f"{grid_name}_detrend_{str(flag).lower()}"] = res
