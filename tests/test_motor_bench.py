@@ -92,9 +92,17 @@ def test_detection_survives_sample_rates_that_are_not_1_khz(fs):
 
 
 def _rig_pair(lag_s=0.37, a0=45.0, fs=1000.0):
-    """An encoder trace and a phone trace of the same motion, offset in time."""
+    """An encoder trace and a phone trace of the same motion, offset in time.
+
+    Duration comes from run_duration_s rather than a flat 8 s: the tail-drift
+    gate in score_trial needs the tail to span 5*tau past release plus two
+    full periods, and at tau=1.6/f=0.9 an 8 s swing is shorter than the 5*tau
+    settle alone, so the gate would always fail and tail_drift_deg_s would
+    always be NaN.
+    """
+    run = {"a0_deg": a0, "f_hz": 0.9, "tau_s": 1.6}
     t, th, rel = mr.full_trace(a0_deg=a0, f_hz=0.9, tau_s=1.6,
-                               duration_s=8.0, fs_hz=fs)
+                               duration_s=mr.run_duration_s(run), fs_hz=fs)
     return t, th, t + lag_s, th.copy(), rel
 
 
@@ -128,3 +136,32 @@ def test_release_time_is_reported_on_the_common_clock():
     et, eth, it, ith, rel = _rig_pair(lag_s=0.1)
     out = mb.align(et, eth, it, ith)
     assert out["t_release_s"] == pytest.approx(rel, abs=0.02)
+
+
+def test_a_perfect_phone_recovers_the_commanded_amplitude():
+    """The ceiling case. If A0 is wrong when the phone trace IS the encoder
+    trace, the defect is in extraction, not in the sensor."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0, a0=45.0)
+    out = mb.score_trial(mb.align(et, eth, it, ith),
+                         {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
+    assert out["a0_true"] == 45.0
+    assert out["a0_ratio"] == pytest.approx(1.0, abs=0.15)
+    assert abs(out["rmse_deg"]) < 0.5
+
+
+def test_a_phone_reading_high_is_reported_as_a_ratio_above_one():
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0, a0=45.0)
+    out = mb.score_trial(mb.align(et, eth, it * 1.0, ith * 1.5),
+                         {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
+    assert out["a0_ratio"] > 1.2
+    assert out["a0_error_deg"] > 0
+
+
+def test_tail_drift_is_measured_not_assumed():
+    """The corpus estimate is -0.735 deg/s from indirect evidence. Here it is
+    a fitted slope on a trace whose true drift is known to be zero."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0, a0=45.0)
+    drifted = ith + 0.4 * (it - it[0])
+    out = mb.score_trial(mb.align(et, eth, it, drifted),
+                         {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
+    assert out["tail_drift_deg_s"] == pytest.approx(0.4, abs=0.15)

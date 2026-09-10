@@ -126,8 +126,21 @@ def sweep_matrix():
     return runs
 
 
-def export_trace(run, out_dir, fs_hz=1000.0, duration_s=12.0):
+def run_duration_s(run):
+    """How long this run's swing must last to be measurable.
+
+    Long enough for the tail to settle (5 tau) plus two full periods to fit a
+    drift slope across, with margin. A 12 s trial at tau=3.2 is only 3.75 time
+    constants: the "settled" tail still carries live oscillation, and fitting
+    it reports half a degree per second of drift that is not there.
+    """
+    return max(12.0, 5.0 * float(run["tau_s"]) + 4.0 / float(run["f_hz"]) + 2.0)
+
+
+def export_trace(run, out_dir, fs_hz=1000.0, duration_s=None):
     """Write one run's commanded trace as CSV for LabVIEW to stream."""
+    if duration_s is None:
+        duration_s = run_duration_s(run)
     os.makedirs(out_dir, exist_ok=True)
     t, theta, _rel = full_trace(run["a0_deg"], run["f_hz"], run["tau_s"],
                                 duration_s=duration_s, fs_hz=fs_hz)

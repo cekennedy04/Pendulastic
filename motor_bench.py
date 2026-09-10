@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 import motor_reference as mr
+import pendulastic_pt_score as pts
 
 
 class SyncError(ValueError):
@@ -131,4 +132,83 @@ def align(enc_t, enc_theta, imu_t, imu_theta):
         "imu_t": np.asarray(imu_t, dtype=float) - lag,
         "imu_theta": np.asarray(imu_theta, dtype=float),
         "t_release_s": float(t_release),
+    }
+
+
+def _a0_of(t, theta):
+    """A0 through the production extractor, or NaN.
+
+    release_idx=0 is not optional. The caller has already trimmed to the
+    release, and compute_pt_params runs its OWN release detection which needs
+    the pre-release hold to find a baseline. Trimmed without being told, it
+    mis-fires about 0.58 s late at the first trough and truncates A0 --
+    measured at ratio 0.683 instead of 1.002, and varying with frequency and
+    damping in a way that looks exactly like a real instrument defect. It is
+    not one: told where release is, the extractor recovers a known amplitude to
+    0.2% at every amplitude from 5 to 90 deg and at every waveform shape tested.
+    """
+    p = pts.compute_pt_params(np.asarray(t, float), np.asarray(theta, float),
+                              release_idx=0)
+    if not p:
+        return float("nan")
+    v = p.get("A0_deg")
+    return float(v) if v is not None else float("nan")
+
+
+def score_trial(aligned, run):
+    """One trial against truth. Direction is always imu - truth.
+
+    Both traces are trimmed to post-release BEFORE anything is extracted.
+    compute_pt_params runs its own release detection, and a 5 deg square sync
+    pulse is a sharper transient than the swing -- left in, it can anchor A0 to
+    the preamble and return a plausible-looking wrong number.
+    """
+    rel = float(aligned["t_release_s"])
+    et_all, eth_all = aligned["enc_t"], aligned["enc_theta"]
+    it_all, ith_all = aligned["imu_t"], aligned["imu_theta"]
+    e_keep, i_keep = et_all >= rel, it_all >= rel
+    et, eth = et_all[e_keep], eth_all[e_keep]
+    it, ith = it_all[i_keep], ith_all[i_keep]
+
+    a0_true = float(run["a0_deg"])
+    a0_enc = _a0_of(et, eth)
+    a0_imu = _a0_of(it, ith)
+
+    # RMSE on the encoder's grid, over the overlap only.
+    lo, hi = max(et.min(), it.min()), min(et.max(), it.max())
+    grid = et[(et >= lo) & (et <= hi)]
+    ref = np.interp(grid, et, eth)
+    test = np.interp(grid, it, ith)
+    rmse = float(np.sqrt(np.mean((test - ref) ** 2))) if len(grid) > 2 else float("nan")
+
+    # Tail drift: slope of the settled tail, or NaN when the trial is too
+    # short to have one.
+    #
+    # The estimator is fine; the GATE is what matters. Measured on traces with
+    # known drift: at tau=1.6 a last-quarter fit reports 0.301 deg/s on an 8 s
+    # trace whose true drift is ZERO, and 0.005 on the same trace at 12 s. At
+    # tau=3.2 it reports 0.557 at 12 s and -0.006 at 24 s. What it is fitting
+    # in the short cases is residual oscillation, not drift -- roughly 1.8
+    # cycles still alive inside the window -- and the sign flips with phase, so
+    # no fixed window fraction is stable.
+    #
+    # A trial that cannot support the measurement reports nothing rather than a
+    # phantom, which is the whole point: -0.735 deg/s is the corpus estimate
+    # this bench exists to check, and a spurious 0.3 would sit right on top of it.
+    settle_s = 5.0 * float(run["tau_s"])
+    min_span_s = 2.0 / float(run["f_hz"])
+    tail_mask = it >= (it[0] + settle_s)
+    if tail_mask.sum() >= 10 and (it[-1] - it[0] - settle_s) >= min_span_s:
+        drift = float(np.polyfit(it[tail_mask], ith[tail_mask], 1)[0])
+    else:
+        drift = float("nan")
+
+    return {
+        "a0_true": a0_true,
+        "a0_enc": a0_enc,
+        "a0_imu": a0_imu,
+        "a0_ratio": (a0_imu / a0_true) if a0_true else float("nan"),
+        "a0_error_deg": a0_imu - a0_true,
+        "tail_drift_deg_s": drift,
+        "rmse_deg": rmse,
     }
