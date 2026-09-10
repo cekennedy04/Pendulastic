@@ -246,8 +246,86 @@ def main():
     recs = load()
     matched = [r for r in recs if r["mas"] is not None]
     print("scored trials: %d   matched to a MAS grade: %d" % (len(recs), len(matched)))
-    for fn in (fig_mas_coverage(), fig_auc_comparison(recs), fig_published_ranges(recs)):
+    for fn in (fig_mas_coverage(), fig_auc_comparison(recs),
+               fig_published_ranges(recs), fig_healthy_ranges(recs)):
         print("wrote %s" % fn)
+
+
+
+# ── fig 4: our healthy range against the published healthy range ────────────
+def fig_healthy_ranges(recs):
+    """Every metric with a published healthy value, in the PUBLISHED units.
+
+    Our phi_max_ratio, omega_max_n and omega_min_n are the published
+    quantities divided by A0, so multiplying A0 back in makes five of the
+    seven directly comparable rather than two.
+    """
+    D = np.pi / 180.0
+    h = [r for r in recs if r["mas"] == "0"]
+
+    def col(fn):
+        v = [fn(r) for r in h]
+        return np.array([x for x in v if x is not None and np.isfinite(x)])
+
+    def denorm(key):
+        return col(lambda r: (r[key] * r["A0_deg"] * D)
+                   if r.get(key) is not None and r.get("A0_deg") else None)
+
+    panels = [
+        ("R2n",  col(lambda r: r.get("R2n")), 1.0, 2.5, "", "R2n > 1"),
+        ("N",    col(lambda r: r.get("N")),   6.0, 7.0, "swings", "N = 6 to 7"),
+        ("phi-max", denorm("phi_max_ratio"),  0.34, 0.61, "rad", "0.34 to 0.61 rad"),
+        ("omega-max", denorm("omega_max_n"),  11.0, 17.0, "rad/s", "11 to 17 rad/s"),
+        ("omega-min", denorm("omega_min_n"), -12.0, -9.0, "rad/s", "-12 to -9 rad/s"),
+    ]
+
+    fig, axes = plt.subplots(1, 5, figsize=(13.0, 4.2))
+    for ax, (name, v, lo, hi, unit, band) in zip(axes, panels):
+        inside = ((v >= lo) & (v <= hi)).mean() * 100
+        ax.axhspan(lo, hi, color=BLUE, alpha=0.16, zorder=0)
+        bp = ax.boxplot([v], positions=[1], widths=0.42, patch_artist=True,
+                        medianprops=dict(color=INK, linewidth=1.6),
+                        showfliers=False, zorder=3)
+        bp["boxes"][0].set_facecolor(ORANGE)
+        bp["boxes"][0].set_alpha(0.6)
+        # 5th-95th whisker of our own data, so the FULL spread is visible and
+        # not just the box.
+        p5, p95 = np.percentile(v, [5, 95])
+        ax.plot([1, 1], [p5, p95], color=MUTED, linewidth=1, zorder=2)
+        _style(ax)
+        lo_ax = min(p5, lo) - 0.12 * (max(p95, hi) - min(p5, lo))
+        hi_ax = max(p95, hi) + 0.12 * (max(p95, hi) - min(p5, lo))
+        ax.set_ylim(lo_ax, hi_ax)
+        ax.set_xticks([1])
+        ax.set_xticklabels(["ours\n(n=%d)" % len(v)], fontsize=9)
+        ax.set_title(name + ((" (" + unit + ")") if unit else ""),
+                     fontsize=10, color=INK)
+        ax.text(0.5, 0.965, "published: " + band, fontsize=7.5, color=BLUE,
+                ha="center", va="top", transform=ax.transAxes)
+        ax.text(0.5, 0.045, "%.0f%% of our trials inside" % inside, fontsize=8,
+                color=INK if inside >= 25 else "#b03030",
+                ha="center", va="bottom", transform=ax.transAxes)
+
+    fig.suptitle("Our healthy (MAS 0) legs against the published healthy ranges",
+                 fontsize=12, color=INK, x=0.01, ha="left")
+    fig.subplots_adjust(bottom=0.10, wspace=0.42)
+    fig.text(0.01, -0.16,
+             "Blue band = Popović-Maneski 2017 group H. Orange box = our MAS-0 "
+             "trials (IQR), grey line = 5th-95th percentile.\n"
+             "phi-max, omega-max and omega-min are OUR normalised parameters "
+             "multiplied back by A0, which is what makes them comparable at all.\n\n"
+             "The two velocity panels should NOT be read as our participants "
+             "swinging half as fast. Peak angular velocity has no asymptote as "
+             "the smoothing\nwindow shrinks -- this codebase measures 186 deg/s at "
+             "a 0.75 s window against 433 deg/s at 0.05 s on the same trials -- so "
+             "a published value\nmeasured under different smoothing is not "
+             "commensurable. f and area_ratio are absent because "
+             "Popović-Maneski introduced them and published no healthy value.",
+             fontsize=8, color=MUTED)
+    out = os.path.join(OUT_DIR, "fig_lit4_healthy_ranges.png")
+    fig.savefig(out, facecolor="white", bbox_inches="tight", dpi=160)
+    plt.close(fig)
+    return out
 
 
 if __name__ == "__main__":
