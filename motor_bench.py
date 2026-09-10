@@ -212,3 +212,68 @@ def score_trial(aligned, run):
         "tail_drift_deg_s": drift,
         "rmse_deg": rmse,
     }
+
+
+def _a0_of_detrended(t, theta, detrend):
+    """A0 through the production extractor under a chosen detrend convention.
+
+    release_idx=0 for the same reason _a0_of passes it: the caller has
+    already trimmed both traces to post-release. Without it, compute_pt_params
+    re-detects release on the trimmed trace, mis-fires about 0.58 s late at
+    the first trough, and returns A0 at roughly 0.68 of truth instead of 1.00
+    -- a defect that looks exactly like a real instrument fault and is not one.
+    """
+    p = pts.compute_pt_params(np.asarray(t, float), np.asarray(theta, float),
+                              release_idx=0, detrend=detrend)
+    if not p:
+        return float("nan")
+    v = p.get("A0_deg")
+    return float(v) if v is not None else float("nan")
+
+
+def score_four_ways(samples, aligned, run):
+    """Score the trial on both grids and under both detrend conventions.
+
+    `samples` is the raw component reconstruction when a real phone log is
+    available, in which case each grid is replayed from raw. When it is None
+    (a synthetic trial) the aligned trace is resampled instead, which exercises
+    the same comparison without needing an AHRS replay.
+    """
+    import imu_calibration_tuner as tuner
+
+    out = {}
+    for grid_name, tick in (("20hz", tuner.TICK_S), ("100hz", tuner.ANALYSIS_TICK_S)):
+        if samples is not None:
+            t_g, th_g = tuner.replay_trial(samples, _REPLAY_CONFIG(), tick_s=tick)
+            t_g = np.asarray(t_g, float) - aligned["lag_s"]
+            th_g = np.asarray(th_g, float)
+        else:
+            t_src, th_src = aligned["imu_t"], aligned["imu_theta"]
+            t_g = np.arange(t_src.min(), t_src.max(), tick)
+            th_g = np.interp(t_g, t_src, th_src)
+
+        # Trim to the release BEFORE re-extracting. score_trial does this
+        # internally, but the line below OVERWRITES its a0_imu, so the trim has
+        # to happen here too. Without it _a0_of_detrended gets an untrimmed
+        # array while passing release_idx=0 -- which asserts index 0 IS the
+        # release -- and every convention returns NaN. Same defect as the one
+        # already fixed in _a0_of, reappearing at a second call site.
+        rel = float(aligned["t_release_s"])
+        keep = t_g >= rel
+        t_rel, th_rel = t_g[keep] - rel, th_g[keep]
+
+        for flag in (False, True):
+            sub = dict(aligned)
+            sub["imu_t"], sub["imu_theta"] = t_g, th_g
+            res = score_trial(sub, run)
+            res["a0_imu"] = _a0_of_detrended(t_rel, th_rel, flag)
+            res["a0_ratio"] = (res["a0_imu"] / res["a0_true"]) if res["a0_true"] else float("nan")
+            res["a0_error_deg"] = res["a0_imu"] - res["a0_true"]
+            out[f"{grid_name}_detrend_{str(flag).lower()}"] = res
+    return out
+
+
+def _REPLAY_CONFIG():
+    """The production replay settings, so the bench measures what ships."""
+    return {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+            "gravity_seed": True, "method": "relative"}

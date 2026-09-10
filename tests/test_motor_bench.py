@@ -165,3 +165,33 @@ def test_tail_drift_is_measured_not_assumed():
     out = mb.score_trial(mb.align(et, eth, it, drifted),
                          {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
     assert out["tail_drift_deg_s"] == pytest.approx(0.4, abs=0.15)
+
+
+def test_all_four_conventions_are_scored():
+    """The phone ships detrend=False on a 100 Hz grid; analysis uses True. The
+    flag moves phone PT7 by 0.363 against optical's 0.050, and nothing has ever
+    said which is closer to TRUTH. This is where that gets answered."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0, a0=45.0)
+    aligned = mb.align(et, eth, it, ith)
+    out = mb.score_four_ways(None, aligned, {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
+    assert set(out) == {"20hz_detrend_false", "20hz_detrend_true",
+                        "100hz_detrend_false", "100hz_detrend_true"}
+    for key, res in out.items():
+        # Asserting the KEY exists is not a test. An earlier version did
+        # exactly that and passed while all four ratios were NaN.
+        r = res["a0_ratio"]
+        assert np.isfinite(r), f"{key} returned {r}"
+        assert 0.9 < r < 1.1, f"{key} recovered {r:.3f} of a clean known amplitude"
+
+
+def test_the_detrend_flag_changes_the_answer_on_a_drifting_trace():
+    """On a clean trace the two conventions should nearly agree; on a drifting
+    one they must not, or the comparison could not detect the defect it exists
+    for."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0, a0=45.0)
+    drifted = ith + 0.6 * (it - it[0])
+    out = mb.score_four_ways(None, mb.align(et, eth, it, drifted),
+                             {"a0_deg": 45.0, "f_hz": 0.9, "tau_s": 1.6})
+    a = out["100hz_detrend_false"]["a0_imu"]
+    b = out["100hz_detrend_true"]["a0_imu"]
+    assert abs(a - b) > 1.0, "detrend should matter on a drifting trace"
