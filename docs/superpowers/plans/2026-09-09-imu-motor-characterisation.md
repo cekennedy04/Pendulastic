@@ -205,7 +205,7 @@ git commit -m "feat(bench): sync preamble and the full commanded trace"
 
 **Interfaces:**
 - Consumes: `full_trace` from Task 2
-- Produces: `sweep_matrix() -> list[dict]` with keys `run_id, a0_deg, f_hz, tau_s, repeat`; `export_trace(run, out_dir, fs_hz) -> str`
+- Produces: `sweep_matrix() -> list[dict]` with keys `run_id, a0_deg, f_hz, tau_s, repeat`; `export_trace(run, out_dir, fs_hz, duration_s=None) -> str`; `run_duration_s(run) -> float`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -301,8 +301,21 @@ def sweep_matrix():
     return runs
 
 
-def export_trace(run, out_dir, fs_hz=1000.0, duration_s=12.0):
+def run_duration_s(run):
+    """How long this run's swing must last to be measurable.
+
+    Long enough for the tail to settle (5 tau) plus two full periods to fit a
+    drift slope across, with margin. A 12 s trial at tau=3.2 is only 3.75 time
+    constants: the "settled" tail still carries live oscillation, and fitting
+    it reports half a degree per second of drift that is not there.
+    """
+    return max(12.0, 5.0 * float(run["tau_s"]) + 4.0 / float(run["f_hz"]) + 2.0)
+
+
+def export_trace(run, out_dir, fs_hz=1000.0, duration_s=None):
     """Write one run's commanded trace as CSV for LabVIEW to stream."""
+    if duration_s is None:
+        duration_s = run_duration_s(run)
     os.makedirs(out_dir, exist_ok=True)
     t, theta, _rel = full_trace(run["a0_deg"], run["f_hz"], run["tau_s"],
                                 duration_s=duration_s, fs_hz=fs_hz)
@@ -332,12 +345,12 @@ git commit -m "feat(bench): the sweep matrix and its LabVIEW export"
 
 **Files:**
 - Create: `motor_bench.py`
-- Modify: `motor_reference.py` (add `preamble_duration_s()`)
+- Modify: `motor_reference.py` (add `pulse_search_window_s()`)
 - Test: `tests/test_motor_bench.py`
 
 **Interfaces:**
 - Consumes: `motor_reference.PULSE_COUNT`, `PULSE_DEG`
-- Produces: `find_pulse_edges(t, signal, expected=PULSE_COUNT, search_s=None) -> list[float]`; `SyncError`. Also adds `motor_reference.preamble_duration_s()`.
+- Produces: `find_pulse_edges(t, signal, expected=PULSE_COUNT, search_s=None) -> list[float]`; `SyncError`. Also adds `motor_reference.pulse_search_window_s()`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -444,7 +457,7 @@ def find_pulse_edges(t, signal, expected=mr.PULSE_COUNT, search_s=None):
     # phone's reconstructed angle without assuming the two agree. Assuming they
     # agree is precisely what this harness exists to test.
     if search_s is None:
-        search_s = mr.preamble_duration_s()
+        search_s = mr.pulse_search_window_s()
     win = t <= (t[0] + search_s)
     if win.sum() < 10:
         raise SyncError(
@@ -483,15 +496,29 @@ Expected: PASS, 3 passed
 Also add to `motor_reference.py`, beside `preamble()`:
 
 ```python
-def preamble_duration_s():
-    """How long the sync preamble runs, from the constants that define it.
+def pulse_search_window_s():
+    """How long to look for sync pulses: past the last one, short of the swing.
 
-    Shared so the detector can bound its search to the preamble without
-    re-deriving the geometry in a second place and letting the two drift.
+    NOT the preamble's full length. That was tried and it is fs-dependent in a
+    way that reproduces the bug it was meant to fix: this returns raw seconds
+    while preamble() rounds each segment's sample count per fs, so at rates
+    where the roundings do not cancel the real preamble is SHORTER than the
+    nominal figure. Measured: exact at 1000/500/200/100 Hz, but -0.006 s at
+    250 Hz and -0.012765 s at 104.72 Hz. There the window overran into the
+    swing, span reinflated to the swing amplitude, and detection failed with
+    "found 1 pulse edges". A phone samples near 100-200 Hz and irregularly, so
+    this was going to bite on real data while every 1 kHz test passed.
+
+    Ending halfway through PRE_ROLL_S instead puts the boundary in the middle
+    of guaranteed stillness: the last pulse ends at 0.94 s, the swing starts at
+    2.19 s, and this returns 1.69 s. Roughly 0.7 s of margin on each side, so
+    rounding jitter of a few milliseconds cannot reach either edge at any
+    plausible rate -- and it needs no assumption that the samples are evenly
+    spaced, which a phone's are not.
     """
     return (LEAD_S
             + PULSE_COUNT * (PULSE_WIDTH_S + PULSE_GAP_S)
-            + PRE_ROLL_S)
+            + PRE_ROLL_S / 2.0)
 ```
 
 And add these two regression tests to `tests/test_motor_bench.py`:
@@ -507,14 +534,40 @@ def test_edges_are_found_on_a_full_trial_not_just_an_isolated_preamble():
     assert len(mb.find_pulse_edges(t, th)) == 3
 
 
-def test_a_trace_that_starts_mid_pulse_is_refused_not_counted_from_zero():
+def test_a_trace_that_starts_already_high_does_not_count_a_bogus_first_edge():
     """The one failure mode here that fails OPEN: recording t[0] as an edge
     returns the right COUNT with one bogus member, which no downstream check
-    can catch."""
-    t, th = mr.preamble(fs_hz=1000.0)
-    cut = int(mr.LEAD_S * 1000.0) + 10          # begins inside pulse 1
-    with pytest.raises(mb.SyncError):
-        mb.find_pulse_edges(t[cut:] - t[cut], th[cut:])
+    can catch.
+
+    Constructed so it reaches the armed-flag guard. An earlier version simply
+    cut into pulse 1, which made the first 5% of the window all pulse-height,
+    so baseline == max, span == 0, and it exited through "signal never rises"
+    -- a different path entirely. It passed while proving nothing.
+    """
+    fs = 1000.0
+    _t, th = mr.preamble(fs_hz=fs)
+    lead = np.full(30, mr.PULSE_DEG)            # starts high, but only briefly
+    sig = np.concatenate([lead, th])
+    t = np.arange(len(sig)) / fs
+    # Baseline must still resolve low, or this exercises the wrong branch.
+    win = t <= mr.pulse_search_window_s()
+    assert np.median(sig[win][: int(win.sum() * 0.05)]) == 0.0, (
+        "test setup is wrong: baseline is not low, so the armed guard is not reached")
+    assert len(mb.find_pulse_edges(t, sig)) == 3, (
+        "the leading high block must not be counted as a fourth edge")
+
+
+@pytest.mark.parametrize("fs", [1000.0, 500.0, 250.0, 200.0, 104.72, 100.0, 60.0])
+def test_detection_survives_sample_rates_that_are_not_1_khz(fs):
+    """A phone samples near 100-200 Hz and irregularly, not at 1 kHz.
+
+    Deriving the search window from the preamble's nominal length failed here:
+    preamble() rounds each segment per fs, so the real preamble runs short at
+    250 Hz (-0.006 s) and 104.72 Hz (-0.012765 s), the window overran into the
+    swing, and detection failed with "found 1 pulse edges".
+    """
+    t, th, _rel = mr.full_trace(90.0, 0.9, 1.6, duration_s=12.0, fs_hz=fs)
+    assert len(mb.find_pulse_edges(t, th)) == 3
 ```
 
 - [ ] **Step 5: Commit**
@@ -534,7 +587,7 @@ git commit -m "feat(bench): sync-pulse edge detection, which refuses rather than
 
 **Interfaces:**
 - Consumes: `find_pulse_edges` from Task 4
-- Produces: `align(enc_t, enc_theta, imu_t, imu_theta) -> dict` with keys `lag_s, enc_t, enc_theta, imu_t, imu_theta, t_release_s`
+- Produces: `align(enc_t, enc_theta, imu_t, imu_theta) -> dict` with keys `lag_s, pulse_offset_spread_s, clock_rate_error, enc_t, enc_theta, imu_t, imu_theta, t_release_s`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -558,6 +611,18 @@ def test_alignment_puts_the_two_traces_on_one_clock():
     n = min(len(out["enc_theta"]), len(out["imu_theta"]))
     diff = out["imu_theta"][:n] - out["enc_theta"][:n]
     assert np.nanmax(np.abs(diff)) < 0.5, "aligned traces should nearly coincide"
+
+
+def test_the_clock_rate_error_is_reported_even_when_it_passes():
+    """The spread bound only catches a 7.6% rate error over this lever arm, so
+    a 2% clock -- 240 ms of drift across a 12 s trial -- passes. That is
+    acceptable for a crystal-based phone clock, but the number must be VISIBLE
+    rather than merely under a threshold, or nobody can tell a good sync from a
+    barely-passing one."""
+    et, eth, it, ith, _rel = _rig_pair(lag_s=0.0)
+    out = mb.align(et, eth, it * 1.02 + 0.3, ith)
+    assert out["clock_rate_error"] == pytest.approx(0.02, abs=0.005)
+    assert out["pulse_offset_spread_s"] > 0.0
 
 
 def test_release_time_is_reported_on_the_common_clock():
@@ -585,16 +650,39 @@ def align(enc_t, enc_theta, imu_t, imu_theta):
     i_edges = find_pulse_edges(imu_t, imu_theta)
     offsets = [i - e for i, e in zip(i_edges, e_edges)]
     lag = float(np.median(offsets))
-    if float(np.max(offsets) - np.min(offsets)) > 0.05:
+    spread = float(np.max(offsets) - np.min(offsets))
+
+    # Rate error, reported rather than merely bounded.
+    #
+    # KNOW WHAT THIS CAN AND CANNOT SEE. The pulses span 0.66 s, so a clock
+    # running fast by r shows up here as spread r*0.66. The 50 ms bound below
+    # therefore only catches r > 7.6%. Measured: a clock 2% fast passes, having
+    # drifted 240 ms by the end of a 12 s trial. Three edges over two thirds of
+    # a second are barely evidence about RATE at all.
+    #
+    # That is tolerable because a phone clock is crystal-based at 50-100 ppm,
+    # which drifts 0.6-1.2 ms across a trial -- negligible against everything
+    # else measured here -- and the realistic threat is a fixed OFFSET, which
+    # this handles exactly. But the number is reported so a clock that does
+    # misbehave is visible instead of silently passing. If it ever matters, the
+    # fix is a second pulse burst at the END of the trial: a 12 s lever arm
+    # makes the same three-edge test roughly 18x more sensitive.
+    lever = float(e_edges[-1] - e_edges[0])
+    rate_error = (spread / lever) if lever > 0 else float("nan")
+
+    if spread > 0.05:
         raise SyncError(
-            f"pulse offsets disagree by {np.max(offsets) - np.min(offsets):.3f} s; "
-            "the two clocks are not running at the same rate")
+            f"pulse offsets disagree by {spread:.3f} s over a {lever:.2f} s "
+            f"lever arm ({100 * rate_error:.2f}% rate error); the two clocks "
+            "are not running at the same rate")
 
     # Release is one preamble after the encoder's first edge.
     t_release = e_edges[0] + (mr.PULSE_COUNT * (mr.PULSE_WIDTH_S + mr.PULSE_GAP_S)
                               + mr.PRE_ROLL_S)
     return {
         "lag_s": lag,
+        "pulse_offset_spread_s": spread,
+        "clock_rate_error": rate_error,
         "enc_t": np.asarray(enc_t, dtype=float),
         "enc_theta": np.asarray(enc_theta, dtype=float),
         "imu_t": np.asarray(imu_t, dtype=float) - lag,
@@ -671,8 +759,19 @@ import pendulastic_pt_score as pts
 
 
 def _a0_of(t, theta):
-    """A0 through the production extractor, or NaN."""
-    p = pts.compute_pt_params(np.asarray(t, float), np.asarray(theta, float))
+    """A0 through the production extractor, or NaN.
+
+    release_idx=0 is not optional. The caller has already trimmed to the
+    release, and compute_pt_params runs its OWN release detection which needs
+    the pre-release hold to find a baseline. Trimmed without being told, it
+    mis-fires about 0.58 s late at the first trough and truncates A0 --
+    measured at ratio 0.683 instead of 1.002, and varying with frequency and
+    damping in a way that looks exactly like a real instrument defect. It is
+    not one: told where release is, the extractor recovers a known amplitude to
+    0.2% at every amplitude from 5 to 90 deg and at every waveform shape tested.
+    """
+    p = pts.compute_pt_params(np.asarray(t, float), np.asarray(theta, float),
+                              release_idx=0)
     if not p:
         return float("nan")
     v = p.get("A0_deg")
@@ -705,10 +804,27 @@ def score_trial(aligned, run):
     test = np.interp(grid, it, ith)
     rmse = float(np.sqrt(np.mean((test - ref) ** 2))) if len(grid) > 2 else float("nan")
 
-    # Tail drift: slope of the last quarter, where a true trace is flat.
-    k = max(10, len(it) // 4)
-    tail_t, tail_y = it[-k:], ith[-k:]
-    drift = float(np.polyfit(tail_t, tail_y, 1)[0]) if k >= 10 else float("nan")
+    # Tail drift: slope of the settled tail, or NaN when the trial is too
+    # short to have one.
+    #
+    # The estimator is fine; the GATE is what matters. Measured on traces with
+    # known drift: at tau=1.6 a last-quarter fit reports 0.301 deg/s on an 8 s
+    # trace whose true drift is ZERO, and 0.005 on the same trace at 12 s. At
+    # tau=3.2 it reports 0.557 at 12 s and -0.006 at 24 s. What it is fitting
+    # in the short cases is residual oscillation, not drift -- roughly 1.8
+    # cycles still alive inside the window -- and the sign flips with phase, so
+    # no fixed window fraction is stable.
+    #
+    # A trial that cannot support the measurement reports nothing rather than a
+    # phantom, which is the whole point: -0.735 deg/s is the corpus estimate
+    # this bench exists to check, and a spurious 0.3 would sit right on top of it.
+    settle_s = 5.0 * float(run["tau_s"])
+    min_span_s = 2.0 / float(run["f_hz"])
+    tail_mask = it >= (it[0] + settle_s)
+    if tail_mask.sum() >= 10 and (it[-1] - it[0] - settle_s) >= min_span_s:
+        drift = float(np.polyfit(it[tail_mask], ith[tail_mask], 1)[0])
+    else:
+        drift = float("nan")
 
     return {
         "a0_true": a0_true,
