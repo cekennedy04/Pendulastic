@@ -195,3 +195,39 @@ def test_the_detrend_flag_changes_the_answer_on_a_drifting_trace():
     a = out["100hz_detrend_false"]["a0_imu"]
     b = out["100hz_detrend_true"]["a0_imu"]
     assert abs(a - b) > 1.0, "detrend should matter on a drifting trace"
+
+
+def _row(a0_true, ratio, drift=0.0):
+    return {"run": {"a0_deg": a0_true},
+            "scores": {k: {"a0_true": a0_true, "a0_imu": a0_true * ratio,
+                           "a0_ratio": ratio, "a0_error_deg": a0_true * (ratio - 1),
+                           "tail_drift_deg_s": drift, "rmse_deg": 0.1}
+                       for k in ("20hz_detrend_false", "20hz_detrend_true",
+                                 "100hz_detrend_false", "100hz_detrend_true")}}
+
+
+def test_the_summary_finds_where_extraction_breaks():
+    """Good above 25 deg, bad below: the breakdown point must be reported, and
+    it is the number the excursion floor has never had."""
+    rows = [_row(a0, 1.0) for a0 in (90, 50, 30, 28, 25)] + \
+           [_row(a0, 2.5) for a0 in (22, 20, 15, 10, 5)]
+    s = mb.summarise(rows)
+    assert s["n"] == 10
+    assert 22.0 <= s["breakdown_a0_deg"] <= 25.0
+
+
+def test_no_breakdown_is_reported_as_none_not_as_zero():
+    rows = [_row(a0, 1.0) for a0 in (90, 50, 25, 10, 5)]
+    assert mb.summarise(rows)["breakdown_a0_deg"] is None
+
+
+def test_the_summary_names_the_convention_closest_to_truth():
+    """One convention is made clearly best and the other three clearly worse,
+    so the assertion can only pass for the right reason."""
+    rows = [_row(a0, 1.0) for a0 in (90, 50, 25)]
+    for r in rows:
+        r["scores"]["100hz_detrend_true"]["a0_ratio"] = 1.02   # nearly exact
+        r["scores"]["100hz_detrend_false"]["a0_ratio"] = 1.40
+        r["scores"]["20hz_detrend_true"]["a0_ratio"] = 1.55
+        r["scores"]["20hz_detrend_false"]["a0_ratio"] = 1.80
+    assert mb.summarise(rows)["best_convention"] == "100hz_detrend_true"

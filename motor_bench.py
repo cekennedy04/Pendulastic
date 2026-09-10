@@ -277,3 +277,48 @@ def _REPLAY_CONFIG():
     """The production replay settings, so the bench measures what ships."""
     return {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
             "gravity_seed": True, "method": "relative"}
+
+
+#: A trial counts as recovered when A0 is within this fraction of truth.
+RECOVERY_TOLERANCE = 0.20
+
+
+def summarise(rows, convention="100hz_detrend_false"):
+    """Session-level answers to the four questions the bench exists for.
+
+    `breakdown_a0_deg` is the largest commanded amplitude at which extraction
+    stopped recovering truth. None means it never broke down over the sweep,
+    which is itself an answer -- and one the 25 deg floor would then have to
+    justify some other way.
+    """
+    by_a0 = {}
+    drifts = []
+    for r in rows:
+        s = r["scores"][convention]
+        by_a0.setdefault(float(r["run"]["a0_deg"]), []).append(float(s["a0_ratio"]))
+        d = s.get("tail_drift_deg_s")
+        if d is not None and np.isfinite(d):
+            drifts.append(float(d))
+
+    ratio_by_a0 = {a0: float(np.median(v)) for a0, v in sorted(by_a0.items())}
+    breakdown = None
+    for a0 in sorted(ratio_by_a0, reverse=True):
+        if abs(ratio_by_a0[a0] - 1.0) > RECOVERY_TOLERANCE:
+            breakdown = a0
+            break
+
+    best, best_err = None, float("inf")
+    for key in ("20hz_detrend_false", "20hz_detrend_true",
+                "100hz_detrend_false", "100hz_detrend_true"):
+        errs = [abs(r["scores"][key]["a0_ratio"] - 1.0) for r in rows
+                if np.isfinite(r["scores"][key]["a0_ratio"])]
+        if errs and float(np.median(errs)) < best_err:
+            best, best_err = key, float(np.median(errs))
+
+    return {
+        "n": len(rows),
+        "a0_ratio_by_amplitude": ratio_by_a0,
+        "breakdown_a0_deg": breakdown,
+        "drift_median_deg_s": float(np.median(drifts)) if drifts else float("nan"),
+        "best_convention": best,
+    }
