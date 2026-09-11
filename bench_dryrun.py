@@ -26,13 +26,17 @@ os.chdir(BASE)
 
 import numpy as np  # noqa: E402
 
-#: How much of the pre-release hold to keep when trimming. The first extremum
-#: needs a sample on its rising side to register at all, so trimming exactly AT
-#: release loses it and reports the first trough instead -- half a period of
-#: decay, read as a ~30% amplitude error.
-_TRIM_LEAD_S = 0.5
-
 GRAVITY = 9.81
+
+
+def _pulses_end_s():
+    """When the sync pulses are over, in the full_trace clock.
+
+    Everything after this is settle, lift and hold -- all of it useful to the
+    scorer, none of it fast enough to be mistaken for a release.
+    """
+    import motor_reference as mr
+    return mr.LEAD_S + mr.PULSE_COUNT * (mr.PULSE_WIDTH_S + mr.PULSE_GAP_S)
 MAG_FIELD = np.array([22.0, 0.0, 43.0])   # microtesla, a plausible mid-latitude field
 
 
@@ -100,17 +104,25 @@ def main() -> int:
         log = synth_phone_log(t, th)
         tt, ang, q = tuner.replay_trial_detailed(
             log, dict(cfg), tick_s=tuner.ANALYSIS_TICK_S)
-        # Trim to release before scoring, exactly as the bench harness must.
-        # compute_pt_params' active window is measured from the START of the
-        # series, not from release, so a long preamble eats it: on one 90 deg
-        # swing, changing RAMP_S alone moved the untrimmed A0 across
-        # 11.08 / 80.90 / 63.31 / 49.12 while the trimmed value held at 82.5.
-        # The bench derives t_release from the sync pulses via
-        # motor_reference.release_offset_s(); here it is known directly.
+        # Cut the sync pulses off before scoring, exactly as the bench harness
+        # must. compute_pt_params does its OWN release detection (it slices at
+        # rel_i internally), and a 5 deg pulse edge is 5000 deg/s -- it clears
+        # any velocity threshold instantly, so the scorer takes a pulse for the
+        # release and the 10 s active-window cap then runs from there instead
+        # of from the real swing. Measured on one 90 deg swing, varying only
+        # RAMP_S, A0 came out 80.90 / 63.31 / 49.12 with the pulses present and
+        # 88.91 / 88.96 / 89.55 with them removed.
+        #
+        # Cut at the END OF THE PULSES, not at release: the pre-release hold is
+        # informative (it feeds `neutral` and the drift estimate), and throwing
+        # it away costs real accuracy -- cutting at release-0.5 s gives 82.6
+        # (-8.3%) against 89.0 (-1.1%) for cutting at the pulses. The corpus
+        # agrees: trimming real trials to release made test-retest WORSE on 7
+        # of 8 parameters.
         if q.ok and len(tt):
             tt = np.asarray(tt, float)
             ang = np.asarray(ang, float)
-            keep = tt >= (t_rel - _TRIM_LEAD_S)
+            keep = tt >= _pulses_end_s()
             if keep.sum() > 50:
                 tt, ang = tt[keep] - tt[keep][0], ang[keep]
         if not q.ok:
