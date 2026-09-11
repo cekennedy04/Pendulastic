@@ -258,7 +258,16 @@ def test_imu_and_optitrack_trials_overlay_after_independent_t0_alignment():
     n_imu = 400
     t_imu = 5.0 + np.arange(n_imu) / fps_imu
     hold_imu = int(1.5 * fps_imu)
-    tilt = np.zeros(n_imu)
+    # Hold at the pre-release value, not at zero. This used to be np.zeros,
+    # which made the IMU half step discontinuously from 0.0 to 0.4 at the
+    # release index while its OptiTrack twin below holds at 180.0 and starts
+    # its swing at 180.0 -- continuous, as a real limb is. A step is not what
+    # this test says it is testing ("a smooth (non-step) onset", below), and
+    # it inverts the thing being measured: smoothing spreads a step
+    # symmetrically, so detection fires BEFORE the true release and backing
+    # off makes the answer worse instead of better. On the corrected,
+    # physical onset the detected release lands +0.01 s from truth.
+    tilt = np.full(n_imu, 0.4)
     for i in range(hold_imu, n_imu):
         ti = (i - hold_imu) / fps_imu
         tilt[i] = 0.4 * math.exp(-0.3 * ti) * math.cos(2 * math.pi * 0.9 * ti)
@@ -585,3 +594,866 @@ def test_load_hpe_model_curves_return_rejected_reports_did_not_track_swing(tmp_p
     assert len(rejected) == 1
     assert rejected[0]["name"] == "mediapipe"
     assert rejected[0]["reason"] == "did_not_track_swing"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# load_hpe_model_curves: minimal-overshoot (spastic) trials
+#
+# A spastic limb arrests at its own resting angle, so flexion-past-neutral
+# collapses to ~0 even on a full-amplitude swing. Real example driving these
+# tests -- Participant_19 Right/pre, a stroke participant's affected leg:
+# held at 180 deg, released, travels to ~132 deg, settles at ~135 deg. Total
+# excursion 44-48 deg, but overshoot past neutral only 0.3-2.8 deg. Five such
+# trials exist across the dataset (P13, P14, P19), all with PT7 >= 1.42.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _spastic_trial(n=300, fps=30.0, hold_deg=180.0, settle_deg=135.0, overshoot=2.5):
+    """Pendulum that drops a long way but arrests at its resting angle:
+    large total excursion, near-zero flexion past neutral."""
+    t = np.arange(n) / fps
+    ang = np.empty(n)
+    hold = int(fps)
+    for i in range(n):
+        if i < hold:
+            ang[i] = hold_deg
+        else:
+            ti = (i - hold) / fps
+            # Heavily damped: one shallow dip below the settle angle, then flat.
+            ang[i] = settle_deg - overshoot * math.exp(-3.0 * ti) * math.cos(2 * math.pi * 0.9 * ti)
+    return t, ang
+
+
+def _write_tracking_csv(path, t_m, ang_m):
+    import pandas as pd
+    pd.DataFrame({"time_sec": t_m, "knee_angle_deg": ang_m}).to_csv(path, index=False)
+
+
+def test_minimal_overshoot_trial_is_not_discarded(tmp_path):
+    """A spastic limb with ~45 deg of real travel but ~2.5 deg of flexion
+    past neutral must still be analysed. The old opti_peak < 3.0 gate threw
+    these away before any candidate was even enumerated, silently removing
+    source-agreement data from the most impaired limbs in the dataset."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _spastic_trial()
+    assert (ang.max() - ang.min()) > 40.0        # real movement
+    assert (135.0 - ang.min()) < 3.0             # but almost no overshoot
+
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang + 1.0)  # model tracks it closely
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 135.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"tracking candidate was discarded; rejected={rejected}"
+    assert accepted[0]["name"] == "mediapipe"
+    # NB: not asserting a small rmse here. load_hpe_model_curves aligns a
+    # candidate by shifting its first-0.5s reference window onto neutral_deg,
+    # but that window sits at the HELD angle (180) not the resting angle, so
+    # its internal rmse carries a constant hold-to-neutral offset. Pre-existing
+    # behaviour, unrelated to overshoot; pt_report_common._lag_align_candidate
+    # recomputes the reported RMSE via compare_pair. What matters here is that
+    # the candidate is no longer discarded before evaluation.
+    assert np.isfinite(accepted[0]["rmse"])
+
+
+def test_minimal_overshoot_trial_still_rejects_untracking_model(tmp_path):
+    """Admitting low-overshoot trials must not disable the quality filter:
+    a flat model curve over the same trial must still be rejected. Guards
+    against trading 'no RMSE bars' for 'meaningless RMSE bars'."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _spastic_trial()
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, np.full(len(t), 180.0))   # never moves
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 135.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted == []
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "did_not_track_swing"
+
+
+def test_trial_with_no_real_movement_is_still_discarded(tmp_path):
+    """The validity check must still reject genuinely dead recordings --
+    marker dropout, leg never released. Excursion, not overshoot, is what
+    separates those from a spastic limb."""
+    import pendulastic_pt_score as pt
+
+    t = np.arange(300) / 30.0
+    ang = 180.0 + 0.3 * np.sin(2 * np.pi * 0.9 * t)   # ~0.6 deg of jitter
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang)
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 180.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted == []
+    assert rejected == []
+
+
+def test_normal_overshoot_trial_behaviour_is_unchanged(tmp_path):
+    """Characterisation: a limb that DOES overshoot must keep the exact
+    neutral-referenced behaviour it had before minimal-overshoot support
+    was added, so no existing published RMSE number moves."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _damped_sinusoid()                  # 15 deg amplitude, ~30 deg overshoot
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang + 2.0)
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, 180.0,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"rejected={rejected}"
+    assert accepted[0]["name"] == "mediapipe"
+    assert accepted[0]["rmse"] < 5.0
+
+
+def test_candidate_is_baseline_aligned_to_hold_not_to_neutral(tmp_path):
+    """A candidate that reproduces the OptiTrack curve exactly must come back
+    sitting ON that curve, not shifted down by the hold-to-neutral gap.
+
+    Regression test: alignment used to map the candidate's reference window
+    (the pre-release HOLD, ~180 deg) onto neutral_deg (the RESTING angle,
+    ~140 deg on real trials), displacing every curve by ~40 deg and inflating
+    its RMSE by the same amount."""
+    import pendulastic_pt_score as pt
+
+    t, ang = _damped_sinusoid()          # holds at 180, settles near 165
+    neutral = 165.0                      # resting angle, 15 deg below the hold
+    assert abs(ang[:15].mean() - 180.0) < 0.5
+
+    csv_path = tmp_path / "P_T_1_mediapipe.csv"
+    _write_tracking_csv(csv_path, t, ang)          # perfect tracker
+
+    accepted, rejected = pt.load_hpe_model_curves(
+        "999_left_pre", "1", "1", t, ang, neutral,
+        csv_files=[str(csv_path)], return_rejected=True)
+
+    assert accepted, f"rejected={rejected}"
+    cleaned = accepted[0]["ang"]
+    ok = np.isfinite(cleaned)
+    # A perfect tracker must land on the reference, within smoothing error.
+    assert abs(float(np.nanmean(cleaned[ok] - ang[ok]))) < 1.0
+    assert accepted[0]["rmse"] < 2.0
+
+
+# ── settled-tail drift correction (2026-08-28) ─────────────────────────────
+# A0 = (angle at release) - (median of the settled tail). A sensor whose curve
+# sinks through the trial drags that tail median down and inflates A0 with no
+# error in the swing at all. The drift correction used to fit ONLY the
+# pre-release hold, which is where gyro bias was just calibrated and is flat by
+# construction, so it could not see the drift it existed to remove. Measured on
+# 93 IMU trials: baseline slope +0.193 deg/s vs settled tail -0.833 deg/s.
+
+def _damped_swing(sweep=50.0, fs=100.0, hold_s=2.0, swing_s=16.0,
+                  drift_deg_s=0.0, settle=180.0 - 50.0, drift_from_release=True):
+    """Held-then-released pendulum decaying to `settle`, plus optional linear
+    sensor drift. Angle convention: 180 = fully extended.
+
+    drift_from_release models what the real IMU does, and it is the whole
+    point. zero() recalibrates gyro bias from the hold buffer at the tare
+    instant, so the pre-release hold is FLAT and the drift accumulates
+    afterwards. Applying drift from t=0 instead would put the full slope inside
+    the pre-release baseline, where the old baseline-only fit removes it
+    perfectly -- a synthetic that the defect cannot reproduce on.
+    """
+    import numpy as np
+    n_hold = int(hold_s * fs)
+    n_swing = int(swing_s * fs)
+    t = np.arange(n_hold + n_swing) / fs
+    ang = np.empty(len(t))
+    ang[:n_hold] = 180.0
+    ts = np.arange(n_swing) / fs
+    ang[n_hold:] = settle + sweep * np.exp(-ts / 2.0) * np.cos(2 * np.pi * 0.9 * ts)
+    if drift_from_release:
+        ramp = np.concatenate([np.zeros(n_hold), ts])
+    else:
+        ramp = t - t[0]
+    return t, ang + drift_deg_s * ramp
+
+
+def test_settled_tail_slope_recovers_a_known_drift():
+    import pendulastic_pt_score as p
+    for true_slope in (-0.8, -0.3, 0.0, 0.5):
+        t, ang = _damped_swing(drift_deg_s=true_slope)
+        got = p._settled_tail_drift_slope(t, ang, rel_i=200)
+        assert got is not None, true_slope
+        assert got == pytest.approx(true_slope, abs=0.12), (true_slope, got)
+
+
+def test_settled_tail_slope_refuses_a_tail_that_is_still_swinging():
+    """Over-correcting an unsettled trial would eat real swing, so a ringing
+    tail must return None rather than a confident wrong number."""
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(swing_s=4.0)          # ends mid-oscillation
+    assert p._settled_tail_drift_slope(t, ang, rel_i=200) is None
+
+
+def test_settled_tail_slope_refuses_an_implausibly_large_slope():
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(drift_deg_s=40.0)
+    assert p._settled_tail_drift_slope(t, ang, rel_i=200) is None
+
+
+def test_settled_tail_slope_refuses_too_short_a_tail():
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(swing_s=12.0)
+    assert p._settled_tail_drift_slope(t, ang, rel_i=len(t) - 5) is None
+
+
+def test_drift_no_longer_inflates_A0():
+    """THE defect. The same swing, scored with and without sensor drift, must
+    give the same A0 -- the drift is in the sensor, not in the leg."""
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, clean = _damped_swing(drift_deg_s=0.0)
+    _t, drifting = _damped_swing(drift_deg_s=-0.8)
+
+    a_clean = p.compute_pt_params(t, clean)
+    a_drift = p.compute_pt_params(t, drifting)
+    assert a_clean and a_drift
+    assert a_drift["A0_deg"] == pytest.approx(a_clean["A0_deg"], rel=0.10), (
+        a_clean["A0_deg"], a_drift["A0_deg"])
+
+
+def test_a_flat_optical_curve_is_left_alone():
+    """OptiTrack tails measure +0.009 deg/s, so the correction must be a no-op
+    there. A fix that only helps the IMU by disturbing the reference is not a
+    fix."""
+    import pendulastic_pt_score as p
+    t, ang = _damped_swing(drift_deg_s=0.0)
+    with_detrend = p.compute_pt_params(t, ang, detrend=True)
+    without = p.compute_pt_params(t, ang, detrend=False)
+    assert with_detrend and without
+    assert with_detrend["A0_deg"] == pytest.approx(without["A0_deg"], rel=0.03)
+
+
+def test_pendulum_still_decaying_is_not_mistaken_for_drift():
+    """The guard that a first attempt at this fix got wrong.
+
+    A decaying oscillation is LINEAR over less than one period, so a short tail
+    fits a steep slope with a tiny residual and looks exactly like drift. On a
+    0.32 Hz synthetic whose tail covered 0.62 of a period the fit came back at
+    -4.13 deg/s with a residual of 2.17 deg, and correcting by it ate 29 deg of
+    real swing (A0 45.6 -> 16.8). The tail must span several periods before its
+    slope means anything.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+    t = np.linspace(0, 10, 400)
+    ang = np.where(t < 2.0, 180.0,
+                   130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
+    rel = p._detect_release(t, p._sg(ang, dt=p._median_dt(t), p=3))
+    assert p._settled_tail_drift_slope(t, ang, rel) is None
+    params = p.compute_pt_params(t, ang)
+    assert params["A0_deg"] == pytest.approx(45.6, rel=0.10), params["A0_deg"]
+    assert params["quality_warn"] is False
+
+
+def test_drift_cap_is_what_stops_the_decay_case_and_must_not_be_raised():
+    """Pins the interaction the tuning exposed.
+
+    The consistency tolerances were relaxed to their measured optimum (80%
+    coverage), and at that point the SLOPE CAP is the last guard rejecting a
+    still-decaying pendulum. Raising it to 5 lets the 0.32 Hz case through and
+    eats 29 deg of real swing. This test fails if someone raises the cap
+    without re-deriving the tolerances.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+    t = np.linspace(0, 10, 400)
+    ang = np.where(t < 2.0, 180.0,
+                   130.0 + 50.0 * np.exp(-0.4 * (t - 2.0)) * np.cos(2.0 * (t - 2.0)))
+    rel = p._detect_release(t, p._sg(ang, dt=p._median_dt(t), p=3))
+    assert p._MAX_DRIFT_DEG_S <= 4.0, "raising this re-opens the 29 deg swing-eating bug"
+    assert p._settled_tail_drift_slope(t, ang, rel) is None
+
+    original = p._MAX_DRIFT_DEG_S
+    try:
+        p._MAX_DRIFT_DEG_S = 5.0
+        assert p._settled_tail_drift_slope(t, ang, rel) is not None, (
+            "if this no longer fires, the cap is not the guard doing the work "
+            "and the comment on _MAX_DRIFT_DEG_S is stale")
+    finally:
+        p._MAX_DRIFT_DEG_S = original
+
+
+def test_padding_a_short_tail_with_stable_data_erases_the_drift_it_should_find():
+    """Why the 'assume a stable leg and extend the tail' approach is not used.
+
+    Measured on the corpus: of the trials this guard rejects, 16 of 19 are still
+    moving faster than 1 deg/s when the recording stops, and their honest tail
+    slope (-1.059 deg/s) is STEEPER than the trials we do correct. Appending
+    flat samples at the last observed value does not estimate that drift, it
+    erases it -- driving the fit to ~0 and switching the correction off on the
+    trials that need it most, while appearing to reach 100% coverage.
+    """
+    import numpy as np
+    import pendulastic_pt_score as p
+
+    # A trial whose sensor drifts and which is STILL sinking when it ends.
+    fs = 100.0
+    t = np.arange(int(9 * fs)) / fs
+    rel = int(2 * fs)
+    ang = np.full(len(t), 180.0)
+    ts = t[rel:] - t[rel]
+    ang[rel:] = 130.0 + 50.0 * np.exp(-ts / 3.0) * np.cos(2 * np.pi * 0.9 * ts) - 1.0 * ts
+
+    tail_slope = float(np.polyfit(t[-150:], ang[-150:], 1)[0])
+    assert tail_slope < -0.5, tail_slope        # genuinely still descending
+
+    dt = 1.0 / fs
+    pad_t = t[-1] + dt * np.arange(1, int(4.0 / dt) + 1)
+    padded_t = np.concatenate([t, pad_t])
+    padded_ang = np.concatenate([ang, np.full(len(pad_t), ang[-1])])
+
+    padded_slope = p._settled_tail_drift_slope(padded_t, padded_ang, rel)
+    # Padding either yields ~0 (the drift erased) or is rejected. Either way it
+    # never recovers the real slope, which is the entire point.
+    assert padded_slope is None or abs(padded_slope) < abs(tail_slope) / 2.0, (
+        tail_slope, padded_slope)
+
+
+def test_quadriceps_catch_merge_was_subsumed_by_find_peaks():
+    """The removed sub-peak merge could never fire, at any sample rate.
+
+    find_peaks is given distance = fps/3.5, so no two returned extrema are ever
+    closer than that. The merge window was fps/6 -- strictly INSIDE a separation
+    already guaranteed. The two constants were inverted against each other, so
+    a 'spastic quadriceps catch' safeguard was advertised in the code while
+    being unreachable. Removing it changed nothing on any of the 186 real
+    curves in the corpus.
+
+    This test exists so the same mistake is not reintroduced: any merge window
+    must be WIDER than find_peaks' distance to do anything at all.
+    """
+    for fps in (30, 60, 100, 120, 200, 2000):
+        find_peaks_distance = max(3, int(fps / 3.5))
+        old_merge_window = max(3, int(fps / 6))
+        assert old_merge_window <= find_peaks_distance, (
+            f"at {fps} Hz the merge window ({old_merge_window}) exceeds "
+            f"find_peaks distance ({find_peaks_distance}) -- if this ever "
+            f"becomes true the removal reasoning needs revisiting")
+
+
+def test_merge_helper_is_gone_not_merely_unused():
+    """A dead function that claims a clinical safeguard is worse than no
+    function: it reads as protection that exists."""
+    import pendulastic_pt_score as p
+    assert not hasattr(p, "_merge_close_extrema")
+
+
+# ── excursion gate (2026-08-30) ────────────────────────────────────────────
+# PT7 is non-monotonic in severity: all seven parameters are ratios normalised
+# on the swing, so a collapsed swing renormalises them and a near-rigid leg
+# scores healthy. The gate refuses the VERDICT in that regime; it does not
+# claim to fix the non-monotonicity.
+
+def test_excursion_gate_refuses_a_grade_for_a_barely_moving_leg():
+    """The unsafe cell, in real numbers: two corpus trials with A0 = 9.0 deg
+    currently report PT7 0.278 -> MAS '1+'. A leg that moved 9 degrees is not
+    mildly spastic; it is a trial you cannot read."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 9.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.1}
+    out = p.mas_estimate(params)
+    assert out["interpretable"] is False
+    assert out["mas"] is None, "must not hand back a grade it cannot support"
+    assert out["pt7"] is not None, "the score is still reported, just not graded"
+    assert "excursion" in out["reason"].lower()
+
+
+def test_excursion_gate_message_is_about_the_measurement_not_the_patient():
+    """Low excursion also comes from poor positioning, incomplete release,
+    guarding, obstruction and sensor failure. Reporting 'severe spasticity'
+    would trade one wrong answer for another."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 5.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.1}
+    reason = p.mas_estimate(params)["reason"].lower()
+    assert "repeat" in reason, "must tell the operator to re-run the trial"
+    assert "positioning" in reason, "must point at the protocol, not the patient"
+    assert "severe" not in reason, "must not assert a severity it cannot measure"
+
+
+def test_a_normal_swing_is_graded_as_before():
+    """The gate must be inert on trials it has no business touching -- it fires
+    on 2 of 53 control trials, not on the population."""
+    import pendulastic_pt_score as p
+    params = {"A0_deg": 48.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.7,
+              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.05}
+    out = p.mas_estimate(params)
+    assert out["interpretable"] is True
+    assert out["mas"] == p.pt_to_mas(out["pt7"]), "unchanged grading above the gate"
+
+
+def test_excursion_gate_stays_clear_of_the_lowest_spastic_leg():
+    """What actually constrains the threshold.
+
+    The "two SD below the control mean" story is circular: the only two trials
+    pulling that mean down are P9 left/right at A0 9.0, which are exactly the
+    trials the gate catches. Excluding them the 51 clean controls give a 2-SD
+    floor of 31.5 -- ABOVE the lowest spastic leg (28.7), so a clean control
+    bound would refuse grades on the study's own cases.
+
+    The real constraint is therefore the spastic minimum, and it is the one
+    worth pinning: the gate must stay below 28.7 or it starts reclassifying
+    the cases the study exists to measure.
+    """
+    import pendulastic_pt_score as p
+    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7, (
+        "gate would refuse grades on real spastic legs")
+    assert p.MIN_INTERPRETABLE_A0_DEG > 12.0, (
+        "gate so low it would stop catching collapsed swings")
+
+
+def test_unscoreable_trial_is_not_interpretable():
+    import pendulastic_pt_score as p
+    for params in (None, {}, {"A0_deg": None}, {"A0_deg": float("nan")}):
+        assert p.excursion_ok(params) is False
+        assert p.mas_estimate(params)["mas"] is None
+
+
+# ── the excursion gate must guard BOTH directions ────────────────────────────
+
+def _plausible_params(a0):
+    return {"A0_deg": a0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.6,
+            "omega_max_n": 6.0, "omega_min_n": 0.001, "f": 0.9, "area_ratio": 0.08}
+
+
+def test_impossibly_large_excursion_is_refused_a_mas_grade():
+    import pendulastic_pt_score as pt
+    """A0 = 418.1 deg is produced by the seed-window bug on P9 Left/Right
+    trial_3 at 97.3% coverage. A floor-only gate passed it straight through and
+    printed a MAS grade off a reconstruction that had failed."""
+    got = pt.mas_estimate(_plausible_params(418.1))
+    assert got["mas"] is None
+    assert got["interpretable"] is False
+    assert "Impossible excursion" in got["reason"]
+    assert "418.1" in got["reason"]
+
+
+def test_the_gate_still_refuses_a_collapsed_swing():
+    import pendulastic_pt_score as pt
+    got = pt.mas_estimate(_plausible_params(8.5))
+    assert got["mas"] is None
+    assert "Insufficient excursion" in got["reason"]
+
+
+def test_the_two_refusals_give_different_reasons():
+    import pendulastic_pt_score as pt
+    """Too-small and too-large are different failures and must not be reported
+    with the same message -- one says repeat the trial, the other says the
+    reconstruction is wrong."""
+    small = pt.mas_estimate(_plausible_params(8.5))["reason"]
+    large = pt.mas_estimate(_plausible_params(418.1))["reason"]
+    assert small != large
+
+
+def test_every_excursion_measured_in_this_corpus_is_still_accepted():
+    import pendulastic_pt_score as pt
+    """The ceiling must reject nothing that was ever really measured. Across 218
+    scored optical trials the largest genuine A0 is 89.8 deg."""
+    for a0 in (25.0, 46.6, 63.5, 89.8):
+        assert pt.excursion_ok(_plausible_params(a0)), a0
+
+
+def test_a_knee_angle_cannot_exceed_180_so_the_ceiling_sits_below_it():
+    import pendulastic_pt_score as pt
+    assert pt.MAX_INTERPRETABLE_A0_DEG < 180.0
+    assert pt.MAX_INTERPRETABLE_A0_DEG > 89.8
+    assert not pt.excursion_ok(_plausible_params(180.0))
+
+
+def test_nan_and_missing_a0_are_still_not_interpretable():
+    import pendulastic_pt_score as pt
+    assert not pt.excursion_ok({"A0_deg": float("nan")})
+    assert not pt.excursion_ok({})
+    assert not pt.excursion_ok(None)
+
+
+# ── every scored parameter is invariant to a constant angle offset ───────────
+#
+# This is the load-bearing property of the 2026-08-31 pose-free knee-axis design
+# (docs/superpowers/specs/2026-08-31-optitrack-knee-axis-design.md). That design
+# gives up on recovering the absolute zero -- the rig cannot support it, since
+# in all 254 trials at least one segment is a collinear bar whose roll is
+# unobservable -- and instead argues that the zero does not matter, because
+# every scored quantity is a difference, a ratio of differences, a derivative,
+# a frequency, a count, or an integral of those.
+#
+# The spec verifies that by reading the source. These tests verify it by
+# measurement, because if it is false the whole design collapses and the failure
+# would be silent: scores would drift with an offset nobody can observe.
+
+def _offset_invariance_probe():
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t = np.arange(0, 6.0, 1 / 120.0)
+    hold = t < 1.0
+    swing = 180.0 - 45.0 * (1.0 - np.exp(-1.8 * (t - 1.0)) * np.cos(2 * np.pi * 0.9 * (t - 1.0)))
+    ang = np.where(hold, 180.0, swing)
+    return t, ang
+
+
+def test_every_scored_parameter_ignores_a_constant_angle_offset():
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt.compute_pt_params(t, ang)
+    assert base, "probe signal must score"
+    for off in (-15.0, -5.0, 5.0, 15.0):
+        shifted = pt.compute_pt_params(t, ang + off)
+        assert shifted, f"offset {off} made the trial unscoreable"
+        for key in list(pt._PARAM_KEYS) + ["A0_deg", "A1_deg"]:
+            a, b = base.get(key), shifted.get(key)
+            if a is None or b is None or not (np.isfinite(a) and np.isfinite(b)):
+                continue
+            assert abs(b - a) <= 1e-6 + 1e-6 * abs(a), (
+                f"{key} moved by {b - a:.3e} under a {off:+.0f} deg offset -- the "
+                f"pose-free design assumes it cannot")
+
+
+def test_the_composite_pt7_score_ignores_a_constant_angle_offset():
+    """The number a clinician actually reads."""
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt.compute_pt_score(pt.compute_pt_params(t, ang))
+    for off in (-15.0, 15.0):
+        shifted = pt.compute_pt_score(pt.compute_pt_params(t, ang + off))
+        assert abs(shifted - base) <= 1e-6 + 1e-6 * abs(base), (
+            f"pt7 moved {shifted - base:.3e} under a {off:+.0f} deg offset")
+
+
+def test_release_detection_ignores_a_constant_angle_offset():
+    """If the release index moved, every downstream parameter would move with
+    it and the invariance argument would collapse. Measured across the real
+    corpus: 0 moves in 872 offset scorings."""
+    import numpy as np
+    import pendulastic_pt_score as pt
+    t, ang = _offset_invariance_probe()
+    base = pt._detect_release(t, ang)
+    for off in (-15.0, -5.0, 5.0, 15.0):
+        assert pt._detect_release(t, ang + off) == base, f"release moved at {off:+.0f}"
+
+
+# -- physical (time-based) smoothing window -------------------------------
+
+def _pendulum_at(fs, dur=12.0, hold=2.0, A0=50.0, freq=0.9, decay=0.4):
+    """One physical swing, sampled at fs. The MOTION is identical at every
+    fs -- only the sampling changes -- so any PT parameter that moves with fs
+    is measuring the filter, not the patient."""
+    import numpy as np
+    t = np.arange(0.0, dur, 1.0 / fs)
+    swing = (130.0 + A0 * np.exp(-decay * (t - hold))
+             * np.cos(2 * np.pi * freq * (t - hold)))
+    return t, np.where(t < hold, 180.0, swing)
+
+
+def test_sg_window_is_a_duration_not_a_sample_count():
+    # The defect: _sg took a fixed sample COUNT, so the same 15-sample window
+    # spanned 0.75 s of a 20 Hz IMU trace and 0.125 s of a 120 Hz OptiTrack
+    # trace -- 75% of a swing period against 12% of one.
+    import numpy as np
+    import pendulastic_pt_score as p
+    sig = np.zeros(400); sig[200] = 1.0
+    n_50 = int((p._sg(sig, dt=1.0 / 50.0) != 0).sum())
+    n_200 = int((p._sg(sig, dt=1.0 / 200.0) != 0).sum())
+    # An impulse spreads over exactly the filter window, so the support IS the
+    # window: 4x the rate must give ~4x the samples for the same duration.
+    assert n_200 == pytest.approx(4 * n_50, rel=0.25), (n_50, n_200)
+
+
+def test_sg_window_spans_the_configured_number_of_seconds():
+    import numpy as np
+    import pendulastic_pt_score as p
+    for fs in (50.0, 100.0, 200.0):
+        sig = np.zeros(600); sig[300] = 1.0
+        support = int((p._sg(sig, dt=1.0 / fs) != 0).sum())
+        assert support / fs == pytest.approx(p._SG_WINDOW_S, abs=0.03), fs
+
+
+def test_sg_window_is_the_single_documented_knob():
+    import pendulastic_pt_score as p
+    assert p._SG_WINDOW_S == 0.10
+
+
+def test_sg_falls_back_to_the_savgol_minimum_when_the_rate_is_too_low():
+    # At 30 Hz a 0.10 s window is 3 samples, below savgol's polyorder+2
+    # floor. It must widen to the minimum, not crash and not silently
+    # return an unfiltered signal.
+    import numpy as np
+    import pendulastic_pt_score as p
+    sig = np.zeros(200); sig[100] = 1.0
+    out = p._sg(sig, dt=1.0 / 30.0, p=3)
+    support = int((out != 0).sum())
+    assert support >= 5
+    assert not np.array_equal(out, sig)
+
+
+def test_compute_pt_params_does_not_depend_on_sample_rate():
+    # The parameters the smoothing window governs. Same swing at 50 Hz and
+    # 200 Hz -- identical motion, only the sampling differs -- so anything
+    # that moves here is measuring the filter rather than the patient.
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert slow is not None and fast is not None
+    # omega_max_n and phi_max_ratio are both normalised by A0, so they were
+    # excluded from this list while the release back-off was still counted in
+    # samples. With that fixed they belong here: measured 1.58% and 1.13%.
+    for k in ("omega_peak_deg_s", "N", "f", "R2n", "omega_max_n", "phi_max_ratio"):
+        assert fast[k] == pytest.approx(slow[k], rel=0.05), (
+            f"{k} moved {slow[k]:.4f} -> {fast[k]:.4f} on identical motion")
+
+
+def test_peak_angular_velocity_survives_a_four_fold_change_in_sample_rate():
+    # omega_peak is the quantity the fixed-sample window hurt most: it is the
+    # peak of a numerical derivative, so its value was set by the filter
+    # width. On the real corpus the same motion read 350 deg/s at 120 Hz and
+    # 163 deg/s at 20 Hz. Tight tolerance on purpose -- this one is now
+    # invariant to 0.3% over 50-400 Hz, and a regression here means the
+    # window has gone back to being counted in samples.
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert fast["omega_peak_deg_s"] == pytest.approx(
+        slow["omega_peak_deg_s"], rel=0.01)
+
+
+def test_oscillation_count_is_the_same_at_20_hz_and_120_hz():
+    # The rates the pipeline really runs at: the IMU replay grid and the
+    # OptiTrack capture rate. With a 15-SAMPLE window these were a 0.75 s
+    # and a 0.125 s filter, and the count of oscillations disagreed by a
+    # median 16.7% across 143 real trials -- the same leg was scored as
+    # having a different number of swings depending on which instrument
+    # watched it. Measured 0.0% after the window became a duration.
+    #
+    # 20 Hz cannot realise a 0.10 s window (2 samples, below the savgol
+    # floor), so this asserts the floor still leaves N invariant; it does
+    # not claim the two rates are fully equivalent. omega does still differ
+    # at 20 Hz, which is why the IMU replay grid moves off 20 Hz.
+    #
+    # Characterisation, not a regression guard: a synthetic pendulum is far
+    # smoother than a real trace, so reverting _sg to a fixed sample count
+    # does NOT break this test (verified by mutation). What actually catches
+    # that reversion is test_sg_window_is_a_duration_not_a_sample_count.
+    import numpy as np
+    import pendulastic_pt_score as p
+    rng = np.random.default_rng(11)
+    def noisy(fs):
+        t, a = _pendulum_at(fs)
+        return t, a + rng.normal(0.0, 0.25, len(a))
+    slow = p.compute_pt_params(*noisy(20.0))
+    fast = p.compute_pt_params(*noisy(120.0))
+    assert slow is not None and fast is not None
+    assert slow["N"] == fast["N"], (slow["N"], fast["N"])
+
+
+def test_a0_does_not_depend_on_sample_rate():
+    """Was a strict xfail between 258ca60 and the release back-off fix.
+
+    The smoothing window fixed what it governed -- omega_peak became
+    invariant to 0.3% over 50-400 Hz -- but A0_deg kept drifting
+    monotonically, 47.75 deg at 50 Hz down to 44.23 at 400 Hz, because
+    _detect_release stepped back a fixed 2 SAMPLES from the threshold
+    crossing and so reported a later release the faster the capture was.
+    Making that back-off a duration took the A0 spread over the rates where
+    the 0.10 s window is realisable from 7.8% to 1.7%, and this now holds at
+    1.29% between 50 and 200 Hz.
+    """
+    import pendulastic_pt_score as p
+    slow = p.compute_pt_params(*_pendulum_at(50.0))
+    fast = p.compute_pt_params(*_pendulum_at(200.0))
+    assert fast["A0_deg"] == pytest.approx(slow["A0_deg"], rel=0.02)
+
+
+def test_release_detection_backoff_is_a_duration_not_a_sample_count():
+    # _detect_release stepped back a fixed 2 SAMPLES from the threshold
+    # crossing -- 0.040 s at 50 Hz but 0.005 s at 400 Hz -- so the faster the
+    # capture, the later the release it reported. Same class of bug as the
+    # smoothing window, and the reason A0_deg drifted 47.75 -> 44.23 deg
+    # across 50-400 Hz on identical motion.
+    import numpy as np
+    import pendulastic_pt_score as p
+    times = []
+    for fs in (50.0, 120.0, 400.0):
+        t, ang = _pendulum_at(fs)
+        smoothed = p._sg(ang, dt=p._median_dt(t))
+        times.append(float(t[p._detect_release(t, smoothed)]))
+    assert max(times) - min(times) < 0.02, times
+
+
+def test_release_backoff_survives_quantisation_at_clinical_capture_rates():
+    # This replaces a pin on 2.0/120, which was the old two-sample constant
+    # converted at OptiTrack's rate. That value quantises to ZERO back-off at
+    # every rate at or below 40 Hz, including the 20 Hz phone stream, which is
+    # what the assertion below exists to prevent recurring.
+    import pendulastic_pt_score as p
+    assert p._RELEASE_BACKOFF_S == pytest.approx(0.10)
+    for fps in (20.0, 30.0, 50.0, 60.0, 100.0, 120.0):
+        back = max(0, int(round(p._RELEASE_BACKOFF_S * fps)))
+        assert back >= 1, f"back-off vanishes at {fps} Hz"
+
+
+def test_a0_is_recovered_at_every_capture_rate():
+    """A0 must not depend on how fast the trial was sampled.
+
+    The property the back-off constant exists to provide, asserted directly
+    rather than by pinning the constant's value. A0 is read at the release
+    sample, so a back-off that quantises away leaves A0 sampled after the limb
+    has already fallen -- which under-read a known 45 deg swing as 35.3 deg at
+    20 Hz, with a systematic -4.9 deg bias across 243 synthetics. A one-
+    directional error is the worst shape for comparing a participant against
+    themselves over time, so this is asserted per rate AND as a spread.
+    """
+    import pendulastic_pt_score as p
+    neutral, a0_true, freq, lam, hold_s = 135.0, 45.0, 1.0, 0.9, 1.2
+    recovered = []
+    for fps in (20.0, 60.0, 120.0):
+        dt = 1.0 / fps
+        hold = np.full(int(hold_s / dt), neutral + a0_true)
+        ts = np.arange(0.0, 9.0, dt)
+        swing = neutral + a0_true * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)
+        ang = np.concatenate([hold, swing])
+        t = np.arange(len(ang)) * dt
+        got = p.compute_pt_params(t, ang, None, False)["A0_deg"]
+        assert abs(got - a0_true) < 1.0, f"A0 {got:.2f} at {fps} Hz, want {a0_true}"
+        recovered.append(got)
+    assert max(recovered) - min(recovered) < 1.0, f"A0 varies by rate: {recovered}"
+
+
+def test_n_tracks_damping_rather_than_the_clock():
+    """N must measure the leg, not how long we were willing to look.
+
+    This is the property the 4 s active-window cap destroyed. Under it, N read
+    4.0 for a 12-cycle swing, a 9-cycle swing and a 6-cycle swing alike -- one
+    number across a 2x range in what physically happened, on the parameter this
+    project's own findings call the best in the set. Asserted as a SPREAD as
+    well as per-case, because the failure mode was not inaccuracy, it was
+    constancy.
+    """
+    import pendulastic_pt_score as p
+    neutral, a0, freq, fs = 135.0, 45.0, 1.0, 20.0
+    dt = 1.0 / fs
+    got = []
+    for lam in (0.25, 0.5, 1.0):
+        hold = np.full(int(1.2 / dt), neutral + a0)
+        ts = np.arange(0.0, 12.0, dt)
+        ang = np.concatenate([hold, neutral + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)])
+        t = np.arange(len(ang)) * dt
+        got.append(p.compute_pt_params(t, ang, None, False)["N"])
+
+    # More damping must mean fewer counted cycles, strictly.
+    assert got[0] > got[1] > got[2], f"N does not track damping: {got}"
+    assert max(got) - min(got) > 3.0, f"N is nearly constant across damping: {got}"
+    # And the lightly damped leg must not be pinned near the old 4.0 cap.
+    assert got[0] > 8.0, f"N still looks capped: {got[0]}"
+
+
+def test_a_resting_tail_is_not_counted_as_oscillation():
+    """The failure the removed cap was documented as preventing.
+
+    evaluate_peak_detection.py establishes that the docstring's N = 0.5 / 28.5
+    needed the PRE-a1ca2b5 detector, which had no prominence gate: a1ca2b5
+    shipped the cap and prominence=min_amp together, and prominence is what
+    does the work. This pins that, so removing the cap cannot silently become
+    removing the guard -- if someone drops prominence from find_peaks, this
+    fails.
+
+    Uses the exact synthetic that reproduces the documented numbers under the
+    old detector: a single drop with no rebound, so the true cycle count is 0
+    however long the tail runs.
+    """
+    import pendulastic_pt_score as p
+    rng = np.random.default_rng(7)
+    fs, dt = 120.0, 1.0 / 120.0
+    counts = []
+    for tail_s in (3.0, 30.0):
+        hold = np.full(int(0.6 / dt), 180.0)
+        ramp = np.concatenate([
+            np.linspace(180.0, 106.0, int(0.5 / dt)),
+            np.linspace(106.0, 60.0, int(0.5 / dt)),
+        ])
+        tail = np.full(int(tail_s / dt), 60.0)
+        ang = np.concatenate([hold, ramp, tail])
+        ang = ang + rng.normal(0.0, 2.0, len(ang))
+        t = np.arange(len(ang)) * dt
+        r = p.compute_pt_params(t, ang, None, True)
+        counts.append(0.0 if r is None else r["N"])
+
+    # A 10x longer tail must not manufacture cycles out of nothing.
+    assert counts[0] < 1.0, f"short tail already over-counting: {counts[0]}"
+    assert counts[1] < 1.0, f"long resting tail counted as oscillation: {counts[1]}"
+
+
+def test_a_limb_that_sags_after_the_swing_still_scores_as_it_swung():
+    """PT7 must describe the oscillation, not how the limb settled afterwards.
+
+    `neutral` is the settled-tail median, so a limb that keeps creeping into
+    flexion after the swing dies oscillated about a HIGHER centre than the
+    angle it ends at. Before the centred frame that mismatch took area_ratio
+    from 0.008 to 0.824 and PT7 from 0.0713 to 1.2180 -- a 17x false
+    impairment on an oscillation that never changed -- and starved the
+    sub-neutral troughs from 7 to 3.
+
+    The oscillation below is byte-identical across the sweep; only the sag
+    differs. See evaluate_capture_bias.py for the full measurement.
+    """
+    import pendulastic_pt_score as p
+    rest, a0, freq, lam, mu, fs = 135.0, 45.0, 1.0, 0.45, 0.25, 20.0
+    dt = 1.0 / fs
+    areas, scores, troughs = [], [], []
+
+    for creep in (0.0, 5.0, 20.0):
+        ts = np.arange(0.0, 10.0, dt)
+        hold = np.full(int(1.2 / dt), rest + creep + a0)
+        swing = rest + creep * np.exp(-mu * ts) \
+            + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts)
+        tt = np.arange(0.0, 6.0, dt)
+        tail = rest + creep * np.exp(-mu * (ts[-1] + dt + tt))
+        ang = np.concatenate([hold, swing, tail])
+        t = np.arange(len(ang)) * dt
+        r = p.compute_pt_params(t, ang, None, False)
+        areas.append(r["area_ratio"])
+        scores.append(p.compute_pt_score(r))
+        troughs.append(len(r["tr_i"]))
+
+    # The symmetry index is the parameter the baseline shift destroyed; it
+    # must now barely move, because the swing's symmetry never changed.
+    assert max(areas) - min(areas) < 0.05, f"area_ratio still tracks the sag: {areas}"
+    # And the troughs must not be starved away.
+    assert min(troughs) >= 5, f"sub-neutral troughs starved by the sag: {troughs}"
+    # PT7 may still drift a little, because A0 deliberately still measures
+    # release-above-REST and so absorbs the sag. What must not return is the
+    # order-of-magnitude inflation.
+    assert max(scores) - min(scores) < 0.25, f"PT7 still tracks the sag: {scores}"
+
+
+def test_the_centred_frame_leaves_a_clean_swing_alone():
+    """A trial with no sag must be unaffected by the correction."""
+    import pendulastic_pt_score as p
+    rest, a0, freq, lam, fs = 135.0, 45.0, 1.0, 0.45, 20.0
+    dt = 1.0 / fs
+    ts = np.arange(0.0, 10.0, dt)
+    ang = np.concatenate([
+        np.full(int(1.2 / dt), rest + a0),
+        rest + a0 * np.exp(-lam * ts) * np.cos(2 * np.pi * freq * ts),
+        np.full(int(6.0 / dt), rest),
+    ])
+    t = np.arange(len(ang)) * dt
+    r = p.compute_pt_params(t, ang, None, False)
+    # A symmetric decaying cosine: the asymmetry index must stay small, and
+    # A0 must still read the release amplitude it was built with.
+    assert r["area_ratio"] < 0.1, r["area_ratio"]
+    assert abs(r["A0_deg"] - a0) < 1.5, r["A0_deg"]
+    assert r["N"] > 5.0, r["N"]

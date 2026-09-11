@@ -1,8 +1,10 @@
 //! U1 test scenarios (see the plan's U1 entry). These are known-answer tests
-//! against the ported formulas' documented behavior, not yet a cross-check
-//! against a live Python-computed fixture file — that fixture-vs-Python
-//! comparison is a separate offline validation step once real trial data
-//! exists (KTD3's shadow study).
+//! against the ported formulas' documented behavior. The cross-check against
+//! Python-computed values lives in `pipeline_test.rs`, which runs this
+//! module's fusion + calibration over a full raw log and compares the result
+//! to what `imu_calibration_tuner.replay_trial` produces for it. What remains
+//! outstanding is validation against *real* trial data — a separate offline
+//! step once that data exists (KTD3's shadow study).
 
 use mobile_imu_core::ahrs::{gravity_seed, MadgwickAhrs, BETA};
 use mobile_imu_core::calibration::{calibrate_accel_bias, calibrate_gyro_bias, ReleaseDetector};
@@ -102,7 +104,6 @@ fn recently_calm_false_during_an_active_burst() {
 fn release_detector_fires_once_on_a_genuine_release() {
     let mut detector = ReleaseDetector::new();
     let mut hold_buf: SampleBuf = Vec::new();
-    let mut fired_at: Option<usize> = None;
 
     // 1.0s of calm samples at 50Hz (spans the full GYRO_BIAS_WINDOW_S), then
     // a burst that crosses FLEX_CAPTURE_THRESHOLD.
@@ -119,14 +120,12 @@ fn release_detector_fires_once_on_a_genuine_release() {
     let t = calm_samples.len() as f64 * 0.02;
     let fired = detector.on_gyro_sample(release_sample, &hold_buf, t);
     assert!(fired, "must fire on the qualifying release burst");
-    fired_at = Some(calm_samples.len());
     assert!(!detector.is_armed());
 
     // A second burst after release must never fire again.
     hold_buf.push((t, release_sample));
     let fired_again = detector.on_gyro_sample(release_sample, &hold_buf, t + 0.02);
-    assert!(!fired_again);
-    assert!(fired_at.is_some());
+    assert!(!fired_again, "release must latch -- a second burst cannot re-fire");
 }
 
 #[test]
@@ -182,6 +181,15 @@ fn ahrs_magnetometer_path_is_reachable_but_opt_in() {
     // while KTD10's contract is that real callers pass None. Same starting
     // state, same accel/gyro, different mag argument -> different quaternion
     // proves the branch executes when a caller opts in.
+    //
+    // The mag vector is not arbitrary. Madgwick derives the earth-frame
+    // reference `b` from the measurement itself, flattened into the XZ plane,
+    // so a mag reading that *already* lies in the current frame's XZ plane
+    // (e.g. [1,0,0] or [0,0,1] at identity) has a residual of exactly zero by
+    // construction: the branch executes and correctly contributes nothing,
+    // which leaves the assertion below unable to tell a live branch from a
+    // dead one. [0,1,0] has a nonzero earth-frame Y component, which is
+    // precisely what the magnetic correction exists to null out.
     let mut without_mag = MadgwickAhrs::new(BETA);
     let mut with_mag = MadgwickAhrs::new(BETA);
     without_mag.q = [1.0, 0.0, 0.0, 0.0];
@@ -189,8 +197,28 @@ fn ahrs_magnetometer_path_is_reachable_but_opt_in() {
 
     let gyro = [0.0, 0.0, 0.0]; // no rotation -> correction step dominates
     let accel = [0.0, 0.0, 1.0];
-    without_mag.update(gyro, accel, None, 0.01);
-    with_mag.update(gyro, accel, Some([1.0, 0.0, 0.0]), 0.01);
+    let dt = 0.01;
+    without_mag.update(gyro, accel, None, dt);
+    with_mag.update(gyro, accel, Some([0.0, 1.0, 0.0]), dt);
 
     assert_ne!(without_mag.q, with_mag.q);
+
+    // The accel residual is zero here (identity IS the equilibrium for
+    // accel=[0,0,1]), so the entire difference is the magnetic term, and it
+    // must be a pure yaw (Z) correction of one normalized gradient-descent
+    // step: beta * dt. Asserting the shape and magnitude — not merely "these
+    // differ" — is what keeps this test honest if the mag Jacobian is ever
+    // mis-transcribed into something that still happens to move q.
+    assert_eq!(
+        without_mag.q,
+        [1.0, 0.0, 0.0, 0.0],
+        "no-mag arm should sit at equilibrium"
+    );
+    assert!(with_mag.q[1].abs() < 1e-12, "mag correction leaked into x (roll)");
+    assert!(with_mag.q[2].abs() < 1e-12, "mag correction leaked into y (pitch)");
+    assert!(
+        (with_mag.q[3].abs() - BETA * dt).abs() < 1e-9,
+        "expected a single beta*dt yaw step, got {}",
+        with_mag.q[3]
+    );
 }

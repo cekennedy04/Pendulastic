@@ -80,18 +80,53 @@ def bland_altman(subject_a: np.ndarray, subject_b: np.ndarray):
             "n": len(a)}
 
 
+# Folder names under Recordings/ that are not real participants.
+_NON_PARTICIPANT_IDS = {"test", "0", "demo"}
+
+
 def load_group_and_demo():
-    """participant -> {"group": ..., "age": ..., "sex": ...} from
-    Recordings/Participant_N/metadata.json.
+    """participant -> {"group", "spasticity", "spasticity_source", "age", "sex",
+    "diagnosis"} from Recordings/Participant_N/metadata.json.
 
     Keyed by the FOLDER name (matches discover_trials()'s t["participant"]),
     not the JSON's own "participant_id" field -- that field is unreliable
     (e.g. Recordings/Participant_5/metadata.json has participant_id="6_jk",
-    a data-entry bug in the source file, confirmed 2026-08-19)."""
+    a data-entry bug in the source file, confirmed 2026-08-19).
+
+    "group" is the CANONICAL arm from pt_cohort_common.classify_participant.
+    This function used to classify inline as:
+
+        group = "MS" if "multiple sclerosis" in diagnosis else ("Control" if diagnosis else None)
+
+    which swept every non-MS diagnosis into Control. Measured against the real
+    metadata on 2026-08-27 that put all four post-stroke participants (19, 21,
+    22, 24) into the CONTROL arm of the mixed-effects model, the AUC and the
+    boxplots. Control now means control.
+
+    "spasticity" is the per-participant characterisation from
+    spasticity_grouping -- non-spastic / spastic / unknown -- rolled up from
+    per-leg labels. It exists because diagnosis is not the variable the
+    pendulum test measures, and because grouping on it keeps every participant
+    in the analysis: the arm-based split has no home for a post-stroke
+    participant, so correcting the arm alone would have dropped those four
+    rather than mislabelling them, which is not an improvement.
+    """
+    import pt_cohort_common as _pcc
+    import spasticity_grouping as _sg
+
+    registry, registry_exists = _pcc.load_registry()
+    mas_by_leg = _sg.load_mas_by_leg()
+    mas_components = _sg.load_mas_components_by_leg()
+    a0 = a0_by_leg_from_optitrack()
+
     out = {}
     base = "Recordings"
     for name in os.listdir(base):
         if not name.startswith("Participant_"):
+            continue
+        # Participant_test is capture scaffolding (participant_id "test",
+        # weight 20 kg) and was being classified as an MS participant.
+        if name.replace("Participant_", "").strip().lower() in _NON_PARTICIPANT_IDS:
             continue
         meta_path = os.path.join(base, name, "metadata.json")
         if not os.path.isfile(meta_path):
@@ -102,12 +137,48 @@ def load_group_and_demo():
         except (OSError, ValueError):
             continue
         pid = name.replace("Participant_", "")
-        diagnosis = (meta.get("diagnosis") or "").strip().lower()
-        group = "MS" if "multiple sclerosis" in diagnosis or diagnosis == "ms" else (
-            "Control" if diagnosis else None)
-        out[pid] = {"group": group, "age": meta.get("age"), "sex": meta.get("sex"),
+        arm, _source = _pcc.classify_participant(
+            pid, _pcc.load_metadata_diagnosis(pid), registry, registry_exists)
+        legs = _sg.classify_participant_legs(
+            pid, arm=arm, mas_by_leg=mas_by_leg,
+            mas_components=mas_components,
+            a0_by_leg={leg: a0.get((pid, leg)) for leg in _sg.LEGS})
+        rolled = _sg.participant_level(legs)
+        out[pid] = {"group": arm,
+                    "spasticity": rolled.level,
+                    "spasticity_source": rolled.source,
+                    "age": meta.get("age"), "sex": meta.get("sex"),
                     "diagnosis": meta.get("diagnosis")}
     return out
+
+
+def a0_by_leg_from_optitrack():
+    """{(participant, leg): median A0_deg} over each leg's pre-condition trials.
+
+    The median, not the mean: OptiTrack coverage collapses mid-swing on most
+    trials, so a single badly-tracked trial can drag an average a long way.
+    Trials that cannot be reconstructed at all are simply absent, which leaves
+    the leg UNKNOWN rather than guessed.
+    """
+    import glob
+    import statistics
+    import pendulastic_pt_score as _pts
+
+    per_leg = {}
+    pattern = os.path.join("OptiTrack_Recordings", "Participant_*", "*", "pre",
+                           "**", "trial_*_optitrack.csv")
+    for path in glob.glob(pattern, recursive=True):
+        parts = path.replace("\\", "/").split("/")
+        pid = parts[1].replace("Participant_", "")
+        leg = parts[2].lower()
+        try:
+            t, angle, _quality = _pts.load_optitrack_detailed(path)
+            val = _pts.compute_pt_params(t, angle).get("A0_deg")
+        except Exception:
+            continue
+        if val is not None and float(val) == float(val):
+            per_leg.setdefault((pid, leg), []).append(float(val))
+    return {k: statistics.median(v) for k, v in per_leg.items() if v}
 
 
 def load_mas_scores():

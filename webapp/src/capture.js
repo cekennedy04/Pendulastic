@@ -1,0 +1,180 @@
+// Runs on the MAIN THREAD, and must: DeviceMotionEvent is exposed only on
+// window, and requestPermission() must be called from a user gesture on iOS.
+// The handler stays minimal so UI work never delays or drops sensor events.
+//
+// The module is split in two: `encodeSample` below is pure (no DOM, no
+// worker, no globals) so the deg/s->rad/s conversion and the beta/gamma/alpha
+// -> x/y/z axis mapping -- the highest-risk arithmetic in this file -- can be
+// unit tested under `node --test` (see tests/capture.test.js). Everything
+// past it is browser-only plumbing (permission prompt, devicemotion
+// listener, wake lock, worker construction/transfer) that no test runner can
+// exercise without a real device, and is left untested per task-5 dispatch.
+
+const BATCH_MS = 50;          // matches TICK_S; the production _IMU_PAGE cadence
+const FLOATS_PER_SAMPLE = 7;  // [t_ms, ax, ay, az, gx, gy, gz]
+const CAP = 64;               // 50ms at 60Hz is ~3 samples; ample headroom
+const DEG2RAD = Math.PI / 180;
+
+// Pure: encodes one motion event into the 7-float wire layout the worker
+// expects, writing into `out` starting at `offset`. Takes only the plain
+// values a DeviceMotionEvent carries (event.timeStamp,
+// event.accelerationIncludingGravity, event.rotationRate) -- not the event
+// class itself -- so it can be driven with a plain object in tests.
+//
+// event.timeStamp is stamped at event CREATION by the browser, so it
+// survives main-thread contention. Using a handler-time clock
+// (Date.now()/performance.now()) instead is what collapsed dt to zero in the
+// 2026-08-17 defect; callers must pass event.timeStamp through unchanged.
+//
+// Axis mapping: beta->x, gamma->y, alpha->z. The browser reports
+// rotationRate in deg/s; the worker/wasm core expects rad/s.
+export function encodeSample(out, offset, event) {
+  const a = event.accelerationIncludingGravity;
+  const r = event.rotationRate;
+  out[offset] = event.timeStamp;
+  out[offset + 1] = a.x;
+  out[offset + 2] = a.y;
+  out[offset + 3] = a.z;
+  out[offset + 4] = r.beta * DEG2RAD;
+  out[offset + 5] = r.gamma * DEG2RAD;
+  out[offset + 6] = r.alpha * DEG2RAD;
+  return out;
+}
+
+// The handle returned by startCapture's two early exits (no motion sensors,
+// permission denied). It must be SHAPE-COMPATIBLE with the real handle
+// below, not merely "something with a stop()".
+//
+// Why: app.js's onResult/onError keep the finished handle in `exportSession`
+// and later call `exportSession.exportJsonl()` inside a promise chain whose
+// `.finally()` decrements `sessionBusyCount`. A stub missing `exportJsonl`
+// throws a TypeError SYNCHRONOUSLY -- before any `.finally()` is attached --
+// so the count is incremented and never decremented, `refreshExportLock`
+// takes its busy branch forever, and both session buttons are wedged with no
+// recovery short of a reload. Returning a REJECTED PROMISE instead keeps the
+// failure on the async path every caller already handles.
+//
+// Reachable in practice: tap Start, deny the iOS motion permission prompt.
+export function neverStartedHandle(reason) {
+  return {
+    stop() {},
+    exportJsonl: () => Promise.reject(new Error(reason)),
+    requestReference: () => Promise.resolve(null),
+  };
+}
+
+export async function startCapture({ onState, onResult, onError }) {
+  if (typeof DeviceMotionEvent === 'undefined') {
+    onError('This browser does not expose motion sensors.');
+    return neverStartedHandle('capture never started: this browser does not expose motion sensors');
+  }
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    const granted = await DeviceMotionEvent.requestPermission();
+    if (granted !== 'granted') {
+      onError('Motion permission denied. Reload the tab and tap Start to retry.');
+      return neverStartedHandle('capture never started: motion permission denied');
+    }
+  }
+
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* best effort */ }
+
+  // Resolvers for in-flight `exportJsonl()` calls, FIFO -- exactly one
+  // `export`/`exportResult` round trip is ever in flight per call site
+  // (app.js awaits each call before starting another), so a simple queue is
+  // enough to route each reply to its promise without a per-message id.
+  const exportWaiters = [];
+  const referenceWaiters = [];
+
+  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'state') onState(m);
+    else if (m.type === 'result') onResult(m.params, m.trajectory, m.ptScore);
+    else if (m.type === 'exportResult') exportWaiters.shift()?.resolve(m.jsonl);
+    else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
+    else if (m.type === 'error') {
+      // A failed `export` request also comes back as `{type:'error'}`
+      // (worker.js's generic catch) -- route it to the waiting promise
+      // instead of the trial fault-latch, which an export failure has
+      // nothing to do with.
+      //
+      // Reference requests are settled FIRST, and resolved rather than
+      // rejected. There are two request queues now, and the worker's error
+      // reply says nothing about which one it belongs to; draining the
+      // export queue first meant a failed reference request rejected an
+      // unrelated in-flight export, surfacing as a spurious "trial was
+      // scored but NOT saved". A reference that cannot be fetched is not an
+      // error the operator can act on -- it just means no comparison table.
+      if (referenceWaiters.length > 0) referenceWaiters.shift().resolve(null);
+      else if (exportWaiters.length > 0) exportWaiters.shift().reject(new Error(m.reason));
+      else onError(m.reason);
+    }
+  };
+  worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3 } });
+
+  let buf = new Float64Array(CAP * FLOATS_PER_SAMPLE);
+  let n = 0;
+
+  const onMotion = (event) => {
+    const a = event.accelerationIncludingGravity;
+    const r = event.rotationRate;
+    if (!a || a.x === null || !r || r.beta === null) return;
+    if (n >= CAP) return;                    // dropped rather than reallocating mid-handler
+    encodeSample(buf, n * FLOATS_PER_SAMPLE, event);
+    n++;
+  };
+
+  const flush = () => {
+    if (n === 0) return;
+    const out = buf.subarray(0, n * FLOATS_PER_SAMPLE).slice();
+    n = 0;
+    // Transfer ownership -- no copy, and no COOP/COEP isolation required.
+    // `out.buffer` is detached by this call; it must not be read again.
+    worker.postMessage({ type: 'batch', buf: out.buffer }, [out.buffer]);
+  };
+
+  window.addEventListener('devicemotion', onMotion);
+  const timer = setInterval(flush, BATCH_MS);
+
+  return {
+    stop() {
+      clearInterval(timer);
+      window.removeEventListener('devicemotion', onMotion);
+      flush();
+      worker.postMessage({ type: 'finish' });
+      wakeLock?.release?.().catch(() => {});
+    },
+    // Raw-log export (KTD4): resolves with the newline-delimited JSON of the
+    // whole trial. Callable any time the worker's session is still alive --
+    // in particular after `finish`, since `TrialSession::finish` takes
+    // `&self` and never consumes the raw log -- which is what lets the
+    // result screen's Export control fire after the trial has already
+    // scored (or failed to).
+    exportJsonl() {
+      return new Promise((resolve, reject) => {
+        exportWaiters.push({ resolve, reject });
+        worker.postMessage({ type: 'export' });
+      });
+    },
+    // Ask the worker for the healthy reference the result screen shows
+    // beside each measured value. Fire-and-forget: the answer arrives as a
+    // normal `{type:"reference"}` message, and until it does the comparison
+    // table stays hidden rather than showing dashes.
+    requestReference() {
+      return new Promise((resolve) => {
+        // Settled either way. A cached worker.js from before this message
+        // type existed falls through every branch of its handler and posts
+        // NOTHING, so without this the promise hangs forever, the caller
+        // keeps re-requesting, and referenceWaiters grows for the life of
+        // the session. Resolving null means "no comparison available",
+        // which the UI already renders as a hidden table.
+        let settled = false;
+        const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+        referenceWaiters.push({ resolve: done });
+        worker.postMessage({ type: 'reference' });
+        setTimeout(() => done(null), 3000);
+      });
+    },
+  };
+}

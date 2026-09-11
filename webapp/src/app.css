@@ -1,0 +1,1065 @@
+/* Plain CSS, no framework, no build step (task-6 binding constraint).
+   Read mid-procedure, one-handed, at arm's length: everything that matters
+   is large, high-contrast, and color- AND text-differentiated (never color
+   alone) so it survives outdoor glare and color-vision differences. */
+
+:root {
+  /* Workbench palette -- mirrors workbench_style.PALETTE so the phone and
+     the desktop app read as one product. Names match the desktop's roles
+     (BG/SURFACE/PANEL/BTN_ACT/FG/FG2/FG3/BORDER), not the old
+     ink/paper/muted/line vocabulary, so a rule's intent is legible against
+     the Python side. */
+  --bg:          #F4F6F9;
+  --surface:     #FFFFFF;
+  --panel:       #F5F8FC;
+  --accent:      #2563EB;
+  --accent-soft: #DCEAFE;
+  --fg:          #0F172A;
+  --fg2:         #475569;
+  --fg3:         #64748B;
+  --border:      #CBD5E1;
+  --mono: Consolas, ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Back-compat aliases. The rules below still reference these names; they
+     are retired as each rule is migrated, and this block goes away in the
+     styling pass. Kept so this task is a pure value change with no chance
+     of a missed selector silently losing its color. */
+
+  /* SAFETY-CRITICAL -- DO NOT RETUNE. Each is documented below at the rule
+     that uses it: read at arm's length under outdoor glare, always paired
+     with an independent glyph and text label. */
+
+  /* RETUNED 2026-09-03, deliberately and on the record, by user decision:
+     the banner moved from #7a0d0d (red) to amber. It is still a WARNING
+     colour -- the banner states the instrument is not validated, and this
+     app is an adjunct to a clinician's judgement, so it has to stay loud
+     about what it has not established.
+     Amber is the CORRECT register here, not a watered-down red. ANSI Z535
+     and ISO 7010 reserve red for DANGER -- a hazard that will cause harm --
+     and orange for WARNING, one that could. "Not validated" is a caution
+     about how to read a number, not an imminent physical hazard, so red was
+     arguably over-signalling and spending the strongest colour the app has
+     on its most permanent element.
+     Blue was asked for first and rejected here: --accent is #2563EB and the
+     released capture state is #1d4ed8, so a blue banner would share its
+     colour language with buttons and a healthy state and stop reading as a
+     warning at all.
+     #92400E rather than reusing --holding-bg #b45309, for two measured
+     reasons: white-on-#92400E is 7.09:1 against WCAG AA's 4.5 (reusing the
+     holding amber would have been 5.02:1, a large drop from red's 11.11:1
+     on a surface that must survive outdoor glare), and an identical value
+     would make the persistent banner and a transient HOLDING state the same
+     colour on screen at the same time. */
+  --banner-bg: #92400E;
+  --banner-fg: #ffffff;
+  --moving-bg: #6b7280;
+  --holding-bg: #b45309;
+  --ready-bg: #0f7a37;
+  --fired-bg: #1d4ed8;
+  --unscorable-bg: #4b5563;
+  --fault-bg: #9f1239;
+  --pt-healthy-bg: #0f7a37;
+  --pt-borderline-bg: #b45309;
+  --pt-impaired-bg: #9f1239;
+  --pt-unknown-bg: #4b5563;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  /* Segoe UI leads to match workbench_style's FONT_BODY, so the phone and the
+     desktop app read as one product on Windows. This is a no-op on iOS: Segoe
+     UI is not installed there, so the stack falls through to -apple-system
+     (San Francisco) exactly as before -- which is also the right face on a
+     phone. The ordering therefore changes the desktop and leaves the device
+     the app actually ships on untouched. */
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  /* Prevent iOS Safari from letting a long word or long number blow out
+     layout width on a narrow phone screen. */
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 0 0 max(16px, env(safe-area-inset-bottom)) 0;
+}
+
+/* ---- Mandatory validation banner --------------------------------------
+   Required unconditionally by spec §8 until G0 passes: no dismiss control,
+   no fade, no flag to hide it. Sits above everything, including the state
+   guide AND the install gate below (task-2 dispatch, binding constraint:
+   the gate must not replace or hide this banner) -- z-index must stay
+   higher than #install-gate's or its full-viewport overlay paints over
+   this sticky bar despite `hidden` never being set on it. */
+#banner {
+  background: var(--banner-bg);
+  color: var(--banner-fg);
+  font-weight: 700;
+  font-size: clamp(14px, 4.2vw, 18px);
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+}
+
+/* ---- Standalone-install gate --------------------------------------------
+   Blocks recording until the app is opened from the Home Screen icon, not a
+   browser tab (task-2 dispatch). Safari deletes all script-writable storage
+   after 7 days of inactivity with the site, and Apple documents an exemption
+   for Home Screen installs -- but that exemption is unverified platform
+   behaviour Apple could change, not a guarantee, which is why the copy above
+   says "reduces how often" rather than promising safety. Sits above #guide
+   in DOM order and above everything but the mandatory banner in z-index, so
+   it cannot be scrolled past or covered. */
+#install-gate {
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--surface); color: var(--fg);
+  padding: 24px; overflow-y: auto;
+  display: flex; flex-direction: column; justify-content: center;
+}
+#install-gate[hidden] { display: none; }
+#install-gate h1 { font-size: 22px; margin: 0 0 12px; }
+#install-gate p { font-size: 16px; line-height: 1.5; margin: 0 0 14px; }
+.install-note { color: var(--fg3); font-size: 14px; }
+
+#start, #stop {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 16px auto 0;
+  padding: 18px;
+  font-size: clamp(20px, 6vw, 26px);
+  font-weight: 700;
+  border: none;
+  border-radius: 14px;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+#stop {
+  background: var(--fault-bg);
+}
+
+/* The `hidden` attribute is the ONLY show/hide mechanism app.js has, and the
+   `display: block` above silently defeats it. `[hidden] { display: none }`
+   lives in the UA stylesheet, and author-origin declarations beat UA-origin
+   ones outright -- specificity never even enters into it. So without this
+   rule `el('stop').hidden = true` is a no-op: both buttons stay on screen for
+   the whole trial, and tapping Start during a live capture starts a SECOND
+   capture. That orphans the first worker, its flush interval, its devicemotion
+   listener and its wake lock with no handle left to stop any of them; the
+   orphan then fights the live session for the guide display, and one error
+   from it calls stop() on the good trial.
+
+   Restating it at author origin is necessary but not sufficient on its own: a
+   bare `[hidden]` selector is (0,1,0) and would still lose to `#start` at
+   (1,0,0) within this same stylesheet. These selectors are (1,1,0), so they
+   win.
+
+   `#result` is included for the same invariant even though it is not broken
+   today: it is the third element app.js toggles, it carries author rules, and
+   it only escapes this because nothing here sets its `display`. Stating the
+   rule once for all three means adding a `display` to any of them cannot
+   quietly reintroduce the bug. */
+#start[hidden], #stop[hidden], #result[hidden], #waveform-wrap[hidden], #pt-score[hidden],
+#export-actions[hidden], #send-to-laptop[hidden] { display: none; }
+
+/* ---- State guide --------------------------------------------------------
+   The single largest element on the page. Each state carries its own
+   background color, its own icon glyph, AND its own text label -- three
+   independent cues -- because this is read at arm's length by someone whose
+   hands are occupied and cannot lean in to disambiguate a subtle shade. */
+#guide {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: pre-line;
+  margin: 16px;
+  padding: 24px 16px;
+  min-height: 34vh;
+  border-radius: 18px;
+  font-weight: 800;
+  font-size: clamp(24px, 9vw, 44px);
+  line-height: 1.25;
+  color: #fff;
+  background: var(--moving-bg);
+  transition: background-color 120ms ease-out;
+}
+
+#guide::before {
+  display: block;
+  font-size: 0.6em;
+  margin-bottom: 0.15em;
+}
+
+#guide.moving { background: var(--moving-bg); }
+#guide.moving::before { content: "●"; }
+
+#guide.holding { background: var(--holding-bg); }
+#guide.holding::before { content: "◐"; }
+
+/* READY must be impossible to mistake for any other state: it is the only
+   state that pulses, the only one with an exclamation glyph, and it uses
+   the single highest-contrast color on the page (a saturated green against
+   white text, distinct from Holding's amber and Moving's neutral gray even
+   under a washed-out outdoor screen). */
+#guide.ready {
+  background: var(--ready-bg);
+  outline: 6px solid #ffffff;
+  outline-offset: -10px;
+  animation: ready-pulse 900ms ease-in-out infinite;
+}
+#guide.ready::before { content: "▲ RELEASE NOW ▲"; font-size: 0.4em; letter-spacing: 0.08em; }
+
+@keyframes ready-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(15, 122, 55, 0.55); }
+  50% { box-shadow: 0 0 0 18px rgba(15, 122, 55, 0); }
+}
+
+#guide.fired { background: var(--fired-bg); }
+#guide.fired::before { content: "↓"; }
+
+/* The limb settled and the trial self-terminated. Reuses --ready-bg because
+   this is the same kind of event: the protocol was satisfied. Carries its own
+   glyph like every other state, so the meaning never rests on colour alone --
+   the rule the whole state palette is built on. */
+#guide.settled { background: var(--ready-bg); }
+#guide.settled::before { content: "✓"; }
+
+/* An expected clinical outcome (no usable swing), not a fault -- deliberately
+   neutral, not alarming, distinct from both Moving's gray and the true
+   fault color below. */
+#guide.unscorable { background: var(--unscorable-bg); }
+#guide.unscorable::before { content: "—"; }
+
+/* Something broke, as opposed to a legitimate unscorable trial. Kept
+   visually distinct (a different hue and glyph) so the two are never read
+   as the same thing. */
+#guide.fault { background: var(--fault-bg); }
+#guide.fault::before { content: "⚠"; }
+
+@media (prefers-reduced-motion: reduce) {
+  #guide.ready { animation: none; }
+}
+
+/* ---- Waveform plot -------------------------------------------------------
+   Spec §5's result-screen waveform. Plain 2D canvas, drawn directly in
+   app.js -- no charting library (task binding constraint). The point is
+   glanceability: an operator has to be able to see, from arm's length,
+   whether the traced motion matches the swing they just performed, so this
+   favours one large high-contrast plot over anything dense. */
+#waveform-wrap {
+  margin: 8px 16px 4px;
+}
+
+#waveform {
+  display: block;
+  width: 100%;
+  height: 42vh;
+  min-height: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.waveform-caption {
+  margin: 8px 2px 0;
+  font-weight: 700;
+  font-size: clamp(13px, 3.6vw, 16px);
+  color: var(--fg);
+}
+
+#waveform-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 6px 2px 0;
+  font-size: clamp(12px, 3.2vw, 14px);
+  color: var(--fg3);
+}
+
+#waveform-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#waveform-legend .swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  display: inline-block;
+  flex: none;
+}
+
+/* Same hue vocabulary as #guide's state colors, reused so a released trial's
+   plot reads consistently with the state screen the operator just watched. */
+.swatch-trace { background: var(--fg); }
+.swatch-neutral { background: var(--fg3); }
+.swatch-release { background: var(--fired-bg); }
+.swatch-peak { background: var(--ready-bg); }
+.swatch-trough { background: var(--banner-bg); }
+
+/* ---- Hold gates ---------------------------------------------------------
+   Surfaced as two separate readouts, not one pass/fail: a hold can fail
+   because the limb is moving (rate) or because it is slowly drifting
+   (accumulated pose change), and those have different corrective actions. */
+#gates {
+  display: flex;
+  gap: 12px;
+  margin: 0 16px 16px;
+  padding: 0;
+}
+
+.gate {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: center;
+}
+
+#gates dt {
+  font-size: clamp(12px, 3.2vw, 14px);
+  font-weight: 600;
+  color: var(--fg3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 4px;
+}
+
+#gates dd {
+  font-family: var(--mono);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(16px, 4.6vw, 20px);
+  font-weight: 700;
+  color: var(--fg);
+}
+
+/* ---- Provisional PT score -------------------------------------------------
+   Derived at read time in the wasm core (mobile-imu-core/src/pt_score.rs),
+   never persisted -- HEALTHY_REF is still being recalibrated. Deliberately
+   visually distinct from the 20-parameter #result table below it (a summary
+   the operator reads first, not a replacement for the raw numbers), and
+   carries its own disclaimer text rather than relying on the page banner
+   alone: an unlabelled unbounded number reads as "lower is worse" by default,
+   which is backwards here. */
+#pt-score {
+  width: calc(100% - 32px);
+  margin: 8px 16px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+#pt-score-disclaimer {
+  margin: 0 0 10px;
+  font-size: clamp(12px, 3.4vw, 14px);
+  color: var(--fg3);
+  line-height: 1.4;
+}
+
+#pt-score-disclaimer strong { color: var(--fg); }
+
+#pt-score-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+#pt-score-value {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: clamp(28px, 9vw, 40px);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+#pt-score-zone {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #fff;
+  background: var(--pt-unknown-bg);
+}
+
+#pt-score-zone.zone-healthy { background: var(--pt-healthy-bg); }
+#pt-score-zone.zone-borderline { background: var(--pt-borderline-bg); }
+#pt-score-zone.zone-impaired { background: var(--pt-impaired-bg); }
+#pt-score-zone.zone-unknown { background: var(--pt-unknown-bg); }
+/* Zone classification suppressed while HEALTHY_REF is recalibrated (see
+   app.js ZONE_CLASSIFICATION_CALIBRATED). Neutral on purpose: any of the
+   red/amber/green zone colours would read as a verdict. */
+#pt-score-zone.zone-uncalibrated { background: var(--pt-unknown-bg); }
+
+/* Unmeasured-parameter notice. Sits above the number because it changes how
+   the number should be read. Amber, not red: the trial is valid and kept --
+   a limb with high tone legitimately produces this -- it is the SCORE that
+   needs qualifying, not the capture that needs repeating. */
+/* The excursion gate's refusal. Red, unlike the amber unmeasured notice:
+   that one qualifies a number worth reading, this one says the swing cannot
+   support a reading at all. */
+/* The live score is the capture app's convention (detrend=false); the STORED
+   record uses the analysis convention. Labelling the on-screen number stops it
+   being mistaken for the one in the exported manifest. */
+#pt-score-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+#pt-score-excursion {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid var(--pt-impaired-bg, #dc3545);
+  background: rgba(220, 53, 69, 0.12);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+#pt-score-unmeasured {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 4px solid var(--pt-borderline-bg, #d39e00);
+  background: rgba(211, 158, 0, 0.12);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+#pt-score-breakdown-label {
+  margin: 12px 0 4px;
+  font-size: clamp(11px, 3vw, 13px);
+  font-weight: 600;
+  color: var(--fg3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#pt-score-breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+
+#pt-score-breakdown td {
+  font-family: var(--mono);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+#pt-score-breakdown td:first-child { color: var(--fg3); font-weight: 600; }
+#pt-score-breakdown td:last-child { text-align: right; }
+
+/* ---- Raw-log export (KTD4) ------------------------------------------------
+   Offered on every trial outcome the raw log survives -- a real result, an
+   unscorable trial, and a genuine fault alike -- because the whole reason
+   this exists is to diagnose trials that look wrong ON the phone (a peak at
+   the release point, missed oscillations, post-release drift), and those are
+   exactly the trials most likely to also score oddly or not at all. `Export`
+   (navigator.share, falling back to a plain download) works on any host;
+   `Send to laptop` is shown only when the page itself came from the dev
+   server (`location.port === '8900'`), since a production deploy has no
+   `/upload` endpoint to receive it. */
+#export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 32px);
+  margin: 4px 16px 16px;
+}
+
+#export-btn, #send-to-laptop {
+  padding: 12px 18px;
+  font-size: clamp(14px, 3.8vw, 16px);
+  font-weight: 700;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+#send-to-laptop {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#export-status {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: clamp(12px, 3.2vw, 14px);
+  color: var(--fg3);
+}
+
+/* ---- Result table -------------------------------------------------------
+   All 20 scored parameters, unfiltered (task-6 requirement 4) -- several are
+   only meaningful read together, and no clinical prioritisation has been
+   established for this app. */
+#result {
+  width: calc(100% - 32px);
+  margin: 8px 16px 16px;
+  border-collapse: collapse;
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+
+#result td {
+  font-family: var(--mono);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+#result td:first-child {
+  color: var(--fg3);
+  font-weight: 600;
+}
+
+#result td:last-child {
+  text-align: right;
+}
+
+/* ---- Session bar (task-6) -------------------------------------------------
+   Persistence and the export lock: every scored trial is saved to IndexedDB
+   as it arrives, and this bar is the only way a session's data actually
+   leaves the device. `close-session` stays disabled -- and the warning
+   stays visible -- until `exported_at` is set, which recording even one more
+   trial after an export clears again (see app.js's persistTrial). That
+   round-trip is the entire point: without it a clinician could export once,
+   record five more trials, and close the session believing it was archived. */
+#session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 32px);
+  margin: 4px 16px 16px;
+}
+
+#export-session, #close-session {
+  padding: 12px 18px;
+  font-size: clamp(14px, 3.8vw, 16px);
+  font-weight: 700;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+#export-session {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#close-session:disabled {
+  color: var(--fg3);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Deliberately alarming (the banner-red used for the fault state elsewhere
+   on this page) -- a hidden trial is the exact failure this whole task
+   exists to prevent, so this must not read as a routine notice. */
+#export-warning {
+  flex-basis: 100%;
+  margin: 0;
+  font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 14px);
+  color: var(--banner-bg);
+}
+
+#session-status {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: clamp(12px, 3.2vw, 14px);
+  color: var(--fg3);
+}
+
+/* ---- Views ---------------------------------------------------------------
+   Views deliberately do NOT use the `hidden` attribute. app.css already
+   carries a long note (see the #start/#stop rule) on author-origin `display`
+   silently defeating `hidden`; that fix works but obliges every future author
+   rule to remember it. A dedicated class cannot be defeated the same way, so
+   new code avoids the bug class by construction. The existing intra-view
+   `hidden` toggles are unchanged. */
+main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.view { display: none; }
+.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.view-head {
+  display: flex; align-items: center; gap: 12px;
+  margin: 16px 16px 8px;
+}
+.view-head h2 {
+  margin: 0;
+  font-size: clamp(17px, 4.8vw, 21px);
+  font-weight: 700;
+  color: var(--fg);
+}
+
+/* Why a transition was refused -- shown in place rather than as an alert(),
+   which would block the extension AND the capture it is reporting on. */
+.nav-blocked {
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border-left: 4px solid var(--holding-bg);
+  background: rgba(180, 83, 9, 0.12);
+  font-size: clamp(13px, 3.6vw, 15px);
+  font-weight: 600;
+  color: var(--fg);
+}
+.nav-blocked[hidden] { display: none; }
+
+/* ---- Brand (workbench_style.brand_mark + the ModeSelectView header) ------ */
+.brand { display: flex; align-items: center; gap: 14px; margin: 24px 16px 28px; }
+.brand-mark { width: 52px; height: 52px; flex: none; color: var(--accent); }
+.brand-text h1 {
+  margin: 0; font-size: clamp(22px, 7vw, 28px); font-weight: 700; color: var(--fg);
+}
+.brand-text p {
+  margin: 2px 0 0; font-size: clamp(12px, 3.6vw, 15px); color: var(--fg3);
+}
+
+/* ---- Tiles (workbench_style.Tile) ---------------------------------------
+   The desktop tile's hover state becomes :active/:focus-visible -- a phone
+   has no hover, and a hover rule there sticks after a tap. */
+.tile {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  padding: 16px; margin: 0;
+  font: inherit; text-align: left; cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--fg);
+}
+.tile:active, .tile:focus-visible { border-color: var(--accent); border-width: 2px; padding: 15px; }
+.tile-icon { width: 26px; height: 26px; flex: none; color: var(--accent); }
+.tile-text { display: flex; flex-direction: column; min-width: 0; }
+.tile-title { font-size: clamp(15px, 4.4vw, 18px); font-weight: 700; }
+.tile-sub { font-size: clamp(12px, 3.4vw, 14px); color: var(--fg3); margin-top: 2px; }
+
+.tile--primary { background: var(--accent); border-color: var(--accent); color: #fff; margin: 0 0 18px; }
+.tile--primary .tile-icon { color: #fff; }
+.tile--primary .tile-sub { color: #EAF2FF; }
+.tile--primary:active, .tile--primary:focus-visible { background: #1D4ED8; border-color: #1D4ED8; }
+
+#view-home { padding: 0 16px 24px; }
+.tile-grid { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- Buttons (workbench_style.primary_button / secondary_button) --------- */
+.btn {
+  padding: 12px 18px; font: inherit; font-weight: 700;
+  border-radius: 12px; border: 1px solid var(--border); cursor: pointer;
+  min-height: 44px;
+}
+.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--secondary { background: var(--accent-soft); color: var(--fg); }
+
+/* ---- Cards (workbench_style.card_frame) ---------------------------------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 0 16px 12px;
+}
+.card-label {
+  margin: 0 0 8px;
+  font-size: clamp(11px, 3vw, 13px); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg3);
+}
+
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.field > span { font-size: clamp(12px, 3.4vw, 14px); font-weight: 600; color: var(--fg2); }
+.field input, .field select, .field textarea, #participant-select, #participant-new {
+  font: inherit;
+  padding: 10px 12px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.field input:focus, .field select:focus, .field textarea:focus { outline: 2px solid var(--accent); }
+.field-row { display: flex; gap: 8px; margin-top: 8px; }
+.field-row #participant-new { flex: 1; min-width: 0; }
+#participant-select { width: 100%; }
+
+.field-error {
+  margin: 0 16px 8px; font-weight: 700;
+  font-size: clamp(12px, 3.4vw, 14px); color: var(--banner-bg);
+}
+.field-error[hidden] { display: none; }
+.field-status { margin: 0 16px 8px; font-size: clamp(12px, 3.2vw, 14px); color: var(--fg3); }
+
+#mas-save { margin: 0 16px 16px; width: calc(100% - 32px); }
+
+/* A pending assessment is incomplete, not wrong -- the same amber the
+   unmeasured-parameter notice uses, never the fault red. */
+.mas-row.is-pending { border-left: 4px solid var(--holding-bg); }
+.empty { margin: 16px; color: var(--fg3); }
+
+/* Segmented left/right control. Both options are always visible, so the
+   choice is legible without opening a picker. */
+.seg { display: flex; gap: 8px; }
+.seg-btn {
+  flex: 1; min-height: 44px; font: inherit; font-weight: 700;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); color: var(--fg); cursor: pointer;
+}
+.seg-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* The build line at the foot of the session view. Deliberately selectable --
+   a tester compares it against what the deployment serves, and on a phone the
+   only way to do that reliably is to select and copy it. Monospace so a
+   12-hex-character id can be read a character at a time. */
+.build-info {
+  margin: 4px 16px 20px;
+  font-family: var(--mono);
+  font-size: clamp(11px, 3vw, 13px);
+  color: var(--fg3);
+  word-break: break-all;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ---- Trends charts -------------------------------------------------------
+   Fixed height so the three charts stack predictably on a phone; the canvas
+   is re-fitted to its CSS box at device pixel ratio on every render, so this
+   is the layout size, not the bitmap size. */
+.chart { display: block; width: 100%; height: 200px; }
+.chart-export { margin-top: 8px; width: 100%; }
+#trend-source { font-family: var(--mono); }
+#trend-import { font: inherit; width: 100%; }
+
+/* ---- Capture progress ----------------------------------------------------
+   Answers "how much longer", which the state label alone cannot. The fill
+   uses currentColor so the bar inherits whatever the guide's state colour is
+   -- one colour vocabulary, not two that can disagree. */
+#guide-progress {
+  height: 8px;
+  margin: 8px 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface);
+}
+#guide-progress[hidden] { display: none; }
+#guide-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  /* Short enough to read as immediate, long enough not to strobe at the 50ms
+     batch cadence. A reset must still look like a reset, so this never
+     animates a shrink -- see app.js. */
+  transition: width 120ms linear;
+}
+#guide-progress-label { margin: 4px 16px 0; text-align: center; }
+
+/* Static instruction, not feedback: the phone is on the shank and cannot
+   sense where the clinician's hands are. */
+#hold-guide {
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#hold-guide summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+#hold-guide p { margin: 8px 0 0; line-height: 1.45; }
+
+/* ---- placement diagram (capture view) ----------------------------------
+   Schematic, not anatomical. Stroke widths are set in absolute px rather
+   than scaled with the viewBox so the lines stay legible at phone width,
+   where the SVG renders around 260 CSS px wide. */
+#placement-figure { margin: 10px 0 0; }
+
+#placement-diagram {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  margin: 0 auto;
+}
+
+#placement-figure figcaption {
+  margin: 6px 0 0;
+  font-size: clamp(12px, 3.2vw, 13px);
+  line-height: 1.4;
+  color: var(--fg3);
+}
+
+.pd-plinth { fill: var(--accent-soft); stroke: var(--border); stroke-width: 1; }
+.pd-plinth-leg { stroke: var(--border); stroke-width: 2; }
+.pd-thigh {
+  stroke: var(--fg3);
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+.pd-shank {
+  stroke: var(--fg);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+.pd-joint { fill: var(--surface); stroke: var(--fg2); stroke-width: 2.5; }
+
+/* The fall path is a hint about what happens next, not part of the setup
+   instruction, so it is dashed and de-emphasised rather than drawn as limb. */
+.pd-swing {
+  fill: none;
+  stroke: var(--fg3);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.55;
+}
+
+/* The two things the clinician actually has to place. Accent-filled so they
+   read first, and each is ALSO labelled in text -- colour alone must not be
+   what carries the instruction. */
+.pd-phone { fill: var(--accent); stroke: var(--accent); stroke-width: 1; }
+.pd-hand { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+
+.pd-label {
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
+  fill: var(--fg2);
+}
+.pd-label-muted { fill: var(--fg3); font-weight: 500; }
+.pd-label-accent { fill: var(--accent); }
+
+/* ---- gate help ---------------------------------------------------------
+   Same shell as #hold-guide so the two collapsibles on this view read as one
+   pattern rather than two. */
+#gate-help {
+  margin: 0 16px 16px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#gate-help summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+#gate-help-list { margin: 8px 0 0; }
+#gate-help-list dt {
+  font-weight: 700;
+  color: var(--fg);
+  font-size: clamp(12px, 3.2vw, 14px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 10px;
+}
+#gate-help-list dt:first-child { margin-top: 0; }
+#gate-help-list dd { margin: 4px 0 0; line-height: 1.45; }
+#gate-help-list strong { color: var(--fg); }
+
+/* ---- trial exclusion (Unit B item 4) -----------------------------------
+   An excluded trial is struck through, NOT hidden. It keeps its row, its
+   params and its raw log, and it still exports -- it only stops counting.
+   Nothing in this app deletes trial data. */
+.trial-entry { display: block; }
+
+.trial-excluded .tile-title,
+/* NOT :first-of-type -- .tile-title is a <span> too, so .tile-sub is never
+   the first span among its siblings and the rule silently did nothing. */
+.trial-excluded .tile-sub:not(.trial-exclusion-note) {
+  text-decoration: line-through;
+  color: var(--fg3);
+}
+
+/* The reason is NOT struck through: it is the one line on the row that has to
+   stay readable, since it says why the strike-through is there. */
+.trial-exclusion-note {
+  text-decoration: none;
+  color: var(--fg2);
+  font-style: italic;
+}
+
+.trial-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 0 4px;
+}
+
+.trial-exclude-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.trial-exclude-reason {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* A text-weight action, deliberately not a .btn: excluding sits beside a
+   full-width tile and must not compete with it for the tap. */
+.link-btn {
+  padding: 6px 4px;
+  font: inherit;
+  font-size: clamp(13px, 3.4vw, 14px);
+  font-weight: 600;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  /* 44px of touch target without 44px of ink. */
+  min-height: 44px;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* ---- quick test (Unit B item 6) ---------------------------------------- */
+#participant-quick-test { width: 100%; margin-top: 10px; }
+
+#quick-test-note {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+/* ---- reference comparison (Unit C item 8) ------------------------------
+   Numbers, not a verdict. No red/green anywhere in this block: the reference
+   is provisional and the app suppresses the composite zone for the same
+   reason, so per-parameter colour would re-instate exactly the
+   classification being withheld. */
+#reference-block {
+  margin: 10px 16px 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: clamp(13px, 3.6vw, 15px);
+  color: var(--fg2);
+}
+#reference-block summary { font-weight: 700; color: var(--fg); cursor: pointer; }
+
+#reference-table {
+  width: 100%;
+  margin: 8px 0 0;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+#reference-table th {
+  text-align: right;
+  font-size: clamp(11px, 3vw, 12px);
+  font-weight: 600;
+  color: var(--fg3);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+#reference-table th:first-child,
+#reference-table td:first-child { text-align: left; }
+#reference-table td {
+  text-align: right;
+  padding: 5px 6px;
+  font-family: var(--mono);
+  font-size: clamp(12px, 3.2vw, 13px);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+#reference-table td:first-child { font-family: inherit; color: var(--fg2); }
+
+/* A withdrawn reference is de-emphasised, NOT flagged. It is an absence of a
+   comparison, not a bad result, and colouring it as a warning would say the
+   opposite. */
+.ref-withdrawn td { color: var(--fg3); }
+
+#reference-withdrawn { margin: 8px 0 0; line-height: 1.45; }
+
+/* ---- per-metric bands --------------------------------------------------
+   Colour shows how far a metric sits from the reference, green through amber
+   to a darker red. Colour is never the only signal: every band also carries
+   a text severity label, because this is read at arm's length under outdoor
+   glare and by people who cannot separate red from green. Both the band
+   colour and its text colour are set inline from metric-rows.js, which picks
+   a foreground with enough contrast for the band it sits on. */
+#metric-list { margin: 10px 16px 0; }
+
+.metric {
+  margin: 0 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.metric-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: clamp(13px, 3.4vw, 15px);
+  /* The old table overflowed the screen at four fixed columns. A flex row
+     with a wrapping label and a shrink-proof value cannot. */
+  flex-wrap: wrap;
+}
+
+.metric-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  /* Wraps instead of pushing the numbers off the right edge. */
+  overflow-wrap: anywhere;
+}
+
+.metric-value {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.metric-sev {
+  flex: 0 0 100%;
+  font-size: clamp(11px, 3vw, 12px);
+  opacity: 0.85;
+}
+
+.metric-body {
+  padding: 10px 12px;
+  background: var(--surface);
+  font-size: clamp(13px, 3.4vw, 14px);
+  color: var(--fg2);
+}
+.metric-what { margin: 0; line-height: 1.45; }
+.metric-range { margin: 8px 0 0; line-height: 1.45; color: var(--fg3); }

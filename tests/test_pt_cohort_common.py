@@ -16,8 +16,12 @@ def test_classify_metadata_unaffected_control():
     assert pcc.classify_participant("6", "Unaffected Control", {}, True) == ("Control", "metadata")
 
 
-def test_classify_metadata_stroke_and_other_are_excluded():
-    assert pcc.classify_participant("9", "Stroke", {}, True) == ("Excluded", "metadata")
+def test_classify_metadata_stroke_is_its_own_arm_other_is_excluded():
+    """Stroke became a full comparison arm on 2026-08-26 -- post-stroke
+    participants are part of the study, so classifying them as Excluded
+    (what this test asserted before) would drop them from the analysis.
+    "Other Motor Impairment" is still genuinely outside the comparison."""
+    assert pcc.classify_participant("9", "Stroke", {}, True) == ("Stroke", "metadata")
     assert pcc.classify_participant("10", "Other Motor Impairment", {}, True) == ("Excluded", "metadata")
 
 
@@ -216,7 +220,7 @@ def test_effect_label_nan_is_na():
     assert pcc.effect_label(float("nan")) == "n/a"
 
 
-# ── compute_cohort_stats ─────────────────────────────────────────────────
+# ── compute_pairwise_stats (three-arm; replaced compute_cohort_stats) ────
 
 def _summary(pt7):
     d = {k: 1.0 for k in pcc._SCORE_KEYS}
@@ -224,46 +228,59 @@ def _summary(pt7):
     return d
 
 
-def test_compute_cohort_stats_known_values():
-    ms = {"left": [_summary(1.0), _summary(2.0), _summary(3.0)], "right": []}
-    control = {"left": [_summary(10.0), _summary(11.0), _summary(12.0)], "right": []}
-    rows = pcc.compute_cohort_stats(ms, control)
-    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
-    assert row["n_ms"] == 3 and row["n_control"] == 3
-    assert row["ms_median"] == 2.0
-    assert row["control_median"] == 11.0
+def _pt7(rows, arm_a, arm_b, leg="left"):
+    return next(r for r in rows if r["leg"] == leg and r["parameter"] == "pt7"
+                and r["arm_a"] == arm_a and r["arm_b"] == arm_b)
+
+
+def test_compute_pairwise_stats_known_values():
+    arms = {"MS": {"left": [_summary(1.0), _summary(2.0), _summary(3.0)], "right": []},
+            "Stroke": {"left": [], "right": []},
+            "Control": {"left": [_summary(10.0), _summary(11.0), _summary(12.0)], "right": []}}
+    rows = pcc.compute_pairwise_stats(arms)
+    row = _pt7(rows, "MS", "Control")
+    assert row["n_a"] == 3 and row["n_b"] == 3
+    assert row["a_median"] == 2.0
+    assert row["b_median"] == 11.0
     assert row["cliffs_delta"] == 1.0
     assert row["effect_size"] == "large"
     assert row["mann_whitney_p"] is not None
 
 
-def test_compute_cohort_stats_small_n_is_na():
-    ms = {"left": [_summary(1.0)], "right": []}
-    control = {"left": [_summary(10.0), _summary(11.0)], "right": []}
-    rows = pcc.compute_cohort_stats(ms, control)
-    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
-    assert row["n_ms"] == 1
+def test_compute_pairwise_stats_small_n_is_na():
+    arms = {"MS": {"left": [_summary(1.0)], "right": []},
+            "Stroke": {"left": [], "right": []},
+            "Control": {"left": [_summary(10.0), _summary(11.0)], "right": []}}
+    rows = pcc.compute_pairwise_stats(arms)
+    row = _pt7(rows, "MS", "Control")
+    assert row["n_a"] == 1
     assert row["mann_whitney_p"] is None
     assert row["cliffs_delta"] is None
     assert row["effect_size"] == "n/a"
-    assert row["ms_median"] == 1.0   # still reported -- just no significance test
+    assert row["holm_p"] is None      # untestable contrasts are not in the family
+    assert row["a_median"] == 1.0     # still reported -- just no significance test
 
 
-def test_compute_cohort_stats_covers_every_leg_and_score_key():
-    ms = {"left": [_summary(1.0)], "right": [_summary(2.0)]}
-    control = {"left": [_summary(3.0)], "right": [_summary(4.0)]}
-    rows = pcc.compute_cohort_stats(ms, control)
-    seen = {(r["leg"], r["parameter"]) for r in rows}
-    assert seen == {(leg, key) for leg in pcc._LEGS for key in pcc._SCORE_KEYS}
+def test_compute_pairwise_stats_covers_every_leg_key_and_contrast():
+    arms = {"MS": {"left": [_summary(1.0)], "right": [_summary(2.0)]},
+            "Stroke": {"left": [_summary(5.0)], "right": [_summary(6.0)]},
+            "Control": {"left": [_summary(3.0)], "right": [_summary(4.0)]}}
+    rows = pcc.compute_pairwise_stats(arms)
+    seen = {(r["leg"], r["parameter"], r["arm_a"], r["arm_b"]) for r in rows}
+    assert seen == {(leg, key, a, b) for leg in pcc._LEGS for key in pcc._SCORE_KEYS
+                    for a, b in pcc._CONTRASTS}
 
 
-def test_compute_cohort_stats_empty_arm_no_crash():
-    ms = {"left": [], "right": []}
-    control = {"left": [_summary(1.0), _summary(2.0)], "right": []}
-    rows = pcc.compute_cohort_stats(ms, control)
-    row = next(r for r in rows if r["leg"] == "left" and r["parameter"] == "pt7")
-    assert row["n_ms"] == 0
-    assert row["ms_median"] is None
+def test_compute_pairwise_stats_empty_arm_no_crash():
+    """Stroke is legitimately empty until a stroke participant is recorded,
+    so an absent arm must report medians of None rather than raising."""
+    arms = {"MS": {"left": [], "right": []},
+            "Stroke": {"left": [], "right": []},
+            "Control": {"left": [_summary(1.0), _summary(2.0)], "right": []}}
+    rows = pcc.compute_pairwise_stats(arms)
+    row = _pt7(rows, "MS", "Control")
+    assert row["n_a"] == 0
+    assert row["a_median"] is None
     assert row["mann_whitney_p"] is None
 
 
@@ -317,15 +334,15 @@ def test_build_composition_rows_unrecognized_metadata_with_resolving_registry_sh
     # Regression for the Finding-1 fix regressing this adjacent case: when
     # metadata is present but unrecognized (a typo) AND the registry entry
     # is what actually resolves classification, `diagnosis` must carry the
-    # registry's string ("Stroke"), not the unrecognized metadata typo --
+    # registry's string ("Other Motor Impairment"), not the metadata typo --
     # otherwise the Excluded banner shows a diagnosis that was never used
     # for classification while hiding the real reason.
-    monkeypatch.setattr(pcc, "load_registry", lambda: ({"5": "Stroke"}, True))
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({"5": "Other Motor Impairment"}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: "Multipl Sclerosis")
     monkeypatch.setattr(pcc.common, "leg_trial_counts", lambda pid: {"left": 4, "right": 4})
     rows = pcc.build_composition_rows({"5"})
     assert rows[0]["group"] == "Excluded" and rows[0]["source"] == "registry"
-    assert rows[0]["diagnosis"] == "Stroke"
+    assert rows[0]["diagnosis"] == "Other Motor Impairment"
 
 
 def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
@@ -355,15 +372,20 @@ def test_write_composition_csv_writes_all_rows(tmp_path):
 
 # ── write_stats_csv ─────────────────────────────────────────────────────
 
-def test_write_stats_csv_header_documents_cliffs_delta_sign_convention(tmp_path):
-    rows = pcc.compute_cohort_stats(
-        {"left": [_summary(1.0), _summary(2.0)], "right": []},
-        {"left": [_summary(10.0), _summary(11.0)], "right": []})
-    out_path = tmp_path / "ms_vs_control_stats.csv"
-    pcc.write_stats_csv(rows, str(out_path))
+def test_write_contrasts_csv_header_documents_cliffs_delta_sign_convention(tmp_path):
+    """With three arms the sign convention can no longer be baked into the
+    header as "control_minus_ms" -- each row names its own arm_a/arm_b, so
+    the header says b_minus_a and the row supplies which is which."""
+    rows = pcc.compute_pairwise_stats({
+        "MS": {"left": [_summary(1.0), _summary(2.0)], "right": []},
+        "Stroke": {"left": [], "right": []},
+        "Control": {"left": [_summary(10.0), _summary(11.0)], "right": []}})
+    out_path = tmp_path / "cohort_stats.csv"
+    pcc.write_contrasts_csv(rows, str(out_path))
     header = out_path.read_text(encoding="utf-8").splitlines()[0]
-    assert "cliffs_delta_control_minus_ms" in header
-    assert header.split(",")[-2] == "cliffs_delta_control_minus_ms"
+    assert "cliffs_delta_b_minus_a" in header
+    assert header.split(",")[-2] == "cliffs_delta_b_minus_a"
+    assert "arm_a" in header and "arm_b" in header and "holm_p" in header
 
 
 # ── print_composition_banner ───────────────────────────────────────────
@@ -519,7 +541,8 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
                         lambda *a, **k: figure_calls.append(a), raising=False)
     monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: {"13", "6"})
-    monkeypatch.setattr(pcc, "all_classified_pids", lambda: {"MS": ["13"], "Control": ["6"]})
+    monkeypatch.setattr(pcc, "all_classified_pids",
+                        lambda: {"MS": ["13"], "Stroke": [], "Control": ["6"]})
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
     monkeypatch.setattr(pcc, "classify_participant",
@@ -533,7 +556,10 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     pcc.run_cohort_comparison()   # must not raise despite 13 contributing zero summaries
     assert len(figure_calls) == 1
     stats_content = (tmp_path / "ms_vs_control_stats.csv").read_text(encoding="utf-8")
-    assert "left,pt7,0," in stats_content   # n_ms=0 for the leg 13 failed to contribute to
+    # Three-arm CSV: rows are (leg, parameter, arm_a, arm_b, n_a, ...), so the
+    # "MS contributed nothing to this leg" case now reads as n_a=0 on the
+    # MS-vs-Control contrast rather than a bare "left,pt7,0,".
+    assert "left,pt7,MS,Control,0," in stats_content
     comp_content = (tmp_path / "cohort_composition.csv").read_text(encoding="utf-8")
     assert "13,MS,metadata,4,4" in comp_content   # raw counts still shown despite 0 scored
 
@@ -579,10 +605,13 @@ def test_make_cohort_comparison_figure_writes_png_without_raising(tmp_path):
     control_summaries = {"left": [_summary(2.0)], "right": [_summary(2.2)]}
     ms_raw = {"left": [_trial(pt7=1.0)], "right": [_trial(pt7=1.2)]}
     control_raw = {"left": [_trial(pt7=2.0)], "right": [_trial(pt7=2.2)]}
-    stats_rows = pcc.compute_cohort_stats(ms_summaries, control_summaries)
-    out_path = tmp_path / "ms_vs_control_boxplots.png"
+    contrast_rows = pcc.compute_pairwise_stats({
+        "MS": ms_summaries, "Stroke": {"left": [], "right": []},
+        "Control": control_summaries})
+    out_path = tmp_path / "cohort_boxplots.png"
     pcc.make_cohort_comparison_figure(
-        ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2, str(out_path), stats_rows)
+        ms_summaries, ms_raw, 1, 1, control_summaries, control_raw, 1, 1, 2,
+        str(out_path), contrast_rows)
     assert out_path.is_file()
     assert out_path.stat().st_size > 0
 
@@ -615,7 +644,7 @@ def test_build_cohort_snapshot_skipped_when_arm_empty(monkeypatch):
 
     assert snapshot["ms_pids"] == ["13"]
     assert snapshot["control_pids"] == []
-    assert snapshot["stats_rows"] is None
+    assert snapshot["contrast_rows"] is None
     assert snapshot["ms_summaries"] is None
 
 
@@ -633,7 +662,7 @@ def test_write_cohort_artifacts_no_recollection_when_arm_empty(monkeypatch, tmp_
         "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
         "ms_n_participants": None, "ms_n_trials": None,
         "control_n_participants": None, "control_n_trials": None,
-        "stats_rows": None, "n_excluded_unclassified": 0, "range_rows": [],
+        "contrast_rows": None, "n_excluded_unclassified": 0, "range_rows": [],
     }
     pcc.write_cohort_artifacts(snapshot)   # must not raise
 
@@ -668,3 +697,57 @@ def test_leg_cohort_reference_leave_one_out_for_own_arm(monkeypatch):
 
 def test_leg_cohort_reference_none_when_not_comparable():
     assert pcc.leg_cohort_reference({"ms_pids": ["13"], "control_pids": []}, "13", "left") is None
+
+
+def test_all_classified_pids_covers_every_arm(monkeypatch):
+    """Regression: the result dict was hardcoded {"MS": [], "Control": []},
+    so when Stroke became a full arm on 2026-08-26 it was silently dropped
+    here. Key off _ARMS so a fourth arm cannot repeat the mistake."""
+    assert set(pcc.all_classified_pids().keys()) == set(pcc._ARMS)
+
+
+def test_stroke_participant_short_on_trials_still_reaches_the_cohort_pool(monkeypatch):
+    """The composition pool unions the trial-threshold-qualifying set with
+    every classified participant, so a participant one trial short still
+    counts. That union named only MS and Control, which meant a Stroke
+    participant short a trial was dropped while an identically-placed MS
+    participant was kept. Both must survive."""
+    monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: set())
+    monkeypatch.setattr(pcc, "all_classified_pids",
+                        lambda: {"MS": ["4"], "Stroke": ["21"], "Control": ["6"]})
+    seen = {}
+
+    def _capture(pids):
+        seen["pids"] = set(pids)
+        return []
+
+    monkeypatch.setattr(pcc, "build_composition_rows", _capture)
+    try:
+        pcc.build_cohort_snapshot()
+    except Exception:
+        pass  # downstream stages need real data; the pool is what we assert on
+    assert seen.get("pids") == {"4", "21", "6"}, (
+        f"Stroke participant dropped from the cohort pool: {seen.get('pids')}")
+
+
+# ── secondary-view labelling (2026-08-28) ──────────────────────────────
+# Grouping is by spasticity now, not diagnosis. This module is kept as a
+# reference view, so its output has to SAY so -- a caveat that lives only in
+# the module docstring never reaches whoever opens the PNG or reads the run log.
+
+def test_composition_banner_marks_itself_as_the_secondary_view(capsys, monkeypatch):
+    monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
+    rows = [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+             "n_trials_left": 5, "n_trials_right": 5}]
+    pcc.print_composition_banner(rows)
+    out = capsys.readouterr().out.lower()
+    assert "secondary" in out
+    assert "spasticity" in out, "must name what the primary stratification IS"
+
+
+def test_module_docstring_records_why_diagnosis_is_no_longer_primary():
+    """The label is a claim about the analysis, so the reasoning has to be
+    findable next to it rather than only in a commit message."""
+    doc = (pcc.__doc__ or "").lower()
+    assert "not the primary comparison" in doc
+    assert "spasticity" in doc

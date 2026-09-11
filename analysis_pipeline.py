@@ -1116,12 +1116,28 @@ def load_optitrack_csv(csv_path):
 # ~129k) over the true near-zero alignment (correlation ~88k, still the
 # stronger PHYSICAL match, just not the strongest NUMERICAL one), producing
 # 24 deg RMSE where a correctly-aligned comparison would score far lower.
-# MAX_LAG_SEC=5.0 is empirically derived: every other real trial's
-# auto-detected lag in this corpus falls in [-4.07, 1.78] seconds (phone/
-# OptiTrack clock-sync jitter, not model error), so 5s gives comfortable
-# margin without being wide enough to re-admit spurious multi-second
-# matches like the one above.
-MAX_LAG_SEC = 5.0
+# MAX_LAG_SEC was 5.0 until 2026-08-28, derived from the observation that
+# every other real trial's auto-detected lag fell in [-4.07, 1.78] seconds,
+# read at the time as phone/OptiTrack clock-sync jitter. That reasoning was
+# circular: the range was measured with this same unbounded search, so the
+# multi-second values in it were aliases, not jitter -- exactly the failure
+# the bound exists to prevent, just smaller than the -18s case above.
+#
+# The real capture skew is now measured and has a known cause. Both
+# pendulastic_app.py and master_app.py start the IMU log and video writer
+# first, then call motive_sync.start_local_motive(), whose NatNet handshake
+# blocks for 0.60s of hardcoded sleeps plus up to 3 * RESPONSE_TIMEOUT
+# before StartRecording is dispatched -- a hard ceiling of ~1.2s. Measured
+# across 94 IMU trials the skew is 0.71 +/- 0.12s, and across 77 cached
+# MediaPipe trials 0.68s, both well inside that ceiling.
+#
+# 1.5s therefore covers every physically reachable skew with margin while
+# excluding the aliases: on the video corpus the old +/-5s bound placed 22
+# of 77 trials at |lag| > 2.5s, which the capture hardware cannot produce.
+# Tightening the bound RAISES reported video RMSE slightly (27.0 -> 27.8 deg
+# median) because it removes a spurious multi-second degree of freedom the
+# old numbers were fitted with; the old figure was flattered, not better.
+MAX_LAG_SEC = 1.5
 
 
 def synchronize_signals(ref_t, ref_y, test_t, test_y, resample_hz=60.0,

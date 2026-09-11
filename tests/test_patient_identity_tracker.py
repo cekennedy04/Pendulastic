@@ -208,3 +208,48 @@ def test_frame_counter_increments_every_call():
     t.select([], W, H)
     t.select([PATIENT], W, H)
     assert t.n_frames == 3
+
+
+# ── Lone-detection continuity (the silent wrong-person path) ─────────────────
+# When MediaPipe returns exactly one pose, the len(poses)==1 branch used to
+# accept it unconditionally, re-lock onto it, and never count a switch. On
+# P17 Right/post the patient goes undetected in 66% of frames while the
+# assessor is still found, so 31 lone-assessor frames were accepted as the
+# patient (11 of them cleared the confidence floor and were written to the
+# CSV), and n_switches stayed 0 -- a false negative, not a clean run.
+
+def test_lone_pose_far_from_lock_is_not_silently_accepted():
+    t = _tracker(hysteresis_frames=3)
+    t.select([PATIENT, ASSESSOR], W, H)          # lock onto the patient
+    r = t.select([ASSESSOR], W, H)               # patient undetected this frame
+    assert r.ambiguous is True
+    assert r.pose is None
+
+
+def test_lone_pose_far_from_lock_does_not_move_the_lock():
+    t = _tracker(hysteresis_frames=3)
+    t.select([PATIENT, ASSESSOR], W, H)
+    locked = t._locked_knee_px
+    t.select([ASSESSOR], W, H)
+    assert t._locked_knee_px == locked
+
+
+def test_lone_pose_near_the_lock_is_still_accepted():
+    """The common case -- only the patient detected -- must keep working."""
+    t = _tracker(hysteresis_frames=3)
+    t.select([PATIENT, ASSESSOR], W, H)
+    r = t.select([PATIENT], W, H)
+    assert r.ambiguous is False
+    assert r.pose is PATIENT
+
+
+def test_persistent_lone_pose_far_from_lock_eventually_takes_over_and_counts_a_switch():
+    """A genuine re-acquisition must still be possible, but it must be
+    counted, not silent."""
+    t = _tracker(hysteresis_frames=3)
+    t.select([PATIENT, ASSESSOR], W, H)
+    for _ in range(2):
+        assert t.select([ASSESSOR], W, H).ambiguous is True
+    r = t.select([ASSESSOR], W, H)
+    assert r.ambiguous is False
+    assert t.n_switches == 1

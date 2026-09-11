@@ -34,10 +34,15 @@ node_modules/
 .expo/
 
 # Participant / session data — never commit
+# The `.*` globs catch backup/temp copies (mas_scores.csv.bak-...); the exact-name
+# rules alone leave those untracked but committable.
 sessions.json
+sessions.json.*
 uploads/
 mas_scores.csv
+mas_scores.csv.*
 participant_groups.json
+participant_groups.json.*
 
 # Self-signed TLS cert/key for the phone-camera stream server — generated
 # at runtime, regenerated per-machine/per-IP, never committed.
@@ -92,3 +97,22 @@ mobile-imu-core/harness-android/local.properties
 mobile-imu-core/harness-ios/*.xcodeproj/
 mobile-imu-core/harness-ios/build/
 mobile-imu-core/target/
+
+# Generated wasm bindings for the web capture app. Built by
+# `npm run build:wasm` from webapp/ (and by CI before the webapp tests run);
+# never committed. The .wasm is not reproducible across machines -- it embeds
+# the building machine's cargo registry path, source paths with that OS's
+# separators, and a rustc version/commit string -- so a committed copy can
+# only ever be one machine's bytes masquerading as canonical.
+webapp/src/wasm/
+
+# Raw IMU trials captured via the webapp's "Send to laptop" /upload route
+# (dev_server.py). Participant-adjacent data -- must never be committed.
+webapp/captures/
+
+# Built static-deploy output (npm run build:dist). Regenerable. Already
+# matched incidentally by the bare `dist/` under # Python, but named here so
+# moving or scoping that line cannot silently make a deploy artifact
+# committable.
+webapp/dist/
+*.err

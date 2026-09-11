@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Pendulastic</title>
+<!--
+  Both of these exist to make the Home Screen launch STANDALONE (no browser
+  chrome). install-gate.js blocks recording until it sees exactly that, so
+  without them the gate can never be passed on iOS: the clip opens chromed,
+  the modal stays up, and the app cannot record at all.
+
+  The same declaration is also what makes the clip a Home Screen *web app*
+  rather than a bookmark -- which is the form Apple documents the 7-day
+  storage-eviction exemption for, and therefore the premise the local
+  durability design rests on.
+
+  The manifest covers iOS 15.4+ and every other platform; the legacy meta tag
+  covers older iOS, which ignores the manifest's `display` entirely. Both are
+  kept: dropping either silently narrows which devices can record.
+-->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="./manifest.json">
+<link rel="stylesheet" href="./src/app.css">
+<body>
+  <div id="banner">research capture only &mdash; not validated</div>
+  <div id="install-gate" hidden>
+    <h1>Install before recording</h1>
+    <p id="install-why">
+      Safari deletes a website's stored data after 7 days of inactivity.
+      Adding Pendulastic to your Home Screen is what keeps participant records
+      and captured trials from being erased between sessions.
+    </p>
+    <p id="install-how"></p>
+    <p class="install-note">
+      Exported files are the permanent record regardless — installing reduces
+      how often you need them, it is not what makes your data safe.
+    </p>
+  </div>
+  <main>
+    <section class="view active" id="view-home">
+      <header class="brand">
+        <svg class="brand-mark" viewBox="0 0 52 52" aria-hidden="true">
+          <!-- workbench_style.brand_mark() at identical proportions: pivot dot,
+               swing line, weighted bob, enclosing ring. -->
+          <circle cx="26" cy="26" r="21.8" fill="none" stroke="currentColor" stroke-width="2.5"/>
+          <line x1="26" y1="11.4" x2="36.4" y2="35.4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="36.4" cy="35.4" r="4.7" fill="currentColor"/>
+          <circle cx="26" cy="11.4" r="2.3" fill="currentColor"/>
+        </svg>
+        <div class="brand-text">
+          <h1>Pendulastic</h1>
+          <p>Clinical Pendulum Test Platform</p>
+        </div>
+      </header>
+
+      <button class="tile tile--primary" data-nav="capture">
+        <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+          <circle cx="12" cy="12" r="4" fill="currentColor"/>
+        </svg>
+        <span class="tile-text">
+          <span class="tile-title">Record Trial</span>
+          <span class="tile-sub" id="home-participant">no participant set</span>
+        </span>
+      </button>
+
+      <div class="tile-grid">
+        <button class="tile" data-nav="trials">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="5" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2"/>
+            <rect x="13" y="5" width="8" height="14" fill="none" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Trials</span>
+            <span class="tile-sub" id="home-trial-count">none yet</span>
+          </span>
+        </button>
+        <button class="tile" data-nav="mas">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M8 12l3 3 5-6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">MAS Entry</span>
+            <span class="tile-sub">Enter &amp; validate</span>
+          </span>
+        </button>
+        <button class="tile" data-nav="session">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 20V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Session</span>
+            <span class="tile-sub">Participant &amp; export</span>
+          </span>
+        </button>
+        <button class="tile" data-nav="trends">
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19V5M4 19h16M7 15l4-5 3 3 5-7" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Trends</span>
+            <span class="tile-sub">Over time &amp; figures</span>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <section class="view" id="view-capture">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Record Trial</h2></div>
+      <p id="nav-blocked" class="nav-blocked" hidden></p>
+      <p id="settle-alert" class="nav-blocked" hidden></p>
+      <details id="hold-guide">
+        <summary>How to hold the leg</summary>
+        <p id="hold-guide-text">
+          Support the thigh so the knee stays at the edge of the plinth. Hold
+          the shank horizontal, wait for READY, then release cleanly and let
+          go completely &mdash; do not follow the leg down.
+        </p>
+        <!-- Schematic, NOT anatomical: a labelled line drawing, deliberately
+             not an illustration that would imply clinical authority it does
+             not have. Inline SVG rather than a raster asset so it costs no
+             file, scales on any screen, and themes with the palette. -->
+        <figure id="placement-figure">
+          <svg id="placement-diagram" viewBox="0 0 280 178" role="img"
+               aria-labelledby="placement-title placement-desc">
+            <title id="placement-title">Phone and hand placement for the pendulum test</title>
+            <desc id="placement-desc">
+              Side view. The participant sits with the thigh supported on the
+              plinth and the knee at its edge. The shank hangs from the knee
+              and is held horizontal. The phone is strapped to the front of
+              the shank, mid-way between knee and ankle. The clinician
+              supports the leg at the ankle.
+            </desc>
+            <!-- Plinth first, so the thigh draws on top of it and reads as
+                 resting ON the surface rather than floating above it. -->
+            <rect x="10" y="68" width="120" height="8" rx="2" class="pd-plinth" />
+            <line x1="24" y1="76" x2="24" y2="152" class="pd-plinth-leg" />
+            <line x1="116" y1="76" x2="116" y2="152" class="pd-plinth-leg" />
+            <text x="34" y="92" class="pd-label">plinth</text>
+
+            <!-- Thigh and shank are collinear in the start position, so they
+                 are told apart by WEIGHT, not by angle: the thigh is drawn
+                 lighter (supported, not measured) and the shank darkest (the
+                 segment that swings and the one the phone rides on). -->
+            <line x1="34" y1="64" x2="130" y2="64" class="pd-thigh" />
+            <text x="36" y="54" class="pd-label">thigh (supported)</text>
+
+            <line x1="130" y1="64" x2="216" y2="64" class="pd-shank" />
+            <text x="150" y="90" class="pd-label">shank</text>
+
+            <!-- Knee last of the three, so the joint sits over both segments
+                 and marks the plinth edge unambiguously. -->
+            <circle cx="130" cy="64" r="7" class="pd-joint" />
+            <text x="106" y="90" class="pd-label">knee</text>
+
+            <!-- Where it goes after release: a hint, not an instruction. -->
+            <path d="M216 64 A 86 86 0 0 1 130 150" class="pd-swing" />
+            <text x="134" y="168" class="pd-label pd-label-muted">swings down</text>
+
+            <rect x="161" y="49" width="24" height="12" rx="2" class="pd-phone" />
+            <text x="156" y="43" class="pd-label pd-label-accent">phone</text>
+
+            <circle cx="216" cy="64" r="10" class="pd-hand" />
+            <text x="230" y="60" class="pd-label pd-label-accent">hold here</text>
+          </svg>
+          <figcaption>
+            Phone on the shank, midway between knee and ankle. Support the leg
+            at the ankle and release from there.
+          </figcaption>
+        </figure>
+        <p class="install-note">
+          Wording not yet confirmed against the study protocol &mdash; review
+          before clinical use.
+        </p>
+      </details>
+      <button id="start">Start trial</button>
+      <div id="guide">tap Start</div>
+      <div id="guide-progress" hidden><span id="guide-progress-fill"></span></div>
+      <p id="guide-progress-label" class="field-status" hidden></p>
+      <dl id="gates">
+        <div class="gate">
+          <dt>hold (motion)</dt><dd id="calm">&mdash;</dd>
+        </div>
+        <div class="gate">
+          <dt>drift (pose)</dt><dd id="drift">&mdash;</dd>
+        </div>
+      </dl>
+      <!-- Collapsed by default, and deliberately so: the two numbers above are
+           read one-handed mid-procedure, and permanent help text would push
+           them off a phone screen. The two gates get separate explanations
+           because the CORRECTIVE ACTION differs, which is the whole reason the
+           app surfaces them as two numbers rather than one. -->
+      <details id="gate-help">
+        <summary>What are these two numbers?</summary>
+        <dl id="gate-help-list">
+          <dt>hold (motion)</dt>
+          <dd data-gate="calm">
+            How long the limb has been still. It resets to zero the moment the
+            leg moves. <strong>If it will not climb: stop moving the leg.</strong>
+          </dd>
+          <dt>drift (pose)</dt>
+          <dd data-gate="drift">
+            How far the limb has rotated away from where the hold started, even
+            if it moved too slowly to reset the timer above. Past 5&deg; it
+            restarts the hold.
+            <strong>If it keeps growing: bring the leg back to its starting
+            position.</strong>
+          </dd>
+        </dl>
+      </details>
+      <button id="stop" hidden>Stop</button>
+      <div id="waveform-wrap" hidden>
+        <canvas id="waveform"></canvas>
+        <p id="waveform-range" class="waveform-caption"></p>
+        <div id="waveform-legend">
+          <span class="legend-item"><span class="swatch swatch-trace"></span>angle</span>
+          <span class="legend-item"><span class="swatch swatch-neutral"></span>neutral</span>
+          <span class="legend-item"><span class="swatch swatch-release"></span>release</span>
+          <span class="legend-item"><span class="swatch swatch-peak"></span>&#9650; peak</span>
+          <span class="legend-item"><span class="swatch swatch-trough"></span>&#9660; trough</span>
+        </div>
+      </div>
+      <div id="pt-score" hidden>
+        <p id="pt-score-disclaimer">
+          Composite score &mdash; research capture only, see the banner above.
+          <strong>Lower is healthier.</strong> Unbounded above &mdash; not a
+          0&ndash;1 scale.
+        </p>
+        <p id="pt-score-excursion" hidden></p>
+        <p id="pt-score-unmeasured" hidden></p>
+        <div id="pt-score-summary">
+          <span id="pt-score-label">Real-time estimate</span>
+          <span id="pt-score-value">&mdash;</span>
+          <span id="pt-score-zone">&mdash;</span>
+        </div>
+      <p id="lateral-note" class="field-status" hidden></p>
+      <div id="metric-list" hidden></div>
+        <p id="pt-score-breakdown-label">largest driver first</p>
+        <table id="pt-score-breakdown"></table>
+      </div>
+      <div id="export-actions" hidden>
+        <button id="export-btn">Export raw log</button>
+        <button id="send-to-laptop" hidden>Send to laptop</button>
+        <p id="export-status"></p>
+      </div>
+      <table id="result" hidden></table>
+    </section>
+
+    <section class="view" id="view-trials">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Trials</h2></div>
+      <div id="trial-list"></div>
+    </section>
+
+    <section class="view" id="view-mas">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>MAS Score Entry</h2></div>
+      <form id="mas-form" class="form">
+        <div class="card">
+          <p class="card-label">Who</p>
+          <label class="field"><span>Participant ID</span>
+            <input name="participant" type="text" autocomplete="off"></label>
+          <label class="field"><span>Leg</span>
+            <select name="leg">
+              <option value="">--</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select></label>
+          <label class="field"><span>Stronger leg</span>
+            <select name="stronger_leg"></select></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Context</p>
+          <label class="field"><span>Condition</span>
+            <input name="condition" type="text" autocomplete="off"></label>
+          <label class="field"><span>Diagnosis</span>
+            <input name="diagnosis" type="text" autocomplete="off"></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Grades</p>
+          <label class="field"><span>MAS grade</span>
+            <select name="mas_grade"></select></label>
+          <label class="field"><span>MAS flexion</span>
+            <select name="mas_flexion"></select></label>
+          <label class="field"><span>MAS extension</span>
+            <select name="mas_extension"></select></label>
+        </div>
+
+        <div class="card">
+          <p class="card-label">Assessment</p>
+          <label class="field"><span>Assessed by</span>
+            <input name="assessed_by" type="text" autocomplete="off"></label>
+          <label class="field"><span>Assessed date</span>
+            <input name="assessed_date" type="date"></label>
+          <label class="field"><span>Notes</span>
+            <textarea name="notes" rows="3"></textarea></label>
+        </div>
+
+        <p id="mas-errors" class="field-error" hidden></p>
+        <p id="mas-status" class="field-status"></p>
+        <button class="btn btn--primary" id="mas-save" type="submit">Save assessment</button>
+      </form>
+      <div id="mas-list"></div>
+    </section>
+
+    <section class="view" id="view-session">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Session</h2></div>
+      <p id="participant-required" class="field-status" hidden>
+        Select or add a participant to begin.
+      </p>
+      <div class="card">
+        <p class="card-label">Participant</p>
+        <select id="participant-select"></select>
+        <div class="field-row">
+          <input id="participant-new" type="text" inputmode="text" autocomplete="off"
+                 placeholder="New participant ID">
+          <button class="btn btn--secondary" id="participant-add">Add</button>
+        </div>
+        <p id="participant-error" class="field-error" hidden></p>
+        <!-- A labelled path, not a way around the participant gate. Quick-test
+             trials record against a built-in participant with a fixed id, are
+             marked on every trial, never reach a trend, and export under the
+             name QUICK-TEST rather than a clinic id. -->
+        <button class="btn btn--secondary" id="participant-quick-test">
+          Quick test &mdash; no participant
+        </button>
+        <p id="quick-test-note" class="field-status" hidden>
+          Recording as <strong>QUICK-TEST</strong>. These trials are kept and
+          exported, but they are excluded from trends and are not attributed to
+          any participant.
+        </p>
+      </div>
+
+      <div class="card">
+        <p class="card-label">Leg</p>
+        <div class="seg" id="side-select" role="group" aria-label="Leg">
+          <button class="seg-btn" data-side="left">Left</button>
+          <button class="seg-btn" data-side="right">Right</button>
+        </div>
+      </div>
+
+      <div id="session-bar">
+        <button id="export-session">Export session</button>
+        <button id="close-session" disabled>Close session</button>
+        <p id="export-warning" hidden>This session has unexported trials. Export before closing.</p>
+        <p id="mas-pending-count" class="field-status" hidden></p>
+        <p id="session-status"></p>
+      </div>
+      <p id="build-info" class="build-info"></p>
+    </section>
+    <section class="view" id="view-trends">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Trends</h2></div>
+      <p id="trend-source" class="field-status"></p>
+      <p id="trend-empty" class="empty" hidden></p>
+
+      <div class="card">
+        <p class="card-label">MAS grade</p>
+        <canvas id="chart-mas" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="mas">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">A0 &mdash; first-flexion amplitude (deg)</p>
+        <canvas id="chart-a0" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="a0">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">PT7 composite</p>
+        <canvas id="chart-pt7" class="chart"></canvas>
+        <button class="btn btn--secondary chart-export" data-figure="pt7">Export PNG</button>
+      </div>
+
+      <div class="card">
+        <p class="card-label">Import a session bundle</p>
+        <input id="trend-import" type="file" accept=".json,.csv" multiple>
+        <p id="trend-import-status" class="field-status"></p>
+      </div>
+    </section>
+
+  </main>
+  <script type="module" src="./src/app.js"></script>
+  <script>
+    // Module service workers need {type:'module'} -- sw.js imports build-id.js.
+    //
+    // updateViaCache:'none' is not a micro-optimisation. The default,
+    // 'imports', lets the browser satisfy the update check for sw.js's
+    // IMPORTS out of the ordinary HTTP cache -- and sw.js's only import is
+    // build-id.js, the generated file carrying BUILD_ID (the cache key) and
+    // SHELL (the file list). Served stale, the update check compares the old
+    // build id against itself, concludes nothing changed, and the phone keeps
+    // its old shell forever. That is precisely the staleness this branch
+    // exists to prevent, so the shell's own version marker must never come
+    // from a cache.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { type: 'module', updateViaCache: 'none' })
+          .catch((e) => console.warn('service worker registration failed', e));
+      });
+    }
+  </script>
+</body>
