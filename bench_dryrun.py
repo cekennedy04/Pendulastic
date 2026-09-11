@@ -26,7 +26,11 @@ os.chdir(BASE)
 
 import numpy as np  # noqa: E402
 
-GRAVITY = 9.81
+#: Accelerometer unit: g, matching the phone's own logs (a real trial's
+#: |accel| has median 1.006, not 9.81). The AHRS normalises accel, so this
+#: scale does not change the fused angle -- it is set for faithfulness, and
+#: was NOT the cause of the synthesis defect recorded in check_synthesis().
+GRAVITY = 1.0
 
 
 def _pulses_end_s():
@@ -37,7 +41,10 @@ def _pulses_end_s():
     """
     import motor_reference as mr
     return mr.LEAD_S + mr.PULSE_COUNT * (mr.PULSE_WIDTH_S + mr.PULSE_GAP_S)
-MAG_FIELD = np.array([22.0, 0.0, 43.0])   # microtesla, a plausible mid-latitude field
+
+
+#: Magnetic field, microtesla. |B| = 61.3 matches the real logs' median.
+MAG_FIELD = np.array([31.3, 0.0, 52.7])
 
 
 def _rot_y(theta_rad):
@@ -82,11 +89,70 @@ def synth_phone_log(t_s, theta_deg, phone_hz=100.0, noise_deg_s=0.15, seed=0):
     return out
 
 
+def check_synthesis(tol_deg=5.0):
+    """Does the synthesis reproduce an angle we already know?
+
+    THE PROBE MAY NOT REPORT ACCURACY UNLESS THIS PASSES.
+
+    During the pre-release hold the arm sits at exactly the commanded
+    amplitude, so the replayed angle must track it. It does not: the replay
+    reports ~175 deg for EVERY commanded amplitude (90, 70, 50, 25, 15),
+    carrying no amplitude information at all, while real corpus trials through
+    the identical code path score sensibly at ~60 deg. The defect is in this
+    file's synthesis, not in the production pipeline.
+
+    Ruled out while chasing it: accelerometer units (the AHRS normalises
+    accel, so g vs m/s^2 changes nothing -- verified, identical to 2 dp),
+    role assignment (real trials are solo `proximal` too), the concurrently
+    staged replay changes (old and new agree to 0.04 deg), and the
+    calibration config (unchanged since 2026-08-17).
+
+    This guard exists because the probe spent a whole investigation emitting
+    amplitude errors of "-1.1%" that were arithmetic on a signal carrying no
+    amplitude -- numbers plausible enough to reach a committed report. A
+    simulation that cannot recover a value it was given must say so loudly
+    rather than keep printing percentages.
+    """
+    import motor_reference as mr
+    import imu_calibration_tuner as tuner
+    from imu_calibration_config import load_config
+    cfg = load_config()
+    rows, ok = [], True
+    for a0 in (90.0, 50.0, 25.0):
+        t, th, t_rel = mr.full_trace(a0, 0.9, 1.6, duration_s=12.0, fs_hz=1000.0)
+        tt, ang, q = tuner.replay_trial_detailed(
+            synth_phone_log(t, th), dict(cfg), tick_s=tuner.ANALYSIS_TICK_S)
+        if not q.ok:
+            rows.append((a0, float("nan"))); ok = False; continue
+        tt = np.asarray(tt, float); ang = np.asarray(ang, float)
+        m = (tt > t_rel - 1.0) & (tt < t_rel - 0.1)
+        got = float(np.nanmedian(ang[m])) if m.sum() else float("nan")
+        rows.append((a0, got))
+        if not np.isfinite(got) or abs(got - a0) > tol_deg:
+            ok = False
+    return ok, rows
+
+
 def main() -> int:
     import motor_reference as mr
     import imu_calibration_tuner as tuner
     import pendulastic_pt_score as pts
     from imu_calibration_config import load_config
+
+    ok, rows = check_synthesis()
+    print("synthesis self-check -- commanded hold vs replayed angle:")
+    for a0, got in rows:
+        flag = "ok" if np.isfinite(got) and abs(got - a0) <= 5.0 else "MISMATCH"
+        print(f"   commanded {a0:6.1f} deg -> replay {got:8.2f} deg   {flag}")
+    if not ok:
+        print(
+            "\nSELF-CHECK FAILED. The synthesis does not reproduce an angle it\n"
+            "was given, so no amplitude number from it means anything. Refusing\n"
+            "to print accuracy figures. The smoke-test results below are still\n"
+            "valid -- whether the phone REFUSES, and the commanded step at\n"
+            "release -- because those do not depend on amplitude fidelity.\n"
+            "Ground truth for the bench is the ENCODER, not this file.\n")
+    print()
 
     cfg = load_config()
     print(f"PRE_ROLL_S = {mr.PRE_ROLL_S}   "
@@ -104,21 +170,19 @@ def main() -> int:
         log = synth_phone_log(t, th)
         tt, ang, q = tuner.replay_trial_detailed(
             log, dict(cfg), tick_s=tuner.ANALYSIS_TICK_S)
-        # Cut the sync pulses off before scoring, exactly as the bench harness
-        # must. compute_pt_params does its OWN release detection (it slices at
-        # rel_i internally), and a 5 deg pulse edge is 5000 deg/s -- it clears
-        # any velocity threshold instantly, so the scorer takes a pulse for the
-        # release and the 10 s active-window cap then runs from there instead
-        # of from the real swing. Measured on one 90 deg swing, varying only
-        # RAMP_S, A0 came out 80.90 / 63.31 / 49.12 with the pulses present and
-        # 88.91 / 88.96 / 89.55 with them removed.
+        # Cut the sync pulses off before scoring. compute_pt_params does its
+        # OWN release detection (it slices at rel_i internally), and measured
+        # on this trajectory that detection lands in the RAMP rather than at
+        # release -- so the pulses and the lift both sit inside the scored
+        # window. The bench harness must cut them; where exactly to cut is a
+        # question this probe CANNOT answer while check_synthesis() fails,
+        # because every amplitude comparison it makes is meaningless.
         #
-        # Cut at the END OF THE PULSES, not at release: the pre-release hold is
-        # informative (it feeds `neutral` and the drift estimate), and throwing
-        # it away costs real accuracy -- cutting at release-0.5 s gives 82.6
-        # (-8.3%) against 89.0 (-1.1%) for cutting at the pulses. The corpus
-        # agrees: trimming real trials to release made test-retest WORSE on 7
-        # of 8 parameters.
+        # What does stand, because it does not depend on amplitude fidelity:
+        # the corpus result that trimming real trials to release makes
+        # test-retest WORSE on 7 of 8 parameters, and that the pre-release
+        # hold is informative because it feeds `neutral` and the drift
+        # estimate. See docs/reports/2026-09-11-preamble-sensitivity.md.
         if q.ok and len(tt):
             tt = np.asarray(tt, float)
             ang = np.asarray(ang, float)
