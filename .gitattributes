@@ -1,0 +1,38 @@
+# Line endings: the repo stores LF for every text file (verified 2026-09-11:
+# 564/564 tracked text files are i/lf). Pin that here so checkouts no longer
+# depend on each machine's core.autocrlf, which was producing a mix of CRLF,
+# LF and mixed-ending working copies on Windows.
+* text=auto eol=lf
+
+# cmd.exe is the one consumer that wants CRLF (goto/labels misbehave with LF).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary payloads: never normalise, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.mov binary
+*.avi binary
+*.bin binary
+*.tak binary
+*.npy binary
+*.npz binary
+*.pkl binary
+*.pt binary
+*.pth binary
+*.onnx binary
+*.tflite binary
+*.task binary
+*.wasm binary
+*.pdf binary
+*.pptx binary
+*.docx binary
+*.xlsx binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

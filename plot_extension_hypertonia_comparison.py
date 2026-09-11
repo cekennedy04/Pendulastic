@@ -1,4 +1,4 @@
-"""
+r"""
 plot_extension_hypertonia_comparison.py
 =======================================
 Publication figure: Panel A (normal T1) vs Panel B (extension catch T3).

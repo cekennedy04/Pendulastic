@@ -1,4 +1,4 @@
-"""
+r"""
 plot_comprehensive_parameter_matrix.py
 =======================================
 4x2 publication grid: Left vs Right, Pre vs Post, across 7 parameters for P5.
