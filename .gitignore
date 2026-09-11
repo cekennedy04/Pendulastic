@@ -116,3 +116,6 @@ webapp/captures/
 # committable.
 webapp/dist/
 *.err
+
+# LabVIEW motor-rig .bin stretch trials + generated decoded/ output (~140 MB raw data)
+ck_app_pt_test/
