@@ -19,7 +19,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install numpy scipy pytest
+      # The test imports imu_calibration_tuner -> pendulastic_pt_score, which
+      # imports pandas and matplotlib at module level. Verified in a fresh venv:
+      # numpy+scipy+pytest alone fails at collection; adding these two passes.
+      - run: pip install numpy scipy pandas matplotlib pytest
       # Guards a SILENT failure: a malformed export replays as an unscorable
       # trial, or worse, as a plausible wrong one.
       - run: pytest tests/test_web_export_contract.py -q
