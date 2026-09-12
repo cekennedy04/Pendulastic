@@ -28,9 +28,17 @@ import tkinter
 # tests/test_pose.py and tests/test_metrics.py could not even be collected.
 # Every other test file here bootstraps its own path rather than requiring an
 # install step; do the same for src/ so a bare checkout runs the whole suite.
-_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = os.path.join(_ROOT, "src")
 if os.path.isdir(_SRC) and _SRC not in sys.path:
     sys.path.insert(0, _SRC)
+
+# The flat root modules (imu_calibration_tuner, pendulastic_pt_score, ...) are
+# importable under `python -m pytest`, which puts the cwd on sys.path, but not
+# under a bare `pytest` -- which is what CI runs. Bootstrap the root the same
+# way as src/ so both invocations see the same tree.
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 _anchor = None
 
