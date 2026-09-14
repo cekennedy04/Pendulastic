@@ -2300,15 +2300,23 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
 #      trial's fastest sustained motion (`_RELEASE_EVENT_FRAC`). Relative, not
 #      absolute, so it stays unit-agnostic; "first" so a handling burst at the
 #      end of a recording cannot steal the release from the swing.
-#   3. The leg never comes back from a release: the swing's return peaks stay
-#      below the extension it was held at. A departure the signal later
-#      crosses back over -- the examiner's lift into the hold, a twitch that
-#      settles back -- is not the release (`_RELEASE_RETURN_FRAC`). Only a
-#      run that departs from a still stretch is judged this way at all: the
-#      net displacement over the `_RELEASE_QUIET_S` before the onset must be
-#      under `_RELEASE_QUIET_FRAC` of the run's own, or the run is the swing
-#      continuing (the return out of the first trough), never its start. If
-#      no run passes, the first stands.
+#   3. A release departs from the EXTENSION EXTREME: the hold the leg is let
+#      go from is the highest angle in the trial (180 = straight in every
+#      series this scores), and nothing after it -- the swing's return peaks,
+#      the settled tail -- gets back there (`_RELEASE_TOP_TOL_FRAC`). The
+#      examiner's lift into the hold starts at rest, a handling burst after
+#      the swing starts near neutral, the return out of the first trough
+#      starts at the minimum: none of them departs from the top. Only a run
+#      that departs from a still stretch is judged at all (net displacement
+#      over `_RELEASE_QUIET_S` before the onset under `_RELEASE_QUIET_FRAC`
+#      of the run's own).
+#
+# Rule 2's threshold is relative to the FASTEST run, and a brisk lift or a
+# late handling burst can be 4x faster than a rigid leg's drop, so the drop
+# never forms a run at all. Hence the loop: every run the rules reject is
+# struck from the trial, the threshold is re-derived from what is left, and
+# the scan repeats until a run passes or nothing is left. If nothing ever
+# passes, the first run seen stands.
 #
 # The reported index is the ONSET of the accepted run: walk back from where the
 # sustained rate qualified to the last sample whose 100 ms rate was quiet --
@@ -2322,10 +2330,6 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
 # move with the sample rate, and every step is a plain comparison on the same
 # values in the same order as the Rust port (mobile-imu-core/src/scoring.rs
 # detect_release) -- keep them identical.
-#
-# Rule 3 needs enough signal after a candidate to judge it: with under
-# `_RELEASE_RETURN_MIN_S` left the "never comes back" test would pass
-# trivially, so such a run is skipped and the first run stands.
 _RELEASE_SUSTAIN_S = 0.10
 _RELEASE_EVENT_FRAC = 0.25
 _RELEASE_ONSET_FRAC = 0.20
@@ -2333,8 +2337,13 @@ _RELEASE_HOLD_REF_S = 1.0
 _RELEASE_HOLD_NOISE_MULT = 3.0
 _RELEASE_QUIET_S = 0.30
 _RELEASE_QUIET_FRAC = 0.25
-_RELEASE_RETURN_FRAC = 0.05
-_RELEASE_RETURN_MIN_S = 1.0
+_RELEASE_TOP_TOL_FRAC = 0.05
+
+
+def _extremum_gap_samples(dt: float) -> int:
+    """find_peaks' `distance`: the smoothing window in samples, floored at
+    savgol's own minimum. Shared with the Rust port -- keep identical."""
+    return max(3, int(_SG_WINDOW_S / dt))
 
 
 def _detect_release(t: np.ndarray, ang: np.ndarray,
@@ -2362,56 +2371,62 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     if bi >= m:
         return bi
     vs = np.array([v[i:i + k].min() for i in range(m)])
-    vmax = float(vs[bi:].max())
-    if vmax <= 0.0:
-        return bi
-    thr_event = _RELEASE_EVENT_FRAC * vmax
-    tol = _RELEASE_RETURN_FRAC * float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
+    # The extension extreme, past the AHRS's settling time.
+    top = float(np.nanmax(ang[bi:]))
+    tol = _RELEASE_TOP_TOL_FRAC * float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
+    struck = np.zeros(m, dtype=bool)   # samples of runs the rules rejected
     first = None
-    i = bi
-    while i < m:
-        if vs[i] < thr_event:
-            i += 1
-            continue
-        i0 = i
-        while i + 1 < m and vs[i + 1] >= thr_event:
-            i += 1
-        i1 = i
-        thr_onset = _RELEASE_ONSET_FRAC * float(vs[i0:i1 + 1].max())
-        pre = v[max(bi, i0 - k_ref):i0]
-        if len(pre):
-            thr_onset = max(thr_onset, _RELEASE_HOLD_NOISE_MULT * float(np.median(pre)))
-        j = i0
-        while j > bi and v[j - 1] > thr_onset:
-            j -= 1
-        # v looks 100 ms ahead, so j sits a few STILL samples before the leg
-        # moves. Deliberately left there: they are the hold, so A0 reads the
-        # held angle, and the SG derivative's edge fit then starts on a flat
-        # stretch instead of on the steepest part of the drop -- snapping j
-        # forward to the first moving sample was tried and cost omega_max_n
-        # its corpus test-retest (ICC 0.158 -> 0.115). The price is that on
-        # ~1 in 150 corpus trials the hold's own noise forms a "peak" that N
-        # counts once.
-        if first is None:
-            first = j
-        i = i1 + 1
-        # Rule 0: a release departs from a HOLD. A run that follows straight
-        # on from motion (the return swing out of the first trough departs
-        # from the trial's minimum and never comes back below it either) is
-        # part of the swing, not its start. Net displacement over the window
-        # before the onset, against the run's own: noise nets to nothing over
-        # 0.3 s where a rate would not, and a hold is still by definition.
-        run_disp = abs(ang[min(i1 + k, n - 1)] - ang[j])
-        if j - k_quiet >= bi and abs(ang[j] - ang[j - k_quiet]) > _RELEASE_QUIET_FRAC * run_disp:
-            continue
-        if t[n - 1] - t[j] < _RELEASE_RETURN_MIN_S:
-            continue
-        hold = ang[j]
-        sign = 1.0 if ang[min(i0 + k, n - 1)] >= hold else -1.0
-        after = ang[j + 1:]
-        after = after[np.isfinite(after)]
-        if bool(np.all(sign * (after - hold) >= -tol)):
-            return j
+    while True:
+        live = vs[bi:][~struck[bi:]]
+        if len(live) == 0:
+            break
+        vmax = float(live.max())
+        if vmax <= 0.0:
+            break
+        thr_event = _RELEASE_EVENT_FRAC * vmax
+        seen = False
+        i = bi
+        while i < m:
+            if struck[i] or vs[i] < thr_event:
+                i += 1
+                continue
+            i0 = i
+            while i + 1 < m and not struck[i + 1] and vs[i + 1] >= thr_event:
+                i += 1
+            i1 = i
+            i = i1 + 1
+            seen = True
+            struck[i0:i1 + 1] = True
+            thr_onset = _RELEASE_ONSET_FRAC * float(vs[i0:i1 + 1].max())
+            pre = v[max(bi, i0 - k_ref):i0]
+            if len(pre):
+                thr_onset = max(thr_onset, _RELEASE_HOLD_NOISE_MULT * float(np.median(pre)))
+            j = i0
+            while j > bi and v[j - 1] > thr_onset:
+                j -= 1
+            # v looks 100 ms ahead, so j sits a few STILL samples before the leg
+            # moves. Deliberately left there: they are the hold, so A0 reads the
+            # held angle, and the SG derivative's edge fit then starts on a flat
+            # stretch instead of on the steepest part of the drop -- snapping j
+            # forward to the first moving sample was tried and cost omega_max_n
+            # its corpus test-retest (ICC 0.158 -> 0.115). The price is that on
+            # ~1 in 150 corpus trials the hold's own noise forms a "peak" that N
+            # counts once.
+            if first is None:
+                first = j
+            # Rule 0: a release departs from a HOLD. A run that follows straight
+            # on from motion (the return swing out of the first trough) is
+            # part of the swing, not its start. Net displacement over the window
+            # before the onset, against the run's own: noise nets to nothing over
+            # 0.3 s where a rate would not, and a hold is still by definition.
+            run_disp = abs(ang[min(i1 + k, n - 1)] - ang[j])
+            if j - k_quiet >= bi and abs(ang[j] - ang[j - k_quiet]) > _RELEASE_QUIET_FRAC * run_disp:
+                continue
+            # Rule 3: it departs from the extension extreme.
+            if abs(ang[j] - top) <= tol:
+                return j
+        if not seen:
+            break
     return first if first is not None else bi
 
 
@@ -2919,8 +2934,10 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # at all (Session_2 bench, 2026-09-11). Measurement assumes no band now;
     # the guard against counting noise is prominence=min_amp below, and a
     # value that is fast for a knee is FLAGGED (F_PLAUSIBLE_MAX_HZ), never
-    # zeroed. The 3-sample floor is savgol's own resolution, not physiology.
-    min_dist = 3
+    # zeroed. What remains is resolution, not physiology: two extrema closer
+    # than the smoothing window cannot be told apart, and the gap is that
+    # window as a DURATION so a ripple is resolved at every rate or at none.
+    min_dist = _extremum_gap_samples(_median_dt(t_r))
 
     # ── Neutral from settled tail of signal (used internally for phi/A0/R2n) ──
     # min(), not max(): the window is the LAST 25% of samples. max() always
@@ -3087,7 +3104,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # resting contribution.
     _EXTEND_S = 4.5
     _dt_mean  = float(np.mean(np.diff(t_r))) if len(t_r) > 1 else 1.0 / 30.0
-    _n_ext    = max(1, int(_EXTEND_S / _dt_mean))
+    # + 1e-9 before truncating: on a regular grid 4.5/dt lands ON an integer,
+    # and the last bit of dt_mean (pairwise vs running sum) decided which
+    # side of it the two ports fell -- an extra or missing tail sample, and
+    # an area_ratio that differed by 1e-4 between phone and desktop.
+    _n_ext    = max(1, int(_EXTEND_S / _dt_mean + 1e-9))
     _phi_rest = float(np.nanmedian(phi[max(int(0.80 * len(phi)), 1):]))
     _t_ar     = np.concatenate([t_r, t_r[-1] + np.arange(1, _n_ext + 1) * _dt_mean])
     _phi_ar   = np.concatenate([phi, np.full(_n_ext, _phi_rest)])

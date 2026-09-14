@@ -482,7 +482,7 @@ pub const TRIAL_LOW_AMP_OMEGA_PEAK_DEG_S: f64 = 62.413699253573384;
 pub const TRIAL_LOW_AMP_F: f64 = 1.0;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['area_ratio']
-pub const TRIAL_LOW_AMP_AREA_RATIO: f64 = 0.11199579360272234;
+pub const TRIAL_LOW_AMP_AREA_RATIO: f64 = 0.1121025885722883;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['A0_deg']
 pub const TRIAL_LOW_AMP_A0_DEG: f64 = 12.018741990957533;
@@ -500,13 +500,13 @@ pub const TRIAL_LOW_AMP_NEUTRAL_DEG: f64 = 167.9517084211558;
 pub const TRIAL_LOW_AMP_PRE_RELEASE_DEG: f64 = 180.00000000000045;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_plus']
-pub const TRIAL_LOW_AMP_P_PLUS: f64 = 4.862555801072739;
+pub const TRIAL_LOW_AMP_P_PLUS: f64 = 4.863607713185135;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_minus']
 pub const TRIAL_LOW_AMP_P_MINUS: f64 = 3.883081240086721;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_total']
-pub const TRIAL_LOW_AMP_P_TOTAL: f64 = 8.74563704115946;
+pub const TRIAL_LOW_AMP_P_TOTAL: f64 = 8.746688953271857;
 
 pub const TRIAL_LOW_AMP_SPASTICITY_TYPE: &str = "extension";
 
@@ -550,10 +550,10 @@ pub const TRIAL_LOW_AMP_PT_SCORE_OMEGA_MIN_N: f64 = 0.014165716360095672;
 pub const TRIAL_LOW_AMP_PT_SCORE_F: f64 = 0.013493018965274637;
 
 /// compute_pt_score_breakdown(TRIAL_LOW_AMP)['area_ratio']
-pub const TRIAL_LOW_AMP_PT_SCORE_AREA_RATIO: f64 = 0.050279705146746206;
+pub const TRIAL_LOW_AMP_PT_SCORE_AREA_RATIO: f64 = 0.05043226938898329;
 
 /// compute_pt_score(TRIAL_LOW_AMP)
-pub const TRIAL_LOW_AMP_PT_SCORE_TOTAL: f64 = 0.24146540263275704;
+pub const TRIAL_LOW_AMP_PT_SCORE_TOTAL: f64 = 0.24161796687499412;
 
 // ---- end-to-end raw log (see gen_fixtures.py) ----
 
