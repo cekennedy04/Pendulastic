@@ -127,8 +127,11 @@ Session_3 on `fix/optitrack-trial-quality`'s engine, live convention:
 | `A0` (SEM, MDC95) | 16.4 (0.29, 1.62) | 16.2 (0.29, 1.61) |
 | `R2n` (SEM, MDC95) | 1.37 (0.02, 0.11) | 1.38 (0.02, 0.12) |
 
-Same swing now gives the same score on all four, on both engines' branches
-(the deployed engine had scored 1/6/11 and refused 15).
+Same swing now gives the same score on all four on this engine. On the
+shipping engine (20 Hz grid) three of the four agree (`f` 1.7647, `N` 2.0)
+and trial 11 reads `N` 1.5 -- the smoothing floor at 20 Hz smears the ring
+and the last extremum is marginal; the deployed build had scored 1/6/11
+and refused 15.
 
 **What still fails, and why it is not release detection.** Trials 3, 7, 12
 (and 2, 10, 14, whose `f = 0.17` is a motor sweep counted as a cycle) are
