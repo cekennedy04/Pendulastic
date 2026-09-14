@@ -1572,21 +1572,38 @@ def test_a_still_trial_is_still_refused():
     assert p.compute_pt_params(t, ang) is None
 
 
-def test_a_four_hertz_swing_scores_at_four_hertz():
-    # A short pendulum (the bench arm, a phone on its own) rings at 3-4 Hz.
-    # The inter-extremum gap handed to find_peaks was fps/3.5 -- one full
-    # period at 3.5 Hz -- so a 3.2-3.5 Hz swing lost every peak that landed a
-    # sample early and scored at half its frequency, and 4 Hz could not score
-    # at all. The gap must admit 4 Hz with margin.
+def _ring_at(f_hz, a0=30.0, fs=100.0):
     import numpy as np
-    import pendulastic_pt_score as p
-    t = np.arange(0.0, 8.0, 0.01)
+    t = np.arange(0.0, 8.0, 1.0 / fs)
     rel = 2.0
-    swing = 150.0 + 30.0 * np.exp(-0.5 * (t - rel)) * np.cos(2 * np.pi * 4.0 * (t - rel))
-    ang = np.where(t < rel, 180.0, swing)
-    params = p.compute_pt_params(t, ang, detrend=False)
+    swing = 150.0 + a0 * np.exp(-0.5 * (t - rel)) * np.cos(2 * np.pi * f_hz * (t - rel))
+    return t, np.where(t < rel, 180.0, swing)
+
+
+@pytest.mark.parametrize("f_hz", [3.0, 4.0, 6.0])
+def test_a_fast_ring_is_measured_at_its_own_frequency(f_hz):
+    # Measure everything, exclude nothing. The inter-extremum gap handed to
+    # find_peaks was one full period at 3.5 Hz, so a 3.2-3.5 Hz swing lost
+    # every peak that landed a sample early and scored at half its
+    # frequency, and 4 Hz could not score at all. There is no frequency cap
+    # now; prominence is the only guard against counting noise.
+    import pendulastic_pt_score as p
+    params = p.compute_pt_params(*_ring_at(f_hz), detrend=False)
     assert params is not None
-    assert params["f"] == pytest.approx(4.0, rel=0.03), params["f"]
-    # The same synthetic at 3.0-3.5 Hz counts 12-13.5 cycles; at 4 Hz the old
-    # gap halved that to 8.
-    assert params["N"] >= 12, params["N"]
+    assert params["f"] == pytest.approx(f_hz, rel=0.03), params["f"]
+    # ~13 cycles clear the amplitude floor at 3 Hz on this synthetic; the
+    # count must scale with the frequency, not be clipped by a gap.
+    assert params["N"] >= 12 * f_hz / 3.0 - 1, params["N"]
+
+
+def test_an_implausibly_fast_swing_is_flagged_not_zeroed():
+    # A knee swings near 1 Hz; 3 Hz is a bench arm or a phone on its own.
+    # The value is still reported -- the flag is advisory, for the clinician.
+    import pendulastic_pt_score as p
+    fast = p.compute_pt_params(*_ring_at(3.0), detrend=False)
+    assert fast["f"] == pytest.approx(3.0, rel=0.03)
+    assert fast["f_out_of_range"] is True
+    slow = p.compute_pt_params(*_ring_at(1.0), detrend=False)
+    assert slow["f"] == pytest.approx(1.0, rel=0.03)
+    assert slow["f_out_of_range"] is False
+    assert p.F_PLAUSIBLE_MAX_HZ == 2.0

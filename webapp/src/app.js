@@ -40,7 +40,7 @@ const CLASSES = ['moving', 'holding', 'ready', 'fired'];
 
 // The result table renders PARAM_FIELDS (imported from session-store.js) in
 // that module's order -- exactly the field names PtParams' JSON serialiser
-// emits (mobile-imu-core's params_json.rs), so the table always shows all 20.
+// emits (mobile-imu-core's params_json.rs), so the table always shows all 21.
 // Several are only meaningful read together, and no clinical prioritisation
 // has been established for this app (task-6 dispatch, requirement 4).
 //

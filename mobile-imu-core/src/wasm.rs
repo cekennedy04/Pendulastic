@@ -78,7 +78,7 @@ impl WasmSession {
     /// accepted peaks/troughs — for the result-screen plot. `undefined` when
     /// unscorable, same contract as `finish`. Deliberately a separate call
     /// rather than added fields on `finish`'s payload: `finish`'s JSON key
-    /// set is pinned at exactly 20 scalars by `tests/params_json_test.rs`.
+    /// set is pinned at exactly 21 scalars by `tests/params_json_test.rs`.
     pub fn finish_trajectory(&self) -> Option<String> {
         let (r, p) = self.inner.finish(None).ok()?;
         Some(trajectory_json::trajectory_to_json(&r, &p))

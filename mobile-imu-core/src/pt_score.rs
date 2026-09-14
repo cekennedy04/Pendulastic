@@ -560,6 +560,7 @@ mod tests {
             neutral_deg_raw: 0.0,
             pre_release_deg: 0.0,
             quality_warn: false,
+            f_out_of_range: false,
             phi_negated: false,
             spasticity_type: crate::scoring::SpasticityType::Balanced,
             p_plus: 0.0,

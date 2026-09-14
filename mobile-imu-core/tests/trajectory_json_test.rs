@@ -32,6 +32,7 @@ fn finite_params() -> PtParams {
         neutral_deg_raw: 176.0,
         pre_release_deg: 180.0,
         quality_warn: false,
+        f_out_of_range: false,
         phi_negated: false,
         spasticity_type: SpasticityType::Balanced,
         p_plus: 10.0,
