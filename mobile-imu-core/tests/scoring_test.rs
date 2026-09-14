@@ -411,3 +411,119 @@ fn n_counts_every_swing_rather_than_capping_at_a_clock() {
     // And the lightly damped leg must not sit near the old 4.0 ceiling.
     assert!(got[0] > 8.0, "N still looks capped: {}", got[0]);
 }
+
+// ---- release detection: the onset of the swing, not the first twitch ------
+//
+// Mirrors tests/test_pt_score.py's `_hold_then_swing` cases. The reference
+// and this port must find the same release on the same signal, so these
+// fixtures are built the same way (deterministic LCG noise stands in for
+// numpy's generator; only the shape matters).
+
+fn lcg_noise(n: usize, seed: u64) -> Vec<f64> {
+    let mut s = seed;
+    (0..n)
+        .map(|_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        })
+        .collect()
+}
+
+/// A hold of `hold_s` seconds (tremor + drift), then a decaying swing
+/// released at t = hold_s. 100 Hz.
+fn hold_then_swing(hold_s: f64, tremor_deg: f64, drift_deg_s: f64) -> (Vec<f64>, Vec<f64>) {
+    let fs = 100.0;
+    let n = ((hold_s + 8.0) * fs) as usize;
+    let noise = lcg_noise(n, 7);
+    let top = 180.0 + drift_deg_s * hold_s;
+    let t: Vec<f64> = (0..n).map(|i| i as f64 / fs).collect();
+    let ang = t
+        .iter()
+        .zip(&noise)
+        .map(|(&ti, &nz)| {
+            if ti < hold_s {
+                180.0
+                    + drift_deg_s * ti
+                    + tremor_deg * (2.0 * std::f64::consts::PI * 7.0 * ti).sin()
+                    + tremor_deg * 0.6 * nz
+            } else {
+                let tau = ti - hold_s;
+                top - 45.0
+                    * (1.0 - (-0.4 * tau).exp() * (2.0 * std::f64::consts::PI * 0.9 * tau).cos())
+            }
+        })
+        .collect();
+    (t, ang)
+}
+
+fn release_time(t: &[f64], ang: &[f64]) -> f64 {
+    compute_pt_params(t, ang, None, false)
+        .expect("scorable")
+        .t_r[0]
+}
+
+#[test]
+fn release_is_found_after_a_long_tremulous_drifting_hold() {
+    let (t, ang) = hold_then_swing(14.0, 1.5, 0.5);
+    let got = release_time(&t, &ang);
+    assert!((got - 14.0).abs() <= 0.05, "release at {got}, want 14.0");
+}
+
+#[test]
+fn release_ignores_a_single_sample_blip_in_the_hold() {
+    let (t, mut ang) = hold_then_swing(9.0, 0.0, 0.0);
+    ang[300] += 5.0;
+    let got = release_time(&t, &ang);
+    assert!((got - 9.0).abs() <= 0.05, "release at {got}, want 9.0");
+}
+
+#[test]
+fn release_ignores_a_brisk_lift_into_the_hold() {
+    // Leg resting flexed, lifted 120 -> 178 over one second, held, released
+    // at 6 s. The lift is fast and sustained but the leg comes back through
+    // it; the release is the departure it never returns from.
+    let t: Vec<f64> = (0..1400).map(|i| i as f64 * 0.01).collect();
+    let ang: Vec<f64> = t
+        .iter()
+        .map(|&ti| {
+            if ti < 6.0 {
+                120.0 + 58.0 * ((ti - 2.0) / 1.0).clamp(0.0, 1.0)
+            } else {
+                let tau = ti - 6.0;
+                178.0
+                    - 55.0
+                        * (1.0
+                            - (-0.4 * tau).exp() * (2.0 * std::f64::consts::PI * 0.9 * tau).cos())
+            }
+        })
+        .collect();
+    let got = release_time(&t, &ang);
+    assert!((got - 6.0).abs() <= 0.05, "release at {got}, want 6.0");
+}
+
+#[test]
+fn explicit_release_idx_bypasses_detection() {
+    let (t, ang) = hold_then_swing(4.0, 0.0, 0.0);
+    let forced = 450;
+    let p = compute_pt_params(&t, &ang, Some(forced), false).unwrap();
+    assert_eq!(p.t_r[0], t[forced]);
+    let auto = release_time(&t, &ang);
+    assert!(
+        (auto - 4.0).abs() <= 0.05,
+        "auto release at {auto}, want 4.0"
+    );
+}
+
+#[test]
+fn a_still_trial_is_still_refused() {
+    let noise = lcg_noise(1200, 3);
+    let t: Vec<f64> = (0..1200).map(|i| i as f64 * 0.01).collect();
+    let ang: Vec<f64> = t
+        .iter()
+        .zip(&noise)
+        .map(|(&ti, &nz)| 178.0 - 0.3 * ti + 0.8 * nz)
+        .collect();
+    assert!(compute_pt_params(&t, &ang, None, false).is_none());
+}
