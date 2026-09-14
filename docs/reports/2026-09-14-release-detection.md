@@ -9,9 +9,9 @@ better on `f` and `R2n`. What the bench still refuses is not release
 detection: it is the tail of a motor trajectory that never rests where the
 ring was centred, and it is documented below rather than patched.**
 
-Commits: `d2e2cee`, `05b5a4e`, `c2dfe67` on `fix/optitrack-trial-quality`
-(the engine this task named); `3e1ab69`, `6e8b9f3` on
-`feat/webapp-workbench-restyle` (the branch the phone app ships from; see
+Commits: `d2e2cee`, `05b5a4e`, `c2dfe67`, `35d3192` on
+`fix/optitrack-trial-quality` (the engine this task named); `3e1ab69`,
+`6e8b9f3`, `33450c5` on `feat/webapp-workbench-restyle` (the branch the phone app ships from; see
 "Two engines" below). Tests: 95 in `tests/test_pt_score.py`, 45 in
 `tests/test_imu_calibration_tuner.py`, Rust suite green on both branches,
 webapp `node --test` 392/392.
@@ -70,14 +70,20 @@ Both ports, same constants, same comparisons in the same order
    converge). Relative, so unit-agnostic; *first*, so a handling burst at
    the end of a recording (`14_right_pre_T4`, 23.5 s in) cannot steal the
    release.
-3. **Never comes back.** A candidate that departs from a still stretch
+3. **Departs from the top.** A candidate that departs from a still stretch
    (net displacement over the 0.3 s before its onset under a quarter of its
-   own) is accepted only if the signal never crosses back over its hold
-   level by more than 5% of range. The examiner's brisk lift into the hold
-   (`15_left_pre_T1`: 120 -> 178 deg at 60 deg/s, released 2 s later) is
-   rejected by this and the release after it accepted. A candidate that
-   follows straight on from motion is the swing continuing. If nothing
-   passes, the first run stands.
+   own) is accepted only if its hold is within 5% of range of the trial's
+   highest angle -- the extension the leg was let go from. The examiner's
+   brisk lift into the hold (`15_left_pre_T1`: 120 -> 178 deg at 60 deg/s,
+   released 2 s later) starts at rest and is rejected; a handling knock
+   after the swing starts near neutral; the return out of the first trough
+   starts at the minimum. Every rejected run is struck and rule 2's
+   threshold re-derived from what is left, so a lift or a knock 4x faster
+   than a rigid leg's drop cannot keep the drop from ever forming a run
+   (the pre-deploy review's two failure cases, now tests). If nothing
+   passes, the first run stands. Not covered: a knock that carries the leg
+   ABOVE the extension hold -- nothing in the signal then says which
+   departure was the test.
 
 The reported index is the run's onset: walk back to the last sample whose
 100 ms rate was under 20% of the run's peak or under 3x the hold's own
@@ -182,6 +188,48 @@ extremum. Newly scored: `15_left_pre_T1` (lift rejected, A0 63.9) and
 `23_left_pre_T1` (release right at 9.25 s, but a second violent event at
 12.5 s leaves the tail at 178 deg and A0 = 4.5 -- a tail problem, worth an
 exclusion tag).
+
+## Pre-deploy review (2026-09-14, two adversarial passes)
+
+Fixed before deploy (`35d3192` / `33450c5`): the two release-detector
+failure cases above; find_peaks' gap was a bare 3 samples (0.15 s at
+20 Hz, 0.025 s at 120 Hz) and is now the smoothing window as a duration;
+`area_ratio`'s tail extension truncated `4.5/dt_mean` on an exact integer
+and the ports fell on different sides by a last bit (parity 1.6e-4 ->
+4e-7). Bench and corpus numbers did not move.
+
+Found and NOT fixed -- scoring-formula decisions for the owner, all
+pre-existing and on both branches unless noted:
+
+- **`omega_min_n` duplicates `omega_max_n` on the shipping branch.**
+  `omega_max_n = max|omega|/A0` and `omega_min_n = min(omega)/A0` are the
+  same drop with opposite signs (every golden fixture pins them equal and
+  opposite; `HEALTHY_REF.omega_min_n = -9.4152` vs `omega_max_n = 9.5672`).
+  Popovic's pair is the flexion drop and the extension RETURN. On
+  `fix/optitrack-trial-quality` it is `min|omega|` instead, ~0 for every
+  trial. Either way one of the seven parameters carries no information and
+  the composite counts the drop twice. Fix = signed max for the return,
+  recalibrate that reference entry.
+- **`f` assumes alternating extrema.** Consecutive extrema of any sign are
+  treated as half-periods; with one polarity missing `f` halves (this is
+  the Session_3 3.2 Hz -> 1.7 Hz mechanism), and the half-period outlier
+  filter `|hp - med| < 1.5 med` can never reject a short gap. Fix = period
+  from same-sign spacing, median not mean.
+- **`swing_centre` (shipping branch) is gated on >= 3 first-pass extrema**,
+  so the sag correction is off for the damped legs it was built for; and
+  the first-trough depth is read in the neutral frame with `abs()`, which
+  inflates A1 when the trough sits above neutral.
+- **The phone scores an EMA(0.3)-smoothed 20 Hz series against a
+  HEALTHY_REF from unsmoothed 120 Hz OptiTrack**: a textbook 45 deg / 1 Hz
+  swing reads omega_peak 197 vs 248 deg/s and lands in the borderline zone
+  on smoothing alone. The 100 Hz analysis grid (`5d61ab9`) never reached
+  `replay.rs` on the shipping branch.
+- Smaller: `t_r.len() < 25` (1.25 s at 20 Hz) lets a Stop-button trial
+  score mid-swing with a wrong neutral; `release_override` must be a gyro
+  sample index or replay fails (latent, the app never passes one); the
+  export schema is still `v4` with a 21st params key; one port divergence
+  on Session_3 trial 14 (Rust N 2.0 vs Python 1.5, a marginal extremum on
+  the motor-return trial) predates this work.
 
 ## Python and Rust agree
 
