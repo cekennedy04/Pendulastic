@@ -10,7 +10,7 @@
 export const PARAM_FIELDS = [
   'r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n', 'f', 'area_ratio',
   'omega_peak_deg_s', 'a0_deg', 'a1_deg', 'first_trough_depth', 'neutral_deg',
-  'neutral_deg_raw', 'pre_release_deg', 'quality_warn', 'phi_negated',
+  'neutral_deg_raw', 'pre_release_deg', 'quality_warn', 'f_out_of_range', 'phi_negated',
   'spasticity_type', 'p_plus', 'p_minus', 'p_total',
 ];
 

@@ -91,6 +91,9 @@ pub struct PtParams {
     pub pre_release_deg: f64,
     /// Whether `area_ratio` exceeded [`AREA_RATIO_WARN`].
     pub quality_warn: bool,
+    /// `f` above [`F_PLAUSIBLE_MAX_HZ`]: reported as measured, flagged for
+    /// the clinician. Advisory, never a reason to refuse the trial.
+    pub f_out_of_range: bool,
     /// Whether the angle convention was flipped so extension reads positive.
     pub phi_negated: bool,
     pub spasticity_type: SpasticityType,
@@ -231,10 +234,12 @@ fn swing_centre(phi: &[f64], dt: f64, period_s: f64) -> Vec<f64> {
         .collect()
 }
 
-/// `_MAX_SWING_HZ`: the fastest swing whose extrema are all admitted. A shank
-/// rings at ~1 Hz; a short pendulum (the bench arm, a phone on its own) at
-/// 3-4 Hz. 5 Hz leaves 4 Hz a 25% margin; noise is kept out by prominence.
-const MAX_SWING_HZ: f64 = 5.0;
+/// `F_PLAUSIBLE_MAX_HZ`: above this, `f` is reported as measured but
+/// flagged (`PtParams::f_out_of_range`). A knee swings near 1 Hz; faster is
+/// a bench arm, a phone on its own, or something worth a clinician's look --
+/// never a reason to zero the value. Advisory only: measurement assumes no
+/// frequency band.
+pub const F_PLAUSIBLE_MAX_HZ: f64 = 2.0;
 
 /// `_RELEASE_*` -- the release detector's constants. Seconds and fractions
 /// only, so nothing here moves with the sample rate.
@@ -662,12 +667,11 @@ pub fn compute_pt_params(
         return None;
     }
 
-    // Minimum gap between two extrema of the same sign: one full period at
-    // the fastest swing admitted (`MAX_SWING_HZ`). It was one period at
-    // 3.5 Hz, and a 3.2-3.5 Hz bench ring scored at half its frequency.
-    let span = (t_r[t_r.len() - 1] - t_r[0]).max(0.1);
-    let fps_eff = t_r.len() as f64 / span;
-    let min_dist = 3.max((fps_eff / MAX_SWING_HZ) as usize);
+    // No frequency cap: the gap was one full period at 3.5 Hz and a 3.2-3.5 Hz
+    // ring scored at half its frequency. Prominence is the guard against
+    // noise; a fast value is flagged (`F_PLAUSIBLE_MAX_HZ`), never zeroed.
+    // Three samples is savgol's own resolution, not physiology.
+    let min_dist = 3;
 
     // Neutral from the settled tail. `min`, not `max`: the window is the LAST
     // 25% of samples, and taking the max collapses "tail median" into
@@ -757,7 +761,7 @@ pub fn compute_pt_params(
     // The quadriceps-catch merge was removed here to match Python (d323104,
     // "remove the quadriceps-catch merge -- it could never fire"). It
     // collapsed extrema closer than max(3, fps/6) samples, but find_peaks
-    // above already enforces distance = max(3, fps/MAX_SWING_HZ), and fps/6 < that
+    // above already enforces distance = max(3, fps/3.5) at the time, and fps/6 < fps/3.5
     // at every sample rate, so no surviving pair was ever close enough to
     // merge. Keeping it implied a spastic-catch safeguard that was not in
     // fact running. Verified behaviour-neutral: all fixtures still pass.
@@ -917,6 +921,7 @@ pub fn compute_pt_params(
         neutral_deg_raw,
         pre_release_deg,
         quality_warn: area_ratio > AREA_RATIO_WARN,
+        f_out_of_range: f > F_PLAUSIBLE_MAX_HZ,
         phi_negated,
         spasticity_type,
         p_plus,

@@ -619,6 +619,12 @@ _N_SIMPLE    = len(_SIMPLE_KEYS)
 # which can occur when unlabelled-marker angle computation fails to cleanly
 # separate thigh vs shank clusters ("duo" sessions with mixed-leg markers).
 AREA_RATIO_WARN = 0.55
+# Above this, `f` is reported as measured but flagged (`f_out_of_range`): a
+# knee swings near 1 Hz (Popovic's healthy legs 0.9-1.1 Hz, spastic legs
+# slower still), so a faster oscillation is a bench arm, a phone on its own,
+# or something worth a clinician's look -- never a reason to zero the value.
+# Advisory only: measurement never assumes a frequency band.
+F_PLAUSIBLE_MAX_HZ = 2.0
 
 def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     """
@@ -2107,11 +2113,6 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
     return slope
 
 
-# The fastest swing whose extrema are all admitted by compute_pt_params'
-# peak search; see the min_dist comment there.
-_MAX_SWING_HZ = 5.0
-
-
 # Release detection.
 #
 # Until 2026-09-14 this was a DISPLACEMENT detector: baseline = median of the
@@ -2592,16 +2593,14 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     if len(t_r) < 25:
         return None
 
-    # Minimum gap between two extrema of the SAME sign, i.e. one full period
-    # at the fastest swing admitted. A shank rings at ~1 Hz, but a short
-    # pendulum (the motor bench arm, a phone on its own) rings at 3-4 Hz, and
-    # the gap was one period at 3.5 Hz: a 3.2-3.5 Hz swing lost every peak
-    # that landed a sample early and scored at HALF its frequency, and 4 Hz
-    # could not score at all (Session_2 bench, 2026-09-11; synthetic 4 Hz:
-    # N 8 for 13 true cycles). 5 Hz leaves 4 Hz a 25% margin. Noise is kept
-    # out by prominence=min_amp below, not by this gap.
-    fps_eff  = len(t_r) / max(t_r[-1] - t_r[0], 0.1)
-    min_dist = max(3, int(fps_eff / _MAX_SWING_HZ))
+    # No frequency cap. find_peaks' distance used to be one full period at
+    # 3.5 Hz (fps/3.5): a 3.2-3.5 Hz swing lost every peak that landed a
+    # sample early and scored at HALF its frequency, and 4 Hz could not score
+    # at all (Session_2 bench, 2026-09-11). Measurement assumes no band now;
+    # the guard against counting noise is prominence=min_amp below, and a
+    # value that is fast for a knee is FLAGGED (F_PLAUSIBLE_MAX_HZ), never
+    # zeroed. The 3-sample floor is savgol's own resolution, not physiology.
+    min_dist = 3
 
     # ── Neutral from settled tail of signal (used internally for phi/A0/R2n) ──
     # min(), not max(): the window is the LAST 25% of samples. max() always
@@ -2698,10 +2697,10 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
     # A sub-peak merge used to run here, to absorb the extra extremum a spastic
     # quadriceps catch can put into the curve. It was unreachable and has been
-    # removed. find_peaks above is given distance=min_dist = fps/_MAX_SWING_HZ
-    # (fps/3.5 = 0.286 s at the time), so no two returned extrema are EVER
-    # closer than that; the merge window was fps/6 = 0.167 s, i.e. strictly
-    # inside a separation that was already guaranteed. The two constants were inverted against each other, so the
+    # removed. find_peaks above was given distance=min_dist = fps/3.5 at the
+    # time, so no two returned extrema were EVER closer than 0.286 s; the
+    # merge window was fps/6 = 0.167 s, i.e. strictly inside a separation
+    # that was already guaranteed. The two constants were inverted against each other, so the
     # merge could not fire at any sample rate (verified at 30/60/100/120/200/
     # 2000 Hz), and removing it changed nothing on any of the 186 real curves
     # in the corpus. See test_quadriceps_catch_merge_was_subsumed_by_find_peaks.
@@ -2803,6 +2802,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     area_ratio = abs(P_plus - P_minus) / P_total if P_total > 1e-6 else 1.0
 
     quality_warn = (area_ratio > AREA_RATIO_WARN)
+    f_out_of_range = bool(f > F_PLAUSIBLE_MAX_HZ)
 
     # Spasticity type from Popovic 2018 Fig 7:
     # balanced areas → healthy/mild; extension-dominant → extension spasticity;
@@ -2820,6 +2820,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         omega_peak_deg_s=omega_peak_dps,
         f=f, area_ratio=area_ratio,
         quality_warn=quality_warn,
+        f_out_of_range=f_out_of_range,
         # diagnostics
         A0_deg=A0, A1_deg=A1, first_trough_depth=first_trough_depth,
         neutral_deg=neutral,

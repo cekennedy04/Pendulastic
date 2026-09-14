@@ -527,3 +527,44 @@ fn a_still_trial_is_still_refused() {
         .collect();
     assert!(compute_pt_params(&t, &ang, None, false).is_none());
 }
+
+// ---- no frequency cap; fast swings are flagged, never zeroed -------------
+
+fn ring_at(f_hz: f64) -> (Vec<f64>, Vec<f64>) {
+    let t: Vec<f64> = (0..800).map(|i| i as f64 * 0.01).collect();
+    let ang = t
+        .iter()
+        .map(|&ti| {
+            if ti < 2.0 {
+                180.0
+            } else {
+                let tau = ti - 2.0;
+                150.0 + 30.0 * (-0.5 * tau).exp() * (2.0 * std::f64::consts::PI * f_hz * tau).cos()
+            }
+        })
+        .collect();
+    (t, ang)
+}
+
+#[test]
+fn a_fast_ring_is_measured_at_its_own_frequency() {
+    for f_hz in [3.0, 4.0, 6.0] {
+        let (t, ang) = ring_at(f_hz);
+        let p = compute_pt_params(&t, &ang, None, false).unwrap();
+        assert!((p.f - f_hz).abs() <= 0.03 * f_hz, "f {} at {f_hz} Hz", p.f);
+        assert!(p.n >= 12.0 * f_hz / 3.0 - 1.0, "N {} at {f_hz} Hz", p.n);
+    }
+}
+
+#[test]
+fn an_implausibly_fast_swing_is_flagged_not_zeroed() {
+    let (t, ang) = ring_at(3.0);
+    let fast = compute_pt_params(&t, &ang, None, false).unwrap();
+    assert!((fast.f - 3.0).abs() <= 0.09, "f {}", fast.f);
+    assert!(fast.f_out_of_range);
+    let (t, ang) = ring_at(1.0);
+    let slow = compute_pt_params(&t, &ang, None, false).unwrap();
+    assert!((slow.f - 1.0).abs() <= 0.03, "f {}", slow.f);
+    assert!(!slow.f_out_of_range);
+    assert_eq!(mobile_imu_core::scoring::F_PLAUSIBLE_MAX_HZ, 2.0);
+}

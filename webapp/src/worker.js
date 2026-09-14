@@ -43,7 +43,7 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
     },
     // The full tick series, release point, and accepted peaks/troughs for
     // the result-screen plot -- a separate wasm call from `finish` because
-    // `finish`'s JSON key set is pinned at exactly 20 scalars
+    // `finish`'s JSON key set is pinned at exactly 21 scalars
     // (mobile-imu-core/tests/params_json_test.rs). Same undefined-on-
     // unscorable contract as `finish`.
     finishTrajectory: () => {

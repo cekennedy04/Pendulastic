@@ -2,7 +2,7 @@
 //! against the defect found in the task-3 brief: a hand-formatted JSON
 //! string that silently dropped `spasticity_type` because nothing under
 //! `cargo test` could reach the formatter to notice. Every one of
-//! `PtParams`' 20 scalar fields must show up as a JSON key, and
+//! `PtParams`' 21 scalar fields must show up as a JSON key, and
 //! `spasticity_type` must serialise to one of its three Rust variant names.
 
 #[path = "fixtures/golden.rs"]
@@ -53,6 +53,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "neutral_deg_raw",
     "pre_release_deg",
     "quality_warn",
+    "f_out_of_range",
     "phi_negated",
     "spasticity_type",
     "p_plus",
@@ -61,7 +62,7 @@ const EXPECTED_KEYS: &[&str] = &[
 ];
 
 #[test]
-fn all_twenty_scalar_fields_are_present_as_keys() {
+fn all_twenty_one_scalar_fields_are_present_as_keys() {
     let cfg = ReplayConfig {
         beta: golden::E2E_BETA,
         ema_alpha: golden::E2E_EMA_ALPHA,
@@ -76,8 +77,8 @@ fn all_twenty_scalar_fields_are_present_as_keys() {
 
     assert_eq!(
         EXPECTED_KEYS.len(),
-        20,
-        "the expected-key list itself must list all 20 fields"
+        21,
+        "the expected-key list itself must list all 21 fields"
     );
     for key in EXPECTED_KEYS {
         let needle = format!("\"{key}\":");
@@ -135,6 +136,7 @@ fn finite_params() -> PtParams {
         neutral_deg_raw: 174.0,
         pre_release_deg: 90.0,
         quality_warn: false,
+        f_out_of_range: false,
         phi_negated: false,
         spasticity_type: SpasticityType::Balanced,
         p_plus: 10.0,

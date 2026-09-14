@@ -84,9 +84,9 @@ fn main() {
                 let rel = p.t_r.first().copied().unwrap_or(f64::NAN);
                 let rel_i = r.t.iter().position(|&x| x >= rel).unwrap_or(0);
                 println!(
-                    "{name}\tok\t{rel_i}\t{rel:.3}\t{:.6}\t{:.1}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}",
+                    "{name}\tok\t{rel_i}\t{rel:.3}\t{:.6}\t{:.1}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}",
                     p.f, p.n, p.a0_deg, p.r2n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
-                    p.area_ratio, p.neutral_deg,
+                    p.area_ratio, p.neutral_deg, p.f_out_of_range,
                     unmeasured_params(&p).join(",")
                 );
             }

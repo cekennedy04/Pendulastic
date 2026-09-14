@@ -5,7 +5,7 @@
 //! is exactly how the brief's original hand-rolled formatter silently
 //! dropped `spasticity_type` from the payload.
 //!
-//! Emits all 20 of `PtParams`' scalar fields — the 7 scored parameters, the
+//! Emits all 21 of `PtParams`' scalar fields — the 7 scored parameters, the
 //! diagnostics, and the clinically meaningful `spasticity_type`
 //! classification. The `phi`/`ang_r`/`t_r`/`omega_s`/peak-index series are
 //! deliberately excluded: they're for plotting/downstream checks, not the
@@ -48,7 +48,7 @@ pub fn params_to_json(p: &PtParams) -> String {
             "\"omega_min_n\":{},\"f\":{},\"area_ratio\":{},\"omega_peak_deg_s\":{},",
             "\"a0_deg\":{},\"a1_deg\":{},\"first_trough_depth\":{},\"neutral_deg\":{},",
             "\"neutral_deg_raw\":{},\"pre_release_deg\":{},\"quality_warn\":{},",
-            "\"phi_negated\":{},\"spasticity_type\":\"{}\",\"p_plus\":{},",
+            "\"f_out_of_range\":{},\"phi_negated\":{},\"spasticity_type\":\"{}\",\"p_plus\":{},",
             "\"p_minus\":{},\"p_total\":{}}}"
         ),
         fmt_f64(p.r2n),
@@ -66,6 +66,7 @@ pub fn params_to_json(p: &PtParams) -> String {
         fmt_f64(p.neutral_deg_raw),
         fmt_f64(p.pre_release_deg),
         p.quality_warn,
+        p.f_out_of_range,
         p.phi_negated,
         spasticity_type_str(p.spasticity_type),
         fmt_f64(p.p_plus),
