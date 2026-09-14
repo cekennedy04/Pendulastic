@@ -1574,3 +1574,59 @@ def test_an_implausibly_fast_swing_is_flagged_not_zeroed():
     assert slow["f"] == pytest.approx(1.0, rel=0.03)
     assert slow["f_out_of_range"] is False
     assert p.F_PLAUSIBLE_MAX_HZ == 2.0
+
+
+def _lift_hold_release(lift_from=90.0, hold_deg=120.0, lift_s=0.25, hold_s=2.0,
+                       a0=10.0, decay=3.0, fs=100.0, burst=None):
+    """Rest -> brisk examiner lift -> hold -> slow, heavily damped drop of
+    `a0` (a rigid leg). `burst` = (t_start, deg, dur_s) adds a handling
+    excursion late in the recording."""
+    import numpy as np
+    rng = np.random.default_rng(3)
+    t = np.arange(0.0, 9.0, 1.0 / fs)
+    t_lift, t_rel = 1.0, 1.0 + lift_s + hold_s
+    ang = np.full(len(t), lift_from)
+    m = (t >= t_lift) & (t < t_lift + lift_s)
+    ang[m] = lift_from + (hold_deg - lift_from) * (t[m] - t_lift) / lift_s
+    ang[(t >= t_lift + lift_s) & (t < t_rel)] = hold_deg
+    tau = t[t >= t_rel] - t_rel
+    ang[t >= t_rel] = hold_deg - a0 * (1.0 - np.exp(-decay * tau) * np.cos(2 * np.pi * 0.8 * tau))
+    if burst is not None:
+        b0, bdeg, bdur = burst
+        m = (t >= b0) & (t < b0 + bdur)
+        ang[m] += bdeg * np.sin(np.pi * (t[m] - b0) / bdur)
+    ang = ang + 0.1 * rng.standard_normal(len(t))
+    return t, ang, t_rel
+
+
+def test_release_of_a_rigid_leg_is_not_lost_to_a_brisk_lift():
+    # The lift into the hold is 4x faster than a rigid leg's drop. A threshold
+    # set from the trial's fastest motion alone never lets the drop form a
+    # run, and the lift -- which the leg never swings back below -- is all
+    # that is left. The release must still be found: it is the departure
+    # from the trial's extension extreme.
+    t, ang, t_rel = _lift_hold_release()
+    # A slow drop ramps gently, so the onset lands a little earlier than a
+    # fast one would; anything inside 0.1 s is the hold, and harmless.
+    assert _release_time(t, ang) == pytest.approx(t_rel, abs=0.10)
+
+
+def test_release_is_not_stolen_by_a_faster_handling_burst_at_the_end():
+    # A 120 deg knock into flexion, 0.4 s long and 4x faster than the drop,
+    # after the leg has settled. It is the trial's fastest motion, so on its
+    # own it would set the run threshold too high for the drop to qualify;
+    # it does not depart from the top, so it is struck and the scan repeats.
+    # (A knock that carries the leg ABOVE the extension hold is not covered:
+    # nothing in the signal then says which departure was the test.)
+    t, ang, t_rel = _lift_hold_release(lift_s=2.0, a0=30.0, decay=0.4,
+                                       burst=(7.5, -120.0, 0.4))
+    assert _release_time(t, ang) == pytest.approx(t_rel, abs=0.06)
+
+
+def test_extremum_gap_is_a_duration_not_a_sample_count():
+    # find_peaks' minimum gap between same-sign extrema is the smoothing
+    # window, so a ripple is either resolved at every rate or at none.
+    import pendulastic_pt_score as p
+    for fs in (20.0, 100.0, 120.0):
+        dt = 1.0 / fs
+        assert p._extremum_gap_samples(dt) == max(3, int(p._SG_WINDOW_S / dt))

@@ -250,11 +250,16 @@ const RELEASE_HOLD_REF_S: f64 = 1.0;
 const RELEASE_HOLD_NOISE_MULT: f64 = 3.0;
 const RELEASE_QUIET_S: f64 = 0.30;
 const RELEASE_QUIET_FRAC: f64 = 0.25;
-const RELEASE_RETURN_FRAC: f64 = 0.05;
-const RELEASE_RETURN_MIN_S: f64 = 1.0;
+const RELEASE_TOP_TOL_FRAC: f64 = 0.05;
 
-/// `_detect_release`: the onset of the first sustained, large motion that the
-/// signal never comes back from.
+/// `_extremum_gap_samples`: find_peaks' `distance` -- the smoothing window in
+/// samples, floored at savgol's own minimum. Identical to the reference.
+fn extremum_gap_samples(dt: f64) -> usize {
+    3.max((SG_WINDOW_S / dt) as usize)
+}
+
+/// `_detect_release`: the onset of the first sustained, large motion that
+/// departs from the extension extreme.
 ///
 /// This replaced a displacement detector (baseline = median of the first
 /// 0.6 s, fire on the first 8%-of-range crossing) that, measured on a motor
@@ -271,12 +276,20 @@ const RELEASE_RETURN_MIN_S: f64 = 1.0;
 /// 2. The FIRST sustained run reaching a quarter of the trial's fastest
 ///    sustained motion. Relative, so unit-agnostic; first, so a handling
 ///    burst at the end cannot steal the release from the swing.
-/// 3. The leg never comes back from a release. A departure the signal later
-///    crosses back over (the examiner's lift into the hold, a twitch that
-///    settles) is not it -- judged only for runs that depart from a still
-///    stretch (net displacement over the 0.3 s before the onset under a
-///    quarter of the run's own), since a run that follows straight on from
-///    motion is the swing continuing. If nothing passes, the first run stands.
+/// 3. A release departs from the EXTENSION EXTREME: the hold is the highest
+///    angle in the trial (180 = straight in every series this scores), and
+///    nothing after it gets back there. The examiner's lift starts at rest,
+///    a handling burst after the swing starts near neutral, the return out
+///    of the first trough starts at the minimum: none departs from the top.
+///    Judged only for runs that depart from a still stretch (net displacement
+///    over the 0.3 s before the onset under a quarter of the run's own).
+///
+/// Rule 2's threshold is relative to the FASTEST run, and a brisk lift or a
+/// late handling burst can be 4x faster than a rigid leg's drop, so the drop
+/// never forms a run at all. Hence the loop: every run the rules reject is
+/// struck from the trial, the threshold is re-derived from what is left, and
+/// the scan repeats until a run passes or nothing is left. If nothing ever
+/// passes, the first run seen stands.
 ///
 /// The index returned is the run's onset: walk back to the last sample whose
 /// 100 ms rate was quiet (under a fifth of the run's peak, or under three
@@ -318,65 +331,71 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let vs: Vec<f64> = (0..m)
         .map(|i| v[i..i + k].iter().cloned().fold(f64::INFINITY, f64::min))
         .collect();
-    let vmax = vs[bi..].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    if vmax <= 0.0 {
-        return bi;
-    }
-    let thr_event = RELEASE_EVENT_FRAC * vmax;
-    let tol = RELEASE_RETURN_FRAC * (nanpercentile(ang, 97.0) - nanpercentile(ang, 3.0));
+    // The extension extreme, past the AHRS's settling time.
+    let top = ang[bi..]
+        .iter()
+        .cloned()
+        .filter(|a| a.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    let tol = RELEASE_TOP_TOL_FRAC * (nanpercentile(ang, 97.0) - nanpercentile(ang, 3.0));
+    // Samples of runs the rules rejected.
+    let mut struck = vec![false; m];
     let mut first: Option<usize> = None;
-    let mut i = bi;
-    while i < m {
-        if vs[i] < thr_event {
-            i += 1;
-            continue;
-        }
-        let i0 = i;
-        while i + 1 < m && vs[i + 1] >= thr_event {
-            i += 1;
-        }
-        let i1 = i;
-        let run_peak = vs[i0..=i1]
-            .iter()
-            .cloned()
+    loop {
+        let vmax = (bi..m)
+            .filter(|&i| !struck[i])
+            .map(|i| vs[i])
             .fold(f64::NEG_INFINITY, f64::max);
-        let mut thr_onset = RELEASE_ONSET_FRAC * run_peak;
-        let pre_start = i0.saturating_sub(k_ref).max(bi);
-        if pre_start < i0 {
-            thr_onset = thr_onset.max(RELEASE_HOLD_NOISE_MULT * nanmedian(&v[pre_start..i0]));
+        if vmax <= 0.0 {
+            break;
         }
-        let mut j = i0;
-        while j > bi && v[j - 1] > thr_onset {
-            j -= 1;
+        let thr_event = RELEASE_EVENT_FRAC * vmax;
+        let mut seen = false;
+        let mut i = bi;
+        while i < m {
+            if struck[i] || vs[i] < thr_event {
+                i += 1;
+                continue;
+            }
+            let i0 = i;
+            while i + 1 < m && !struck[i + 1] && vs[i + 1] >= thr_event {
+                i += 1;
+            }
+            let i1 = i;
+            i = i1 + 1;
+            seen = true;
+            for x in struck.iter_mut().take(i1 + 1).skip(i0) {
+                *x = true;
+            }
+            let run_peak = vs[i0..=i1].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let mut thr_onset = RELEASE_ONSET_FRAC * run_peak;
+            let pre_start = i0.saturating_sub(k_ref).max(bi);
+            if pre_start < i0 {
+                thr_onset = thr_onset.max(RELEASE_HOLD_NOISE_MULT * nanmedian(&v[pre_start..i0]));
+            }
+            let mut j = i0;
+            while j > bi && v[j - 1] > thr_onset {
+                j -= 1;
+            }
+            // v looks 100 ms ahead, so j sits a few still samples before the
+            // leg moves. Left there on purpose: see the reference for why
+            // snapping forward cost omega_max_n its test-retest.
+            if first.is_none() {
+                first = Some(j);
+            }
+            // Rule 0: a release departs from a HOLD -- net displacement over
+            // the window before the onset, against the run's own.
+            let run_disp = (ang[(i1 + k).min(n - 1)] - ang[j]).abs();
+            if j >= bi + k_quiet && (ang[j] - ang[j - k_quiet]).abs() > RELEASE_QUIET_FRAC * run_disp {
+                continue;
+            }
+            // Rule 3: it departs from the extension extreme.
+            if (ang[j] - top).abs() <= tol {
+                return j;
+            }
         }
-        // v looks 100 ms ahead, so j sits a few still samples before the leg
-        // moves. Left there on purpose: see the reference for why snapping
-        // forward cost omega_max_n its test-retest.
-        if first.is_none() {
-            first = Some(j);
-        }
-        i = i1 + 1;
-        // Rule 0: a release departs from a HOLD -- net displacement over the
-        // window before the onset, against the run's own.
-        let run_disp = (ang[(i1 + k).min(n - 1)] - ang[j]).abs();
-        if j >= bi + k_quiet && (ang[j] - ang[j - k_quiet]).abs() > RELEASE_QUIET_FRAC * run_disp {
-            continue;
-        }
-        if t[n - 1] - t[j] < RELEASE_RETURN_MIN_S {
-            continue;
-        }
-        let hold = ang[j];
-        let sign = if ang[(i0 + k).min(n - 1)] >= hold {
-            1.0
-        } else {
-            -1.0
-        };
-        let never_returns = ang[j + 1..]
-            .iter()
-            .filter(|a| a.is_finite())
-            .all(|&a| sign * (a - hold) >= -tol);
-        if never_returns {
-            return j;
+        if !seen {
+            break;
         }
     }
     first.unwrap_or(bi)
@@ -670,8 +689,9 @@ pub fn compute_pt_params(
     // No frequency cap: the gap was one full period at 3.5 Hz and a 3.2-3.5 Hz
     // ring scored at half its frequency. Prominence is the guard against
     // noise; a fast value is flagged (`F_PLAUSIBLE_MAX_HZ`), never zeroed.
-    // Three samples is savgol's own resolution, not physiology.
-    let min_dist = 3;
+    // What remains is resolution: two extrema closer than the smoothing
+    // window cannot be told apart, so the gap is that window as a duration.
+    let min_dist = extremum_gap_samples(median_dt(&t_r));
 
     // Neutral from the settled tail. `min`, not `max`: the window is the LAST
     // 25% of samples, and taking the max collapses "tail median" into
@@ -863,12 +883,15 @@ pub fn compute_pt_params(
     // Recordings that end before the leg fully settles under-represent the
     // balanced resting region, inflating |P+ - P-|.
     const EXTEND_S: f64 = 4.5;
+    // np.mean(np.diff(t_r)), summed the same way as the reference.
     let dt_mean = if t_r.len() > 1 {
-        (t_r[t_r.len() - 1] - t_r[0]) / (t_r.len() - 1) as f64
+        t_r.windows(2).map(|w| w[1] - w[0]).sum::<f64>() / (t_r.len() - 1) as f64
     } else {
         1.0 / 30.0
     };
-    let n_ext = 1.max((EXTEND_S / dt_mean) as usize);
+    // + 1e-9 before truncating, as the reference: 4.5/dt lands on an integer
+    // on a regular grid and the last bit of dt_mean decided which side.
+    let n_ext = 1.max((EXTEND_S / dt_mean + 1e-9) as usize);
     // Integrated about the swing centre: the asymmetry being measured is the
     // limb's, and a baseline drifting one way makes a symmetric swing read as
     // maximally asymmetric (0.008 -> 0.824 across 20 deg of sag).

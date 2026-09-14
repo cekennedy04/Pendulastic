@@ -470,7 +470,7 @@ pub const TRIAL_LOW_AMP_OMEGA_PEAK_DEG_S: f64 = 62.54935335876593;
 pub const TRIAL_LOW_AMP_F: f64 = 1.0000000000000002;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['area_ratio']
-pub const TRIAL_LOW_AMP_AREA_RATIO: f64 = 0.07508725785655138;
+pub const TRIAL_LOW_AMP_AREA_RATIO: f64 = 0.07500347743196417;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['A0_deg']
 pub const TRIAL_LOW_AMP_A0_DEG: f64 = 12.018741990957533;
@@ -488,13 +488,13 @@ pub const TRIAL_LOW_AMP_NEUTRAL_DEG: f64 = 167.9517084211558;
 pub const TRIAL_LOW_AMP_PRE_RELEASE_DEG: f64 = 180.00000000000045;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_plus']
-pub const TRIAL_LOW_AMP_P_PLUS: f64 = 3.7276719295266103;
+pub const TRIAL_LOW_AMP_P_PLUS: f64 = 3.7283001319454367;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_minus']
 pub const TRIAL_LOW_AMP_P_MINUS: f64 = 4.332919647767218;
 
 /// compute_pt_params(TRIAL_LOW_AMP)['P_total']
-pub const TRIAL_LOW_AMP_P_TOTAL: f64 = 8.060591577293827;
+pub const TRIAL_LOW_AMP_P_TOTAL: f64 = 8.061219779712655;
 
 pub const TRIAL_LOW_AMP_SPASTICITY_TYPE: &str = "balanced";
 
