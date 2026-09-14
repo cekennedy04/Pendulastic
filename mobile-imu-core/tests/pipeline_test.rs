@@ -220,18 +220,22 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
     // A0 does not come back at full height, and that is the pipeline's real
     // transfer function rather than a defect: the EMA and the fusion's own
     // response each cost a little peak. Measured end to end, 45 deg of input
-    // returns as ~40.2 (Python reference 40.383, this port 39.973) -- about
-    // 10.7% attenuation.
+    // returns as ~43.2 (Python reference and this port agree to 1e-6 on the
+    // same replayed series) -- about 4% attenuation.
+    //
+    // It was ~40.2 (10.7%) until 2026-09-14, and most of that gap was never
+    // the filter: the release detector fired ~90 ms INTO the drop, so A0 was
+    // read a few degrees below the hold. Finding the true onset returned
+    // those degrees; the remaining 4% is the EMA and the fusion.
     //
     // This used to assert the raw 45 within +-2, which only ever passed
     // because the port smoothed on a fixed 9-sample window where the
     // reference used 0.10 s; that divergence happened to push the port's A0
     // nearer the unfiltered truth while moving it AWAY from the reference it
     // is supposed to mirror. With both engines on the 100 Hz analysis grid and
-    // the same duration-based smoothing they now agree to 0.41 deg, and the
-    // honest expectation is the filtered value, held to a TIGHTER bound than
-    // before.
-    const A0_FILTERED_DEG: f64 = 40.18;
+    // the same duration-based smoothing, the honest expectation is the
+    // filtered value, held to a TIGHT bound.
+    const A0_FILTERED_DEG: f64 = 43.20;
     close(p.a0_deg, A0_FILTERED_DEG, 1.0, "recovered first-swing amplitude");
 
     // The attenuation itself, asserted as a system invariant rather than left
@@ -239,8 +243,8 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
     // the pipeline's gain, this is what says so.
     let attenuation = p.a0_deg / golden::E2E_TRUE_A0_DEG;
     assert!(
-        (0.87..=0.91).contains(&attenuation),
-        "pipeline amplitude gain {attenuation:.4} outside the documented          0.87-0.91 band (A0 {} deg from a {} deg input)",
+        (0.94..=0.98).contains(&attenuation),
+        "pipeline amplitude gain {attenuation:.4} outside the documented          0.94-0.98 band (A0 {} deg from a {} deg input)",
         p.a0_deg,
         golden::E2E_TRUE_A0_DEG
     );

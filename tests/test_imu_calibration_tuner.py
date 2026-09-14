@@ -578,7 +578,12 @@ def test_score_waveform_plateau_during_active_swing_fails():
     t, angle = _damped_pendulum_series()
     angle = angle.copy()
     release_i = int(1.0 / 0.05)
-    freeze_start = release_i + 2
+    # Freeze 0.3 s INTO the swing, not 2 samples after release. The release
+    # detector needs the departure sustained for ~0.2 s to call it the
+    # release; a stream that freezes 0.1 s in reads as a twitch followed
+    # by a later release, and the plateau then sits in the "hold", where
+    # the continuity scan (which starts at release) never looks.
+    freeze_start = release_i + 6
     freeze_len = 10
     freeze_end = freeze_start + freeze_len
     frozen_value = angle[freeze_start]

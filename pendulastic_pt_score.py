@@ -2269,55 +2269,140 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
     return slope
 
 
-# How far back from the threshold crossing the reported release is placed.
+# The fastest swing whose extrema are all admitted by compute_pt_params'
+# peak search; see the min_dist comment there.
+_MAX_SWING_HZ = 5.0
+
+
+# Release detection.
 #
-# This was a fixed 2 SAMPLES until 2026-09-01 -- the same defect as the
-# smoothing window had, one layer down. Two samples is 0.040 s at 50 Hz but
-# 0.005 s at 400 Hz, so the faster the capture, the less it stepped back and
-# the later the release it reported: 2.0400 s at 50 Hz against 2.0725 s at
-# 400 Hz for a synthetic released at exactly 2.0 s. A0_deg is read just after
-# the release, so it fell 47.75 -> 44.23 deg across that range on identical
-# motion, and omega_max_n and phi_max_ratio inherited it because both
-# normalise by A0.
+# Until 2026-09-14 this was a DISPLACEMENT detector: baseline = median of the
+# first 0.6 s, threshold = 8% of the signal's range, fire on the first
+# crossing, step back 2/120 s. Measured on a 15-trial motor bench replayed
+# through the production pipeline it fired 0.3-0.5 s early on 2 s holds and
+# 4-11 s early on 5-12 s holds, every time -- the operator's lift into the
+# hold, the AHRS settling, hand tremor and gyro drift all cross 8% of range
+# long before the leg is let go, so "release" landed in the hold and the
+# oscillation fell outside the analysis window (f = 0, N = 0 on real swings).
+# On the participant corpus it fired inside the examiner's lift on ~10 of 147
+# trials, and 70-120 ms into the drop on the rest.
 #
-# Pinned to what the old constant meant at 120 Hz, OptiTrack's capture rate:
-# the reference instrument barely moves and every other rate comes to it.
-# Over the rates where compute_pt_params' 0.10 s window is realisable
-# (>= 50 Hz) this takes the A0 spread from 7.8% to 1.7%.
+# What replaces it is a MOTION detector with three rules, each answering one
+# thing the bench and the corpus showed the displacement rule getting wrong:
 #
-# The back-off compensates a real lag -- smoothing plus the 8%-of-range
-# threshold mean detection fires after motion starts -- but it is NOT tuned
-# to cancel it. On the synthetic above a 0.080 s back-off would drive the
-# error to zero, and that is a trap: the lag scales with how fast the leg is
-# released, so a value fitted to one signal would be wrong for others, and
-# too large a back-off lands inside the pre-release hold, where A0 reads the
-# flat plateau instead of the swing. Removing the rate dependence and
-# re-tuning the lag are separate questions; this is only the first.
+#   1. Rate over a 100 ms window, and that rate must hold for a further
+#      100 ms (`_RELEASE_SUSTAIN_S`). A one-sample spike, a sync pulse or a
+#      knock never forms a sustained run and cannot anchor; tremor is
+#      oscillatory and nets to nothing over the window; drift is far too slow.
+#   2. The release is the FIRST sustained run that reaches a quarter of the
+#      trial's fastest sustained motion (`_RELEASE_EVENT_FRAC`). Relative, not
+#      absolute, so it stays unit-agnostic; "first" so a handling burst at the
+#      end of a recording cannot steal the release from the swing.
+#   3. The leg never comes back from a release: the swing's return peaks stay
+#      below the extension it was held at. A departure the signal later
+#      crosses back over -- the examiner's lift into the hold, a twitch that
+#      settles back -- is not the release (`_RELEASE_RETURN_FRAC`). Only a
+#      run that departs from a still stretch is judged this way at all: the
+#      net displacement over the `_RELEASE_QUIET_S` before the onset must be
+#      under `_RELEASE_QUIET_FRAC` of the run's own, or the run is the swing
+#      continuing (the return out of the first trough), never its start. If
+#      no run passes, the first stands.
 #
-# The duration still quantises to whole samples, so below ~60 Hz it rounds
-# to zero: 30 fps video gets no back-off where it previously got 0.067 s.
-# That is the intended direction -- two samples at 30 fps overshot by four
-# times in time -- but it is a floor, not an exact conversion, the same way
-# the 0.10 s smoothing window floors at savgol's polyorder+2.
-_RELEASE_BACKOFF_S = 2.0 / 120.0
+# The reported index is the ONSET of the accepted run: walk back from where the
+# sustained rate qualified to the last sample whose 100 ms rate was quiet --
+# under a fifth of the run's peak (`_RELEASE_ONSET_FRAC`), or under three
+# times the hold's own median rate over the preceding second
+# (`_RELEASE_HOLD_REF_S`, `_RELEASE_HOLD_NOISE_MULT`), whichever is larger, so
+# a tremulous hold stops the walk at its first quiet sample instead of
+# carrying it back through the tremor. Against a known bench release (raw
+# gyro onset) this lands within -22..+5 ms on all 15 trials, so there is no
+# separate back-off any more. Everything is in seconds, so the answer does not
+# move with the sample rate, and every step is a plain comparison on the same
+# values in the same order as the Rust port (mobile-imu-core/src/scoring.rs
+# detect_release) -- keep them identical.
+#
+# Rule 3 needs enough signal after a candidate to judge it: with under
+# `_RELEASE_RETURN_MIN_S` left the "never comes back" test would pass
+# trivially, so such a run is skipped and the first run stands.
+_RELEASE_SUSTAIN_S = 0.10
+_RELEASE_EVENT_FRAC = 0.25
+_RELEASE_ONSET_FRAC = 0.20
+_RELEASE_HOLD_REF_S = 1.0
+_RELEASE_HOLD_NOISE_MULT = 3.0
+_RELEASE_QUIET_S = 0.30
+_RELEASE_QUIET_FRAC = 0.25
+_RELEASE_RETURN_FRAC = 0.05
+_RELEASE_RETURN_MIN_S = 1.0
 
 
 def _detect_release(t: np.ndarray, ang: np.ndarray,
-                    baseline_sec: float = 0.6,
-                    thresh_deg:   float = 5.0) -> int:
+                    baseline_sec: float = 0.6) -> int:
+    """Index of the release: the onset of the first sustained, large motion
+    that the signal never returns from. Falls back to the end of the
+    baseline window (`baseline_sec`, inside which nothing is trusted: the
+    AHRS is still converging there) when the signal never moves."""
+    n = len(t)
     bi = max(3, int(np.searchsorted(t, t[0] + baseline_sec)))
-    bi = min(bi, len(t) - 1)
-    baseline = float(np.nanmedian(ang[:bi]))
-    # Adaptive threshold: pure 8% of signal range, no hardcoded absolute floor,
-    # so detection stays unit-agnostic across sensor formats (degrees, radians,
-    # normalized tilt magnitude, ...) rather than assuming a degree-scale signal.
-    signal_range = float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
-    thresh_deg = 0.08 * signal_range
-    back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
-    for i in range(bi, len(t)):
-        if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
-            return max(0, i - back)
-    return bi
+    bi = min(bi, n - 1)
+    dt = _median_dt(t)
+    # floor(x + 0.5), not round(): Python rounds halves to even and Rust away
+    # from zero, and the two ports must agree on the window at every rate.
+    k = max(1, int(_RELEASE_SUSTAIN_S / dt + 0.5))
+    k_ref = max(1, int(_RELEASE_HOLD_REF_S / dt + 0.5))
+    k_quiet = max(1, int(_RELEASE_QUIET_S / dt + 0.5))
+    if n <= 2 * k + 1:
+        return bi
+    # v[i]: displacement rate over the 100 ms starting at sample i.
+    v = np.abs(ang[k:] - ang[:-k]) / (t[k:] - t[:-k])
+    v = np.where(np.isfinite(v), v, 0.0)
+    # vs[i]: that rate sustained -- its minimum over the next 100 ms.
+    m = len(v) - k + 1
+    if bi >= m:
+        return bi
+    vs = np.array([v[i:i + k].min() for i in range(m)])
+    vmax = float(vs[bi:].max())
+    if vmax <= 0.0:
+        return bi
+    thr_event = _RELEASE_EVENT_FRAC * vmax
+    tol = _RELEASE_RETURN_FRAC * float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
+    first = None
+    i = bi
+    while i < m:
+        if vs[i] < thr_event:
+            i += 1
+            continue
+        i0 = i
+        while i + 1 < m and vs[i + 1] >= thr_event:
+            i += 1
+        i1 = i
+        thr_onset = _RELEASE_ONSET_FRAC * float(vs[i0:i1 + 1].max())
+        pre = v[max(bi, i0 - k_ref):i0]
+        if len(pre):
+            thr_onset = max(thr_onset, _RELEASE_HOLD_NOISE_MULT * float(np.median(pre)))
+        j = i0
+        while j > bi and v[j - 1] > thr_onset:
+            j -= 1
+        if first is None:
+            first = j
+        i = i1 + 1
+        # Rule 0: a release departs from a HOLD. A run that follows straight
+        # on from motion (the return swing out of the first trough departs
+        # from the trial's minimum and never comes back below it either) is
+        # part of the swing, not its start. Net displacement over the window
+        # before the onset, against the run's own: noise nets to nothing over
+        # 0.3 s where a rate would not, and a hold is still by definition.
+        run_disp = abs(ang[min(i1 + k, n - 1)] - ang[j])
+        if j - k_quiet >= bi and abs(ang[j] - ang[j - k_quiet]) > _RELEASE_QUIET_FRAC * run_disp:
+            continue
+        if t[n - 1] - t[j] < _RELEASE_RETURN_MIN_S:
+            continue
+        hold = ang[j]
+        sign = 1.0 if ang[min(i0 + k, n - 1)] >= hold else -1.0
+        after = ang[j + 1:]
+        after = after[np.isfinite(after)]
+        if bool(np.all(sign * (after - hold) >= -tol)):
+            return j
+    return first if first is not None else bi
 
 
 def detect_release_t0(t: np.ndarray, signal: np.ndarray,
@@ -2818,9 +2903,16 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     if len(t_r) < 25:
         return None
 
-    # Pendulum can't oscillate faster than ~3 Hz; enforce minimum inter-peak gap
+    # Minimum gap between two extrema of the SAME sign, i.e. one full period
+    # at the fastest swing admitted. A shank rings at ~1 Hz, but a short
+    # pendulum (the motor bench arm, a phone on its own) rings at 3-4 Hz, and
+    # the gap was one period at 3.5 Hz: a 3.2-3.5 Hz swing lost every peak
+    # that landed a sample early and scored at HALF its frequency, and 4 Hz
+    # could not score at all (Session_2 bench, 2026-09-11; synthetic 4 Hz:
+    # N 8 for 13 true cycles). 5 Hz leaves 4 Hz a 25% margin. Noise is kept
+    # out by prominence=min_amp below, not by this gap.
     fps_eff  = len(t_r) / max(t_r[-1] - t_r[0], 0.1)
-    min_dist = max(3, int(fps_eff / 3.5))   # samples per half-period at 3.5 Hz max
+    min_dist = max(3, int(fps_eff / _MAX_SWING_HZ))
 
     # ── Neutral from settled tail of signal (used internally for phi/A0/R2n) ──
     # min(), not max(): the window is the LAST 25% of samples. max() always
@@ -2912,10 +3004,10 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 
     # A sub-peak merge used to run here, to absorb the extra extremum a spastic
     # quadriceps catch can put into the curve. It was unreachable and has been
-    # removed. find_peaks above is given distance=min_dist = fps/3.5, so no two
-    # returned extrema are EVER closer than 0.286 s; the merge window was
-    # fps/6 = 0.167 s, i.e. strictly inside a separation that was already
-    # guaranteed. The two constants were inverted against each other, so the
+    # removed. find_peaks above is given distance=min_dist = fps/_MAX_SWING_HZ
+    # (fps/3.5 = 0.286 s at the time), so no two returned extrema are EVER
+    # closer than that; the merge window was fps/6 = 0.167 s, i.e. strictly
+    # inside a separation that was already guaranteed. The two constants were inverted against each other, so the
     # merge could not fire at any sample rate (verified at 30/60/100/120/200/
     # 2000 Hz), and removing it changed nothing on any of the 186 real curves
     # in the corpus. See test_quadriceps_catch_merge_was_subsumed_by_find_peaks.

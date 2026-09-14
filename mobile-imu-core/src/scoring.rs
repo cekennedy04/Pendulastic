@@ -303,28 +303,148 @@ fn sg_seconds(sig: &[f64], dt: f64, win_s: f64, p: usize) -> Vec<f64> {
     }
 }
 
-/// `_detect_release`: first sample whose deviation from the pre-release
-/// baseline exceeds an adaptive threshold, backed off by two samples.
+/// `_MAX_SWING_HZ`: the fastest swing whose extrema are all admitted. A shank
+/// rings at ~1 Hz; a short pendulum (the bench arm, a phone on its own) at
+/// 3-4 Hz. 5 Hz leaves 4 Hz a 25% margin; noise is kept out by prominence.
+const MAX_SWING_HZ: f64 = 5.0;
+
+/// `_RELEASE_*` -- the release detector's constants. Seconds and fractions
+/// only, so nothing here moves with the sample rate.
+const RELEASE_SUSTAIN_S: f64 = 0.10;
+const RELEASE_EVENT_FRAC: f64 = 0.25;
+const RELEASE_ONSET_FRAC: f64 = 0.20;
+const RELEASE_HOLD_REF_S: f64 = 1.0;
+const RELEASE_HOLD_NOISE_MULT: f64 = 3.0;
+const RELEASE_QUIET_S: f64 = 0.30;
+const RELEASE_QUIET_FRAC: f64 = 0.25;
+const RELEASE_RETURN_FRAC: f64 = 0.05;
+const RELEASE_RETURN_MIN_S: f64 = 1.0;
+
+/// `_detect_release`: the onset of the first sustained, large motion that the
+/// signal never comes back from.
 ///
-/// The threshold is a pure fraction of the signal's own 97th-to-3rd percentile
-/// range, with no absolute floor, so detection stays unit-agnostic — the same
-/// function works on degrees, radians, or a normalised tilt magnitude. Falls
-/// back to the baseline window's end when the threshold is never crossed.
+/// This replaced a displacement detector (baseline = median of the first
+/// 0.6 s, fire on the first 8%-of-range crossing) that, measured on a motor
+/// bench replayed through this very pipeline, fired 0.3-0.5 s early on 2 s
+/// holds and 4-11 s early on 5-12 s holds -- the lift into the hold, the
+/// AHRS settling, tremor and drift all cross 8% of range long before the leg
+/// is let go, so the swing fell outside the analysis window (f = 0, N = 0 on
+/// real swings). The reference's comment block above `_detect_release` in
+/// `pendulastic_pt_score.py` carries the full account; the rules are:
+///
+/// 1. Rate over a 100 ms window, sustained for a further 100 ms. A spike or
+///    a sub-100 ms pulse never forms a run; tremor nets to nothing; drift is
+///    far too slow.
+/// 2. The FIRST sustained run reaching a quarter of the trial's fastest
+///    sustained motion. Relative, so unit-agnostic; first, so a handling
+///    burst at the end cannot steal the release from the swing.
+/// 3. The leg never comes back from a release. A departure the signal later
+///    crosses back over (the examiner's lift into the hold, a twitch that
+///    settles) is not it -- judged only for runs that depart from a still
+///    stretch (net displacement over the 0.3 s before the onset under a
+///    quarter of the run's own), since a run that follows straight on from
+///    motion is the swing continuing. If nothing passes, the first run stands.
+///
+/// The index returned is the run's onset: walk back to the last sample whose
+/// 100 ms rate was quiet (under a fifth of the run's peak, or under three
+/// times the hold's own median rate over the preceding second). Nothing
+/// inside `baseline_sec` is trusted -- the AHRS is still converging there.
+///
+/// Same values, same comparisons, same order as the reference: keep the two
+/// identical.
 fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let n = t.len();
     let mut bi = t.partition_point(|&x| x < t[0] + baseline_sec).max(3);
     bi = bi.min(n - 1);
-    let baseline = nanmedian(&ang[..bi]);
-    let signal_range = nanpercentile(ang, 97.0) - nanpercentile(ang, 3.0);
-    let thresh = 0.08 * signal_range;
-    for (offset, &a) in ang[bi..].iter().enumerate() {
-        if a.is_finite() && (a - baseline).abs() > thresh {
-            return (bi + offset).saturating_sub(2);
+    let dt = median_dt(t);
+    // floor(x + 0.5) on both sides: Python's round() goes to even, Rust's
+    // away from zero, and the ports must agree on the window at every rate.
+    let win = |sec: f64| ((sec / dt + 0.5).floor() as usize).max(1);
+    let k = win(RELEASE_SUSTAIN_S);
+    let k_ref = win(RELEASE_HOLD_REF_S);
+    let k_quiet = win(RELEASE_QUIET_S);
+    if n <= 2 * k + 1 {
+        return bi;
+    }
+    // v[i]: displacement rate over the 100 ms starting at sample i.
+    let v: Vec<f64> = (0..n - k)
+        .map(|i| {
+            let r = (ang[i + k] - ang[i]).abs() / (t[i + k] - t[i]);
+            if r.is_finite() {
+                r
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    // vs[i]: that rate sustained -- its minimum over the next 100 ms.
+    let m = v.len() - k + 1;
+    if bi >= m {
+        return bi;
+    }
+    let vs: Vec<f64> = (0..m)
+        .map(|i| v[i..i + k].iter().cloned().fold(f64::INFINITY, f64::min))
+        .collect();
+    let vmax = vs[bi..].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if vmax <= 0.0 {
+        return bi;
+    }
+    let thr_event = RELEASE_EVENT_FRAC * vmax;
+    let tol = RELEASE_RETURN_FRAC * (nanpercentile(ang, 97.0) - nanpercentile(ang, 3.0));
+    let mut first: Option<usize> = None;
+    let mut i = bi;
+    while i < m {
+        if vs[i] < thr_event {
+            i += 1;
+            continue;
+        }
+        let i0 = i;
+        while i + 1 < m && vs[i + 1] >= thr_event {
+            i += 1;
+        }
+        let i1 = i;
+        let run_peak = vs[i0..=i1]
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut thr_onset = RELEASE_ONSET_FRAC * run_peak;
+        let pre_start = i0.saturating_sub(k_ref).max(bi);
+        if pre_start < i0 {
+            thr_onset = thr_onset.max(RELEASE_HOLD_NOISE_MULT * nanmedian(&v[pre_start..i0]));
+        }
+        let mut j = i0;
+        while j > bi && v[j - 1] > thr_onset {
+            j -= 1;
+        }
+        if first.is_none() {
+            first = Some(j);
+        }
+        i = i1 + 1;
+        // Rule 0: a release departs from a HOLD -- net displacement over the
+        // window before the onset, against the run's own.
+        let run_disp = (ang[(i1 + k).min(n - 1)] - ang[j]).abs();
+        if j >= bi + k_quiet && (ang[j] - ang[j - k_quiet]).abs() > RELEASE_QUIET_FRAC * run_disp {
+            continue;
+        }
+        if t[n - 1] - t[j] < RELEASE_RETURN_MIN_S {
+            continue;
+        }
+        let hold = ang[j];
+        let sign = if ang[(i0 + k).min(n - 1)] >= hold {
+            1.0
+        } else {
+            -1.0
+        };
+        let never_returns = ang[j + 1..]
+            .iter()
+            .filter(|a| a.is_finite())
+            .all(|&a| sign * (a - hold) >= -tol);
+        if never_returns {
+            return j;
         }
     }
-    bi
+    first.unwrap_or(bi)
 }
-
 
 /// First index from which `ang_r` stays permanently within `tol` of `neutral`.
 ///
@@ -584,11 +704,12 @@ pub fn compute_pt_params(
         return None;
     }
 
-    // A pendulum cannot oscillate faster than ~3 Hz; enforce a minimum
-    // inter-peak gap in samples.
+    // Minimum gap between two extrema of the same sign: one full period at
+    // the fastest swing admitted (`MAX_SWING_HZ`). It was one period at
+    // 3.5 Hz, and a 3.2-3.5 Hz bench ring scored at half its frequency.
     let span = (t_r[t_r.len() - 1] - t_r[0]).max(0.1);
     let fps_eff = t_r.len() as f64 / span;
-    let min_dist = 3.max((fps_eff / 3.5) as usize);
+    let min_dist = 3.max((fps_eff / MAX_SWING_HZ) as usize);
 
     // Neutral from the settled tail. `min`, not `max`: the window is the LAST
     // 25% of samples, and taking the max collapses "tail median" into
@@ -662,7 +783,7 @@ pub fn compute_pt_params(
     // The quadriceps-catch merge was removed here to match Python (d323104,
     // "remove the quadriceps-catch merge -- it could never fire"). It
     // collapsed extrema closer than max(3, fps/6) samples, but find_peaks
-    // above already enforces distance = max(3, fps/3.5), and fps/6 < fps/3.5
+    // above already enforces distance = max(3, fps/MAX_SWING_HZ), and fps/6 < that
     // at every sample rate, so no surviving pair was ever close enough to
     // merge. Keeping it implied a spastic-catch safeguard that was not in
     // fact running. Verified behaviour-neutral: all fixtures still pass.

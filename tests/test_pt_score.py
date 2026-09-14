@@ -148,10 +148,13 @@ def test_wider_A0_window_catches_late_initial_peak():
     n, fps = 300, 30.0
     t = np.arange(n) / fps
     ang = np.empty(n)
-    # Pre-release hold at 180°
+    # Pre-release hold at 210 deg -- above everything the swing below reaches.
+    # (It was 180, in the MIDDLE of a swing that runs 165-205: a leg let go
+    # into an oscillation that crosses back over its own hold is not a
+    # release, and the release detector now says so.)
     hold = int(fps)  # 30 frames
     for i in range(hold):
-        ang[i] = 180.0
+        ang[i] = 210.0
     # Post-release oscillation with peak delayed to ~18% of post-release window
     peak_offset = 54  # frames after release ≈ 18% of 300
     for i in range(hold, n):
@@ -281,10 +284,12 @@ def test_imu_and_optitrack_trials_overlay_after_independent_t0_alignment():
 
     # Both physical releases happen 1.5s into each recording's own hold phase;
     # after independent t0 alignment, both must land at ~0 on their own axis.
-    # A smooth (non-step) onset means detection lags the true release by a few
-    # samples worth of threshold-crossing time — allow that, not sub-frame exactness.
-    assert abs(t_imu_aligned[hold_imu]) < 0.1
-    assert abs(t_opti_aligned[hold_opti]) < 0.1
+    # These synthetics release as an instantaneous STEP; the detector's onset
+    # is the last sample before its 100 ms rate window sees motion, which on a
+    # step (smeared 50 ms by smoothing) lands up to ~150 ms early. Real
+    # releases ramp, and land within a few tens of ms -- allow the step case.
+    assert abs(t_imu_aligned[hold_imu]) < 0.15
+    assert abs(t_opti_aligned[hold_opti]) < 0.15
 
 
 def test_detect_release_t0_rejects_mismatched_lengths():
@@ -1284,14 +1289,6 @@ def test_release_detection_backoff_is_a_duration_not_a_sample_count():
     assert max(times) - min(times) < 0.02, times
 
 
-def test_release_backoff_matches_what_two_samples_meant_at_120_hz():
-    # The duration is pinned to what the old constant meant at OptiTrack's
-    # capture rate -- the reference instrument -- so the modality every other
-    # one is validated against barely moves, and the rest come to it.
-    import pendulastic_pt_score as p
-    assert p._RELEASE_BACKOFF_S == pytest.approx(2.0 / 120.0)
-
-
 # -- axis conditioning reaches the operator ------------------------------
 
 def test_ill_conditioned_axis_has_a_real_warning_not_the_generic_fallback():
@@ -1491,3 +1488,105 @@ def test_the_caveat_travels_with_a_grade_served_over_the_wire():
     fields = getattr(AnalysisResponse, "model_fields", None) or \
         getattr(AnalysisResponse, "__fields__")
     assert "mas_caveat" in fields
+
+
+# -- release detection: onset of the sustained swing, not the first twitch ---
+
+def _hold_then_swing(hold_s, fs=100.0, A0=45.0, freq=0.9, decay=0.4,
+                     tremor_deg=0.0, drift_deg_s=0.0, seed=0):
+    """A pre-release hold of `hold_s` (with optional tremor and gyro-style
+    drift), then a decaying pendulum swing released at t = hold_s."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    t = np.arange(0.0, hold_s + 8.0, 1.0 / fs)
+    hold = 180.0 + drift_deg_s * t + tremor_deg * np.sin(2 * np.pi * 7.0 * t) \
+        + tremor_deg * 0.3 * rng.standard_normal(len(t))
+    top = 180.0 + drift_deg_s * hold_s          # where the hold left the leg
+    swing = top - A0 * (1.0 - np.exp(-decay * (t - hold_s))
+                        * np.cos(2 * np.pi * freq * (t - hold_s)))
+    return t, np.where(t < hold_s, hold, swing)
+
+
+def _release_time(t, ang):
+    import pendulastic_pt_score as p
+    return float(t[p._detect_release(t, p._sg(ang, dt=p._median_dt(t), p=3))])
+
+
+def test_release_is_found_after_a_long_tremulous_drifting_hold():
+    # The old displacement detector fired on the first sample that left the
+    # median of the first 0.6 s by 8% of range -- a 14 s hold with hand tremor
+    # and 0.5 deg/s of drift crossed that seconds before the leg moved.
+    t, ang = _hold_then_swing(14.0, tremor_deg=1.5, drift_deg_s=0.5)
+    assert _release_time(t, ang) == pytest.approx(14.0, abs=0.05)
+
+
+def test_release_is_found_after_a_short_hold_too():
+    t, ang = _hold_then_swing(3.0, tremor_deg=1.0, drift_deg_s=-0.5)
+    assert _release_time(t, ang) == pytest.approx(3.0, abs=0.05)
+
+
+def test_release_ignores_a_single_sample_blip_in_the_hold():
+    # A departure must be SUSTAINED: a one-sample 5 deg spike (a sync pulse,
+    # a handling knock) 6 s before the real release must not be the release.
+    import numpy as np
+    t, ang = _hold_then_swing(9.0)
+    ang = ang.copy()
+    ang[int(3.0 * 100)] += 5.0
+    assert _release_time(t, ang) == pytest.approx(9.0, abs=0.05)
+
+
+def test_release_ignores_a_brisk_lift_into_the_hold():
+    # The recording often starts with the leg resting flexed and the examiner
+    # lifting it to extension: fast, sustained, and NOT the release. The
+    # release is the departure the leg never comes back from.
+    import numpy as np
+    t = np.arange(0.0, 14.0, 0.01)
+    lift = np.clip((t - 2.0) / 1.0, 0.0, 1.0)              # 120 -> 178 over 1 s
+    ang = 120.0 + 58.0 * lift
+    rel = 6.0
+    swing = 178.0 - 55.0 * (1.0 - np.exp(-0.4 * (t - rel)) * np.cos(2 * np.pi * 0.9 * (t - rel)))
+    ang = np.where(t < rel, ang, swing)
+    assert _release_time(t, ang) == pytest.approx(rel, abs=0.05)
+
+
+def test_explicit_release_idx_bypasses_detection():
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, ang = _hold_then_swing(4.0)
+    forced = int(np.searchsorted(t, 4.5))
+    params = p.compute_pt_params(t, ang, release_idx=forced)
+    assert params is not None
+    assert params["t_r"][0] == pytest.approx(t[forced])
+    auto = p.compute_pt_params(t, ang)
+    assert auto["t_r"][0] == pytest.approx(4.0, abs=0.05)
+
+
+def test_a_still_trial_is_still_refused():
+    # No swing, only sensor noise and drift: whatever the detector picks, the
+    # trial must not score.
+    import numpy as np
+    import pendulastic_pt_score as p
+    rng = np.random.default_rng(1)
+    t = np.arange(0.0, 12.0, 0.01)
+    ang = 178.0 - 0.3 * t + 0.4 * rng.standard_normal(len(t))
+    assert p.compute_pt_params(t, ang) is None
+
+
+def test_a_four_hertz_swing_scores_at_four_hertz():
+    # A short pendulum (the bench arm, a phone on its own) rings at 3-4 Hz.
+    # The inter-extremum gap handed to find_peaks was fps/3.5 -- one full
+    # period at 3.5 Hz -- so a 3.2-3.5 Hz swing lost every peak that landed a
+    # sample early and scored at half its frequency, and 4 Hz could not score
+    # at all. The gap must admit 4 Hz with margin.
+    import numpy as np
+    import pendulastic_pt_score as p
+    t = np.arange(0.0, 8.0, 0.01)
+    rel = 2.0
+    swing = 150.0 + 30.0 * np.exp(-0.5 * (t - rel)) * np.cos(2 * np.pi * 4.0 * (t - rel))
+    ang = np.where(t < rel, 180.0, swing)
+    params = p.compute_pt_params(t, ang, detrend=False)
+    assert params is not None
+    assert params["f"] == pytest.approx(4.0, rel=0.03), params["f"]
+    # The same synthetic at 3.0-3.5 Hz counts 12-13.5 cycles; at 4 Hz the old
+    # gap halved that to 8.
+    assert params["N"] >= 12, params["N"]
