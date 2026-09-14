@@ -416,6 +416,9 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
         while j > bi && v[j - 1] > thr_onset {
             j -= 1;
         }
+        // v looks 100 ms ahead, so j sits a few still samples before the leg
+        // moves. Left there on purpose: see the reference for why snapping
+        // forward cost omega_max_n its test-retest.
         if first.is_none() {
             first = Some(j);
         }

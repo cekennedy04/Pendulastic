@@ -2382,6 +2382,14 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
         j = i0
         while j > bi and v[j - 1] > thr_onset:
             j -= 1
+        # v looks 100 ms ahead, so j sits a few STILL samples before the leg
+        # moves. Deliberately left there: they are the hold, so A0 reads the
+        # held angle, and the SG derivative's edge fit then starts on a flat
+        # stretch instead of on the steepest part of the drop -- snapping j
+        # forward to the first moving sample was tried and cost omega_max_n
+        # its corpus test-retest (ICC 0.158 -> 0.115). The price is that on
+        # ~1 in 150 corpus trials the hold's own noise forms a "peak" that N
+        # counts once.
         if first is None:
             first = j
         i = i1 + 1
