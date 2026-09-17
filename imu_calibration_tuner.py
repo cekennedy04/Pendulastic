@@ -26,7 +26,7 @@ from pendulastic_imu_server import (
 )
 from pendulastic_pt_score import compute_pt_params
 from imu_calibration_config import load_config, save_config
-from imu_flex_axis import FlexAxisEstimator
+from imu_flex_axis import FlexAxisEstimator, swing_about_axis_deg
 
 # Matches pendulastic_app.py's _imu_poll_worker 50 ms (~20 Hz) poll cadence —
 # EMA's effective smoothing depends on both alpha and the sample interval it's
@@ -558,48 +558,91 @@ def replay_trial_detailed(raw_samples: list, params: dict,
         return (np.array([]), np.array([]),
                 ReplayQuality(False, "no_zero_capture", detail))
 
-    def _swing_from_quats(quats: dict) -> float:
+    def _q_delta_solo_g(quats: dict):
+        """The rotation-from-zero and (solo) gravity reference for one tick, or
+        (None, None) when this tick cannot be resolved."""
         if (ROLE_PROXIMAL in quats and ROLE_DISTAL in quats
                 and ROLE_PROXIMAL in q_zero and ROLE_DISTAL in q_zero):
             q_rel_zero = _qmul(_qconj(q_zero[ROLE_PROXIMAL]), q_zero[ROLE_DISTAL])
             q_rel_cur  = _qmul(_qconj(quats[ROLE_PROXIMAL]), quats[ROLE_DISTAL])
-            q_delta = _qmul(_qconj(q_rel_zero), q_rel_cur)
-            solo_g = None
-        else:
-            solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
-                ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
-            if solo_role is None or solo_role not in q_zero:
-                return float("nan")
-            q_delta = _qmul(_qconj(q_zero[solo_role]), quats[solo_role])
-            solo_g = g_zero.get(solo_role)
+            return _qmul(_qconj(q_rel_zero), q_rel_cur), None
+        solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
+            ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
+        if solo_role is None or solo_role not in q_zero:
+            return None, None
+        return _qmul(_qconj(q_zero[solo_role]), quats[solo_role]), g_zero.get(solo_role)
 
-        if params["flex_axis_capture"] and flex_axis is not None:
-            q = q_delta if q_delta[0] >= 0.0 else -q_delta
-            sin_half = float(np.linalg.norm(q[1:]))
-            if sin_half > 1e-9:
-                theta = 2.0 * math.acos(min(1.0, float(q[0])))
-                u = q[1:] / sin_half
-                swing = abs(math.degrees(theta * float(np.dot(u, flex_axis))))
-            else:
-                swing = 0.0
-        elif solo_g is not None:
-            # Discard rotation about the vertical: yaw is unobservable here
-            # (no magnetometer correction, and gravity carries no heading),
-            # so it free-integrates residual gyro error. Mirrors
-            # swing_angle_deg()'s solo fallback -- see its comment for the
-            # live-trial measurement.
-            q = q_delta if q_delta[0] >= 0.0 else -q_delta
-            sin_half = float(np.linalg.norm(q[1:]))
-            if sin_half > 1e-9:
-                theta = 2.0 * math.acos(min(1.0, float(q[0])))
-                u = q[1:] / sin_half
-                u_across = u - float(np.dot(u, solo_g)) * solo_g
-                swing = abs(math.degrees(theta * float(np.linalg.norm(u_across))))
-            else:
-                swing = 0.0
-        else:
-            dot = max(-1.0, min(1.0, abs(float(q_delta[0]))))
-            swing = 2.0 * math.degrees(math.acos(dot))
+    def _fallback_sign_axis() -> Optional[np.ndarray]:
+        """Per-trial reference axis that restores the SIGN of the axis-agnostic
+        fallback, so a swing crossing the zero reference is not folded up the
+        way ``abs()`` did. It is the mean direction of the raw quaternion vector
+        parts across the whole trial, each aligned to the DEEPEST swing (the
+        largest rotation from the zero pose),
+        so the dominant motion reads positive. Pinning to the deepest swing, not
+        the first moving tick, matters: the first tick is often the pre-release
+        hold, which sits on the opposite side of a mid-drop zero capture and
+        would otherwise flip the whole trial's sign. Deliberately an aligned
+        mean rather than an eigen-decomposition so the Rust core can mirror it
+        op-for-op without an eigensolver (replay::fallback_sign_axis). The live
+        per-sample server has no equivalent because it cannot look across the
+        trial; only the flexion-axis path (the shipping default) is signed
+        there. Returns None when nothing moved."""
+        vecs = []
+        best = None
+        best_n = 0.0
+        for q in tick_quats:
+            q_delta, _solo_g = _q_delta_solo_g(q)
+            if q_delta is None:
+                continue
+            vec = np.asarray(q_delta[1:], float)
+            n = float(np.linalg.norm(vec))
+            if n < 1e-6:
+                continue
+            vecs.append(vec)
+            if n > best_n:
+                best_n = n
+                best = vec
+        if best is None:
+            return None
+        acc = np.zeros(3)
+        for vec in vecs:
+            acc += vec if float(np.dot(vec, best)) >= 0.0 else -vec
+        n = float(np.linalg.norm(acc))
+        if not np.isfinite(n) or n < 1e-12:
+            return None
+        return acc / n
+
+    _use_flex = bool(params["flex_axis_capture"]) and flex_axis is not None
+    _fallback_axis = None if _use_flex else _fallback_sign_axis()
+
+    def _swing_from_quats(quats: dict) -> float:
+        q_delta, solo_g = _q_delta_solo_g(quats)
+        if q_delta is None:
+            return float("nan")
+
+        if _use_flex:
+            # Signed projection onto the captured anatomical axis; see
+            # imu_flex_axis.swing_about_axis_deg. Shared verbatim with the live
+            # server so replay and live cannot diverge.
+            return swing_about_axis_deg(q_delta, flex_axis)
+
+        # Axis-agnostic fallback (no flexion axis captured, or the two-phone
+        # case): total rotation distance from the zero pose, SIGNED by the
+        # per-trial reference axis so a zero-crossing swing is not folded the way
+        # abs() did. Matches the shipping Rust core (replay::swing_deg)
+        # op-for-op -- the phone core has no gravity reference at scoring time,
+        # so unlike the live server's per-sample solo branch this does NOT
+        # project across gravity; the replay exists to reproduce what the phone
+        # computes, and behaviour-locking to it is the property that matters.
+        q = q_delta if q_delta[0] >= 0.0 else -q_delta
+        theta = 2.0 * math.acos(min(1.0, abs(float(q[0]))))
+        swing = math.degrees(theta)
+        # Sign from the RAW quaternion vector part (continuous, flips at the zero
+        # crossing, not at the w==0 / 180 deg hemisphere seam).
+        ref_vec = np.asarray(q_delta[1:], float)
+        if (_fallback_axis is not None
+                and float(np.dot(ref_vec, _fallback_axis)) < 0.0):
+            swing = -swing
         return swing
 
     def _beta_from_quats(quats: dict) -> float:

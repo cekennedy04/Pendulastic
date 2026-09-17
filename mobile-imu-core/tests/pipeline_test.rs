@@ -217,25 +217,20 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
         1.5,
         "recovered resting angle",
     );
-    // A0 does not come back at full height, and that is the pipeline's real
-    // transfer function rather than a defect: the EMA and the fusion's own
-    // response each cost a little peak. Measured end to end, 45 deg of input
-    // returns as ~43.2 (Python reference and this port agree to 1e-6 on the
-    // same replayed series) -- about 4% attenuation.
+    // A0 comes back at ~44.8 of the 45 deg input -- about 0.4% attenuation from
+    // the EMA and the fusion (Python reference and this port agree to 1e-6 on
+    // the same replayed series).
     //
-    // It was ~40.2 (10.7%) until 2026-09-14, and most of that gap was never
-    // the filter: the release detector fired ~90 ms INTO the drop, so A0 was
-    // read a few degrees below the hold. Finding the true onset returned
-    // those degrees; the remaining 4% is the EMA and the fusion.
-    //
-    // This used to assert the raw 45 within +-2, which only ever passed
-    // because the port smoothed on a fixed 9-sample window where the
-    // reference used 0.10 s; that divergence happened to push the port's A0
-    // nearer the unfiltered truth while moving it AWAY from the reference it
-    // is supposed to mirror. With both engines on the 100 Hz analysis grid and
-    // the same duration-based smoothing, the honest expectation is the
-    // filtered value, held to a TIGHT bound.
-    const A0_FILTERED_DEG: f64 = 43.20;
+    // It read ~43.2 (4%) until the abs()-fold fix (2026-09-17). Most of that
+    // gap was the fold, not the filter: the swing angle was reported as
+    // |rotation from the zero pose|, which mirrored the pre-release hold (the
+    // leg held ABOVE the mid-drop release capture) from the correct hyper-
+    // extension side down onto the flexion side, dragging the detrend baseline
+    // and shaving ~1.6 deg off the recovered first swing. Signing the rotation
+    // (replay::swing_deg) puts the hold back where it belongs and the amplitude
+    // returns almost whole. An earlier ~40.2 (10.7%) era was a release detector
+    // that fired ~90 ms into the drop (fixed 2026-09-14).
+    const A0_FILTERED_DEG: f64 = 44.83;
     close(p.a0_deg, A0_FILTERED_DEG, 1.0, "recovered first-swing amplitude");
 
     // The attenuation itself, asserted as a system invariant rather than left
@@ -243,8 +238,8 @@ fn full_pipeline_recovers_the_motion_it_was_given() {
     // the pipeline's gain, this is what says so.
     let attenuation = p.a0_deg / golden::E2E_TRUE_A0_DEG;
     assert!(
-        (0.94..=0.98).contains(&attenuation),
-        "pipeline amplitude gain {attenuation:.4} outside the documented          0.94-0.98 band (A0 {} deg from a {} deg input)",
+        (0.98..=1.00).contains(&attenuation),
+        "pipeline amplitude gain {attenuation:.4} outside the documented          0.98-1.00 band (A0 {} deg from a {} deg input)",
         p.a0_deg,
         golden::E2E_TRUE_A0_DEG
     );
