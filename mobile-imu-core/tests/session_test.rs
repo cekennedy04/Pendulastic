@@ -87,3 +87,105 @@ fn motion_above_the_guard_resets_to_moving() {
     feed(&mut s, 2, [0.9, 0.0, 0.0], t);
     assert!(matches!(s.state(), HoldState::Moving), "got {:?}", s.state());
 }
+
+// ---- post-release settling -------------------------------------------------
+// A trial ends when the limb has been still for SETTLE_TARGET_S. The gate is
+// gyro-magnitude only (ZERO_CAPTURE_GUARD_RAD_S), NOT is_stationary_window:
+// that stricter gyro+accel check is documented as never firing for a
+// meaningful fraction of genuinely fine strapped-sensor trials, and with no
+// time cap those trials would record forever.
+
+/// Drives a session through hold -> release, the same way the release test
+/// does, so settling is exercised through the real state machine rather than
+/// a test-only back door. Returns the time to continue from.
+fn release(sess: &mut TrialSession) -> f64 {
+    let t = feed(sess, 120, [0.005, 0.0, 0.0], 0.0);
+    assert!(matches!(sess.state(), HoldState::Ready), "setup: {:?}", sess.state());
+    let t = feed(sess, 3, [1.5, 0.0, 0.0], t);
+    assert!(matches!(sess.state(), HoldState::Released), "setup: {:?}", sess.state());
+    t
+}
+
+/// Seconds of samples, as a 60 Hz count.
+fn secs(n: f64) -> usize {
+    (n * FS).round() as usize
+}
+
+#[test]
+fn five_seconds_of_stillness_settles_the_trial() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    feed(&mut s, secs(5.2), [0.01, 0.0, 0.0], t);
+    assert!(matches!(s.state(), HoldState::Settled), "got {:?}", s.state());
+}
+
+#[test]
+fn settling_does_not_fire_before_the_target() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    feed(&mut s, secs(4.5), [0.01, 0.0, 0.0], t);
+    assert!(matches!(s.state(), HoldState::Released), "got {:?}", s.state());
+    assert!(s.settle_s() > 3.0, "should be accumulating, got {}", s.settle_s());
+}
+
+// The same reset shape reset_hold() uses: movement sends the accumulator back
+// to zero, it does not merely pause it.
+#[test]
+fn movement_resets_the_settle_accumulator() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    let t = feed(&mut s, secs(3.0), [0.01, 0.0, 0.0], t);
+    assert!(s.settle_s() > 1.0, "expected accumulation, got {}", s.settle_s());
+    feed(&mut s, secs(0.3), [1.5, 0.0, 0.0], t);
+    assert_eq!(s.settle_s(), 0.0);
+    assert!(matches!(s.state(), HoldState::Released), "got {:?}", s.state());
+}
+
+// The population this app exists for. A limb with sustained clonus must never
+// self-terminate -- there is deliberately no time cap, so the operator ends it.
+#[test]
+fn a_limb_that_never_settles_never_terminates() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    feed(&mut s, secs(30.0), [1.2, 0.0, 0.0], t);
+    assert!(matches!(s.state(), HoldState::Released), "got {:?}", s.state());
+    assert_eq!(s.settle_s(), 0.0);
+}
+
+#[test]
+fn settled_is_terminal() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    let t = feed(&mut s, secs(5.2), [0.01, 0.0, 0.0], t);
+    assert!(matches!(s.state(), HoldState::Settled));
+    feed(&mut s, secs(2.0), [1.5, 0.0, 0.0], t);
+    assert!(matches!(s.state(), HoldState::Settled), "got {:?}", s.state());
+}
+
+// Samples must keep being logged while settling, or the tail median that
+// neutral_deg is computed from would be missing exactly the settled part --
+// which is the whole reason for requiring a settle.
+#[test]
+fn samples_are_still_logged_while_settling() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    let before = s.sample_count();
+    feed(&mut s, secs(2.0), [0.01, 0.0, 0.0], t);
+    assert!(s.sample_count() > before, "settling must not stop the log");
+}
+
+// Settled freezes the accumulator too, not just the state. Without the
+// explicit terminal arm in push(), advance_settle keeps running after
+// completion and settle_s would reset to 0 on the next movement -- a
+// completed trial reporting zero settled seconds. The state alone cannot
+// catch that, because advance_settle never clears Settled.
+#[test]
+fn settle_s_freezes_once_settled() {
+    let mut s = TrialSession::new(ReplayConfig::default());
+    let t = release(&mut s);
+    let t = feed(&mut s, secs(5.2), [0.01, 0.0, 0.0], t);
+    let at_completion = s.settle_s();
+    assert!(at_completion >= 5.0, "expected a completed settle, got {at_completion}");
+    feed(&mut s, secs(2.0), [1.5, 0.0, 0.0], t);
+    assert_eq!(s.settle_s(), at_completion, "a completed trial must not un-settle");
+}

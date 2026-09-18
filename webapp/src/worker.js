@@ -30,6 +30,7 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       code: inner.state_code(),
       calm_s: inner.calm_s(),
       drift_deg: inner.drift_deg(),
+      settle_s: inner.settle_s(),
     }),
     finish: () => {
       const json = inner.finish();

@@ -66,15 +66,18 @@ test('a recorded swing scores through the same path as a live capture', async ()
   // reference's own measurement over 46 real trials against OptiTrack, where
   // A0 error fell 25.8% -> 20.9%.
   //
-  // Re-based onto the observed filtered value at a TIGHTER bound than the old
-  // +-2.0, so this still catches the wrong-unit regression the original
-  // comment was guarding (a gyro in deg/s is off by ~57x, orders of magnitude
-  // outside this).
-  assert.ok(Math.abs(result.a0_deg - 40.8) <= 1.0,
-    `a0_deg=${result.a0_deg} not within 1 deg of the expected filtered 40.8 deg`);
+  // Re-based again 2026-09-18: the Rust core now projects the swing onto the
+  // captured flex axis (matching the validated Python reference) instead of the
+  // axis-agnostic total-rotation magnitude. On this fixture that lifts a0_deg
+  // from 40.79 to 43.86 -- a gain of 0.975 rather than 0.906, i.e. CLOSER to the
+  // simulated 45 deg input, because the projection no longer bleeds the swing
+  // into an unsigned magnitude. Still tight enough to catch the wrong-unit
+  // regression the original comment guarded (a gyro in deg/s is off by ~57x).
+  assert.ok(Math.abs(result.a0_deg - 43.9) <= 1.0,
+    `a0_deg=${result.a0_deg} not within 1 deg of the expected filtered 43.9 deg`);
   const gain = result.a0_deg / 45.0;
-  assert.ok(gain >= 0.87 && gain <= 0.93,
-    `pipeline amplitude gain ${gain.toFixed(4)} outside the documented 0.87-0.93 band`);
+  assert.ok(gain >= 0.95 && gain <= 1.0,
+    `pipeline amplitude gain ${gain.toFixed(4)} outside the flex-projection 0.95-1.0 band`);
   assert.ok(Math.abs(result.neutral_deg - 135.0) <= 3.0,
     `neutral_deg=${result.neutral_deg} not within 3 deg of the expected 180-45=135`);
 });

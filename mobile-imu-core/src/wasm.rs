@@ -37,14 +37,21 @@ impl WasmSession {
         }
     }
 
-    /// 0 Moving, 1 Holding, 2 Ready, 3 Released.
+    /// 0 Moving, 1 Holding, 2 Ready, 3 Released, 4 Settled (terminal).
     pub fn state_code(&self) -> u8 {
         match self.inner.state() {
             HoldState::Moving => 0,
             HoldState::Holding { .. } => 1,
             HoldState::Ready => 2,
             HoldState::Released => 3,
+            HoldState::Settled => 4,
         }
+    }
+
+    /// Seconds of post-release stillness accumulated toward SETTLE_TARGET_S;
+    /// freezes once Settled. Drives the settle countdown and the auto-stop.
+    pub fn settle_s(&self) -> f64 {
+        self.inner.settle_s()
     }
 
     pub fn calm_s(&self) -> f64 {

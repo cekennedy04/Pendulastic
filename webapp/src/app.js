@@ -35,8 +35,11 @@ const FIXED_PATIENT_LABEL = 'TEST-PARTICIPANT'; // a literal we control, not fre
 // code 0..3 from onState, per capture.js's doc comment: 0 Moving, 1 Holding,
 // 2 Ready, 3 Released. Both arrays are indexed by that same code, matching
 // mobile-imu-core's HoldState (see progress.md conflict #5).
-const STATES = ['MOVING\nhold still', 'HOLDING', 'READY\nrelease now', 'RELEASED\nlet it settle'];
-const CLASSES = ['moving', 'holding', 'ready', 'fired'];
+const STATES = ['MOVING\nhold still', 'HOLDING', 'READY\nrelease now', 'RELEASED\nlet it settle', 'SETTLED\ntrial complete'];
+const CLASSES = ['moving', 'holding', 'ready', 'fired', 'settled'];
+// Mirrors mobile-imu-core session.rs SETTLE_TARGET_S: the trial self-terminates
+// after this many seconds of post-release stillness (core emits state code 4).
+const SETTLE_TARGET_S = 5.0;
 
 // The result table renders PARAM_FIELDS (imported from session-store.js) in
 // that module's order -- exactly the field names PtParams' JSON serialiser
@@ -1060,15 +1063,26 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  function onState({ code, calm_s, drift_deg }) {
+  function onState({ code, calm_s, drift_deg, settle_s = 0 }) {
     const g = el('guide');
     g.className = CLASSES[code];
-    g.textContent = code === 1 ? `HOLDING ${calm_s.toFixed(1)}s` : STATES[code];
+    if (code === 1) {
+      g.textContent = `HOLDING ${calm_s.toFixed(1)}s`;
+    } else if (code === 3) {
+      // Settle countdown: how long the limb must stay still to auto-complete.
+      const remaining = Math.max(0, SETTLE_TARGET_S - settle_s);
+      g.textContent = `RELEASED\nlet it settle ${remaining.toFixed(1)}s`;
+    } else {
+      g.textContent = STATES[code];
+    }
     // Both gates are surfaced separately: the corrective action for motion
     // and for drift differ, so "it failed" is not enough for the clinician
     // (task-6 dispatch, requirement 2).
     el('calm').textContent = `${calm_s.toFixed(2)} s / 0.95 s`;
     el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
+    // The limb has been still for SETTLE_TARGET_S and the core terminated the
+    // trial (code 4). End it here -- the same one stop path as the button.
+    if (code === 4) endTrial();
   }
 
   function onResult(p, trajectory, ptScore) {
@@ -1215,22 +1229,26 @@ if (typeof document !== 'undefined') {
     session = await startCapture({ onState, onResult, onError });
   });
 
-  el('stop').addEventListener('click', () => {
-    // THE fix for C1, and the half that actually recovers the handle.
-    //
-    // Stop is the normal -- and only -- way a trial completes: it posts
-    // `finish` to the worker, whose `result` reply arrives one task later and
-    // drives onResult. But this handler nulls `session` SYNCHRONOUSLY, so
-    // onResult ran with `session === null` and had nothing left to capture.
-    // Capturing here, before the nulling, is what gives onResult a handle to
-    // retain -- and `retainExportHandle` up there is what stops onResult's
-    // later `null` from undoing it. Neither half works alone.
+  // The ONE stop path, shared by the Stop button and the settle auto-stop
+  // (onState code 4). Idempotent: guarded on #stop already hidden so a settle
+  // event and a Stop tap cannot double-stop the same trial.
+  //
+  // THE fix for C1, and the half that actually recovers the handle. Stop posts
+  // `finish` to the worker, whose `result` reply arrives one task later and
+  // drives onResult. This nulls `session` SYNCHRONOUSLY, so onResult would run
+  // with `session === null` and nothing to capture. Capturing here, before the
+  // nulling, gives onResult a handle to retain -- and `retainExportHandle` up
+  // there stops onResult's later `null` from undoing it. Neither half works alone.
+  function endTrial() {
+    if (el('stop').hidden) return; // no trial in flight
     exportSession = retainExportHandle(exportSession, session);
     session?.stop();
     session = null;
     el('stop').hidden = true;
     el('start').hidden = false;
-  });
+  }
+
+  el('stop').addEventListener('click', endTrial);
 }
 
 
