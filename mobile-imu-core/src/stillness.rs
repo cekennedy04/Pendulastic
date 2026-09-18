@@ -19,7 +19,14 @@ pub const GYRO_BIAS_MIN_SAMPLES: usize = 5;
 /// the primary/more reliable signal — it separates the "genuinely still" and
 /// "likely handling" clusters cleanly; accel is a corroborating check only.
 pub const GYRO_STATIONARY_MAX_RAD_S: f64 = 0.9;
-pub const ACCEL_STATIONARY_MAX_MPS2: f64 = 0.18;
+/// Accel peak-to-peak bound as a FRACTION of the window's own gravity
+/// magnitude, so the verdict is unit-independent (iOS reports g ~1, Android
+/// m/s² ~9.81). The Python source fixed this on 2026-08-25; the old raw-m/s²
+/// bar judged an m/s² device 9.81× too tightly and silently suppressed
+/// gyro-bias calibration (measured: it left the bias at 0 where Python
+/// calibrated 0.16 rad/s, drifting the projected angle 20-32° on ~15% of
+/// trials). On a g-reporting phone g_mag ~1.0, so this is the old comparison.
+pub const ACCEL_STATIONARY_MAX_G: f64 = 0.18;
 
 /// A trailing sample buffer: `(timestamp_seconds, raw_vector)` pairs, oldest
 /// first. Callers are responsible for pruning entries older than the window
@@ -41,7 +48,7 @@ fn max_axis_peak_to_peak(buf: &SampleBuf) -> f64 {
 }
 
 /// True iff both buffers span the full `GYRO_BIAS_WINDOW_S` and stay within
-/// `GYRO_STATIONARY_MAX_RAD_S` / `ACCEL_STATIONARY_MAX_MPS2` peak-to-peak
+/// `GYRO_STATIONARY_MAX_RAD_S` / `ACCEL_STATIONARY_MAX_G` peak-to-peak
 /// range — checked per-axis (max over x/y/z of that axis's own peak-to-peak),
 /// not on the combined vector magnitude. Magnitude alone would miss a signal
 /// that oscillates DIRECTION at roughly constant magnitude (e.g. alternating
@@ -59,8 +66,25 @@ pub fn is_stationary_window(gyro_buf: &SampleBuf, accel_buf: &SampleBuf, now: f6
             _ => {}
         }
     }
-    max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S
-        && max_axis_peak_to_peak(accel_buf) < ACCEL_STATIONARY_MAX_MPS2
+    // Accel spread as a fraction of the window's own gravity magnitude
+    // (matches Python's 2026-08-25 fix). Magnitude of the mean accel over the
+    // window is the gravity reference.
+    let n = accel_buf.len() as f64;
+    let mut mean = [0.0_f64; 3];
+    for (_, v) in accel_buf {
+        for k in 0..3 {
+            mean[k] += v[k];
+        }
+    }
+    for m in &mut mean {
+        *m /= n;
+    }
+    let g_mag = (mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]).sqrt();
+    if g_mag < 1e-9 {
+        return false; // no usable gravity reference: not a still hold
+    }
+    let accel_spread = max_axis_peak_to_peak(accel_buf) / g_mag;
+    max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S && accel_spread < ACCEL_STATIONARY_MAX_G
 }
 
 /// Zero-orientation capture guard: the raw gyro magnitude for the qualifying
