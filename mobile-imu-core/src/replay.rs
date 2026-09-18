@@ -13,6 +13,7 @@
 
 use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
 use crate::calibration::{calibrate_accel_bias, calibrate_gyro_bias, ReleaseDetector};
+use crate::flex_axis::FlexAxisEstimator;
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
 use crate::resample::{ema_smooth, rescale_ema_alpha, tick_resample, ANALYSIS_TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
@@ -91,11 +92,43 @@ fn sub3(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Rotation magnitude from the zero pose, in degrees. Quaternion delta rather
-/// than differenced Euler angles: pitch extraction is unreliable near ±90°,
-/// exactly where a pendulum swing's tibia passes.
-fn swing_deg(q_zero: Quat, q_cur: Quat) -> f64 {
+/// Swing angle from the zero pose, in degrees, matching the validated Python
+/// `_swing_from_quats` / `swing_angle_deg` three-tier extraction op-for-op:
+///   (a) projected onto the captured flex axis: `abs(theta * dot(u, flex_axis))`
+///   (b) solo across-gravity (no flex axis yet): `abs(theta * |u - (u.g)g|)`
+///   (c) axis-agnostic total-rotation fallback: `2*acos(|w|)`
+/// Previously the Rust core always used (c), which counts free-integrating yaw
+/// drift as flexion (86.9° reported on a still phone) — 20-53° off the Python
+/// projection on ~20% of real trials. The magnitude is `abs()` (the clinical,
+/// corpus-validated convention; the signed variant regressed corpus test-retest).
+fn swing_deg(q_zero: Quat, q_cur: Quat, flex_axis: Option<Vec3>, g_zero: Option<Vec3>) -> f64 {
     let d = qmul(qconj(q_zero), q_cur);
+    // Canonical hemisphere (w >= 0), exactly as the Python mirror does before
+    // decomposing to axis-angle.
+    let q = if d[0] >= 0.0 { d } else { [-d[0], -d[1], -d[2], -d[3]] };
+    let qv = [q[1], q[2], q[3]];
+    let sin_half = (qv[0] * qv[0] + qv[1] * qv[1] + qv[2] * qv[2]).sqrt();
+
+    if let Some(axis) = flex_axis {
+        if sin_half <= 1e-9 {
+            return 0.0;
+        }
+        let theta = 2.0 * q[0].min(1.0).acos();
+        let u = [qv[0] / sin_half, qv[1] / sin_half, qv[2] / sin_half];
+        let proj = u[0] * axis[0] + u[1] * axis[1] + u[2] * axis[2];
+        return (theta * proj).abs().to_degrees();
+    }
+    if let Some(g) = g_zero {
+        if sin_half <= 1e-9 {
+            return 0.0;
+        }
+        let theta = 2.0 * q[0].min(1.0).acos();
+        let u = [qv[0] / sin_half, qv[1] / sin_half, qv[2] / sin_half];
+        let along = u[0] * g[0] + u[1] * g[1] + u[2] * g[2];
+        let across = [u[0] - along * g[0], u[1] - along * g[1], u[2] - along * g[2]];
+        let n = (across[0] * across[0] + across[1] * across[1] + across[2] * across[2]).sqrt();
+        return (theta * n).abs().to_degrees();
+    }
     2.0 * d[0].abs().clamp(-1.0, 1.0).acos().to_degrees()
 }
 
@@ -116,6 +149,12 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     let mut seeded = false;
     let mut calib_was_stable = false;
     let mut zero: Option<(Quat, usize)> = None;
+    // Flex-axis capture, matching the Python replay: fed raw gyro from the
+    // release onward, its own threshold/commit logic does the rest. `g_zero` is
+    // the sensor-frame gravity direction at release, for the solo across-gravity
+    // fallback when no flex axis commits.
+    let mut flex = FlexAxisEstimator::new();
+    let mut g_zero: Option<Vec3> = None;
 
     let mut sample_t: Vec<f64> = Vec::with_capacity(samples.len());
     let mut sample_q: Vec<Quat> = Vec::with_capacity(samples.len());
@@ -159,6 +198,20 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 };
                 if capture && zero.is_none() {
                     zero = Some((ahrs.q, i));
+                    // Gravity direction at release (for the across-gravity tier).
+                    if let Some(a) = accel {
+                        let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                        if n > 1e-6 {
+                            g_zero = Some([a[0] / n, a[1] / n, a[2] / n]);
+                        }
+                    }
+                }
+                // Feed the flex-axis estimator from the release onward, on the
+                // RAW gyro (as the Python reference does); its threshold gate and
+                // 25-sample commit select the swing burst. Idempotent once
+                // committed.
+                if zero.is_some() {
+                    flex.update(s.v, accel);
                 }
 
                 if zero.is_none() {
@@ -192,10 +245,14 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
 
     let (release_quat, release_idx) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
 
+    // Committed (or provisional) flex axis for the whole trial, matching the
+    // Python replay which projects every tick onto the final captured axis.
+    let flex_axis = flex.axis();
+
     let angle_raw: Vec<f64> = sample_q
         .iter()
         .map(|q| {
-            let sw = swing_deg(release_quat, *q);
+            let sw = swing_deg(release_quat, *q, flex_axis, g_zero);
             match cfg.method {
                 Method::Relative => 180.0 - sw,
                 Method::Ockendon => ockendon_deg(sw, OCKENDON_FT_RATIO),

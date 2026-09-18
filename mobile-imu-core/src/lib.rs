@@ -20,6 +20,7 @@
 pub mod ahrs;
 pub mod calibration;
 pub mod export_jsonl;
+pub mod flex_axis;
 pub mod goniometry;
 pub mod params_json;
 pub mod pt_score;

@@ -37,11 +37,37 @@ fn mean3(buf: &SampleBuf) -> Vec3 {
 /// should leave any previously-calibrated bias unchanged in that case,
 /// mirroring `calibrate_gyro_bias()`'s "leaves gyro_bias at its previous
 /// value" behavior.
+/// Per-axis SNR gate on the min: an axis whose mean is not resolvable above
+/// `GYRO_BIAS_MIN_SNR` standard errors is left at 0, so a 1 s "still" window's
+/// own noise is not mistaken for bias. Matches Python's
+/// `where(|mean| >= 3*sem, mean, 0)`, sem = std(ddof=1)/sqrt(n).
+const GYRO_BIAS_MIN_SNR: f64 = 3.0;
+
 pub fn calibrate_gyro_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
-    if hold_buf.len() < GYRO_BIAS_MIN_SAMPLES {
+    let n = hold_buf.len();
+    if n < GYRO_BIAS_MIN_SAMPLES {
         return None;
     }
-    Some(mean3(hold_buf))
+    let mean = mean3(hold_buf);
+    let mut var = [0.0_f64; 3];
+    for (_, v) in hold_buf {
+        for k in 0..3 {
+            let d = v[k] - mean[k];
+            var[k] += d * d;
+        }
+    }
+    let denom = ((n - 1).max(1)) as f64; // ddof=1
+    let sqrt_n = (n as f64).sqrt();
+    let mut bias = [0.0_f64; 3];
+    for k in 0..3 {
+        let sem = (var[k] / denom).sqrt() / sqrt_n;
+        bias[k] = if mean[k].abs() >= GYRO_BIAS_MIN_SNR * sem {
+            mean[k]
+        } else {
+            0.0
+        };
+    }
+    Some(bias)
 }
 
 /// Estimate accelerometer static bias from a verified-stillness window.
