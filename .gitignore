@@ -125,6 +125,8 @@ webapp/captures/
 # committable.
 webapp/dist/
 *.err
+.vercel
+.env*
 
 # LabVIEW motor-rig .bin stretch trials + generated decoded/ output (~140 MB raw data)
 ck_app_pt_test/
@@ -135,3 +137,12 @@ sweep_resume_log*.txt
 opensim_ik*.txt
 lateral_impact_presentation*.png
 oneoff_lateral_check*.png
+
+# Bench/phone trial data, personal to-do files, generated figures, scratch outputs
+Pendulastic_Mobile_App_Trial/
+to_do/
+bench_figures/
+ab_*.csv
+preamble_out.csv
+x.png
+excluded_trials.json.bak-*
