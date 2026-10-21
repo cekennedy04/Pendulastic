@@ -116,3 +116,10 @@ webapp/captures/
 # committable.
 webapp/dist/
 *.err
+
+# Regenerable run output (sweep logs, analysis stdout, one-off check images)
+sweep_resume_log*.txt
+*_output.txt
+opensim_ik*.txt
+lateral_impact_presentation*.png
+oneoff_lateral_check*.png
