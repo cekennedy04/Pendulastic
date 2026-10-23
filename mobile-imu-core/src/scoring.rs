@@ -148,6 +148,12 @@ const RELEASE_BACKOFF_S: f64 = 0.10;
 /// exactly 0.5 at 30 fps, where the reference yields a back-off of 0 and a
 /// naive port would yield 1. Defined for non-negative inputs, which is all
 /// either call site produces.
+// The `frac < 0.5` and `(f as i64) % 2 == 0` arms return the same value, which
+// clippy reads as a copy-paste slip. They are two distinct cases of
+// round-half-to-even -- below the half, and exactly on it with an even floor --
+// and collapsing them would hide the rule this function exists to implement.
+// The doc comment above spells out why Python parity requires all four arms.
+#[allow(clippy::if_same_then_else)]
 fn round_half_even(x: f64) -> f64 {
     let f = x.floor();
     let frac = x - f;
@@ -308,6 +314,11 @@ fn permanent_settle_idx(ang_r: &[f64], neutral: f64, tol: f64) -> usize {
 /// records N reading 0.5 with a 3 s tail and 28.5 with a 30 s tail on the
 /// *same* motion, and a single spurious tail trough fabricating an A1 out of
 /// nothing.
+// `!(med > 0.0)` is the NaN path, not a style choice: `med` is a nanmedian and
+// is NaN when every gap is NaN. The guard has to refuse NaN as well as a
+// non-positive median before it is multiplied into a limit; `med <= 0.0` is
+// false for NaN and would let it through.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn active_oscillation_window_end(
     t_r: &[f64],
     ang_r: &[f64],
