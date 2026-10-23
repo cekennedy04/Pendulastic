@@ -242,6 +242,10 @@ golden_case!(
 
 /// The 0.45/0.55 pair brackets `MAX_GRAVITY_TILT_COS` from both sides, so the
 /// guard's value — not merely its presence — is pinned.
+// The assertions are deliberately over constants: the point is to pin the
+// guard's VALUE, and the golden fixtures' flags, at their declared numbers.
+// clippy reads a constant assertion as a mistake; here it is the test.
+#[allow(clippy::assertions_on_constants)]
 #[test]
 fn the_tilt_guard_bracket_actually_straddles_the_constant() {
     assert!(0.45 <= MAX_GRAVITY_TILT_COS && MAX_GRAVITY_TILT_COS < 0.55);
@@ -397,6 +401,8 @@ golden_case!(
     FA_THRESH_2_5_N
 );
 
+// Same as above: comparing two golden constants is the assertion's purpose.
+#[allow(clippy::assertions_on_constants)]
 #[test]
 fn the_threshold_is_honoured_as_a_value_not_just_a_flag() {
     // Same stream, same min_samples, different threshold => different axis.

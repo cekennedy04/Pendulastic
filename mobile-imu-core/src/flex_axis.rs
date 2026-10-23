@@ -439,6 +439,10 @@ fn rqi_polish(a: &[[f64; 3]; 3], mut v: Vec3) -> Vec3 {
 /// the matrix is singular to working precision — which, for the deliberately
 /// near-singular shifts inverse iteration uses, is a real possibility and the
 /// signal to stop rather than to divide by ~0.
+// Gaussian elimination over an augmented 3x4 matrix. clippy's suggestion here
+// is wrong, not merely stylistic: `m.iter_mut().skip(col)` would walk the
+// matrix's ROWS, while `for c in col..4` walks the columns of one row.
+#[allow(clippy::needless_range_loop)]
 fn solve3(a: &[[f64; 3]; 3], b: Vec3) -> Option<Vec3> {
     let mut m = [
         [a[0][0], a[0][1], a[0][2], b[0]],
@@ -491,6 +495,9 @@ fn solve3(a: &[[f64; 3]; 3], b: Vec3) -> Option<Vec3> {
 /// Largest-norm column of `(A − λ₂I)(A − λ₃I)`, normalised; falls back to the
 /// x basis vector when that product is degenerate (λ₁ == λ₂), where the
 /// dominant eigenvector is not unique anyway.
+// Reads the COLUMNS of a row-major 3x3, so the index is the point: clippy's
+// `for <item> in &p` would iterate rows and change what is being measured.
+#[allow(clippy::needless_range_loop)]
 fn projector_seed(a: &[[f64; 3]; 3], e2: f64, e3: f64) -> Vec3 {
     let p = mat_mul(&shift_diag(a, e2), &shift_diag(a, e3));
     let mut best = [1.0, 0.0, 0.0];
@@ -508,6 +515,12 @@ fn projector_seed(a: &[[f64; 3]; 3], e2: f64, e3: f64) -> Vec3 {
 
 /// Eigenvalues of a symmetric 3×3 matrix in descending order, by Smith's
 /// closed-form trigonometric solution to the characteristic cubic.
+// `!(p > 0.0)` is deliberately the negated comparison and not `p <= 0.0`:
+// p comes from a sqrt of a sum of squares and can be NaN, and the guard must
+// catch NaN as well as zero before p is used as a divisor. `p <= 0.0` is false
+// for NaN, which would let it through. clippy's partial_cmp rewrite is a
+// readability suggestion that does not know this is the NaN path.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn sym3_eigenvalues(a: &[[f64; 3]; 3]) -> (f64, f64, f64) {
     let p1 = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
     let q = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
