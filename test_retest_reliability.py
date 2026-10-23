@@ -71,6 +71,43 @@ def _algo_fingerprint(cfg) -> str:
     return h.hexdigest()[:12]
 
 
+def _angle_variant() -> str:
+    """Which swing-angle extraction is in this tree, in words.
+
+    The fingerprint above identifies a variant uniquely but says nothing about
+    WHICH one, so a run had to be labelled by hand from the branch name -- and
+    an uncommitted `git revert` that follows you across a checkout makes the
+    branch name a lie. That mislabelled two runs on 2026-10-23. 61d5723 added
+    `swing_about_axis_deg` to imu_flex_axis.py and its revert removes it, so
+    the tree can simply be asked.
+    """
+    try:
+        with open(os.path.join(BASE, "imu_flex_axis.py"), encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return "UNKNOWN (imu_flex_axis.py could not be read)"
+    if "def swing_about_axis_deg" in src:
+        return "SIGNED  (swing_about_axis_deg present: 61d5723 applied)"
+    return "ABS FOLD (no swing_about_axis_deg: 61d5723 absent or reverted)"
+
+
+def _tree_state() -> str:
+    """Branch, commit and dirtiness -- the provenance a result needs quoting."""
+    import subprocess
+
+    def git(*a):
+        try:
+            return subprocess.run(("git",) + a, cwd=BASE, capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except Exception:
+            return ""
+    head = git("rev-parse", "--short", "HEAD") or "?"
+    branch = git("rev-parse", "--abbrev-ref", "HEAD") or "?"
+    dirty = [l for l in (git("status", "--porcelain") or "").splitlines() if l.strip()]
+    suffix = f", {len(dirty)} uncommitted change(s)" if dirty else ", clean"
+    return f"{branch} @ {head}{suffix}"
+
+
 def _cache_path(fp: str) -> str:
     return os.path.join(BASE, "Model_Analysis_Outputs", "_cache",
                         f"test_retest_params_{fp}.json")
@@ -111,8 +148,11 @@ def main() -> int:
     cfg = load_config()
     fp = _algo_fingerprint(cfg)
     cache_file = _cache_path(fp)
+    variant = _angle_variant()
+    print(f"angle extraction      {variant}", flush=True)
+    print(f"tree                  {_tree_state()}", flush=True)
     print(f"algorithm fingerprint {fp}", flush=True)
-    print(f"cache {cache_file}", flush=True)
+    print(f"cache                 {cache_file}", flush=True)
     trials = batch.discover_trials()
     print(f"{len(trials)} trials discovered", flush=True)
 
@@ -230,7 +270,8 @@ def main() -> int:
               f"{s['mean']:9.3f} {cv:7.1f} {s['n_groups']:7d}")
 
     out_csv = _out_csv(fp)
-    pd.DataFrame([{**o, "fingerprint": fp} for o in out]).to_csv(out_csv, index=False)
+    pd.DataFrame([{**o, "fingerprint": fp, "angle_extraction": variant,
+                   "tree": _tree_state()} for o in out]).to_csv(out_csv, index=False)
     print(f"\nwrote {out_csv}")
 
     # ---- where A0's scatter comes from -----------------------------------
