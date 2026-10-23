@@ -48,7 +48,6 @@ second moment is the correct quantity, not the covariance about the mean.
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import numpy as np
@@ -185,11 +184,9 @@ class FlexAxisEstimator:
                     axis = leveled / ln
                     self._leveled = True
 
-        # Eigenvector sign is arbitrary out of eigh(). Pin it to the first
-        # qualifying swing sample: this is what fixes the SIGN of the reported
-        # angle (swing_about_axis_deg projects onto this axis without an
-        # absolute value now), so a flexion in the release direction reads
-        # positive and the convention is reproducible across runs.
+        # Eigenvector sign is arbitrary; the projection takes an absolute value
+        # so sign does not affect the reported angle, but pin it to the first
+        # qualifying sample anyway so the stored axis is reproducible.
         if self._first is not None and float(np.dot(axis, self._first)) < 0.0:
             axis = -axis
         self._axis = axis
@@ -203,38 +200,6 @@ class FlexAxisEstimator:
         self._first = None
         self._gravity = None
         self._leveled = False
-
-
-def swing_about_axis_deg(q_delta, axis) -> float:
-    """SIGNED rotation of ``q_delta`` about unit ``axis``, in degrees.
-
-    The single source of truth for the scalar swing angle, shared verbatim by
-    the live server (``pendulastic_imu_server.swing_angle_deg``) and the offline
-    replay (``imu_calibration_tuner._swing_from_quats``) so the two can never
-    diverge, and mirrored op-for-op by the Rust core's ``replay::swing_deg``.
-
-    This is the fix for the abs()-fold bug. The angle used to be reported as
-    ``abs(theta * dot(u, axis))``; the absolute value mirrored any swing that
-    crossed the zero reference (the negative half reflected up to positive),
-    which compressed the SSR +/-37.5 deg staircase to ~52 deg and corrupts N,
-    A0, area_ratio and f on any clinical pendulum swing that crosses zero. The
-    sign is fixed and reproducible: it follows the orientation of ``axis``,
-    which ``FlexAxisEstimator`` pins to the first qualifying swing sample, so a
-    flexion in the release direction is positive.
-
-    The rotation about ``axis`` is extracted as ``2*atan2(q_vec . axis, q_w)``
-    -- the swing component of a swing/twist split -- on the RAW quaternion, not
-    a hemisphere-canonicalised one. The AHRS integrates ``q_delta`` continuously,
-    and atan2 stays continuous as the rotation passes 180 deg (where q_w changes
-    sign); the old ``theta * dot(u, axis)`` form flipped there because forcing
-    ``w >= 0`` negated q_vec, which turned a large drift on a messy trial into a
-    spurious near-360 deg step and a huge false angular velocity. This form
-    isolates sagittal flexion-extension from ankle inversion/eversion and
-    internal-rotation artefacts without that discontinuity.
-    """
-    q = np.asarray(q_delta, float)
-    return math.degrees(2.0 * math.atan2(float(np.dot(q[1:], np.asarray(axis, float))),
-                                         float(q[0])))
 
 
 def principal_axis(vectors, threshold: float = DEFAULT_THRESHOLD) -> Optional[np.ndarray]:

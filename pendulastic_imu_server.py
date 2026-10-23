@@ -46,7 +46,7 @@ from typing import Optional
 import numpy as np
 
 from imu_calibration_config import load_config
-from imu_flex_axis import FlexAxisEstimator, swing_about_axis_deg
+from imu_flex_axis import FlexAxisEstimator
 
 # Sensor Stream's default. Override with PENDULASTIC_IMU_PORT when two
 # Pendulastic apps must run side by side (e.g. master_app.py acquiring while
@@ -1005,23 +1005,20 @@ def swing_angle_deg() -> float:
             solo_mode = True
 
         if _flex_axis is not None:
-            # Axis-projected SIGNED angle: the component of q_delta's rotation
-            # around the captured anatomical axis, keeping its sign so a swing
-            # that crosses the zero reference is not folded (see
-            # swing_about_axis_deg). Shared verbatim with the replay path.
-            return swing_about_axis_deg(q_delta, _flex_axis)
+            # Axis-projected angle: decomposes q_delta into axis-angle form and
+            # returns only the component around the captured anatomical axis.
+            # Ensure w ≥ 0 (canonical hemisphere) before decomposing.
+            q = q_delta if q_delta[0] >= 0.0 else -q_delta
+            sin_half = float(np.linalg.norm(q[1:]))
+            if sin_half > 1e-9:
+                theta = 2.0 * math.acos(min(1.0, float(q[0])))
+                u     = q[1:] / sin_half
+                return abs(math.degrees(theta * float(np.dot(u, _flex_axis))))
+            return 0.0
 
         if solo_mode and _g_zero_solo is not None:
             # No flexion axis captured yet. Report rotation ACROSS gravity
-            # only, discarding rotation about it. This is a MAGNITUDE, not a
-            # signed angle: with no captured axis and no per-trial history in a
-            # per-sample live call there is no reproducible sign reference. It
-            # is reached only before the first qualifying swing sample (once one
-            # arrives _flex_axis is set and the signed path above is taken), so
-            # in the shipping flex_axis_capture=True config the swing here is
-            # ~0 and the missing sign is immaterial. The offline replay, which
-            # sees the whole trial at once, DOES sign its own axis-agnostic
-            # fallback (imu_calibration_tuner._swing_from_quats).
+            # only, discarding rotation about it.
             #
             # Yaw is unobservable here: the magnetometer correction is
             # deliberately disabled (see on_gyro) and gravity carries no
