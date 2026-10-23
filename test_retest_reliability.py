@@ -136,6 +136,35 @@ DIAG = ["neutral_deg", "pre_release_deg", "release_t_s", "post_release_s"]
 MIN_REPEATS = 3
 
 
+def icc1(frame, col):
+    """ICC(1,1): one-way random effects, single measurement.
+
+    At module scope, not nested in main(), so retest_compare.py can import it
+    rather than keep its own copy -- two copies of a statistic can disagree
+    while both look right, which is the failure this repo has been bitten by
+    before (see shell-list.mjs's header on the same point).
+
+    `frame` needs a "group" column; rows with fewer than 2 repeats in a group
+    are dropped, and fewer than 3 usable groups returns None.
+    """
+    import numpy as np
+
+    groups = [g[col].dropna().values for _, g in frame.groupby("group")]
+    groups = [g for g in groups if len(g) >= 2]
+    if len(groups) < 3:
+        return None
+    k = np.mean([len(g) for g in groups])
+    allv = np.concatenate(groups)
+    n = len(groups)
+    gm = allv.mean()
+    msb = sum(len(g) * (g.mean() - gm) ** 2 for g in groups) / (n - 1)
+    msw = sum(((g - g.mean()) ** 2).sum() for g in groups) / (len(allv) - n)
+    icc = (msb - msw) / (msb + (k - 1) * msw) if (msb + (k - 1) * msw) else np.nan
+    sem = math.sqrt(msw)
+    return {"icc": icc, "sem": sem, "mdc95": 1.96 * math.sqrt(2) * sem,
+            "mean": gm, "n_groups": n, "n_trials": len(allv)}
+
+
 def main() -> int:
     import numpy as np
     import pandas as pd
@@ -203,6 +232,11 @@ def main() -> int:
                     rec["release_t_s"] = None
                     rec["post_release_s"] = None
                 cache[key] = rec
+        # Stamped into the cache so retest_compare.py can label each side
+        # without being told which variant it is looking at. Keys beginning
+        # "__" are never trial keys, so the scoring loop above never sees it.
+        cache["__meta__"] = {"fingerprint": fp, "angle_extraction": variant,
+                             "tree": _tree_state()}
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         tmp = cache_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -237,23 +271,6 @@ def main() -> int:
           f"{len(r)} trials, {len(pids)} participants\n", flush=True)
     if r.empty:
         return 1
-
-    def icc1(frame, col):
-        """ICC(1,1): one-way random effects, single measurement."""
-        groups = [g[col].dropna().values for _, g in frame.groupby("group")]
-        groups = [g for g in groups if len(g) >= 2]
-        if len(groups) < 3:
-            return None
-        k = np.mean([len(g) for g in groups])
-        allv = np.concatenate(groups)
-        n = len(groups)
-        gm = allv.mean()
-        msb = sum(len(g) * (g.mean() - gm) ** 2 for g in groups) / (n - 1)
-        msw = sum(((g - g.mean()) ** 2).sum() for g in groups) / (len(allv) - n)
-        icc = (msb - msw) / (msb + (k - 1) * msw) if (msb + (k - 1) * msw) else np.nan
-        sem = math.sqrt(msw)
-        return {"icc": icc, "sem": sem, "mdc95": 1.96 * math.sqrt(2) * sem,
-                "mean": gm, "n_groups": n, "n_trials": len(allv)}
 
     print(f"{'parameter':16s} {'ICC(1,1)':>9s} {'SEM':>9s} {'MDC95':>9s} "
           f"{'mean':>9s} {'CV%':>7s} {'groups':>7s}")
