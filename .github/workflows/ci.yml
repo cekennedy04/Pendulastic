@@ -6,6 +6,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pinned deliberately, and it is `-D warnings` below that makes the pin
+      # necessary: arming the lint gate makes clippy's lint SET part of the
+      # gate, and every Rust release ships new lints. Unpinned, this job fails
+      # on release days for reasons that have nothing to do with this repo --
+      # exactly the "fails for the wrong reason" problem the gate exists to
+      # end. This bit immediately: the runner moved to 1.99.0 and flagged a
+      # `chunks_exact` in a test that 1.97.0 does not mention.
+      #
+      # Raise this version deliberately, with any new lint fixes in the same
+      # commit, so the move is a decision rather than a surprise.
+      - run: rustup toolchain install 1.99.0 --profile minimal --component clippy
+      - run: rustup default 1.99.0
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo test --manifest-path mobile-imu-core/Cargo.toml
       # -D warnings is what makes this a gate. Without it the step reported

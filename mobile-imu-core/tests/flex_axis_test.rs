@@ -695,8 +695,15 @@ fn the_batch_and_online_axes_agree_in_direction() {
 
 // ---- lateral_motion: capture quality -------------------------------------
 
+// Indexed rather than `chunks_exact(3)` so the same source is lint-clean on
+// more than one toolchain: clippy 1.99 flags a constant chunk size and wants
+// `as_chunks::<3>()`, which 1.97 does not have -- and an #[allow] naming a
+// lint the older clippy has never heard of is itself a warning there, which
+// `-D warnings` turns into an error. Avoiding the construct satisfies both.
 fn lm_in(flat: &[f64]) -> Vec<Vec3> {
-    flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+    (0..flat.len() / 3)
+        .map(|i| [flat[3 * i], flat[3 * i + 1], flat[3 * i + 2]])
+        .collect()
 }
 
 fn assert_lm(got: Option<LateralMotion>, want: Option<(f64, f64)>, what: &str) {
