@@ -59,7 +59,37 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
 METRICS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f",
-           "area_ratio", "A0_deg", "omega_peak_deg_s"]
+           "area_ratio", "A0_deg", "omega_peak_deg_s",
+           # Not among the seven scored parameters, and that is the point:
+           # Whelan's best classifier is built from these two.
+           "first_trough_depth", "neutral_deg", "A1_deg"]
+
+# Published discrimination for MAS 0 vs MAS>0 (knee extensors), from
+# Whelan A, Sexton A, Jones M, O'Connell C, McGibbon CA (2018), J NeuroEng
+# Rehabil -- 131 knees from 93 patients across ABI/MS/CP/SCI, full clinician
+# MAS, AUC with 95% CI. Transcribed from
+# docs/reference/2026-08-24-pendulum-test-literature-benchmarks.md.
+#
+# The mapping is by METRIC FAMILY, not by formula, and that caveat is not
+# decorative: their RI is F1amp/Plateau while our R2n is A1/(1.6*A0), so the
+# AUCs are comparable as "how well does this family separate" and the absolute
+# values are not comparable at all (that document's section 6 says so
+# explicitly). Printed beside our own AUC so a disagreement is visible rather
+# than averaged away.
+PUBLISHED_AUC = {
+    "first_trough_depth": (0.807, "0.729-0.885", "F1amp, 1st flexion amplitude"),
+    "R2n":                (0.784, "0.698-0.869", "RI family (formula differs)"),
+    "neutral_deg":        (0.691, "0.599-0.783", "plateau / resting angle"),
+    "N":                  (0.665, "0.567-0.762", "Ncyc -- their WORST, ANOVA p=0.594"),
+}
+
+# Their Model 2 -- grading severity among spastic knees (MAS 1,1+ vs 2,3) --
+# found every metric in 0.59-0.71 and none acceptable: "none of the metrics we
+# analyzed were able to discriminate between knees with low/moderate and
+# high/severe spasticity." So a binary screen is the supported shape and a
+# graded severity index is not, which is what section 4d of that document
+# concludes about our own three-zone model.
+PUBLISHED_SEVERITY_CEILING = (0.59, 0.71)
 
 # Which parameters are a ratio taken on the swing itself. Called out because
 # "does the ratio rise in spastic legs" is the question this was built for, and
@@ -282,7 +312,35 @@ def main(argv=None):
               f"{len(healthy_rows)} non-spastic legs ({len(hp)} participants), "
               f"{len(spastic_rows)} spastic legs ({len(spp)} participants)")
         if len(healthy_rows) < 3 or len(spastic_rows) < 3:
-            print("  too few legs on one side to compare; reported for composition only")
+            print("  TOO FEW LEGS ON ONE SIDE -- no ranges computed for this tier.")
+            print("  Why, in the order worth checking:")
+            unknown = sum(1 for r in legs.values() if r["level"] not in
+                          (sg.SPASTIC, sg.NON_SPASTIC))
+            nodata = sum(1 for r in legs.values() if r["source"] == sg.SRC_NONE)
+            print(f"    {unknown} of {len(legs)} legs have no spasticity level at all"
+                  f" ({nodata} with source '{sg.SRC_NONE}')")
+            mas_path = getattr(sg, "MAS_CSV", "?")
+            print(f"    mas_scores.csv: {'FOUND' if os.path.exists(mas_path) else 'MISSING'}"
+                  f"  ({mas_path})")
+            try:
+                import pt_cohort_common as _p
+                reg = _p.load_registry()
+                print(f"    participant registry: "
+                      f"{'FOUND, ' + str(len(reg)) + ' entries' if reg else 'EMPTY or MISSING'}")
+            except Exception as e:
+                print(f"    participant registry: could not load ({e})")
+            cache_pids = sorted({r['pid'] for r in legs.values()})
+            print(f"    participant ids seen in the cache: "
+                  f"{', '.join(cache_pids[:12])}{' ...' if len(cache_pids) > 12 else ''}")
+            try:
+                mas = sg.load_mas_by_leg(condition_prefix=args.condition)
+                mas_keys = sorted({str(k) for k in list(mas)[:12]})
+                print(f"    keys the MAS table is indexed by: "
+                      f"{', '.join(mas_keys) if mas_keys else '(empty)'}")
+                print("    If those two id formats do not match, that is the cause:")
+                print("    the label lookup silently misses and every leg reads unknown.")
+            except Exception as e:
+                print(f"    MAS table: could not load ({e})")
             continue
 
         stat_rows = []
@@ -309,16 +367,20 @@ def main(argv=None):
             pcc._holm_adjust(stat_rows)
 
         print(f"\n  {'parameter':<18}{'healthy median':>15}{'[min,max]':>22}"
-              f"{'spastic median':>15}{'delta':>8}{'AUC':>7}{'holm p':>9}")
+              f"{'spastic median':>15}{'delta':>8}{'AUC':>7}{'holm p':>9}"
+              f"{'published':>11}")
         for sr in stat_rows:
             m = sr["parameter"]
             H = describe(healthy_rows, m)
             S = describe(spastic_rows, m)
             band = f"[{H['lo']:.3g}, {H['hi']:.3g}]"
             holm = sr.get("holm_p") or sr.get("mann_whitney_p")
+            pub = PUBLISHED_AUC.get(m)
+            pub_s = f"{pub[0]:.2f}" if pub else "-"
             print(f"  {m:<18}{H['median']:>15.4g}{band:>22}{S['median']:>15.4g}"
                   f"{sr['cliffs_delta']:>8.2f}{sr['auc']:>7.2f}"
-                  f"{(holm if holm is not None else float('nan')):>9.3g}")
+                  f"{(holm if holm is not None else float('nan')):>9.3g}"
+                  f"{pub_s:>11}")
 
         print("\n  screening at the healthy bound, and honestly "
               "(leave-one-participant-out)")
@@ -372,6 +434,13 @@ def main(argv=None):
                       f"  ({r['direction']}, AUC {r['auc']:.2f}){flag}")
             print("  0.50 balanced accuracy is chance. A metric below its own MDC95")
             print("  cannot carry a threshold whatever its accuracy here says.")
+            print(f"\n  Published ceiling: for MAS 0 vs >0 the best metric reaches")
+            print(f"  AUC 0.807 on 131 knees. For GRADING severity among spastic")
+            print(f"  knees every published metric sat in "
+                  f"{PUBLISHED_SEVERITY_CEILING[0]:.2f}-{PUBLISHED_SEVERITY_CEILING[1]:.2f}"
+                  f" and none was")
+            print("  acceptable -- so a binary screen is the supported shape, and a")
+            print("  graded severity index is not. See the benchmarks doc, 4d.")
 
     if out_rows:
         import csv

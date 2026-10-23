@@ -120,7 +120,15 @@ def _out_csv(fp: str) -> str:
 
 PARAMS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n",
           "f", "area_ratio"]
-EXTRA = ["A0_deg", "omega_peak_deg_s"]
+# first_trough_depth and neutral_deg are here because the literature's two
+# best metrics are not among the seven we score. Whelan et al. 2018 (131 knees)
+# put first flexion amplitude at AUC 0.807 and plateau angle at 0.691, and
+# their best classifier is those two together at 77.9% accuracy -- while Ncyc,
+# which carries 1/7 of our composite, is their worst at 0.665 with an ANOVA
+# p of 0.594. compute_pt_params returns both as diagnostics; neither was
+# cached, so neither could be evaluated here. See
+# docs/reference/2026-08-24-pendulum-test-literature-benchmarks.md 4a/4b.
+EXTRA = ["A0_deg", "omega_peak_deg_s", "first_trough_depth", "A1_deg"]
 
 # Recorded alongside the parameters, not scored for reliability: these are what
 # distinguish the competing explanations for A0's scatter. A0 = release angle
