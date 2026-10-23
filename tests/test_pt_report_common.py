@@ -1329,3 +1329,77 @@ def test_row5_source_mas_unlabelled_caller_keeps_previous_behaviour():
 def test_mediapipe_is_the_suppressed_source():
     assert "MediaPipe" in common._MAS_SUPPRESSED_SOURCES
     assert "IMU" not in common._MAS_SUPPRESSED_SOURCES
+
+
+# ── exclusion scopes ─────────────────────────────────────────────────────────
+# An exclusion recording that the OPTICAL reference is missing is not a reason
+# for a phone-only analysis to discard the trial: the phone recording is
+# unaffected. These pin that an un-annotated registry keeps its original
+# drop-everything behaviour, that scope="optical" is honoured only where it
+# applies, and that an unrecognised scope fails conservative rather than
+# silently widening what an analysis accepts.
+
+def _write_registry(monkeypatch, tmp_path, payload):
+    reg_path = tmp_path / "excluded_trials.json"
+    reg_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(common, "EXCLUDED_TRIALS_PATH", str(reg_path))
+    return reg_path
+
+
+def test_legacy_string_entries_are_dropped_by_every_analysis(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {"5_left_pre_T1": "used own muscles"})
+    assert common.load_excluded_trials() == {"5_left_pre_T1": "used own muscles"}
+    assert common.load_excluded_trials(analysis="phone") == {
+        "5_left_pre_T1": "used own muscles"}
+
+
+def test_optical_scope_is_kept_by_a_phone_analysis_and_dropped_by_all(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {
+        "17_left_pre_T1": {"reason": "Motive saved no take", "scope": "optical"},
+        "15_left_pre_T2": {"reason": "used own muscles", "scope": "trial"},
+    })
+    assert set(common.load_excluded_trials()) == {"17_left_pre_T1", "15_left_pre_T2"}
+    # The optical-only exclusion is NOT applied to a phone-only analysis.
+    assert set(common.load_excluded_trials(analysis="phone")) == {"15_left_pre_T2"}
+
+
+def test_reason_strings_survive_both_entry_forms(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {
+        "a_left_pre_T1": "plain string reason",
+        "b_left_pre_T1": {"reason": "structured reason", "scope": "optical"},
+    })
+    got = common.load_excluded_trials()
+    # Callers display these; both forms must read back as plain strings.
+    assert got == {"a_left_pre_T1": "plain string reason",
+                   "b_left_pre_T1": "structured reason"}
+
+
+def test_an_unrecognised_scope_falls_back_to_dropping_everywhere(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {
+        "c_left_pre_T1": {"reason": "who knows", "scope": "something_new"},
+    })
+    # Conservative: an unknown scope must not quietly let a trial through.
+    assert set(common.load_excluded_trials(analysis="phone")) == {"c_left_pre_T1"}
+
+
+def test_an_unknown_analysis_name_is_rejected(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {})
+    with pytest.raises(ValueError):
+        common.load_excluded_trials(analysis="optical")
+
+
+def test_strict_loader_accepts_the_structured_form(tmp_path, monkeypatch):
+    # The exclusion UI writes through the strict loader. If it read an
+    # annotated registry as corrupt, toggling any exclusion would fail and the
+    # annotations would be unwritable.
+    _write_registry(monkeypatch, tmp_path, {
+        "d_left_pre_T1": {"reason": "no take", "scope": "optical"},
+        "e_left_pre_T1": "plain",
+    })
+    assert set(common._load_excluded_trials_strict()) == {"d_left_pre_T1", "e_left_pre_T1"}
+
+
+def test_strict_loader_still_rejects_a_non_string_reason(tmp_path, monkeypatch):
+    _write_registry(monkeypatch, tmp_path, {"f_left_pre_T1": {"reason": 17}})
+    with pytest.raises(common.RegistryCorruptError):
+        common._load_excluded_trials_strict()

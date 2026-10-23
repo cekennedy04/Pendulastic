@@ -298,22 +298,82 @@ def trial_key(participant, leg, condition, trial):
     return f"{participant}_{leg}_{condition}_T{trial}"
 
 
-def load_excluded_trials():
-    """{trial_key: reason} for trials that must be dropped from every
-    discovery/report/sweep -- e.g. a trial where the participant actively
-    used their own muscles to stop the pendulum swing instead of a passive
-    release, which invalidates the Popovic PT-score physics (and, if left
-    in, would corrupt the RMSE pipeline's parameter search too, since a
-    config could spuriously score well against non-passive motion).
+# Why an exclusion carries a scope. The registry began as "trials that must be
+# dropped from every discovery/report/sweep", and for its original entries that
+# is exactly right: a participant who used their own muscles to stop the swing
+# did not perform a pendulum test, so the trial is invalid for any purpose.
+#
+# It has since accumulated a second, different kind of entry -- the OPTICAL
+# REFERENCE was not recorded. Motive saved no take for Participant 17's pre
+# session; Participant 22's shank sat outside camera coverage through the hold;
+# two takes were never exported to CSV. In every one of those the phone
+# recording is unaffected, and two of them say so explicitly ("the video and
+# IMU raw log are intact").
+#
+# Dropping those from a PHONE-ONLY analysis discards usable data for a fault in
+# a different instrument. On 2026-10-23 that cost the within-session
+# test-retest 16 of 21 exclusions' worth of trials -- including Participant 17's
+# pre timepoint and Participant 22's left leg, which were absent from the
+# reliability estimate altogether.
+#
+#   "trial"   -- the trial itself is invalid. Drop it from everything. The
+#                default, including for every legacy string-valued entry, so
+#                an un-annotated registry behaves exactly as it always has.
+#   "optical" -- only the optical reference is missing or unusable. Analyses
+#                that score against OptiTrack must still drop it; analyses
+#                that read the phone alone may keep it.
+EXCLUSION_SCOPES = ("trial", "optical")
+
+
+def _exclusion_reason(value):
+    """The human-readable reason, whichever form the entry takes."""
+    if isinstance(value, dict):
+        return str(value.get("reason", ""))
+    return str(value)
+
+
+def _exclusion_scope(value):
+    """An entry's scope, defaulting to the conservative "trial" -- so a plain
+    string, or a dict with a scope this version does not recognise, keeps the
+    original drop-from-everything behaviour rather than silently widening what
+    an analysis will accept."""
+    if isinstance(value, dict):
+        scope = value.get("scope", "trial")
+        if scope in EXCLUSION_SCOPES:
+            return scope
+    return "trial"
+
+
+def load_excluded_trials(analysis: str = "all"):
+    """{trial_key: reason} for trials to drop.
+
+    analysis="all" (the default, and what every existing caller gets) returns
+    every entry, which is the original behaviour: drop from every
+    discovery/report/sweep.
+
+    analysis="phone" returns only the entries that invalidate the trial
+    itself, leaving out those scoped to a missing optical reference. Use it
+    from an analysis that reads the phone alone -- within-session
+    repeatability, for instance -- where an OptiTrack failure is not a reason
+    to discard a perfectly good phone recording. See EXCLUSION_SCOPES above.
+
     Missing or malformed file -> {} , never raises, matching this
     codebase's other JSON-registry loaders (imu_calibration_config.py,
     pt_cohort_common.load_registry())."""
+    if analysis not in ("all", "phone"):
+        raise ValueError(
+            f"analysis must be 'all' or 'phone', got {analysis!r}")
     try:
         with open(EXCLUDED_TRIALS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    if analysis == "all":
+        return {k: _exclusion_reason(v) for k, v in data.items()}
+    return {k: _exclusion_reason(v) for k, v in data.items()
+            if _exclusion_scope(v) == "trial"}
 
 
 # NOTE: excluded_trials.json's UI write path is set_trials_excluded() below
@@ -413,11 +473,23 @@ def _load_excluded_trials_strict() -> dict:
             data = json.load(f)
     except ValueError as e:
         raise RegistryCorruptError(f"{EXCLUDED_TRIALS_PATH} is not valid JSON: {e}") from e
+    # A value may be a plain reason string, or the structured form
+    # {"reason": str, "scope": ...} that carries an exclusion's scope (see
+    # EXCLUSION_SCOPES). Both are valid; anything else is corruption. This
+    # check has to admit the structured form or the exclusion UI would read an
+    # annotated registry as corrupt and refuse to write, and set_trials_excluded
+    # would be unable to preserve the annotations it round-trips.
+    def _valid_value(v):
+        if isinstance(v, str):
+            return True
+        return isinstance(v, dict) and isinstance(v.get("reason", ""), str)
+
     if not isinstance(data, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+            isinstance(k, str) and _valid_value(v) for k, v in data.items()):
         raise RegistryCorruptError(
             f"{EXCLUDED_TRIALS_PATH} must contain a JSON object of string "
-            f"keys to string values, got {type(data).__name__}")
+            f"keys to reason strings or {{reason, scope}} objects, got "
+            f"{type(data).__name__}")
     return data
 
 

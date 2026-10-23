@@ -172,6 +172,7 @@ def main() -> int:
     import imu_calibration_tuner as tuner
     import rmse_pipeline_common as rpc
     import pendulastic_pt_score as pts
+    import pt_report_common
     from imu_calibration_config import load_config
 
     cfg = load_config()
@@ -182,8 +183,17 @@ def main() -> int:
     print(f"tree                  {_tree_state()}", flush=True)
     print(f"algorithm fingerprint {fp}", flush=True)
     print(f"cache                 {cache_file}", flush=True)
-    trials = batch.discover_trials()
-    print(f"{len(trials)} trials discovered", flush=True)
+    # analysis="phone": this script never touches OptiTrack, so a trial whose
+    # only recorded fault is a missing optical reference is still a perfectly
+    # good phone recording to measure repeatability on. Keeping them recovers
+    # Participant 17's pre timepoint and Participant 22's left leg, which the
+    # default exclusion set removed from this estimate entirely.
+    trials = batch.discover_trials(analysis="phone")
+    n_all = len(pt_report_common.load_excluded_trials())
+    n_phone = len(pt_report_common.load_excluded_trials(analysis="phone"))
+    print(f"{len(trials)} trials discovered "
+          f"({n_all - n_phone} kept that an optical analysis would drop)",
+          flush=True)
 
     try:
         cache = json.load(open(cache_file, encoding="utf-8"))

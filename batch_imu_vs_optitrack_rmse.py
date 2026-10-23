@@ -253,7 +253,7 @@ def _trial_key_for(imu_path: str, optitrack_path):
         parsed["participant"], parsed["leg"], parsed["condition"], parsed["trial"])
 
 
-def discover_trials() -> list:
+def discover_trials(analysis: str = "all") -> list:
     """Glob Recordings/**/Trial_*_imu.csv, derive each trial's 4 component
     sibling paths and matching OptiTrack path. Trials with no OptiTrack
     match are still returned (optitrack_path=None) so main() can count and
@@ -261,8 +261,14 @@ def discover_trials() -> list:
     discovery output. Trials present in pt_report_common.load_excluded_trials()
     are dropped entirely (2026-08-11 addition) -- this pipeline previously
     did not respect that registry at all, unlike pt_report_common's own
-    discover_all_trials()."""
-    excluded = pt_report_common.load_excluded_trials()
+    discover_all_trials().
+
+    `analysis` is passed straight to load_excluded_trials and defaults to
+    "all", so every existing caller keeps dropping every exclusion. A
+    phone-only caller -- within-session repeatability, say -- passes
+    analysis="phone" to keep the trials whose only recorded fault is a
+    missing optical reference; see EXCLUSION_SCOPES in pt_report_common."""
+    excluded = pt_report_common.load_excluded_trials(analysis=analysis)
     trials = []
     pattern = os.path.join(REC_ROOT, "**", "Trial_*_imu.csv")
     for imu_path in sorted(glob.glob(pattern, recursive=True)):
