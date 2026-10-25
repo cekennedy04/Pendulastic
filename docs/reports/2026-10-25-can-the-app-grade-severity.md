@@ -26,10 +26,12 @@ app, not about a reimplementation of it. `mas_estimate` rather than `pt_to_mas`
 because the refusal is part of the answer: a grader that declines precisely on
 the most affected limbs is a healthy-leg detector with a disclaimer.
 
-Nine profiles. Five are a graded tone ladder, L0 (healthy) to L4, varying only
-baseline muscle tone and reflex gain on the published decomposition. Four are
-distinct mechanisms: a catch that releases, a catch that holds, a free fall with
-no ring-down, and a mechanical end-stop.
+Ten profiles, all on the rig's settled geometry (thigh inclined, passive rest
+at a knee angle of 118 degrees). Five are a graded tone ladder, L0 (healthy) to
+L4, varying only baseline muscle tone and reflex gain on the published
+decomposition. Five are distinct mechanisms: a catch that releases, two holds at
+different plateaus, a critically damped fall with no ring-down, and a mechanical
+end-stop.
 
 ## Finding 1 -- across the whole severity range, the app prints one grade
 
@@ -56,16 +58,22 @@ monotone metric compressed inside one band produces exactly this.
 
 At one intended severity, changing only the mechanism:
 
+| intent 2 | PT7 | grade |
+|---|---|---|
+| catch_and_hold_125 (falls to 125, held, no ring-down) | 1.950 | **4** |
+| catch_release_high (caught at 150.6, keeps swinging) | 0.316 | **1+** |
+| tone_L2 (same intended severity, raised tone) | 0.212 | **1** |
+
 | intent 3 | PT7 | grade |
 |---|---|---|
-| catch_and_hold_140 (falls to 140, held, no ring-down) | 1.925 | **4** |
-| tone_L3 (same intended severity, raised tone) | 0.234 | **1** |
+| catch_and_hold_140 | 1.925 | **4** |
+| tone_L3 | 0.234 | **1** |
 
-Three grades apart, same intended severity. Expressed as a ratio of the two
-effects -- the range PT7 covers across the entire severity ladder, divided by
-its largest spread among profiles at one severity:
+A 9.2x spread and three different grades at one intended severity. Expressed as
+a ratio of the two effects -- the range PT7 covers across the entire severity
+ladder, divided by its largest spread among profiles at one severity:
 
-**0.167 / 1.691 = 0.10.** PT7 moves ten times further when the kind of
+**0.167 / 1.738 = 0.10.** PT7 moves ten times further when the kind of
 impairment changes than when its amount goes from none to severe.
 
 ## Finding 3 -- every metric that works is unnormalised; every ratio fails
@@ -75,22 +83,30 @@ produces, scored and diagnostic alike:
 
 | metric | severity range | mechanism spread | ratio | verdict |
 |---|---|---|---|---|
-| `P_plus` (first-half goniometric area) | 36.03 | 5.26 | **6.85** | severity dominates |
-| `omega_peak_deg_s` | 223.19 | 35.77 | **6.24** | severity dominates |
-| `P_total` (total goniometric area) | 76.35 | 25.25 | **3.02** | severity dominates |
-| `neutral_deg` (plateau) | 43.96 | 20.55 | 2.14 | severity dominates |
-| `first_trough_depth` (F1amp) | 39.83 | 18.68 | 2.13 | severity dominates |
-| `A0_deg` | 43.74 | 20.70 | 2.11 | severity dominates |
-| `P_minus` | 40.33 | 19.99 | 2.02 | severity dominates |
-| `A1_deg` | 83.57 | 47.94 | 1.74 | comparable |
-| `omega_max_n` | 1.65 | 1.66 | 0.99 | CONFOUND DOMINATES |
-| `omega_min_n` | 1.65 | 1.66 | 0.99 | CONFOUND DOMINATES |
-| `phi_max_ratio` | 0.29 | 0.52 | 0.55 | CONFOUND DOMINATES |
+| `P_plus` (first-half goniometric area) | 36.03 | 7.16 | **5.03** | severity dominates |
+| `neutral_deg` (plateau) | 43.96 | 20.55 | **2.14** | severity dominates |
+| `A0_deg` | 43.74 | 20.70 | **2.11** | severity dominates |
+| `omega_peak_deg_s` | 223.19 | 107.91 | **2.07** | severity dominates |
+| `P_total` (total goniometric area) | 76.35 | 38.41 | 1.99 | comparable |
+| `first_trough_depth` (F1amp) | 39.83 | 29.83 | 1.34 | comparable |
+| `P_minus` | 40.33 | 31.26 | 1.29 | comparable |
+| `A1_deg` | 83.57 | 88.20 | 0.95 | CONFOUND DOMINATES |
+| `omega_max_n` | 1.65 | 2.36 | 0.70 | CONFOUND DOMINATES |
+| `omega_min_n` | 1.65 | 2.36 | 0.70 | CONFOUND DOMINATES |
+| `phi_max_ratio` | 0.29 | 0.58 | 0.50 | CONFOUND DOMINATES |
 | `N` | 1.50 | 5.50 | 0.27 | CONFOUND DOMINATES |
-| `R2n` | 0.24 | 1.02 | 0.24 | CONFOUND DOMINATES |
-| **`pt7`** | 0.17 | 1.69 | **0.10** | CONFOUND DOMINATES |
-| `area_ratio` | 0.01 | 0.93 | **0.01** | CONFOUND DOMINATES |
-| `f` | 0.00 | 0.80 | 0.00 | CONFOUND DOMINATES |
+| `R2n` | 0.24 | 1.07 | 0.22 | CONFOUND DOMINATES |
+| **`pt7`** | 0.17 | 1.74 | **0.10** | CONFOUND DOMINATES |
+| `area_ratio` | 0.01 | 0.94 | **0.01** | CONFOUND DOMINATES |
+| `f` | 0.00 | 0.81 | 0.00 | CONFOUND DOMINATES |
+
+These numbers moved when the rig geometry was settled and a third mechanism was
+added at intended severity 2, and the direction is worth recording: `A1_deg`
+fell from 1.74 to 0.95 and `first_trough_depth` from 2.13 to 1.34. Both looked
+safe when only two mechanisms were sampled. Four metrics still clear the line;
+only `P_plus` clears it with real margin. An estimate of the confound built on
+two mechanisms is optimistic, and an estimate built on five is still a lower
+bound.
 
 The split is exact and it is not about which parameter: **every metric where
 severity dominates is an unnormalised amplitude, velocity or area. Every metric
@@ -193,9 +209,34 @@ dialled. If real control knees ring at 1.5 Hz and the rig is built to ring at
 limb, and every severity grade obtained on it afterwards would be a grade of
 something that is not a leg.
 
-## Finding 5 -- the refusal lands where it hurts
+## Finding 5 -- a healthy limb with no tone at all is graded "4"
 
-One of nine profiles gets no grade: `tone_L4`, at 33 per cent of the profiles at
+`fall_no_ringdown` is a healthy limb: zero tone, zero short-range stiffness,
+zero reflex gain, no end-stop. The only thing changed from `tone_L0` is the
+damping, raised to critical so the limb falls to its rest and arrives without
+oscillating. It is not a severity and it is not in `SEVERITY_INTENT`.
+
+**It scores PT7 1.952 and the app grades it "4"** -- the most severe category on
+the scale -- alongside `catch_and_hold_125` at 1.950 and `catch_and_hold_140` at
+1.925, which are the actual severe profiles.
+
+The mechanism is the same one behind every other finding here. With no
+oscillations there is no second peak and no return velocity, so the ratios built
+on them collapse to zero and every one-sided penalty maxes out. The score is
+responding to the ABSENCE of a ring-down, and a ring-down can be absent because
+a limb is rigid or because it is damped, which are not the same clinical object
+and are not even the same organ -- damping at the knee is as much a property of
+the mount, the cushion and the trouser as of the leg.
+
+This is the single result that should stop a severity grade being shown to an
+assessor, independently of everything above. A score that awards its maximum to
+a healthy limb for a reason outside the limb is not conservative in one
+direction; it is wrong in the direction that matters, and the error is invisible
+on the trace because the trace looks calm.
+
+## Finding 6 -- the refusal lands where it hurts
+
+One of ten profiles gets no grade: `tone_L4`, at 33 per cent of the profiles at
 intended severity 3 or 4. The excursion gate is doing what it was designed to do
 and it is the right behaviour -- the alternative is reporting a barely-moving leg
 as mild. But it means the app's severity coverage has a ceiling built into it,
@@ -234,19 +275,21 @@ not be MAS 0 or 1.
 4. **Stop scoring `area_ratio` and `f`.** Ratios 0.01 and 0.00. `area_ratio` is
    the ratio of the panel's two best metrics and destroys both.
 5. **Do not report a severity grade from PT7 at all** until the rig has been
-   graded blind. The current output is one grade across the full range, and a
-   single grade presented as a measurement is worse than no grade.
+   graded blind. The current output is one grade across the full range, a
+   single grade presented as a measurement is worse than no grade, and
+   Finding 5 is on its own sufficient: the scale's maximum is awarded to a
+   healthy limb for a property of the mount.
 
 Items 1 and 2 are safe now. Items 3 to 5 change what the app prints and should
 wait for a decision.
 
 ## Open questions
 
-- Is the vertical rig's thigh horizontal or inclined? It decides where the
-  passive rest sits and therefore which arrest angles are producible at all --
-  see `rig_neuromuscular_model.GEOMETRY_THIGH_INCLINED` and
-  `GEOMETRY_THIGH_HORIZONTAL`. On the inclined geometry this corpus implies, a
-  hold at a knee angle of 90 degrees is unreachable.
+- ~~Is the vertical rig's thigh horizontal or inclined?~~ **Settled
+  2026-10-25: inclined, matching the corpus.** Holds are producible only
+  between knee angles of 125 and 160, and "falls and stops near 90" is not
+  producible as a hold at all. See the plan document's settled-geometry
+  section.
 - Does the rig's motor do position control, torque control, or impedance
   control? Three profiles contain genuine discontinuities (a short-range
   stiffness yield, an end-stop) that no torque source reproduces.

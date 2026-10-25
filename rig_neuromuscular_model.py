@@ -624,11 +624,40 @@ def motor_command(sim: dict, rig_limb: Limb = None) -> dict:
 #     falls to its own rest and stays there WITHOUT RINGING DOWN, which is a
 #     damping profile, not a hold.
 #
-# Both are provided. Which one the vertical rig will be is an open question for
-# the build, and it decides which profiles are even producible.
+# SETTLED 2026-10-25: the rig is built THIGH INCLINED, matching the corpus.
+# `RIG_GEOMETRY` below is that decision and everything in PROFILES is built on
+# it. The horizontal variant is kept as a reference for reading the literature,
+# whose textbook description of the test assumes a vertically hanging shank, and
+# is NOT the build.
+#
+# Three consequences follow and are not negotiable, they are geometry:
+#
+#   1. A HOLD is only producible between a knee angle of about 125 and 160. The
+#      solver refuses below 119 (one degree short of the rest) because there is
+#      nothing to hold against, and a hold at 120 needs 0.7 Nm and leaves A0 at
+#      60 -- arithmetically a hold, clinically indistinguishable from a healthy
+#      swing. 125 is the deepest hold worth dialling.
+#   2. "Falls and stops near 90 degrees" is NOT producible as a hold on this
+#      rig. The nearest producible traces are `fall_no_ringdown` -- a critically
+#      damped fall that arrives at the rest without oscillating -- and
+#      `contracture_stop`, which truncates the first overshoot and then returns
+#      to the rest. Both are in PROFILES; neither holds the limb at 90.
+#   3. `q_rest_deg = 62.0` is INFERRED, not measured. It comes from this
+#      cohort's control excursion: A0 = release - rest, and the controls' A0 is
+#      about 62 degrees from a 180 degree release. The rig's actual rest is a
+#      property of its mount and must be MEASURED once it exists, and this
+#      constant updated -- every hold angle, and the refusal boundary, move with
+#      it.
 
 GEOMETRY_THIGH_INCLINED = Limb()                      # q_rest 62, this corpus
 GEOMETRY_THIGH_HORIZONTAL = replace(Limb(), q_rest_deg=90.0)
+
+#: The geometry the rig is being built to. Profiles are built from this, so a
+#: later change to the mount is a one-line change here plus a re-run.
+RIG_GEOMETRY = GEOMETRY_THIGH_INCLINED
+
+#: Deepest hold worth dialling, and the shallowest. See consequence 1 above.
+HOLD_RANGE_DEG = (125.0, 160.0)
 
 
 # ── Builders: a profile is a mechanism, dialled ──────────────────────────────
@@ -855,23 +884,30 @@ PROFILES = {
 
     # The two the user named, and the pair this whole module exists for: same
     # intended grade, opposite traces.
-    "catch_release_high": catch_and_release(),
-    "catch_and_hold_140": catch_and_hold(140.0),
+    "catch_release_high": catch_and_release(base=RIG_GEOMETRY),
+    "catch_and_hold_140": catch_and_hold(140.0, base=RIG_GEOMETRY),
 
-    # The deeper hold, only producible on the horizontal-thigh geometry. Named
-    # for what it is rather than "90" so the geometry dependence is not lost.
-    "fall_no_ringdown_90": Profile(
-        name="fall_no_ringdown_90",
-        limb=tone_limb(1.0, 1.0, base=GEOMETRY_THIGH_HORIZONTAL),
-        note="Horizontal-thigh geometry: the shank falls the full 90 deg to "
-             "vertical and arrives without oscillating, because the limb is "
-             "critically damped. This is the OTHER reading of 'falls and stops "
-             "at 90' -- no hold, no reflex, just damping. On this geometry it "
-             "is reachable; on the inclined rig it is not."),
+    # The deepest hold this geometry supports. 125, not 90: see consequence 1.
+    "catch_and_hold_125": catch_and_hold(125.0, base=RIG_GEOMETRY),
+
+    # The producible reading of "falls and then stops". No hold and no reflex:
+    # the limb is critically damped, so it arrives at its own rest and stays
+    # there without a single oscillation. On the inclined rig that rest is a
+    # knee angle of 118, not 90, and nothing can make it 90 -- an extensor
+    # reflex holds the limb SHORT of its rest and gravity will not take it
+    # further. This is the trace; the angle is what the mount says it is.
+    "fall_no_ringdown": Profile(
+        name="fall_no_ringdown",
+        limb=tone_limb(1.0, 1.0, base=RIG_GEOMETRY),
+        note="Critically damped: falls to the passive rest and arrives without "
+             "oscillating. No tone, no reflex, no end-stop -- the whole effect "
+             "is damping, which means it is NOT a severity and a score that "
+             "reads it as one is reading the mount."),
 
     # Mechanical, not neural.
     "contracture_stop": Profile(
         name="contracture_stop",
+        limb=RIG_GEOMETRY,
         end_stop=EndStop(k_nm=0.5, q0_deg=80.0, width_deg=8.0, b_nms=4.0),
         note="No reflex at all: the limb falls freely and hits an end-range "
              "wall that truncates the first overshoot, then returns to its "
@@ -882,8 +918,10 @@ PROFILES = {
 #: Intended ordering for severity work. NOT a calibration -- see PROFILES.
 #: The two same-grade-different-shape entries share a rank on purpose, because
 #: a severity metric that ranks them apart is responding to shape, not tone.
-#: `contracture_stop` and `fall_no_ringdown_90` are deliberately absent: they
-#: have no intended grade, which is the point of them.
+#: `contracture_stop` and `fall_no_ringdown` are deliberately absent: they have
+#: no intended grade, which is the point of them. `fall_no_ringdown` especially
+#: -- it is pure damping on a healthy limb, so anything that grades it as
+#: affected is grading the mount.
 SEVERITY_INTENT = {
     "tone_L0": 0,
     "tone_L1": 1,
@@ -897,6 +935,7 @@ SEVERITY_INTENT = {
     # where this trace appears.
     "catch_release_high": 2,
     "catch_and_hold_140": 3,
+    "catch_and_hold_125": 2,
     "tone_L4": 4,
 }
 
@@ -1127,14 +1166,17 @@ def main() -> int:
     print(f"{'profile':22s} {'slope':>6s} {'resid':>6s} {'stop sprd':>10s} "
           f"{'rest sprd':>10s}  verdict")
     print("-" * 96)
+    settled_spreads = {}
     for key in PROFILES:
         pr = release_height_probe(PROFILES[key])
+        settled_spreads[key] = pr["settled_spread_deg"]
         print(f"{key:22s} {pr['first_stop_slope']:6.2f} "
               f"{pr['max_abs_residual_deg']:6.1f} "
               f"{pr['first_stop_spread_deg']:10.1f} "
               f"{pr['settled_spread_deg']:10.1f}  {pr['verdict']}")
-    print("  The settled column is the point: it is under 1 deg for eight of "
-          "the nine")
+    flat = [k for k, v in settled_spreads.items() if v == v and v < 1.0]
+    print(f"  The settled column is the point: it is under 1 deg for "
+          f"{len(flat)} of the {len(PROFILES)}")
     print("  profiles, contracture and tonic hold included, so the plateau "
           "cannot tell")
     print("  these mechanisms apart. The exception is tone_L4, where a lower "
@@ -1145,17 +1187,40 @@ def main() -> int:
           "signature.")
 
     print()
-    print("Geometry: which arrest angles a hold can reach")
-    for geom, label in ((GEOMETRY_THIGH_INCLINED, "thigh inclined (rest 118)"),
-                        (GEOMETRY_THIGH_HORIZONTAL, "thigh horizontal (rest 90)")):
-        reach = []
-        for a in (160.0, 150.0, 140.0, 130.0, 120.0, 110.0, 100.0, 90.0):
-            try:
-                catch_and_hold(a, base=geom)
-                reach.append(f"{a:.0f}")
-            except ValueError:
-                pass
-        print(f"  {label:28s} {' '.join(reach) if reach else '(none)'}")
+    print(f"Geometry: THIGH INCLINED (settled 2026-10-25), passive rest at a "
+          f"knee angle of")
+    print(f"{EXTENDED_DEG - RIG_GEOMETRY.q_rest_deg:.0f} deg. Which hold "
+          f"angles that leaves reachable, and what each costs:")
+    print(f"{'hold at':>9s} {'tonic Nm':>9s} {'A0':>6s} {'N':>5s}  note")
+    print("-" * 62)
+    import pendulastic_pt_score as _p
+    for a in (165.0, 160.0, 150.0, 140.0, 130.0, 125.0, 120.0, 119.0, 110.0, 90.0):
+        try:
+            prof = catch_and_hold(a, base=RIG_GEOMETRY)
+        except ValueError:
+            print(f"{a:9.0f} {'--':>9s} {'--':>6s} {'--':>5s}  "
+                  f"past the passive rest: nothing to hold against")
+            continue
+        s = simulate(prof)
+        pr = _p.compute_pt_params(s["t"], s["angle_deg"])
+        lo, hi = HOLD_RANGE_DEG
+        a0 = pr["A0_deg"] if pr else float("nan")
+        # The two ways out of the useful range are opposite failures and
+        # printing one message for both hides which is which.
+        if a > hi:
+            note = (f"too high: A0 {a0:.0f} is below the app's own 25 deg "
+                    f"interpretable floor")
+        elif a < lo:
+            note = "too close to the rest: a 0.7 Nm hold is a healthy swing"
+        else:
+            note = ""
+        print(f"{a:9.0f} {prof.reflex.t_max_nm:9.1f} "
+              f"{pr['A0_deg'] if pr else float('nan'):6.1f} "
+              f"{pr['N'] if pr else float('nan'):5.2f}  {note}")
+    print(f"  Useful hold range is {HOLD_RANGE_DEG[0]:.0f}-"
+          f"{HOLD_RANGE_DEG[1]:.0f} deg. A hold at 120 needs 0.7 Nm and leaves")
+    print("  A0 at 60, which is arithmetically a hold and clinically a healthy "
+          "swing.")
     return 0 if ok else 1
 
 

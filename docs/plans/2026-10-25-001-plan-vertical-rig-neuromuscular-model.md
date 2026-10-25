@@ -167,6 +167,81 @@ protocol proposal: drop from several heights and fit the first-stop slope. It
 would separate contracture from hyperreflexia on kinematics alone, which no
 single trace does.
 
+## SETTLED: the thigh is inclined, and what that costs
+
+`RIG_GEOMETRY = GEOMETRY_THIGH_INCLINED`. Passive rest at a knee angle of 118
+degrees, i.e. 62 degrees of flexion, inferred from this cohort's control
+excursion (A0 = release minus rest, and the controls' A0 is about 62 degrees
+from a 180 degree release). All ten shipped profiles are built on it.
+
+### Consequence 1 -- holds are producible only between 125 and 160 degrees
+
+An extensor reflex arrests the limb SHORT of its rest. It cannot hold it
+beyond, because nothing in a spastic limb pulls further into flexion than
+gravity already does. `catch_and_hold` solves the tonic gain for a requested
+plateau and now refuses outside the reachable band, with the geometry as the
+reason rather than a tuning failure:
+
+| hold at | tonic torque | A0 | N | |
+|---|---|---|---|---|
+| 165 | 15.6 Nm | 15.1 | 0.50 | too high: A0 is below the app's own 25 deg interpretable floor |
+| 160 | 13.9 Nm | 20.1 | 0.00 | |
+| 150 | 10.6 Nm | 30.1 | 0.00 | |
+| 140 | 7.3 Nm | 40.1 | 0.00 | |
+| 130 | 4.0 Nm | 50.0 | 0.00 | |
+| 125 | 2.3 Nm | 55.0 | 0.00 | deepest hold worth dialling |
+| 120 | 0.7 Nm | 60.0 | 0.00 | too close to the rest: a 0.7 Nm hold is a healthy swing |
+| 119 and below | -- | -- | -- | past the passive rest: nothing to hold against |
+
+The band is narrow at both ends and for opposite reasons. Above 160 the limb
+barely falls and the app refuses the trial on excursion. Below 125 the hold
+costs under 2 Nm and leaves A0 near the healthy value, so it is a hold
+arithmetically and a normal swing clinically. `HOLD_RANGE_DEG = (125, 160)`.
+
+### Consequence 2 -- "falls and stops near 90" is not producible as a hold
+
+It was the second of the two waveform families asked for, and on this geometry
+no hold reaches it. Two producible traces are near it and both now ship, with
+the distinction kept visible rather than one of them quietly relabelled:
+
+- **`fall_no_ringdown`** -- critically damped, falls to its rest at 118 and
+  arrives without a single oscillation. This is the "falls and then stops"
+  shape. The angle is 118 because the mount says so, not 90.
+- **`contracture_stop`** -- free fall into an end-range wall that truncates the
+  first overshoot, then back to the rest.
+
+If a hold at 90 is genuinely wanted, the mount has to change, and that is a
+mechanical decision with a measurement attached, not a parameter.
+
+### Consequence 3 -- `q_rest_deg = 62` is inferred and must be measured
+
+It comes from control A0, not from the rig. Every hold angle in the table above
+and the refusal boundary itself move with it, so the first thing to do once the
+rig exists is measure its unactuated rest and update the constant. It is one
+line and everything downstream re-derives.
+
+### What settling it did to the findings
+
+Adding `catch_and_hold_125` gave intent level 2 a third mechanism, and the
+companion report's central number got worse, not better:
+
+| | before | after |
+|---|---|---|
+| PT7 spread at one intended severity | 8.2x | **9.2x** |
+| PT7 signal-to-confound ratio | 0.10 | 0.10 |
+| metrics where severity dominates | 7 | 4 |
+
+`A1_deg` and `first_trough_depth` dropped below the line once a third mechanism
+was sampled, which is the right lesson about both: they looked safe on two.
+
+And the new profile that is not a severity at all exposed the worst single
+result in this work. **`fall_no_ringdown` -- a healthy limb, zero tone, zero
+reflex gain, nothing but damping -- scores PT7 1.952 and is graded "4".** The
+app's most severe category, awarded to a limb with no spasticity, because the
+trace has no oscillations in it. Nothing about tone produced that grade; the
+damping did. Whatever else is decided about PT7, a score that reads a mount
+property as maximal spasticity cannot be shown to an assessor.
+
 ## Validation protocol, following the only precedent that exists
 
 There is no published motorised pendulum-test or Wartenberg simulator. Every
@@ -208,15 +283,9 @@ should borrow from the elbow work rather than invent one.
 
 ## Decisions needed before the build
 
-1. **Thigh inclination.** It sets where the passive rest sits and therefore
-   which arrest angles exist. The corpus implies a rest at a knee angle of 118
-   degrees (62 degrees of flexion), on which a *hold* at 90 degrees is
-   unreachable: an extensor reflex arrests the limb short of its rest, never
-   beyond it. On a horizontal thigh the shank hangs vertical at 90 and "falls
-   and stops at 90" means a critically damped fall with no hold at all. Both
-   geometries ship (`GEOMETRY_THIGH_INCLINED`, `GEOMETRY_THIGH_HORIZONTAL`) and
-   `catch_and_hold` refuses, with the geometry reason, rather than silently
-   producing something else.
+1. ~~Thigh inclination.~~ **SETTLED 2026-10-25: inclined, matching the
+   corpus.** See the section below; `RIG_GEOMETRY` is that decision and every
+   profile is built from it.
 2. **Control mode.** Position, torque, or impedance. It decides whether the
    SRS and end-stop profiles are producible at all, and whether a clinician's
    hand on the shank feels a limb or a servo.
