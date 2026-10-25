@@ -151,6 +151,46 @@ class Limb:
 
 
 @dataclass(frozen=True)
+class Tone:
+    """Baseline tone and short-range stiffness: the two terms that are NOT a reflex.
+
+    Added after a literature check, because the first draft of this module was
+    missing the mechanism the field says matters most. De Groote et al.
+    decompose spastic pendulum kinematics into three torques and report that
+    "prior models simulating increased sensorimotor feedback of muscle
+    velocity fail to explain the key pendulum test kinematic outcomes":
+
+        baseline muscle TONE, a constant joint torque  -> the resting plateau
+        transient SHORT-RANGE STIFFNESS, scaling with tone -> collapses A0
+        delayed FORCE feedback, not velocity feedback  -> kills N
+
+    `torque_nm` is that constant tone. It is also the mechanism behind one of
+    the two kinds of sustained hold: Forman et al. find involuntary sustained
+    activity that is POSITION-INDEPENDENT in cerebral palsy but grows toward
+    extension in stroke. A constant torque is the CP-like hold; the Reflex
+    length channel is the stroke-like one. Lorentzen et al. attribute the
+    sustained activity to persistent inward currents in spinal motoneurones
+    rather than to reflex gain, which is why this term is not slaved to the
+    reflex trigger.
+
+    `srs_nm_per_rad` and `srs_yield_deg` are short-range stiffness: cross-
+    bridges hold for a small stretch and then YIELD, so the torque rises
+    steeply over the first few degrees of motion and then goes away. "Goes
+    away", not "saturates", is the load-bearing word and the first
+    implementation here got it wrong: holding the torque at its maximum once
+    the bridges broke left a standing extensor torque of 17 Nm, which drove
+    the joint 8 deg past full extension and put the plateau at a knee angle of
+    188. A yielded bridge carries no force. So SRS is non-zero only while the
+    limb is bound, it stops the instant the stretch exceeds the yield, and it
+    re-binds when the limb shortens -- which is what makes it collapse the
+    FIRST swing and leave the plateau alone.
+    """
+    torque_nm: float = 0.0           # constant extensor torque
+    srs_nm_per_rad: float = 0.0      # short-range stiffness slope
+    srs_yield_deg: float = 3.0       # stretch at which the bridges yield
+
+
+@dataclass(frozen=True)
 class Reflex:
     """A delayed, saturating stretch reflex with two channels.
 
@@ -176,8 +216,41 @@ class Reflex:
     constant adapt_tau_s. kappa = 0 is a hold that never releases; kappa near 1
     with a short tau is a clasp-knife-like give.
 
+    FORCE channel (`g_force`, `f_thr_nm`). Fires on the extensor torque the
+    limb is already generating, delayed. This is the channel Falisse et al.
+    found superior -- force plus force-rate feedback explained R^2 = 0.73 of
+    hamstring activity against 0.46 for a velocity-and-length model -- and the
+    one De Groote et al. needed to reproduce the lost oscillations. It is also
+    the physiology of the true clasp-knife: Cleland et al. report that
+    inhibition "was evoked only by large stretches that produced significant
+    muscle force. Short stretches that did not produce large forces evoked
+    only excitation."
+
+    Both the velocity and the force channel are kept, rather than the velocity
+    one being deleted on the literature's word. Keeping both lets this module
+    DEMONSTRATE the published result on its own traces instead of assuming it,
+    and `channel_ablation()` runs exactly that comparison.
+
     `t_max_nm` is the ceiling. Saturation matters: without it, gain and
     threshold trade off perfectly and the family structure disappears.
+
+    On the parameter values, the field disagrees with itself and the
+    disagreement is worth carrying rather than resolving by preference. He,
+    Norling & Wang find that "individual changes in the static stretch reflex
+    threshold, in the dynamic threshold, or in the gain can not stimulate the
+    whole spectrum of spasticity severity" and that coupled moves are needed.
+    Le Cavorzin et al., fitting 8 healthy and 15 spastic subjects, find the
+    opposite: "variation of the threshold coefficient alone allowed an overall
+    reproduction of experimental data... no subsequent variation of the reflex
+    gain was required." `graded_tone` moves thresholds and gains together,
+    which is He's recipe, and that choice is a choice.
+
+    `delay_s` is the one constant with usable published numbers at the knee:
+    quadriceps short-latency reflex onset 23-25 ms, electromechanical delay
+    40.5 ms in spastic CP against 54.7 ms in typically developing children
+    (Granata et al., 12 + 12 children -- a single small study behind a widely
+    repeated figure, so indicative rather than established). The default 40 ms
+    is their spastic value.
     """
     t_max_nm: float = 0.0           # torque ceiling; 0 disables the element
     g_vel: float = 0.0              # per (deg/s) above threshold, dimensionless drive
@@ -187,6 +260,10 @@ class Reflex:
     delay_s: float = 0.040          # afferent + electromechanical delay
     tau_rise_s: float = 0.030       # activation rise
     tau_fall_s: float = 0.120       # activation fall; slower than rise
+    g_force: float = 0.0            # per Nm of delayed extensor torque above
+                                    #  threshold -- the channel the literature
+                                    #  says actually kills the oscillations
+    f_thr_nm: float = 2.0           # force threshold for that channel
     adapt_kappa: float = 0.0        # 0 = no give, 1 = full give
     adapt_tau_s: float = 0.50       # how fast the give develops
 
@@ -217,6 +294,7 @@ class Profile:
     """
     name: str
     limb: Limb = field(default_factory=Limb)
+    tone: Tone = field(default_factory=Tone)
     reflex: Reflex = field(default_factory=Reflex)
     end_stop: EndStop = field(default_factory=EndStop)
     release_deg: float = EXTENDED_DEG
@@ -226,14 +304,60 @@ class Profile:
 
 # ── Integration ──────────────────────────────────────────────────────────────
 
-def _drive(q_d: float, qd_d: float, rfx: Reflex) -> float:
-    """Reflex drive from DELAYED state. Both channels, each one-sided."""
+def _drive(q_d: float, qd_d: float, f_d: float, rfx: Reflex) -> float:
+    """Reflex drive from DELAYED state. Three channels, each one-sided.
+
+    `f_d` is the delayed extensor torque the limb was already generating, which
+    is the force-feedback signal. Using the limb's own torque rather than a
+    separate muscle-force state keeps the loop to one quantity the rig can also
+    measure: a torque sensor on the shaft reads it directly, so a profile fitted
+    here is a profile the rig can be told to reproduce.
+    """
     e = 0.0
     if rfx.g_vel:
         e += rfx.g_vel * max(0.0, qd_d * _DEG - rfx.v_thr_deg_s)
     if rfx.g_len:
         e += rfx.g_len * max(0.0, q_d * _DEG - rfx.q_thr_deg)
+    if rfx.g_force:
+        e += rfx.g_force * max(0.0, f_d - rfx.f_thr_nm)
     return e
+
+
+#: The knee's own extension limit. A constant extensor tone with nothing to
+#: stop it drives the joint straight through full extension -- the first run of
+#: the tone ladder settled at a "knee angle" of 284 deg, which is not a reading
+#: a model should be able to produce. Real knees have a capsule.
+#:
+#: The form is the one standard in the field: Riener & Edrich's double-
+#: exponential passive-moment model, whose third term is a pure knee exponential
+#: independent of hip and ankle angle and is exactly this end-stop. The
+#: COEFFICIENTS here are NOT theirs. Two secondary reproductions of that paper
+#: disagree on the sign of its angle coefficient (-0.150 against +0.15), and
+#: coding an unverified constant from a source that contradicts itself would put
+#: a number in the model that nobody can check. These are set to the magnitude
+#: McFaull & Lamontagne measured directly instead -- 6 to 22 Nm at full
+#: extension, against under 4 Nm through midrange -- which is the quantity that
+#: matters here, and the provenance is honest about being a magnitude match
+#: rather than a fitted model.
+EXT_STOP_K_NM = 1.2
+EXT_STOP_WIDTH_DEG = 2.5
+EXT_STOP_DAMPING_NMS = 3.0
+
+
+def _extension_stop_torque(q: float, qd: float) -> float:
+    """Capsular torque resisting hyperextension, <= 0 (it flexes the knee).
+
+    Always applied: it is anatomy, not a profile setting. Below full extension
+    (q > 0) it is exactly zero, so it changes nothing about any trace that
+    stays inside the normal range.
+    """
+    over = -q * _DEG
+    if over <= 0.0:
+        return 0.0
+    t = EXT_STOP_K_NM * (math.exp(min(over / EXT_STOP_WIDTH_DEG, 40.0)) - 1.0)
+    if qd < 0.0:
+        t += EXT_STOP_DAMPING_NMS * (-qd)
+    return -t
 
 
 def _end_stop_torque(q: float, qd: float, es: EndStop) -> float:
@@ -268,11 +392,30 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
     rather than sub-stepped, which is why the step is 2 kHz and not 1 -- the
     rise constant is 30 ms and a 1 ms step keeps it comfortably resolved.
     """
-    L, rfx, es = prof.limb, prof.reflex, prof.end_stop
+    L, tone, rfx, es = prof.limb, prof.tone, prof.reflex, prof.end_stop
+    # The force channel feeds the limb's own extensor torque back into the
+    # torque that produces it, so it is a loop and it can run away. It did:
+    # a gain of 0.09 against a 30 Nm ceiling gave a loop gain of 2.7, the
+    # activation saturated on the standing tone alone, and the limb settled
+    # 134 deg past full extension. Checked rather than clamped, because a
+    # silently clamped runaway still produces a trace and the trace still
+    # looks like data.
+    if rfx.g_force * rfx.t_max_nm >= 1.0:
+        raise ValueError(
+            f"force-feedback loop gain is {rfx.g_force * rfx.t_max_nm:.2f} "
+            f"(g_force {rfx.g_force} x t_max_nm {rfx.t_max_nm}). At 1.0 the "
+            f"reflex sustains itself with no stretch at all. Lower the gain, "
+            f"or the ceiling.")
+    if rfx.g_force and rfx.f_thr_nm <= tone.torque_nm:
+        raise ValueError(
+            f"force threshold {rfx.f_thr_nm} Nm is at or below the standing "
+            f"tone {tone.torque_nm} Nm, so the reflex fires on a limb that is "
+            f"not being stretched. Raise f_thr_nm above the tone.")
     J, B, K = L.J, L.B, L.K
     grav = L.gravity_term
     q_rest = prof.limb.q_rest_deg / _DEG
     sin_mode = (prof.gravity == "sin")
+    srs_yield = tone.srs_yield_deg / _DEG
 
     # The release height sets the initial flexion. The human protocol holds at
     # full extension (q = 0); a lower hold starts the limb already flexed.
@@ -285,31 +428,62 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
     delay_n = max(0, int(round(rfx.delay_s * fs_sim)))
 
     q = np.zeros(n); qd = np.zeros(n); act = np.zeros(n)
-    t_r = np.zeros(n); t_e = np.zeros(n)
+    t_r = np.zeros(n); t_e = nperos = np.zeros(n)
+    t_t = np.zeros(n); t_s = np.zeros(n); t_x = np.zeros(n)
     q[:n_hold] = q0            # held, stationary: a genuinely flat baseline
+    # Short-range stiffness bound: the angle the cross-bridges last bound at.
+    # Held outside the RK4 state because it is non-smooth -- it re-binds the
+    # instant the limb shortens -- and integrating a discontinuity with a
+    # fourth-order scheme smears it over a step instead of applying it.
+    xb = q0
+    bound = True
+    # The extensor torque at the hold IS the tone, so the force channel has a
+    # signal before anything has moved. Seeding it at zero would let a
+    # force-fed profile start from an impossible state.
+    t_x[:n_hold] = tone.torque_nm
 
-    def accel(qv, qdv, av):
-        """q'' from the passive terms, the reflex and the end-stop."""
+    def accel(qv, qdv, av, xbv):
+        """q'' from passive terms, tone, SRS, the reflex and the end-stop.
+
+        Returns the extensor torque separately as well, because it is both the
+        force-feedback signal and what the motor has to supply.
+        """
         u = qv - q_rest
         restore = grav * (math.sin(u) if sin_mode else u)
+        t_tone = tone.torque_nm
+        stretch = qv - xbv
+        t_srs = (tone.srs_nm_per_rad * stretch
+                 if (tone.srs_nm_per_rad and bound and 0.0 <= stretch <= srs_yield)
+                 else 0.0)
         tr = rfx.t_max_nm * av
-        te = _end_stop_torque(qv, qdv, es)
-        return (-B * qdv - K * u - restore - tr - te) / J, tr, te
+        t_ext = t_tone + t_srs + tr
+        te = _end_stop_torque(qv, qdv, es) + _extension_stop_torque(qv, qdv)
+        return ((-B * qdv - K * u - restore - t_ext - te) / J,
+                tr, te, t_tone, t_srs, t_ext)
 
     state = np.array([q0, 0.0, 0.0, 0.0])   # q, qd, a, h
     for i in range(n_hold, n):
+        # SRS bound update, once per step: yield when the stretch exceeds the
+        # bridges' range, re-bind the moment the limb starts shortening. Held
+        # outside the RK4 state because both transitions are discontinuous.
+        if state[0] - xb > srs_yield:
+            bound = False
+        elif state[0] < xb:
+            xb, bound = state[0], True
         j = i - delay_n
         if j < n_hold:
-            e = 0.0            # nothing has moved yet, so nothing has fired
+            # Nothing has moved yet, so neither movement channel has fired --
+            # but the tone is already there, so the force channel has.
+            e = _drive(q0, 0.0, t_x[max(j, 0)], rfx)
         else:
-            e = _drive(q[j], qd[j], rfx)
+            e = _drive(q[j], qd[j], t_x[j], rfx)
         e = min(1.0, e)                      # saturate the drive, not just the
                                              # torque: a gain of 5 and a gain of
                                              # 50 must not be the same profile.
         def deriv(s):
             qv, qdv, av, hv = s
             a_cl = min(1.0, max(0.0, av))
-            qdd, _tr, _te = accel(qv, qdv, a_cl)
+            qdd = accel(qv, qdv, a_cl, xb)[0]
             e_eff = e * (1.0 - rfx.adapt_kappa * min(1.0, max(0.0, hv)))
             tau = rfx.tau_rise_s if e_eff > av else rfx.tau_fall_s
             ad = (e_eff - av) / max(tau, 1e-6)
@@ -325,8 +499,8 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
         state[3] = min(1.0, max(0.0, state[3]))
 
         q[i], qd[i], act[i] = state[0], state[1], state[2]
-        _qdd, tr, te = accel(state[0], state[1], state[2])
-        t_r[i], t_e[i] = tr, te
+        _qdd, tr, te, tt, ts, tx = accel(state[0], state[1], state[2], xb)
+        t_r[i], t_e[i], t_t[i], t_s[i], t_x[i] = tr, te, tt, ts, tx
 
     step = int(round(fs_sim / fs_out))
     idx = np.arange(0, n, step)
@@ -342,6 +516,9 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
         "activation": act,
         "t_reflex_nm": t_r,
         "t_endstop_nm": t_e,
+        "t_tone_nm": t_t,
+        "t_srs_nm": t_s,
+        "t_extensor_nm": t_x,
         "fs_out_hz": fs_out,
         "fs_sim_hz": fs_sim,
     }
@@ -393,17 +570,29 @@ def motor_command(sim: dict, rig_limb: Limb = None) -> dict:
     passive_gap = ((L.J - R.J) * qdd + (L.B - R.B) * qd
                    + L.K * u - R.K * u_r
                    + L.gravity_term * u - R.gravity_term * u_r)
-    torque = passive_gap + sim["t_reflex_nm"] + sim["t_endstop_nm"]
+    torque = (passive_gap + sim["t_reflex_nm"] + sim["t_endstop_nm"]
+              + sim["t_tone_nm"] + sim["t_srs_nm"])
 
     step = int(round(sim["fs_sim_hz"] / sim["fs_out_hz"]))
     idx = np.arange(0, len(q), step)
-    slew = np.gradient(torque, dt)
+    cmd = torque[idx]
+    # Slew is measured on the COMMAND the controller receives, not on the
+    # full-rate internal torque. Short-range stiffness yields discontinuously
+    # by construction, so differentiating the internal series reports slews of
+    # 10,000 Nm/s and up -- a property of the model's discontinuity, not a
+    # requirement on any motor. `torque_step_nm` carries that discontinuity
+    # separately: it is the largest single-sample jump at full rate, and it is
+    # the honest statement of the problem, which is that SRS is a clutch
+    # releasing and no torque source reproduces it. A rig that needs SRS needs
+    # a physical element or position control, not a bigger amplifier.
+    slew = np.gradient(cmd, 1.0 / sim["fs_out_hz"]) if len(cmd) > 2 else np.zeros(1)
     return {
         "t": sim["t_sim"][idx],
         "angle_deg": sim["angle_deg"],
-        "torque_nm": torque[idx],
+        "torque_nm": cmd,
         "peak_torque_nm": float(np.max(np.abs(torque))),
         "peak_slew_nm_s": float(np.max(np.abs(slew))),
+        "torque_step_nm": float(np.max(np.abs(np.diff(torque)))) if len(torque) > 1 else 0.0,
         "peak_speed_deg_s": float(np.max(np.abs(sim["qd_deg_s"]))),
         "peak_accel_deg_s2": float(np.max(np.abs(qdd)) * _DEG),
         "rig_limb": R,
@@ -462,38 +651,113 @@ def tone_limb(k_mult: float, zeta: float, base: Limb = None) -> Limb:
 
 
 def graded_tone(level: int, base: Limb = None) -> Profile:
-    """The conventional severity axis, levels 0-4, with the plateau EMERGENT.
+    """The conventional severity axis, levels 0-4, on the published decomposition.
 
-    Each level raises three things together: passive stiffness, damping ratio,
-    and a tonic length-channel reflex whose threshold falls as it strengthens.
+    Rewritten after a literature check. The first version raised passive K and
+    B and added a tonic length-channel reflex, which worked but is not what the
+    field reports. De Groote et al. state that models driven by muscle-velocity
+    feedback "fail to explain the key pendulum test kinematic outcomes", and
+    that "varying only baseline muscle torque and reflex gain, we simulated a
+    range of pendulum test kinematics observed across different levels of
+    spasticity". So this ladder varies exactly those two, holds the passive
+    properties at the healthy values, and ties short-range stiffness to the
+    tone as they describe.
 
-    The third one is the correction that matters. An earlier sweep of this
-    project shrank A0 by moving `q_rest_deg` toward extension by hand, and then
-    reported that A0 and the plateau carry severity -- which was circular,
-    because the rest shift WAS the dialled severity. Here nothing shifts the
-    rest. The tonic channel sets up a new equilibrium short of it, the plateau
-    rises because the reflex holds the limb there, and A0 = release - plateau
-    shrinks as a CONSEQUENCE. That makes "A0 tracks severity" a result of the
-    model rather than an assumption built into it.
+    Measured on the resulting ladder, each term does one job:
+
+      TONE alone, 0 to 13.5 Nm:   plateau 116.7 -> 168.6, A0 63.0 -> 11.3,
+                                  and N stays at exactly 5.50 throughout
+      SRS alone:                  almost nothing -- A0 63.0 -> 62.7 even at
+                                  400 Nm/rad, because a 3 deg yield can only
+                                  absorb ~6% of the fall's energy
+      FORCE gain, with SRS:       N 5.50 -> 4.00, first trough 29.6 -> 9.6
+      VELOCITY gain, same range:  first trough 30.8 -> 1.0 but N NON-MONOTONE
+                                  (5.5, 5.0, 4.5, 4.5, 5.5)
+
+    Two of those are worth keeping in view. The force channel reduces N
+    monotonically and the velocity channel does not, which is the published
+    claim reproduced on this project's own traces rather than taken on trust;
+    `channel_ablation()` prints the comparison. And the SRS row does NOT
+    reproduce the published claim that short-range stiffness is what collapses
+    the first swing: here the tone term does that work, because A0 is release
+    minus plateau and the tone moves the plateau. Reported as a disagreement
+    rather than tuned away, since the yield would have to be far above the few
+    degrees the mechanism is described with for SRS to carry the first swing.
+
+    SRS is still necessary, for a reason that only showed up when it was
+    switched off: the force channel CANNOT FIRE without it. A constant tone
+    gives a constant extensor torque, so a threshold above the tone is never
+    crossed and the force gain has literally no effect -- 0.0 to 0.03 produced
+    byte-identical traces. SRS supplies the force transient the force channel
+    detects. The two terms are coupled, not independent.
     """
     spec = {
-        #        k_mult  zeta   g_len  q_thr  g_vel  v_thr
-        0:      (1.0,   0.083,  0.000,  20.0, 0.000, 140.0),
-        1:      (3.0,   0.200,  0.004,  30.0, 0.007, 110.0),
-        2:      (8.0,   0.400,  0.012,  22.0, 0.011,  60.0),
-        3:      (18.0,  0.650,  0.030,  14.0, 0.017,  40.0),
-        4:      (40.0,  0.900,  0.070,   6.0, 0.025,  30.0),
+        #       tone_nm  srs/tone  g_force
+        0:      (0.0,     0.0,     0.000),
+        1:      (2.4,    10.0,     0.008),
+        2:      (5.6,    10.0,     0.012),
+        3:      (8.8,    10.0,     0.016),
+        4:      (11.4,   10.0,     0.020),
     }[int(level)]
-    k_mult, zeta, g_len, q_thr, g_vel, v_thr = spec
-    rfx = Reflex() if g_len == 0.0 else Reflex(
-        t_max_nm=30.0, g_len=g_len, q_thr_deg=q_thr, g_vel=g_vel,
-        v_thr_deg_s=v_thr, delay_s=0.040, tau_rise_s=0.030,
-        tau_fall_s=0.200, adapt_kappa=0.0)
-    return Profile(name=f"tone_L{level}", limb=tone_limb(k_mult, zeta, base),
-                   reflex=rfx,
-                   note=f"Graded tone level {level} of 4: K x{k_mult:g}, "
-                        f"zeta {zeta:.2f}, tonic reflex gain {g_len:g}/deg "
-                        f"above {q_thr:g} deg. Plateau is emergent.")
+    # The SRS-to-tone ratio and the force gains are capped by a hard physical
+    # constraint, not chosen for shape. At srs/tone = 35 and gain 0.024 the SRS
+    # transient and the reflex it triggers sum to ~55 Nm, which drives the joint
+    # through full extension: levels 3 and 4 came back with a plateau at a knee
+    # angle of 185 and an A0 of -4.9. selftest() now refuses any profile whose
+    # trace leaves the anatomical range, because a hyperextended "reading" is
+    # not a severity, it is a bug that scores.
+    tone_nm, srs_per_tone, g_force = spec
+    return Profile(
+        name=f"tone_L{level}",
+        limb=base or Limb(),
+        tone=Tone(torque_nm=tone_nm, srs_nm_per_rad=srs_per_tone * tone_nm,
+                  srs_yield_deg=3.0),
+        reflex=Reflex(t_max_nm=30.0, g_force=g_force, f_thr_nm=tone_nm + 1.0,
+                      delay_s=0.040, tau_rise_s=0.030, tau_fall_s=0.200),
+        note=("Level 0 is the HEALTHY limb: zero tone, zero SRS, zero reflex "
+              "gain, so it is the unactuated R15 target and not a severity at "
+              "all. It is keyed tone_L0 rather than 'healthy' so the ladder "
+              "that every severity statistic is computed over actually starts "
+              "at zero -- when it was keyed separately, the ladder silently "
+              "ran L1 to L4 and every reported range was missing its baseline."
+              if level == 0 else
+              f"Graded tone level {level} of 4 on the published decomposition: "
+             f"baseline tone {tone_nm:g} Nm, SRS {srs_per_tone * tone_nm:g} "
+              f"baseline tone {tone_nm:g} Nm, SRS {srs_per_tone * tone_nm:g} "
+              f"Nm/rad yielding at 3 deg, force-feedback gain {g_force:g}. "
+              f"Passive B and K stay healthy. Plateau and A0 are emergent."))
+
+
+def channel_ablation(tone_nm: float = 5.6, srs_nm_per_rad: float = 200.0,
+                     gains=(0.0, 0.005, 0.010, 0.020, 0.030)) -> dict:
+    """Force feedback against velocity feedback, on the same limb.
+
+    The published claim is that the lost oscillations are reproduced by force
+    feedback and not by velocity feedback. This runs both channels over the
+    same gain range on the same limb and returns N for each, so the claim can
+    be checked on this project's traces instead of cited.
+
+    Returns {"force": [(gain, N, first_trough), ...], "velocity": [...]}.
+    """
+    out = {}
+    for channel in ("force", "velocity"):
+        rows = []
+        for g in gains:
+            kw = ({"g_force": g, "f_thr_nm": tone_nm + 1.0} if channel == "force"
+                  else {"g_vel": g, "v_thr_deg_s": 150.0})
+            prof = Profile(
+                name=f"ablate_{channel}_{g}",
+                tone=Tone(torque_nm=tone_nm, srs_nm_per_rad=srs_nm_per_rad,
+                          srs_yield_deg=3.0),
+                reflex=Reflex(t_max_nm=30.0, delay_s=0.040,
+                              tau_rise_s=0.030, tau_fall_s=0.200, **kw))
+            sim = simulate(prof)
+            import pendulastic_pt_score as _pts
+            p = _pts.compute_pt_params(sim["t"], sim["angle_deg"])
+            rows.append((g, p.get("N") if p else None,
+                         p.get("first_trough_depth") if p else None))
+        out[channel] = rows
+    return out
 
 
 def catch_and_hold(arrest_deg: float, base: Limb = None,
@@ -583,7 +847,7 @@ def catch_and_release(t_max_nm: float = 90.0, v_thr_deg_s: float = 180.0,
 # honest state until then is that these are distinguishable shapes.
 
 PROFILES = {
-    "healthy": graded_tone(0),
+    "tone_L0": graded_tone(0),
     "tone_L1": graded_tone(1),
     "tone_L2": graded_tone(2),
     "tone_L3": graded_tone(3),
@@ -621,11 +885,17 @@ PROFILES = {
 #: `contracture_stop` and `fall_no_ringdown_90` are deliberately absent: they
 #: have no intended grade, which is the point of them.
 SEVERITY_INTENT = {
-    "healthy": 0,
+    "tone_L0": 0,
     "tone_L1": 1,
     "tone_L2": 2,
     "tone_L3": 3,
-    "catch_release_high": 3,
+    # Ranked 2, not 3. Mat Rosly et al. report the clasp-knife drop "observed
+    # during fast passive mobilisation for subject with moderate spasticity and
+    # it is absent for low or severe spasticity" -- a releasing catch is a
+    # MID-severity sign, so ranking it alongside the severe profiles would put
+    # the model's own intent at odds with the only published statement about
+    # where this trace appears.
+    "catch_release_high": 2,
     "catch_and_hold_140": 3,
     "tone_L4": 4,
 }
@@ -657,9 +927,12 @@ def release_height_probe(prof: Profile,
 
     The slope alone cannot see a THRESHOLD, because a threshold is a kink and a
     line fitted through a kink looks like a moderate slope. So the residual is
-    reported too, and it is checked FIRST: `max_abs_residual_deg` large is the
-    velocity-channel signature, and it is the one finding here that no passive
-    model imitates at any parameter setting.
+    reported too, and it is checked FIRST: a large
+    `max_abs_residual_deg` means something switched on part-way up the release
+    range, and that is the one finding here that no passive model imitates at
+    any parameter setting. It does NOT identify WHICH threshold -- the velocity
+    channel, the force channel and an SRS yield all produce a kink, and
+    tone_L3 is flagged by it while having no velocity channel at all.
     """
     rows = []
     for h in heights_deg:
@@ -694,7 +967,7 @@ def release_height_probe(prof: Profile,
     if slope != slope:
         verdict = "NO REVERSAL: the limb never turns around at any release height"
     elif resid > 8.0:
-        verdict = "THRESHOLD: kink in first-stop vs release -- velocity-channel reflex"
+        verdict = "THRESHOLD: kink in first-stop vs release -- a threshold fires"
     elif spread < 5.0:
         verdict = "PINNED: first stop fixed whatever the release -- a tonic hold"
     elif slope <= -0.5:
@@ -729,7 +1002,7 @@ def selftest(verbose: bool = True) -> bool:
     L = Limb()
     env = rig.passive_envelope(B=L.B, K=L.K, m=L.m, l=L.l, g=L.g)
 
-    sim = simulate(PROFILES["healthy"])
+    sim = simulate(PROFILES["tone_L0"])
     t, ang = sim["t"], sim["angle_deg"]
     rel = t >= sim["release_t_s"]
     tt, aa = t[rel] - sim["release_t_s"], ang[rel]
@@ -786,7 +1059,7 @@ def selftest(verbose: bool = True) -> bool:
         return float(tt_[c_[1]] - tt_[c_[0]]) if len(c_) >= 2 else float("nan")
 
     hp_lin = _first_half_period(sim)
-    sim_sin = simulate(replace(PROFILES["healthy"], gravity="sin"))
+    sim_sin = simulate(replace(PROFILES["tone_L0"], gravity="sin"))
     hp_sin = _first_half_period(sim_sin)
     if verbose and hp_lin == hp_lin and hp_sin == hp_sin:
         print(f"  1st half-period  linear {hp_lin*1000:.1f} ms   sin "
@@ -797,6 +1070,19 @@ def selftest(verbose: bool = True) -> bool:
     # The active element must do nothing when it is off.
     assert float(np.max(sim["t_reflex_nm"])) == 0.0
     assert float(np.max(sim["t_endstop_nm"])) == 0.0
+
+    # Every shipped profile must stay inside the anatomical range. This is a
+    # real gate, not a formality: it is what caught the tone ladder settling at
+    # a knee angle of 185 deg, which compute_pt_params happily scored.
+    for key, prof in PROFILES.items():
+        ang = simulate(prof)["angle_deg"]
+        hi, lo = float(np.max(ang)), float(np.min(ang))
+        if hi > EXTENDED_DEG + 12.0 or lo < 0.0:
+            ok = False
+            print(f"  FAIL: profile {key} leaves the anatomical range "
+                  f"({lo:.1f} to {hi:.1f} deg)")
+    if verbose and ok:
+        print("  all profiles stay inside the anatomical range")
     return ok
 
 
@@ -807,8 +1093,8 @@ def main() -> int:
     print()
     print("Profiles, as the app would see them")
     print(f"{'profile':22s} {'A0':>6s} {'1st stop':>9s} {'plateau':>8s} "
-          f"{'pk tau':>7s} {'slew':>9s} {'pk spd':>8s}")
-    print("-" * 74)
+          f"{'pk tau':>7s} {'slew':>7s} {'step':>6s} {'pk spd':>7s}")
+    print("-" * 80)
     for key, prof in PROFILES.items():
         sim = simulate(prof)
         cmd = motor_command(sim)          # vs a HEALTHY passive rig
@@ -824,9 +1110,17 @@ def main() -> int:
                 break
         print(f"{key:22s} {prof.release_deg - tail:6.1f} {first_stop:9.1f} "
               f"{tail:8.1f} {cmd['peak_torque_nm']:7.1f} "
-              f"{cmd['peak_slew_nm_s']:9.0f} {cmd['peak_speed_deg_s']:8.0f}")
-    print("  peak torque/slew are what the MOTOR must supply against a rig")
-    print("  dialled to healthy passive mechanics (B = K = 0.5), per R15.")
+              f"{cmd['peak_slew_nm_s']:7.0f} {cmd['torque_step_nm']:6.1f} "
+              f"{cmd['peak_speed_deg_s']:7.0f}")
+    print("  Peak torque and slew are what the MOTOR must supply against a rig")
+    print("  dialled to healthy passive mechanics (B = K = 0.5), per R15. "
+          "`step` is")
+    print("  the largest instantaneous torque jump: where it is large, the "
+          "profile")
+    print("  contains a discontinuity (an SRS yield, an end-stop) that no "
+          "torque")
+    print("  source reproduces -- that profile needs position control or a "
+          "physical part.")
 
     print()
     print("First-stop angle vs release height -- the mechanism discriminator")
@@ -839,10 +1133,16 @@ def main() -> int:
               f"{pr['max_abs_residual_deg']:6.1f} "
               f"{pr['first_stop_spread_deg']:10.1f} "
               f"{pr['settled_spread_deg']:10.1f}  {pr['verdict']}")
-    print("  The settled column is the point: it is near zero for EVERY "
-          "profile, so")
-    print("  the plateau cannot tell these mechanisms apart. The first stop "
-          "can.")
+    print("  The settled column is the point: it is under 1 deg for eight of "
+          "the nine")
+    print("  profiles, contracture and tonic hold included, so the plateau "
+          "cannot tell")
+    print("  these mechanisms apart. The exception is tone_L4, where a lower "
+          "release")
+    print("  no longer generates enough force to fire the channel at all, so "
+          "the limb")
+    print("  rests 19.9 deg further down -- which is itself a threshold "
+          "signature.")
 
     print()
     print("Geometry: which arrest angles a hold can reach")
