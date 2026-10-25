@@ -454,7 +454,8 @@ def model_arm(verbose: bool = True) -> dict:
 
 # ── Cohort arm ───────────────────────────────────────────────────────────────
 
-def cohort_arm(verbose: bool = True) -> dict:
+def cohort_arm(verbose: bool = True, opti_root: str = None,
+               mas_csv: str = None) -> dict:
     """Score the real OptiTrack trials against clinical MAS, with a funnel.
 
     The funnel is the point of the structure. An earlier run of this analysis
@@ -467,6 +468,18 @@ def cohort_arm(verbose: bool = True) -> dict:
     import pt_report_common as prc
     import spasticity_grouping as sg
 
+    # The recordings and mas_scores.csv are gitignored live data and are not in
+    # the repository on any branch -- they were never committed, which is
+    # correct for clinical data and also means un-ignoring them would not put
+    # them anywhere. So the arm takes their location as an argument instead of
+    # requiring them to sit inside the checkout. `--opti-root` and `--mas-csv`
+    # point it at wherever they actually are, including a drive that is not the
+    # repo, and nothing has to be copied or committed to run it.
+    if opti_root:
+        prc.OPTI_ROOT = os.path.abspath(os.path.expanduser(opti_root))
+    if mas_csv:
+        sg.MAS_CSV = os.path.abspath(os.path.expanduser(mas_csv))
+
     funnel = []
 
     def stage(name, n, note=""):
@@ -476,13 +489,24 @@ def cohort_arm(verbose: bool = True) -> dict:
     if not os.path.isdir(prc.OPTI_ROOT):
         if verbose:
             print("=" * 100)
-            print("COHORT ARM -- not available in this checkout")
+            print("COHORT ARM -- the recordings are not here")
             print("=" * 100)
-            print(f"  {prc.OPTI_ROOT} does not exist. The recordings are "
-                  f"gitignored live data,")
-            print("  so this arm only runs on a machine that has them. "
-                  "Nothing is inferred")
-            print("  from their absence.")
+            print(f"  looked in: {prc.OPTI_ROOT}")
+            print(f"  MAS table: {sg.MAS_CSV}"
+                  f"{'' if os.path.exists(sg.MAS_CSV) else '   (also missing)'}")
+            print()
+            print("  These are gitignored live data and were never committed "
+                  "to any branch, so")
+            print("  a fresh clone never has them and un-ignoring them would "
+                  "not create them.")
+            print("  Run this on the machine that holds them, or point it at "
+                  "them:")
+            print()
+            print("    python severity_grading_test.py --cohort \\")
+            print("      --opti-root /path/to/OptiTrack_Recordings \\")
+            print("      --mas-csv   /path/to/mas_scores.csv")
+            print()
+            print("  Nothing is inferred from their absence.")
         return {"available": False, "funnel": funnel, "rows": []}
 
     trials = prc.discover_all_trials()
@@ -760,6 +784,11 @@ def main() -> int:
     ap.add_argument("--model", action="store_true",
                     help="run the model arm only")
     ap.add_argument("--csv", metavar="PATH", help="write both arms to a CSV")
+    ap.add_argument("--opti-root", metavar="DIR",
+                    help="where OptiTrack_Recordings actually is; it does not "
+                         "have to be inside the repository")
+    ap.add_argument("--mas-csv", metavar="PATH",
+                    help="where mas_scores.csv actually is")
     ap.add_argument("--smoke", action="store_true",
                     help="run the cohort arm against synthetic recordings, to "
                          "check its plumbing without the real data")
@@ -774,7 +803,7 @@ def main() -> int:
         model = model_arm()
         print()
     if both or args.cohort:
-        cohort = cohort_arm()
+        cohort = cohort_arm(opti_root=args.opti_root, mas_csv=args.mas_csv)
 
     if args.csv:
         print()
