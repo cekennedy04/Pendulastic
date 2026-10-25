@@ -172,9 +172,19 @@ distinguishable:
 3. The constant is right and the standard is wrong for a reason specific to how
    the controls were recorded.
 
-**This is the first thing to check in the morning and it is cheap.**
-`_dominant_frequency_hz` is already in `pendulastic_pt_score.py`: run it over
-the control trials and compare the answer to 0.799 Hz. One number settles it.
+**This is the first thing to check in the morning, and the check now runs
+itself.** `severity_grading_test.py --cohort` measures the ring-down frequency
+of every scored trial, reports the non-spastic median against the standard's
+0.799 Hz, and says which of the two is wrong. On the synthetic fixture (whose
+waveforms come from the standard) it reports 0.786 Hz, a ratio of 0.98, and
+concludes the standard describes those knees -- so the machinery is known to
+give the right answer when the answer is known. Run it on the real recordings
+and it gives the real one.
+
+If the controls come back near 0.8 Hz, `HEALTHY_REF`'s two velocity constants
+are wrong by 2.2x and every PT7 value this project has ever reported carries
+that error. If they come back near 1.5 Hz, the shank parameters are wrong and
+the rig must not be built to them.
 
 It matters well beyond PT7's thresholds. R15 checks the unactuated rig's
 measured envelope against `passive_envelope`'s prediction before any tone is
@@ -209,10 +219,11 @@ not be MAS 0 or 1.
 
 ## Recommended changes, in order of confidence
 
-1. **Settle the 2.2x frequency disagreement** (Finding 4) by running
-   `_dominant_frequency_hz` over the control trials against 0.799 Hz. Every
-   PT7 threshold depends on it, and so does whether the rig is being built to
-   imitate the right limb.
+1. **Settle the 2.2x frequency disagreement** (Finding 4): run
+   `python severity_grading_test.py --cohort` on the machine with the
+   recordings and read the frequency block. Every PT7 threshold depends on the
+   answer, and so does whether the rig is being built to imitate the right
+   limb.
 2. **Report `P_plus` and `P_total` alongside PT7.** Already computed, highest
    signal-to-confound in the panel, and recommended in print for this exact
    purpose. Costs nothing to surface.

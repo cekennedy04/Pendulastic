@@ -103,6 +103,47 @@ PUBLISHED_SEVERITY_AUC_BAND = (0.59, 0.71)
 
 # ── The production path, called once, in one place ───────────────────────────
 
+def dominant_freq_hz(params) -> float:
+    """Measured ring-down frequency of one scored trial, in Hz.
+
+    Reuses `pendulastic_pt_score._dominant_frequency_hz` on the release-aligned
+    arrays the params already carry, so rel_i is 0 and no release detection is
+    repeated. Private helper, used deliberately: reimplementing the FFT here
+    would mean two answers to the same question that could drift apart.
+
+    This exists to settle one specific question, Finding 4 of
+    docs/reports/2026-10-25-can-the-app-grade-severity.md. The passive standard
+    the rig is dialled to -- Bajd & Bowman's B = K = 0.5, m = 5 kg, l = 0.6 m --
+    rings at 0.799 Hz, and `HEALTHY_REF["omega_max_n"] = 9.5672` implies 1.52 Hz
+    for this cohort's controls. Those cannot both describe the same leg, the gap
+    is a factor of 2.2, and it accounts for three quarters of the PT7 penalty
+    the model's own healthy limb receives. The measured frequency of the control
+    trials decides which is wrong, and it decides whether the rig is being built
+    to imitate the right limb.
+    """
+    if not params:
+        return float("nan")
+    t_r, ang_r = params.get("t_r"), params.get("ang_r")
+    if t_r is None or ang_r is None:
+        return float("nan")
+    f = pts._dominant_frequency_hz(np.asarray(t_r, float),
+                                   np.asarray(ang_r, float), 0)
+    return float(f) if f else float("nan")
+
+
+#: What the passive standard predicts, so the measurement has something to be
+#: compared against at the point of use rather than in a document.
+PASSIVE_STANDARD_HZ = None      # filled on first use, from rig_calibration
+
+
+def passive_standard_hz() -> float:
+    global PASSIVE_STANDARD_HZ
+    if PASSIVE_STANDARD_HZ is None:
+        import rig_calibration as _rc
+        PASSIVE_STANDARD_HZ = float(_rc.passive_envelope()["damped_freq_hz"])
+    return PASSIVE_STANDARD_HZ
+
+
 def score_waveform(t, angle) -> dict:
     """Params, PT7 and the app's verdict for one knee-angle trace.
 
@@ -482,6 +523,7 @@ def cohort_arm(verbose: bool = True) -> dict:
             "spastic": (pts.MAS_RANK.get(grade, 0) > 0),
             "pt7": res["pt7"], "app_grade": res["mas"],
             "interpretable": res["interpretable"],
+            "freq_hz": dominant_freq_hz(p),
             **{m: p.get(m) for m in METRICS},
         })
     stage("trials the scorer could measure", len(rows),
@@ -571,6 +613,43 @@ def cohort_arm(verbose: bool = True) -> dict:
               f"{lo}-{hi} and")
         print(f"  the authors judged none of it acceptable.")
 
+    # Finding 4's check, run rather than described.
+    f_heal = [r["freq_hz"] for r in heal
+              if r["freq_hz"] == r["freq_hz"]]
+    f_spas = [r["freq_hz"] for r in spas
+              if r["freq_hz"] == r["freq_hz"]]
+    pred = passive_standard_hz()
+    freq = {"predicted_hz": pred,
+            "healthy_median_hz": float(np.median(f_heal)) if f_heal else float("nan"),
+            "affected_median_hz": float(np.median(f_spas)) if f_spas else float("nan"),
+            "n_healthy": len(f_heal), "n_affected": len(f_spas)}
+    freq["ratio"] = (freq["healthy_median_hz"] / pred) if pred else float("nan")
+    if verbose:
+        print()
+        print("Ring-down frequency against the passive standard "
+              "(report 2026-10-25, Finding 4)")
+        print(f"  Bajd & Bowman standard, B = K = 0.5, m = 5 kg, l = 0.6 m:  "
+              f"{pred:.3f} Hz")
+        print(f"  measured, non-spastic legs (n={freq['n_healthy']}):          "
+              f"        {freq['healthy_median_hz']:.3f} Hz   "
+              f"ratio {freq['ratio']:.2f}x")
+        print(f"  measured, affected legs    (n={freq['n_affected']}):          "
+              f"        {freq['affected_median_hz']:.3f} Hz")
+        print(f"  HEALTHY_REF['omega_max_n'] = "
+              f"{pts.HEALTHY_REF['omega_max_n']:.4f} implies "
+              f"{pts.HEALTHY_REF['omega_max_n'] / (2 * math.pi):.3f} Hz")
+        if freq["ratio"] == freq["ratio"]:
+            if abs(freq["ratio"] - 1.0) <= 0.15:
+                print("  -> the standard describes these knees. "
+                      "HEALTHY_REF's velocity terms are the error.")
+            else:
+                print("  -> the standard does NOT describe these knees. The "
+                      "shank parameters")
+                print("     (m, l, or the mass-centre position) need refitting "
+                      "before the rig is")
+                print("     built to them, and R15's envelope check would fail "
+                      "as specified.")
+    out["frequency"] = freq
     out["discrimination"] = disc
     return out
 
