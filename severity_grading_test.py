@@ -68,7 +68,19 @@ import rig_neuromuscular_model as rig
 SCORED = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f",
           "area_ratio"]
 DIAGNOSTIC = ["A0_deg", "A1_deg", "first_trough_depth", "neutral_deg",
-              "omega_peak_deg_s"]
+              "omega_peak_deg_s",
+              # The absolute goniometric areas, which compute_pt_params already
+              # computes and nothing scores. Included on a specific published
+              # recommendation: Hernot and Le Cavorzin et al., computing reflex
+              # torque in 15 spastic and 10 healthy subjects, found the
+              # relaxation index showed "an unsuitable U-shaped pattern of
+              # variation with increasing reflex-mediated torque" while "the
+              # area under the curve revealed a linear regression", and
+              # concluded RI "would benefit to be replaced by more valid
+              # measures, such as the area under the goniometric curve". Our
+              # `area_ratio` is the RATIO of the two halves, which is a shape
+              # measure; P_total is the absolute area they mean.
+              "P_total", "P_plus", "P_minus"]
 METRICS = SCORED + DIAGNOSTIC
 
 #: Published discrimination for the metrics that have one, for context on any
