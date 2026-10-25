@@ -517,8 +517,27 @@ def cohort_arm(verbose: bool = True) -> dict:
         # cliffs_delta(a, b) is P(b>a) - P(a>b): healthy FIRST, so a positive
         # delta means the affected legs read HIGHER. Passing them the other way
         # round silently inverts the reported direction of every effect.
+        raw = auc(b, a)
+        # The DIRECTIONAL AUC, which is what has to be reported and compared.
+        # `raw` is P(affected > healthy), so a metric that FALLS with
+        # spasticity -- first-flexion amplitude, A0, the goniometric areas,
+        # every one of the strongest candidates -- comes back at 0.000. That
+        # reads as useless and is in fact perfect discrimination pointing the
+        # other way, and the published AUCs it sits next to in this table are
+        # direction-agnostic, so printing `raw` against them is worse than
+        # printing nothing. `auc_dir` is max(raw, 1-raw) and `direction` says
+        # which way.
+        mh = float(np.median([v for v in a if v is not None and np.isfinite(v)])) \
+            if any(v is not None and np.isfinite(v) for v in a) else float("nan")
+        ms = float(np.median([v for v in b if v is not None and np.isfinite(v)])) \
+            if any(v is not None and np.isfinite(v) for v in b) else float("nan")
         disc[m] = {
-            "auc": auc(b, a),
+            "auc_raw": raw,
+            "auc_dir": max(raw, 1.0 - raw) if raw == raw else float("nan"),
+            "direction": ("higher in affected" if raw > 0.5 else
+                          "lower in affected" if raw < 0.5 else "no shift"),
+            "median_healthy": mh,
+            "median_affected": ms,
             "delta": coh.cliffs_delta(a, b),
             "p": coh.mann_whitney(np.asarray(a, float), np.asarray(b, float))[1],
             "n_healthy": len(a), "n_spastic": len(b),
@@ -527,14 +546,24 @@ def cohort_arm(verbose: bool = True) -> dict:
         print()
         print(f"Healthy vs affected  ({len(heal)} healthy trials, "
               f"{len(spas)} affected; grades present: {', '.join(grades)})")
-        print(f"{'metric':22s} {'AUC':>6s} {'delta':>7s} {'p':>8s}  "
-              f"published")
-        print("-" * 74)
+        print(f"{'metric':22s} {'AUC':>6s} {'delta':>7s} {'p':>8s} "
+              f"{'healthy':>10s} {'affected':>10s}  direction / published")
+        print("-" * 104)
         for m, d in sorted(disc.items(), key=lambda kv: -(
-                kv[1]["auc"] if kv[1]["auc"] == kv[1]["auc"] else 0)):
-            pub = f"{PUBLISHED_AUC[m][0]:.3f}  {PUBLISHED_AUC[m][1]}" \
+                kv[1]["auc_dir"] if kv[1]["auc_dir"] == kv[1]["auc_dir"] else 0)):
+            pub = f" | pub {PUBLISHED_AUC[m][0]:.3f} {PUBLISHED_AUC[m][1]}" \
                 if m in PUBLISHED_AUC else ""
-            print(f"{m:22s} {d['auc']:6.3f} {d['delta']:7.2f} {d['p']:8.4f}  {pub}")
+            print(f"{m:22s} {d['auc_dir']:6.3f} {d['delta']:7.2f} {d['p']:8.4f} "
+                  f"{d['median_healthy']:10.3f} {d['median_affected']:10.3f}  "
+                  f"{d['direction']}{pub}")
+        print("  AUC is DIRECTIONAL -- max(P(affected>healthy), P(healthy>"
+              "affected)) -- so it is")
+        print("  comparable with the published figures, and `direction` says "
+              "which way the")
+        print("  metric moves. Read the two medians before the AUC: a perfect "
+              "AUC on two")
+        print("  medians a hair apart separates these samples and would not "
+              "survive a third.")
         lo, hi = PUBLISHED_SEVERITY_AUC_BAND
         print(f"  Severity grading is NOT tested here and cannot be: it needs "
               f"more than")
@@ -544,6 +573,84 @@ def cohort_arm(verbose: bool = True) -> dict:
 
     out["discrimination"] = disc
     return out
+
+
+def smoke_cohort_arm(verbose: bool = True) -> bool:
+    """Run the cohort arm against synthetic recordings, so it is known to work.
+
+    The cohort arm cannot be exercised in a clean checkout -- the recordings
+    are gitignored live data -- which means its first real run would be on the
+    machine that has them, at the moment the answer is wanted. That is the
+    worst time to find a path bug. So this builds a throwaway tree in the
+    shape `discover_all_trials` expects, fills it with waveforms from the rig
+    model written in Motive's pre-computed-angle format, writes a matching
+    mas_scores.csv, repoints the two module constants at them, and runs the
+    arm.
+
+    It is a PLUMBING test, not a validation: the trials are synthetic and the
+    AUCs come back at 1.000 because the profiles are noiseless. What it proves
+    is that discovery, the MAS join, the condition filter, the loader and the
+    scorer all connect -- the five stages that fail identically from outside
+    and that the funnel exists to tell apart.
+
+    This file is NOT importable as a pytest module on every branch (tests/
+    conftest.py imports tkinter), so it lives here behind --smoke rather than
+    in tests/.
+    """
+    import csv as _c
+    import shutil
+    import tempfile
+    import rig_neuromuscular_model as _rig
+    import pt_report_common as prc
+    import spasticity_grouping as sg
+
+    root = tempfile.mkdtemp(prefix="pendulastic-cohort-smoke-")
+    saved = (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV)
+    try:
+        opti = os.path.join(root, "OptiTrack_Recordings")
+        plan = [("1", "left", "0", "tone_L0"), ("1", "right", "0", "tone_L0"),
+                ("2", "left", "0", "tone_L0"), ("2", "right", "0", "tone_L0"),
+                ("3", "left", "1", "tone_L2"), ("3", "right", "1", "tone_L3")]
+        rng = np.random.default_rng(20261025)
+        for pid, leg, _grade, prof in plan:
+            d = os.path.join(opti, f"Participant_{pid}_{leg}_pre", "Session_pre",
+                             "Position_1", "Height_Joint-Level")
+            os.makedirs(d, exist_ok=True)
+            sim = _rig.simulate(_rig.PROFILES[prof])
+            for tr in (1, 2):
+                # Motive exports FLEXION (0 = extended); the loader converts.
+                flex = (180.0 - sim["angle_deg"]
+                        + rng.normal(0.0, 0.15, len(sim["angle_deg"])))
+                with open(os.path.join(d, f"trial_{tr}_optitrack.csv"), "w",
+                          newline="", encoding="utf-8") as fh:
+                    w = _c.writer(fh)
+                    w.writerow(["frame", "time_sec", "knee_angle_deg"])
+                    for i, (ti, fi) in enumerate(zip(sim["t"], flex)):
+                        w.writerow([i, f"{ti:.4f}", f"{fi:.4f}"])
+        mas_path = os.path.join(root, "mas_scores.csv")
+        with open(mas_path, "w", newline="", encoding="utf-8") as fh:
+            w = _c.writer(fh)
+            w.writerow(["participant", "leg", "condition", "mas_grade",
+                        "mas_flexion", "mas_extension", "assessed_by"])
+            for pid, leg, grade, _p in plan:
+                w.writerow([pid, leg, "pre", grade, "", "", "CLINICIAN"])
+
+        prc.OPTI_ROOT = opti
+        prc.ARCHIVE_ROOT = os.path.join(root, "no-archive")
+        prc.EXCLUDED_TRIALS_PATH = os.path.join(root, "excluded.json")
+        sg.MAS_CSV = mas_path
+        out = cohort_arm(verbose=verbose)
+    finally:
+        (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH,
+         sg.MAS_CSV) = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+    ok = out.get("available") and len(out.get("rows", [])) == 12
+    if verbose:
+        print()
+        print(f"  smoke: {'PASS' if ok else 'FAIL'} -- expected 12 scored "
+              f"rows, got {len(out.get('rows', []))}")
+    return bool(ok)
 
 
 def write_csv(path, model, cohort):
@@ -574,7 +681,12 @@ def main() -> int:
     ap.add_argument("--model", action="store_true",
                     help="run the model arm only")
     ap.add_argument("--csv", metavar="PATH", help="write both arms to a CSV")
+    ap.add_argument("--smoke", action="store_true",
+                    help="run the cohort arm against synthetic recordings, to "
+                         "check its plumbing without the real data")
     args = ap.parse_args()
+    if args.smoke:
+        return 0 if smoke_cohort_arm() else 1
     both = not (args.cohort or args.model)
 
     model = {"rows": [], "q1": {}, "q2": [], "q3": {}}
