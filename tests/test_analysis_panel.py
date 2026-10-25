@@ -6,6 +6,7 @@ import tkinter as tk
 from matplotlib.figure import Figure
 
 import pt_report_common as _real_report
+import pendulastic_pt_score as _pt
 
 
 def _root():
@@ -435,8 +436,9 @@ def test_table_populates_with_scored_trials(monkeypatch):
     monkeypatch.setattr(_m, "_report", fake)
     monkeypatch.setattr(_m, "_REPORT_AVAIL", True)
     monkeypatch.setattr(_m, "_PT_AVAIL", True)
-    monkeypatch.setattr(_m, "load_optitrack",
-                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 170.0])))
+    monkeypatch.setattr(_m, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 170.0]),
+                                      _pt.TrialQuality(coverage=0.97, warnings=())))
     monkeypatch.setattr(_m, "compute_pt_params",
                         lambda t, angle: {"N": 4.0, "phi_max_ratio": 0.63871, "area_ratio": 0.0497})
     r = _root()
@@ -452,9 +454,10 @@ def test_table_populates_with_scored_trials(monkeypatch):
         items = p._trial_table.get_children()
         assert len(items) == 2
         vals = p._trial_table.item(items[0], "values")
-        assert vals[4] == "4.0"       # N, 1 decimal
-        assert vals[5] == "0.639"     # phi_max_ratio, 3 decimals
-        assert vals[6] == "0.050"     # area_ratio, 3 decimals
+        assert vals[4] == "97%"       # optical coverage, whole percent
+        assert vals[5] == "4.0"       # N, 1 decimal
+        assert vals[6] == "0.639"     # phi_max_ratio, 3 decimals
+        assert vals[7] == "0.050"     # area_ratio, 3 decimals
     finally:
         r.destroy()
 
@@ -469,7 +472,7 @@ def test_table_shows_na_for_failed_scoring(monkeypatch):
     def raising_load(path):
         raise ValueError("bad csv")
 
-    monkeypatch.setattr(_m, "load_optitrack", raising_load)
+    monkeypatch.setattr(_m, "load_optitrack_detailed", raising_load)
     monkeypatch.setattr(_m, "compute_pt_params", lambda t, angle: None)
     r = _root()
     try:
@@ -482,7 +485,8 @@ def test_table_shows_na_for_failed_scoring(monkeypatch):
         while not p._trial_table.get_children() and time.time() < deadline:
             r.update(); time.sleep(0.02)
         vals = p._trial_table.item(p._trial_table.get_children()[0], "values")
-        assert vals[4] == vals[5] == vals[6] == "N/A"
+        # Coverage is "N/A" too: the load raised, so nothing is known about it.
+        assert vals[4] == vals[5] == vals[6] == vals[7] == "N/A"
     finally:
         r.destroy()
 
@@ -531,8 +535,8 @@ def test_rapid_reselection_drops_stale_table_result(monkeypatch):
         # current one's rows land.
         p._table_request_id = 5
         stale_record = dict(fake.records[0], trial="99")
-        p._table_queue.put(("ok", (4, [(stale_record, None, None, None)], {}, 0), None))
-        p._table_queue.put(("ok", (5, [(fake.records[0], None, None, None)], {}, 0), None))
+        p._table_queue.put(("ok", (4, [(stale_record, None, None, None, None)], {}, 0), None))
+        p._table_queue.put(("ok", (5, [(fake.records[0], None, None, None, None)], {}, 0), None))
         p.after(0, p._poll_table_queue)
         deadline = time.time() + 5
         while not p._trial_table.get_children() and time.time() < deadline:
@@ -996,9 +1000,10 @@ def test_table_status_reports_unscored_count(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             raise ValueError("bad csv")
-        return (np.array([0.0, 1.0]), np.array([180.0, 170.0]))
+        return (np.array([0.0, 1.0]), np.array([180.0, 170.0]),
+                _pt.TrialQuality(coverage=0.97, warnings=()))
 
-    monkeypatch.setattr(_m, "load_optitrack", flaky_load)
+    monkeypatch.setattr(_m, "load_optitrack_detailed", flaky_load)
     monkeypatch.setattr(_m, "compute_pt_params",
                         lambda t, angle: {"N": 4.0, "phi_max_ratio": 0.6, "area_ratio": 0.05})
     r = _root()

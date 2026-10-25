@@ -5,6 +5,7 @@ import builtins
 import json
 import pytest
 
+import pendulastic_pt_score as pt
 import pt_report_common as common
 import run_pt_analysis
 
@@ -155,11 +156,14 @@ def test_trial_candidates_classifies_unreadable(tmp_path, monkeypatch):
     monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
     monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
-    monkeypatch.setattr(common.pt, "load_optitrack", lambda path: (_ for _ in ()).throw(ValueError("bad csv")))
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (_ for _ in ()).throw(ValueError("bad csv")))
 
     candidates = common.trial_candidates("13", include_archive=False)
     assert len(candidates) == 1
     assert candidates[0]["status"] == "unreadable"
+    # "unreadable" must mean the file could not be parsed, and must say why.
+    assert "bad csv" in candidates[0]["reason"]
 
 
 def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatch):
@@ -170,8 +174,9 @@ def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatc
     monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
     monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
-    monkeypatch.setattr(common.pt, "load_optitrack",
-                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0])))
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(coverage=1.0, warnings=())))
     monkeypatch.setattr(common, "score_trial", lambda pid, trial, t, angle: None)
 
     candidates = common.trial_candidates("13", include_archive=False)
@@ -183,6 +188,63 @@ def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatc
     candidates = common.trial_candidates("13", include_archive=False)
     assert candidates[0]["status"] == "scored"
     assert candidates[0]["record"]["pt7"] == 0.5
+    assert candidates[0]["quality"].coverage == 1.0
+    assert candidates[0]["reason"] is None, "a clean trial must carry no reason"
+
+
+def test_poor_quality_trial_is_scored_and_flagged_never_dropped(tmp_path, monkeypatch):
+    """The 2026-08-27 policy: the loader flags, the operator excludes.
+
+    A trial the cameras half-missed must still reach the report as "scored",
+    carrying its warnings, so the operator can see it and decide. Before this,
+    a coverage gate raised inside the loader and the trial silently became
+    "unreadable" -- which emptied P21's whole right leg out of the report."""
+    import numpy as np
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(
+                                          coverage=0.576,
+                                          warnings=("Optical coverage 57.6% is below 90%.",))))
+    monkeypatch.setattr(common, "score_trial",
+                        lambda pid, trial, t, angle: {"pid": pid, "trial": trial, "pt7": 0.5})
+
+    candidates = common.trial_candidates("13", include_archive=False)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "scored", "a poor trial must not be dropped"
+    assert candidates[0]["quality"].coverage == 0.576
+    assert "57.6%" in candidates[0]["reason"], "the operator must be told why"
+
+
+def test_only_excluded_trials_json_removes_a_trial(tmp_path, monkeypatch):
+    """The single exclusion mechanism. Nothing else may drop a trial."""
+    import numpy as np
+    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
+    monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
+    monkeypatch.setattr(common, "ARCHIVE_ROOT", "/nonexistent")
+    monkeypatch.setattr(common.pt, "load_optitrack_detailed",
+                        lambda path: (np.array([0.0, 1.0]), np.array([180.0, 179.0]),
+                                      common.pt.TrialQuality(coverage=0.1, warnings=("awful",))))
+    monkeypatch.setattr(common, "score_trial",
+                        lambda pid, trial, t, angle: {"pid": pid, "trial": trial, "pt7": 0.5})
+
+    # Terrible data, but nobody excluded it -> it still reaches the report.
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
+    assert common.trial_candidates("13", include_archive=False)[0]["status"] == "scored"
+
+    # Same trial, now named in excluded_trials.json -> and only now dropped.
+    key = common.trial_key("13", "left", "pre", 1)
+    monkeypatch.setattr(common, "load_excluded_trials", lambda: {key: "operator says so"})
+    got = common.trial_candidates("13", include_archive=False)[0]
+    assert got["status"] == "excluded"
+    assert got["reason"] == "operator says so"
 
 
 def test_trial_candidates_only_this_participant(tmp_path, monkeypatch):
@@ -1007,3 +1069,227 @@ def test_set_trials_excluded_raises_clear_message_after_two_failures(tmp_path, m
     assert "retried once" in str(exc_info.value)
     assert reg_path.read_text() == original_content
     assert list(tmp_path.iterdir()) == [reg_path]   # temp file cleaned up, original untouched
+
+
+# -- Full-report layout defects (2026-08-27) -------------------------------
+# P24's report had three: the row-5 table's text overflowed its cells (headers
+# clipped to "Timepoin"/"Clinician MA", long accounting strings running into
+# the next column), the left PT-score panel drew its "Impaired" band label
+# outside the axes, and the table left a wide empty band above itself.
+
+
+def _row5_axes(monkeypatch, clinician_matches=None):
+    """A row-5 table drawn on a figure the same width as the real report, so
+    the fitted font size is measured against realistic space."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves",
+                        lambda *a, **k: ([{"name": "mediapipe", "t": t, "ang": ang,
+                                           "rmse": 2.0}], []))
+    monkeypatch.setattr(common, "clinician_mas_matches",
+                        lambda pid, leg, cond: clinician_matches or [])
+    rec = {"pid": "24_left_pre", "trial": "1", "pt7": 0.30, "t_raw": t, "angle_raw": ang,
+           "neutral_deg_raw": 180.0, "mediapipe_curve": {"t": t, "ang": ang},
+           "imu_curve": None}
+    # The real report is a 5x2 grid on a 15x21 figure: one cell is 7.5 wide.
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    common._draw_row5_table(ax, "left", {("left", "pre"): [rec]},
+                            [("pre", "Pre", "#d62728")], "24")
+    return fig, ax
+
+
+def _overflowing_cells(fig, ax):
+    """Cells whose text is wider than the space the cell gives it."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    table = next(child for child in ax.get_children()
+                 if child.__class__.__name__ == "Table")
+    bad = []
+    for (row, col), cell in table.get_celld().items():
+        label = cell.get_text()
+        if not label.get_text():
+            continue
+        usable = cell.get_window_extent(renderer).width * (1 - 2 * getattr(cell, "PAD", 0.1))
+        if label.get_window_extent(renderer).width > usable:
+            bad.append((row, col, label.get_text()))
+    return bad
+
+
+def test_row5_table_text_fits_inside_its_cells(monkeypatch):
+    """The defect: a hardcoded 6.5pt overflowed, and matplotlib never shrinks
+    cell text to fit. Column widths are now measured, not counted in
+    characters, and the font size is solved from what is left."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        assert _overflowing_cells(fig, ax) == []
+    finally:
+        plt.close(fig)
+
+
+def test_row5_table_stays_legible_rather_than_shrinking_without_limit(monkeypatch):
+    """Fitting must not be allowed to solve the problem by disappearing."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        table = next(child for child in ax.get_children()
+                     if child.__class__.__name__ == "Table")
+        sizes = {cell.get_text().get_fontsize() for cell in table.get_celld().values()}
+        assert all(size >= 3.5 for size in sizes), sizes
+    finally:
+        plt.close(fig)
+
+
+def test_row5_table_fills_its_axes_instead_of_floating_in_the_middle(monkeypatch):
+    """loc='center' left a wide empty band between the caveat and the table."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = _row5_axes(monkeypatch)
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        table = next(child for child in ax.get_children()
+                     if child.__class__.__name__ == "Table")
+        cells = [c.get_window_extent(renderer) for c in table.get_celld().values()]
+        table_height = max(c.y1 for c in cells) - min(c.y0 for c in cells)
+        axes_height = ax.get_window_extent(renderer).height
+        assert table_height / axes_height > 0.6, table_height / axes_height
+    finally:
+        plt.close(fig)
+
+
+def test_zone_bands_skip_a_band_above_the_visible_range():
+    """P24's left leg tops out at 0.35, below the Impaired floor of 0.44. Only
+    `hi` was clamped to y_max, so the midpoint landed past the top of the axes
+    and 'Impaired' was drawn floating outside the plot."""
+    bands = common.visible_zone_bands(0.35)
+
+    assert [common.ZONE_LABELS[i] for i, _lo, _hi in bands] == ["Healthy", "Borderline"]
+    assert all(lo < hi for _i, lo, hi in bands), bands
+    assert all(hi <= 0.35 for _i, _lo, hi in bands), bands
+
+
+def test_zone_bands_keep_every_band_when_all_are_visible():
+    bands = common.visible_zone_bands(3.0)
+
+    assert [i for i, _lo, _hi in bands] == [0, 1, 2]
+    assert bands[-1][2] == 3.0
+
+
+def test_zone_band_midpoints_stay_inside_the_axes():
+    """The label is drawn at the band midpoint, so that is what must be in
+    range -- clamping `hi` alone was not enough to guarantee it."""
+    for y_max in (0.05, 0.35, 0.5, 1.6, 3.0):
+        for _i, lo, hi in common.visible_zone_bands(y_max):
+            assert 0 <= (lo + hi) / 2 <= y_max, (y_max, lo, hi)
+
+
+def test_make_report_figure_sidecar_holds_both_legs_not_just_the_last(tmp_path, monkeypatch):
+    """write_clinician_mas_sidecar opens the same P<id>_clinician_mas.csv in
+    "w" mode every call, so calling it once per leg inside make_report_figure's
+    left/right loop lets Right's write truncate Left's. The sidecar is
+    documented as the complete, untruncated clinician-MAS record, so it must
+    carry every leg the report drew, not just the last one."""
+    import csv as _csv
+    import numpy as np
+
+    monkeypatch.setattr(common, "OUT_DIR", str(tmp_path))
+    monkeypatch.setattr(common.pt, "load_hpe_model_curves", lambda *a, **k: ([], []))
+    monkeypatch.setattr(common, "trial_candidates", lambda pid, include_archive=True: [])
+    monkeypatch.setattr(
+        common, "clinician_mas_matches",
+        lambda pid, leg, cond: [{"participant": pid, "leg": leg, "condition": cond,
+                                 "diagnosis": "MS", "mas_grade": "0",
+                                 "assessed_by": "", "assessed_date": "2026-08-28"}])
+
+    t = np.linspace(0, 3, 90)
+    ang = np.where(t < 1.0, 180.0, 180.0 - 30.0 * np.sin((t - 1.0) * 2))
+
+    def _rec(pid):
+        return {"pid": pid, "trial": "1", "pt7": 0.3, "t_raw": t, "angle_raw": ang,
+                "neutral_deg_raw": 180.0, "R2n": 0.9, "N": 3.0, "phi_max_ratio": 0.5,
+                "omega_max_n": 1.0, "omega_min_n": 0.2, "f": 1.5, "area_ratio": 0.1,
+                "mediapipe_curve": None, "imu_curve": None,
+                "mediapipe_rmse": None, "imu_rmse": None}
+
+    by_leg_tp = {("left", "post"): [_rec("17_left_post")],
+                 ("right", "post"): [_rec("17_right_post")]}
+    timepoints = [("post", "Post", "#d62728")]
+
+    _, fig = common.make_report_figure("P17", by_leg_tp, timepoints,
+                                       "P17_full_report.png", "test caveat",
+                                       cohort_snapshot=None, save=False, return_fig=True)
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+    with open(tmp_path / "P17_clinician_mas.csv", newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    assert {r["leg"] for r in rows} == {"left", "right"}
+
+
+# ── excursion gate in the report (2026-08-30) ──────────────────────────────
+
+def test_row5_source_mas_suppresses_a_grade_for_a_collapsed_swing():
+    """A clinician-facing table must not print a MAS grade PT7 cannot support.
+
+    On this corpus that is P9 left/right at A0 9.0 deg, which used to render as
+    MAS 1 and are independently known to be a duplicated-export rig defect."""
+    params = [{"A0_deg": 9.0}, {"A0_deg": 9.2}]
+    assert common._row5_source_mas(0.278, params) is None
+
+
+def test_row5_source_mas_grades_a_normal_swing_as_before():
+    params = [{"A0_deg": 48.0}, {"A0_deg": 52.0}]
+    got = common._row5_source_mas(0.278, params)
+    assert got == common.pt.pt_to_mas(0.278)
+
+
+def test_row5_source_mas_falls_back_when_excursion_is_unknown():
+    """A source with no A0 at all (a test double, say) keeps its old label
+    rather than silently losing it -- absent evidence is not evidence."""
+    assert common._row5_source_mas(0.278, []) == common.pt.pt_to_mas(0.278)
+    assert common._row5_source_mas(0.278, [{"R2n": 1.0}]) == common.pt.pt_to_mas(0.278)
+    assert common._row5_source_mas(None, [{"A0_deg": 48.0}]) is None
+
+
+# -- The excursion gate must guard BOTH directions (2026-08-31) -------------
+# _row5_source_mas checked only the floor. pendulastic_pt_score's own docstring
+# warns why that is not enough: "A one-sided gate only guards one failure
+# direction." A seed-window bug produced A0 = 418.1 deg on P9 Left/Right
+# trial_3 at 97.3% coverage, and that value was being graded MAS "4" -- the
+# worst grade on the scale, off a number that cannot be an interior knee angle
+# at all (they live in [0, 180]).
+
+
+def test_row5_source_mas_refuses_a_collapsed_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 9.0}]) is None
+
+
+def test_row5_source_mas_refuses_an_impossible_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 418.1}]) is None
+
+
+def test_row5_source_mas_grades_a_normal_swing():
+    assert common._row5_source_mas(1.9, [{"A0_deg": 46.6}]) is not None
+
+
+def test_row5_source_mas_boundaries_match_the_reference_constants():
+    lo, hi = pt.MIN_INTERPRETABLE_A0_DEG, pt.MAX_INTERPRETABLE_A0_DEG
+    assert common._row5_source_mas(1.9, [{"A0_deg": lo}]) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": hi}]) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": lo - 0.01}]) is None
+    assert common._row5_source_mas(1.9, [{"A0_deg": hi + 0.01}]) is None
+
+
+def test_row5_source_mas_still_grades_when_no_excursion_is_available():
+    """A source with no A0 at all (a test double) keeps its prior behaviour
+    rather than silently losing its label -- the gate refuses what it can
+    measure and is out of scope for what it cannot."""
+    assert common._row5_source_mas(1.9, []) is not None
+    assert common._row5_source_mas(1.9, [{"A0_deg": None}]) is not None

@@ -12,6 +12,11 @@ _HIP_IDX = (23, 24)
 
 DEFAULT_HYSTERESIS_FRAMES = 5
 DEFAULT_CONFIDENCE_FLOOR = 0.35
+# A tracked knee cannot teleport. Expressed as a fraction of the frame
+# diagonal so it scales with resolution: 0.15 of an 800 px diagonal is 120 px,
+# generous against a swinging knee (tens of px per frame at 30 fps) but well
+# under the ~248 px that separates patient from assessor in a typical frame.
+DEFAULT_MAX_LOCK_JUMP_FRAC = 0.15
 ANATOMICAL_MIN_RATIO = 0.4
 ANATOMICAL_MAX_RATIO = 2.5
 ANATOMICAL_PENALTY = 0.3
@@ -60,12 +65,14 @@ class PatientIdentityTracker:
 
     def __init__(self, hip_idx, knee_idx, ankle_idx,
                  hysteresis_frames: int = DEFAULT_HYSTERESIS_FRAMES,
-                 confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR):
+                 confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR,
+                 max_lock_jump_frac: float = DEFAULT_MAX_LOCK_JUMP_FRAC):
         self._hip_idx = hip_idx
         self._knee_idx = knee_idx
         self._ankle_idx = ankle_idx
         self._hysteresis_frames = hysteresis_frames
         self._confidence_floor = confidence_floor
+        self._max_lock_jump_frac = max_lock_jump_frac
         self._locked_knee_px = None
         self._challenger_streak = 0
         self.n_switches = 0
@@ -96,6 +103,24 @@ class PatientIdentityTracker:
             if score < self._confidence_floor:
                 self.n_ambiguous += 1
                 return SelectionResult(None, score, True)
+            # A lone detection is not automatically the patient. When the
+            # patient goes undetected but the assessor is still found, this
+            # branch used to accept the assessor, re-lock onto them, and
+            # count no switch -- so the CSV got assessor limbs labelled as
+            # patient data and n_switches still read 0. Hold the lone pose to
+            # the same continuity + hysteresis rule the two-pose branch uses:
+            # it must stay near the lock, or persist long enough to count as a
+            # real re-acquisition.
+            if self._locked_knee_px is not None:
+                knee = self._knee_px(pose, w, h)
+                jump = math.hypot(knee[0] - self._locked_knee_px[0],
+                                  knee[1] - self._locked_knee_px[1])
+                if jump > self._max_lock_jump_frac * math.hypot(w, h):
+                    self._challenger_streak += 1
+                    if self._challenger_streak < self._hysteresis_frames:
+                        self.n_ambiguous += 1
+                        return SelectionResult(None, score, True)
+                    self.n_switches += 1
             self._challenger_streak = 0
             self._locked_knee_px = self._knee_px(pose, w, h)
             return SelectionResult(pose, score, False)

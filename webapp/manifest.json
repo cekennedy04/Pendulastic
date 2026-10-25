@@ -1,0 +1,6 @@
+{
+  "name": "Pendulastic",
+  "short_name": "Pendulastic",
+  "display": "standalone",
+  "start_url": "./"
+}

@@ -1,0 +1,205 @@
+//! `#[wasm_bindgen]` veneer. Deliberately logic-free: anything implemented
+//! here is invisible to `cargo test` and therefore unverified. All behaviour
+//! lives in `session`/`replay`/`params_json`, which are pure Rust and
+//! covered.
+
+use wasm_bindgen::prelude::*;
+
+use crate::export_jsonl;
+use crate::params_json;
+use crate::pt_score::{pt_score_to_json, HEALTHY_REF};
+use crate::replay::{RawSample, ReplayConfig, Sensor};
+use crate::session::{HoldState, TrialSession};
+use crate::trajectory_json;
+
+#[wasm_bindgen]
+pub struct WasmSession {
+    inner: TrialSession,
+}
+
+#[wasm_bindgen]
+impl WasmSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new(beta: f64, ema_alpha: f64) -> WasmSession {
+        let cfg = ReplayConfig { beta, ema_alpha, ..ReplayConfig::default() };
+        WasmSession { inner: TrialSession::new(cfg) }
+    }
+
+    /// Flat batch, 7 doubles per sample: `[t_ms, ax, ay, az, gx, gy, gz]`.
+    /// Accel is pushed before gyro for each sample, matching the ordering
+    /// contract the whole pipeline depends on. Gyro must already be rad/s.
+    pub fn push_batch(&mut self, buf: &[f64]) {
+        for c in buf.chunks_exact(7) {
+            let t = c[0] / 1000.0;
+            let ts_ms = c[0].round() as i64;
+            self.inner.push(RawSample { t, ts_ms, sensor: Sensor::Accel, v: [c[1], c[2], c[3]] });
+            self.inner.push(RawSample { t, ts_ms, sensor: Sensor::Gyro, v: [c[4], c[5], c[6]] });
+        }
+    }
+
+    /// 0 Moving, 1 Holding, 2 Ready, 3 Released.
+    pub fn state_code(&self) -> u8 {
+        match self.inner.state() {
+            HoldState::Moving => 0,
+            HoldState::Holding { .. } => 1,
+            HoldState::Ready => 2,
+            HoldState::Released => 3,
+            HoldState::Settled => 4,
+        }
+    }
+
+    pub fn calm_s(&self) -> f64 {
+        match self.inner.state() {
+            HoldState::Holding { calm_s, .. } => calm_s,
+            HoldState::Ready => 0.95,
+            _ => 0.0,
+        }
+    }
+
+    /// Seconds of continuous post-release stillness. Drives the settle
+    /// progress bar; the termination decision itself is made in `session`,
+    /// so there is one home for the rule.
+    pub fn settle_s(&self) -> f64 {
+        self.inner.settle_s()
+    }
+
+    pub fn drift_deg(&self) -> f64 {
+        match self.inner.state() {
+            HoldState::Holding { drift_deg, .. } => drift_deg,
+            _ => 0.0,
+        }
+    }
+
+    pub fn sample_count(&self) -> usize {
+        self.inner.sample_count()
+    }
+
+    /// JSON of the full `PtParams` payload, or `undefined` when unscorable.
+    /// Returning `undefined` rather than throwing keeps `TrialError` a value
+    /// the UI branches on, per KTD7 (never a panic across the boundary).
+    pub fn finish(&self) -> Option<String> {
+        let (_, p) = self.inner.finish(None).ok()?;
+        Some(params_json::params_to_json(&p))
+    }
+
+    /// JSON of the full trial waveform — tick series, release point, and the
+    /// accepted peaks/troughs — for the result-screen plot. `undefined` when
+    /// unscorable, same contract as `finish`. Deliberately a separate call
+    /// rather than added fields on `finish`'s payload: `finish`'s JSON key
+    /// set is pinned at exactly 20 scalars by `tests/params_json_test.rs`.
+    pub fn finish_trajectory(&self) -> Option<String> {
+        let (r, p) = self.inner.finish(None).ok()?;
+        Some(trajectory_json::trajectory_to_json(&r, &p))
+    }
+
+    /// JSON of the composite Popović PT score: `{score, zone, breakdown}`,
+    /// scored against the current `HEALTHY_REF`. `undefined` when unscorable,
+    /// same contract as `finish`/`finish_trajectory`.
+    ///
+    /// Deliberately a separate call, computed at read time from `finish`'s
+    /// own `PtParams` rather than folded into `finish`'s JSON or persisted
+    /// anywhere: `HEALTHY_REF` is still being recalibrated (three times in
+    /// one week as of this writing, with validation task V0.4 still to come),
+    /// so a stored composite would go stale the next time it moves. This
+    /// score is PROVISIONAL — see `pt_score`'s module doc and the "research
+    /// capture only" banner the UI always shows alongside it.
+    pub fn finish_pt_score(&self) -> Option<String> {
+        let (_, p) = self.inner.finish(None).ok()?;
+        Some(pt_score_to_json(&p, &HEALTHY_REF))
+    }
+
+    /// Newline-delimited JSON of the raw accel/gyro/mag log, in the exact
+    /// wire format `tests/test_web_export_contract.py` (repo root) pins as
+    /// the contract into `imu_calibration_tuner.replay_trial` -- this is
+    /// what lets a trial captured on the phone be replayed through the
+    /// Python reference on a laptop. Pure delegation to
+    /// `export_jsonl::export_jsonl`, per this module's own logic-free
+    /// contract: all the formatting behaviour lives there, where
+    /// `cargo test` can reach it. Available before AND after `finish` --
+    /// `TrialSession::finish` takes `&self`, so scoring never consumes the
+    /// raw log.
+    /// Params under the ANALYSIS convention (`detrend=true`), for the record
+    /// that gets stored and exported. `finish` above stays on the live
+    /// convention so the on-screen number matches the desktop capture app;
+    /// these two deliberately differ, and `TrialSession::finish_with` explains
+    /// why picking one globally is not available.
+    pub fn finish_detrended(&self) -> Option<String> {
+        let (_, p) = self.inner.finish_with(None, true).ok()?;
+        Some(params_json::params_to_json(&p))
+    }
+
+    /// The composite score under the analysis convention — the number that must
+    /// agree with the cohort reports.
+    pub fn finish_pt_score_detrended(&self) -> Option<String> {
+        let (_, p) = self.inner.finish_with(None, true).ok()?;
+        Some(pt_score_to_json(&p, &HEALTHY_REF))
+    }
+
+    pub fn export_jsonl(&self) -> String {
+        export_jsonl::export_jsonl(self.inner.samples())
+    }
+
+    /// Capture quality: how much of this trial happened out of the flexion
+    /// plane, as `{"lateral_fraction":..,"lateral_peak_deg_s":..}`. Returns
+    /// the JSON literal `null` when it could not be measured -- no axis
+    /// committed, or nothing above the rate threshold -- which a consumer must
+    /// NOT read as "perfectly planar".
+    ///
+    /// A separate call rather than fields on `finish`, matching
+    /// `finish_trajectory` and `finish_pt_score`: this is a property of the
+    /// CAPTURE, not one of the seven scored parameters, and folding it into
+    /// that payload would invite it being stored as one.
+    ///
+    /// Pure delegation, per this module's logic-free rule.
+    pub fn lateral_motion(&self) -> String {
+        params_json::lateral_motion_to_json(self.inner.lateral_motion())
+    }
+}
+
+/// The healthy reference each scored parameter is compared against, plus the
+/// entries WITHDRAWN as references, which must be shown without a comparison.
+/// Exposed so the result screen can print the reference as a visible number
+/// rather than asserting an in-range verdict off a value the clinician never
+/// sees.
+///
+/// Pure delegation, per this module's logic-free rule.
+#[wasm_bindgen]
+pub fn healthy_reference() -> String {
+    crate::pt_score::healthy_ref_to_json(&HEALTHY_REF)
+}
+
+/// The composite score for a trial's STORED parameters, for the trends view.
+///
+/// [`WasmSession::finish_pt_score`] only works on a live session with samples
+/// pushed into it; a stored trial has scalars and nothing else, because the
+/// composite is deliberately never persisted (`HEALTHY_REF` moves, so a
+/// stored score would go stale).
+///
+/// Logic-free, per this module's contract: the construction and the
+/// argument audit live in `pt_score::pt_score_from_scalars`, where
+/// `cargo test` can see them.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn pt_score_from_params(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+) -> String {
+    crate::pt_score::pt_score_from_scalars(
+        r2n,
+        n,
+        phi_max_ratio,
+        omega_max_n,
+        omega_min_n,
+        f,
+        area_ratio,
+        first_trough_depth,
+        a0_deg,
+    )
+}

@@ -620,6 +620,102 @@ def test_compute_implementation_fingerprint_changes_with_pt_score_source(monkeyp
     assert fp1 != fp2
 
 
+# ── landmark-specific fingerprint ────────────────────────────────────────
+
+def _perturb_source(monkeypatch, target_mod):
+    """Make inspect.getsource report a changed body for one module only --
+    the same trick the compute_implementation_fingerprint tests use, so a
+    fingerprint's reaction to a code change can be tested without editing
+    a file on disk."""
+    real_getsource = rpc.inspect.getsource
+
+    def fake_getsource(mod):
+        if mod is target_mod:
+            return real_getsource(mod) + chr(10) + "# perturbed"
+        return real_getsource(mod)
+
+    monkeypatch.setattr(rpc.inspect, "getsource", fake_getsource)
+
+
+def test_compute_landmark_fingerprint_stable():
+    assert rpc.compute_landmark_fingerprint() == rpc.compute_landmark_fingerprint()
+
+
+def test_compute_landmark_fingerprint_covers_the_extraction_path():
+    # Raw landmarks are produced by exactly two modules:
+    # sweep_mediapipe_config.extract_raw_landmarks drives the inference
+    # loop, and it reads batch_mediapipe.MP_LEG_IDX and calls
+    # batch_mediapipe._select_patient_pose to decide which of the detected
+    # poses is the patient. Either can change the landmark VALUES, so both
+    # must be in the fingerprint or the cache goes stale.
+    assert "sweep_mediapipe_config" in rpc._LANDMARK_FINGERPRINTED_MODULES
+    assert "batch_mediapipe" in rpc._LANDMARK_FINGERPRINTED_MODULES
+
+
+def test_compute_landmark_fingerprint_changes_with_extraction_source(monkeypatch):
+    import sweep_mediapipe_config
+    fp1 = rpc.compute_landmark_fingerprint()
+    _perturb_source(monkeypatch, sweep_mediapipe_config)
+    assert rpc.compute_landmark_fingerprint() != fp1
+
+
+def test_compute_landmark_fingerprint_changes_with_pose_selection_source(monkeypatch):
+    # _select_patient_pose is the assessor-vs-patient heuristic. It was
+    # already replaced once (the "furthest-left knee" version tracked the
+    # assessor's leg for Participant_14), and that class of change silently
+    # rewrites every landmark in the cache.
+    import batch_mediapipe
+    fp1 = rpc.compute_landmark_fingerprint()
+    _perturb_source(monkeypatch, batch_mediapipe)
+    assert rpc.compute_landmark_fingerprint() != fp1
+
+
+def test_compute_landmark_fingerprint_ignores_scoring_only_modules(monkeypatch):
+    # The point of a separate fingerprint. None of these modules runs
+    # during MediaPipe inference: pendulastic_pt_score loads the OptiTrack
+    # reference, workbench_engine aligns and compares two traces,
+    # analysis_pipeline does the lag search, and imu_calibration_tuner is
+    # the IMU path entirely. They can all change a candidate's RMSE -- and
+    # so must stay in _FINGERPRINTED_MODULES -- but none of them can change
+    # a single cached landmark.
+    import analysis_pipeline
+    import imu_calibration_tuner
+    import pendulastic_pt_score
+    import workbench_engine
+    fp1 = rpc.compute_landmark_fingerprint()
+    for mod in (pendulastic_pt_score, workbench_engine, analysis_pipeline,
+                imu_calibration_tuner):
+        monkeypatch.undo()
+        _perturb_source(monkeypatch, mod)
+        assert rpc.compute_landmark_fingerprint() == fp1, mod.__name__
+
+
+def test_compute_landmark_fingerprint_changes_with_mediapipe_version(monkeypatch):
+    # A MediaPipe upgrade re-weights the pose model's post-processing and
+    # moves the landmark coordinates, so cached extractions from the old
+    # version must not be served to the new one.
+    fp1 = rpc.compute_landmark_fingerprint()
+    monkeypatch.setattr(rpc.mediapipe, "__version__", "0.0.0-test")
+    assert rpc.compute_landmark_fingerprint() != fp1
+
+
+def test_compute_landmark_fingerprint_changes_with_opencv_version(monkeypatch):
+    # cv2 decodes the frames the model sees; a decoder change can move the
+    # pixels and therefore the landmarks.
+    fp1 = rpc.compute_landmark_fingerprint()
+    monkeypatch.setattr(rpc.cv2, "__version__", "0.0.0-test")
+    assert rpc.compute_landmark_fingerprint() != fp1
+
+
+def test_compute_landmark_fingerprint_is_narrower_than_the_full_one():
+    # Strict subset, both directions checked: every landmark module is
+    # still covered by the full fingerprint (so the RMSE-level cache did
+    # not lose coverage), and the landmark set is genuinely smaller (so
+    # this indirection is buying something).
+    assert set(rpc._LANDMARK_FINGERPRINTED_MODULES) < set(rpc._FINGERPRINTED_MODULES)
+
+
+
 # ── score_imu_candidate ──────────────────────────────────────────────────
 
 def test_score_imu_candidate_returns_rmse(monkeypatch):
@@ -627,7 +723,7 @@ def test_score_imu_candidate_returns_rmse(monkeypatch):
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (
+                        lambda samples, params, tick_s=None: (
                             __import__("numpy").array([0.0] * 10),
                             __import__("numpy").array([1.0] * 10)))
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
@@ -645,7 +741,8 @@ def test_score_imu_candidate_returns_none_when_too_few_finite_samples(monkeypatc
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (np.array([0.0]), np.array([float("nan")])))
+                        lambda samples, params, tick_s=None: (
+                            np.array([0.0]), np.array([float("nan")])))
     result = rpc.score_imu_candidate(trial, {"beta": 0.041})
     assert result is None
 
@@ -656,7 +753,7 @@ def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
             "optitrack_path": "o"}
     monkeypatch.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
     monkeypatch.setattr(rpc.imu_calibration_tuner, "replay_trial",
-                        lambda samples, params: (
+                        lambda samples, params, tick_s=None: (
                             np.array([0.0] * 20), np.array([1.0] * 20)))
     monkeypatch.setattr(rpc.pt_score, "load_optitrack",
                         lambda path: (np.array([0.0] * 20), np.array([1.0] * 20)))
@@ -668,15 +765,19 @@ def test_score_imu_candidate_returns_none_on_compare_pair_error(monkeypatch):
 
 # ── extract_landmarks_cached / score_mediapipe_candidate ────────────────
 
-def _landmark_cache_fixture(tmp_path, monkeypatch, impl_fp="impl1"):
+def _landmark_cache_fixture(tmp_path, monkeypatch, impl_fp="impl1",
+                            pin_fingerprint=True):
     """Shared setup for the landmark-cache tests: an isolated cache dir, a
     real video file (extract_landmarks_cached content-hashes it), a real
     .task model file (it content-hashes that too now), and a counting stub
-    for the expensive extraction call. compute_implementation_fingerprint
-    is pinned to a constant rather than stubbed out of the call path, so
-    the cache key genuinely includes it."""
+    for the expensive extraction call. compute_landmark_fingerprint is
+    pinned to a constant rather than stubbed out of the call path, so the
+    cache key genuinely includes it. Pass pin_fingerprint=False to run the
+    real one, which is what the tests about which code changes reach this
+    cache need."""
     monkeypatch.setattr(rpc, "SWEEP_CACHE_DIR", str(tmp_path / "sweep_cache"))
-    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: impl_fp)
+    if pin_fingerprint:
+        monkeypatch.setattr(rpc, "compute_landmark_fingerprint", lambda: impl_fp)
     video = tmp_path / "v.mp4"
     video.write_bytes(b"fake")
     model = tmp_path / "models" / "pose_landmarker_full.task"
@@ -729,7 +830,7 @@ def test_extract_landmarks_cached_re_extracts_on_model_file_change(tmp_path, mon
     assert len([n for n in os.listdir(cache_dir) if n.endswith(".pkl")]) == 2
 
 
-def test_extract_landmarks_cached_re_extracts_on_implementation_fingerprint_change(
+def test_extract_landmarks_cached_re_extracts_on_landmark_fingerprint_change(
         tmp_path, monkeypatch):
     # The other missing §7.1 component: if the extraction code itself
     # changes (e.g. sweep_mediapipe_config.extract_raw_landmarks is fixed),
@@ -738,7 +839,50 @@ def test_extract_landmarks_cached_re_extracts_on_implementation_fingerprint_chan
     trial, _video, model, calls = _landmark_cache_fixture(tmp_path, monkeypatch,
                                                           impl_fp="impl1")
     rpc.extract_landmarks_cached(trial, "full", str(model))
-    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", lambda: "impl2")
+    monkeypatch.setattr(rpc, "compute_landmark_fingerprint", lambda: "impl2")
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    assert len(calls) == 2
+
+
+def test_extract_landmarks_cached_does_not_consult_the_full_fingerprint(
+        tmp_path, monkeypatch):
+    # The landmark cache must key on compute_landmark_fingerprint alone.
+    # Consulting the full one is what made every edit to the IMU or PT
+    # scoring path discard 107 cached inference results.
+    trial, _video, model, calls = _landmark_cache_fixture(
+        tmp_path, monkeypatch, pin_fingerprint=False)
+
+    def _boom():
+        raise AssertionError("landmark cache must not use the full fingerprint")
+
+    monkeypatch.setattr(rpc, "compute_implementation_fingerprint", _boom)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    assert len(calls) == 1
+
+
+def test_extract_landmarks_cached_survives_a_scoring_only_code_change(
+        tmp_path, monkeypatch):
+    # End-to-end, against the REAL fingerprint: editing pendulastic_pt_score
+    # (it loads the OptiTrack reference; it never runs during inference)
+    # must not invalidate a single cached landmark.
+    import pendulastic_pt_score
+    trial, _video, model, calls = _landmark_cache_fixture(
+        tmp_path, monkeypatch, pin_fingerprint=False)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    _perturb_source(monkeypatch, pendulastic_pt_score)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    assert len(calls) == 1
+
+
+def test_extract_landmarks_cached_re_extracts_on_real_extraction_code_change(
+        tmp_path, monkeypatch):
+    # The same end-to-end path, in the direction that must still miss --
+    # so narrowing the fingerprint cannot be "simplified" into dropping it.
+    import sweep_mediapipe_config
+    trial, _video, model, calls = _landmark_cache_fixture(
+        tmp_path, monkeypatch, pin_fingerprint=False)
+    rpc.extract_landmarks_cached(trial, "full", str(model))
+    _perturb_source(monkeypatch, sweep_mediapipe_config)
     rpc.extract_landmarks_cached(trial, "full", str(model))
     assert len(calls) == 2
 
@@ -1507,3 +1651,33 @@ def test_make_figures_writes_three_png_files_without_stubbing(tmp_path, monkeypa
         assert os.path.isfile(path)
         assert os.path.getsize(path) > 0
         assert not os.path.isfile(path + ".tmp")  # no leftover temp file
+
+
+def test_score_imu_candidate_replays_on_the_native_analysis_grid():
+    # The sweep scores IMU against OptiTrack, so it is an analysis path.
+    # Only the grid is observable from here -- the RMSE it returns cannot
+    # distinguish one cadence from another -- so the tick is asserted
+    # directly at the boundary.
+    import numpy as np
+    import pytest as _pytest
+    seen = {}
+
+    def fake_replay(samples, params, tick_s=None):
+        seen["tick_s"] = tick_s
+        return np.linspace(0.0, 1.0, 50), np.linspace(1.0, 2.0, 50)
+
+    trial = {"imu_component_paths": {"imu": "i", "accel": "a", "gyro": "g", "mag": "m"},
+             "optitrack_path": "o"}
+    import imu_calibration_tuner as tuner
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(rpc, "reconstruct_trial", lambda a, g, m: [{"t": 0.0}])
+        mp.setattr(rpc.imu_calibration_tuner, "replay_trial", fake_replay)
+        mp.setattr(rpc.pt_score, "load_optitrack",
+                   lambda path: (np.linspace(0.0, 1.0, 50), np.linspace(1.0, 2.0, 50)))
+        mp.setattr(rpc.engine, "compare_pair",
+                   lambda *a, **k: {"status": "ok", "rmse_deg": 1.0, "n_samples": 50})
+        rpc.score_imu_candidate(trial, {"beta": 0.041})
+    finally:
+        mp.undo()
+    assert seen["tick_s"] == tuner.ANALYSIS_TICK_S

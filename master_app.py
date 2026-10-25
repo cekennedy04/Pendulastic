@@ -42,6 +42,18 @@ except Exception:
     imu_server = None
     _IMU_AVAIL = False
 
+# Live marker-coverage monitoring. Optional for the same reason as the IMU: a
+# missing module, or Motive not streaming, must not stop acquisition -- it only
+# costs the operator the warning.
+try:
+    import capture_coverage as _coverage
+    import capture_coverage_session as _coverage_session
+    _COVERAGE_AVAIL = True
+except Exception:
+    _coverage = None
+    _coverage_session = None
+    _COVERAGE_AVAIL = False
+
 # On Windows, the MSMF backend can hang for 30-120 seconds opening a USB camera
 # because of hardware Media Foundation Transforms. Disabling them makes camera
 # open near-instant. This MUST be set before OpenCV (cv2) is imported.
@@ -110,6 +122,10 @@ class MasterApp:
         self._imu_raw_recording = False
         self._imu_raw_jsonl_path = ""
         self._sync_after_id = None                # pending after() for status poll
+
+        # ---- Marker coverage (pre-flight + live) ----
+        self._cov_session = None
+        self._cov_after_id = None
         if _IMU_AVAIL:
             try:
                 imu_server.start()
@@ -249,6 +265,30 @@ class MasterApp:
                                 text=("IMU module unavailable"
                                       if not _IMU_AVAIL else "starting…"))
         self.lbl_imu.pack(anchor="w", padx=8, pady=(0, 4))
+
+        # --- Marker coverage (pre-flight + live) ---
+        # Sits with the recording controls because it is only useful before and
+        # during a trial. Measured across 219 trials: when the labelled markers
+        # go missing the cameras are seeing 0.21 of the 6, so nothing downstream
+        # recovers them -- the only place to catch it is here, while the
+        # participant is still on the plinth.
+        cov_frame = tk.LabelFrame(self.root, text="Marker Coverage (OptiTrack)",
+                                  font=("Segoe UI", 9, "bold"))
+        cov_frame.grid(row=18, column=0, columnspan=2, sticky="ew",
+                       padx=10, pady=(0, 6))
+        self.btn_coverage = tk.Button(
+            cov_frame, text="CHECK COVERAGE",
+            command=self._on_check_coverage,
+            state=("normal" if _COVERAGE_AVAIL else "disabled"))
+        self.btn_coverage.pack(anchor="w", padx=8, pady=(4, 0))
+        self.lbl_coverage = tk.Label(
+            cov_frame, justify="left", anchor="w", font=("Consolas", 8),
+            fg="gray",
+            text=("coverage module unavailable" if not _COVERAGE_AVAIL else
+                  "Hold the leg in the start position, with the assessor\n"
+                  "standing as they will during the trial, then press\n"
+                  "CHECK COVERAGE."))
+        self.lbl_coverage.pack(anchor="w", padx=8, pady=(0, 4))
 
         ttk.Separator(self.root, orient="horizontal").grid(
             row=16, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
@@ -1039,6 +1079,85 @@ class MasterApp:
                 else "Idle - click 'Rescan' to reconnect camera."
             )
 
+    # ── Marker coverage ──────────────────────────────────────────────────
+    #
+    # Two views of one stream. The pre-flight check is a fixed watch the
+    # operator runs deliberately before the first trial; the live readout is a
+    # rolling window that keeps updating so a trial going bad is visible while
+    # it is still cheap to repeat.
+
+    def _coverage_start(self):
+        """Open the mocap stream if it is not already open. Returns success."""
+        if not _COVERAGE_AVAIL:
+            return False
+        if getattr(self, "_cov_session", None) is None:
+            self._cov_session = _coverage_session.CoverageSession()
+        if not self._cov_session.running:
+            if not self._cov_session.start():
+                self.lbl_coverage.config(
+                    fg="#a31515",
+                    text=("No connection to Motive.\n"
+                          "Check View > Data Streaming is on and broadcasting."))
+                return False
+        return True
+
+    def _on_check_coverage(self):
+        if not self._coverage_start():
+            return
+        self._cov_session.begin_preflight()
+        self.btn_coverage.config(state="disabled")
+        self.lbl_coverage.config(fg="gray", text="Watching...")
+        self._poll_preflight()
+
+    def _poll_preflight(self):
+        session = getattr(self, "_cov_session", None)
+        if session is None:
+            return
+        if not session.preflight_done():
+            left = session.preflight_seconds_left()
+            self.lbl_coverage.config(
+                fg="gray",
+                text=(f"Watching... {left:.0f}s\n"
+                      "Hold the leg still, assessor in position."))
+            self.root.after(200, self._poll_preflight)
+            return
+        v = session.finish_preflight()
+        self.btn_coverage.config(state="normal")
+        colour = {"pass": "#1e7d34", "fail": "#a31515"}.get(v.status, "#a31515")
+        self.lbl_coverage.config(fg=colour, text=v.headline)
+        if v.status == _coverage.PASS:
+            messagebox.showinfo("Coverage check", v.detail)
+        else:
+            messagebox.showwarning("Coverage check", v.detail)
+        self._poll_coverage_live()
+
+    def _poll_coverage_live(self):
+        """Keep the readout current between checks and during a recording."""
+        session = getattr(self, "_cov_session", None)
+        if session is None or not session.running:
+            return
+        if session.preflight_seconds_left() > 0:
+            return          # a check is running; it owns the label
+        v = session.live_verdict()
+        if v.status == _coverage.NO_DATA:
+            self.lbl_coverage.config(fg="gray", text="No mocap frames")
+        else:
+            colour = "#1e7d34" if v.status == _coverage.PASS else "#a31515"
+            self.lbl_coverage.config(fg=colour, text=v.headline)
+        self._cov_after_id = self.root.after(500, self._poll_coverage_live)
+
+    def _coverage_stop(self):
+        session = getattr(self, "_cov_session", None)
+        if session is not None:
+            session.stop()
+        after_id = getattr(self, "_cov_after_id", None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+            self._cov_after_id = None
+
     def _lock_inputs(self, locked):
         state = "disabled" if locked else "normal"
         ro_state = "disabled" if locked else "readonly"
@@ -1063,6 +1182,13 @@ class MasterApp:
         if self._sync_after_id is not None:
             self.root.after_cancel(self._sync_after_id)
             self._sync_after_id = None
+        # Closes the mocap socket and cancels its poll. Guarded because a
+        # half-built window (camera failure during __init__) may never have
+        # created one, and a close handler must not raise.
+        try:
+            self._coverage_stop()
+        except Exception:
+            pass
         try:
             was_recording = self.writing_flag.is_set()
             self.writing_flag.clear()

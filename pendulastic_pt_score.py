@@ -29,10 +29,11 @@ Outputs (Model_Analysis_Outputs/PT_Scores/):
 from __future__ import annotations
 
 import glob
+import itertools
 import math
 import os
 import re
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -80,12 +81,10 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # note below for the earlier history and the
 # n=7-total-participants power caveat, which still applies here.
 #
-# PT_HEALTHY_MAX/PT_BORDERLINE_MAX below were NOT recomputed against this
-# new HEALTHY_REF -- they're still the 2026-08-10 PT7-distribution
-# boundaries, now stale relative to the shifted PT7 scale this HEALTHY_REF
-# produces. Recalibrating those is a separate, bigger statistical call
-# (distribution boundaries, not a single per-parameter median) and needs
-# its own deliberate pass, not a silent side effect of this bug fix.
+# PT_HEALTHY_MAX/PT_BORDERLINE_MAX below have since been recomputed against
+# this new HEALTHY_REF in their own 2026-08-24 pass -- see their note. They
+# barely moved (both under 1%), because they measure the SEPARATION between
+# the control and MS populations and these fixes shifted both together.
 #
 # PROVISIONAL (2026-08-10): recalibrated after fixing three compute_pt_params
 # bugs (release detection firing during a detrend artifact, whole-trial
@@ -101,24 +100,196 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # once available. See scratchpad recalibrate_healthy_ref.py for the
 # derivation.
 # One-directional penalties: only penalise deviations in the impaired direction.
+# RECALIBRATED 2026-09-09. Two entries are literature-anchored and five are
+# our own medians, each flagged individually below.
+#
+# This replaces a set measured on n=4 controls (P2, P8, P9, P12) under the
+# settled-angle frame. Three of those four are on record with OptiTrack
+# reconstruction defects -- P9's Left and Right files are byte-identical
+# across all 5 trials, and P2 loses 9 of 16 trials to "rig geometry is
+# unsupported" and "optical coverage 0.0%" -- which is the concrete reason
+# the previous set was flagged invalid.
+#
+# Adopting this moves PT7 on every trial. That is intended: the N entry
+# alone was off by ~3, and being a below-only penalty it meant the N term
+# contributed nothing for anyone, healthy or spastic.
 HEALTHY_REF = {
-    "R2n":           1.0321,  # control median n=4 (2026-08-21 recalibration)
-    "N":             3.5,     # control median n=4 -- was 5.5 pre-fix (see note above)
-    "phi_max_ratio": 0.6386,  # control median n=4
-    "omega_max_n":   6.7684,  # control median n=4
-    "omega_min_n":   0.0010,  # control median n=4
-    "f":             0.9137,  # control median n=4
-    "area_ratio":    0.0768,  # control median n=4
+    # ---- LITERATURE-ANCHORED (Popovic-Maneski 2017, the paper whose PT7
+    #      formula this module implements; see docs/reference/
+    #      2026-08-24-pendulum-test-literature-benchmarks.md section 11) ----
+
+    # Published: "In healthy subjects, the parameter R2n > 1". A BOUNDARY,
+    # not a mean, so 1.0 is the anchor. That reads correctly here because
+    # R2n is penalised only when BELOW the reference: the term becomes "how
+    # far below the healthy boundary", and every healthy value above 1.0
+    # scores zero. Our own n=46 control median is 0.9907 -- marginally on the
+    # spastic side of the published boundary, which is a flag on the control
+    # set rather than on this constant.
+    "R2n":           1.0,
+
+    # Published: "values of N for healthy subjects range from 6 to 7". Our
+    # own V0.4 cohort independently measured 6.5 (robust at 6.0-7.5 across
+    # every control subset), so literature and data agree to within 0.5.
+    # This replaces 3.5, which was never a control median: it was the old
+    # 4-second active-oscillation cap, which returned N = 4.0 for any leg
+    # still swinging after four seconds. See evaluate_healthy_ref_v04.py.
+    "N":             6.5,
+
+    # ---- DATA-DERIVED, no published value exists ----
+    #
+    # Flagged rather than cited. For each of these the published quantity is
+    # either differently defined or was never published at all, so no
+    # literature anchor is available and these are OUR medians. Values are
+    # from evaluate_healthy_ref_v04.py: 46 OptiTrack control trials, 9
+    # participants, 15 legs, scored with the scoring that ships -- against
+    # the n=4 the previous set came from.
+    #
+    # The standing provenance limit applies to all five: every control leg in
+    # mas_scores.csv is assessed_by=ASSUMED, and every clinician-EXAMINED leg
+    # in the dataset is an MS patient. There is no examined healthy leg to
+    # calibrate against, so these describe legs assumed healthy by enrolment.
+
+    # Popovic's phi-max is the first goniogram maximum in RADIANS (published
+    # healthy 0.34-0.61 rad). Ours is A2/A0, a dimensionless ratio. Different
+    # quantity; the published range cannot be used.
+    "phi_max_ratio": 0.6667,
+
+    # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
+    # Ours is divided by A0. Different quantity.
+    "omega_max_n":   9.5672,
+
+    # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
+    # velocity in the return direction. Until 2026-09-09 this module computed
+    # min(abs(omega))/A0 -- the near-zero speed at a turning point -- so the
+    # value sat at ~0.001 for every trial and one of the seven parameters was
+    # a static zero-offset in the sum.
+    #
+    # Median of 46 OptiTrack control trials; all 46 are negative, and it
+    # mirrors omega_max_n (+9.5672) almost exactly, which is what a pendulum
+    # should do. Subset spread -7.26 to -9.82, far tighter than area_ratio's.
+    #
+    # Worth noting but NOT claimed as a match: Popovic's published healthy
+    # range is -12 to -9 rad/s and this lands inside it. Ours is normalised by
+    # A0 (units 1/s) and theirs is not, so the agreement is suggestive rather
+    # than a like-for-like comparison.
+    "omega_min_n":   -9.4152,
+
+    # Popovic-Maneski introduced f themselves ("We introduced two additional
+    # parameters in this study"), and published no healthy value for it.
+    "f":             0.8839,
+
+    # Same: introduced in that study, no published healthy value. ALSO the
+    # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
+    # 90% swing, depending purely on which controls are included. This cohort
+    # cannot pin it, and it is the parameter the swing-centred frame changed.
+    "area_ratio":    0.0945,
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
-# PROVISIONAL (2026-08-10): control median PT=0.111, 75th-pct=0.150;
-# MS median PT=0.448; Mann-Whitney p=0.0001. Same n=7 caveat as HEALTHY_REF.
-# STALE as of the 2026-08-21 HEALTHY_REF recalibration above -- these
-# boundaries were fit against the pre-fix PT7 distribution and have not
-# been recomputed against the new one. Needs its own recalibration pass.
-PT_HEALTHY_MAX    = 0.150  # covers control 75th-pct; below this = healthy
-PT_BORDERLINE_MAX = 0.299  # midpoint of gap between populations
+# RECALIBRATED (2026-08-24) on the MAS-GRADE axis, replacing the MS-vs-Control
+# diagnosis axis every prior calibration used. That change of axis is the
+# substantive one here; the arithmetic is unchanged:
+#   PT_HEALTHY_MAX    = MAS-0 75th percentile
+#   PT_BORDERLINE_MAX = midpoint between PT_HEALTHY_MAX and the MAS>=1 median
+# Unit of observation is the participant-LEG (median of its baseline trials),
+# not the trial -- see the aggregation note at the end for why.
+#
+# Why the axis changed: PT7 measures spasticity SEVERITY, MS is a DIAGNOSIS,
+# and this study's MS arm genuinely spans the full severity range including
+# participants with no measurable spasticity (user-confirmed; corroborated by
+# mas_scores.csv, where P5 is graded MAS 0 on both legs at every timepoint and
+# P13 reaches MAS 0 by 1-week-post). An MS participant graded MAS 0 SHOULD
+# score like a control -- their leg really does swing like one. Calibrating a
+# severity threshold against a diagnosis label therefore mislabels genuine
+# mild cases as calibration failures, and it was the reason the previous
+# cohort appeared to "separate" cleanly at n=7 (it happened to hold the two
+# most-affected participants, P13 and P14) yet appeared to collapse when
+# every metadata-classifiable participant was included.
+#
+# Result, MAS 0 vs MAS>=1 across participant-legs:
+#   MAS 0   n=23  median=0.0771  p75=0.1709
+#   MAS>=1  n= 6  median=0.5346
+#   Mann-Whitney p=0.00196
+# Stable under every reasonable variation tried: dropping the ASSUMED-0
+# controls gives 0.1573/0.3459 (p=0.008), and dropping the imputed legs too
+# gives 0.1573/0.3459 (p=0.067). PT_HEALTHY_MAX stays in 0.157-0.171 and
+# PT_BORDERLINE_MAX in 0.346-0.353 throughout.
+#
+# Versus the prior diagnosis-axis values (0.1492/0.2959, committed earlier
+# the same day): healthy max +15%, borderline max +19%. An earlier revision
+# of this note claimed the diagnosis-axis threshold might be "2-3x too
+# aggressive"; that was WRONG and is retracted -- it came from a looser
+# pairing that let post-treatment conditions and P2's duo artifact into the
+# MAS-0 pool. The real gap is ~15-19%.
+#
+# THREE ASSUMPTIONS THIS CALIBRATION RESTS ON. None are measurements:
+#
+#  1. P4's left/right MAS grades were transposed, and mas_scores.csv has been
+#     corrected accordingly (left 1+ -> 0, right 0 -> 1+; see that file's own
+#     notes column, and the mas_scores.csv.bak-2026-08-24-pre-P4-swap backup,
+#     since that file is gitignored and has no version history). Operator
+#     judgment, supported by biomechanics rather than by re-checking the
+#     source clinical record: as recorded, P4's left leg scored healthy on
+#     all 7 PT params (N=3.5, R2n 1.01-1.17 against a 1.03 healthy ref,
+#     area_ratio 0.015-0.074) while carrying the dataset's most severe grade,
+#     and its right leg showed a damped spastic signature (N=1.0-1.5,
+#     R2n 0.744, area_ratio 0.52-0.54) while graded MAS 0. Correcting it
+#     improves separation ~17x (p 0.033 -> 0.002) and removes a degenerate
+#     inverted band (BORDERLINE_MAX below HEALTHY_MAX) that appeared under
+#     one imputation. NOTE the evidence cannot distinguish "MAS entry
+#     transposed" from "recordings transposed" -- they are observationally
+#     identical here, and only the former was acted on. Verify against the
+#     original clinical record before relying on P4 for anything else.
+#
+#  2. P11 and P18 (both legs each) have no MAS grade at all and are imputed
+#     MAS 0. The data supports 0 over 1: imputing 0 gives p=0.002-0.03 across
+#     configurations while imputing 1 gives p=0.07-0.86 and never reaches
+#     significance, because P18 scores 0.0051/0.0431 -- biomechanically
+#     unimpaired, so placing it in the spastic group destroys the grouping.
+#     Supporting, not proving: a genuinely-spastic leg could in principle
+#     score low. P17 is also ungraded (mas_grade=-1, pending) but has no
+#     scoreable trials, so it cannot affect this either way.
+#
+#  3. All 15 control legs are ASSUMED MAS 0, not clinician-assessed
+#     (assessed_by="ASSUMED" in mas_scores.csv). Reasonable for unaffected
+#     volunteers and near-definitional, but it is still an assumption, and it
+#     supplies 15 of the 23 MAS-0 observations. Excluding them moves
+#     PT_HEALTHY_MAX only 0.1709 -> 0.1573, so the calibration does not hinge
+#     on it.
+#
+# STILL PROVISIONAL, and the aggregation caveat that sank the previous
+# calibration applies here too, only less severely. 29 participant-legs from
+# 15 participants is small, and the MAS>=1 arm is just 6 legs from 4
+# participants (P4r, P13 both, P14 both, P15r). Legs within a participant are
+# not independent, so even the per-leg p=0.00196 is optimistic; a strict
+# per-participant test would have less power still. Treat these as a
+# provisional working threshold, NOT a validated clinical cutoff. The path to
+# a real one is more clinician-assessed grades, especially at MAS>=1 and from
+# participants not already represented -- a data-collection problem, not an
+# analysis one.
+#
+# P2's pre_duo trials are EXCLUDED throughout (its pre_solo trials are kept).
+# Duo sessions record both legs' markers together and are documented
+# elsewhere in this file as unreliable for exactly that reason
+# ("area_ratio inflated by marker mixing"); those four trials score PT7
+# 1.58-1.87, far outside any plausible unaffected range.
+#
+# Data-hygiene trap for anyone editing the baseline filter: P16's condition
+# string is literally "control", meaning that participant's baseline session,
+# NOT a group label. A filter of the shape startswith("pre") or "baseline"
+# silently drops all 8 of its very-low trials (0.0068-0.0221) and biases the
+# MAS-0 distribution upward. This has already caught one reviewer.
+#
+# Prior calibrations, for reference:
+#   2026-08-24 (diagnosis axis, corrected pipeline): 0.1492 / 0.2959
+#   2026-08-10 (diagnosis axis, pre-fix pipeline):   0.150  / 0.299
+#     -- control median PT=0.111, 75th-pct=0.150, MS median PT=0.448.
+#     Those exact numbers are no longer reproducible: Recordings/ and
+#     OptiTrack_Recordings/ are gitignored live data that has changed since
+#     (P13/P14 gained post-treatment sessions, P15-P18 were recorded), so
+#     this is data drift rather than a scoring discrepancy.
+PT_HEALTHY_MAX    = 0.1709  # MAS-0 75th-pct (n=23 legs); below this = healthy
+PT_BORDERLINE_MAX = 0.3528  # midpoint between PT_HEALTHY_MAX and the MAS>=1 median
 
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
@@ -273,6 +444,162 @@ def pt_to_mas(pt: float) -> str:
         if pt <= thresh: return label
     return "4"
 
+
+# ── Excursion gate: refuse a MAS grade PT7 cannot support ────────────────────
+#
+# PT7 is NOT monotonic in severity. All seven of its parameters are ratios
+# normalised on the swing itself, so when the swing collapses they renormalise
+# on a tiny, clean, near-symmetric motion and a barely-moving leg scores
+# healthy. Measured against the pendulum simulator at dialled-in muscle tone
+# (k_x=0, shipped scorer, 2026-08-30):
+#
+#     tone   PT7     MAS    A0
+#      0.0   0.036    0     78.3
+#      3.0   0.989    4     62.4    <- peak
+#      8.0   0.246    1     19.0
+#     10.0   0.322    1+    11.2    <- near-rigid, scored MILD
+#
+# A0 falls monotonically (78.3 -> 11.2) across the whole range and is not one
+# of the scored parameters.
+#
+# This gate does NOT fix the non-monotonicity. PT7 already turns over around
+# A0 ~60 deg, far above any defensible threshold. What the gate does is refuse
+# the VERDICT in the regime where the verdict is actively unsafe -- a leg that
+# barely moved being reported as mild.
+#
+# Threshold derivation. Taken from the CONTROL distribution, never from the
+# spastic legs: there are 7 of those with a usable reference, which cannot
+# support fitting a diagnostic cutoff, and every one of them has A0 >= 28.7 deg
+# so the collapsed-excursion regime is not represented in this corpus at all.
+# Over 53 non-spastic OptiTrack trials passing the quality filter (coverage
+# >= 80%, no area-ratio warning): mean 46.6 deg, sd 11.1, two SD below = 24.5.
+#
+# CORRECTION (same day, after the seed-window bug in
+# the old labeled-marker reconstruction was found). That "two SD below the
+# control mean"
+# derivation is CIRCULAR and must not be quoted as the justification. The only
+# two trials dragging the control distribution down are P9 left and right at
+# A0 9.0 -- precisely the two this gate then catches. Drop them and the
+# remaining 51 controls read mean 48.0, sd 8.3, two SD below = 31.5.
+#
+# And 31.5 is unusable: the lowest spastic leg in the corpus sits at 28.7, so a
+# clean two-SD control bound would land ABOVE the spastic range and start
+# refusing grades on the very cases the study exists to measure. No single
+# threshold satisfies both "two SD below controls" and "clears every spastic
+# leg" on this data.
+#
+# So 25 is NOT a control-derived bound. It is a conservative floor CONSTRAINED
+# BY THE SPASTIC MINIMUM: as high as it can go while staying clear of the
+# lowest observed spastic leg (28.7, ~13% margin), which is what stops it
+# silently reclassifying a study case. It catches the collapsed tail and
+# nothing more, and it claims nothing about where the healthy range ends.
+#
+# There is a second reason to hang the threshold off the spastic side rather
+# than the control side: the labels are not equally trustworthy. Of the
+# "non-spastic" rows, 17 are ASSUMED controls that nobody examined -- the same
+# claim recruitment already makes -- and only 10 legs across 5 participants were
+# genuinely examined by a clinician. The spastic labels are mostly examined; the
+# control labels mostly are not.
+#
+# RE-DERIVE this once the seed-window bug is fixed. The control distribution is
+# contaminated in an unknown direction today: that bug anchors the zero to
+# whatever pose fills the first 60 frames, produces a convincing ~180 baseline
+# either way, and survives the coverage and area-ratio filters untouched (P9
+# Left trial_3 reaches A0 418 deg at 97.3% coverage). Until the reconstruction
+# is trustworthy, no threshold derived from these A0 values is either.
+#
+# Effect on the current corpus: flags 2 of 53 non-spastic trials (4%) and 0 of
+# 7 spastic. Both flagged trials have A0 = 9.0 deg and currently report
+# PT7 0.278 -> MAS "1+", i.e. a leg that barely moved being called mildly
+# spastic. That is the cell this exists to close.
+#
+# The message is deliberately about the MEASUREMENT, not the patient. Low
+# excursion also comes from poor positioning, an incomplete release, guarding
+# or pain, mechanical obstruction, and sensor failure. Reporting "severe
+# spasticity" on those would trade one wrong answer for another.
+EXCURSION_REF_MEAN_DEG = 46.6
+EXCURSION_REF_SD_DEG = 11.1
+EXCURSION_REF_N = 53
+MIN_INTERPRETABLE_A0_DEG = 25.0
+
+# Upper bound on a believable excursion. The floor above catches a swing that
+# collapsed; this catches a number that is not a swing at all.
+#
+# A0 is the initial extension above neutral of an INTERIOR knee angle, which
+# lives in [0, 180], so anything at or above 180 is arithmetically impossible
+# rather than merely unusual. 120 sits well below that and well above the data:
+# across 218 scored optical trials the 99th percentile is 89.8 deg and the
+# largest genuine value is also 89.8, so the gate has ~34% headroom over the
+# real maximum and rejects nothing that was ever measured.
+#
+# It is not hypothetical. The seed-window bug documented in
+# the old seeded reconstruction produced A0 = 418.1 deg on P9 Left/Right trial_3
+# at 97.3% coverage, and that value passed the floor-only gate and had a MAS
+# grade printed off it. A one-sided gate only guards one failure direction.
+MAX_INTERPRETABLE_A0_DEG = 120.0
+
+IMPOSSIBLE_EXCURSION = (
+    "Impossible excursion: the leg moved {a0:.1f} deg, above the {gate:.0f} deg "
+    "ceiling. A0 is the initial extension of an interior knee angle, which "
+    "cannot exceed 180 deg at all, and the largest value measured across this "
+    "corpus is 89.8 deg. A number this size means the reconstruction failed, "
+    "not that the leg swung far -- check the trial's anatomical reference "
+    "before reading anything into the score."
+)
+
+INSUFFICIENT_EXCURSION = (
+    "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
+    "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
+    "PT7's parameters are ratios normalised on the swing, so they stop tracking "
+    "severity once the swing collapses. Repeat the trial and check positioning, "
+    "release and sensor placement before reading anything into the score."
+)
+
+
+def excursion_ok(params: Optional[dict]) -> bool:
+    """False when the swing is too small -- or too large -- to mean anything.
+
+    None params, or a missing A0, count as NOT ok: an unmeasurable trial is not
+    an interpretable one. The upper bound matters as much as the lower one: a
+    reconstruction failure shows up as an impossibly LARGE excursion just as
+    readily as a collapsed one, and a floor-only gate waves it straight through
+    to a printed MAS grade.
+    """
+    if not params:
+        return False
+    a0 = params.get("A0_deg")
+    if a0 is None or not np.isfinite(a0):
+        return False
+    return MIN_INTERPRETABLE_A0_DEG <= float(a0) <= MAX_INTERPRETABLE_A0_DEG
+
+
+def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
+    """MAS estimate for a trial, or an explicit refusal.
+
+    Returns {"mas": str|None, "pt7": float|None, "interpretable": bool,
+             "reason": str}. `mas` is None exactly when `interpretable` is
+    False, so a caller cannot accidentally render a grade the score does not
+    support -- which is the failure this whole block exists to prevent.
+
+    Prefer this over calling pt_to_mas(compute_pt_score(params)) directly.
+    """
+    if not params:
+        return {"mas": None, "pt7": None, "interpretable": False,
+                "reason": "No PT parameters: the trial could not be scored."}
+    score = compute_pt_score(params) if ref is None else compute_pt_score(params, ref)
+    if not excursion_ok(params):
+        a0 = params.get("A0_deg")
+        if a0 is not None and np.isfinite(a0) and float(a0) > MAX_INTERPRETABLE_A0_DEG:
+            return {"mas": None, "pt7": score, "interpretable": False,
+                    "reason": IMPOSSIBLE_EXCURSION.format(
+                        a0=float(a0), gate=MAX_INTERPRETABLE_A0_DEG)}
+        return {"mas": None, "pt7": score, "interpretable": False,
+                "reason": INSUFFICIENT_EXCURSION.format(
+                    a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),
+                    gate=MIN_INTERPRETABLE_A0_DEG, mean=EXCURSION_REF_MEAN_DEG,
+                    sd=EXCURSION_REF_SD_DEG, n=EXCURSION_REF_N)}
+    return {"mas": pt_to_mas(score), "pt7": score, "interpretable": True, "reason": ""}
+
 # Ordinal MAS scale, single source of truth for anything that needs a numeric
 # rank (Spearman correlation, weighted Cohen's kappa) rather than the raw
 # label -- e.g. mas_validation.py. pt_to_mas() above only ever returns one of
@@ -312,11 +639,18 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     for k in _PARAM_KEYS:
         pij = params.get(k, 0.0)
         phj = ref.get(k, 0.0)
-        if phj <= 0:
+        # `== 0`, not `<= 0`. A NEGATIVE reference is legitimate:
+        # omega_min_n is a signed velocity whose healthy value is below
+        # zero. Skipping non-positive references would have flatlined it
+        # exactly as min(abs(omega)) did, by a different route. Popovic's
+        # own formula takes the absolute value of the whole term, so a
+        # negative P_H is fine there; this one-sided form needs abs() in
+        # the denominator instead, below.
+        if phj == 0:
             breakdown[k] = 0.0
             continue
         delta = pij - phj
-        denom = _N_PARAMS * max(phj, _DENOM_FLOOR)
+        denom = _N_PARAMS * max(abs(phj), _DENOM_FLOOR)
         if k in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
             dev = max(0.0, -delta) / denom   # penalise only if below healthy
         elif k in ("area_ratio", "omega_min_n"):
@@ -431,122 +765,619 @@ def _find_unlabeled_cols(name_row: list, comp_row: Optional[list]) -> list:
         return [groups[nm][:3] for nm in order if len(groups[nm]) >= 3]
 
 
-def _find_labeled_marker_cols(name_row: list, comp_row: list, segment: str) -> list:
+def _find_labeled_marker_cols(name_row: list, comp_row: list, segment: str,
+                              type_row: Optional[list] = None) -> list:
     """
     Return [[x_col, y_col, z_col], ...] for each labeled marker of `segment`.
     Works with Motive 1.22 (new) format where comp_row uses "Position" labels
     and marker names may be quoted (e.g. '"Shank:Marker1"').
+
+    IMPORTANT -- solved vs measured markers. A Motive export lists each labeled
+    marker TWICE: once under type "Rigid Body Marker" (Motive's reprojection of
+    the marker from the solved rigid-body pose) and once under type "Marker"
+    (the actual 3-D measurement). The two are easy to confuse because they
+    share a name, but the reprojection is rigid BY CONSTRUCTION -- its
+    inter-marker distances have exactly 0.00 mm spread, versus 0.1-0.4 mm for
+    the measurement -- and it inherits every tracking failure of the rigid body
+    it was solved from. Preferring it silently defeats the whole point of the
+    marker path, which exists to sidestep rigid-body tracking resets.
+
+    So: when `type_row` is supplied we take the measured "Marker" block and
+    fall back to the solved block only if there is no measured one. Without a
+    `type_row` we keep the historical first-3-columns behaviour so existing
+    callers are unaffected.
     """
     seg_l = segment.lower()
-    n = max(len(name_row), len(comp_row) if comp_row else 0)
+    n = max(len(name_row), len(comp_row) if comp_row else 0,
+            len(type_row) if type_row else 0)
     names = (name_row + [""] * n)[:n]
     comps = (comp_row + [""] * n)[:n] if comp_row else [""] * n
+    types = (type_row + [""] * n)[:n] if type_row else [""] * n
 
-    # Collect Position columns grouped by marker name (preserving column order).
-    # New Motive 1.22 format uses "Position" (not "X"/"Y"/"Z") for all 3 axes.
-    groups: dict = {}
+    # Collect Position columns grouped by marker name, keeping solved and
+    # measured columns apart. New Motive 1.22 format uses "Position" (not
+    # "X"/"Y"/"Z") for all 3 axes.
+    measured: dict = {}
+    solved: dict = {}
     order: list = []
-    for i, (nm, cp) in enumerate(zip(names, comps)):
+    for i, (nm, cp, tp) in enumerate(zip(names, comps, types)):
         nm_l = nm.strip().strip('"').lower()
         cp_l = cp.strip().lower()
-        if nm_l.startswith(seg_l + ":marker") and cp_l in ("position", "x", "y", "z"):
-            key = nm.strip().strip('"')
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append(i)
+        if not (nm_l.startswith(seg_l + ":marker") and
+                cp_l in ("position", "x", "y", "z")):
+            continue
+        key = nm.strip().strip('"')
+        if key not in order:
+            order.append(key)
+        bucket = solved if tp.strip().lower() == "rigid body marker" else measured
+        bucket.setdefault(key, []).append(i)
 
     result = []
     for mname in order:
-        cols = groups[mname]
+        cols = measured.get(mname) or solved.get(mname) or []
         if len(cols) >= 3:
             result.append(cols[:3])   # first 3 = X, Y, Z in Motive export order
     return result
 
 
-def _angle_from_labeled_markers_pca(
-        df: pd.DataFrame,
-        shank_triplets: list,
-        thigh_triplets: list) -> np.ndarray:
-    """
-    Knee angle from labeled Shank/Thigh marker positions via per-frame PCA.
-    More robust than stored quaternions for recordings with Motive tracking resets.
-    Returns interior knee angle in degrees (180° = fully extended).
-    """
-    from scipy.ndimage import median_filter as _mf
+# Fraction of frames in which the cameras must actually have seen every Shank
+# and Thigh marker before a trial's optical curve is considered fully trusted.
+#
+# Set 2026-08-26. Sweeping all 215 trials in OptiTrack_Recordings found 157
+# (73%) below 90%, with dropout beginning ~0.5 s in — at pendulum release —
+# because the swinging shank leaves the camera volume. Those frames carry no
+# unlabeled detections either (~0 per frame), so the markers were genuinely
+# unseen rather than merely unlabeled, and no interpolation can recover them.
+#
+# This is a WARNING threshold, not a gate. Between 2026-08-26 and 2026-08-27 it
+# rejected the trial outright, which silently emptied whole participants out of
+# the reports (P21's right leg lost all 5 trials). Deciding a trial is bad is
+# the operator's call, made through excluded_trials.json; the loader's job is
+# to hand over an honest curve and say plainly what is wrong with it. The one
+# thing it must never do is fill the gap in — see optitrack_knee_axis.
+LOW_OPTICAL_COVERAGE = 0.90
 
-    n = len(df)
 
-    def _get(cols):
+def _raw_column_coverage(df: pd.DataFrame, cols: list) -> float:
+    """Fraction of frames in which every column in `cols` was actually
+    recorded — measured BEFORE any ffill, which is the only point at which
+    the answer is still true."""
+    if len(df) == 0 or not cols:
+        return 0.0
+    arr = df.iloc[:, list(cols)].values.astype(float)
+    arr[np.abs(arr) > 1e5] = np.nan
+    return float(np.isfinite(arr).all(axis=1).mean())
+
+
+def _seed_window_speed_mm(df: pd.DataFrame, shank_triplets: list,
+                          n_frames: int = 60) -> float:
+    """Median per-frame travel (mm) of the shank cluster over the seed window.
+
+    Seed-free by construction -- it only asks whether the leg was STILL while
+    the reference pose was being taken, which is what the seed assumes and
+    never checks.
+    """
+    if len(df) == 0 or len(shank_triplets) < 3:
+        return float("nan")
+    cols = []
+    for trip in shank_triplets[:3]:
+        arr = df.iloc[:, trip].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        cols.append(arr)
+    stacked = np.stack(cols)[:, :n_frames, :]
+    # A frame with no tracked marker is an empty slice for nanmean, which warns
+    # and yields NaN. Drop those frames instead: the question is how fast the
+    # leg moved while it WAS seen, not how many frames were missed -- coverage
+    # is reported separately.
+    seen = np.isfinite(stacked).any(axis=(0, 2))
+    if seen.sum() < 2:
+        return float("nan")
+    centroid = np.nanmean(stacked[:, seen, :], axis=0)
+    if len(centroid) < 2:
+        return float("nan")
+    step = np.linalg.norm(np.diff(centroid, axis=0), axis=1) * 1000.0
+    step = step[np.isfinite(step)]
+    return float(np.median(step)) if step.size else float("nan")
+
+
+def _coverage_from_cols(df: pd.DataFrame, shank_triplets: list,
+                        thigh_triplets: list) -> float:
+    """Fraction of frames in which every Shank and Thigh marker was tracked."""
+    if len(df) == 0:
+        return 0.0
+    ok = np.ones(len(df), dtype=bool)
+    for cols in list(shank_triplets[:3]) + list(thigh_triplets[:3]):
         arr = df.iloc[:, cols].values.astype(float)
         arr[np.abs(arr) > 1e5] = np.nan
-        return arr
+        ok &= np.isfinite(arr).all(axis=1)
+    return float(ok.mean())
 
-    sm = [_get(c) for c in shank_triplets[:3]]
-    tm = [_get(c) for c in thigh_triplets[:3]]
 
-    # Reference long-axis direction from centroid-to-centroid over first 60 frames
-    ref_n = min(60, n)
-    sc = np.nanmean(np.stack([m[:ref_n] for m in sm], axis=0), axis=(0, 1))
-    tc = np.nanmean(np.stack([m[:ref_n] for m in tm], axis=0), axis=(0, 1))
-    v_ts = sc - tc
-    nrm = float(np.linalg.norm(v_ts))
-    if nrm < 1e-6:
-        raise ValueError("Shank and thigh centroids coincide — cannot determine reference direction.")
-    ref_shank =  v_ts / nrm   # toward ankle
-    ref_thigh = -v_ts / nrm   # toward hip
+# Every way Motive could have permuted a 3-marker cluster's labels.
+_MARKER_PERMUTATIONS = [list(p) for p in itertools.permutations(range(3))]
 
-    def _pca_dirs(markers, ref):
-        dirs = np.zeros((n, 3))
-        for i in range(n):
-            pts = np.array([m[i] for m in markers])
-            if np.any(np.isnan(pts)):
-                dirs[i] = np.nan
-                continue
-            c = pts.mean(axis=0)
+# Largest per-marker residual (metres) still considered the same rigid cluster
+# after the best-fitting permutation. The measured plates hold their shape to
+# 0.09-0.38 mm on this corpus, so 3 mm is loose enough for real noise and tight
+# enough to catch a stray marker mislabeled into the cluster.
+MAX_CLUSTER_RMSD_M = 0.003
+
+# Second singular value (metres) below which a 3-marker cluster counts as a
+# collinear bar rather than a triangle. Measured across this corpus the thigh
+# cluster spans ~79 mm along its line but only 0.8-2.7 mm across it, while a
+# real triangle spans 18-27 mm across. 0.010 m sits in the empty gap between
+# those two populations.
+MIN_CLUSTER_PLANAR_EXTENT_M = 0.010
+
+# Largest change in a segment's axis between consecutive frames that is still
+# physically possible. At this rig's 120 Hz, 30 deg per frame is 3600 deg/s —
+# far beyond any limb. Used to reject frames where marker relabeling would
+# otherwise teleport the axis.
+MAX_AXIS_STEP_DEG = 30.0
+
+
+def _shortest_arc_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation carrying unit vector `a` onto unit vector `b` by the shortest
+    arc — i.e. with no roll about the resulting axis.
+
+    Used for collinear marker clusters, where roll is unobservable and any
+    other choice would be inventing information.
+    """
+    a = a / max(float(np.linalg.norm(a)), 1e-12)
+    b = b / max(float(np.linalg.norm(b)), 1e-12)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = float(np.linalg.norm(v))
+    if s < 1e-12:
+        # Parallel, or exactly opposed: identity is right for the former; for
+        # the latter any perpendicular axis works, so pick a stable one.
+        if c > 0:
+            return np.eye(3)
+        axis = np.array([1.0, 0.0, 0.0])
+        if abs(a[0]) > 0.9:
+            axis = np.array([0.0, 1.0, 0.0])
+        axis = np.cross(a, axis); axis /= np.linalg.norm(axis)
+        k = np.array([[0.0, -axis[2], axis[1]],
+                      [axis[2], 0.0, -axis[0]],
+                      [-axis[1], axis[0], 0.0]])
+        return np.eye(3) + 2.0 * (k @ k)
+    k = np.array([[0.0, -v[2], v[1]],
+                  [v[2], 0.0, -v[0]],
+                  [-v[1], v[0], 0.0]])
+    return np.eye(3) + k + k @ k * ((1.0 - c) / (s * s))
+
+
+def _reference_shape(mk: np.ndarray, hold_idx: np.ndarray) -> np.ndarray:
+    """Centred reference shape (3, 3) for a marker cluster over `hold_idx`.
+
+    Averaging each marker's position across the hold sounds obvious and is
+    wrong: Motive permutes Marker1/2/3 between frames, so marker slot j holds
+    different physical markers at different times and the mean collapses the
+    cluster. Measured on P21 Left T3 that shrank the thigh triangle from its
+    true 64.8/64.9/129.7 mm to 56.0/56.1/112.1 mm — a 13% contraction that
+    poisoned every axis derived from it.
+
+    So: anchor on one frame, permutation-align the rest to it, then average.
+    """
+    anchor = mk[:, hold_idx[0], :]
+    anchor_c = anchor - anchor.mean(axis=0)
+    acc = [anchor_c]
+    for f in hold_idx[1:]:
+        cur_c = mk[:, f, :] - mk[:, f, :].mean(axis=0)
+        best, best_rmsd = None, np.inf
+        for perm in _MARKER_PERMUTATIONS:
+            cand = cur_c[perm, :]
             try:
-                _, _, vt = np.linalg.svd(pts - c, full_matrices=False)
-                ax = vt[0]
-            except Exception:
-                dirs[i] = np.nan
+                rot = _kabsch_rotation(cand, anchor_c)
+            except np.linalg.LinAlgError:
                 continue
-            if np.dot(ax, ref) < 0:
-                ax = -ax
-            dirs[i] = ax
-        for i in range(1, n):
-            if np.any(np.isnan(dirs[i])):
-                dirs[i] = dirs[i - 1]
-                continue
-            if np.dot(dirs[i], dirs[i - 1]) < 0:
-                dirs[i] = -dirs[i]
-        for c in range(3):
-            dirs[:, c] = _mf(dirs[:, c], size=7)
-        dirs /= np.linalg.norm(dirs, axis=1, keepdims=True).clip(1e-9)
-        return dirs
+            resid = anchor_c - (rot @ cand.T).T
+            rmsd = float(np.sqrt(np.mean(np.sum(resid ** 2, axis=1))))
+            if rmsd < best_rmsd:
+                best_rmsd, best = rmsd, (rot @ cand.T).T
+        if best is not None and best_rmsd < MAX_CLUSTER_RMSD_M:
+            acc.append(best)
+    ref = np.mean(np.stack(acc), axis=0)
+    return ref - ref.mean(axis=0)
 
-    thigh_dirs = _pca_dirs(tm, ref_thigh)
-    shank_dirs = _pca_dirs(sm, ref_shank)
 
-    dot = np.clip(np.sum(thigh_dirs * shank_dirs, axis=1), -1.0, 1.0)
-    angles = np.degrees(np.arccos(dot))
+def _kabsch_rotation(ref_centred: np.ndarray, cur_centred: np.ndarray) -> np.ndarray:
+    """Least-squares rotation carrying `ref_centred` onto `cur_centred`.
 
-    # Set the pre-release period to 180° (fully extended convention).
-    # PCA-based angles can drift significantly during the hold period due to
-    # collinear marker geometry, so the baseline-deviation approach in
-    # _detect_release would fire too early without this override.
-    # The physical release is detected by a rapid angular velocity drop
-    # (>100°/s) which clearly separates the pendulum swing from any slow drift.
-    t_sec = df.iloc[:, 1].values.astype(float); t_sec -= t_sec[0]
-    dadt = np.gradient(angles, t_sec)
-    release_idx = 0
-    for i in range(5, n - 1):
-        if t_sec[i] > 1.0 and dadt[i] < -100.0:
-            release_idx = max(0, i - 2)
-            break
-    if release_idx > 5:
-        angles[:release_idx] = 180.0
+    Both inputs are (k, 3) and already mean-centred. The det correction keeps
+    the result a proper rotation rather than a reflection.
+    """
+    u, _s, vt = np.linalg.svd(ref_centred.T @ cur_centred)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    return vt.T @ np.diag([1.0, 1.0, d]) @ u.T
 
-    return angles
+
+def _kabsch_rotations(ref_centred: np.ndarray, cur_stack: np.ndarray) -> np.ndarray:
+    """Batched `_kabsch_rotation`: one (3, 3) reference against a stack of
+    (m, 3, 3) current shapes, returning (m, 3, 3) rotations.
+
+    Same math as the scalar version, done in one LAPACK call instead of m.
+    That matters because the coverage gate stopped rejecting trials on
+    2026-08-27, so this now runs on every frame of all 215 trials rather than
+    the 27% that used to pass — 6 permutations x ~1000 frames x 2 segments per
+    trial, which is minutes of wall-clock when looped in Python.
+    """
+    h = np.einsum("ji,mjk->mik", ref_centred, cur_stack)
+    u, _s, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(np.einsum("mij,mkj->mik", vt, u)))
+    eye = np.zeros((len(cur_stack), 3, 3))
+    eye[:, 0, 0] = eye[:, 1, 1] = 1.0
+    eye[:, 2, 2] = d
+    return np.einsum("mji,mjk,mlk->mil", vt, eye, u)
+
+
+# A labeled marker whose position never changes across the whole take is not a
+# measurement. Motive can export the rigid-body marker block in the body's own
+# LOCAL frame, in which case every "position" is a constant offset from the body
+# origin. 1 mm of total span over a whole trial is far below real marker noise
+# (0.09-0.38 mm frame to frame, but metres of travel over a swing), so anything
+# under this is a constant, not a moving marker.
+MAX_STATIC_MARKER_SPAN_M = 0.001
+
+
+def _labeled_markers_are_local(df: pd.DataFrame, triplets: list) -> bool:
+    """True when the labeled marker block holds local offsets, not world points.
+
+    Seen on P2 and P4: Shank:Marker1 has span [0, 0, 0] over 893 frames while
+    the SAME take's unlabeled markers move through metres in world coordinates.
+    Both segments' local blocks are centred on their own body origin, so their
+    centroids coincide and the knee angle is undefined -- which is what the
+    loader used to report, as though the markers had been placed badly. They
+    had not; the export setting was wrong, and the real data is still in the
+    file under the unlabeled block.
+    """
+    for cols in triplets[:3]:
+        arr = df.iloc[:, cols].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        fin = arr[np.isfinite(arr).all(axis=1)]
+        if len(fin) < 2:
+            return False
+        if float(np.max(fin.max(axis=0) - fin.min(axis=0))) > MAX_STATIC_MARKER_SPAN_M:
+            return False
+    return True
+
+
+def _split_unlabeled_by_motion(df: pd.DataFrame, triplets: list):
+    """Split unlabeled world markers into (shank, thigh) triplets by how far
+    each travels.
+
+    In a pendulum test the thigh is held still and the shank swings, so total
+    excursion separates the two clusters by an order of magnitude -- measured on
+    P4 right, 8-28 mm for the thigh trio against 137-311 mm for the shank trio.
+    The three biggest movers are the shank; the three smallest are the thigh.
+
+    Returns (shank, thigh) or (None, None) when there are not two clean trios.
+    """
+    scored = []
+    for cols in triplets:
+        arr = df.iloc[:, cols].values.astype(float)
+        arr[np.abs(arr) > 1e5] = np.nan
+        fin = arr[np.isfinite(arr).all(axis=1)]
+        if len(fin) < 2:
+            continue
+        scored.append((float(np.sum(fin.max(axis=0) - fin.min(axis=0))), cols))
+    if len(scored) < 6:
+        return None, None
+    scored.sort(key=lambda sc: sc[0])
+    thigh = [c for _s, c in scored[:3]]
+    shank = [c for _s, c in scored[-3:]]
+    # Refuse an ambiguous split rather than inventing a segmentation: the
+    # swinging trio must clearly out-travel the still one.
+    if scored[-3][0] < 3.0 * max(scored[2][0], 1e-6):
+        return None, None
+    return shank, thigh
+
+
+# Marker speed (mm per frame) above which the seed window is not a hold.
+#
+# The anatomical seed assumes the first 60 frames show the leg held still and
+# extended, and makes that pose exactly 180 deg. If the recording opens while
+# the leg is still MOVING, the zero is anchored to a moving pose and every
+# angle after it is wrong -- P9 Left trial_3 does this and reports A0 = 418 deg
+# at 97.3% coverage, where nothing else flags it.
+#
+# Set from the corpus: across 248 trials the median seed-window speed is
+# 0.06 mm/frame and the 90th percentile 0.24, while the failing trials sit at
+# 2.0-2.8. 1.0 is ~4x the p90 and less than half the smallest failure, and
+# selects 8 trials. This detects the MOVING-seed case only; a recording that
+# opens at rest is stationary and cannot be caught this way.
+MAX_SEED_WINDOW_SPEED_MM = 1.0
+
+SEED_WINDOW_MOVING = (
+    "The reference window is not a hold: the shank markers move {speed:.2f} mm "
+    "per frame over the first {n} frames, against {gate:.1f} for a still leg "
+    "(corpus median 0.06). The knee angle's zero is taken from those frames on "
+    "the assumption they show the leg held extended, so if the recording opened "
+    "mid-movement the whole curve is offset by an unknown amount. Re-record "
+    "starting before the lift."
+)
+
+
+# Whether to measure the knee angle about a joint centre found from the swing
+# instead of about an axis seeded from an assumed hold.
+#
+# OFF, because this corpus cannot support it -- not because the method is
+# wrong. It is validated against synthetic ground truth (see the three
+# _build_protocol tests): it measures a trial that opens at rest, one that
+# opens mid-swing, and one that opens at the hold all to within 2 deg, which
+# the seeded method cannot do because it anchors 180 deg to whatever pose
+# frames 0-59 happen to contain.
+#
+# What blocks it here is the marker geometry, measured across 238 trials: the
+# shank markers do not orbit any fixed point to better than a MEDIAN 25 mm
+# residual (p25 17 mm, p75 37 mm) where a usable fit needs about 8 mm, so only
+# 18 trials qualify. De-rotating the thigh frame rather than merely
+# translating it moved the median from 30.9 mm to 25.1 mm and changed nothing
+# material. That is consistent with the rig defects already on file: the thigh
+# cluster is a collinear BAR, so its roll is unobservable and it cannot define
+# a stable frame to fit in.
+#
+# Leaving it on would be worse than leaving it off, because 18 trials would be
+# measured one way and 220 another inside the same cohort comparison.
+#
+# To make this usable, fix the RIG: put a real triangle on the thigh instead of
+# a collinear bar. Then the thigh has an observable frame, the residual should
+# collapse, and the seed assumption can be deleted outright.
+USE_FUNCTIONAL_KNEE_CENTRE = False
+
+# Smallest shank rotation (degrees, peak-to-peak) that makes the knee centre
+# observable. The sphere fit needs the shank to actually sweep an arc about the
+# joint; on a leg that never swings, the centre is unconstrained along the
+# direction of no motion and the fit will happily return a confident-looking
+# number that is meaningless. 15 deg is well under the smallest genuine swing
+# in this corpus and well over the 6.4 deg seen on trials whose swing the
+# cameras missed entirely.
+MIN_ROTATION_FOR_KNEE_FIT_DEG = 15.0
+
+# Largest acceptable sphere-fit residual (metres). A marker orbiting a fixed
+# joint centre holds its radius; 8 mm is loose enough for soft-tissue movement
+# over a plate and tight enough to reject a fit to something that is not a
+# hinge.
+MAX_KNEE_FIT_RESIDUAL_M = 0.008
+
+
+def _functional_knee_centre(shank_mk: np.ndarray, thigh_mk: np.ndarray):
+    """Locate the knee from the motion itself, with no reference pose.
+
+    Returns (centre, residual_m, rotation_deg) in the thigh-anchored frame, or
+    (None, nan, rotation_deg) when the motion cannot support a fit.
+
+    Why this exists: every earlier version derived the segment axes from an
+    assumed extended hold in the first 60 frames, and made that pose exactly
+    180 deg by construction. When a recording opens at rest, or mid-swing, the
+    zero is anchored to a flexed pose and every angle after it is wrong while
+    the baseline still reads a convincing 179.9. That was confirmed on video
+    for P8 Left trial_2 and produced A0 = 418 deg on P9 Left trial_3.
+
+    A pendulum trial contains what is needed to avoid the assumption. The thigh
+    is held still and the shank swings about the knee, so in the thigh's frame
+    every shank marker traces an arc of a sphere centred on the joint. Fitting
+    that centre uses the swing itself as the reference and needs no opinion
+    about which frames are the hold.
+
+    The fit is the standard algebraic one: for marker m at frame i,
+        |p_mi|^2 - 2 p_mi . c = r_m^2 - |c|^2
+    which is linear in c and in one per-marker constant, so all three markers
+    are solved jointly for a single shared centre.
+    """
+    ok = (np.isfinite(shank_mk).all(axis=(0, 2)) &
+          np.isfinite(thigh_mk).all(axis=(0, 2)))
+    if ok.sum() < 30:
+        return None, float("nan"), 0.0, None
+
+    # Anchor to the thigh. Subtracting its centroid removes translation, but the
+    # thigh also ROTATES 8-22 deg over a trial on this rig, and a rotating
+    # reference frame turns the shank's pure hinge motion into something that is
+    # not a sphere about any point. Measured, translation-only anchoring left a
+    # median fit residual of 30.9 mm against an 8 mm tolerance and rejected 212
+    # of 253 trials. So de-rotate as well.
+    #
+    # The thigh cluster is a collinear bar on nearly every trial here, so its
+    # roll is unobservable and only the line direction can be tracked -- the
+    # same constraint _seg_axes works under. Shortest-arc rotation from the
+    # reference line is therefore the most that can honestly be removed, and it
+    # removes the two degrees of freedom that matter for a sagittal swing.
+    thigh_c = thigh_mk[:, ok, :].mean(axis=0)          # (nv, 3)
+    rel = shank_mk[:, ok, :] - thigh_c[None, :, :]     # (3, nv, 3)
+
+    t_rel = thigh_mk[:, ok, :] - thigh_c[None, :, :]   # thigh markers, centred
+    ref_line = np.linalg.svd(t_rel[:, 0, :] - t_rel[:, 0, :].mean(axis=0),
+                             full_matrices=False)[2][0]
+    for j in range(rel.shape[1]):
+        cur = t_rel[:, j, :] - t_rel[:, j, :].mean(axis=0)
+        try:
+            line = np.linalg.svd(cur, full_matrices=False)[2][0]
+        except np.linalg.LinAlgError:
+            continue
+        if np.dot(line, ref_line) < 0:
+            line = -line
+        rot = _shortest_arc_rotation(line, ref_line)   # bring frame back to ref
+        rel[:, j, :] = rel[:, j, :] @ rot.T
+
+    # How far does the shank actually sweep? Use the marker furthest from the
+    # cluster centroid, whose arc is longest and least noise-dominated.
+    span = 0.0
+    for m in range(rel.shape[0]):
+        d = rel[m] - rel[m].mean(axis=0)
+        nrm = np.linalg.norm(d, axis=1)
+        good = nrm > 1e-9
+        if good.sum() < 10:
+            continue
+        u = d[good] / nrm[good][:, None]
+        cosines = np.clip(u @ u[0], -1.0, 1.0)
+        span = max(span, float(np.degrees(np.arccos(cosines)).max()))
+    if span < MIN_ROTATION_FOR_KNEE_FIT_DEG:
+        return None, float("nan"), span, None, None
+
+    # A knee is a HINGE, so the shank sweeps a plane and every marker holds a
+    # constant coordinate along the flexion axis. A free sphere fit is therefore
+    # rank-deficient in that direction -- the term is absorbed into the radius,
+    # and least squares returns an arbitrary value for it (measured: 7 mm of
+    # error, a systematic 4.2 deg bias, from a fit whose residual was 0.00 mm).
+    # So find the flexion axis, fit a circle in the plane perpendicular to it,
+    # and place the centre along the axis where the segments themselves say.
+    disp = np.diff(rel, axis=1).reshape(-1, 3)
+    disp = disp[np.isfinite(disp).all(axis=1)]
+    if len(disp) < 10:
+        return None, float("nan"), span, None, None
+    # Motion lies in the plane perpendicular to the axis, so the axis is the
+    # direction of least displacement.
+    axis = np.linalg.svd(disp - disp.mean(axis=0), full_matrices=False)[2][-1]
+    e1 = np.cross(axis, [0.0, 0.0, 1.0])
+    if np.linalg.norm(e1) < 1e-6:
+        e1 = np.cross(axis, [0.0, 1.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(axis, e1)
+
+    n_m, n_f, _ = rel.shape
+    rows, rhs = [], []
+    for m in range(n_m):
+        q = np.column_stack([rel[m] @ e1, rel[m] @ e2])      # (n_f, 2)
+        blk = np.zeros((n_f, 2 + n_m))
+        blk[:, :2] = -2.0 * q
+        blk[:, 2 + m] = -1.0
+        rows.append(blk)
+        rhs.append(-np.sum(q ** 2, axis=1))
+    A = np.vstack(rows)
+    b = np.concatenate(rhs)
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None, float("nan"), span, None, None
+    # The along-axis component is unobservable from a hinge's motion. Take it
+    # from the segments: the joint sits between the two cluster centroids, so
+    # their mean projection onto the axis is the honest choice.
+    shank_c_rel = rel.mean(axis=0)
+    along = float(np.mean(shank_c_rel @ axis)) * 0.5
+    centre = sol[0] * e1 + sol[1] * e2 + along * axis
+
+    resid = []
+    for m in range(n_m):
+        d = rel[m] - centre
+        r = np.linalg.norm(d - np.outer(d @ axis, axis), axis=1)   # in-plane radius
+        resid.append(np.abs(r - r.mean()))
+    residual = float(np.sqrt(np.mean(np.concatenate(resid) ** 2)))
+    if not np.isfinite(residual) or residual > MAX_KNEE_FIT_RESIDUAL_M:
+        return None, residual, span, None
+    return centre, residual, span, axis
+
+
+def _angle_from_knee_centre(shank_mk: np.ndarray, thigh_mk: np.ndarray,
+                            centre: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """Interior knee angle per frame, measured about a located joint centre.
+
+    The flexion is measured as a SIGNED rotation in the plane of the swing,
+    not as an unsigned angle between two direction vectors. That matters: a
+    marker plate's centroid sits a few millimetres off the bone axis, which
+    displaces the ZERO of the rotation by a couple of degrees, and an unsigned
+    arccos folds at 180 deg and turns that displacement into a sign flip
+    (measured -4.23 deg at extension, +4.23 deg when flexed, on the same
+    trial). A folded error cannot be removed by any later shift. A signed one
+    is a genuine constant, and _anchor_to_extension takes it out.
+
+    Cluster CENTROIDS are used throughout, which are invariant to Motive
+    permuting Marker1/2/3 -- the relabeling the Kabsch path needs continuity
+    heuristics to survive does not arise here.
+    """
+    n = shank_mk.shape[1]
+    out = np.full(n, np.nan)
+    ok = (np.isfinite(shank_mk).all(axis=(0, 2)) &
+          np.isfinite(thigh_mk).all(axis=(0, 2)))
+    if not ok.any():
+        return out
+    thigh_c = thigh_mk[:, ok, :].mean(axis=0)
+    shank_c = shank_mk[:, ok, :].mean(axis=0)
+    knee = thigh_c + centre                      # centre is thigh-relative
+
+    w = np.asarray(axis, dtype=float)
+    w = w / max(float(np.linalg.norm(w)), 1e-12)
+
+    def _in_plane(v):
+        return v - np.outer(v @ w, w)
+
+    u_t = _in_plane(thigh_c - knee)
+    u_s = _in_plane(shank_c - knee)
+    nt = np.linalg.norm(u_t, axis=1)
+    ns = np.linalg.norm(u_s, axis=1)
+    good = (nt > 1e-9) & (ns > 1e-9)
+    if not good.any():
+        return out
+
+    # Where the shank would point if the leg were straight.
+    ref = -u_t[good] / nt[good][:, None]
+    cur = u_s[good] / ns[good][:, None]
+    cos = np.clip(np.sum(ref * cur, axis=1), -1.0, 1.0)
+    sin = np.sum(np.cross(ref, cur) * w, axis=1)
+    flexion = np.degrees(np.arctan2(sin, cos))   # signed, 0 when straight
+
+    # The flexion axis comes from an SVD, so its sign is arbitrary and the
+    # rotation could come out negated. A knee flexes; it does not hyperextend
+    # through a whole swing. Orient the axis so the trial's dominant rotation
+    # is positive flexion.
+    if np.median(flexion) < 0:
+        flexion = -flexion
+
+    idx = np.where(ok)[0][good]
+    out[idx] = 180.0 - flexion
+    return out
+
+
+# How close to the maximum an angle must sit to count as part of the held
+# extension, and how long that must last.
+#
+# The discriminator is between an examiner HOLDING the leg up and a swing
+# merely passing through its turning point, where the angle is also
+# momentarily flat. Measured on the synthetic protocol at this rig's 120 Hz:
+# a real hold gives a run of 91-97 frames within 0.5 deg of the maximum, while
+# a 0.85 Hz swing's turning point manages only 23. 60 frames -- half a second --
+# sits in that gap with ~1.5x margin below the shortest hold and ~2.6x above
+# the longest turning point.
+#
+# Frames, not seconds, because this path only ever runs on the 120 Hz optical
+# rig. A slower source would need this expressed as a duration.
+EXTENSION_HOLD_BAND_DEG = 0.5
+MIN_EXTENSION_HOLD_FRAMES = 60
+
+
+def _held_extension_frames(angles: np.ndarray) -> int:
+    """Longest run of frames sitting within EXTENSION_HOLD_BAND_DEG of the
+    curve's maximum -- i.e. how long the leg was HELD at its most extended.
+
+    Distinguishes an examiner holding the leg up from a swing merely passing
+    through its turning point, where the angle is also momentarily flat.
+    """
+    ok = np.isfinite(angles)
+    if ok.sum() < 7:
+        return 0
+    top = float(np.percentile(angles[ok], 98.0)) - EXTENSION_HOLD_BAND_DEG
+    longest = run = 0
+    for i, good in enumerate(ok):
+        if good and angles[i] >= top:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return longest
+
+
+# _anchor_to_extension and _angle_from_labeled_markers were DELETED on
+# 2026-09-01. The latter seeded the anatomical axis from the FIRST 60 frames
+# and set axis_thigh = -axis_shank, so the seed frame read exactly 180 deg by
+# construction and an unsigned arccos folded there instead of running past --
+# a trial starting at rest or mid-motion anchored "straight" to a flexed pose
+# and still reported a convincing 179.9 baseline. It had no production callers
+# after the loader moved to optitrack_knee_axis, but it still read as live
+# code. optitrack_knee_axis.knee_angle_from_clusters replaces it.
+#
+# _functional_knee_centre and _angle_from_knee_centre above are now reachable
+# only through USE_FUNCTIONAL_KNEE_CENTRE, which nothing sets. They are kept
+# deliberately: that method is sound and is parked pending the rig fix
+# documented at USE_FUNCTIONAL_KNEE_CENTRE, not left behind by accident.
 
 
 def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
@@ -584,68 +1415,205 @@ def _angle_from_markers(df: pd.DataFrame, triplets: list) -> np.ndarray:
     return angles
 
 
-def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (t_sec, angle_deg) from an OptiTrack CSV (any known format)."""
+# Widest peak-to-peak knee-angle excursion a real pendulum test can contain.
+# Knee flexion ROM is ~150 deg; 200 leaves generous headroom for a noisy but
+# genuine curve while staying far below the hundreds-to-thousands of degrees a
+# flipped hinge axis accumulates. Used only to WARN (see
+# _curve_quality_warnings) -- no trial is ever dropped on it.
+MAX_PLAUSIBLE_CURVE_SPAN_DEG = 200.0
+
+
+def _curve_quality_warnings(angles: np.ndarray,
+                            hold_frames: int = 60,
+                            relative: bool = False) -> list:
+    """Describe everything wrong with a knee-angle curve. Never raises.
+
+    `relative=True` skips ONLY "above full extension", which reads an absolute
+    value and so needs the zero. A relative curve's zero is arbitrary, and it
+    fired on 18/26 trials of a real-corpus sample.
+
+    "rises after release" is NOT skipped. It compares the post-release median
+    against the pre-release median of the same curve, so it is offset-invariant
+    by construction and depends only on POLARITY -- which the hinge-axis sign
+    pin now fixes (optitrack_knee_axis._pin_axis_sign). It was briefly
+    suppressed here while polarity was still arbitrary, which retired the P21
+    tripwire on the optical path: the one path P21's inversion actually
+    happened on. Re-enabled 2026-09-01.
+
+    Each returned string is a complete, operator-readable sentence naming one
+    way this curve fails to describe a real pendulum test. An empty list means
+    the curve looks physically sound.
+
+    This used to be `_reject_implausible_curve`, which raised and so removed
+    the trial from every report. It reports instead: the operator decides what
+    is bad (via excluded_trials.json), and a curve they cannot see is one they
+    cannot judge. The checks themselves are unchanged and still earn their
+    keep as regression tripwires — "rises after release" is exactly the P21
+    signature that was fixed at source on 2026-08-26.
+    """
+    warnings: list = []
+    angles = np.asarray(angles, dtype=float)
+    finite = angles[np.isfinite(angles)]
+    if finite.size == 0:
+        return ["Knee angle curve is entirely NaN — the cameras never saw "
+                "both marker clusters in the same frame."]
+
+    span = float(np.max(finite) - np.min(finite))
+
+    if not relative and float(np.max(finite)) > 180.5:
+        warnings.append(
+            f"Knee angle reaches {np.max(finite):.1f}° — above full extension, "
+            "so the segment axes are mis-derived.")
+
+    # An excursion far larger than the joint can physically make is the
+    # OPPOSITE failure, and unlike a flat curve nothing downstream catches it.
+    # The knee carries roughly 150 deg of flexion, so a pendulum-test curve
+    # cannot legitimately span more than about 180 deg peak-to-peak. Spans of
+    # several hundred to several thousand degrees are what a mis-derived hinge
+    # axis produces once its eigenvector flips mid-trial and the angle
+    # accumulates instead of oscillating.
+    #
+    # Measured on the 253-trial OptiTrack corpus (2026-09-01): sampled curves
+    # span 362, 395, 679, 714, 899, 1040, 1617, 1698, 1960, 2342 and 2724 deg
+    # while raising no warning at all, and only 8% of scored trials carry an
+    # A0 inside compute_pt_params' 25-120 deg interpretable band. Every other
+    # check in this function was either convention-dependent (and so skipped
+    # for a relative curve) or looked only for TOO LITTLE motion, so this
+    # entire failure mode was silent.
+    #
+    # Convention-free on purpose: a span is invariant to both the arbitrary
+    # zero and the arbitrary polarity of a relative curve, so unlike the
+    # "above full extension" and "rises after release" checks this one stays
+    # correct in relative mode -- which is the mode the knee-axis
+    # reconstruction actually returns, and therefore the mode that needs it.
+    #
+    # A warning, never a rejection: same contract as every other check here,
+    # and the same rule the excursion gate follows -- flag the data, let the
+    # operator decide via excluded_trials.json.
+    if span > MAX_PLAUSIBLE_CURVE_SPAN_DEG:
+        warnings.append(
+            f"Knee angle spans {span:.0f}° — more than the joint can travel "
+            f"(> {MAX_PLAUSIBLE_CURVE_SPAN_DEG:.0f}°), so this curve is an "
+            "accumulating hinge-axis artifact rather than a swing. Every PT "
+            "parameter derived from it is meaningless; prefer the IMU curve.")
+
+    # A curve with no excursion at all carries no pendulum in it — seen when
+    # the Shank and Thigh bodies were built from overlapping markers, which
+    # makes their relative angle constant by construction. Kept very tight
+    # (1°) on purpose: a genuinely rigid spastic limb swings little, and that
+    # is signal, not an error.
+    if span < 1.0:
+        warnings.append(
+            f"Knee angle never varies (range {span:.2f}°) — no pendulum swing "
+            "is present in this trial.")
+
+    hold = angles[:hold_frames]
+    hold = hold[np.isfinite(hold)]
+    post = angles[hold_frames:]
+    post = post[np.isfinite(post)]
+    if hold.size >= 5 and post.size >= 5:
+        baseline = float(np.median(hold))
+        if float(np.median(post)) > baseline + 5.0:
+            warnings.append(
+                f"Knee angle rises after release ({baseline:.1f}° → "
+                f"{np.median(post):.1f}°); the leg is released from extension, "
+                "so this curve is inverted.")
+    return warnings
+
+
+class TrialQuality(NamedTuple):
+    """What the loader knows about how trustworthy a trial's curve is.
+
+    `coverage` is the fraction of frames in which every Shank and Thigh marker
+    was actually tracked. `warnings` holds one sentence per detected problem
+    and is empty for a clean trial. Nothing here excludes a trial — it is the
+    evidence an operator uses to decide whether to.
+    """
+    coverage: float
+    warnings: tuple
+
+
+def _load_precomputed_angle(path: str):
+    """Format C: a CSV of already-computed angles (frame,time_sec,knee_angle_deg).
+
+    Motive exports these as a flexion angle (0° = fully extended, increasing
+    with flexion). Convert to the interior convention used everywhere else
+    (180° = fully extended, decreasing with flexion). Returns None if `path`
+    is not this format.
+    """
+    with open(path, encoding="utf-8-sig") as fh:
+        first = fh.readline().strip()
+    if not (first.lower().startswith("frame") and "knee_angle_deg" in first.lower()):
+        return None
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    t = df["time_sec"].values.astype(float); t -= t[0]
+    return t, 180.0 - df["knee_angle_deg"].values.astype(float)
+
+
+def _parse_optitrack_header(path: str):
+    """Parse a Motive CSV header once, for both load_optitrack and
+    optical_coverage.
+
+    Returns (df, name_row, comp_row, type_row, is_new), or None for an empty
+    file. `df` deliberately keeps Motive's blank cells as NaN — see the note in
+    load_optitrack about why filling them fabricates the swing.
+    """
     with open(path, encoding="utf-8-sig") as fh:
         raw = fh.readlines()
     if not raw:
-        raise ValueError("Empty file.")
+        return None
 
     first = raw[0].strip()
-
-    # ── Format C: pre-computed angles (frame,time_sec,knee_angle_deg) ─────────
-    # Motive exports this as a flexion angle (0° = fully extended, increases with flex).
-    # Convert to interior knee angle (180° = fully extended, decreases with flex) so all
-    # formats share the same coordinate system: 180° at start, ↓ = more flexion.
-    if first.lower().startswith("frame") and "knee_angle_deg" in first.lower():
-        df = pd.read_csv(path, encoding="utf-8-sig")
-        t  = df["time_sec"].values.astype(float); t -= t[0]
-        return t, 180.0 - df["knee_angle_deg"].values.astype(float)
-
-    # ── Parse header: detect format A (old) vs B (new Motive 1.22) ────────────
     is_new = first.lower().startswith("format version")
 
     name_row: Optional[list] = None
     comp_row: Optional[list] = None
+    type_row: Optional[list] = None
     data_start = 0
 
+    _TYPE_STRINGS = {"rigid body", "rigid body marker", "marker", ""}
+    _COMP_STRINGS = {"rotation", "position", "error per marker", "x", "y", "z", "w"}
+
     if is_new:
-        # Scan for "Frame,..." header row
+        # Scan for the "Frame,..." header row
         for i, line in enumerate(raw):
             cells = [c.strip() for c in line.split(",")]
             if cells[0].lower() == "frame":
                 data_start = i; break
-        # Name row: scan rows 1..data_start-1 for the one containing body/marker names.
-        # Type row has "Rigid Body"/"Marker"; name row has "Thigh","Shank","Unlabeled XXXX".
-        _TYPE_STRINGS = {"rigid body", "rigid body marker", "marker", ""}
-        _COMP_STRINGS = {"rotation", "position", "error per marker", "x", "y", "z", "w"}
+        # Name row: the one carrying body/marker names ("Thigh", "Shank",
+        # "Unlabeled XXXX") rather than types or components.
         for i in range(1, data_start):
             cells = [c.strip() for c in raw[i].split(",")]
             non_trivial = [c for c in cells[2:] if c.lower() not in _TYPE_STRINGS
                            and c.lower() not in _COMP_STRINGS
                            and not (len(c) > 20 and all(ch in '0123456789ABCDEFabcdef' for ch in c))]
             if len(non_trivial) >= 2:
-                name_row = [c.strip() for c in raw[i].split(",")]
+                name_row = cells
                 break
-        comp_row = None   # new format: use group-of-3 triplet method
+        # Type row: non-index cells are all Motive type keywords. Needed to
+        # tell a measured "Marker" from a solved "Rigid Body Marker".
+        for i in range(1, data_start):
+            cells = [c.strip() for c in raw[i].split(",")]
+            body = [c.lower() for c in cells[2:]]
+            if body and all(c in _TYPE_STRINGS for c in body) and any(body):
+                type_row = cells
+                break
     else:
         # Old format: look for "Name" / "Component" / "Frame" row tags
         for i, line in enumerate(raw):
             cells = [c.strip() for c in line.split(",")]
-            tag   = cells[0].lower()
-            if tag == "name":           name_row = cells
-            elif tag in ("component","comp"): comp_row = cells
-            elif tag == "frame":        data_start = i; break
+            tag = cells[0].lower()
+            if tag == "name":                  name_row = cells
+            elif tag in ("component", "comp"): comp_row = cells
+            elif tag == "frame":               data_start = i; break
 
     df = (pd.read_csv(path, skiprows=data_start, encoding="utf-8-sig")
-            .apply(pd.to_numeric, errors="coerce").ffill().bfill())
-    t = df.iloc[:, 1].values.astype(float); t -= t[0]
+            .apply(pd.to_numeric, errors="coerce"))
 
-    # ── Build component row for new format so _find_rb_quat_cols can work ─────
-    # In new (1.22) format the component row is one of the header rows; we
-    # identify it as the row whose cells are all in the standard Motive vocab.
-    _MOTIVE_COMPS = {"rotation","position","error per marker","marker quality",
-                     "x","y","z","w",""}
+    # Build a component row for the new format so _find_rb_quat_cols can work:
+    # it is the header row whose cells are all standard Motive component words.
+    _MOTIVE_COMPS = {"rotation", "position", "error per marker", "marker quality",
+                     "x", "y", "z", "w", ""}
     if is_new and comp_row is None and name_row is not None:
         for i in range(1, data_start):
             cells = [c.strip().lower() for c in raw[i].split(",")]
@@ -655,19 +1623,144 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
                 comp_row = [c.strip() for c in raw[i].split(",")]
                 break
 
-    # ── New Motive 1.22 format: labeled marker PCA path ───────────────────────
+    return df, name_row, comp_row, type_row, is_new
+
+
+def optical_coverage(path: str) -> float:
+    """Fraction of frames in `path` where every Shank/Thigh marker was tracked.
+
+    Returns 1.0 for formats that carry no labeled markers (nothing to gate on).
+    Use this to triage a corpus without paying for the full angle computation.
+    """
+    parsed = _parse_optitrack_header(path)
+    if parsed is None:
+        return 1.0
+    df, name_row, comp_row, type_row, is_new = parsed
+    if not (is_new and name_row is not None):
+        return 1.0
+    shank = _find_labeled_marker_cols(name_row, comp_row or [], "Shank",
+                                      type_row=type_row)
+    thigh = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh",
+                                      type_row=type_row)
+    if len(shank) < 3 or len(thigh) < 3:
+        return 1.0
+    return _coverage_from_cols(df, shank, thigh)
+
+
+_KNEE_AXIS_WARNINGS = {
+    # NOT a complaint about the capture. Nothing looks for a hold any more, so
+    # blaming the operator's protocol (as the previous wording did, on 26/26
+    # trials) pointed at the wrong thing entirely: this is the reconstruction
+    # declining to invent a zero it cannot observe.
+    "uncalibrated_offset":
+        "These angles are RELATIVE, not absolute: the knee axis is recovered "
+        "from the markers' rotation, whose direction fixes the curve's sense "
+        "but not its origin, so no zero is observable and none is invented. "
+        "The shape, the swing, and every scored PT parameter are unaffected -- "
+        "they are offset-invariant -- but do not read an individual angle "
+        "value as a joint angle.",
+    "out_of_plane_motion":
+        "The leg did not swing in a single plane, so the reported amplitude "
+        "is a LOWER BOUND: a non-sagittal swing projected onto one axis reads "
+        "short by roughly cos(out-of-plane angle).",
+    "OUT_OF_PLANE_AMPLITUDE_UNDERREPORTED":
+        "Treat phi_max and R2n as minimum bounds for this trial.",
+}
+
+
+def load_optitrack_detailed(path: str) -> Tuple[np.ndarray, np.ndarray, TrialQuality]:
+    """Return (t_sec, angle_deg, quality) from an OptiTrack CSV.
+
+    Never rejects a trial for being low quality. A trial whose markers were
+    unseen through the swing comes back with NaN across the gap and a
+    TrialQuality saying so — the gap is never filled in, because interpolating
+    it would fabricate the swing (that was the pre-2026-08-26 bug), but nor is
+    the trial withheld, because only the operator can decide it is bad.
+
+    Still raises for a file that cannot be READ at all — an empty file, an
+    unparseable header, too few marker columns. That is not a judgement about
+    data quality, it is the absence of data.
+    """
+    precomputed = _load_precomputed_angle(path)
+    if precomputed is not None:
+        t_pre, ang_pre = precomputed
+        return t_pre, ang_pre, TrialQuality(
+            coverage=float(np.isfinite(ang_pre).mean()) if len(ang_pre) else 0.0,
+            warnings=tuple(_curve_quality_warnings(ang_pre)))
+
+    parsed = _parse_optitrack_header(path)
+    if parsed is None:
+        raise ValueError("Empty file.")
+    df, name_row, comp_row, type_row, is_new = parsed
+    t = df.iloc[:, 1].values.astype(float); t -= t[0]
+
+    # ── New Motive 1.22 format: labeled marker path ───────────────────────────
     # Stored quaternions can be permanently corrupted by Motive tracking resets
     # (the rigid body re-acquires at the wrong orientation after losing track).
-    # Labeled marker positions are unaffected; PCA of the Shank/Thigh marker
-    # triangle gives smooth, accurate knee angles without this failure mode.
+    # The MEASURED labeled markers do not share that failure mode, so a Kabsch
+    # fit of the Shank/Thigh marker triangles gives a cleaner knee angle — but
+    # only over frames the cameras actually saw, hence the coverage gate.
     if is_new and name_row is not None:
-        _shank_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Shank")
-        _thigh_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh")
+        _shank_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Shank",
+                                               type_row=type_row)
+        _thigh_mks = _find_labeled_marker_cols(name_row, comp_row or [], "Thigh",
+                                               type_row=type_row)
+        if (len(_shank_mks) >= 3 and len(_thigh_mks) >= 3
+                and _labeled_markers_are_local(df, _shank_mks)
+                and _labeled_markers_are_local(df, _thigh_mks)):
+            # The labeled block is local offsets. The world positions are still
+            # in this file under the unlabeled block, so use those instead of
+            # rejecting the trial.
+            _un = _find_unlabeled_cols(name_row, None if is_new else comp_row)
+            _s2, _t2 = _split_unlabeled_by_motion(df, _un)
+            if _s2 and _t2:
+                _shank_mks, _thigh_mks = _s2, _t2
+
         if len(_shank_mks) >= 3 and len(_thigh_mks) >= 3:
+            cov = _coverage_from_cols(df, _shank_mks, _thigh_mks)
+            import optitrack_knee_axis as _ka
+
+            def _cluster(cols_list):
+                arr = np.stack([df.iloc[:, c].values.astype(float)
+                                for c in cols_list[:3]])
+                arr[np.abs(arr) > 1e5] = np.nan
+                return arr
+
+            _fps = 1.0 / max(float(np.median(np.diff(t))), 1e-9)
             try:
-                return t, _angle_from_labeled_markers_pca(df, _shank_mks, _thigh_mks)
-            except Exception:
-                pass
+                _res = _ka.knee_angle_from_clusters(_cluster(_shank_mks),
+                                                    _cluster(_thigh_mks), _fps)
+            except _ka.GeometryError as exc:
+                # The cluster geometry itself defeated the reconstruction.
+                # There is no curve to hand back, but the trial is still not
+                # "excluded" — it is unreadable, which the caller reports as
+                # such.
+                raise ValueError(f"{exc} (optical coverage {cov*100:.1f}%)") from exc
+            # ALWAYS the relative curve. Every scored PT parameter is invariant
+            # to both a constant offset and a mirror (both measured, see
+            # tests/test_optitrack_knee_axis.py), so an absolute zero buys the
+            # score nothing — and this reconstruction cannot earn one honestly:
+            # the hinge axis comes from an eigenvector whose sign is arbitrary,
+            # so a half-micron of rounding decides the curve's polarity and its
+            # zero. Inventing an absolute angle from that is exactly the
+            # 179.9-on-a-flexed-leg bug this work exists to remove.
+            angles = _res.get_relative_angles()
+            warns = list(_curve_quality_warnings(angles, relative=True))
+            for _flag in _res.flags:
+                warns.append(_KNEE_AXIS_WARNINGS.get(
+                    _flag, f"Knee-axis reconstruction flag: {_flag}."))
+            _seed_speed = _seed_window_speed_mm(df, _shank_mks)
+            if np.isfinite(_seed_speed) and _seed_speed > MAX_SEED_WINDOW_SPEED_MM:
+                warns.insert(0, SEED_WINDOW_MOVING.format(
+                    speed=_seed_speed, n=60, gate=MAX_SEED_WINDOW_SPEED_MM))
+            if cov < LOW_OPTICAL_COVERAGE:
+                warns.insert(0,
+                    f"Optical coverage {cov*100:.1f}% is below "
+                    f"{LOW_OPTICAL_COVERAGE*100:.0f}% — the cameras did not see "
+                    f"the markers for {(1-cov)*100:.1f}% of this trial, so the "
+                    "gap is NaN rather than swing. Prefer the IMU curve.")
+            return t, angles, TrialQuality(coverage=float(cov),
+                                           warnings=tuple(warns))
 
     # ── Quaternion path ────────────────────────────────────────────────────────
     try:
@@ -680,8 +1773,14 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
         if thigh_cols is None:
             thigh_cols, shank_cols = [2,3,4,5], [9,10,11,12]
 
-        qd = np.column_stack([df.iloc[:, c].values for c in thigh_cols])
-        qp = np.column_stack([df.iloc[:, c].values for c in shank_cols])
+        # Legacy path: these quaternion routines have no NaN handling of their
+        # own, so they get an explicitly filled copy. Measure coverage FIRST —
+        # after the fill every frame looks tracked, and reporting that as
+        # coverage would tell the operator the opposite of the truth.
+        cov_q = _raw_column_coverage(df, list(thigh_cols) + list(shank_cols))
+        df_filled = df.ffill().bfill()
+        qd = np.column_stack([df_filled.iloc[:, c].values for c in thigh_cols])
+        qp = np.column_stack([df_filled.iloc[:, c].values for c in shank_cols])
 
         if not (_is_sentinel(qd) or _is_sentinel(qp)):
             # Normalise raw quaternions (in case Motive exported un-normalised)
@@ -739,7 +1838,15 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
             angle_q = np.degrees(r_knee.magnitude())
 
             # Interior-angle convention: 180° = fully extended, decreases with flexion
-            return t, 180.0 - angle_q
+            ang_q = 180.0 - angle_q
+            warns_q = list(_curve_quality_warnings(ang_q))
+            if cov_q < 1.0:
+                warns_q.insert(0,
+                    f"Rigid-body quaternions were recorded for only "
+                    f"{cov_q*100:.1f}% of frames; this legacy path fills the "
+                    "rest forward, so the gap is invented motion, not measured.")
+            return t, ang_q, TrialQuality(coverage=cov_q,
+                                          warnings=tuple(warns_q))
     except (IndexError, ValueError):
         pass
 
@@ -752,18 +1859,309 @@ def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
     trips = _find_unlabeled_cols(name_row, None if is_new else comp_row)
     if len(trips) < 4:
         raise ValueError(f"Need >=4 unlabeled marker triplets; found {len(trips)}.")
-    return t, _angle_from_markers(df, trips)
+    cov_fb = _raw_column_coverage(df, [c for trip in trips for c in trip])
+    ang_fb = _angle_from_markers(df.ffill().bfill(), trips)
+    warns_fb = list(_curve_quality_warnings(ang_fb))
+    if cov_fb < 1.0:
+        warns_fb.insert(0,
+            f"Unlabeled markers were recorded for only {cov_fb*100:.1f}% of "
+            "frames; this legacy path fills the rest forward, so the gap is "
+            "invented motion, not measured.")
+    return t, ang_fb, TrialQuality(coverage=cov_fb, warnings=tuple(warns_fb))
+
+
+def load_optitrack(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (t_sec, angle_deg) from an OptiTrack CSV (any known format).
+
+    Thin wrapper over load_optitrack_detailed for the many callers that only
+    want the curve. Use the detailed form wherever the quality of the trial
+    should reach the operator — this one drops it on the floor.
+    """
+    t, angle, _quality = load_optitrack_detailed(path)
+    return t, angle
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PT parameter computation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _sg(sig: np.ndarray, w: int = 11, p: int = 3) -> np.ndarray:
+# Smoothing window as a PHYSICAL DURATION, not a sample count.
+#
+# Until 2026-08-31 _sg took a fixed number of SAMPLES (11/15/15/9/7 at the
+# five call sites below). The three modalities reach compute_pt_params at
+# three different rates, so one constant meant three different filters:
+# a 15-sample window spans 0.750 s of a 20 Hz IMU replay, 0.500 s of 30 Hz
+# video and 0.125 s of 120 Hz OptiTrack -- 75% of a ~1 Hz swing period
+# against 12% of one. Decimating real 120 Hz OptiTrack to 20 Hz, which
+# changes the sampling and nothing else about the motion, moved the median
+# omega_max_n from 8.50 to 3.19 and N from 3.5 to 2.5 across 205 trials.
+# Re-running the 120 Hz data with 20 Hz-EQUIVALENT durations reproduced the
+# 20 Hz values (omega_max_n gap 153.8% -> 7.2%, N 25.0% -> 0.0%), which is
+# what attributes the divergence to this window rather than to anything
+# else in the pipeline. IMU and OptiTrack could not agree on a PT score at
+# any angle accuracy while this stood.
+#
+# 0.10 s passes the ~0.9 Hz swing and its first several harmonics while
+# still rejecting the release transient and sensor jitter. Note that the
+# choice is definitional, not measured: peak angular velocity has no
+# asymptote as the window shrinks (median 186 deg/s at 0.75 s, 343 at
+# 0.25 s, 433 at 0.05 s on 40 trials at 120 Hz), because a shorter window
+# simply admits more differentiation noise. N, by contrast, sits at ~3.0
+# across that whole range -- the parameter least defined by this constant.
+_SG_WINDOW_S = 0.10
+
+
+def _median_dt(t: np.ndarray) -> float:
+    """Sample interval of a time base, robust to the dropped frames and
+    duplicate timestamps that both the optical and the phone streams
+    contain. Falls back to 30 fps only for a series too short to measure."""
+    t = np.asarray(t, dtype=float)
+    if len(t) < 2:
+        return 1.0 / 30.0
+    dt = float(np.median(np.diff(t)))
+    return dt if dt > 0 else 1.0 / 30.0
+
+
+def _sg(sig: np.ndarray, dt: float, win_s: float = _SG_WINDOW_S,
+        p: int = 3) -> np.ndarray:
+    """Savitzky-Golay smoothing over a window of win_s SECONDS.
+
+    dt is the series' own sample interval, so the same physical filter is
+    applied whatever rate the trial was captured at. Where the rate is too
+    low to realise win_s -- 0.10 s is only 3 samples at 30 fps video, below
+    savgol's polyorder+2 floor -- the window widens to that floor rather
+    than failing, which means a 30 fps trace is smoothed over 0.167 s and
+    is NOT strictly comparable to a 100 Hz one. That residual is bounded
+    and reported; it is not the 6x spread the sample-count window had."""
     n = len(sig)
+    w = int(round(win_s / dt))
+    if w % 2 == 0:
+        w += 1
+    if w < p + 2:
+        w = p + 2 if (p + 2) % 2 == 1 else p + 3
     w = min(w, n - 1 if n % 2 == 0 else n)
     w = w if w % 2 == 1 else w - 1
     return savgol_filter(sig, w, p) if w >= p + 2 else sig.copy()
+
+
+# Drift estimation is anchored on the settled tail rather than the pre-release
+# hold -- see the long note at the call site in compute_pt_params for why the
+# hold cannot show the drift.
+_TAIL_FRAC = 0.25          # trailing share of the post-release curve to use
+_TAIL_MIN_SAMPLES = 15
+# A decaying oscillation looks LINEAR over less than one period, so a short
+# window cannot tell "still settling" from "drifting". A clean synthetic trial
+# (0.32 Hz, tail only 0.62 of a period) fitted at -4.13 deg/s with a residual
+# of just 2.17 deg, and correcting by it ate 29 deg of real swing: A0 45.6 ->
+# 16.8.
+#
+# Counting PERIODS was the second attempt and was also wrong, for two reasons
+# measured over 93 trials: it rejected 56% of them on its own (the median tail
+# spans 1.955 periods, sitting right against a threshold of 2), and its
+# frequency estimate degrades on exactly the trials it should pass -- a heavily
+# damped leg barely oscillates, so its dominant frequency comes out near 0.1 Hz
+# and the period requirement becomes unreachable, even though such a leg settles
+# SOONEST and is the safest of all to correct.
+#
+# Test the property directly instead. A tail that is still decaying FLATTENS:
+# split it in half and the second half is markedly less steep. Genuine sensor
+# drift is constant, so both halves fit the same slope. That discriminates decay
+# from drift without estimating a frequency at all, and it works on a leg that
+# never oscillates.
+_TAIL_MIN_SECONDS = 1.0
+_TAIL_MIN_HALF_SAMPLES = 8      # per half, so each slope is worth fitting
+# Tolerances chosen by sweeping them against the corpus rather than by taste,
+# because coverage is not the goal -- accuracy is, and a setting that corrects
+# more trials while scoring them worse is a worse setting. Measured over 93
+# trials (coverage / median |ratio-1| / trials beyond 2x):
+#   0.60,0.35 -> 67% / 34.7% / 5      1.20,0.60 -> 80% / 33.7% / 4
+#   1.50,0.80 -> 82% / 34.2% / 4      2.50,1.20 -> 84% / 34.2% / 4
+# 1.20/0.60 is the optimum: it corrects 80% of trials AND scores best. Past it,
+# coverage keeps rising while accuracy turns over, which is the signal that the
+# extra trials are ones whose tails should not have been trusted.
+_SLOPE_CONSISTENCY_FRAC = 1.20  # halves may differ by this share of the slope
+_SLOPE_CONSISTENCY_ABS_DEG_S = 0.60   # ...or this much, whichever is larger
+_TAIL_MAX_RESIDUAL_DEG = 6.0   # still ringing above this -- not settled
+# Measured drift is 0.833 deg/s (median, 93 trials); p10 reaches -2.5, so a cap
+# of 2 was itself rejecting 9% of trials.
+#
+# Do not raise this above 4. With the consistency tolerances relaxed to their
+# measured optimum, THIS cap is the last thing rejecting the decaying-pendulum
+# case: the 0.32 Hz synthetic fits -4.13 deg/s, and at a cap of 5 it is accepted
+# and eats 29 deg of real swing (A0 45.6 -> 16.8). Verified both ways in
+# test_pendulum_still_decaying_is_not_mistaken_for_drift.
+_MAX_DRIFT_DEG_S = 4.0
+# A settled tail barely moves. If the fitted line carries the tail through more
+# than this share of the trial's own swing range, it is tracking motion.
+_TAIL_MAX_DISPLACEMENT_FRAC = 0.15
+
+
+def _dominant_frequency_hz(t: np.ndarray, ang: np.ndarray,
+                           rel_i: int) -> Optional[float]:
+    """Dominant oscillation frequency (Hz) of the post-release curve, or None.
+
+    Used only to ask whether a tail window is long enough for its slope to mean
+    anything. An FFT peak is enough for that -- this is not the reported `f`,
+    which is measured from detected peaks further down.
+    """
+    seg_t = np.asarray(t[rel_i:], dtype=float)
+    seg = np.asarray(ang[rel_i:], dtype=float)
+    ok = np.isfinite(seg_t) & np.isfinite(seg)
+    seg_t, seg = seg_t[ok], seg[ok]
+    if len(seg) < 16:
+        return None
+    dur = float(seg_t[-1] - seg_t[0])
+    if dur <= 0:
+        return None
+    dt = dur / (len(seg) - 1)
+    # Remove the linear trend so the FFT is not dominated by the settle itself.
+    trend = np.polyfit(seg_t, seg, 1)
+    seg = seg - (trend[0] * seg_t + trend[1])
+    spectrum = np.abs(np.fft.rfft(seg))
+    freqs = np.fft.rfftfreq(len(seg), d=dt)
+    if len(spectrum) < 3:
+        return None
+    peak = int(np.argmax(spectrum[1:])) + 1     # skip DC
+    f = float(freqs[peak])
+    return f if np.isfinite(f) and f > 1e-6 else None
+
+
+def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
+                              rel_i: int) -> Optional[float]:
+    """Sensor drift in deg/s, measured from the settled tail, or None.
+
+    A pendulum that has come to rest has zero slope, so any slope remaining in
+    the tail belongs to the sensor. Returns None -- meaning "do not correct" --
+    whenever the tail cannot be trusted to be at rest: too few samples, too
+    short a window, still oscillating, or a slope so large it must be real
+    motion rather than drift. None is the safe answer, because over-correcting
+    a trial that never settled would eat real swing.
+    """
+    n = len(t)
+    if rel_i is None or rel_i < 0 or n - rel_i < _TAIL_MIN_SAMPLES:
+        return None
+    start = int(rel_i + (1.0 - _TAIL_FRAC) * (n - rel_i))
+    t_tail = np.asarray(t[start:], dtype=float)
+    a_tail = np.asarray(ang[start:], dtype=float)
+    ok = np.isfinite(t_tail) & np.isfinite(a_tail)
+    t_tail, a_tail = t_tail[ok], a_tail[ok]
+    if len(t_tail) < _TAIL_MIN_SAMPLES:
+        return None
+    tail_dur = float(t_tail[-1] - t_tail[0])
+    if tail_dur < _TAIL_MIN_SECONDS:
+        return None
+
+    # Decay flattens; drift does not. Compare the two halves of the tail.
+    half = len(t_tail) // 2
+    if half < _TAIL_MIN_HALF_SAMPLES:
+        return None
+    s_first = float(np.polyfit(t_tail[:half], a_tail[:half], 1)[0])
+    s_second = float(np.polyfit(t_tail[half:], a_tail[half:], 1)[0])
+    if not (np.isfinite(s_first) and np.isfinite(s_second)):
+        return None
+
+    slope, intercept = np.polyfit(t_tail, a_tail, 1)
+    slope = float(slope)
+    if not np.isfinite(slope) or abs(slope) > _MAX_DRIFT_DEG_S:
+        return None
+
+    tolerance = max(_SLOPE_CONSISTENCY_ABS_DEG_S,
+                    _SLOPE_CONSISTENCY_FRAC * abs(slope))
+    if abs(s_first - s_second) > tolerance:
+        # Flattening, i.e. still settling -- not drift.
+        #
+        # Do NOT try to rescue these by padding the tail with an assumed-stable
+        # continuation. It was measured: of the 19 trials that reach here, 16
+        # are still moving faster than 1 deg/s when the recording stops, so
+        # "assume the leg is stable" is precisely the false assumption. Their
+        # honest tail slope is -1.059 deg/s (steeper than the -0.761 median of
+        # the trials we DO correct, i.e. these drift the most). Appending 4 s of
+        # flat samples at the last observed value drives the fitted slope to
+        # +0.000 -- it does not estimate the drift, it erases it, and it would
+        # silently switch the correction off on exactly the trials that need it
+        # most while appearing to extend coverage to 100%.
+        #
+        # The information is missing from the recording, and padding fabricates
+        # it in the same window that defines the score's reference level. Fixing
+        # these needs a longer recording, or a drift-free anchor the tail does
+        # not provide (the accelerometer gives absolute inclination with no
+        # integration -- see imu_absolute_vs_knee.net_rotation_from_gravity).
+        return None
+    # Settled means the tail is a straight line plus noise. If it still swings,
+    # the residual about that line is large and the slope is not drift.
+    residual = a_tail - (slope * t_tail + intercept)
+    if float(np.nanmax(residual) - np.nanmin(residual)) > _TAIL_MAX_RESIDUAL_DEG:
+        return None
+
+    # Final guard, and the one that catches slow decay the residual check
+    # cannot: a genuinely settled tail hardly moves. Compare how far the fitted
+    # line carries it against the trial's own swing range, so the test scales
+    # with the trial instead of assuming an absolute size.
+    post = np.asarray(ang[rel_i:], dtype=float)
+    post = post[np.isfinite(post)]
+    if len(post) >= 2:
+        swing_range = float(np.nanmax(post) - np.nanmin(post))
+        displacement = abs(slope) * float(t_tail[-1] - t_tail[0])
+        if swing_range > 1e-6 and displacement > _TAIL_MAX_DISPLACEMENT_FRAC * swing_range:
+            return None
+    return slope
+
+
+# How far back from the threshold crossing the reported release is placed.
+#
+# This was a fixed 2 SAMPLES until 2026-09-01 -- the same defect as the
+# smoothing window had, one layer down. Two samples is 0.040 s at 50 Hz but
+# 0.005 s at 400 Hz, so the faster the capture, the less it stepped back and
+# the later the release it reported: 2.0400 s at 50 Hz against 2.0725 s at
+# 400 Hz for a synthetic released at exactly 2.0 s. A0_deg is read just after
+# the release, so it fell 47.75 -> 44.23 deg across that range on identical
+# motion, and omega_max_n and phi_max_ratio inherited it because both
+# normalise by A0.
+#
+# This was 2.0/120 -- "what the old two-sample constant meant at 120 Hz" --
+# and that pinning was wrong, because the quantity it converts is a physical
+# lag, not a sample count. The duration still quantises to whole samples, so
+# 2/120 rounds to ZERO at every rate at or below 40 Hz. The 20 Hz phone
+# stream therefore got no back-off at all, and A0 is read at the release
+# sample (A0_raw = phi[0]), so it was sampled after the leg had already
+# fallen. On the E2E replay fixture, whose forward-simulated swing has a
+# known 45 deg amplitude, A0 came out at 35.3 deg -- a 9.7 deg under-read,
+# against 1.3 deg before the rate-independence work.
+#
+# The previous note here rejected re-tuning this value, on the grounds that
+# the lag scales with release speed so a constant fitted to one signal would
+# be wrong for others, and that too large a back-off lands inside the
+# pre-release hold where A0 reads the plateau instead of the swing. Both are
+# testable, and both were tested: 243 synthetics spanning capture rate
+# (20/60/120 Hz), amplitude (20/45/70 deg), frequency (0.5/1.0/1.5 Hz),
+# damping (0.5/0.9/1.5) and release ramp (instant, 0.10 s, 0.25 s), scored
+# against their own known A0.
+#
+#   back-off   mean|err|   max|err|   signed bias   trials worse than 2 deg
+#    0.0167      4.92        20.46       -4.92               194 / 243
+#    0.0800      0.41         2.43       -0.00                 4
+#    0.1000      0.36         2.43       +0.11                 3
+#    0.1500      0.35         3.50       +0.34                10
+#
+# The first objection does not survive: 0.10 s is best across the whole grid,
+# slow releases included, not merely on one signal. The second one does, and
+# is what bounds the value from above -- at 0.15 s the bias turns positive
+# and the failures triple, which is the back-off reaching into the plateau.
+# 0.10 s sits at the minimum with a bias of +0.11 deg.
+#
+# It is also not a free parameter. Smoothing is a 0.10 s window (_SG_WINDOW_S),
+# so the release edge is smeared by about half of it and the 8%-of-range
+# threshold then fires late by the same order. Back-off and smoothing are the
+# same physical duration because they are the same physical effect, which is
+# why the residual error goes flat across rates instead of trading one rate
+# off against another.
+#
+# What this replaces was a systematic -4.92 deg bias: A0 under-read on nearly
+# every synthetic, in the same direction. A0 is the spasticity grouping
+# variable wherever a clinical MAS grade is absent, and a one-directional
+# error is the worst shape for comparing a participant against themselves
+# over time.
+_RELEASE_BACKOFF_S = 0.10
 
 
 def _detect_release(t: np.ndarray, ang: np.ndarray,
@@ -777,9 +2175,10 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     # normalized tilt magnitude, ...) rather than assuming a degree-scale signal.
     signal_range = float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
     thresh_deg = 0.08 * signal_range
+    back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
     for i in range(bi, len(t)):
         if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
-            return max(0, i - 2)
+            return max(0, i - back)
     return bi
 
 
@@ -809,7 +2208,7 @@ def detect_release_t0(t: np.ndarray, signal: np.ndarray,
     if mask.sum() < 4:
         raise ValueError("Need at least 4 finite samples to detect release.")
     t_c = t[mask]
-    sig_s = _sg(signal[mask])
+    sig_s = _sg(signal[mask], dt=_median_dt(t_c))
     baseline_i = max(3, int(np.searchsorted(t_c, t_c[0] + baseline_sec)))
     baseline_i = min(baseline_i, len(t_c) - 1)
     rel_i = _detect_release(t_c, sig_s, baseline_sec=baseline_sec)
@@ -840,39 +2239,87 @@ def align_to_release(t: np.ndarray, t0: float) -> np.ndarray:
     return t - t0
 
 
-def _merge_close_extrema(idx_arr: np.ndarray, values: np.ndarray, min_sep: int) -> np.ndarray:
+# REMOVED 2026-09-08, by user decision: "I don't want to cap the number of
+# swings, they can swing as many times as they need."
+#
+# This was 4.0 s, matched to score_waveform's Continuity-check window on the
+# reasoning that "a real pendulum swing settles well within this". It does not.
+# At a ~1 Hz swing, 4 s is four cycles, so N read 4.0 for ANY leg still
+# oscillating after four seconds -- which is any healthy leg. Measured at 20 Hz
+# with A0 = 45 deg and only the damping varied, N was identical (4.0) across a
+# 2x range in how many oscillations physically occurred: 12, 9 and 6 true
+# cycles all scored 4.0. In that regime N carried no damping information at
+# all, and N is the parameter this project's own findings call the best in the
+# set. It also explains HEALTHY_REF["N"] = 3.5: that "control median" is the
+# cap, not a property of control legs.
+#
+# What the cap was protecting is real but is not what it was documented as.
+# evaluate_peak_detection.py reproduces the tail-noise failure the docstring
+# cites (N = 0.5 at a 3 s tail, 28.5 at 30 s) exactly -- and shows it needs the
+# PRE-a1ca2b5 detector, which had no prominence gate. a1ca2b5 shipped the cap
+# and prominence=min_amp together, and it is prominence that does the work:
+# under the current detector those same signals give N = 0.0 with the window
+# and 0.0 without it.
+#
+# The residual exposure, stated plainly rather than waved away: above roughly
+# min_amp of white noise, or ~8 deg of tremor, an unbounded resting tail can
+# still be over-counted, and no window rule tested contains it -- a
+# settle-bounded window scores identically to no window on every such row. On
+# phone captures the tail is bounded by capture instead: settle-termination
+# ends the recording a few seconds after the limb settles. Long-tailed desktop
+# and OptiTrack trials keep the exposure, and a trial whose N looks
+# implausibly high should be read as a noisy tail, not a lively leg.
+#
+# The constant is gone rather than set to infinity so no caller can quietly
+# reintroduce a cap by reading it.
+#
+# What replaces it is a CONTIGUITY rule, not a second cap. Removing the bound
+# outright was tried and reinstated the failure on the repo's own
+# TRIAL_NOISY_TAIL fixture -- a single drop with a 3.5 deg, 0.9 Hz tremor added
+# to its resting tail, which was counted as 8 oscillation cycles. That fixture
+# exists precisely to catch this, and its comment is explicit that the
+# prominence gate alone does not suppress that ripple.
+#
+# The distinction the rule uses is that a pendulum starts oscillating when it
+# is RELEASED, so its extrema begin about a half period after release and keep
+# arriving on schedule; a tail tremor begins after the limb has come to rest,
+# separated from the release by a stretch containing no extrema at all. Judging
+# that separation against the run's OWN median extremum spacing keeps the rule
+# free of any absolute time constant, so it never limits how many times a leg
+# may swing -- which is the property that made the 4 s cap wrong.
+_OSCILLATION_GAP_FACTOR = 2.5
+
+
+def _swing_centre(phi: np.ndarray, dt: float, period_s: float) -> np.ndarray:
+    """The slow baseline the oscillation is riding on, as a per-sample series.
+
+    A boxcar average over exactly ONE swing period integrates a sinusoid of
+    that period to zero, so the swing cancels and whatever the centre is doing
+    survives. That matters because `neutral` is the SETTLED angle, and a limb
+    that keeps creeping into flexion after the oscillation dies swung about a
+    higher centre than the angle it finally rests at.
+
+    Measured over synthetics identical but for the post-swing sag, that
+    mismatch took area_ratio from 0.008 to 0.824 and PT7 from 0.0713 to
+    1.2180 -- a 17x false impairment on an unchanged oscillation -- and
+    starved the sub-neutral troughs from 7 to 3. See evaluate_capture_bias.py.
+
+    A boxcar rather than the midpoint of consecutive extrema, which was tried
+    first and is biased by DAMPING: for a decaying oscillation the midpoint of
+    a peak and the following trough sits above the true centre, which
+    regressed A0 on trials with no sag at all.
     """
-    Merge consecutive detected extrema that are closer than min_sep samples.
-    Keeps the one with the larger value (used for both peaks and troughs by
-    passing the appropriate sign of the signal). Eliminates spurious sub-peaks
-    introduced by the spastic quadriceps catch.
-    """
-    if len(idx_arr) < 2:
-        return idx_arr
-    merged = list(idx_arr)
-    changed = True
-    while changed:
-        changed = False
-        new: list = []
-        i = 0
-        while i < len(merged):
-            if i + 1 < len(merged) and (merged[i + 1] - merged[i]) < min_sep:
-                keep = merged[i] if values[merged[i]] >= values[merged[i + 1]] else merged[i + 1]
-                new.append(keep)
-                i += 2
-                changed = True
-            else:
-                new.append(merged[i])
-                i += 1
-        merged = new
-    return np.array(merged, dtype=int)
-
-
-# Matches imu_calibration_tuner.score_waveform's own Continuity-check window
-# cap -- a real pendulum swing settles well within this, so a stray extremum
-# past it is tail noise, not real oscillation.
-_ACTIVE_WINDOW_CAP_SEC = 4.0
-
+    n = int(round(period_s / dt)) if dt > 0 else 0
+    if n < 3 or n >= len(phi):
+        return np.zeros_like(phi)
+    if n % 2 == 0:
+        n += 1
+    pad = n // 2
+    # Edge-padded rather than zero-padded: zeros would drag the baseline
+    # toward neutral exactly at the release, which is the one place the
+    # first swing needs its own centre.
+    padded = np.concatenate([np.full(pad, phi[0]), phi, np.full(pad, phi[-1])])
+    return np.convolve(padded, np.ones(n) / n, mode="valid")[:len(phi)]
 
 def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
                                    pk_i: np.ndarray, tr_i: np.ndarray,
@@ -888,22 +2335,76 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
 
     Same two-branch logic imu_calibration_tuner.score_waveform's own
     Continuity check already uses on this exact class of problem:
-      - an oscillation was detected (pk_i/tr_i non-empty): window ends at
-        the last detected extremum, capped at _ACTIVE_WINDOW_CAP_SEC past
-        release. The cap matters even though pk_i/tr_i here are the
-        PRE-filter (possibly noise-contaminated) detections -- once any
-        extremum lands past the cap, the cap alone determines the window
-        regardless of how much later a noisier extremum might be.
+      - an oscillation was detected (pk_i/tr_i non-empty): the window ends
+        where the extrema stop arriving on schedule -- at the first gap,
+        from release or between consecutive extrema, larger than
+        _OSCILLATION_GAP_FACTOR times their own median spacing. There is NO
+        time cap: a leg may swing as many times as it swings, and the 4 s
+        cap that used to live here bounded N itself rather than the noise.
       - no oscillation at all (a genuine single drop with no rebound, the
         severe-spasticity end of the spectrum -- find_peaks needs the
         signal to go down AND back up to register any extremum, so this
         case never finds one): find the first point after which the signal
-        is PERMANENTLY within tolerance of neutral, capped the same way.
+        is PERMANENTLY within tolerance of neutral, Also uncapped.
     """
-    extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
+    extrema = np.sort(np.concatenate([
+        np.asarray(pk_i, dtype=int), np.asarray(tr_i, dtype=int)]))
     if len(extrema):
-        last_extremum_t = float(t_r[int(extrema.max())])
-        return t_r[0] + min(_ACTIVE_WINDOW_CAP_SEC, max(0.0, last_extremum_t - t_r[0]))
+        times = t_r[extrema].astype(float)
+        if len(times) == 1:
+            # One extremum carries no spacing to judge against. Accepted: the
+            # worst case is N = 0.5 on a lone tail bump, which is a bounded
+            # error, not a fabricated oscillation.
+            return float(times[0])
+        gaps = np.diff(times)
+        med = float(np.median(gaps))
+        if med <= 0:
+            return float(times[-1])
+        limit = _OSCILLATION_GAP_FACTOR * med
+
+        # Anchored at RELEASE. A pendulum starts oscillating when it is let
+        # go: its first extremum follows release by about a half period. A
+        # tail tremor does not -- it begins after the limb has come to rest,
+        # separated from the release by a stretch with no extrema in it. That
+        # separation is what distinguishes the two, and it is independent of
+        # how many times the leg subsequently swings.
+        #
+        # KNOWN LIMIT, measured rather than assumed. The median is taken over
+        # ALL gaps, so a long regular tremor can outvote a handful of real
+        # swing extrema and set the limit to its own cadence. Anchoring on a
+        # RUNNING median of the accepted run instead was tried and is worse:
+        # on a heavily damped swing that yields only one or two extrema, the
+        # first gap IS the quiet stretch before the tremor, so it anchors the
+        # threshold wide open and a 4 deg tail tremor scored N = 20.5 where
+        # this version scores 0.0. Neither rule is right in general; this one
+        # fails safe on the case that actually occurs.
+        if times[0] - t_r[0] > limit:
+            return float(t_r[0])
+
+        # Then stop at the first interior gap: the run of real oscillation
+        # ends where the extrema stop arriving on schedule.
+        for i, gap in enumerate(gaps):
+            if gap > limit:
+                return float(times[i])
+        return float(times[-1])
+        limit = _OSCILLATION_GAP_FACTOR * med
+
+        # Anchored at RELEASE. A pendulum starts oscillating when it is let go:
+        # its first extremum follows release by about a half period. A tail
+        # tremor does not -- it begins after the limb has already come to rest,
+        # separated from the release by a stretch with no extrema in it. That
+        # separation is what distinguishes the two, and it is independent of
+        # how many times the leg subsequently swings.
+        if times[0] - t_r[0] > limit:
+            return float(t_r[0])
+
+        # Then stop at the first interior gap: the run of real oscillation ends
+        # where the extrema stop arriving on schedule. Anything after that gap
+        # is a separate disturbance, however periodic it looks.
+        for i, gap in enumerate(gaps):
+            if gap > limit:
+                return float(times[i])
+        return float(times[-1])
     tol = max(2.0, 0.05 * A0)
     near_neutral = np.abs(ang_r - neutral) <= tol
     settle_idx = len(ang_r) - 1   # never permanently settles -> fall back to the full window
@@ -911,8 +2412,7 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
         if np.all(near_neutral[i:]):
             settle_idx = i
             break
-    settle_t = float(t_r[settle_idx])
-    return min(t_r[0] + _ACTIVE_WINDOW_CAP_SEC, settle_t)
+    return float(t_r[settle_idx])
 
 
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
@@ -948,7 +2448,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # moves -- same failure mode already documented and worked around in
     # pt_report_common.release_aligned_waveform for plotting, needed here
     # too since this is what computes the score.
-    ang_s_raw = _sg(ang_c_raw, w=15, p=3)
+    ang_s_raw = _sg(ang_c_raw, dt=_median_dt(t_c), p=3)
     if release_idx is not None:
         # Map raw frame index into the finite-only compressed array
         finite_indices = np.where(mask)[0]
@@ -974,15 +2474,42 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # negligible fraction of the fit window, but for a short hold they can
     # dominate it and bias the slope badly. Trim a small time margin off
     # the END of the baseline window so detection lag never enters the fit.
+    #
+    # ...but the baseline ALONE cannot see the drift that matters. The gyro
+    # bias is calibrated from that very hold window (pendulastic_imu_server
+    # .zero() recalibrates from the trailing hold buffer at the tare instant),
+    # so the baseline is flat BY CONSTRUCTION and the fit comes back at
+    # essentially zero. The drift develops afterwards. Measured over 93 IMU
+    # trials on 2026-08-28: pre-release baseline slope +0.193 deg/s, settled
+    # tail slope -0.833 deg/s, with |tail| > |baseline| in 84% of trials.
+    # Extrapolating the baseline slope therefore removed nothing, the IMU
+    # curve sank ~0.8 deg/s through the trial, `neutral` (the tail median)
+    # sank with it, and A0 = phi[0] = release - neutral came out inflated.
+    # Tail slope predicted the IMU/OptiTrack A0 ratio at rho=-0.641, p=8e-12;
+    # baseline slope only managed rho=+0.260.
+    #
+    # So estimate the drift from the SETTLED TAIL, which is the other region
+    # that is physically at rest: a pendulum that has stopped has zero slope,
+    # so whatever slope is there is the sensor's. This keeps the original
+    # protection -- the swing itself never enters the fit -- while looking at
+    # the region that can actually show the problem. OptiTrack tails measure
+    # +0.009 deg/s, so this is a no-op on optical curves and only bites where
+    # there is real drift.
     _MIN_BASELINE = 10
     _LAG_MARGIN_SEC = 0.05
     baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
-    if detrend and baseline_end >= _MIN_BASELINE:
-        slope, _ = np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)
+    slope = None
+    if detrend:
+        slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
+        if slope is None and baseline_end >= _MIN_BASELINE:
+            # Tail unusable (trial ended mid-swing, too short, still ringing).
+            # Fall back to the historical baseline fit rather than to nothing.
+            slope = float(np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)[0])
+    if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
         ang_c = ang_c_raw
-    ang_s = _sg(ang_c, w=15, p=3)
+    ang_s = _sg(ang_c, dt=_median_dt(t_c), p=3)
     # Pre-release angle: median of the window just before release
     # (the held/extended leg position — used as the "Rest" reference on the graph)
     pre_n = max(3, min(20, rel_i))
@@ -1026,8 +2553,22 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     if phi_negated:              # convention: extension = positive
         phi = -phi; A0_raw = abs(A0_raw)
 
-    phi_s = _sg(phi, w=9, p=2)
+    phi_s = _sg(phi, dt=_median_dt(t_r), p=2)
 
+    # A0 deliberately measures release-above-REST, not the oscillation
+    # amplitude, and keeps doing so after the swing-centred frame landed. It
+    # is therefore the whole residual sag sensitivity (PT7 spread 0.058).
+    #
+    # Re-basing it was measured and is worse. Half the first peak-to-trough
+    # excursion is sag-invariant (spread 1.2 deg against 19.4) but its error
+    # grows monotonically with DAMPING -- -2.7 deg at lambda 0.25 rising to
+    # -14.1 deg at lambda 2.0 -- because a more damped swing loses more
+    # amplitude between the peak and the trough being differenced. A0 is the
+    # spasticity grouping variable wherever a clinical MAS grade is absent,
+    # and damping IS the spasticity signal, so that definition would make A0
+    # partly a restatement of what it has to stay independent of.
+    # release-above-rest is damping-invariant (spread 0.9 across an 8x damping
+    # range). See evaluate_capture_bias.compare_a0_definitions.
     # A0: maximum of smoothed phi in first 20% after release (wider window handles late trigger)
     # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
     first_n = max(5, int(0.20 * len(phi)))
@@ -1050,6 +2591,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     min_amp  = max(1.0, 0.05 * A0)
     pk_i2, _ = find_peaks( phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
     tr_i2, _ = find_peaks(-phi_s, height=min_amp, distance=min_dist, prominence=min_amp)
+    # Second pass, against the swing's own centre rather than the settled
+    # angle. The first pass exists only to estimate the period the boxcar
+    # needs -- extremum spacing is a half period -- so this refines the same
+    # detection rather than being a different detector.
+    #
+    # Only the DETECTION and the symmetry integral move to the centred frame.
+    # A0 and the amplitudes stay relative to `neutral`, because "how far the
+    # limb was from where it rests" is what A0 means; re-basing it would
+    # redefine a Popovic parameter rather than fix an implementation.
+    _dt_c = float(np.median(np.diff(t_r))) if len(t_r) > 1 else 0.0
+    _ext0 = np.sort(np.concatenate([np.asarray(pk_i2, dtype=int),
+                                    np.asarray(tr_i2, dtype=int)]))
+    phi_centre = np.zeros_like(phi_s)
+    if len(_ext0) >= 3 and _dt_c > 0:
+        _half = float(np.median(np.diff(t_r[_ext0])))
+        if _half > 0:
+            phi_centre = _swing_centre(phi_s, _dt_c, 2.0 * _half)
+            _phi_sc = phi_s - phi_centre
+            pk_i2, _ = find_peaks( _phi_sc, height=min_amp, distance=min_dist, prominence=min_amp)
+            tr_i2, _ = find_peaks(-_phi_sc, height=min_amp, distance=min_dist, prominence=min_amp)
+
 
     # Bound to the active-oscillation window before counting anything --
     # see _active_oscillation_window_end's own docstring for why an
@@ -1058,14 +2620,26 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     pk_i2 = pk_i2[t_r[pk_i2] <= window_end_t]
     tr_i2 = tr_i2[t_r[tr_i2] <= window_end_t]
 
-    # Merge sub-peaks closer than fps/6 apart — the spastic quadriceps catch
-    # produces an abrupt deceleration that find_peaks misreads as two peaks.
-    merge_sep = max(3, int(fps_eff / 6))
-    pk_i2 = _merge_close_extrema(pk_i2,  phi_s, merge_sep)
-    tr_i2 = _merge_close_extrema(tr_i2, -phi_s, merge_sep)
+    # A sub-peak merge used to run here, to absorb the extra extremum a spastic
+    # quadriceps catch can put into the curve. It was unreachable and has been
+    # removed. find_peaks above is given distance=min_dist = fps/3.5, so no two
+    # returned extrema are EVER closer than 0.286 s; the merge window was
+    # fps/6 = 0.167 s, i.e. strictly inside a separation that was already
+    # guaranteed. The two constants were inverted against each other, so the
+    # merge could not fire at any sample rate (verified at 30/60/100/120/200/
+    # 2000 Hz), and removing it changed nothing on any of the 186 real curves
+    # in the corpus. See test_quadriceps_catch_merge_was_subsumed_by_find_peaks.
+    #
+    # The protection itself is not lost: find_peaks' distance constraint is the
+    # STRICTER of the two and keeps the more prominent extremum, which is what
+    # the merge did. What neither ever handled is a catch whose sub-peak lands
+    # MORE than min_dist away -- that extremum survives and is counted as a real
+    # oscillation. Handling that needs a deliberate physiological rule, not a
+    # window; it is not silently covered today and never was.
 
     # ── 1. R2n  (A1 = PEAK-TO-PEAK of first oscillation) ─────────────────────
-    neg_tr = [(i, phi[i]) for i in tr_i2 if phi[i] < -min_amp]
+    _phi_g = phi - phi_centre
+    neg_tr = [(i, phi[i]) for i in tr_i2 if _phi_g[i] < -min_amp]
     if neg_tr:
         first_trough_depth = abs(neg_tr[0][1])
         A1 = A0 + first_trough_depth          # peak-to-peak (Bajd & Bowman)
@@ -1074,8 +2648,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     R2n = A1 / (1.6 * A0) if A0 > 1e-3 else 0.0
 
     # ── 2. N  (count significant full oscillation cycles) ────────────────────
-    n_pos = sum(1 for i in pk_i2 if phi[i] >  min_amp)
-    n_neg = sum(1 for i in tr_i2 if phi[i] < -min_amp)
+    # Gated in the SAME frame the extrema were found in, or a trough found
+    # about the swing centre is rejected for not clearing a threshold
+    # measured from the settled angle -- which is the starvation this fixes.
+    n_pos = sum(1 for i in pk_i2 if _phi_g[i] >  min_amp)
+    n_neg = sum(1 for i in tr_i2 if _phi_g[i] < -min_amp)
     N = (n_pos + n_neg) / 2.0
 
     # ── 6. f  (computed before phi_max_ratio so window_end can use it) ───────
@@ -1105,13 +2682,24 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         phi_max_ratio = 0.0
 
     # ── 4 & 5. omega max/min (normalised by A0) ───────────────────────────────
-    omega_s        = _sg(np.gradient(phi, t_r), w=7, p=2)
+    omega_s        = _sg(np.gradient(phi, t_r), dt=_median_dt(t_r), p=2)
     omega_abs      = np.abs(omega_s)
     omega_peak_dps = float(np.nanmax(omega_abs))      # deg/s  (raw, not normalised)
     omega_max_n    = omega_peak_dps / A0               # normalised by A0
 
     swing_mask  = np.abs(phi) > min_amp
-    omega_min_n = (float(np.nanmin(omega_abs[swing_mask])) / A0
+    # SIGNED minimum, matching Popovic. This used to be
+    # min(abs(omega_s)), the near-zero speed at a turning point, which
+    # made the parameter ~0.001 for everyone and left one of the seven a
+    # static zero-offset in the sum. Popovic's published healthy range is
+    # NEGATIVE (-12 to -9 rad/s), so omega-min is the peak velocity in the
+    # extension/return direction, not the slowest point of the swing.
+    #
+    # The 'penalise only if ABOVE reference' direction survives the change
+    # and is now easier to justify: a healthy limb returns fast (large
+    # negative), a restrained one barely returns (closer to zero), so
+    # ABOVE the reference is the impaired side.
+    omega_min_n = (float(np.nanmin(omega_s[swing_mask])) / A0
                    if swing_mask.sum() > 5 else 0.0)
 
     # ── 7. Area ratio  (symmetry index) ──────────────────────────────────────
@@ -1125,7 +2713,12 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     _n_ext    = max(1, int(_EXTEND_S / _dt_mean))
     _phi_rest = float(np.nanmedian(phi[max(int(0.80 * len(phi)), 1):]))
     _t_ar     = np.concatenate([t_r, t_r[-1] + np.arange(1, _n_ext + 1) * _dt_mean])
-    _phi_ar   = np.concatenate([phi, np.full(_n_ext, _phi_rest)])
+    # Integrated about the swing centre: the asymmetry being measured is the
+    # limb's, and a baseline that drifts one way makes a symmetric swing read
+    # as maximally asymmetric (0.008 -> 0.824 across 20 deg of sag).
+    _phi_c_ar = phi - phi_centre
+    _phi_rest_c = float(np.nanmedian(_phi_c_ar[max(int(0.80 * len(_phi_c_ar)), 1):]))
+    _phi_ar   = np.concatenate([_phi_c_ar, np.full(_n_ext, _phi_rest_c)])
     dt        = np.diff(_t_ar)
     phi_mid   = (_phi_ar[:-1] + _phi_ar[1:]) / 2.0
     P_plus    = float(np.sum(dt * np.maximum( phi_mid, 0)))
@@ -1170,6 +2763,17 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
 # ══════════════════════════════════════════════════════════════════════════════
 
 _HPE_MODELS = ["mediapipe", "rtmpose", "mmpose", "fremocap"]
+
+# load_hpe_model_curves() swing-validity thresholds, in degrees.
+# MIN_EXCURSION_DEG: total angular travel below which a trial is treated as
+#   containing no real swing (dead recording / marker dropout). Well under the
+#   43-50 deg travelled by the most impaired real trials on file, and well over
+#   OptiTrack marker jitter.
+# MIN_OVERSHOOT_DEG: flexion past neutral below which the neutral-referenced
+#   amplitude thresholds degenerate, and the flexion axis is re-origined at the
+#   held/extended position instead. See the comments at the use site.
+MIN_EXCURSION_DEG = 10.0
+MIN_OVERSHOOT_DEG = 3.0
 
 def load_hpe_model_data(pid_str: str, pos: str, trial: str) -> Optional[dict]:
     """
@@ -1283,10 +2887,11 @@ def _replay_raw_imu_fallback(rec_dir: str, trial: str):
         return None
     try:
         from imu_calibration_config import load_config
-        from imu_calibration_tuner import replay_trial
+        from imu_calibration_tuner import ANALYSIS_TICK_S, replay_trial
         from reconstruct_imu_raw_logs import reconstruct_trial
         samples = reconstruct_trial(accel, gyro, mag)
-        t_m, ang_m = replay_trial(samples, load_config())
+        t_m, ang_m = replay_trial(samples, load_config(),
+                                  tick_s=ANALYSIS_TICK_S)
     except Exception:
         return None
     if len(t_m) == 0 or np.count_nonzero(np.isfinite(ang_m)) < 10:
@@ -1413,14 +3018,66 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
     # Swing detection: find the active flexion window (past neutral)
     opti_flex_valid = np.where(valid_mask, opti_flex, np.nan)
     opti_peak = float(np.nanmax(opti_flex_valid)) if valid_mask.any() else 0.0
-    if opti_peak < 3.0:
+
+    # Total angular travel, independent of where the limb comes to rest.
+    angle_valid = np.where(valid_mask, angle_raw, np.nan)
+    opti_excursion = (float(np.nanmax(angle_valid) - np.nanmin(angle_valid))
+                      if valid_mask.any() else 0.0)
+
+    # Validity check: did this trial contain a real swing at all? This used to
+    # test opti_peak < 3.0, i.e. flexion PAST NEUTRAL -- but a spastic limb
+    # arrests at its own resting angle, so its overshoot is ~0 by definition
+    # however far it actually travelled. That threw away five valid trials
+    # across P13/P14/P19 (43-50 deg excursion, PT7 1.42-1.77) while never once
+    # catching a dead recording: load_hpe_model_curves only ever runs on trials
+    # compute_pt_params already scored, so genuinely empty ones never reach it.
+    # Total excursion separates "leg never moved" from "leg moved but didn't
+    # overshoot", which flexion-past-neutral cannot.
+    if opti_excursion < MIN_EXCURSION_DEG:
         return _finish([], [])
+
+    # Every threshold below is a fraction of the reference amplitude, so with
+    # opti_peak ~0 the swing window would be empty and the tracking filter's
+    # bar would fall under a degree -- admitting anything, including a flat
+    # line. For those trials re-origin the flexion axis at the held/extended
+    # position so amplitudes are real again. Limbs that do overshoot keep
+    # flex_origin == neutral_deg and are byte-for-byte unchanged.
+    low_overshoot = opti_peak < MIN_OVERSHOOT_DEG
+    if low_overshoot:
+        flex_origin = float(np.nanmax(angle_valid))
+        opti_flex = flex_origin - angle_raw
+        opti_flex_valid = np.where(valid_mask, opti_flex, np.nan)
+        opti_peak = float(np.nanmax(opti_flex_valid))
+    else:
+        flex_origin = neutral_deg
+
     swing_thresh = max(3.0, opti_peak * 0.20)
     in_swing = (opti_flex_valid > swing_thresh)
     if not in_swing.any():
         return _finish([], [])
     sw_t = t_opti[in_swing]
     sw_lo, sw_hi = float(sw_t[0]) - 0.5, float(sw_t[-1]) + 0.5
+
+    # How much the reference actually VARIES inside the swing window. On a
+    # re-origined axis the absolute flexion value is dominated by the constant
+    # offset from full extension, so only variation distinguishes a curve that
+    # tracked the swing from one that sat still at the resting angle.
+    _opti_flex_sw = opti_flex_valid[in_swing]
+    opti_var = float(np.nanmax(_opti_flex_sw) - np.nanmin(_opti_flex_sw))
+
+    # OptiTrack's own level over the opening reference window, for baseline-
+    # aligning candidates against. A candidate's reference window and this one
+    # both sit in the pre-release hold, so they measure the SAME physical
+    # angle (leg extended) on two devices -- which is what makes them
+    # alignable. Aligning to neutral_deg instead, as this used to, mapped the
+    # candidate's HELD angle onto OptiTrack's RESTING angle and pushed every
+    # curve down by the hold-to-neutral gap (~39-45 deg on real trials).
+    # Taken as a high percentile of the whole trial rather than an opening
+    # window: interior angle is maximal at full extension, which IS the held
+    # position, so this finds the hold level even when a recording starts late
+    # or the leg is already moving in its first samples. The percentile rather
+    # than the outright max keeps a single marker-jitter spike from setting it.
+    opti_hold = float(np.nanpercentile(angle_valid, 98)) if valid_mask.any() else neutral_deg
 
     def _evaluate_candidate(model_name, t_m, ang_m):
         """Shared alignment/cleaning/swing-tracking-filter/RMSE pipeline for
@@ -1447,12 +3104,14 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
             return None, "insufficient_reference_window"
         model_neutral = float(np.nanmean(ang_m[:ref_n][ref_valid[:ref_n]]))
 
-        # Align HPE to OptiTrack interior-angle space.
-        # Both use interior angle (DECREASES with flex): simple baseline shift.
-        # hpe_flex = model_neutral - knee_angle_deg  (positive = more flex)
-        # aligned  = neutral_deg   - hpe_flex        (= knee_angle + (neutral_opti - model_neutral))
-        hpe_flex_raw = model_neutral - ang_m   # HPE flexion displacement (positive = flex)
-        aligned = neutral_deg - hpe_flex_raw
+        # Align HPE to OptiTrack interior-angle space by a simple baseline
+        # shift: both use interior angle (DECREASES with flex), and both
+        # reference windows sit in the same pre-release hold, so putting the
+        # candidate's hold level onto OptiTrack's hold level puts the two
+        # curves in a common frame. Any residual after this is real
+        # disagreement (amplitude/gain error, lag, tracking loss) rather than
+        # a bookkeeping offset -- which is the whole point of the RMSE.
+        aligned = ang_m + (opti_hold - model_neutral)
         lo_bound, hi_bound = 70.0, 210.0
 
         # Physical bounds clamp
@@ -1463,36 +3122,58 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         thresh = 15.0 if raw_pct > 70 else 25.0
         cleaned = _clean_hpe_angle(aligned, outlier_thresh=thresh, max_gap=3, sg_w=7)
 
-        # Model flexion-past-neutral in swing window
+        # Model flexion in swing window, measured from the SAME origin as
+        # opti_flex (neutral normally; the held/extended angle on minimal-
+        # overshoot trials) -- the peak ratio below compares the two directly,
+        # so a mismatched origin would make it meaningless.
         sw_mask = (t_m >= sw_lo) & (t_m <= sw_hi) & np.isfinite(cleaned)
         if sw_mask.sum() < 3:
             return None, "insufficient_swing_samples"
-        model_flex_sw = neutral_deg - cleaned[sw_mask]
+        model_flex_sw = flex_origin - cleaned[sw_mask]
         model_peak = float(np.nanmax(model_flex_sw)) if model_flex_sw.size else -np.inf
 
-        # Auto-correct inverted HPE: some models (or dual-leg sessions) produce an
-        # angle that moves in the OPPOSITE direction (extension when the knee flexes).
-        # Detect: if the standard direction gives a bad peak but the reflected direction
-        # gives a good peak, mirror the signal around the neutral line.
-        if model_peak < 0.30 * opti_peak:
-            alt_sw   = cleaned[sw_mask] - neutral_deg
-            alt_peak = float(np.nanmax(alt_sw)) if alt_sw.size else -np.inf
-            # Accept inversion if (a) reflected direction meets the ratio threshold, OR
-            # (b) original peak collapsed to near-zero but reflected gives a real swing.
-            # Case (b) handles P4-type failures where the model tracks extension not flexion
-            # and the ratio check fails because model_peak≈0 in both directions.
-            if alt_peak >= 0.30 * opti_peak or (model_peak < 5.0 and alt_peak > 5.0):
-                cleaned        = 2.0 * neutral_deg - cleaned   # reflect around neutral
-                model_flex_sw  = alt_sw
-                model_peak     = alt_peak
-            else:
-                return None, "did_not_track_swing"   # neither direction tracks the swing
+        # Orientation. Some models (or dual-leg sessions) report an angle that
+        # moves the OPPOSITE way -- extension where the knee flexes -- and must
+        # be mirrored. Decide that by correlation against the reference, not by
+        # which direction yields the larger peak: a correctly-oriented curve
+        # that merely UNDER-REPORTS amplitude also has a small flexion peak, so
+        # a peak-ratio test mirrors it and silently converts an amplitude error
+        # into a spurious inversion. (Real case: the phone IMU compresses the
+        # swing ~40%, and under the old hold-to-neutral alignment the peak test
+        # flipped every left-leg curve.)
+        # Test it by which SIDE of the hold the curve travels, not by
+        # correlation: the candidate carries an unknown lag against OptiTrack
+        # (0.7-2.5 s on real phone-IMU trials), and a phase-shifted sinusoid
+        # correlates negatively over a restricted swing window even when it
+        # tracks perfectly. Excursion direction is lag-invariant -- the leg is
+        # released from full extension, so a correctly-oriented interior-angle
+        # curve can only travel DOWN from its baseline.
+        _up = float(np.nanmax(cleaned) - opti_hold) if np.isfinite(cleaned).any() else 0.0
+        _down = float(opti_hold - np.nanmin(cleaned)) if np.isfinite(cleaned).any() else 0.0
+        if _up > _down:
+            cleaned = 2.0 * flex_origin - cleaned      # reflect around the origin
+            model_flex_sw = flex_origin - cleaned[sw_mask]
+            model_peak = (float(np.nanmax(model_flex_sw))
+                          if model_flex_sw.size else -np.inf)
 
-        if model_peak / opti_peak < 0.30:
-            return None, "did_not_track_swing"   # model didn't track the swing
+        # Did it track the swing? Compare how much the candidate VARIES across
+        # the window against how much the reference varies, rather than how far
+        # each reaches past neutral. Same reasoning as the validity check
+        # above: neutral sits near the bottom of a compressed curve's travel,
+        # so a flexion-past-neutral ratio punishes an amplitude error far out
+        # of proportion -- the phone IMU reproduces 61% of the true range but
+        # only 17% of the flexion past neutral, and the old form rejected it
+        # outright instead of reporting the disagreement. A curve that doesn't
+        # move still has model_var ~ 0 and is still rejected.
+        model_var = float(np.nanmax(model_flex_sw) - np.nanmin(model_flex_sw)) \
+            if model_flex_sw.size else np.nan
+        if not np.isfinite(model_var) or model_var < 0.30 * opti_var:
+            return None, "did_not_track_swing"
 
-        # RMSE in flexion space interpolated onto OptiTrack time grid
-        model_flex_full = neutral_deg - cleaned
+        # RMSE in flexion space interpolated onto OptiTrack time grid. The
+        # origin cancels in the opti_flex - model_flex difference, so RMSE is
+        # numerically identical either way -- it just has to match opti_flex.
+        model_flex_full = flex_origin - cleaned
         model_flex_interp = np.interp(t_opti, t_m, model_flex_full,
                                       left=np.nan, right=np.nan)
         ok = valid_mask & np.isfinite(model_flex_interp)

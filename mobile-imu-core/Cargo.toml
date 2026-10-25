@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-# Will also need "staticlib"/"cdylib" once U3 adds UniFFI cross-compilation
-# (KTD2) — plain "lib" (rlib) is all U1/U2's pure-Rust testing needs today.
-crate-type = ["lib"]
+# rlib for `cargo test`; cdylib for the wasm32 build. Adding cdylib does not
+# affect native builds.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+
+# Gated to wasm32 so native `cargo test` stays dependency-free, which is what
+# keeps the crate trivially portable (spec §7).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"

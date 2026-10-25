@@ -51,7 +51,43 @@ VIS_THRESH = 0.40   # lower than training — we want coverage, not perfection
 CSV_FIELDNAMES = ["frame", "time_sec", "leg",
                    "hip_x", "hip_y", "knee_x", "knee_y", "ankle_x", "ankle_y",
                    "hip_score", "knee_score", "ankle_score", "knee_angle_deg",
+                   "knee_angle_world_deg",
                    "identity_score", "identity_ambiguous"]
+
+
+def knee_angle_2d(hip, knee, ankle, w, h) -> float:
+    """Knee angle from PROJECTED pixel coordinates.
+
+    This is what the pipeline has always stored, and it is only correct when
+    the leg lies in the image plane. On P17 a lateral camera put the resting
+    knee within 9.3 deg of OptiTrack while an oblique one was 52.9 deg out,
+    because hip-knee-ankle project as near-collinear when the camera looks
+    along the thigh. Kept as the primary column for continuity.
+    """
+    v1 = np.array([(hip.x - knee.x) * w, (hip.y - knee.y) * h])
+    v2 = np.array([(ankle.x - knee.x) * w, (ankle.y - knee.y) * h])
+    n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+    if n1 < 1e-6 or n2 < 1e-6:
+        return float("nan")
+    return float(np.degrees(np.arccos(np.clip(v1.dot(v2) / (n1 * n2), -1.0, 1.0))))
+
+
+def knee_angle_3d(hip, knee, ankle) -> float:
+    """Knee angle from MediaPipe's metric world landmarks (hip-centred x,y,z
+    in metres), which are view-independent by construction.
+
+    Not universally better: BlazePose's z is regressed, not measured, so on a
+    well-placed lateral camera it was slightly worse than the 2D angle
+    (12.2 vs 9.3 deg on P17 left). On an oblique camera it halved the error
+    (27.2 vs 52.9 deg). Recorded alongside the 2D angle so the choice can be
+    made per trial downstream rather than baked in here.
+    """
+    v1 = np.array([hip.x - knee.x, hip.y - knee.y, hip.z - knee.z])
+    v2 = np.array([ankle.x - knee.x, ankle.y - knee.y, ankle.z - knee.z])
+    n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+    if n1 < 1e-9 or n2 < 1e-9:
+        return float("nan")
+    return float(np.degrees(np.arccos(np.clip(v1.dot(v2) / (n1 * n2), -1.0, 1.0))))
 
 # BlazePose connections to draw (subset: torso + both legs)
 _DRAW_CONNECTIONS = [
@@ -254,6 +290,7 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
             hip_x = hip_y = kne_x = kne_y = ank_x = ank_y = float("nan")
             hip_s = kne_s = ank_s = 0.0
             angle = float("nan")
+            angle_world = float("nan")
             result = None
             lms    = None
             identity_score = float("nan")
@@ -268,10 +305,21 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
                 # tracking -- replaces the old per-frame, memory-less
                 # _select_patient_pose() call site (that function itself is
                 # unchanged and still used by sweep_mediapipe_config.py).
-                sel = tracker.select(result.pose_landmarks or [], w, h)
+                poses = result.pose_landmarks or []
+                sel = tracker.select(poses, w, h)
                 lms = sel.pose
                 identity_score = sel.score
                 identity_ambiguous = sel.ambiguous
+
+                # Metric 3D landmarks for the SAME pose the tracker chose --
+                # index-matched, so the world angle can never describe a
+                # different person from the 2D one.
+                world_lms = None
+                if lms is not None:
+                    _wl = result.pose_world_landmarks or []
+                    _i = poses.index(lms)
+                    if _i < len(_wl):
+                        world_lms = _wl[_i]
 
                 if lms is not None:
                     hl  = lms[h_idx]; kl = lms[k_idx]; al = lms[a_idx]
@@ -295,6 +343,15 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
                                     np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
                                 angle = float(np.degrees(np.arccos(cos_a)))
                                 mp_hits += 1
+
+                            # View-independent companion to the projected
+                            # angle above. Written for every frame the 2D
+                            # angle is written, so the two columns always
+                            # cover the same frames.
+                            if world_lms is not None:
+                                angle_world = knee_angle_3d(
+                                    world_lms[h_idx], world_lms[k_idx],
+                                    world_lms[a_idx])
 
             except Exception:
                 pass
@@ -335,6 +392,8 @@ def process_trial(trial: dict, landmarker, force_leg: str = None):
                 "knee_score":     round(kne_s, 3),
                 "ankle_score":    round(ank_s, 3),
                 "knee_angle_deg": round(angle, 4) if np.isfinite(angle) else "",
+                "knee_angle_world_deg": (round(angle_world, 4)
+                                         if np.isfinite(angle_world) else ""),
                 "identity_score":     round(identity_score, 4) if np.isfinite(identity_score) else "",
                 "identity_ambiguous": identity_ambiguous,
             })

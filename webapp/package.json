@@ -1,0 +1,12 @@
+{
+  "name": "pendulastic-webapp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:shell": "node scripts/build-shell.mjs",
+    "build:dist": "node scripts/build-wasm.mjs && node scripts/build-dist.mjs",
+    "fixtures": "node tests/fixtures/make-fixture.mjs"
+  }
+}

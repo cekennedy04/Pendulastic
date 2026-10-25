@@ -21,14 +21,56 @@ from pendulastic_imu_server import (
     MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
     GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES, _is_stationary_window,
+    GYRO_BIAS_MIN_SNR, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
+    _gravity_dir_from_hold,
 )
 from pendulastic_pt_score import compute_pt_params
 from imu_calibration_config import load_config, save_config
+from imu_flex_axis import FlexAxisEstimator
 
 # Matches pendulastic_app.py's _imu_poll_worker 50 ms (~20 Hz) poll cadence —
 # EMA's effective smoothing depends on both alpha and the sample interval it's
 # applied at, so the replay must resample to this exact grid before applying it.
 TICK_S = 0.05
+
+# Grid the ANALYSIS path derives parameters on. The phone streams accel,
+# gyro and mag at ~100 Hz each (measured across the corpus: 100.6/100.7/
+# 100.7 Hz average per trial), so 20 Hz was never a sensor limit -- it is
+# TICK_S, the app's display poll, and resampling to it before deriving
+# parameters pushed compute_pt_params' 0.10 s smoothing window below
+# savgol's floor, leaving IMU parameters filtered over 0.25 s against the
+# 120 Hz OptiTrack reference's 0.10 s.
+#
+# Measured over 46 trials scored against their own OptiTrack reference,
+# moving analysis to this grid improves agreement on the parameters the
+# window governs: omega_peak 29.1% -> 19.6%, omega_max_n 41.9% -> 32.6%,
+# A0_deg 25.8% -> 20.9%, R2n 10.8% -> 10.2%; N is unchanged at 15.5%, and
+# phi_max_ratio (24.9% -> 25.5%) and f (2.7% -> 3.8%) are marginally worse.
+# Angle accuracy itself is untouched, as it must be -- the AHRS is identical
+# and only its output grid moves: RMSE against OptiTrack went 10.52 -> 10.53
+# deg mean, 8.65 -> 8.70 median.
+ANALYSIS_TICK_S = 0.01
+
+
+def _rescale_ema_alpha(alpha: float, tick_s: float) -> float:
+    """The EMA coefficient that reproduces `alpha`'s time constant on a grid
+    of `tick_s` seconds instead of TICK_S.
+
+    An EMA's actual smoothing is set by alpha AND the interval it steps at:
+    one step retains (1 - alpha) of the old value, so over a fixed duration
+    the retention is (1 - alpha) ** (duration / step). Replaying on the
+    native 100 Hz grid while reusing the alpha tuned for 50 ms steps would
+    therefore make it a five-times LIGHTER filter and let through exactly
+    the jitter that value was chosen to reject -- a change to the signal,
+    dressed up as a change to the sampling. Solving
+    (1 - a_new) ** (TICK_S / tick_s) = (1 - alpha) keeps the filter fixed
+    and moves only the grid.
+
+    alpha = 1.0 means "no smoothing" and stays 1.0 at every rate."""
+    a = min(max(float(alpha), 0.0), 1.0)
+    if tick_s == TICK_S or a >= 1.0:
+        return a
+    return 1.0 - (1.0 - a) ** (tick_s / TICK_S)
 
 # Zero-orientation capture guard (2026-08-07 fix): the raw gyro magnitude for
 # the qualifying role must have stayed below this bound for a full trailing
@@ -171,7 +213,7 @@ class _RoleState:
         self.accel_bias = mean_accel - gravity
 
 
-def replay_trial(raw_samples: list, params: dict):
+def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
     """
     Re-simulate the AHRS + flex-axis + zero-referencing + EMA pipeline over a
     raw trial log, mirroring pendulastic_imu_server.py's on_accel/on_mag/
@@ -213,9 +255,21 @@ def replay_trial(raw_samples: list, params: dict):
     def _snapshot():
         return {r: s.ahrs.q.copy() for r, s in roles.items()}
 
+    def _gravity_snapshot():
+        """Gravity direction per role in that role's own frame at zero time.
+        Mirrors pendulastic_imu_server.zero()'s _g_zero_solo capture."""
+        out = {}
+        for r, s in roles.items():
+            g = _gravity_dir_from_hold(s.accel_hold_buf)
+            if g is not None:
+                out[r] = g
+        return out
+
     flex_axis: Optional[np.ndarray] = None
     flex_axis_armed = True
+    flex_est = FlexAxisEstimator(_FLEX_CAPTURE_THRESHOLD)
     q_zero: dict = {}
+    g_zero: dict = {}
     zero_captured = False
 
     # Mirrors on_gyro()'s "only the distal segment (or the solo phone)
@@ -227,8 +281,8 @@ def replay_trial(raw_samples: list, params: dict):
 
     t0 = raw_samples[0]["t"]
     t_end = raw_samples[-1]["t"]
-    n_ticks = max(1, int((t_end - t0) / TICK_S) + 1)
-    tick_times = t0 + np.arange(n_ticks) * TICK_S
+    n_ticks = max(1, int((t_end - t0) / tick_s) + 1)
+    tick_times = t0 + np.arange(n_ticks) * tick_s
 
     # tick_quats[i] = per-role quaternion snapshot as of tick i, taken just
     # before any sample at/after that tick's time is processed — i.e. "as it
@@ -267,8 +321,13 @@ def replay_trial(raw_samples: list, params: dict):
             dt = None
             if st.last_ts is not None and ts:
                 dt = (ts - st.last_ts) / 1000.0
-            if dt is None or not (0.0 < dt < 0.5):
-                dt = 0.01
+            # Same bound as on_gyro(): reject only a gap that cannot be a
+            # sample interval, and integrate a real interval as measured.
+            # The old 0.5 s bound silently substituted a constant for any
+            # stream slower than 2 Hz -- see on_gyro()'s comment for the
+            # live-trial measurement that found it.
+            if dt is None or not (0.0 < dt <= _MAX_GYRO_DT_S):
+                dt = _NOMINAL_GYRO_DT_S
             st.last_ts = ts
 
             # Onset-of-motion detection runs BEFORE this sample's rotation is
@@ -324,14 +383,33 @@ def replay_trial(raw_samples: list, params: dict):
             # on_gyro()'s is_distal/is_solo gate.
             is_distal = (role == ROLE_DISTAL)
             is_solo = (not has_distal) and (role == ROLE_PROXIMAL)
-            if flex_axis_armed and st.pending_departure and (is_distal or is_solo):
+            # `or flex_est.n_samples` keeps a capture that has already begun
+            # accumulating through the rest of the swing: pending_departure is
+            # revoked by any calm sample, and |omega| passes through zero at
+            # every swing reversal, which would otherwise strand the estimator
+            # part-taught and leave the provisional single-sample axis in
+            # place. Entry still requires pending_departure, so the guard
+            # against capturing during handling is unchanged, as is when
+            # q_zero is taken (zero_captured latches independently).
+            if flex_axis_armed and (is_distal or is_solo) and \
+                    (st.pending_departure or flex_est.n_samples):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
                     if not zero_captured:
                         q_zero = _snapshot()
+                        g_zero = _gravity_snapshot()
                         zero_captured = True
                     if params["flex_axis_capture"]:
-                        flex_axis = v / omega_mag
-                    flex_axis_armed = False
+                        # Accumulate across the opening of the swing rather
+                        # than capturing this one sample -- see imu_flex_axis.
+                        # Stays armed until the estimator commits, so the axis
+                        # keeps refining instead of freezing on the release
+                        # transient.
+                        flex_est.update(v, gravity=st.accel)
+                        flex_axis = flex_est.axis
+                        if flex_est.committed:
+                            flex_axis_armed = False
+                    else:
+                        flex_axis_armed = False
 
             # Gyro-bias calibration, gated on genuine raw-signal stillness --
             # low raw gyro variance AND stable raw accel magnitude over the
@@ -354,8 +432,18 @@ def replay_trial(raw_samples: list, params: dict):
                         print(f"[DEBUG] calib fire role={role} t={samp['t']:.3f} "
                               f"n_hold_buf={len(st.gyro_hold_buf)}")
                     if len(st.gyro_hold_buf) >= GYRO_BIAS_MIN_SAMPLES:
-                        st.gyro_bias = np.mean(
-                            [vv for _, vv in st.gyro_hold_buf], axis=0)
+                        # Mirrors _IMUDevice.calibrate_gyro_bias(): apply only
+                        # the axes the window can actually resolve. Stillness
+                        # gating alone is not enough -- on a phone measured
+                        # still for 20.5 s the true bias is 0.00376 rad/s while
+                        # a 1 s window's mean errs by 0.0119 rad/s, so a
+                        # "stationary" window still yields an estimate that is
+                        # mostly its own noise.
+                        _vals = np.array([vv for _, vv in st.gyro_hold_buf])
+                        _mean = _vals.mean(axis=0)
+                        _sem = _vals.std(axis=0, ddof=1) / math.sqrt(len(_vals))
+                        st.gyro_bias = np.where(
+                            np.abs(_mean) >= GYRO_BIAS_MIN_SNR * _sem, _mean, 0.0)
                         if _os.environ.get("IMU_DEBUG_BIAS"):
                             print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
                     st.calibrate_accel_bias()
@@ -401,12 +489,14 @@ def replay_trial(raw_samples: list, params: dict):
             q_rel_zero = _qmul(_qconj(q_zero[ROLE_PROXIMAL]), q_zero[ROLE_DISTAL])
             q_rel_cur  = _qmul(_qconj(quats[ROLE_PROXIMAL]), quats[ROLE_DISTAL])
             q_delta = _qmul(_qconj(q_rel_zero), q_rel_cur)
+            solo_g = None
         else:
             solo_role = ROLE_DISTAL if ROLE_DISTAL in quats else (
                 ROLE_PROXIMAL if ROLE_PROXIMAL in quats else None)
             if solo_role is None or solo_role not in q_zero:
                 return float("nan")
             q_delta = _qmul(_qconj(q_zero[solo_role]), quats[solo_role])
+            solo_g = g_zero.get(solo_role)
 
         if params["flex_axis_capture"] and flex_axis is not None:
             q = q_delta if q_delta[0] >= 0.0 else -q_delta
@@ -415,6 +505,21 @@ def replay_trial(raw_samples: list, params: dict):
                 theta = 2.0 * math.acos(min(1.0, float(q[0])))
                 u = q[1:] / sin_half
                 swing = abs(math.degrees(theta * float(np.dot(u, flex_axis))))
+            else:
+                swing = 0.0
+        elif solo_g is not None:
+            # Discard rotation about the vertical: yaw is unobservable here
+            # (no magnetometer correction, and gravity carries no heading),
+            # so it free-integrates residual gyro error. Mirrors
+            # swing_angle_deg()'s solo fallback -- see its comment for the
+            # live-trial measurement.
+            q = q_delta if q_delta[0] >= 0.0 else -q_delta
+            sin_half = float(np.linalg.norm(q[1:]))
+            if sin_half > 1e-9:
+                theta = 2.0 * math.acos(min(1.0, float(q[0])))
+                u = q[1:] / sin_half
+                u_across = u - float(np.dot(u, solo_g)) * solo_g
+                swing = abs(math.degrees(theta * float(np.linalg.norm(u_across))))
             else:
                 swing = 0.0
         else:
@@ -449,7 +554,7 @@ def replay_trial(raw_samples: list, params: dict):
         kappas = np.array([ockendon_deg(_beta_from_quats(q), ft_ratio) for q in tick_quats])
         angle_raw = kappas if method == "ockendon" else (180.0 - kappas)
 
-    alpha = params["ema_alpha"]
+    alpha = _rescale_ema_alpha(params["ema_alpha"], tick_s)
     ema = None
     smoothed = np.empty_like(angle_raw)
     for i, a in enumerate(angle_raw):

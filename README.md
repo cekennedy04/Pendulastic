@@ -87,6 +87,28 @@ pip install -r requirements.txt
 
 ---
 
+## Mobile app (`webapp/`)
+
+`webapp/` is a self-contained iOS Safari app for capturing and scoring the
+pendulum test on the phone itself: motion is captured from the phone's IMU,
+fused and scored by the `mobile-imu-core/` Rust engine compiled to
+WebAssembly, and all 20 parameters are shown on-device. It is **not
+validated** and says so in-app.
+
+**To try it, you do not need to build anything:** it is deployed at
+**https://pendulastic-app.vercel.app**. Open that in Safari on an iPhone and
+use *Share → Add to Home Screen* — install it rather than bookmarking it,
+because iOS discards a non-installed site's stored recordings after ~7 days.
+
+To build or deploy it from source (Node + Rust toolchain required), see
+[`webapp/README.md`](webapp/README.md) — in particular
+[Build step](webapp/README.md#build-step-required-before-serving-or-testing)
+and [Deploying to Vercel](webapp/README.md#deploying-to-vercel-the-live-app).
+The live site is updated by a local build and CLI upload, not by pushing to
+this repo, so what is deployed is whatever was last uploaded.
+
+---
+
 ## Quick Start
 
 ```python
