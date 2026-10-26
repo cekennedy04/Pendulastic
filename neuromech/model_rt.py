@@ -76,7 +76,29 @@ class Params:
     # ── leg and passive tissue (reference) ───────────────────────────────
     s: float = ref.L_SCALE_NOMINAL        # relative leg length -> inertia, mass, lever
     B: float = ref.D_NOMINAL              # passive viscous damping, N.m.s/rad
-    incline_deg: float = -35.0            # thigh inclination; rest knee angle ~125 deg (Pendulastic)
+    # Thigh inclination. -35.0 puts the passive rest at 55.0 deg of flexion from
+    # full extension (a 125 deg knee angle in Pendulastic's convention), because
+    # the rest is where cos(theta + incline) = 0, i.e. theta = -90 - incline.
+    #
+    # THIS DEFAULT IS A PLACEHOLDER AND IS PROBABLY WRONG BY ~16 DEG. Plan D7
+    # says rest geometry is an input measured twice -- the rig's unactuated rest
+    # and the corpus rest by one defined method -- and B10's first pass on the
+    # corpus (2026-10-26) measured a thigh incline of -18.9 deg and rest depths
+    # of 65.2 (CHAT), 71.1 (Control) and 65.9 (MINT). Those two figures agree
+    # with each other: -18.9 deg of incline IS a 70.4 deg rest here, which
+    # matches Control's 71.1.
+    #
+    # It is left at -35.0 deliberately, not out of inertia. Changing it moves
+    # the passive rest, which moves A0 -- every scenario releases from full
+    # extension and swings to the rest -- and every one of PT7's seven
+    # parameters is a ratio normalised on A0. So a one-line edit here
+    # re-specifies the whole scenario library, the expected values in
+    # out/scenario_manifest.csv and the travel the rig has to deliver. Two
+    # things should settle before that: B10 covered 2 controls over 11 trials
+    # and the session running it stopped partway, so the sample may not be
+    # final; and the three groups disagree (65-66 vs 71), so there is no single
+    # number to adopt without deciding whose geometry the emulator represents.
+    incline_deg: float = -35.0
     use_limit: bool = True                # soft walls at 0 and -110 deg
     # Explicit inertia, overriding the `s` scaling when all three are set.
     # `s` cannot carry both the swing frequency and the torque scale at once
