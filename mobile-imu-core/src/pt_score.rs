@@ -28,8 +28,21 @@
 use crate::params_json::fmt_f64;
 use crate::scoring::PtParams;
 
-/// `pendulastic_pt_score._N_PARAMS` — the 7 scored parameters.
-pub const N_PARAMS: usize = 7;
+/// `pendulastic_pt_score._N_PARAMS` — the 6 scored parameters.
+///
+/// Was 7. `omega_min_n` was dropped from the scored set on 2026-10-26: it is
+/// `-omega_max_n` for any limb dropped from the extension extreme, because
+/// `omega_max_n` is `max(|omega|)` while `omega_min_n` is `min(omega)` and the
+/// fastest motion is the first fall. Measured on 53 emulator scenarios, 51
+/// summed to exactly 0.0000. On a healthy passive limb the pair contributed
+/// 0.0665 + 0.0653 of a 0.1417 total — 94% of the score, from one measurement
+/// weighted twice. See `pendulastic_pt_score._PARAM_KEYS` for the full note.
+/// The field is still computed and still reported; it is not summed.
+pub const N_PARAMS: usize = 6;
+
+/// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
+/// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
+pub const SCORE_FORMULA_ID: &str = "pt6-2026-10-26";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -85,7 +98,19 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
 
 /// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
 /// Below this, a score reads as healthy.
+///
+/// STALE as of 2026-10-26, like its Python twin: a percentile of cohort scores
+/// computed under the 7-term sum that included `omega_min_n`. Not rescaled —
+/// a single-factor fit to the old→new mapping leaves a 44.6% worst-case
+/// residual concentrated at 0.12–0.14, i.e. at this very boundary, and errs
+/// toward reading borderline limbs as healthy. Nothing renders a zone today
+/// (`webapp/src/app.js`: `ZONE_CLASSIFICATION_CALIBRATED = false`). Re-derive
+/// from the control cohort before switching that on.
 pub const PT_HEALTHY_MAX: f64 = 0.1709;
+
+/// Which scored set [`PT_HEALTHY_MAX`]/[`PT_BORDERLINE_MAX`] were calibrated
+/// under. While this differs from [`SCORE_FORMULA_ID`] they are stale.
+pub const PT_ZONES_CALIBRATED_FOR: &str = "pt7-2026-08-24";
 
 /// `pendulastic_pt_score.PT_BORDERLINE_MAX` — midpoint between
 /// `PT_HEALTHY_MAX` and the MAS>=1 median. Above this, a score reads as
@@ -139,27 +164,38 @@ pub fn pt_zone(score: f64) -> PtZone {
 ///
 /// Penalty directions (impaired = deviated from healthy reference):
 ///   `n`, `r2n`, `phi_max_ratio`, `omega_max_n` → penalise only if BELOW
-///   reference. `omega_min_n`, `area_ratio` → penalise only if ABOVE
-///   reference. `f` → bidirectional, skipped when uncomputable.
+///   reference. `area_ratio` → penalise only if ABOVE reference. `f` →
+///   bidirectional, skipped when uncomputable.
+///
+/// `omega_min_n` has no field here. `pendulastic_pt_score.compute_pt_score_breakdown`
+/// iterates `_PARAM_KEYS`, so its dict has six entries and no `omega_min_n`
+/// key at all — a seventh field here would be a parity break, not a
+/// convenience. The raw PARAMETER is untouched: `PtParams::omega_min_n` is
+/// still measured and still emitted by `params_json`, which is where a
+/// diagnostic belongs. A score breakdown holds contributions, and this one
+/// contributes nothing. See [`N_PARAMS`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PtScoreBreakdown {
     pub r2n: f64,
     pub n: f64,
     pub phi_max_ratio: f64,
     pub omega_max_n: f64,
-    pub omega_min_n: f64,
     pub f: f64,
     pub area_ratio: f64,
 }
 
 impl PtScoreBreakdown {
-    /// Sum of all seven contributions — `pendulastic_pt_score.compute_pt_score`
-    /// is exactly `sum(compute_pt_score_breakdown(...).values())`, so this
-    /// sums in the same `_PARAM_KEYS` order (`R2n, N, phi_max_ratio,
-    /// omega_max_n, omega_min_n, f, area_ratio`) rather than field-declaration
-    /// order that happens to differ, to match the reference bit-for-bit.
+    /// Sum of the six SCORED contributions — `pendulastic_pt_score.compute_pt_score`
+    /// is exactly `sum(compute_pt_score_breakdown(...).values())` over
+    /// `_PARAM_KEYS`, so this sums in that same order (`R2n, N, phi_max_ratio,
+    /// omega_max_n, f, area_ratio`) rather than field-declaration order that
+    /// happens to differ, to match the reference bit-for-bit.
+    ///
+    /// `omega_min_n` is deliberately absent: it duplicates `omega_max_n` (see
+    /// [`N_PARAMS`]). Adding it back would silently restore the double weight,
+    /// which `tests/test_pt_zone_parity.py` now checks for.
     pub fn total(&self) -> f64 {
-        self.r2n + self.n + self.phi_max_ratio + self.omega_max_n + self.omega_min_n + self.f + self.area_ratio
+        self.r2n + self.n + self.phi_max_ratio + self.omega_max_n + self.f + self.area_ratio
     }
 
     /// `(key, contribution)` pairs ordered by DESCENDING contribution, so a
@@ -172,7 +208,6 @@ impl PtScoreBreakdown {
             ("n", self.n),
             ("phi_max_ratio", self.phi_max_ratio),
             ("omega_max_n", self.omega_max_n),
-            ("omega_min_n", self.omega_min_n),
             ("f", self.f),
             ("area_ratio", self.area_ratio),
         ];
@@ -216,11 +251,6 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     } else {
         dev_below(params.omega_max_n, healthy.omega_max_n, denom(healthy.omega_max_n))
     };
-    let omega_min_n = if healthy.omega_min_n == 0.0 {
-        0.0
-    } else {
-        dev_above(params.omega_min_n, healthy.omega_min_n, denom(healthy.omega_min_n))
-    };
     let area_ratio = if healthy.area_ratio == 0.0 {
         0.0
     } else {
@@ -236,7 +266,7 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
         (params.f - healthy.f).abs() / denom(healthy.f)
     };
 
-    PtScoreBreakdown { r2n, n, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio }
+    PtScoreBreakdown { r2n, n, phi_max_ratio, omega_max_n, f, area_ratio }
 }
 
 /// `pendulastic_pt_score.compute_pt_score(params, ref)` — the sum of
@@ -341,7 +371,53 @@ pub fn excursion_reason(params: &PtParams) -> Option<String> {
     ))
 }
 
-/// Which of the seven scored parameters are placeholders rather than
+/// `pendulastic_pt_score.oscillation_ok` — false when there is no first swing,
+/// so the oscillation parameters are undefined rather than small.
+///
+/// A limb that falls and arrests returns `a1_deg = 0`, which forces `r2n`,
+/// `n`, `f` and `phi_max_ratio` to exactly 0.0. Four of the six scored
+/// parameters penalise only BELOW reference, so all four saturate together and
+/// the trial scores ~1.85–2.14 — read as MAS 4 and marked interpretable, off
+/// four zeros that mean "not measured" rather than "measured as nothing".
+///
+/// `a0_deg` is deliberately not consulted: that is [`excursion_ok`]'s job, and
+/// a limb can have a perfectly good A0 and still never swing, which is exactly
+/// the case this catches. A non-finite `a1_deg` is NOT ok, on the same
+/// reasoning as [`excursion_ok`].
+pub fn oscillation_ok(params: &PtParams) -> bool {
+    params.a1_deg.is_finite() && params.a1_deg > 0.0
+}
+
+/// Why the oscillation gate refused, or `None` when it did not. Text mirrors
+/// `pendulastic_pt_score.NO_OSCILLATION`.
+pub fn oscillation_reason(params: &PtParams) -> Option<String> {
+    if oscillation_ok(params) {
+        return None;
+    }
+    Some(format!(
+        "No measurable oscillation: the leg moved {:.1} deg and then stopped, with no \
+         first swing to measure (A1 = 0, N = 0). Five of PT7's parameters are properties \
+         OF the oscillation, so when there is none they are not small, they are undefined. \
+         Scoring them as zero makes a limb that never swung look maximally spastic by \
+         arithmetic rather than by measurement. A leg that drops and holds is a real and \
+         severe clinical finding; it is just not a finding PT7 can grade. Record it as an \
+         arrest and note the angle.",
+        params.a0_deg
+    ))
+}
+
+/// Why the trial cannot support a zone, or `None` when nothing refuses.
+///
+/// Mirrors the order `pendulastic_pt_score.mas_estimate` checks in: the
+/// excursion gate first, because its messages are the more specific, then the
+/// oscillation gate. A limb that both under-swings and never oscillates (the
+/// emulator's `R-hold-90`) therefore reports the excursion, which is the
+/// finding an operator can act on.
+pub fn refusal_reason(params: &PtParams) -> Option<String> {
+    excursion_reason(params).or_else(|| oscillation_reason(params))
+}
+
+/// Which of the six scored parameters are placeholders rather than
 /// measurements, in `_PARAM_KEYS` order.
 ///
 /// The distinction matters clinically. A limb with high tone legitimately
@@ -395,8 +471,9 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
         .collect::<Vec<_>>()
         .join(",");
 
-    // The score is always reported; the ZONE is withheld when the excursion
-    // gate refuses. That split is deliberate and mirrors `mas_estimate`, which
+    // The score is always reported; the ZONE is withheld when EITHER gate
+    // refuses -- the excursion gate, or (since 2026-10-26) the oscillation
+    // gate. That split is deliberate and mirrors `mas_estimate`, which
     // returns `pt7` alongside `mas: None`: the number is still the arithmetic
     // that came out, but a band read off a collapsed or impossible swing is a
     // claim the measurement cannot support. `uninterpretable` is a distinct
@@ -407,7 +484,7 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
     // but the swing cannot support a band read off it" -- and the first is the
     // more fundamental failure, so a non-finite total keeps saying `unknown`
     // rather than being relabelled by the excursion gate.
-    let refused = excursion_reason(params);
+    let refused = refusal_reason(params);
     let zone_str = if zone == PtZone::Unknown {
         zone.as_str()
     } else if refused.is_some() {
@@ -425,7 +502,7 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 
     format!(
         "{{\"score\":{},\"score_simple\":{},\"zone\":\"{}\",\"breakdown\":[{}],\
-         \"unmeasured\":[{}],\"excursion_reason\":{}}}",
+         \"unmeasured\":[{}],\"excursion_reason\":{}}}",   // key name is wire-frozen
         fmt_f64(total),
         fmt_f64(pt_score_simple(params, healthy)),
         zone_str,
@@ -439,13 +516,12 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 ///
 /// Stored trials keep the scalar parameters but not the trajectory vectors,
 /// so a full [`PtParams`] cannot be rebuilt from one. It does not need to be:
-/// the whole scoring path reads only these nine scalars and touches no vector
+/// the whole scoring path reads only these TEN scalars and touches no vector
 /// field --
 ///
-///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, omega_max_n,
-///                            omega_min_n, f, area_ratio
+///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, omega_max_n, f, area_ratio
 ///   [`unmeasured_params`]  : f, first_trough_depth, n
-///   [`excursion_reason`]   : a0_deg
+///   [`refusal_reason`]     : a0_deg, a1_deg
 ///
 /// -- so the remaining fields are filled with values that cannot influence the
 /// result, and `scalar_path_matches_the_full_params_path` pins that claim
@@ -465,6 +541,12 @@ pub fn pt_score_from_scalars(
     area_ratio: f64,
     first_trough_depth: f64,
     a0_deg: f64,
+    // Added 2026-10-26 with the oscillation gate. It was previously filled
+    // with 0.0 as an unread field; `refusal_reason` now reads it, and a
+    // hard-coded 0.0 refused EVERY stored trial for having no first swing.
+    // `scalar_path_matches_the_full_params_path` caught that, which is the
+    // whole reason it exists.
+    a1_deg: f64,
 ) -> String {
     let params = PtParams {
         r2n,
@@ -476,10 +558,10 @@ pub fn pt_score_from_scalars(
         area_ratio,
         first_trough_depth,
         a0_deg,
+        a1_deg,
         // Unread by every function the scoring path calls -- see this
         // function's doc comment, and `trajectory_vectors_do_not_affect_the_score`.
         omega_peak_deg_s: 0.0,
-        a1_deg: 0.0,
         neutral_deg: 0.0,
         neutral_deg_raw: 0.0,
         pre_release_deg: 0.0,
@@ -555,9 +637,11 @@ mod tests {
         let full = params(|p| {
             p.first_trough_depth = 7.4;
             p.a0_deg = 41.2;
+            // Read by the oscillation gate since 2026-10-26, so it must be
+            // carried through the scalar path, not treated as inert.
+            p.a1_deg = 33.0;
             // Deliberately populated: these must not reach the score.
             p.omega_peak_deg_s = 210.0;
-            p.a1_deg = 33.0;
             p.neutral_deg = 2.1;
             p.p_total = 1.8;
             p.phi = vec![1.0, 2.0];
@@ -567,7 +651,7 @@ mod tests {
         let from_scalars = pt_score_from_scalars(
             full.r2n, full.n, full.phi_max_ratio, full.omega_max_n,
             full.omega_min_n, full.f, full.area_ratio,
-            full.first_trough_depth, full.a0_deg,
+            full.first_trough_depth, full.a0_deg, full.a1_deg,
         );
         assert_eq!(pt_score_to_json(&full, &HEALTHY_REF), from_scalars);
     }
@@ -580,9 +664,11 @@ mod tests {
     fn trajectory_vectors_do_not_affect_the_score() {
         let empty = params(|p| {
             p.a0_deg = 45.0;
+            p.a1_deg = 70.0;
         });
         let filled = params(|p| {
             p.a0_deg = 45.0;
+            p.a1_deg = 70.0;
             p.phi = vec![9.0; 50];
             p.ang_r = vec![9.0; 50];
             p.t_r = vec![9.0; 50];
@@ -604,12 +690,12 @@ mod tests {
         let good = pt_score_from_scalars(
             HEALTHY_REF.r2n, HEALTHY_REF.n, HEALTHY_REF.phi_max_ratio,
             HEALTHY_REF.omega_max_n, HEALTHY_REF.omega_min_n, HEALTHY_REF.f,
-            HEALTHY_REF.area_ratio, 0.0, 45.0,
+            HEALTHY_REF.area_ratio, 0.0, 45.0, 70.0,
         );
         let collapsed = pt_score_from_scalars(
             HEALTHY_REF.r2n, HEALTHY_REF.n, HEALTHY_REF.phi_max_ratio,
             HEALTHY_REF.omega_max_n, HEALTHY_REF.omega_min_n, HEALTHY_REF.f,
-            HEALTHY_REF.area_ratio, 0.0, 5.0,
+            HEALTHY_REF.area_ratio, 0.0, 5.0, 70.0,
         );
         assert_ne!(good, collapsed, "a0_deg must reach excursion_reason");
     }
@@ -745,7 +831,7 @@ mod tests {
         });
         let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
         let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio + breakdown.omega_max_n
-            + breakdown.omega_min_n + breakdown.f + breakdown.area_ratio;
+            + breakdown.f + breakdown.area_ratio;
         assert_eq!(pt_score(&p, &HEALTHY_REF), manual);
     }
 
@@ -908,6 +994,7 @@ mod tests {
     fn an_interpretable_trial_still_reports_its_zone() {
         let p = params(|p| {
             p.a0_deg = 46.6;
+            p.a1_deg = 85.6;        // a real first swing: the oscillation gate reads this
             p.first_trough_depth = 39.0;
         });
         let json = pt_score_to_json(&p, &HEALTHY_REF);
@@ -1033,7 +1120,14 @@ mod tests {
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        assert!((full - 1.768_336_341_387_656_72_f64).abs() < 1e-15, "full={full:.17}");
+        // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
+        // reads HIGHER on this fixture, not lower, which is the double count
+        // cutting the other way: dropping omega_min_n also drops the /7 in
+        // every other term's denominator, and this fixture's area_ratio is so
+        // far above reference (0.94 vs 0.0945) that widening its share
+        // outweighs losing a term whose own contribution here was small
+        // (omega_min_n = 0.004, barely above the -9.4152 reference).
+        assert!((full - 1.896_321_590_796_999_47_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

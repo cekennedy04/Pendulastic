@@ -87,12 +87,18 @@ Paste `model_step_formula_node.txt` into a Formula Node inside the Timed Loop. O
 
 - shift registers for the 6 states (`th w ts tr tf tc`) and 3 flags (`srs_on rev clon_t0`), initialised
   at release to `th = th0, w = omega0`, others 0, `srs_on = 1, rev = 0, clon_t0 = -1`;
-- two ring buffers of length **52** (omega, T_SRS). Each tick read `idx = (head-50) mod 52` →
-  `wd, sd` and `(head-51) mod 52` → `wd_prev, sd_prev`; after the node write `w_o, ts_o` at
-  `head+1`. (Length 52, not 51: with 51 the "one older" index wraps onto the newest sample and the
-  reflex runs away — the bug found while building the Python twin.)
-- host-computed constants from `Params`: `J = 0.446 s⁴`, `mgl = 4.96 s² · 9.81 · 0.256 s`,
-  `inc = rad(incline)`, `clon_nm = rad(clonus_deg) · J · (2π clonus_hz)²`, `k_f · gain_scale`,
+- **three** ring buffers of length **52** (omega, T_SRS, theta). Each tick read
+  `idx = (head-50) mod 52` → `wd, sd, thd` and `(head-51) mod 52` → `wd_prev, sd_prev`; after the
+  node write `w_o, ts_o, th_o` at `head+1`. Initialise the theta buffer to `th0`, not 0, so the
+  length drive reads zero stretch before release. (Length 52, not 51: with 51 the "one older" index
+  wraps onto the newest sample and the reflex runs away — the bug found while building the Python
+  twin. The theta buffer was added 2026-10-26 for the length drive `k_l`; a rig that never sets
+  `k_l` can leave `thd` wired to `th0` and skip the third buffer.)
+- host-computed constants from `Params`: `J = 0.446 s⁴`, `mgl = 4.96 s² · 9.81 · 0.256 s`
+  (or the explicit `lc_m / m_kg / j_kgm2` triple when the limb comes from anthropometry —
+  `model_rt.limb_from_anthropometry`), `inc = rad(incline)`,
+  `clon_nm = rad(clonus_deg) · J · (2π clonus_hz)²`, `k_l_thr = rad(k_l_thr_deg)`,
+  `k_f · gain_scale`, `k_v · gain_scale`, `k_l · gain_scale`,
   the four guard phases (printed in each test-vector header).
 - setpoint = `rad2deg(th_o) − rest_deg` into the Mode A path (feedforward from the model's own
   `w_o` and `dw`).
@@ -101,6 +107,12 @@ Paste `model_step_formula_node.txt` into a Formula Node inside the Timed Loop. O
 through the node and compare its outputs with the files' `*_o` columns. The same text, executed as
 JavaScript by `verify_formula_node.js`, matches the Python twin to 1e-11 on every state for all 3 000
 ticks, so any LabVIEW mismatch is a wiring error, not a model error.
+
+Regenerate both vectors with `python neuromech/labview/make_test_vectors.py` after ANY change to
+`model_rt.simulate`, then re-run the verifier. Their parameter sets are pinned in that script rather
+than read from the calibrated ladder, so a parity failure can never be confused with a
+recalibration. `test_vector_all_modules` exercises every branch including `coulomb_nm`, `k_v`, `k_l`
+and `reflex_max_nm`.
 
 Interactive variant (PT training): add the measured interaction torque to `tau` (calibrated torque
 channel, sign: + extends). This is admittance rendering; it is stable while the virtual inertia

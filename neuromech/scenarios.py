@@ -15,8 +15,13 @@ Groups:
   A  PT7-band presets P0-P3: the published severity axis calibrated to the centre of each
                       PT7 band. NOT MAS settings (plan D5): calibrated to the scorer's own bands,
                       right for phone-vs-encoder testing, circular for validating grades
-  M  mechanism profiles   rig_neuromuscular_model.PROFILES (severity AND kind of severity),
-                      rendered by that module and played the same way (plan D1)
+  M  mechanism profiles   neuromech.profiles.PROFILES (severity AND kind of severity).
+                      Was rig_neuromuscular_model.PROFILES, rendered by that module (plan D1);
+                      B9 ported its mechanisms into model_rt, so these now render from the
+                      validated core and that module is retired
+  R  rig / mechanism   the four mechanisms B9 ported: bearing friction, a named person's
+                      anthropometry, a tonic arrest-and-hold, and the velocity vs length vs
+                      force reflex channels
   S  severity axis     the published model's tone+reflex path, incl. the inverting branch
   B  behaviours        flexor/extensor dominance, catch, clonus, rigidity, contracture,
                        hypotonia, guarding, spasm, habituation
@@ -27,7 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from neuromech.model_rt import Params
+from neuromech.model_rt import Params, catch_and_hold, limb_from_anthropometry, rig_params
 
 
 @dataclass(frozen=True)
@@ -46,7 +51,7 @@ class Scenario:
     hold_wobble_deg: float = 0.0
     truncate_s: float | None = None
     probes: str = ""                 # what this scenario is designed to exercise
-    source: str = "model_rt"         # "model_rt" or "rnm:<profile>" (rig_neuromuscular_model)
+    source: str = "model_rt"         # "model_rt" or "prof:<name>" (neuromech.profiles)
     intent: int | None = None        # intended severity level, where the source defines one
 
 
@@ -63,10 +68,17 @@ MAS_TARGETS = {"0": 0.06, "1": 0.20, "1+": 0.36, "2": 0.52, "3": 0.69}
 def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     """mas_lambda: calibrated severity per MAS grade (from build.calibrate_ladder)."""
     L = mas_lambda
-    m1p, m2 = severity(L["1+"]), severity(L["2"])
+    # Bands the scorer cannot reach are ABSENT from this dict rather than
+    # present with a made-up lambda (build.calibrate_ladder), so the A group is
+    # only as long as the axis actually supports and the B/C/D groups fall back
+    # to whichever mid rung exists.
+    _mid = sorted(L.values())[len(L) // 2] if L else 0.5
+    m1p, m2 = severity(L.get("1+", _mid)), severity(L.get("2", _mid))
     sc: list[Scenario] = []
     # ── A: PT7-band presets ───────────────────────────────────────────────
     for g in ("0", "1", "1+", "2", "3"):
+        if g not in L:
+            continue
         sc.append(Scenario(f"A-P{g.replace('+', 'p')}", "A", f"PT7-band preset {g} (PT7 {MAS_TARGETS[g]}, lambda {L[g]:.3f})",
                            severity(L[g]), probes=f"phone vs encoder at a programmed PT7 of {MAS_TARGETS[g]}"))
     # ── S: severity axis incl. the inverting branch ───────────────────────
@@ -129,13 +141,51 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         Scenario("D-short", "D", "Recording stopped 3 s after release", base, truncate_s=3.0, probes="settle / N on a cut record"),
         Scenario("D-lowlift", "D", "Released from 30 deg short of full extension", base, theta0_deg=-30.0, probes="A0 and ratios on a partial lift"),
     ]
-    # ── M: mechanism profiles from rig_neuromuscular_model ────────────────
-    try:
-        import rig_neuromuscular_model as R
-        for name, prof in R.PROFILES.items():
-            it = R.SEVERITY_INTENT.get(name)
-            sc.append(Scenario(f"M-{name}", "M", f"{name} (intent {it if it is not None else 'n/a'})", source=f"rnm:{name}",
-                               intent=it, probes=(getattr(prof, "note", "") or "")[:140]))
-    except ImportError:
-        pass
+    # ── M: mechanism profiles ─────────────────────────────────────────────
+    # Source changed 2026-10-26 (B9). These were rendered by
+    # rig_neuromuscular_model, a second physics core kept alongside this one
+    # under plan D1 "until ported into the core". B9 ported its mechanisms into
+    # model_rt and the Formula Node, so the profiles now render from the
+    # validated core on the same code path as every other scenario -- and the
+    # rig plays one model, not two that have to be kept in agreement by hand.
+    from neuromech import profiles as PR
+    # rig_passive is the same Params as R-friction below, which carries the
+    # identification probe; rendering both would put two byte-identical 1 kHz
+    # setpoint files in the run sheet. It stays in PROFILES because
+    # severity_grading_test iterates that dict and wants the hardware baseline.
+    for name, prm in PR.PROFILES.items():
+        if name == "rig_passive":
+            continue
+        it = PR.SEVERITY_INTENT.get(name)
+        sc.append(Scenario(f"M-{name}", "M", f"{name} (intent {it if it is not None else 'n/a'})",
+                           prm, source=f"prof:{name}", intent=it,
+                           probes=PR.PROBES.get(name, "")))
+    # ── R: the four mechanisms B9 ported, each exercised on its own ────────
+    _anth = dict(zip(("lc_m", "m_kg", "j_kgm2"), limb_from_anthropometry(72.0, 1.75)))
+    sc += [
+        Scenario("R-friction", "R", "The rig's own dry bearing friction, no pathology", rig_params(),
+                 probes="N and R2n on the real hardware: Coulomb decay is arithmetic where viscous "
+                        "decay is geometric, so this is the trace that identifies coulomb_nm"),
+        Scenario("R-friction-heavy", "R", "Bearing friction at 0.4 N.m (a tight or cold bearing)",
+                 rig_params(coulomb_nm=0.4),
+                 probes="how much of a healthy-looking N deficit the rig itself can manufacture"),
+        Scenario("R-anthro-72kg", "R", "Winter anthropometry, 72 kg / 1.75 m, no pathology", Params(**_anth),
+                 probes="f against anthropometric_frequency_hz; the mass-free period prediction"),
+        Scenario("R-anthro-heavy", "R", "Same height, 95 kg: identical period, heavier limb",
+                 Params(**dict(zip(("lc_m", "m_kg", "j_kgm2"), limb_from_anthropometry(95.0, 1.75)))),
+                 probes="f must match R-anthro-72kg -- mass cancels in m*g*lc/J; only torque differs"),
+        Scenario("R-reflex-force", "R", "Extensor reflex: FORCE feedback only (the published channel)",
+                 Params(tone=2.0, k_f=0.75, k_df=0.025),
+                 probes="first-swing vs second-swing ordering; De Groote's own discriminator"),
+        Scenario("R-reflex-vel", "R", "Extensor reflex: VELOCITY feedback only, same tone",
+                 Params(tone=2.0, k_v=3.0, k_v_thr=0.5),
+                 probes="the classical alternative; must not invert the swing ordering where force does"),
+        Scenario("R-reflex-len", "R", "Extensor reflex: LENGTH feedback only, same tone",
+                 Params(tone=2.0, k_l=3.0, k_l_thr_deg=5.0),
+                 probes="tonic stretch drive: resistance grows with excursion, not with speed"),
+        Scenario("R-reflex-sat", "R", "Velocity feedback driven hard into a 4 N.m ceiling",
+                 Params(tone=2.0, k_v=8.0, k_v_thr=0.2, reflex_max_nm=4.0),
+                 probes="saturation: a muscle cannot produce unbounded force, and an unbounded "
+                        "force-feedback loop above gain 1 is a numerical artefact, not a patient"),
+    ]
     return sc

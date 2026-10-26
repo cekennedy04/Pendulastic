@@ -190,6 +190,7 @@ pub fn pt_score_from_params(
     area_ratio: f64,
     first_trough_depth: f64,
     a0_deg: f64,
+    a1_deg: f64,
 ) -> String {
     crate::pt_score::pt_score_from_scalars(
         r2n,
@@ -201,5 +202,6 @@ pub fn pt_score_from_params(
         area_ratio,
         first_trough_depth,
         a0_deg,
+        a1_deg,
     )
 }

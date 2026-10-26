@@ -71,7 +71,7 @@ new = """<h2>7. Decisions for the owner</h2>
 s = s.replace(old, new)
 rep('<tr><td>Figures (deck and publication)</td>', """<tr><td>Session planner and scorer</td><td class=mono>python -m neuromech.session plan | score</td><td>built; dry-run verified</td></tr>
 <tr><td>Dry run on synthetic hardware</td><td class=mono>python -m neuromech.dryrun</td><td>9/9 runs in band</td></tr>
-<tr><td>Vertical-rig mechanism model and severity test</td><td class=mono>rig_neuromuscular_model.py, severity_grading_test.py</td><td>merged; self-test passes; on the production convention</td></tr>
+<tr><td>Vertical-rig mechanism model and severity test</td><td class=mono>neuromech/profiles.py, severity_grading_test.py</td><td>mechanisms ported into the De Groote core (B9); the second model is retired</td></tr>
 <tr><td>Figures (deck and publication)</td>""")
 open(p, "w", encoding="utf-8").write(s)
 

@@ -31,7 +31,12 @@ sys.path.insert(0, ROOT)
 from neuromech import session as SS  # noqa: E402
 
 PLANT = dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0)
-DEFAULT_SIDS = ["A-P0", "A-P2", "A-P3", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
+# A-P3 is gone: its PT7 target (0.69) is above the rising-branch peak, so no
+# setting on the severity axis reaches it. calibrate_ladder used to return
+# the top of its own bracket and call it P3; it now says UNREACHABLE and
+# omits the rung, so naming it here would fail the plan. M-tone_L4 is the
+# most severe rung that exists, and sits at the peak.
+DEFAULT_SIDS = ["A-P0", "A-P2", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
 
 
 def plant_response(sp, fs=1000.0, plant=PLANT):

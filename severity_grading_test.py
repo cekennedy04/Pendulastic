@@ -11,7 +11,7 @@ grading claim therefore has to be tested somewhere the severity is known.
 This harness tests it in two places and keeps them separate, because they
 answer different questions and have different weaknesses:
 
-  MODEL ARM. Score the archetypes from rig_neuromuscular_model, where the
+  MODEL ARM. Score the archetypes from neuromech.profiles, where the
     intended severity and the MECHANISM are both known by construction. This
     is the only arm that can reach MAS 2-4 today. Its weakness is obvious: the
     severities are intended, not clinician-graded, so this arm can show the
@@ -58,7 +58,7 @@ import numpy as np
 
 import pendulastic_pt_score as pts
 import pt_cohort_common as coh          # cliffs_delta, mann_whitney, effect_label
-import rig_neuromuscular_model as rig
+from neuromech import profiles as rig   # PROFILES / SEVERITY_INTENT / simulate
 
 #: Every quantity the swing produces, scored and diagnostic alike. The
 #: diagnostics are here because the question is which metric carries severity,
@@ -795,7 +795,6 @@ def smoke_cohort_arm(verbose: bool = True) -> bool:
     import csv as _c
     import shutil
     import tempfile
-    import rig_neuromuscular_model as _rig
     import pt_report_common as prc
     import spasticity_grouping as sg
 
@@ -811,7 +810,7 @@ def smoke_cohort_arm(verbose: bool = True) -> bool:
             d = os.path.join(opti, f"Participant_{pid}_{leg}_pre", "Session_pre",
                              "Position_1", "Height_Joint-Level")
             os.makedirs(d, exist_ok=True)
-            sim = _rig.simulate(_rig.PROFILES[prof])
+            sim = rig.simulate(rig.PROFILES[prof])
             for tr in (1, 2):
                 # Motive exports FLEXION (0 = extended); the loader converts.
                 flex = (180.0 - sim["angle_deg"]

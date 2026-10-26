@@ -38,6 +38,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      # Pinned rather than relying on the runner image's bundled Node: the
+      # last step of this job executes the LabVIEW Formula Node text as
+      # JavaScript, so a runner without node would skip the only check that
+      # the rig's model and the Python model agree.
+      - uses: actions/setup-node@v4
+        with: { node-version: '24' }
       # matplotlib and pandas are not optional here, however odd that reads for
       # a scoring test: pendulastic_pt_score imports both at module scope (and
       # calls matplotlib.use("Agg") there), so the production scorer cannot be
@@ -93,6 +99,23 @@ jobs:
             tests/test_motor_bench.py \
             tests/test_motor_reference.py \
             neuromech/tests
+      # Two files in neuromech/tests carry the model's own contract, and both
+      # are load-bearing:
+      #   test_pendulum_sim_reference.py  the integrator and the delay line,
+      #     checked before any biomechanical parameter -- a wrong integrator
+      #     is otherwise indistinguishable from a wrong parameter.
+      #   test_model_rt_ports.py          that `Params()` is still the
+      #     validated reference. Four mechanisms were added 2026-10-26 (B9) and
+      #     every one of them defaults to zero; a regression that turned one on
+      #     by default would change the published model silently, and the
+      #     scenario library would just quietly grade differently.
+
+      # The LabVIEW port. `model_step_formula_node.txt` is the text that gets
+      # pasted into the rig's Formula Node, executed here as JavaScript
+      # against vectors generated from the Python twin. Without this, the
+      # Python model and the thing the motor actually runs can diverge and
+      # nothing says so until a run on hardware looks wrong.
+      - run: node neuromech/labview/verify_formula_node.js
 
   webapp:
     runs-on: ubuntu-latest

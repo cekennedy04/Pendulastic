@@ -42,17 +42,17 @@ PARAMS7 = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area
 
 
 def _render_source(sc: S.Scenario):
-    """(t from release, theta in model convention [Pendulastic = 180 + theta], passive rest, torques)."""
-    if sc.source.startswith("rnm:"):
-        import rig_neuromuscular_model as R
-        prof = R.PROFILES[sc.source[4:]]
-        sim = R.simulate(prof, swing_s=sc.duration)
-        k = sim["t_sim"] >= sim["release_t_s"] - 1e-9
-        t = sim["t_sim"][k] - sim["release_t_s"]
-        th = -sim["q_deg"][k]                          # q = flexion from full extension; Pendulastic = 180 - q
-        tq = {"tone": sim["t_tone_nm"][k], "srs": sim["t_srs_nm"][k], "reflex": sim["t_reflex_nm"][k],
-              "contract": sim["t_endstop_nm"][k]}
-        return t, th, -float(prof.limb.q_rest_deg), tq
+    """(t from release, theta in model convention [Pendulastic = 180 + theta], passive rest, torques).
+
+    Every scenario renders through one call now. This function used to fork on
+    a "rnm:" source and render the mechanism profiles through
+    rig_neuromuscular_model -- a second physics core, with its own convention
+    (q = flexion from full extension, so theta = -q), its own rest angle and
+    its own four-component torque dict that had to be mapped onto this one's.
+    B9 ported those mechanisms into model_rt, so the M group is ordinary
+    Params and the fork is gone, along with the two conventions that had to be
+    kept in agreement by hand.
+    """
     r = simulate(sc.params, theta0_deg=sc.theta0_deg, omega0=sc.omega0, duration=sc.duration, record_torques=True)
     return r["t"], r["theta_deg"].copy(), passive_rest_deg(sc.params), r["torques"]
 
@@ -116,22 +116,76 @@ def rig_setpoint(t, theta_model_deg, rest, sc: S.Scenario):
     return ts, sp, vel, acc, phase, len(pre) / FS_RIG
 
 
-def calibrate_ladder():
-    """Bisection on the rising branch of the severity axis for each MAS band centre."""
-    def pt7(lam):
-        sc = S.Scenario("cal", "A", "", S.severity(lam))
-        t, th, _, _ = render(sc)
-        _, est = score(t, th, sc)
-        return est["pt7"]
-    out = {}
+def pt7_at(lam: float):
+    """PT7 the production scorer gives the severity axis at this lambda."""
+    sc = S.Scenario("cal", "A", "", S.severity(lam))
+    t, th, _, _ = render(sc)
+    _, est = score(t, th, sc)
+    return est["pt7"]
+
+
+def rising_branch_peak(hi: float = 2.0, step: float = 0.05):
+    """(lambda, PT7) where the severity axis stops rising.
+
+    Bisection needs a monotone bracket, and this axis is NOT monotone: PT7
+    rises, peaks, then falls as the shrinking excursion the ratios normalise
+    against outruns the degrading ratios. The peak moves whenever HEALTHY_REF
+    moves, so it is measured here rather than hard-coded -- a stale bracket
+    was how the old [0, 0.75] silently returned its own edge.
+    """
+    best = (0.0, pt7_at(0.0) or 0.0)
+    lam = step
+    while lam <= hi + 1e-9:
+        v = pt7_at(lam)
+        if v is not None and v > best[1]:
+            best = (lam, v)
+        lam += step
+    return best
+
+
+def calibrate_ladder(strict: bool = False):
+    """Bisection on the RISING branch of the severity axis for each PT7 target.
+
+    Returns {band: lambda}, omitting any target the axis cannot reach. An
+    unreachable target used to come back as the bracket edge dressed up as a
+    calibrated band -- so  was reported
+    against a target of 0.06 with nothing solved, and written to ladder.json.
+    """
+    lam_peak, pt_peak = rising_branch_peak()
+    floor = pt7_at(0.0)
+    print(f"  rising branch: PT7 {floor:.4f} at lambda 0 -> peak {pt_peak:.4f} at lambda {lam_peak:.2f}")
+    out, unreachable = {}, []
     for g, target in S.MAS_TARGETS.items():
-        lo, hi = 0.0, 0.75
+        if floor is not None and target <= floor:
+            # The band sits below what a limb with NOTHING added scores, so no
+            # setting reaches it: severity only moves PT7 up from the floor.
+            # The rung is still real and still worth playing -- it is the
+            # healthy end of the axis -- so it is pinned at lambda 0 and
+            # labelled for what it is, rather than bisected toward a target it
+            # cannot have. The old bisection returned lambda 0.0000 here too
+            # and reported it as a solved band, which is the same scenario
+            # wearing a claim it could not support.
+            out[g] = 0.0
+            print(f"  band {g:>2}: lambda 0.0000 -> PT7 {floor:.3f} (target {target} is BELOW the "
+                  f"passive floor; pinned to the healthy end of the axis)")
+            continue
+        if target > pt_peak:
+            unreachable.append((g, target, f"above the rising-branch peak PT7 {pt_peak:.4f}"))
+            continue
+        lo, hi = 0.0, lam_peak
         for _ in range(22):
             mid = 0.5 * (lo + hi)
-            if pt7(mid) < target: lo = mid
+            v = pt7_at(mid)
+            if v is None or v < target: lo = mid
             else: hi = mid
         out[g] = round(0.5 * (lo + hi), 4)
-        print(f"  MAS {g:>2}: lambda {out[g]:.4f} -> PT7 {pt7(out[g]):.3f} (target {target})")
+        print(f"  band {g:>2}: lambda {out[g]:.4f} -> PT7 {pt7_at(out[g]):.3f} (target {target})")
+    for g, target, why in unreachable:
+        print(f"  band {g:>2}: UNREACHABLE (target {target}) -- {why}")
+    if unreachable and strict:
+        raise SystemExit(
+            f"{len(unreachable)} of {len(S.MAS_TARGETS)} PT7 targets are unreachable on this "
+            f"scorer; re-point scenarios.MAS_TARGETS or fix the reference constants")
     return out
 
 
@@ -142,8 +196,12 @@ def main():
         ladder = json.load(open(lad_path))
     else:
         print("calibrating MAS ladder on the rising branch of the severity axis...")
-        ladder = calibrate_ladder(); json.dump(ladder, open(lad_path, "w"), indent=1)
+        ladder = calibrate_ladder(strict="--strict" in sys.argv)
+        json.dump(ladder, open(lad_path, "w"), indent=1)
     rows = []
+    missing = [g for g in S.MAS_TARGETS if g not in ladder]
+    if missing:
+        print(f"  note: no A-P rung for {', '.join(missing)} (unreachable on this scorer)")
     for sc in S.build(ladder):
         t, th, rest, tq = render(sc)
         prm, est = score(t, th, sc)

@@ -9,8 +9,9 @@ const src = fs.readFileSync(path.join(dir, "model_step_formula_node.txt"), "utf8
   .replace(/\bfloat64\b/g, "let")
   .replace(/\b(cos|sin|exp|tanh)\(/g, "Math.$1(");
 const OUT = ["th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o", "srs_on_o", "rev_o", "clon_t0_o", "tau_o"];
-const INPUTS = ["th", "w", "ts", "tr", "tf", "tc", "srs_on", "rev", "clon_t0", "t", "wd", "wd_prev", "sd", "sd_prev",
-  "J", "mgl", "inc", "th0", "B", "tone", "k_f", "k_df", "k_srs", "flex_g", "flex_vth", "catch_g", "catch_vth", "catch_rel",
+const INPUTS = ["th", "w", "ts", "tr", "tf", "tc", "srs_on", "rev", "clon_t0", "t", "wd", "wd_prev", "sd", "sd_prev", "thd",
+  "J", "mgl", "inc", "th0", "B", "coul", "tone", "k_f", "k_df", "k_srs", "k_v", "k_v_thr", "k_l", "k_l_thr", "refl_max",
+  "flex_g", "flex_vth", "catch_g", "catch_vth", "catch_rel",
   "clon_nm", "clon_hz", "clon_tau", "rigid", "cog_d", "cog_hz", "con_k", "con_th", "guard", "gph0", "gph1", "gph2", "gph3",
   "spasm", "spasm_t", "spasm_w", "use_lim"];
 const step = new Function(...INPUTS, `let ${OUT.join(", ")};\n${src}\nreturn {${OUT.join(", ")}};`);
@@ -19,8 +20,11 @@ let worst = 0, failed = false;
 for (const f of fs.readdirSync(dir).filter(n => n.startsWith("test_vector_") && n.endsWith(".csv"))) {
   const lines = fs.readFileSync(path.join(dir, f), "utf8").trim().split(/\r?\n/);
   const h = JSON.parse(lines[0].slice(2)); const cols = lines[1].split(",");
-  const P = { J: h.J, mgl: h.mgl, inc: h.inc, th0: h.th0, B: h.B, tone: h.tone, k_f: h.k_f * h.gain_scale, k_df: h.k_df * h.gain_scale,
-    k_srs: h.k_srs, flex_g: h.flex_gain, flex_vth: h.flex_vth, catch_g: h.catch_gain, catch_vth: h.catch_vth, catch_rel: rad(h.catch_release_deg),
+  const P = { J: h.J, mgl: h.mgl, inc: h.inc, th0: h.th0, B: h.B, coul: h.coulomb_nm, tone: h.tone,
+    k_f: h.k_f * h.gain_scale, k_df: h.k_df * h.gain_scale,
+    k_srs: h.k_srs, k_v: h.k_v * h.gain_scale, k_v_thr: h.k_v_thr, k_l: h.k_l * h.gain_scale,
+    k_l_thr: rad(h.k_l_thr_deg), refl_max: h.reflex_max_nm,
+    flex_g: h.flex_gain, flex_vth: h.flex_vth, catch_g: h.catch_gain, catch_vth: h.catch_vth, catch_rel: rad(h.catch_release_deg),
     clon_nm: h.clon_nm, clon_hz: h.clonus_hz, clon_tau: h.clonus_tau, rigid: h.rigid_nm, cog_d: h.cog_depth, cog_hz: h.cog_hz,
     con_k: h.contract_k, con_th: rad(h.contract_deg), guard: h.guard_nm, gph0: h["gph0..3"][0], gph1: h["gph0..3"][1],
     gph2: h["gph0..3"][2], gph3: h["gph0..3"][3], spasm: h.spasm_nm, spasm_t: h.spasm_t, spasm_w: h.spasm_w, use_lim: h.use_limit ? 1 : 0 };

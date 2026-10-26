@@ -49,8 +49,17 @@ Three sources, three rests: it becomes a measured input.
 - **D1 — One physics core: De Groote 2018, nonlinear gravity.** Checked against the authors' code,
   reproduces all three hallmark features, matches our controls' frequency unfitted, and its
   `mgl·cos` gravity answers Lin & Rymer's point that the linear form is inadequate even for normal
-  legs. A's mechanisms (tonic length hold, velocity channel, end-stop, capsule, adaptation) are kept
-  as **profiles rendered by A's module** until ported into the core (§5, B9); Mode A plays both.
+  legs. A's mechanisms (tonic length hold, velocity channel, end-stop, capsule, adaptation) were kept
+  as **profiles rendered by A's module** until ported into the core (§5, B9); Mode A played both.
+  **Closed 2026-10-26:** B9 is done, so the core is now literally one. The M profiles render from
+  `model_rt` through the same call as every other scenario, `build._render_source` no longer forks on
+  the source, and `rig_neuromuscular_model.py` is retired. Two things the port added beyond A's
+  module: dry bearing friction is off by default (`rig_params()` turns it on), because the rig has
+  friction and De Groote's leg does not and a default that quietly differed would make the validated
+  reference and the hardware indistinguishable; and SRS stays tone-proportional rather than absolute,
+  which is the published form — short-range stiffness comes from bound cross-bridges, so an absolute
+  stiffness would let a flaccid limb have a stiff first drop. A's 80 ms reflex delay and 3.0 deg
+  critical stretch were NOT carried over: the reference MATLAB's own 50 ms and 1.5 deg win.
 - **D2 — Validated scorer only.** Every expected value, every rig run, every report.
 - **D3 — Position-controlled playback first (Mode A), on whichever rig exists.** It is model-agnostic
   (it plays a file), works on the horizontal rig today, and A's constraint 1 — short-range stiffness
@@ -105,7 +114,7 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
 | B8 | LabVIEW VIs for Mode A | **owner/LabVIEW** — spec in `neuromech/labview/LABVIEW_PROGRAM_SPEC.md` |
-| B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | next |
+| B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — `coulomb_nm`, `k_v`/`k_l`/`reflex_max_nm`, `catch_and_hold()`, `limb_from_anthropometry()`; Formula Node re-verified at 1.7e-11; `Params()` bit-identical to before; A's module retired |
 | B10 | Corpus rest geometry by the validated scorer | next (needs the recordings; ~25 min run) |
 
 ## 5a. What the dry run established (2026-10-26)

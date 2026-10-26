@@ -37,14 +37,14 @@ PART C -- four measurement artifacts that could have inflated the measured
 ratio, each tested on model traces where the true frequency is known. None
 reaches 9.57:
 
-    Gaussian angle noise     4.38 -> 6.01 at 4 deg RMS (an order of magnitude
+    Gaussian angle noise     5.16 -> 6.40 at 4 deg RMS (an order of magnitude
                              above optical marker noise)
-    isolated spikes          4.38 -> 4.45 at 30 spikes of 10 deg, and
+    isolated spikes          5.16 -> 5.11 at 30 spikes of 10 deg, and
                              omega_peak does not move at all
-    release step/push/freeze 4.38 -> 5.85, and only under a 600 deg/s push
+    release step/push/freeze 5.16 -> 6.76, and only under a 600 deg/s push
                              lasting 60 ms, which is not a passive release
-    broadband 8 deg RMS      mean 5.84, but individual draws span 1.48 to
-                             12.53 -- they STRADDLE the constant, because at
+    broadband 8 deg RMS      mean 7.88, but individual draws span 1.39 to
+                             21.37 -- they STRADDLE the constant, because at
                              that level N jumps around and trials start
                              coming back unscorable. So noise at IMU scale
                              can produce 9.57 on one trial. It cannot produce
@@ -70,6 +70,16 @@ explaining before any constant is called wrong. Until it is, this module
 reports a contradiction and its arithmetic, not a verdict.
 
 Run:  python healthy_ref_frequency_audit.py
+
+
+MODEL CHANGE, 2026-10-26. Every model figure in this module was recomputed
+when `rig_neuromuscular_model` was retired in favour of `neuromech`, whose
+engine is checked against De Groote's own MATLAB. The clean-trace
+`omega_max_n` moved 4.38 -> 5.16 and the relaxation index 1.74 -> 1.81. Both
+verdicts are unchanged and one is stronger: the resampling spread this part
+retracts is now 1.02x (5.052 at 20 Hz to 5.164 at 240 Hz) against the real
+pipeline's 2.7x, and 5.16 is still 1.85x below the disputed 9.5672 while
+sitting within 1 SD of the one measured peak-velocity figure.
 """
 from __future__ import annotations
 
@@ -85,7 +95,7 @@ import numpy as np
 
 import pendulastic_pt_score as pts
 import rig_calibration as rig
-import rig_neuromuscular_model as rnm
+from neuromech import profiles as rnm   # was rig_neuromuscular_model (retired 2026-10-26)
 
 G = 9.81
 
@@ -320,8 +330,9 @@ def part_e(verbose=True):
     strength of the _sg window note in pendulastic_pt_score (quoted below),
     which records the median omega_max_n moving 8.50 -> 3.19 when real 120 Hz
     OptiTrack is decimated to 20 Hz. Tested inside this model, sampling rate
-    does ESSENTIALLY NOTHING: omega_max_n reads 4.324 at 20 Hz and 4.381 at
-    240 Hz, and even with 2 deg of added noise it only spans 4.29 to 5.18. The
+    does ESSENTIALLY NOTHING: omega_max_n reads 5.052 at 20 Hz and 5.164 at
+    240 Hz -- a 1.02x spread -- and even with 2 deg of added noise it only
+    spans 4.89 to 5.90. The
     model cannot reproduce the 2.7x move, so whatever causes it in the real
     pipeline is not sampling rate as such and is not white noise either. The
     mechanism is UNIDENTIFIED and `part_c` only bounds what it is not.
@@ -330,10 +341,11 @@ def part_e(verbose=True):
     defines the relaxation-index denominator as starting angle minus resting
     angle -- exactly this project's A0 -- and notes the first-swing excursion
     EXCEEDS it, since healthy RI is conventionally above 1. That is true and
-    this model already reproduces it: RI comes out 1.74 against a measured
-    healthy 1.678 +/- 0.090. And with that built in, omega_max_n is still
-    4.38, because for a limb released from rest the peak-velocity-to-A0 ratio
-    is a shade under the damped angular frequency, not RI times it.
+    this model already reproduces it: RI (= A1/A0 = 1.6*R2n) comes out 1.81
+    against a measured healthy 1.678 +/- 0.090 and 1.91 +/- 0.16, i.e. inside
+    the published range. And with that built in, omega_max_n is still 5.16,
+    because for a limb released from rest the peak-velocity-to-A0 ratio is a
+    shade under the damped angular frequency, not RI times it.
 
     WHAT STILL STANDS, on three legs that do not need each other:
 
@@ -343,7 +355,7 @@ def part_e(verbose=True):
       measurement  221.9 +/- 35.6 deg/s peak first-swing velocity in 50
                    healthy supine adults, against the 446 deg/s the constant
                    requires at A0 = 46.6: +6.3 SD
-      this model   reproduces the measured RI and still reads 4.38
+      this model   reproduces the measured RI and still reads 5.16
 
       and the project's own 8.50 -> 3.19 experiment is disqualifying on its
       own terms whatever causes it: a quantity that halves when you resample
@@ -377,10 +389,21 @@ def part_e(verbose=True):
     meas, sd = MEASURED_PEAK_DEG_S
     a0 = pts.EXCURSION_REF_MEAN_DEG
     required = DISPUTED * a0
+    # Resample the SAME motion and re-measure. Computed, not quoted: the
+    # figures here used to be literals carried over from the retired
+    # rig_neuromuscular_model, which would have gone stale silently the
+    # moment the model behind them changed.
+    rates = {}
+    for fs_hz in (20.0, 60.0, 120.0, 240.0):
+        tg = np.arange(0.0, sim["t"][-1], 1.0 / fs_hz)
+        ang = np.interp(tg, sim["t"], sim["angle_deg"])
+        pr = pts.compute_pt_params(tg, ang)
+        rates[fs_hz] = pr["omega_max_n"] if pr else float("nan")
     res = {"model_omega_max_n": p["omega_max_n"],
            "required_peak_deg_s": required,
            "measured_peak_deg_s": meas,
-           "sd_away": (required - meas) / sd}
+           "sd_away": (required - meas) / sd,
+           "by_rate": rates}
     if verbose:
         print()
         print("E. The mechanism, and the verdict")
@@ -410,20 +433,21 @@ def part_e(verbose=True):
               f"measurement.")
         print()
         print("  RETRACTION: this part first blamed the frame rate. Tested in")
-        print("  this model, sampling rate does almost nothing -- omega_max_n")
-        print("  reads 4.324 at 20 Hz and 4.381 at 240 Hz. The model cannot")
-        print("  reproduce the real pipeline's 2.7x move, so the mechanism is")
-        print("  UNIDENTIFIED. part_c bounds what it is not: noise, spikes,")
-        print("  release steps and marker freezes all fall short.")
+        print("  this model, sampling rate does almost nothing:")
+        print("    " + "   ".join(f"{int(k)} Hz: {v:.3f}" for k, v in rates.items()))
+        _lo, _hi = min(rates.values()), max(rates.values())
+        print(f"  a spread of {_hi / _lo:.2f}x against the real pipeline's 2.7x, so the")
+        print("  mechanism is UNIDENTIFIED. part_c bounds what it is not: noise,")
+        print("  spikes, release steps and marker freezes all fall short.")
         print()
         print("  VERDICT, which does not depend on the mechanism:")
         print("  omega_max_n and omega_min_n cannot be properties of a healthy")
         print("  limb. The Bajd & Bowman passive set survives -- three")
         print("  anthropometric routes agree with it, the one measured")
         print("  peak-velocity figure is within 1 SD of it, and this model")
-        print("  reproduces the measured relaxation index while still reading")
-        print("  4.38. And a quantity that halves when the same motion is")
-        print("  resampled is disqualified whatever the cause.")
+        print(f"  reproduces the measured relaxation index while still reading")
+        print(f"  {p['omega_max_n']:.2f}. And a quantity that halves when the same motion")
+        print("  is resampled is disqualified whatever the cause.")
     return res
 
 
