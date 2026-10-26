@@ -295,6 +295,102 @@ should borrow from the elbow work rather than invent one.
    drift across repeated drops. It is physiologically correct and it fights the
    6.1 degree reproducibility target.
 
+## What the literature runs actually returned (2026-10-26)
+
+Two deep-research runs, ~8M subagent tokens, synthesis failed both times on
+session limits and nearly every publisher host was refused by the environment's
+network policy. Almost no numbers with units came back, and the rig build spec
+is still largely unsourced. What did land is below, with provenance, because
+several items change the spec rather than decorate it.
+
+### Three that change the passive spec
+
+**The linear second-order model is published as INADEQUATE -- for normal legs,
+not only spastic ones.** Lin & Rymer (IEEE TBME, DOI 10.1109/10.83611) report
+that the form `J*phi'' + B*phi' + K*phi = 0` this project inherits does not
+describe passive pendular lower-leg motion, that K and B are
+**amplitude-dependent**, and that the swing is asymmetric. So constant scalar
+B = K = 0.5 is a modelling simplification and not a measured property, and
+R15's "dial the rig to the passive standard and check its envelope" is
+checking the rig against a form the field says is the wrong shape. The rig can
+still be built to it as a reference point -- but the plan should say that it is
+a reference point, not the limb.
+
+**B is the least estimable parameter in the test.** Chow & Stokic: of eight
+pendulum parameters, the damping coefficient was the only one that failed to
+change after an intrathecal baclofen bolus, and had to be dropped from the
+within-subject analysis entirely for missing data, while every directly
+measured kinematic parameter was significant at p <= 0.004. Separately, passive
+knee viscosity did NOT differ between paraplegic SCI and able-bodied controls
+(p = 0.17) while stiffness did (p = 0.01). A fitted B is not on the same
+evidential footing as a measured amplitude or velocity.
+
+**Normalisation traps are endemic, and we walked into one.** Franken et al.
+report knee damping and gravity normalised to lower-leg inertia -- B/J in 1/s
+and m*g*l_c/J in 1/s^2 -- not as absolute B in Nms/rad or K in Nm/rad, so
+their figures cannot be compared with 0.5 without first multiplying by each
+subject's J. That is structurally the same error as dividing peak velocity by
+A0 and reading the result as a frequency. A review of the field
+(DOI 10.1186/s12938-020-00826-8) makes the general point: pendulum-test
+outcome measures are not comparable across studies using different setups or
+definitions.
+
+### Reproducibility: the real bar is lower than Bohannon's
+
+| benchmark | value | population |
+|---|---|---|
+| within-session, reversal angle, 4 consecutive trials | ICC 0.96, 6.1 deg spread | Bohannon |
+| between-session, whole response, mean 26.8 days | ICC(2,1) **0.84** | 14 healthy adults |
+| between-day, first swing angle | ICC **0.87** controls, 0.93 SCI | De Santis & Perez |
+| two-IMU vs 3D optical, first swing angle | ICC **>0.82** controls, >0.98 SCI | same |
+
+Two things follow. **Across days the bar is ~0.84-0.87, not 0.96** -- Bohannon's
+figure is within-session and should not be quoted as the reproducibility target
+for a rig validated over sessions. And **healthy limbs are the HARDER
+measurement**: IMU-against-optical agreement is >0.98 in SCI but only >0.82 in
+controls. That is the opposite of the intuition behind the phone-app validation
+plan, and it means a phone-vs-optical agreement study will look worst exactly
+where the reference is supposed to be cleanest.
+
+### Protocol variables that are not free
+
+- **Posture.** Body position significantly changes healthy kinematics: with
+  motorised release on the non-dominant leg, both swing count (p = 0.03) and
+  relaxation index (p < 0.001) were higher semi-supine than supine. A healthy
+  reference constant is only valid for the posture it was measured in -- which
+  is a problem for every figure in this section, since the one normative
+  velocity sample (n = 50) was SUPINE and this rig is thigh-inclined.
+- **Leg dominance.** The non-dominant leg had significantly more swings than
+  the dominant one in three of three conditions tested (p = 0.009, p < 0.001,
+  p < 0.001, n = 15).
+- **Age.** Resistance to passive pendular knee motion increases with age in
+  healthy subjects (n = 77 normative), so a single population-free constant
+  does not exist.
+- **Motorised release beats hand release**, and the authors say so directly:
+  body-position effects were detectable under automated release and
+  non-significant under investigator release. This supports the rig's
+  motorised release on sensitivity grounds, not just repeatability.
+
+### Corroborating our own Finding 3
+
+Fowler et al. (DOI 10.1111/j.1469-8749.2000.tb00067.x): **first-swing excursion
+separated all severity groups (p < 0.05) while the relaxation index did not
+(p > 0.05 between most groups)**. That is the amplitude-beats-ratio result of
+this project's companion report, in print, from an independent cohort. Note
+Fowler's population is children and adolescents (ages 4-19), so its figures are
+not an adult reference -- shorter limbs bias frequency high.
+
+### Still unsourced, and now known to be unsourced
+
+The per-grade torque ladder, measured healthy K and B in Nm/rad and Nms/rad,
+Willaert's per-subject parameter table, Riener & Edrich's knee coefficients and
+the disputed sign, any measured ring-down frequency in Hz for healthy adults,
+and any published realism tolerance for a limb simulator. Every one of these
+was located in a specific paper and refused by the network policy. The hosts to
+allow are `pmc.ncbi.nlm.nih.gov`, `doi.org`, `journals.physiology.org`,
+`link.springer.com`, `europepmc.org`, `sciencedirect.com` and
+`jneuroengrehab.biomedcentral.com`.
+
 ## Papers to obtain, in order
 
 The literature pass was done without publisher access, so parameter tables were

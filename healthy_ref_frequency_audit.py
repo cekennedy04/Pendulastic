@@ -313,7 +313,44 @@ MEASURED_PEAK_N = 50
 
 
 def part_e(verbose=True):
-    """The mechanism, from this codebase's own record. This is the answer.
+    """The verdict, and a mechanism claim RETRACTED.
+
+    WHAT THIS PART ORIGINALLY SAID, AND WHY IT WAS WRONG. It attributed the
+    inflation to the frame rate and the differentiated noise floor, on the
+    strength of the _sg window note in pendulastic_pt_score (quoted below),
+    which records the median omega_max_n moving 8.50 -> 3.19 when real 120 Hz
+    OptiTrack is decimated to 20 Hz. Tested inside this model, sampling rate
+    does ESSENTIALLY NOTHING: omega_max_n reads 4.324 at 20 Hz and 4.381 at
+    240 Hz, and even with 2 deg of added noise it only spans 4.29 to 5.18. The
+    model cannot reproduce the 2.7x move, so whatever causes it in the real
+    pipeline is not sampling rate as such and is not white noise either. The
+    mechanism is UNIDENTIFIED and `part_c` only bounds what it is not.
+
+    Fowler's definition point does not rescue the constant either. Fowler
+    defines the relaxation-index denominator as starting angle minus resting
+    angle -- exactly this project's A0 -- and notes the first-swing excursion
+    EXCEEDS it, since healthy RI is conventionally above 1. That is true and
+    this model already reproduces it: RI comes out 1.74 against a measured
+    healthy 1.678 +/- 0.090. And with that built in, omega_max_n is still
+    4.38, because for a limb released from rest the peak-velocity-to-A0 ratio
+    is a shade under the damped angular frequency, not RI times it.
+
+    WHAT STILL STANDS, on three legs that do not need each other:
+
+      physics      mass cancels, so 0.79-0.97 Hz across every anthropometric
+                   table and body size; 1.52 Hz needs K = 17-40 Nm/rad or a
+                   0.12-0.16 m shank
+      measurement  221.9 +/- 35.6 deg/s peak first-swing velocity in 50
+                   healthy supine adults, against the 446 deg/s the constant
+                   requires at A0 = 46.6: +6.3 SD
+      this model   reproduces the measured RI and still reads 4.38
+
+      and the project's own 8.50 -> 3.19 experiment is disqualifying on its
+      own terms whatever causes it: a quantity that halves when you resample
+      the same motion cannot be a property of a leg, even if this module
+      cannot say why it halves.
+
+    The original text, kept because it is the claim being retracted:
 
     `omega_max_n` is `max|d(phi)/dt| / A0`, a differentiated quantity divided
     by an amplitude. Differentiation amplifies high-frequency content, so the
@@ -372,12 +409,21 @@ def part_e(verbose=True):
         print(f"  The requirement is {res['sd_away']:+.1f} SD from the "
               f"measurement.")
         print()
-        print("  VERDICT: omega_max_n and omega_min_n are the wrong constants.")
-        print("  The Bajd & Bowman passive set survives -- three independent")
-        print("  anthropometric routes agree with it to within 20%, and the one")
-        print("  measured peak-velocity figure sits within 1 SD of what it")
-        print("  predicts. The two velocity constants are measuring the")
-        print("  differentiated noise floor of a 120 Hz reconstruction.")
+        print("  RETRACTION: this part first blamed the frame rate. Tested in")
+        print("  this model, sampling rate does almost nothing -- omega_max_n")
+        print("  reads 4.324 at 20 Hz and 4.381 at 240 Hz. The model cannot")
+        print("  reproduce the real pipeline's 2.7x move, so the mechanism is")
+        print("  UNIDENTIFIED. part_c bounds what it is not: noise, spikes,")
+        print("  release steps and marker freezes all fall short.")
+        print()
+        print("  VERDICT, which does not depend on the mechanism:")
+        print("  omega_max_n and omega_min_n cannot be properties of a healthy")
+        print("  limb. The Bajd & Bowman passive set survives -- three")
+        print("  anthropometric routes agree with it, the one measured")
+        print("  peak-velocity figure is within 1 SD of it, and this model")
+        print("  reproduces the measured relaxation index while still reading")
+        print("  4.38. And a quantity that halves when the same motion is")
+        print("  resampled is disqualified whatever the cause.")
     return res
 
 
@@ -385,19 +431,23 @@ def main() -> int:
     part_a(); part_b(); part_c(); part_d(); part_e()
     print()
     print("WHAT THIS DOES NOT SETTLE")
-    print("  The replacement VALUES. Saying 9.5672 is an artifact does not say")
-    print("  what a healthy limb's omega_max_n is, because the honest answer is")
-    print("  that it depends on the sampling rate and the smoothing window --")
-    print("  which is a reason to stop scoring these two parameters rather than")
-    print("  to recalibrate them. A quantity that cannot be stated without also")
-    print("  stating the frame rate is not a property of a leg.")
+    print("  The replacement VALUES. The physics puts a healthy limb's")
+    print("  omega_max_n near 4.3-4.4, and this model holds there from 20 Hz to")
+    print("  240 Hz. But the REAL pipeline does not: it reads 8.50 at 120 Hz")
+    print("  and 3.19 at 20 Hz on the same motion. Until that is explained, a")
+    print("  recalibrated constant would be fitted to whatever is causing it,")
+    print("  so the recommendation is to stop scoring these two rather than to")
+    print("  give them new numbers.")
     print()
-    print("  Popovic's healthy omega-max, recorded in this project's notes as")
-    print("  11-17 rad/s UNNORMALISED, is still unexplained: it is 2.3-3.5x what")
-    print("  the same authors' passive set predicts. The research run could not")
-    print("  reach the paper to check the definition. It does not change the")
-    print("  verdict -- an unnormalised rad/s figure is not comparable to a")
-    print("  per-A0 ratio either way -- but it is not reconciled.")
+    print("  Popovic's 11-17 rad/s is no longer a puzzle worth carrying: that")
+    print("  healthy range traces to n = 6 healthy subjects in a retrospective")
+    print("  study whose authors state it was underpowered, with group")
+    print("  differences not reaching significance for want of sample size. It")
+    print("  is not a normative range. An independent n = 50 normative sample")
+    print("  measured 3.873 +/- 0.622 rad/s and does not reproduce it.")
+    print()
+    print("  WHAT THE MECHANISM IS. Still open, and it matters: until it is")
+    print("  named, nobody can say which other parameters it touched.")
     return 0
 
 

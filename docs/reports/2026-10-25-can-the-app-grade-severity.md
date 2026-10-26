@@ -190,19 +190,36 @@ Three independent lines agree:
    221.9 +/- 35.6 deg/s peak first-swing velocity in 50 healthy supine adults.
    The physics predicts about 204 deg/s at A0 = 46.6, inside one SD. The
    constant requires 446 deg/s, which is **+6.3 SD** from the measurement.
-3. *The mechanism is recorded in this codebase already.* The `_sg` window note
-   in `pendulastic_pt_score.py` says that decimating real 120 Hz OptiTrack to
-   20 Hz -- changing the sampling and nothing else about the motion -- moved
-   the median `omega_max_n` from **8.50 to 3.19** across 205 trials. A quantity
-   that moves 2.7x on sampling rate alone is not measuring a limb. It is
-   `max|dphi/dt| / A0`: a differentiated numerator, so it is set partly by the
-   reconstruction's noise floor. `HEALTHY_REF` was measured at 120 Hz, the end
-   of that range that reads high.
+3. *The quantity is not reproducible in the real pipeline.* The `_sg` window
+   note in `pendulastic_pt_score.py` records that decimating real 120 Hz
+   OptiTrack to 20 Hz -- changing the sampling and nothing else about the
+   motion -- moved the median `omega_max_n` from **8.50 to 3.19** across 205
+   trials. A quantity that halves when the same motion is resampled cannot be
+   a property of a leg, whatever causes it.
 
-An injected-noise sweep closes the loop from the other side: on a trace whose
-true frequency is fixed and known, `omega_max_n` climbs monotonically with
-angle noise (4.38 clean, 5.26 at 4 deg RMS) and lands in the 5-9 band real
-reconstructions occupy.
+**A mechanism claim here is RETRACTED.** An earlier version of this section
+blamed the frame rate and the differentiated noise floor. Tested inside the
+model, sampling rate does almost nothing: `omega_max_n` reads 4.324 at 20 Hz
+and 4.381 at 240 Hz, and with 2 deg of noise only spans 4.29-5.18. The model
+cannot reproduce the real pipeline's 2.7x move, so **the mechanism is
+unidentified** -- `healthy_ref_frequency_audit.py` part_c only bounds what it
+is not (noise, spikes, release steps and marker freezes all fall short). That
+matters beyond this constant: until the cause is named, nobody can say which
+other parameters it touched.
+
+Nor does the obvious rescue work. Fowler defines the relaxation-index
+denominator as starting angle minus resting angle -- exactly this project's
+A0 -- and notes the first-swing excursion exceeds it, healthy RI being above
+1. True, and the model already reproduces it (RI 1.74 against a measured
+1.678 +/- 0.090); with that built in `omega_max_n` is still 4.38, because for
+a limb released from rest the peak-velocity-to-A0 ratio is a shade *under* the
+damped angular frequency, not RI times it.
+
+And Popovic's 11-17 rad/s, flagged as unreconciled in the first write-up, is
+no longer a puzzle worth carrying: that healthy range traces to **n = 6**
+healthy subjects in a retrospective study whose authors state it was
+underpowered. It is not a normative range, and an independent n = 50 sample
+measured 3.873 +/- 0.622 rad/s.
 
 So the Bajd & Bowman passive set survives and the rig should be built to it.
 Two consequences follow immediately. These two parameters supplied 0.154 of the
