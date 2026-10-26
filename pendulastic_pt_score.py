@@ -442,9 +442,61 @@ def draw_pt_annotations(ax, params: dict, manual_release: bool = False) -> list 
 
 
 def pt_to_mas(pt: float) -> str:
+    """HISTORICAL MAS-grade predictor. Prefer `pt_zone` for any verdict.
+
+    `_MAS` is Popovic (2018)'s threshold table and its own block comment says
+    it is "kept for historical comparison only". It is retained because
+    predicting a MAS GRADE is what a MAS-agreement study needs --
+    mas_validation.py scores weighted kappa against clinician grades, and a
+    three-zone classifier cannot do that. It is NOT the right thing to show
+    anyone as a verdict, for two reasons measured on this cohort's own data:
+
+      Popovic's MAS-0 boundary is 0.12, while this cohort's MAS-0 legs reach
+      0.1709 at the 75th percentile (PT_HEALTHY_MAX). So roughly a quarter of
+      the legs a clinician graded 0 are returned as "1" or worse.
+
+      PT_BORDERLINE_MAX is the midpoint of PT_HEALTHY_MAX and this cohort's
+      MAS>=1 median, which puts that median at about 0.535. Popovic's table
+      maps 0.535 to "2" -- but those legs are graded MAS 1 or 1+.
+
+    So the table over-grades at both ends. It cannot simply be refitted here
+    either: `fit_mas_thresholds.py` exists for that and refuses to fit without
+    enough paired observations across enough distinct grades, and this cohort
+    has no leg above MAS 1+. A six-grade table is not supportable on this data;
+    three zones are.
+    """
     for thresh, label in _MAS:
         if pt <= thresh: return label
     return "4"
+
+
+def pt_zone(score: Optional[float]) -> str:
+    """The DATA-DERIVED verdict: "healthy", "borderline", "impaired", "unknown".
+
+    Classifies against this project's own bands rather than Popovic's table --
+    PT_HEALTHY_MAX (the MAS-0 75th percentile over 23 legs) and
+    PT_BORDERLINE_MAX (the midpoint between that and the MAS>=1 median). This
+    is the function the shipped app has always used; it existed only in Rust
+    (`mobile-imu-core/src/pt_score.rs::pt_zone`) while the Python reporting
+    path went through `pt_to_mas`, so the two halves of the project disagreed
+    on every trial. Added here so they agree.
+
+    Strict on both bounds, matching the Rust and the reference's own "below
+    this / above this" phrasing: a score exactly equal to either boundary
+    reads as borderline. `tests/test_web_export_contract.py` territory -- the
+    constants and this ordering must stay byte-identical to the Rust.
+
+    The bands are PROVISIONAL and the app knows it: webapp's `zoneDisplay`
+    refuses to render a zone at all while ZONE_CLASSIFICATION_CALIBRATED is
+    false, which is what KD8/R16 requires until the rig is calibrated.
+    """
+    if score is None or not np.isfinite(score):
+        return "unknown"
+    if score < PT_HEALTHY_MAX:
+        return "healthy"
+    if score > PT_BORDERLINE_MAX:
+        return "impaired"
+    return "borderline"
 
 
 # ── Excursion gate: refuse a MAS grade PT7 cannot support ────────────────────
@@ -578,29 +630,38 @@ def excursion_ok(params: Optional[dict]) -> bool:
 def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     """MAS estimate for a trial, or an explicit refusal.
 
-    Returns {"mas": str|None, "pt7": float|None, "interpretable": bool,
-             "reason": str}. `mas` is None exactly when `interpretable` is
-    False, so a caller cannot accidentally render a grade the score does not
-    support -- which is the failure this whole block exists to prevent.
+    Returns {"zone": str|None, "mas": str|None, "pt7": float|None,
+             "interpretable": bool, "reason": str}. Both are None exactly when
+    `interpretable` is False, so a caller cannot accidentally render a verdict
+    the score does not support -- which is the failure this whole block exists
+    to prevent.
+
+    `zone` is the verdict to use and the one the app shows: it comes from this
+    project's own data-derived bands. `mas` is the historical Popovic
+    prediction, retained for MAS-agreement studies only -- see `pt_to_mas` for
+    the measured ways that table over-grades both ends of this cohort.
 
     Prefer this over calling pt_to_mas(compute_pt_score(params)) directly.
     """
     if not params:
-        return {"mas": None, "pt7": None, "interpretable": False,
+        return {"mas": None, "zone": None, "pt7": None, "interpretable": False,
                 "reason": "No PT parameters: the trial could not be scored."}
     score = compute_pt_score(params) if ref is None else compute_pt_score(params, ref)
     if not excursion_ok(params):
         a0 = params.get("A0_deg")
         if a0 is not None and np.isfinite(a0) and float(a0) > MAX_INTERPRETABLE_A0_DEG:
-            return {"mas": None, "pt7": score, "interpretable": False,
+            return {"mas": None, "zone": None, "pt7": score,
+                    "interpretable": False,
                     "reason": IMPOSSIBLE_EXCURSION.format(
                         a0=float(a0), gate=MAX_INTERPRETABLE_A0_DEG)}
-        return {"mas": None, "pt7": score, "interpretable": False,
+        return {"mas": None, "zone": None, "pt7": score,
+                "interpretable": False,
                 "reason": INSUFFICIENT_EXCURSION.format(
                     a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),
                     gate=MIN_INTERPRETABLE_A0_DEG, mean=EXCURSION_REF_MEAN_DEG,
                     sd=EXCURSION_REF_SD_DEG, n=EXCURSION_REF_N)}
-    return {"mas": pt_to_mas(score), "pt7": score, "interpretable": True, "reason": ""}
+    return {"mas": pt_to_mas(score), "zone": pt_zone(score), "pt7": score,
+            "interpretable": True, "reason": ""}
 
 # Ordinal MAS scale, single source of truth for anything that needs a numeric
 # rank (Spearman correlation, weighted Cohen's kappa) rather than the raw

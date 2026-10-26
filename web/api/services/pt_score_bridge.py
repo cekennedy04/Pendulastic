@@ -45,6 +45,7 @@ class PTScoreBridge:
             compute_pt_params,
             compute_pt_score_simple,
             pt_to_mas,
+            pt_zone,
         )
 
         t, angle = _load_hpe_csv(csv_path)
@@ -55,6 +56,11 @@ class PTScoreBridge:
 
         pt_simple = compute_pt_score_simple(params)
         mas       = pt_to_mas(pt_simple)
+        # The data-derived verdict, which is what the phone app shows. `mas`
+        # above is Popovic's historical table and over-grades both ends of this
+        # cohort (see pendulastic_pt_score.pt_to_mas); it is kept so existing
+        # callers do not break, but `zone` is the one to read.
+        zone      = pt_zone(pt_simple)
 
         def _safe(v: float) -> float:
             return float(v) if math.isfinite(v) else 0.0
@@ -62,6 +68,7 @@ class PTScoreBridge:
         return {
             "trial_id":    trial_meta["id"],
             "mas_estimate": mas,
+            "zone": zone,
             "pt_score":    round(pt_simple, 4),
             "parameters": {
                 "R2n":              _safe(params["R2n"]),
