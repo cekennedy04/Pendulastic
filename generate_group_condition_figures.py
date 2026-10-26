@@ -30,6 +30,7 @@ import batch_imu_vs_optitrack_rmse as batch
 import workbench_engine as engine
 from generate_paper_figures import BLUE, ORANGE, INK, MUTED, GRID, OUT_DIR, _style_axis
 from generate_paper_results_analysis import PARAMS
+import participant_paths
 
 # Perez-lineage palette extended with slot 3 (aqua) for a third category
 AQUA = "#1baf7a"
@@ -71,7 +72,7 @@ def build_rows():
         if len(t_imu) < 10:
             continue
         imu_pt = engine.windowed_pt_params(t_imu, ang_imu)
-        pid = t["participant"].replace("Participant_", "")
+        pid = participant_paths.strip_prefix(t["participant"])
         raw_cond = os.path.basename(os.path.dirname(t["imu"]))
         row = {"pid": pid, "group": groups.get(pid, {}).get("group"),
               "condition": normalize_condition(raw_cond), "raw_condition": raw_cond}
