@@ -155,6 +155,9 @@ impl TrialSession {
         }
     }
 
+    // Indexed loop over the 3-element drift accumulator, mirroring the
+    // reference's own `for k in range(3)`. See the note on AhrsState::update.
+    #[allow(clippy::needless_range_loop)]
     fn advance_hold(&mut self, omega: [f64; 3], t: f64) {
         let dt = match self.last_gyro_t {
             Some(prev) if t > prev && t - prev < 0.5 => t - prev,

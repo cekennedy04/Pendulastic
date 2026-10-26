@@ -499,6 +499,10 @@ pub fn pt_score_from_scalars(
     pt_score_to_json(&params, &HEALTHY_REF)
 }
 
+// WITHDRAWN_REFS and healthy_ref_to_json sit below this module. Moving ~30
+// lines of shipping code to satisfy an ordering lint is churn in a scoring
+// file, so the ordering is declared intentional instead.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1007,6 +1011,11 @@ mod tests {
 
 
     #[test]
+    // The golden values carry every digit the reference prints, and the
+    // assertion formats the measured value at the same 17 digits so a mismatch
+    // is legible. Trimming the literals to f64's representable width, as
+    // clippy asks, would make the expected and printed forms differ.
+    #[allow(clippy::excessive_precision)]
     fn both_scores_match_the_python_reference_bit_for_bit() {
         // Values produced by pendulastic_pt_score.compute_pt_score_simple /
         // compute_pt_score on this exact params dict, printed at 17 significant
