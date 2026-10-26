@@ -185,6 +185,37 @@ def passive_standard_hz() -> float:
     return PASSIVE_STANDARD_HZ
 
 
+def pt_zone(score) -> str:
+    """The classifier the APP actually uses, ported from mobile-imu-core.
+
+    This exists because the harness was reading the wrong function and
+    reported a defect that is not there. `mas_estimate` returns
+    `pt_to_mas(score)`, which indexes Popovic's `_MAS` table -- and
+    `pendulastic_pt_score.py` labels that table, in its own comment, "kept for
+    historical comparison only". Its MAS-0 boundary is 0.12.
+
+    The phone app does not use it. `mobile-imu-core/src/pt_score.rs::pt_zone`
+    classifies against the project's OWN data-derived bands,
+    `PT_HEALTHY_MAX = 0.1709` (the MAS-0 75th percentile over 23 legs) and
+    `PT_BORDERLINE_MAX = 0.3528`, strict on both bounds. Under those bands the
+    model's healthy limb scores 0.157 and reads HEALTHY, which is correct; under
+    the historical table it reads "1", which is what this report first called a
+    defect in the app.
+
+    Both are reported from here on, with the historical one labelled, because
+    the two disagree on every profile and a reader needs to know which number
+    came from which. Ported rather than imported because the Rust is the
+    authority and this keeps the port visible and checkable against it.
+    """
+    if score is None or not np.isfinite(score):
+        return "unknown"
+    if score < pts.PT_HEALTHY_MAX:
+        return "healthy"
+    if score > pts.PT_BORDERLINE_MAX:
+        return "impaired"
+    return "borderline"
+
+
 def score_waveform(t, angle) -> dict:
     """Params, PT7 and the app's verdict for one knee-angle trace.
 
@@ -197,6 +228,7 @@ def score_waveform(t, angle) -> dict:
     params = pts.compute_pt_params(np.asarray(t, float), np.asarray(angle, float))
     est = pts.mas_estimate(params)
     return {"params": params, "pt7": est["pt7"], "mas": est["mas"],
+            "zone": pt_zone(est["pt7"]) if est["interpretable"] else "refused",
             "interpretable": est["interpretable"], "reason": est["reason"],
             "scorable": params is not None}
 
@@ -286,6 +318,7 @@ def model_arm(verbose: bool = True) -> dict:
             "mas": res["mas"],
             "interpretable": res["interpretable"],
             "scorable": res["scorable"],
+            "zone": res["zone"],
             "reason": res["reason"],
             **{m: p.get(m) for m in METRICS},
         })
@@ -296,8 +329,9 @@ def model_arm(verbose: bool = True) -> dict:
               "and mechanism are known")
         print("=" * 100)
         print(f"{'profile':22s} {'int':>4s} {'A0':>6s} {'plateau':>8s} "
-              f"{'ftd':>6s} {'N':>5s} {'PT7':>7s} {'grade':>6s}  note")
-        print("-" * 100)
+              f"{'ftd':>6s} {'N':>5s} {'PT7':>7s} {'app zone':>10s} "
+              f"{'hist':>5s}  note")
+        print("-" * 104)
         for r in rows:
             intent = "-" if r["intent"] is None else str(r["intent"])
             grade = r["mas"] if r["mas"] is not None else "REFUSED"
@@ -306,7 +340,8 @@ def model_arm(verbose: bool = True) -> dict:
                 return f"{v:{w}.{d}f}" if isinstance(v, float) and math.isfinite(v) else f"{'--':>{w}s}"
             print(f"{r['profile']:22s} {intent:>4s} {f(r['A0_deg'])} "
                   f"{f(r['neutral_deg'],8)} {f(r['first_trough_depth'])} "
-                  f"{f(r['N'],5,2)} {f(r['pt7'],7,3)} {grade:>6s}  {note[:34]}")
+                  f"{f(r['N'],5,2)} {f(r['pt7'],7,3)} {r['zone']:>10s} "
+                  f"{grade:>5s}  {note[:28]}")
 
     rows_by_profile = {r["profile"]: r for r in rows}
     graded = [r for r in rows if r["intent"] is not None]
@@ -454,7 +489,14 @@ def model_arm(verbose: bool = True) -> dict:
     # single threshold band produces a constant verdict.
     if verbose:
         print()
-        print("Q5  The grade the app would actually print, along the ladder")
+        print("Q5  What the app would actually print, along the ladder")
+        print("  app zones (pt_zone, the project's own data-derived bands):")
+        print("    " + "   ".join(
+            f"L{rig.SEVERITY_INTENT[r['profile']]}={r['zone']}" for r in ladder))
+        zs = [r["zone"] for r in ladder]
+        print(f"  {len(set(zs))} distinct zone(s), "
+              f"{'monotone' if zs == sorted(zs, key=['healthy','borderline','impaired','refused','unknown'].index) else 'NOT monotone'}")
+        print("  the historical Popovic MAS table, for comparison only:")
         cells = []
         for r in ladder:
             g = r["mas"] if r["mas"] else "REFUSED"

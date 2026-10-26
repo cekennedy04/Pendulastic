@@ -1,4 +1,4 @@
-# Can the app grade severity? Four grades of six, and it misplaces both ends
+# Can the app grade severity? Yes for healthy-vs-affected; no across kinds
 
 **Date:** 2026-10-25
 **Code:** `severity_grading_test.py`, `rig_neuromuscular_model.py`
@@ -61,33 +61,49 @@ decomposition. Five are distinct mechanisms: a catch that releases, two holds at
 different plateaus, a critically damped fall with no ring-down, and a mechanical
 end-stop.
 
-## Finding 1 -- it resolves four grades of six, and misplaces both ends
+## Finding 1 -- the app's own classifier is fine; I was reading the wrong one
 
-| profile | A0 | plateau | first trough | N | PT7 | grade |
-|---|---|---|---|---|---|---|
-| tone_L0 (healthy) | 61.6 | 118.3 | 53.5 | 6.50 | 0.157 | **1** |
-| tone_L1 | 58.3 | 121.7 | 23.5 | 5.00 | 0.277 | **1** |
-| tone_L2 | 54.6 | 125.5 | 25.9 | 4.50 | 0.286 | **1+** |
-| tone_L3 | 51.1 | 133.1 | 1.0 | 3.00 | 0.470 | **2** |
-| tone_L4 | 43.7 | 140.6 | 0.0 | 0.50 | 1.963 | **4** |
+**WITHDRAWN, twice over.** This finding claimed the app misgrades the healthy
+limb. It does not. The claim came from the harness calling `mas_estimate`,
+which returns `pt_to_mas(score)` -- an index into Popovic's `_MAS` table whose
+MAS-0 boundary is 0.12, and which `pendulastic_pt_score.py` labels in its own
+comment "kept for historical comparison only".
 
-Monotone, four distinct grades. The scoring tracks dialled severity
-considerably better than this report first claimed.
+The phone app does not use that table.
+`mobile-imu-core/src/pt_score.rs::pt_zone` classifies against the project's own
+data-derived bands -- `PT_HEALTHY_MAX = 0.1709`, the MAS-0 75th percentile over
+23 legs, and `PT_BORDERLINE_MAX = 0.3528`. Under those, on the corrected model:
 
-Three things are still wrong, and none of them is a correlation problem.
+| profile | PT7 | app zone | historical table |
+|---|---|---|---|
+| tone_L0 (healthy) | 0.157 | **healthy** | 1 |
+| tone_L1 | 0.277 | borderline | 1 |
+| tone_L2 | 0.286 | borderline | 1+ |
+| tone_L3 | 0.470 | impaired | 2 |
+| tone_L4 | 1.963 | impaired | 4 |
 
-**The healthy limb is graded "1", not "0".** PT7 0.157 against a MAS-0 band
-ending at 0.12. This limb is the passive standard R15 dials the unactuated rig
-to -- zero tone, zero reflex gain, and an oscillation count now matching the
-cohort's own measurement exactly. It should read healthy and it does not.
+Three zones, monotone, healthy limb healthy. The app gets this right, and the
+webapp is more conservative still: `zoneDisplay` refuses to show the raw zone
+at all while `ZONE_CLASSIFICATION_CALIBRATED` is false, which is what KD8/R16
+requires.
 
-**Grade "3" is skipped.** L3 reads "2" at 0.470 and L4 jumps to "4" at 1.963:
-PT7 more than quadruples in one step, the step where the oscillations collapse.
-The top of the scale is a cliff, not a gradient.
+What IS a real defect, and it is one of hygiene rather than of grading: the
+project has **two threshold systems that disagree on every profile**, and the
+Python reporting path (`mas_estimate` -> `pt_to_mas`) is wired to the one its
+own comment calls historical, while the app uses the data-derived one. Anything
+reading PT7 grades out of the Python pipeline -- `hpe_mas_evaluation.py` among
+them -- is reporting against Popovic's 2018 boundaries, not this cohort's.
+That should be settled one way or the other, and it needs no change to the
+score.
 
-**The resolution is worst where the data is.** L0 to L2 spans the whole mild
-range this cohort occupies, moves PT7 by 0.129, and yields two grades, one of
-which is wrong. The severities nobody has recorded get the clean separation.
+**A fix I tested and rejected.** Dropping `omega_max_n` and `omega_min_n` from
+the scored set -- which Finding 4 shows have badly wrong reference constants --
+does bring the healthy limb to 0.019 and a grade of "0". But it breaks
+monotonicity: `tone_L2` falls to 0.093 and grades BELOW `tone_L1` at 0.141, so
+a moderate limb reads healthier than a mild one. The two parameters are doing
+real discriminative work despite their constants being wrong, so the fix
+belongs in the constants, not in the parameter set -- and the constants cannot
+be set until the 2x discrepancy of Finding 4 is explained. Not shipped.
 
 ## Finding 2 -- PT7 responds as much to the KIND of impairment as to its amount
 
