@@ -268,7 +268,10 @@ should borrow from the elbow work rather than invent one.
 
 ## What is NOT in the literature -- gaps this programme could fill
 
-- A motorised pendulum-test simulator. Does not exist.
+- A motorised pendulum-test simulator for the WARTENBERG TEST specifically.
+  Narrowed 2026-10-26: a programmable force-feedback knee simulator,
+  parameterised from passive pendulum drop tests, is prior art (Riener &
+  Burgkart, 2001, US8108190B2, expired).
 - A threshold angle (TSRT) for knee extensors or flexors. Never measured;
   the technique exists only for elbow, ankle and wrist.
 - A reflex gain for the spastic knee in transferable units. Every model
@@ -379,6 +382,83 @@ separated all severity groups (p < 0.05) while the relaxation index did not
 this project's companion report, in print, from an independent cohort. Note
 Fowler's population is children and adolescents (ages 4-19), so its figures are
 not an adult reference -- shorter limbs bias frequency high.
+
+### Targeted follow-up, 2026-10-26: what a search-only channel yielded
+
+The environment's network policy refuses ALL outbound HTTPS from this
+container -- `en.wikipedia.org` returns the same 403-on-CONNECT as every
+publisher -- so WebFetch cannot reach anything either. WebSearch still works.
+Everything below came through search-index summaries, which are
+model-generated from snippets and are a weaker source than a read page.
+Provenance is marked per item.
+
+**CONFIRMED, consistent across two independent queries.** Pei et al.'s
+per-MAS-grade peak resistive torque for the passive hydraulic upper-arm
+simulator: **0.9, 3.5, 4.2, 6.9, 9.8 Nm for MAS 0, 1, 2, 3, 4.** The same
+paper's abstract separately reports peak resistive torque ranging **1.3 to
+6.7 Nm under fast stretch**, which does not reconcile with the 9.8 Nm figure
+and is presumably a different test condition -- both are reported here because
+the paper does not say. Severity is set mechanically by exposing one of **five
+pairs of orifices** on the piston head while the rest stay covered.
+
+**WITHDRAWN.** The orifice-diameter ladder (2.5 / 2.0 / 1.9 / 1.8 / 1.5 mm for
+MAS 0-4) that an earlier run reported from a snippet did NOT reproduce on a
+targeted query, which found the five-orifice mechanism but no diameters. Do
+not use those numbers.
+
+**The closest prior art to this rig, and it is close.** A patent family by
+**Robert Riener and Rainer Burgkart**, "Programmable joint simulator with force
+and motion feedback" -- WO2003001483A1, EP1402503B1, US8108190B2,
+DE10130485C2, CN1240031C, priority 2001-06-25. US8108190B2 is listed as
+**expired for fee non-payment**. Relevant to the build:
+
+- A body model with controllable drive elements, a sensor arrangement that
+  detects the examiner's forces and movements, and a programmable controller --
+  i.e. the architecture this plan proposes, patented 25 years ago.
+- Each degree of freedom is parameterised by **stiffness in the left, middle
+  and right regions of the characteristic curve plus the width of the middle
+  region** -- a piecewise-stiffness form with a deliberately soft midrange,
+  which is a different and simpler shape than the exponential end-stop this
+  module implements, and worth comparing against.
+- The knee is given **low impedance in flexion and high impedance in the other
+  degrees of freedom**, which is a direct answer to this plan's open
+  control-mode question for the one DOF the pendulum test uses.
+- **Experimental data for the extension/flexion DOF are obtained through
+  passive pendulum drop tests** (the patent cites Riener et al. 1996). So using
+  the pendulum test to parameterise a programmable joint simulator is
+  established practice, not a novel step.
+- A **library of parameter sets** is described, covering knees with various
+  healthy or pathological properties.
+- One counterpart mentions a flexion damping coefficient of about **1.0
+  Nm/rad**; the unit as relayed is wrong for a damping term (Nms/rad is the
+  dimension), so treat the magnitude as indicative and the unit as unverified.
+
+This changes one claim in this plan. "There is no published motorised
+pendulum-test simulator" remains true for the Wartenberg *test* specifically,
+but a programmable, force-feedback, pendulum-parameterised KNEE simulator is
+prior art. The novelty claim should be narrowed accordingly, and the expired US
+patent is a design reference that can be used freely.
+
+**Second independent replication of "K discriminates, B does not."** A
+rheumatoid-arthritis pendulum study reports knee stiffness significantly higher
+in patients than controls (p < 0.001) while viscosity differences were not
+significant -- the same split the paraplegic-SCI study found (K p = 0.01,
+B p = 0.17). Two of two, in different diseases. Combined with the baclofen
+result (damping was the only one of eight parameters that failed to shift),
+this is a consistent picture: B is the weak parameter and should not anchor a
+build spec.
+
+**Method note for the rig's own characterisation.** The field computes damping
+ratio and natural frequency from the period T and the amplitude ratio D of each
+half-cycle, half-cycle by half-cycle, rather than fitting a whole trace. Worth
+matching, because it is what any comparison figure will have been computed with.
+
+**Not obtainable through this channel.** No measured healthy-adult ring-down
+frequency in Hz, and no healthy K in Nm/rad or B in Nms/rad. The control-group
+tables that hold them were located in three specific papers (PMC1693559
+rheumatoid arthritis, PMC3544505 Down syndrome, PMC4397198 spinal cord injury)
+and all three are refused by the policy. These are the fetches to do first once
+the hosts are allowed.
 
 ### Still unsourced, and now known to be unsourced
 
