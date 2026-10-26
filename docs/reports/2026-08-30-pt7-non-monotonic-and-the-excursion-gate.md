@@ -3,6 +3,16 @@
 **2026-08-30** — reproduction of the PT7 severity curve against simulator
 ground truth, and the gate now shipped against its unsafe tail.
 
+> **Fixture relocated, 2026-10-26.** The simulator this report measures
+> against is no longer at `tests/fixtures/pendulum_sim.py`; it lives at
+> `neuromech/pendulum_sim.py` on `bench/retest-abs`, with its reference-MATLAB
+> validation test at `neuromech/tests/test_pendulum_sim_reference.py`. An
+> earlier note on this session's work called the finding below unreproducible
+> for want of that file — that was wrong. The same inversion reproduces from
+> `neuromech/out/severity_sweep.csv`, which peaks at PT7 1.220 (λ 0.85) and
+> falls to 0.514 by λ 1.5. See
+> `docs/reports/2026-10-26-neuromech-rig-model-reconciliation.md`.
+
 ## The finding
 
 PT7 is not monotonic in severity. Measured with the shipped scorer against
