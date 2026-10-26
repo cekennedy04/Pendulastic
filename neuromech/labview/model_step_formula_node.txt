@@ -1,0 +1,108 @@
+/* ===========================================================================
+   Pendulastic knee-spasticity model -- ONE 1 ms RT-loop tick, LabVIEW Formula Node
+   Mirrors neuromech/model_rt.py simulate(..., integrator="euler4") line for line.
+   Verify with labview/test_vector_MAS2.csv before trusting it (see LABVIEW_PROGRAM_SPEC.md §6).
+
+   Paste into a Formula Node inside the Timed Loop (dt = 1 ms). Every name below is a
+   Formula Node terminal:
+     INPUT  state   : th, w, ts, tr, tf, tc            (rad, rad/s, N.m x4)  -- shift registers
+     INPUT  flags   : srs_on, rev, clon_t0             (1/0, 1/0, s; clon_t0 = -1 until triggered)
+     INPUT  time    : t                                (s since release)
+     INPUT  delayed : wd, wd_prev, sd, sd_prev, thd    (omega, T_SRS and THETA 50 and 51 samples
+                                                        ago, read from the ring buffers OUTSIDE
+                                                        this node -- THREE buffers now, length 52)
+     INPUT  geometry: J, mgl, inc, th0                 (kg.m^2, N.m, rad, rad) -- from Params.s, incline
+     INPUT  params  : B, coul, tone, k_f, k_df, k_srs, k_v, k_v_thr, k_l, k_l_thr, refl_max,
+                      flex_g, flex_vth, catch_g, catch_vth, catch_rel,
+                      clon_nm, clon_hz, clon_tau, rigid, cog_d, cog_hz, con_k, con_th,
+                      guard, gph0, gph1, gph2, gph3, spasm, spasm_t, spasm_w, use_lim
+     OUTPUT         : th_o, w_o, ts_o, tr_o, tf_o, tc_o, srs_on_o, rev_o, clon_t0_o, tau_o
+   Afterwards (outside the node): push w_o, ts_o and th_o into the three ring buffers (length 52),
+   and send rad2deg(th_o) - rest_deg as the position setpoint (Mode B) or tau_o's active part
+   as the torque command (Mode C).
+   =========================================================================== */
+
+float64 h, q, tt, dth, s_vneg, s_lt, s_gt, drive, d_ts, e_r, d_tr, e_f, d_tf, stretch, inhib, e_c, d_tc;
+float64 grav, damp, fric, wall, clon, rig, con, grd, spm, tau, dw, wdd, sdd, k, e_v, e_l;
+float64 TAU_A, TAU_SRS, DTH_C, DT, TWO_PI;
+DT = 0.001; h = DT / 4.0; TAU_A = 0.010; TAU_SRS = 0.050; DTH_C = 0.0261799387799; TWO_PI = 6.28318530718;
+
+/* first-swing bookkeeping, decided once per tick (as the Python twin does) */
+srs_on_o = srs_on; rev_o = rev; clon_t0_o = clon_t0;
+if (srs_on_o == 1 && w > 0 && t > 0.05) srs_on_o = 0;
+if (rev_o == 0 && w > 0 && t > 0.05) { rev_o = 1; if (clon_nm != 0) clon_t0_o = t; }
+
+/* delayed derivatives: backward difference of the buffer (zero for the first 51 ticks) */
+wdd = (wd - wd_prev) / DT;
+sdd = (sd - sd_prev) / DT;
+if (t < 0.051) { wdd = 0; sdd = 0; }
+
+th_o = th; w_o = w; ts_o = ts; tr_o = tr; tf_o = tf; tc_o = tc;
+for (q = 0; q < 4; q++) {
+    tt = t + q * h;
+    /* passive */
+    grav = -mgl * cos(th_o + inc);
+    damp = -B * w_o;
+    fric = -coul * tanh(w_o / 0.05);   /* dry bearing friction of the rig (COULOMB_BAND = 0.05) */
+    wall = 0;
+    if (use_lim == 1) wall = -exp(3.0 * th_o) + exp(3.0 * (-1.91986217719 - th_o));
+    /* short-range stiffness, first drop only */
+    k = k_srs * tone;
+    dth = th_o - th0;
+    s_vneg = 0.5 * (1 + tanh(1.2 * (-10.0 * w_o)));
+    if (srs_on_o == 1 && s_vneg > 0.001) {
+        s_lt = 0.5 * (1 + tanh(1.2 * (50.0 * (dth + DTH_C))));
+        s_gt = 0.5 * (1 + tanh(1.2 * (50.0 * (-dth - DTH_C))));
+        drive = (s_lt * (-ts_o - k * dth) + s_gt * (-ts_o + k * DTH_C)) / TAU_A;
+        d_ts = s_vneg * drive + 0.5 * (1 + tanh(1.2 * (10.0 * w_o))) * (-ts_o) / TAU_SRS;
+    } else {
+        d_ts = -ts_o / TAU_SRS;
+    }
+    /* delayed extensor reflex: force feedback (De Groote 2018) plus optional
+       velocity and length drives on the SAME activation state, then a ceiling.
+       k_v = k_l = refl_max = 0 reduces this to the published two lines. */
+    e_r = k_f * (sd - B * wd) + k_df * (sdd - B * wdd);
+    e_v = -wd - k_v_thr;
+    if (e_v < 0) e_v = 0;
+    e_l = (th0 - thd) - k_l_thr;
+    if (e_l < 0) e_l = 0;
+    e_r = e_r + k_v * e_v + k_l * e_l;
+    if (e_r < 0) e_r = 0;
+    if (refl_max != 0 && e_r > refl_max) e_r = refl_max;
+    d_tr = (e_r - tr_o) / TAU_A;
+    /* hamstring reflex: opposes extension velocity */
+    e_f = flex_g * (wd - flex_vth);
+    if (e_f < 0) e_f = 0;
+    d_tf = (e_f - tf_o) / TAU_A;
+    /* clasp-knife catch: lets go past catch_rel of flexion stretch */
+    stretch = th0 - th_o;
+    inhib = 0.5 * (1 + tanh(1.2 * (20.0 * (catch_rel - stretch))));
+    e_c = -wd - catch_vth;
+    if (e_c < 0) e_c = 0;
+    e_c = catch_g * e_c * inhib;
+    d_tc = (e_c - tc_o) / TAU_A;
+    /* clonus burst */
+    clon = 0;
+    if (clon_nm != 0 && clon_t0_o >= 0) clon = clon_nm * exp(-(tt - clon_t0_o) / clon_tau) * sin(TWO_PI * clon_hz * (tt - clon_t0_o));
+    /* lead-pipe / cogwheel rigidity */
+    rig = -rigid * tanh(w_o / 0.05) * (1 + cog_d * sin(TWO_PI * cog_hz * tt));
+    /* contracture stop */
+    con = con_k * (con_th - th_o);
+    if (con < 0) con = 0;
+    /* guarding: four fixed sinusoids 0.6/1.1/1.7/2.4 Hz */
+    grd = 0;
+    if (guard != 0 && tt > 0.3) grd = guard * 0.5 * (sin(TWO_PI * 0.6 * tt + gph0) + sin(TWO_PI * 1.1 * tt + gph1) + sin(TWO_PI * 1.7 * tt + gph2) + sin(TWO_PI * 2.4 * tt + gph3));
+    /* single spasm pulse */
+    spm = 0;
+    if (spasm != 0 && tt >= spasm_t && tt <= spasm_t + spasm_w) spm = spasm * sin(3.14159265359 * (tt - spasm_t) / spasm_w);
+    /* sum and step */
+    tau = grav + damp + fric + wall + tone + ts_o + tr_o - tf_o + tc_o + clon + rig + con + grd + spm;
+    dw = tau / J;
+    th_o = th_o + h * w_o;
+    w_o  = w_o  + h * dw;
+    ts_o = ts_o + h * d_ts;
+    tr_o = tr_o + h * d_tr;
+    tf_o = tf_o + h * d_tf;
+    tc_o = tc_o + h * d_tc;
+}
+tau_o = tau;
