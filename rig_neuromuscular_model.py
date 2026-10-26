@@ -142,7 +142,31 @@ class Limb:
     #: cannot represent; `rig.PASSIVE_DAMPING_NMS_PER_RAD` is still available
     #: for reproducing the old behaviour.
     B: float = 0.25                                  # Nms/rad
+
+    #: Coulomb (dry) friction, Nm, opposing whichever way the limb is moving.
+    #: Added because viscous damping alone cannot satisfy both measurements at
+    #: once. Casabona et al. measure FIRST-CYCLE damping at 0.18-0.31 Nms/rad;
+    #: this project's own 46 control trials measure N = 6.5. Under linear
+    #: viscous damping those are inconsistent -- B = 0.25 gives N = 10.5 and
+    #: matching N = 6.5 needs B ~ 0.42, outside the measured range. Lin &
+    #: Rymer already report that a second-order LINEAR model is inadequate for
+    #: passive pendular lower-leg motion in NORMAL legs and that damping is
+    #: amplitude-dependent. Dry friction is the standard amplitude-dependent
+    #: term: it takes a fixed bite of energy per unit angle travelled, so it is
+    #: negligible against gravity on the first big swing and dominant on the
+    #: small ones, truncating the tail without altering the first cycle. It
+    #: also decays the envelope LINEARLY rather than exponentially, and brings
+    #: the limb to a dead stop once the restoring torque can no longer overcome
+    #: it -- both of which a real goniogram shows and a pure exponential does
+    #: not.
     K: float = rig.PASSIVE_STIFFNESS_NM_PER_RAD      # Nm/rad
+    #: 0.15 Nm reconciles the two measurements exactly: with B = 0.25 it
+    #: returns N = 6.50 against this cohort's measured 6.5, while leaving A0
+    #: (61.6 vs 61.6), first-trough depth (53.5 vs 54.7), R2n (1.17 vs 1.18)
+    #: and the plateau (118.3) essentially as they were. So the oscillation
+    #: count and the first-cycle damping are not in conflict after all -- a
+    #: linear damping law was.
+    coulomb_nm: float = 0.15                         # Nm, dry friction
     m: float = rig.SHANK_MASS_KG                     # kg
     l: float = rig.SHANK_LENGTH_M                    # m
     g: float = rig.GRAVITY_M_S2                      # m/s^2
@@ -540,7 +564,14 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
         tr = rfx.t_max_nm * av
         t_ext = t_tone + t_srs + tr
         te = _end_stop_torque(qv, qdv, es) + _extension_stop_torque(qv, qdv)
-        return ((-B * qdv - K * u - restore - t_ext - te) / J,
+        # Coulomb friction opposes motion and must not chatter about zero
+        # velocity: below a small velocity band it is scaled down linearly,
+        # which is the standard regularisation and keeps RK4 stable.
+        t_fric = 0.0
+        if L.coulomb_nm:
+            band = 0.5 / _DEG                 # 0.5 deg/s
+            t_fric = L.coulomb_nm * max(-1.0, min(1.0, qdv / band))
+        return ((-B * qdv - K * u - restore - t_ext - te - t_fric) / J,
                 tr, te, t_tone, t_srs, t_ext)
 
     state = np.array([q0, 0.0, 0.0, 0.0])   # q, qd, a, h
@@ -1140,6 +1171,13 @@ def release_height_probe(prof: Profile,
 
 # ── Self-check against the analytic solution the project already uses ────────
 
+def pts_N(sim) -> float:
+    """N as the shipped scorer counts it, for one simulated trace."""
+    import pendulastic_pt_score as _p
+    p = _p.compute_pt_params(sim["t"], sim["angle_deg"])
+    return float(p["N"]) if p else float("nan")
+
+
 def selftest(verbose: bool = True) -> bool:
     """Integrator vs rig_calibration.passive_envelope, and the sin-mode cost.
 
@@ -1151,10 +1189,13 @@ def selftest(verbose: bool = True) -> bool:
     the excursions a real pendulum test uses.
     """
     ok = True
-    L = Limb()
+    # The closed form has no dry-friction term, so the comparison is run on a
+    # friction-FREE limb. Comparing the shipped limb against it would report a
+    # spurious decay mismatch and hide a real one.
+    L = replace(Limb(), coulomb_nm=0.0)
     env = rig.passive_envelope(B=L.B, K=L.K, m=L.m, l=L.l, g=L.g)
 
-    sim = simulate(PROFILES["tone_L0"])
+    sim = simulate(Profile(name="selftest_frictionless", limb=L))
     t, ang = sim["t"], sim["angle_deg"]
     rel = t >= sim["release_t_s"]
     tt, aa = t[rel] - sim["release_t_s"], ang[rel]
@@ -1211,7 +1252,15 @@ def selftest(verbose: bool = True) -> bool:
         return float(tt_[c_[1]] - tt_[c_[0]]) if len(c_) >= 2 else float("nan")
 
     hp_lin = _first_half_period(sim)
-    sim_sin = simulate(replace(PROFILES["tone_L0"], gravity="sin"))
+    # What the dry friction costs in oscillation count, reported because it is
+    # the whole reason the term exists.
+    n_free = pts_N(simulate(Profile(name="n_free", limb=L)))
+    n_fric = pts_N(simulate(Profile(name="n_fric", limb=Limb())))
+    if verbose:
+        print(f"  oscillation count  frictionless {n_free:.2f}   with "
+              f"{Limb().coulomb_nm:g} Nm dry friction {n_fric:.2f}   "
+              f"(cohort measured 6.5)")
+    sim_sin = simulate(Profile(name="selftest_sin", limb=L, gravity="sin"))
     hp_sin = _first_half_period(sim_sin)
     if verbose and hp_lin == hp_lin and hp_sin == hp_sin:
         print(f"  1st half-period  linear {hp_lin*1000:.1f} ms   sin "

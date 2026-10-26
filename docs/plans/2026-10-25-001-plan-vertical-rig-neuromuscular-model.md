@@ -477,6 +477,26 @@ spec, all from adult controls:
 flexion and extension to differ -- the measured values are directional, which
 a single scalar B cannot represent.
 
+**And the rig needs about 0.15 Nm of DRY FRICTION, which is the opposite of
+what a rig builder's instinct says.** Viscous damping alone cannot satisfy both
+measurements at once: at the measured first-cycle B of 0.25 the model rings
+10.5 times, while this cohort's 46 control trials measure N = 6.5, and matching
+N under linear damping needs B ~ 0.42, outside the measured range. Lin & Rymer
+already report that a second-order linear model is inadequate for passive
+pendular lower-leg motion in NORMAL legs, with amplitude-dependent damping. Dry
+friction is the standard amplitude-dependent term: a fixed bite of energy per
+unit angle travelled, negligible against gravity on the first big swing and
+dominant on the small ones. At 0.15 Nm it gives **N = 6.50 against the measured
+6.5**, and leaves A0 (61.6), first-trough depth (53.5), R2n (1.17) and the
+plateau (118.3) essentially unchanged.
+
+So a very low-friction bearing would make the rig ring longer than a real leg
+and fail R15's envelope check for a reason that has nothing to do with tone.
+Specify the bearing and seal drag to land near 0.15 Nm at the knee axis, or be
+prepared to emulate it in the controller -- and measure it on the built rig,
+because it is the one passive term that is a property of the hardware rather
+than of the limb being imitated.
+
 `l = 0.6 m` and `J = m*l^2/3 = 0.6 kg m^2` describe a limb much larger than a
 typical adult shank. Winter's foot+leg for a 59.5 kg, 1.625 m adult gives
 m = 3.63 kg, shank length 0.400 m, mass-centre arm 0.242 m and

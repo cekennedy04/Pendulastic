@@ -1,8 +1,36 @@
-# Can the app grade severity? No, and the reason is structural
+# Can the app grade severity? Four grades of six, and it misplaces both ends
 
 **Date:** 2026-10-25
 **Code:** `severity_grading_test.py`, `rig_neuromuscular_model.py`
 **Run:** `python severity_grading_test.py`
+
+> **REVISED TWICE ON 2026-10-26, and the original headline is withdrawn. Read
+> this first.** The first measurements were taken on a model with two defects,
+> both since fixed against papers read in full:
+>
+> 1. *Short-range stiffness had the wrong shape* -- it fell to zero at the
+>    critical stretch instead of plateauing, so it was far too brief to collapse
+>    the first swing. Corrected to the published form: linear rise, plateau
+>    while lengthening, exponential decay on shortening, first swing only
+>    (Willaert et al.; De Groote et al.).
+> 2. *Damping was purely viscous*, which cannot satisfy two measurements at
+>    once. Measured first-cycle damping of 0.18-0.31 Nms/rad gives N = 10.5,
+>    while this cohort measures N = 6.5. Adding 0.15 Nm of dry friction -- the
+>    amplitude-dependent term Lin & Rymer say a linear model is missing -- gives
+>    N = 6.50 exactly and leaves A0, first-trough depth, R2n and the plateau
+>    unchanged.
+>
+> With both fixed the app grades far better than first reported: **four distinct
+> grades across five dialled severities (1, 1+, 2, 4), monotone, severe graded
+> severe.** The original Finding 1 -- "one grade across the whole range" -- is
+> withdrawn. Finding 3 is weakened: PT7's signal-to-confound ratio is 1.08, not
+> 0.10, and only `area_ratio` is still confound-dominated.
+>
+> **Findings 2 and 5 survive untouched and now carry the argument.** PT7 still
+> differs 6.9x between mechanisms at one intended severity, and a healthy,
+> critically damped limb is still graded "4". Neither depended on the ladder's
+> range. Finding 4, on the two velocity constants, rests on measured values and
+> is unaffected.
 
 ## The question and why it could not be answered before
 
@@ -33,28 +61,33 @@ decomposition. Five are distinct mechanisms: a catch that releases, two holds at
 different plateaus, a critically damped fall with no ring-down, and a mechanical
 end-stop.
 
-## Finding 1 -- the app resolves almost nothing through the mild range, then saturates
+## Finding 1 -- it resolves four grades of six, and misplaces both ends
 
 | profile | A0 | plateau | first trough | N | PT7 | grade |
 |---|---|---|---|---|---|---|
-| tone_L0 (healthy) | 61.6 | 118.3 | 54.7 | 10.50 | 0.156 | **1** |
-| tone_L1 | 58.0 | 122.1 | 24.9 | 10.00 | 0.234 | **1** |
-| tone_L2 | 50.6 | 130.4 | 21.3 | 9.00 | 0.240 | **1** |
-| tone_L3 | 50.6 | 134.1 | 0.2 | 7.00 | 0.387 | **1+** |
-| tone_L4 | 43.8 | 140.7 | 0.0 | 0.50 | 1.898 | **4** |
+| tone_L0 (healthy) | 61.6 | 118.3 | 53.5 | 6.50 | 0.157 | **1** |
+| tone_L1 | 58.3 | 121.7 | 23.5 | 5.00 | 0.277 | **1** |
+| tone_L2 | 54.6 | 125.5 | 25.9 | 4.50 | 0.286 | **1+** |
+| tone_L3 | 51.1 | 133.1 | 1.0 | 3.00 | 0.470 | **2** |
+| tone_L4 | 43.7 | 140.6 | 0.0 | 0.50 | 1.963 | **4** |
 
-So the app does move with severity: three distinct grades, monotone, severe
-graded severe. The earlier claim that it prints ONE grade across the whole
-range was an artifact of the mis-specified SRS, and is withdrawn.
+Monotone, four distinct grades. The scoring tracks dialled severity
+considerably better than this report first claimed.
 
-Two problems remain, and they are the same problem twice. The healthy limb is
-graded **"1"**, not "0" -- PT7 0.156 against a MAS-0 band ending at 0.12. And
-the grades are badly distributed: L0 through L2 all read "1", then L3 to L4
-jumps from "1+" straight to "4", skipping "2" and "3" entirely, because PT7
-leaps 0.387 to 1.898 the moment the oscillations collapse. Almost no resolution
-through the mild range, then saturation. That is the shape of a collapse
-detector, not of a scale -- and the mild range is where this cohort's legs
-actually sit.
+Three things are still wrong, and none of them is a correlation problem.
+
+**The healthy limb is graded "1", not "0".** PT7 0.157 against a MAS-0 band
+ending at 0.12. This limb is the passive standard R15 dials the unactuated rig
+to -- zero tone, zero reflex gain, and an oscillation count now matching the
+cohort's own measurement exactly. It should read healthy and it does not.
+
+**Grade "3" is skipped.** L3 reads "2" at 0.470 and L4 jumps to "4" at 1.963:
+PT7 more than quadruples in one step, the step where the oscillations collapse.
+The top of the scale is a cliff, not a gradient.
+
+**The resolution is worst where the data is.** L0 to L2 spans the whole mild
+range this cohort occupies, moves PT7 by 0.129, and yields two grades, one of
+which is wrong. The severities nobody has recorded get the clean separation.
 
 ## Finding 2 -- PT7 responds as much to the KIND of impairment as to its amount
 
