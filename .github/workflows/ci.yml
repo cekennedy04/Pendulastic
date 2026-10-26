@@ -62,6 +62,14 @@ jobs:
       # note were "run locally and the result stated in the change that makes
       # it" because CI gated exactly one file.
       #
+      # test_pt_zone_parity.py is gated because it is the ONLY thing keeping
+      # the Python and Rust verdict classifiers from drifting apart. pt_zone
+      # exists in both -- mobile-imu-core/src/pt_score.rs and
+      # pendulastic_pt_score.py -- and the project already shipped for a while
+      # with two threshold systems that disagreed on every trial because
+      # nothing compared them. An ungated parity test would not have caught
+      # that either.
+      #
       # Deliberately a file list and not `pytest tests/`: the GUI suite needs a
       # display, and three non-GUI files have failures unrelated to scoring
       # (see the changeset notes). Widening this is a follow-up, not a silent
@@ -71,7 +79,8 @@ jobs:
             tests/test_pt_score.py \
             tests/test_pt_report_common.py \
             tests/test_mas_validation.py \
-            tests/test_spasticity_grouping.py
+            tests/test_spasticity_grouping.py \
+            tests/test_pt_zone_parity.py
 
   webapp:
     runs-on: ubuntu-latest
