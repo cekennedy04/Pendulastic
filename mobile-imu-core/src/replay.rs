@@ -91,86 +91,12 @@ fn sub3(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Rotation from the zero pose, in degrees, SIGNED about the trial's swing
-/// axis. Quaternion delta rather than differenced Euler angles: pitch
-/// extraction is unreliable near ±90°, exactly where a pendulum swing's tibia
-/// passes.
-///
-/// This is the fix for the abs()-fold bug. The magnitude used to be
-/// `2*acos(|w|)`, which — being a magnitude — mirrors any swing that crosses
-/// the zero reference (the negative half reflected up to positive), corrupting
-/// N, A0, area_ratio and f. The magnitude is unchanged; `sign_axis` (from
-/// [`fallback_sign_axis`]) restores the sign so a zero-crossing swing keeps its
-/// direction. Mirrors `imu_calibration_tuner._swing_from_quats`'s axis-agnostic
-/// fallback (the phone core has no captured flexion axis; that is U3's
-/// orchestrator). Sign is dropped (magnitude only) when the trial never moved.
-fn swing_deg(q_zero: Quat, q_cur: Quat, sign_axis: Option<Vec3>) -> f64 {
+/// Rotation magnitude from the zero pose, in degrees. Quaternion delta rather
+/// than differenced Euler angles: pitch extraction is unreliable near ±90°,
+/// exactly where a pendulum swing's tibia passes.
+fn swing_deg(q_zero: Quat, q_cur: Quat) -> f64 {
     let d = qmul(qconj(q_zero), q_cur);
-    let mag = 2.0 * d[0].abs().clamp(-1.0, 1.0).acos().to_degrees();
-    match sign_axis {
-        Some(a) => {
-            // Sign from the RAW quaternion vector part projected onto the
-            // reference axis. The AHRS integrates `d` continuously, so this
-            // projection is continuous and flips exactly when the swing crosses
-            // the zero reference -- not at the w==0 (180 deg) hemisphere seam,
-            // where flipping would turn the magnitude's peak into a spurious
-            // step. For the physical swings this path sees (well under 180 deg)
-            // the raw and canonical vector parts are identical.
-            let proj = d[1] * a[0] + d[2] * a[1] + d[3] * a[2];
-            if proj < 0.0 {
-                -mag
-            } else {
-                mag
-            }
-        }
-        None => mag,
-    }
-}
-
-/// Per-trial reference axis that restores the SIGN of [`swing_deg`], so a swing
-/// crossing the zero reference is not folded. The mean direction of the raw
-/// quaternion vector parts across the trial, each aligned to the DEEPEST swing
-/// (the largest rotation from the zero pose) so the dominant motion reads
-/// positive. Pinning to the deepest swing rather than the first moving sample
-/// matters: the first sample is often the pre-release hold, which sits on the
-/// opposite side of a mid-drop zero capture and would otherwise flip the whole
-/// trial's sign. Mirrors `imu_calibration_tuner._fallback_sign_axis` op-for-op
-/// (an aligned mean, deliberately not an eigen-decomposition, so no eigensolver
-/// is needed here). `None` when nothing moved.
-fn fallback_sign_axis(q_zero: Quat, sample_q: &[Quat]) -> Option<Vec3> {
-    let mut vecs: Vec<Vec3> = Vec::with_capacity(sample_q.len());
-    let mut best: Option<Vec3> = None;
-    let mut best_n = 0.0_f64;
-    for &q in sample_q {
-        let d = qmul(qconj(q_zero), q);
-        let v = [d[1], d[2], d[3]];
-        let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-        if n < 1e-6 {
-            continue;
-        }
-        vecs.push(v);
-        if n > best_n {
-            best_n = n;
-            best = Some(v);
-        }
-    }
-    let best = best?;
-    let mut acc: Vec3 = [0.0; 3];
-    for v in vecs {
-        let aligned = if v[0] * best[0] + v[1] * best[1] + v[2] * best[2] >= 0.0 {
-            v
-        } else {
-            [-v[0], -v[1], -v[2]]
-        };
-        for k in 0..3 {
-            acc[k] += aligned[k];
-        }
-    }
-    let n = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
-    if !n.is_finite() || n < 1e-12 {
-        return None;
-    }
-    Some([acc[0] / n, acc[1] / n, acc[2] / n])
+    2.0 * d[0].abs().clamp(-1.0, 1.0).acos().to_degrees()
 }
 
 pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, TrialError> {
@@ -266,14 +192,10 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
 
     let (release_quat, release_idx) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
 
-    // Reference axis for the signed swing, computed once from the whole trial
-    // (the phone core has no captured flexion axis). See `fallback_sign_axis`.
-    let sign_axis = fallback_sign_axis(release_quat, &sample_q);
-
     let angle_raw: Vec<f64> = sample_q
         .iter()
         .map(|q| {
-            let sw = swing_deg(release_quat, *q, sign_axis);
+            let sw = swing_deg(release_quat, *q);
             match cfg.method {
                 Method::Relative => 180.0 - sw,
                 Method::Ockendon => ockendon_deg(sw, OCKENDON_FT_RATIO),
@@ -291,71 +213,4 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         release_quat,
         release_idx,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Unit quaternion for a rotation of `phi` (rad) about a unit axis.
-    fn q_about(axis: Vec3, phi: f64) -> Quat {
-        let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
-        let a = [axis[0] / n, axis[1] / n, axis[2] / n];
-        let h = 0.5 * phi;
-        [h.cos(), h.sin() * a[0], h.sin() * a[1], h.sin() * a[2]]
-    }
-
-    /// The abs()-fold regression: a swing that crosses the zero reference must
-    /// come back SIGNED, not mirrored up to positive.
-    #[test]
-    fn swing_that_crosses_zero_is_signed_not_folded() {
-        let axis = [1.0, 0.0, 0.0];
-        let zero = q_about(axis, 0.0);
-        let a = 30.0_f64.to_radians();
-        let seq: Vec<Quat> = (0..400)
-            .map(|i| {
-                let phi = a * (i as f64 / 399.0 * 4.0 * std::f64::consts::PI).sin();
-                q_about(axis, phi)
-            })
-            .collect();
-        let sign_axis = fallback_sign_axis(zero, &seq);
-        assert!(sign_axis.is_some(), "a moving trial must yield a sign axis");
-        let out: Vec<f64> = seq.iter().map(|q| swing_deg(zero, *q, sign_axis)).collect();
-
-        let min = out.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = out.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        assert!(min < -27.0, "negative half folded away: min={min}");
-        assert!(max > 27.0, "positive half missing: max={max}");
-        // Tracks the true signed angle, not its absolute value.
-        for (i, &v) in out.iter().enumerate() {
-            let phi = (a * (i as f64 / 399.0 * 4.0 * std::f64::consts::PI).sin()).to_degrees();
-            assert!((v - phi).abs() < 1e-6, "sample {i}: got {v}, want {phi}");
-        }
-    }
-
-    /// A monotonic swing that never crosses zero must be UNCHANGED from the old
-    /// unsigned magnitude (`2*acos(|w|)`) — this is why the golden E2E fixture
-    /// keeps passing after the fix.
-    #[test]
-    fn monotonic_swing_matches_the_unsigned_magnitude() {
-        let axis = [0.0, 1.0, 0.0];
-        let zero = q_about(axis, 0.0);
-        let seq: Vec<Quat> = (0..200)
-            .map(|i| q_about(axis, (i as f64 / 199.0) * 80.0_f64.to_radians()))
-            .collect();
-        let sign_axis = fallback_sign_axis(zero, &seq);
-        for q in &seq {
-            let d = qmul(qconj(zero), *q);
-            let mag = 2.0 * d[0].abs().clamp(-1.0, 1.0).acos().to_degrees();
-            let signed = swing_deg(zero, *q, sign_axis);
-            assert!((signed - mag).abs() < 1e-12, "signed {signed} != mag {mag}");
-        }
-    }
-
-    #[test]
-    fn a_still_trial_has_no_sign_axis() {
-        let zero = q_about([1.0, 0.0, 0.0], 0.0);
-        let seq = vec![zero; 50];
-        assert!(fallback_sign_axis(zero, &seq).is_none());
-    }
 }

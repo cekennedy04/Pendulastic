@@ -35,6 +35,7 @@ import numpy as np
 
 import workbench_engine as engine
 import rmse_pipeline_common as rpc
+import pt_report_common
 import sweep_mediapipe_config as mp_sweep
 from generate_paper_figures import BLUE, ORANGE, INK, MUTED, GRID, OUT_DIR, _style_axis
 from generate_paper_results_analysis import PARAMS, load_group_and_demo, load_mas_scores
@@ -76,6 +77,24 @@ def build_rows():
     imu_by_key = {t["trial_key"]: t for t in imu_trials if t["optitrack_path"] is not None}
     video_by_key = {t["trial_key"]: t for t in video_trials}
     common_keys = sorted(set(imu_by_key) & set(video_by_key))
+    # Honor excluded_trials.json. rpc.discover_imu_trials()/discover_video_trials()
+    # do NOT apply the registry -- only rpc.discover_scorable_trials() does -- so
+    # without this an operator-excluded trial still reaches every figure below.
+    # trial_key here is a sha256 fingerprint, NOT the registry's human-readable
+    # key, so the lookup must go through pt_report_common.trial_key() on the
+    # record's structural fields -- the same bridge discover_scorable_trials()
+    # uses. Comparing the fingerprint directly silently matches nothing.
+    _excluded = pt_report_common.load_excluded_trials()
+    _kept, _dropped = [], []
+    for _k in common_keys:
+        _t = imu_by_key[_k]
+        _legacy = pt_report_common.trial_key(
+            _t["participant"], _t["leg"], _t["condition"], _t["trial_number"])
+        (_dropped if _legacy in _excluded else _kept).append(_legacy if _legacy in _excluded else _k)
+    if _dropped:
+        common_keys = _kept
+        print(f"  excluded_trials.json: dropped {len(_dropped)} trial(s): "
+              + ", ".join(sorted(_dropped)))
 
     groups = load_group_and_demo()
     mas = load_mas_scores()

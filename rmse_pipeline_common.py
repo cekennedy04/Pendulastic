@@ -122,8 +122,17 @@ def parse_structural_fields(path, root):
         if low.startswith("session_") or low.startswith("position_") or low.startswith("height_"):
             continue
         cleaned = part
-        if low.startswith("participant_"):
-            cleaned = re.sub(r"^participant_\d+_?", "", cleaned, flags=re.I)
+        # Strip ANY study prefix (Control_/CHAT_/MINT_/DOSA_/Participant_), not
+        # only the legacy "Participant_" one. After the 2026-09-01 rename the
+        # participant folder otherwise survives into the condition
+        # ("mint_15_post_1month"), which corrupts pt_report_common.trial_key() --
+        # the excluded_trials.json lookup key -- in exactly the way
+        # discover_imu_trials()'s docstring warns about, so every registry
+        # exclusion silently stopped matching. pt_report_common._parse_trial_path
+        # was updated for the rename; this parallel parser was missed. Mirrors
+        # that function's helper use so the two stay in step.
+        if participant_paths.has_pid_prefix(cleaned):
+            cleaned = participant_paths.strip_leading_pid(cleaned)
         cleaned = re.sub(r"(left|right)", "", cleaned, flags=re.I).strip("_")
         if cleaned:
             cond_parts.append(_norm(cleaned))

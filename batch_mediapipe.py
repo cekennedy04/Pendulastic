@@ -33,6 +33,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
+import participant_paths
 import patient_identity_tracker as pit
 
 ROOT      = Path(__file__).parent
@@ -160,59 +161,95 @@ def _has_annotated_video(folder: Path, trial_n: int) -> bool:
     return any(pat.match(p.name) for p in folder.iterdir() if p.is_file())
 
 
+VIDEO_EXTS  = (".avi", ".mp4")
+_TRIAL_STEM = re.compile(r"trial[_ ]?(\d+)$", re.IGNORECASE)
+
+
+def _trial_videos(root: Path):
+    """Yield (video_path, trial_n) for every raw trial video under `root`.
+
+    Only ``Trial_{n}`` stems match, so the ``*_annotated.mp4`` files this
+    script writes are never mistaken for source footage.
+    """
+    for ext in VIDEO_EXTS:
+        for p in sorted(root.rglob(f"*{ext}")):
+            m = _TRIAL_STEM.fullmatch(p.stem)
+            if m and p.is_file():
+                yield p, int(m.group(1))
+
+
+def _output_participant(vid_dir: Path) -> str:
+    """The '<participant>' half of '<participant>_T_{n}_mediapipe_full_0.5.csv'.
+
+    Recording folders were renamed from Participant_{pid} to
+    Control_/CHAT_/MINT_{pid} on 2026-09-01, but every HPE CSV already on disk
+    was written under the old name. Naming outputs after the folder would put
+    CHAT_19_T_1_....csv beside the existing Participant_19_T_1_....csv instead
+    of overwriting it — and load_hpe_model_curves discovers HPE curves by
+    globbing ``*_T_{n}_*.csv``, so the trial would then be scored twice, once
+    off a stale copy. Keep writing the legacy name so re-extraction replaces
+    in place.
+    """
+    for part in reversed(vid_dir.parts):
+        pid = participant_paths.pid_from_dir_name(part)
+        if pid is not None:
+            return f"{participant_paths.LEGACY_PREFIX}_{pid}"
+    return "unknown"
+
+
 def discover_new_trials(force: bool = False):
     """
     Yield dicts for trials that are missing a CSV, an annotated video, or both.
     Each dict carries 'need_csv' and 'need_video' flags so process_trial knows
     which outputs to write. force=True treats every discovered trial as
     needing both, regardless of what already exists on disk.
+
+    Discovery is video-first. It used to walk
+    OptiTrack_Recordings/**/Trial_{n}_optitrack.csv and look for a video beside
+    it, which made an OptiTrack export a precondition for running pose
+    estimation at all — silently skipping 28 of the 285 trial videos on disk,
+    among them every MINT_17 pre session and both of MINT_14's post legs. A
+    trial with no OptiTrack reference still has a video worth tracking; it just
+    cannot be RMSE-scored against ground truth afterwards.
     """
-    for opti_csv in sorted(OPTI_ROOT.rglob("*_optitrack.csv")):
-        m = re.match(r"Trial_(\d+)_optitrack\.csv", opti_csv.name, re.IGNORECASE)
-        if not m:
+    seen = set()
+    for root in (REC_ROOT, OPTI_ROOT):
+        if not root.is_dir():
             continue
-        trial_n  = int(m.group(1))
-        opti_dir = opti_csv.parent
-        rel      = opti_dir.relative_to(OPTI_ROOT)
+        for video, trial_n in _trial_videos(root):
+            vid_dir = video.parent
+            rel     = vid_dir.relative_to(root)
+            # Some sessions carry the same trial in both trees; Recordings/ is
+            # walked first and wins, so each trial is yielded exactly once.
+            key = (str(rel).lower(), trial_n)
+            if key in seen:
+                continue
+            seen.add(key)
 
-        vid_candidates = [
-            opti_dir    / f"trial_{trial_n}.mp4",
-            opti_dir    / f"Trial_{trial_n}.mp4",
-            opti_dir    / f"trial_{trial_n}.avi",
-            opti_dir    / f"Trial_{trial_n}.avi",
-            REC_ROOT / rel / f"trial_{trial_n}.mp4",
-            REC_ROOT / rel / f"Trial_{trial_n}.mp4",
-            REC_ROOT / rel / f"trial_{trial_n}.avi",
-            REC_ROOT / rel / f"Trial_{trial_n}.avi",
-        ]
-        video = next((p for p in vid_candidates if p.exists()), None)
-        if video is None:
-            continue
+            participant = _output_participant(vid_dir)
+            opti_dir    = OPTI_ROOT / rel
 
-        vid_dir     = video.parent
-        participant = rel.parts[0] if rel.parts else "unknown"
+            has_csv = (not force) and (_has_mediapipe_csv(vid_dir, trial_n) or
+                                        _has_mediapipe_csv(opti_dir, trial_n))
+            has_vid = (not force) and _has_annotated_video(vid_dir, trial_n)
 
-        has_csv = (not force) and (_has_mediapipe_csv(vid_dir, trial_n) or
-                                    _has_mediapipe_csv(opti_dir, trial_n))
-        has_vid = (not force) and _has_annotated_video(vid_dir, trial_n)
+            if has_csv and has_vid:
+                print(f"  [skip] {participant} T{trial_n} — CSV + annotated video both exist")
+                continue
 
-        if has_csv and has_vid:
-            print(f"  [skip] {participant} T{trial_n} — CSV + annotated video both exist")
-            continue
+            status = []
+            if not has_csv: status.append("no CSV")
+            if not has_vid: status.append("no annotated video")
+            print(f"  [queue] {participant} T{trial_n} — {', '.join(status)}")
 
-        status = []
-        if not has_csv: status.append("no CSV")
-        if not has_vid: status.append("no annotated video")
-        print(f"  [queue] {participant} T{trial_n} — {', '.join(status)}")
-
-        yield dict(
-            video       = video,
-            vid_dir     = vid_dir,
-            trial_n     = trial_n,
-            participant = participant,
-            need_csv    = not has_csv,
-            need_video  = not has_vid,
-        )
+            yield dict(
+                video       = video,
+                vid_dir     = vid_dir,
+                trial_n     = trial_n,
+                participant = participant,
+                need_csv    = not has_csv,
+                need_video  = not has_vid,
+            )
 
 
 # ── Per-trial processing ──────────────────────────────────────────────────────

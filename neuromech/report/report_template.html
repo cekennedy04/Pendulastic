@@ -1,0 +1,286 @@
+<title>Knee Spasticity Emulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column (~68ch) with figures and tables allowed to run wider; lab-report treatment. */
+:root {
+  --paper: #f6f8f9; --surface: #ffffff; --ink: #1c2433; --muted: #5a6676; --rule: #d9e0e6;
+  --accent: #0b7285; --accent-soft: #e3f2f4; --warn: #c2410c; --warn-soft: #fbeee6;
+  --m0: #0b7285; --m1: #0f9d8a; --m1p: #b7791f; --m2: #d9692b; --m3: #c2410c; --m4: #8f1d22; --badge-ink: #ffffff;
+  --display: "Newsreader", Georgia, "Times New Roman", serif;
+  --body: "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #11161d; --surface: #182029; --ink: #e6ebf0; --muted: #9aa7b5; --rule: #2a3542;
+  --accent: #4fc3cf; --accent-soft: #15333a; --warn: #f0875a; --warn-soft: #3a2218;
+  --m0: #4fc3cf; --m1: #4fd1b0; --m1p: #e2b04a; --m2: #f0955a; --m3: #f0875a; --m4: #f06a70; --badge-ink: #11161d; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #11161d; --surface: #182029; --ink: #e6ebf0; --muted: #9aa7b5; --rule: #2a3542;
+  --accent: #4fc3cf; --accent-soft: #15333a; --warn: #f0875a; --warn-soft: #3a2218;
+  --m0: #4fc3cf; --m1: #4fd1b0; --m1p: #e2b04a; --m2: #f0955a; --m3: #f0875a; --m4: #f06a70; --badge-ink: #11161d; color-scheme: dark }
+body { background: var(--paper); color: var(--ink); font: 400 16px/1.62 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 80px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.col { max-width: 70ch; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2rem, 4.2vw, 2.9rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.75rem; margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.22rem; margin-top: 28px; }
+p, li { margin: 0; }
+.stack > * + * { margin-top: 14px; }
+.eyebrow { font: 500 0.78rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 1.13rem; color: var(--ink); }
+.meta { color: var(--muted); font-size: 0.92rem; }
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 0.9em; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.small { font-size: 0.82rem; color: var(--muted); }
+ul.tight { padding-left: 1.2em; display: grid; gap: 8px; }
+ol.steps { padding-left: 1.4em; display: grid; gap: 10px; }
+/* the answer block */
+.answer { margin-top: 28px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 22px 24px; display: grid; gap: 14px; }
+.answer h2 { margin: 0; padding: 0; border: 0; font-size: 1.3rem; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; }
+.fact { display: grid; gap: 2px; min-width: 0; }
+.fact b { font: 600 1.35rem/1.1 var(--display); }
+.fact span { font-size: 0.88rem; color: var(--muted); }
+/* equation */
+.eq { font-family: var(--display); font-size: clamp(1.05rem, 2.3vw, 1.4rem); text-align: center; padding: 18px 12px; background: var(--accent-soft); border-radius: 6px; overflow-x: auto; white-space: nowrap; }
+.eq small { display: block; font: 400 0.84rem/1.5 var(--body); color: var(--muted); white-space: normal; margin-top: 6px; }
+sub { font-size: 0.7em; }
+/* figures */
+figure { margin: 26px 0 0; }
+figure img { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: 4px; }
+figcaption { margin-top: 8px; font-size: 0.88rem; color: var(--muted); max-width: 90ch; }
+figcaption b { color: var(--ink); }
+/* tables */
+.tbl { overflow-x: auto; margin-top: 18px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+th { font: 600 0.74rem/1.3 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: var(--paper); position: sticky; top: 0; }
+tr:last-child td { border-bottom: 0; }
+.g { font: 600 0.78rem/1 var(--mono); padding: 3px 7px; border-radius: 3px; color: var(--badge-ink); display: inline-block; white-space: nowrap; }
+.g.m0 { background: var(--m0); } .g.m1 { background: var(--m1); } .g.m1p { background: var(--m1p); }
+.g.m2 { background: var(--m2); } .g.m3 { background: var(--m3); } .g.m4 { background: var(--m4); }
+.g.refused { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
+/* findings */
+.finding { display: grid; grid-template-columns: 7.5rem 1fr; gap: 6px 18px; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.finding:last-child { border-bottom: 0; }
+.finding .tag { font: 600 0.8rem/1.4 var(--mono); color: var(--warn); }
+.finding p { min-width: 0; }
+.note { background: var(--warn-soft); border-radius: 6px; padding: 14px 18px; }
+.mode { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+.mode > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.mode .k { font: 600 0.78rem/1 var(--mono); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.mode h3 { margin: 0; font-size: 1.12rem; }
+pre.block { font: 400 0.82rem/1.55 var(--mono); background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; overflow-x: auto; margin-top: 16px; }
+details { margin-top: 18px; }
+summary { cursor: pointer; font-weight: 600; }
+.refs li { font-size: 0.9rem; }
+@media (max-width: 560px) { .finding { grid-template-columns: 1fr; } h2 { font-size: 1.45rem; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+<header class="col stack">
+  <div class="eyebrow">Pendulastic · Aim 3 · research report · 26 Oct 2026</div>
+  <h1>A knee spasticity emulator on the motor rig</h1>
+  <p class="lede">How to program the existing LabVIEW motor rig to reproduce a pendulum test at any spasticity level, with odd behaviours and out-of-range values for each of the seven Popović parameters, so the phone app can be tested against a leg whose answer is known.</p>
+  <p class="meta">Built on the team's Notion design (the pendulum equation and the metric-to-controller table), the validated De Groote 2018 model already ported on <code>feat/pendulum-sim-validation</code>, this autumn's bench characterisation, and new literature. All code, scenario files and figures are in <code>neuromech/</code>.</p>
+</header>
+
+<section class="answer" aria-labelledby="ans">
+  <h2 id="ans">The short answer</h2>
+  <p class="col">Build it in three modes. <b>First, a scenario player</b>: the model runs offline in Python, LabVIEW plays the resulting 1 kHz angle file through the existing position loop, and the encoder log scores every run. That needs one new LabVIEW capability, a setpoint-array input, plus a re-tune and feedforward, because the rig as tuned today over-renders anything above 3 Hz. Then put the same model in the real-time loop (verified Formula Node code is ready). Last, run it in torque mode on a real shank on the vertical rig, where the motor supplies only the muscle torques.</p>
+  <div class="facts">
+    <div class="fact"><b>45 scenarios</b><span>MAS 0–3 ladder, 11 behaviours, a habituation series, out-of-range cases for each parameter, release artefacts</span></div>
+    <div class="fact"><b>0.30° max error</b><span>portable 1 kHz model vs the published model over 10 s, strong spasticity</span></div>
+    <div class="fact"><b>1×10⁻¹¹</b><span>Formula Node code vs the Python twin, every state, 3 000 ticks</span></div>
+    <div class="fact"><b>±65° needed</b><span>42 of 45 scenarios exceed today's ±45° limits</span></div>
+    <div class="fact"><b>2× at 5 Hz</b><span>rig over-renders the catch and clonus band; ILC fixes it in 3–4 runs</span></div>
+    <div class="fact"><b>8 blind spots</b><span>behaviours the production scorer grades wrongly, found before touching hardware</span></div>
+  </div>
+</section>
+
+<section>
+<h2>1. What the emulator has to do</h2>
+<div class="col stack">
+  <p>Patients cannot be programmed. A motor can. The emulator's job is to produce pendulum swings whose true parameters are known, so that three questions get clean answers.</p>
+  <ul class="tight">
+    <li><b>Does the phone measure what the leg did?</b> Every run is scored twice through the same production scorer, once from the 1 kHz encoder (truth) and once from the phone. This extends the bench accuracy work (0.58° static, 0.4 % ring frequency) from steps and rings to real pendulum-test swings.</li>
+    <li><b>Does the app grade correctly at every severity?</b> A programmed MAS ladder tests grade agreement at each level, which the clinic cannot supply on demand (77 % of our clinical legs are MAS 0).</li>
+    <li><b>Does the app refuse or flag what it should?</b> Each of the seven parameters, and the excursion gate, can be pushed past its bounds one at a time to check every flag and refusal path.</li>
+  </ul>
+  <p>A fourth use, interactive training for physical therapists, comes later, in Mode B with the torque sensor in the loop.</p>
+</div>
+</section>
+
+<section>
+<h2>2. The model</h2>
+<div class="col stack">
+  <p>The team's Notion page already states the right equation, and the repository already contains a tested implementation of it. It is De Groote et al. 2018, which explains the three hallmark pendulum-test features in spastic cerebral palsy (smaller first drop, fewer swings, a non-vertical rest) with three mechanisms: baseline tone, short-range stiffness on the first drop, and a delayed force-feedback stretch reflex. The port was checked against the authors' own MATLAB and passes 21 tests.</p>
+</div>
+<div class="eq">J·θ̈ + B·θ̇ + mgl·cos(θ + incline) + T<sub>wall</sub>(θ) = T<sub>tone</sub> + T<sub>SRS</sub> + T<sub>reflex</sub> + T<sub>modules</sub>
+  <small>inertia, passive damping, gravity (thigh inclined so the leg rests near 125°) and soft range walls, against the muscle torques. Reflex: delayed 50 ms, driven by the SRS and damping torques, 10 ms activation.</small></div>
+<div class="col stack" style="margin-top:18px">
+  <p>On top of the published terms, <code>model_rt.py</code> adds nine modules for behaviours the paper does not model. Each is off by default, so with all of them at zero the model is exactly the published one.</p>
+</div>
+<div class="tbl"><table>
+<thead><tr><th>Module</th><th>Torque law</th><th>Clinical picture</th><th>Main parameter it moves</th></tr></thead>
+<tbody>
+<tr><td>Extensor reflex (published)</td><td>k<sub>f</sub>(T<sub>SRS</sub>+T<sub>d</sub>)<sub>t−50ms</sub> + k<sub>df</sub>·d/dt(…)</td><td>Quadriceps spasticity</td><td>R2n, N, φmax</td></tr>
+<tr><td>Flexor reflex</td><td>g<sub>F</sub>·max(0, θ̇<sub>t−50ms</sub> − v<sub>th</sub>), opposes extension</td><td>Hamstring-dominant spasticity</td><td>φmax, area ratio</td></tr>
+<tr><td>Clasp-knife catch</td><td>velocity catch on the drop that shuts off past a stretch length</td><td>Catch, then sudden give</td><td>R2n, ωmin</td></tr>
+<tr><td>Clonus</td><td>decaying 5–8 Hz burst triggered at the end of the drop, sized in degrees</td><td>Clonic beats</td><td>N, f</td></tr>
+<tr><td>Lead-pipe / cogwheel</td><td>−T<sub>r</sub>·tanh(θ̇/ε)·(1 + m·sin 2πf<sub>cog</sub>t)</td><td>Parkinsonian rigidity</td><td>N, decay shape (linear, not exponential)</td></tr>
+<tr><td>Contracture</td><td>K<sub>c</sub>·max(0, θ<sub>c</sub> − θ)</td><td>Limited flexion</td><td>area ratio, f</td></tr>
+<tr><td>Hypotonia</td><td>low B, no tone</td><td>Flaccid leg</td><td>N, R2n</td></tr>
+<tr><td>Guarding</td><td>four fixed sinusoids 0.6–2.4 Hz</td><td>Patient not relaxed</td><td>period regularity</td></tr>
+<tr><td>Spasm</td><td>one half-sine torque pulse</td><td>Mid-swing spasm</td><td>φmax, N</td></tr>
+</tbody></table></div>
+
+<h3 class="col">Making it run in LabVIEW</h3>
+<div class="col stack">
+  <p>The published code integrates with RK4 and cubic-Hermite delay reads. A real-time loop needs something simpler, so the portable model uses a fixed 1 ms step, an integer ring buffer for the 50 ms delay, and <code>tanh</code> blends in place of <code>erf</code> (the Formula Node has no <code>erf</code>). Against the published model it stays within <b>0.000° passive, 0.03° nominal spastic and 0.30° strong spastic</b> over 10 s. The Formula Node form, four explicit Euler substeps per tick, stays within 0.34°. The Formula Node text itself was executed against Python test vectors and matches to 1×10⁻¹¹ on every state.</p>
+  <p>One bug found on the way is worth carrying into the LabVIEW build. The ring buffer must be 52 samples long, not 51. With 51, the "one sample older" index wraps onto the newest sample, the delayed derivative becomes garbage, and the reflex runs away by about 270°.</p>
+</div>
+</section>
+
+<section>
+<h2>3. The scenario library</h2>
+<div class="col stack">
+  <p><!--N_SCEN--> scenarios in five groups, each a setpoint file the rig can play and a row of expected scorer output. Out-of-range cases use exact kinematic transforms where the physics would change several parameters at once. Time-scaling moves only f and the two velocity terms. Amplitude-scaling moves only A0. A slow drift of the resting angle moves only where the scorer thinks the leg rests.</p>
+  <p>The MAS ladder is calibrated by bisection along the published severity axis (tone 2λ N·m, k<sub>f</sub> 0.75λ, k<sub>df</sub> 0.025λ) to the centre of each PT7 band: λ = 0.166, 0.379, 0.500, 0.587 and 0.654 for MAS 0, 1, 1+, 2 and 3. The passive model scores like our controls before any tuning: f 0.915 Hz against the healthy reference 0.914, rest 124.9° against the controls' ~125°, φmax 0.645 against 0.639.</p>
+</div>
+<figure><img src="fig/nm_ladder.png" alt="Left: knee angle versus time for the five programmed MAS presets. Right: PT7 against severity lambda, rising to 1.2 near lambda 0.85, falling to 0.5 at lambda 1.5, refused at lambda 3 and 5, and grading MAS 1 at lambda 6.">
+<figcaption><b>Programmed ladder, and the composite's inversion.</b> Along the published severity axis PT7 climbs to MAS 4, then falls back to MAS 2. Beyond λ ≈ 3 the swing shrinks below the 25° excursion gate and the grade is refused, and a nearly rigid leg at λ = 6 grades MAS 1. The paper's own nominal CP leg (λ = 1) grades MAS 4.</figcaption></figure>
+<figure><img src="fig/nm_behaviours.png" alt="Twelve small plots of programmed behaviours against a grey healthy swing, each titled with the MAS grade the production scorer assigns.">
+<figcaption><b>Programmed behaviours against a healthy swing (grey).</b> Each panel's title is the grade the production scorer assigns.</figcaption></figure>
+<figure><img src="fig/nm_matrix.png" alt="Heat map of every scenario's seven parameters relative to the healthy reference, with the expected MAS grade and flags.">
+<figcaption><b>Expected scorer output for every scenario</b>, coloured by log₂ of the value over the healthy reference. These are the numbers the encoder-scored rig runs should reproduce, and the numbers the phone is then tested against.</figcaption></figure>
+</section>
+
+<section>
+<h2>4. What the emulator already says about the scorer</h2>
+<p class="col">These come from running the scenarios through the production scorer, before any hardware run. Each is a concrete test case the rig can now reproduce on demand.</p>
+<div class="col" style="margin-top:12px">
+  <div class="finding"><span class="tag">inversion</span><p>PT7 is non-monotonic along the published severity axis (figure above). Severe legs grade milder, or are refused. This matches the U-shaped relaxation index Whelan et al. report at MAS 3. A monotonic grade map cannot be calibrated past MAS 2 on PT7 alone.</p></div>
+  <div class="finding"><span class="tag">rest drift</span><p>A healthy leg whose resting angle creeps 3 °/s after it has settled grades <b>MAS 4</b> (area ratio 0.84). This is the same failure seen with the phone on 2026-09-08, now reproduced with a perfect sensor. The scorer needs a settled-tail check, not only a better phone.</p></div>
+  <div class="finding"><span class="tag">missed</span><p>A clasp-knife catch grades MAS 0, a contracture grades MAS 0, and a leg that is not relaxed (guarding) grades MAS 0 with no warning. The literature's relaxation check, by EMG or phase plane, is still absent.</p></div>
+  <div class="finding"><span class="tag">wrong disorder</span><p>Lead-pipe rigidity grades MAS 1 with f = 0 (one swing). Rigidity and spasticity both read as "spastic", and the near-linear decay that tells them apart is not used.</p></div>
+  <div class="finding"><span class="tag">clonus</span><p>Clonic beats make the leg look <i>milder</i> (PT7 0.30 against 0.36 without clonus), because extra beats raise N. A 6 Hz beat is only ten phone samples per cycle at the gyro's ~60 Hz.</p></div>
+  <div class="finding"><span class="tag">anthropometry</span><p>The same healthy swing played 2× faster or slower (a shorter or longer leg) grades MAS 1. f and ω<sub>max</sub> are compared with an adult reference without any correction for leg length.</p></div>
+  <div class="finding"><span class="tag">plausibility</span><p>φmax is capped at exactly 1.000 when energy is injected on the return, rather than flagged as impossible for a passive leg. The 2 Hz frequency flag and both excursion refusals do fire as designed.</p></div>
+  <div class="finding"><span class="tag">protocol</span><p>Stopping the recording 3 s after release grades a healthy leg MAS 1. Five repeated drops with a habituating reflex drift one grade, from MAS 2 to 1+.</p></div>
+</div>
+</section>
+
+<section>
+<h2>5. Can the rig render it?</h2>
+<div class="col stack">
+  <p>Three constraints, all measurable now.</p>
+  <ul class="tight">
+    <li><b>Range.</b> In clinical geometry the leg is released 55° above where it hangs and swings 35–52° below it. 42 of the 45 scenarios exceed today's ±45° software limits. Confirm the arm's mechanical range and set ±65°. Failing that, render at 0.75× amplitude: A0 stays above the 25° gate, and every ratio parameter is amplitude-invariant.</li>
+    <li><b>Speed.</b> The clinical scenarios need 160–330 °/s. The rig has already reached 440 °/s. Only the deliberately extreme kinematic cases (560–700 °/s) are score-only.</li>
+    <li><b>Tracking.</b> Measured from the setpoint and encoder already in 23 SSR logs: the arm follows the command at 1 Hz, overshoots it by 10 % at 2 Hz and 26 % at 3 Hz, by about 2× at 5 Hz, and resonates at 6.35 Hz. That is exactly the band of the spastic catch and clonus.</li>
+  </ul>
+</div>
+<figure><img src="fig/nm_range.png" alt="Range and peak speed needed for each scenario against the current plus or minus 45 degree limits and the 440 degrees per second the rig has reached.">
+<figcaption><b>Range and speed each scenario needs.</b> Red bars exceed the current limits.</figcaption></figure>
+<figure><img src="fig/nm_rig_ilc.png" alt="Left: measured setpoint-to-encoder gain rising to about 2 near 6 Hz, with a second-order fit. Middle: an intended MAS 2 swing, the uncorrected rendering, and the corrected one. Right: tracking error falling by two orders of magnitude over five iterations.">
+<figcaption><b>Why the commanded trajectory must be corrected.</b> Because every scenario is repeated, iterative learning control can correct each command from the previous run's encoder log (<code>python -m neuromech.ilc CMD.csv RUN.bin</code>). On the identified plant it removes the error in 3–4 runs. Real hardware will floor at the rig's noise and nonlinearity, so re-tuning for tracking and adding feedforward come first. Whatever the tracking, score the encoder, not the command.</figcaption></figure>
+</section>
+
+<section>
+<h2>6. The LabVIEW program</h2>
+<p class="col">Everything is an addition to the existing StretchExperiment host and real-time project. The full specification is <code>neuromech/labview/LABVIEW_PROGRAM_SPEC.md</code>.</p>
+<div class="mode">
+  <div><span class="k">Mode A · now</span><h3>Scenario player</h3><p>Reads a 1 kHz setpoint file (angle, velocity and acceleration feedforward, phase) and plays it through the existing position PID. Needs a setpoint-array input, feedforward, and four safety trips. Every file starts with the shared sync-pulse and minimum-jerk preamble from <code>motor_reference.py</code>.</p></div>
+  <div><span class="k">Mode B · next</span><h3>Model in the loop</h3><p>The Formula Node model integrated each tick, with its angle as the setpoint. Parameters live on the front panel. Adding the torque sensor's reading to the model makes it interactive, so a PT can feel the virtual leg (admittance rendering).</p></div>
+  <div><span class="k">Mode C · vertical rig</span><h3>Muscles on a real shank</h3><p>Torque control supplies only tone, SRS, reflex and module torques; gravity and inertia are physical. Needs about 4 N·m for MAS 0–3, 15 N·m for severe legs and 26 N·m for real-size clonus, so a gearbox. This is the only mode in which the app's fused angle can be graded.</p></div>
+</div>
+<pre class="block">[before the loop]  read &lt;sid&gt;.csv into sp[], vel[], acc[]; check range, speed and length
+[Timed Loop 1 kHz] e = sp[k] − encoder
+                   u = PID(e) + Kv·vel[k] + Ka·acc[k]           ← feedforward is new
+                   trip if |e| &gt; 10° for 50 ms, |θ| &gt; limit + 5°, |θ̇| &gt; 600 °/s, or NaN
+                   log time, position, velocity, setpoint, torque, phase (ch6), scenario (ch7)
+[file name]        &lt;sid&gt;_rep&lt;n&gt;.bin                               ← no more manual pairing</pre>
+<h3 class="col">A session</h3>
+<ol class="steps col">
+  <li>Zero and arm the rig as today.</li>
+  <li>Run the 20 s chirp (0.2–10 Hz, ±8°) to identify the plant and the feedforward gains. Stop if the resonance has moved more than 10 % since the last session.</li>
+  <li>Play the MAS 2 preset ten times to measure repeatability.</li>
+  <li>Play the ladder in random order, three times each, then the behaviours, out-of-range cases and artefacts. For each run: start the phone, start the log, play the file, let the app auto-stop, stop the phone, stop the log.</li>
+  <li>Run the ILC tool on any scenario whose delivered PT7 left its band, and play it again.</li>
+</ol>
+<p class="col" style="margin-top:14px"><b>Acceptance per scenario, encoder-scored:</b> delivered PT7 inside the intended band, each parameter within the bench MDC95, tracking RMSE under 1°. The phone is then compared run by run against the encoder-scored parameters.</p>
+</section>
+
+<section>
+<h2>7. Decisions and gaps</h2>
+<div class="tbl"><table>
+<thead><tr><th>#</th><th>Item</th><th>Why it matters</th><th>Proposed action</th></tr></thead>
+<tbody>
+<tr><td class=num>1</td><td>Mechanical range of the arm</td><td>The ladder needs +55° to −52°</td><td>Measure it. Set ±65° if safe, otherwise render at 0.75×</td></tr>
+<tr><td class=num>2</td><td>Setpoint-array input</td><td>Mode A does not exist without it</td><td>Add file read and array indexing beside the Stretch profile generator</td></tr>
+<tr><td class=num>3</td><td>Tracking tune and feedforward</td><td>2× over-rendering above 4 Hz</td><td>Chirp run, then gains, then ILC</td></tr>
+<tr><td class=num>4</td><td>Motor torque and gearbox</td><td>Mode C needs 4–26 N·m</td><td>Read the ServoDisc rating and size a gearbox</td></tr>
+<tr><td class=num>5</td><td>Horizontal plane</td><td>Modes A and B grade the phone's gyro channel only</td><td>Tilted or vertical rig (already planned); Mode C is the end state</td></tr>
+<tr><td class=num>6</td><td>Where the presets come from</td><td>The ladder is calibrated to the scorer's own bands: fine for phone-vs-encoder testing, circular for validating the grade map</td><td>Fit the model to clinic recordings with a clinician MAS (MINT/CHAT and Monica's waveforms); use per-grade medians</td></tr>
+<tr><td class=num>7</td><td>Scorer fixes the scenarios point to</td><td>Rest drift, relaxation, rigidity, anthropometry, plausibility (section 4)</td><td>Treat each failing scenario as a regression test for the scorer</td></tr>
+</tbody></table></div>
+</section>
+
+<section>
+<h2>8. What the literature supports</h2>
+<div class="col stack">
+  <p><b>Model choice.</b> He et al. 1997 showed no single stretch-reflex parameter spans the severity range; simultaneous gain and threshold changes do. That is why the ladder moves tone and both gains together. Le Cavorzin et al. 2001 and Fee &amp; Foulds 2004 fitted pendulum-test models with separate agonist and antagonist terms, the basis for the flexor module and area-ratio asymmetry. De Groote et al. 2018 is the only model shown to reproduce all three hallmark kinematic features, so it is the engine. Willaert et al. 2024 identify neural and non-neural parameters per patient from instrumented tests, which is the route to patient-derived presets (decision 6).</p>
+  <p><b>Robotic precedents.</b> The Haptic Elbow Spasticity Simulator recreated MAS 1, 1+, 2 and 3: clinicians reached 100 % agreement with the source patients, and inter-rater agreement was substantial (κ ≈ 0.63–0.65). Park et al. 2017 parameterised each MAS grade with three characteristics. Pei et al. 2023 rendered spasticity, lead-pipe and cogwheel rigidity on a series-elastic arm and clinicians classified them with more than 87 % accuracy. Cooney et al. 2022 used a humanoid robot to evaluate IMU-based spasticity measurement. All are elbow or upper-limb devices driven by a clinician's hand; none emulates a knee pendulum test, where the motion comes from gravity and the device must render a free swing.</p>
+  <p><b>What the pendulum test can detect.</b> Whelan et al. 2018 (131 knees) found the metrics separate MAS 0 from MAS &gt; 0 but cannot grade severity. They also found the relaxation index U-shaped at MAS 3, which the emulator reproduces in PT7. Aleksić et al. 2021 proposed a pendulum-based scale that also types the spasticity (flexion or extension), which the flexor and extensor modules can now test.</p>
+</div>
+<details class="col"><summary>References (retrieved from PubMed; DOIs linked)</summary>
+<ol class="refs" style="padding-left:1.3em; display:grid; gap:6px; margin-top:10px">
+<li>He J, Norling WR, Wang Y. A dynamic neuromuscular model for describing the pendulum test of spasticity. IEEE Trans Biomed Eng 1997;44:175–84. <a href="https://doi.org/10.1109/10.554764">doi:10.1109/10.554764</a></li>
+<li>Le Cavorzin P, et al. A comprehensive model of spastic hypertonia derived from the pendulum test of the leg. Muscle Nerve 2001. <a href="https://doi.org/10.1002/mus.1196">doi:10.1002/mus.1196</a></li>
+<li>Fee JW, Foulds RA. Neuromuscular modeling of spasticity in cerebral palsy. IEEE TNSRE 2004;12:55–64. <a href="https://doi.org/10.1109/TNSRE.2003.819926">doi:10.1109/TNSRE.2003.819926</a></li>
+<li>De Groote F, Blum KP, Horslen BC, Ting LH. Interaction between muscle tone, short-range stiffness and increased sensory feedback gains explains key kinematic features of the pendulum test in spastic cerebral palsy. PLoS One 2018;13:e0205763. <a href="https://doi.org/10.1371/journal.pone.0205763">doi:10.1371/journal.pone.0205763</a></li>
+<li>Willaert J, et al. Identification of neural and non-neural origins of joint hyper-resistance based on a novel neuromechanical model. IEEE TNSRE 2024. <a href="https://doi.org/10.1109/TNSRE.2024.3381739">doi:10.1109/TNSRE.2024.3381739</a></li>
+<li>Park HS, Kim J, Damiano DL. Development of a Haptic Elbow Spasticity Simulator (HESS). IEEE TNSRE 2012;20:361–70. <a href="https://doi.org/10.1109/TNSRE.2012.2195330">doi:10.1109/TNSRE.2012.2195330</a></li>
+<li>Kim J, Park HS, Damiano DL. Accuracy and reliability of haptic spasticity assessment using HESS. IEEE EMBC 2011. <a href="https://doi.org/10.1109/IEMBS.2011.6092104">doi:10.1109/IEMBS.2011.6092104</a></li>
+<li>Park JH, et al. Development of elbow spasticity model for objective training of spasticity assessment of patients post stroke. IEEE ICORR 2017. <a href="https://doi.org/10.1109/ICORR.2017.8009237">doi:10.1109/ICORR.2017.8009237</a></li>
+<li>Pei Y, Mansouri M, Zallek CM, Hsiao-Wecksler ET. Modeling, control, and clinical validation of an upper-limb medical education task trainer for elbow spasticity and rigidity assessment. IEEE TNSRE 2023;31:3320–30. <a href="https://doi.org/10.1109/TNSRE.2023.3304951">doi:10.1109/TNSRE.2023.3304951</a></li>
+<li>Cooney et al. Humanoid robot based platform to evaluate the efficacy of using inertial sensors for spasticity assessment in cerebral palsy. IEEE JBHI 2022. <a href="https://doi.org/10.1109/JBHI.2021.3088133">doi:10.1109/JBHI.2021.3088133</a></li>
+<li>Whelan A, Sexton A, Jones M, O'Connell C, McGibbon CA. Predictive value of the pendulum test for assessing knee extensor spasticity. J Neuroeng Rehabil 2018. <a href="https://doi.org/10.1186/s12984-018-0411-x">doi:10.1186/s12984-018-0411-x</a></li>
+<li>Aleksić A, et al. New scale for assessing spasticity based on the pendulum test. Comput Methods Biomech Biomed Engin 2021. <a href="https://doi.org/10.1080/10255842.2021.1970144">doi:10.1080/10255842.2021.1970144</a></li>
+</ol></details>
+</section>
+
+<section>
+<h2>9. Files and how to regenerate</h2>
+<div class="tbl"><table>
+<thead><tr><th>Piece</th><th>Path</th><th>State</th></tr></thead>
+<tbody>
+<tr><td>Published model (RK4, checked against the authors' MATLAB)</td><td class=mono>neuromech/pendulum_sim.py</td><td>21 tests pass</td></tr>
+<tr><td>Portable 1 kHz model and nine modules</td><td class=mono>neuromech/model_rt.py</td><td>8 tests pass</td></tr>
+<tr><td>Formula Node port, test vectors, verifier</td><td class=mono>neuromech/labview/</td><td>matches to 1×10⁻¹¹</td></tr>
+<tr><td>Scenario library and build</td><td class=mono>python -m neuromech.build</td><td>45 setpoint files and a manifest</td></tr>
+<tr><td>ILC tool</td><td class=mono>python -m neuromech.ilc CMD.csv RUN.bin</td><td>converges on self-test; untested on hardware</td></tr>
+<tr><td>Figures (deck and publication)</td><td class=mono>python neuromech/nm_figs.py</td><td>done</td></tr>
+<tr><td>LabVIEW VIs</td><td class=mono>neuromech/labview/LABVIEW_PROGRAM_SPEC.md</td><td>specified, not built</td></tr>
+</tbody></table></div>
+</section>
+
+<section>
+<h2>Appendix · every scenario</h2>
+<p class="col">Expected production-scorer output from the model trace (Pendulastic angle, 100 Hz, detrend off). "range" marks scenarios outside today's ±45° limits. Torque is the peak active muscle torque Mode C would have to supply.</p>
+<div class="tbl"><table>
+<thead><tr><th>ID</th><th>Group</th><th>Scenario</th><th class=num>A0°</th><th class=num>R2n</th><th class=num>N</th><th class=num>φmax</th><th class=num>f Hz</th><th class=num>area</th><th class=num>PT7</th><th>MAS</th><th class=num>N·m</th><th>Flags</th></tr></thead>
+<tbody>
+<!--SCENARIO_ROWS-->
+</tbody></table></div>
+</section>
+</div>

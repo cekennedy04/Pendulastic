@@ -71,6 +71,43 @@ def _algo_fingerprint(cfg) -> str:
     return h.hexdigest()[:12]
 
 
+def _angle_variant() -> str:
+    """Which swing-angle extraction is in this tree, in words.
+
+    The fingerprint above identifies a variant uniquely but says nothing about
+    WHICH one, so a run had to be labelled by hand from the branch name -- and
+    an uncommitted `git revert` that follows you across a checkout makes the
+    branch name a lie. That mislabelled two runs on 2026-10-23. 61d5723 added
+    `swing_about_axis_deg` to imu_flex_axis.py and its revert removes it, so
+    the tree can simply be asked.
+    """
+    try:
+        with open(os.path.join(BASE, "imu_flex_axis.py"), encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return "UNKNOWN (imu_flex_axis.py could not be read)"
+    if "def swing_about_axis_deg" in src:
+        return "SIGNED  (swing_about_axis_deg present: 61d5723 applied)"
+    return "ABS FOLD (no swing_about_axis_deg: 61d5723 absent or reverted)"
+
+
+def _tree_state() -> str:
+    """Branch, commit and dirtiness -- the provenance a result needs quoting."""
+    import subprocess
+
+    def git(*a):
+        try:
+            return subprocess.run(("git",) + a, cwd=BASE, capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except Exception:
+            return ""
+    head = git("rev-parse", "--short", "HEAD") or "?"
+    branch = git("rev-parse", "--abbrev-ref", "HEAD") or "?"
+    dirty = [l for l in (git("status", "--porcelain") or "").splitlines() if l.strip()]
+    suffix = f", {len(dirty)} uncommitted change(s)" if dirty else ", clean"
+    return f"{branch} @ {head}{suffix}"
+
+
 def _cache_path(fp: str) -> str:
     return os.path.join(BASE, "Model_Analysis_Outputs", "_cache",
                         f"test_retest_params_{fp}.json")
@@ -99,6 +136,35 @@ DIAG = ["neutral_deg", "pre_release_deg", "release_t_s", "post_release_s"]
 MIN_REPEATS = 3
 
 
+def icc1(frame, col):
+    """ICC(1,1): one-way random effects, single measurement.
+
+    At module scope, not nested in main(), so retest_compare.py can import it
+    rather than keep its own copy -- two copies of a statistic can disagree
+    while both look right, which is the failure this repo has been bitten by
+    before (see shell-list.mjs's header on the same point).
+
+    `frame` needs a "group" column; rows with fewer than 2 repeats in a group
+    are dropped, and fewer than 3 usable groups returns None.
+    """
+    import numpy as np
+
+    groups = [g[col].dropna().values for _, g in frame.groupby("group")]
+    groups = [g for g in groups if len(g) >= 2]
+    if len(groups) < 3:
+        return None
+    k = np.mean([len(g) for g in groups])
+    allv = np.concatenate(groups)
+    n = len(groups)
+    gm = allv.mean()
+    msb = sum(len(g) * (g.mean() - gm) ** 2 for g in groups) / (n - 1)
+    msw = sum(((g - g.mean()) ** 2).sum() for g in groups) / (len(allv) - n)
+    icc = (msb - msw) / (msb + (k - 1) * msw) if (msb + (k - 1) * msw) else np.nan
+    sem = math.sqrt(msw)
+    return {"icc": icc, "sem": sem, "mdc95": 1.96 * math.sqrt(2) * sem,
+            "mean": gm, "n_groups": n, "n_trials": len(allv)}
+
+
 def main() -> int:
     import numpy as np
     import pandas as pd
@@ -111,8 +177,11 @@ def main() -> int:
     cfg = load_config()
     fp = _algo_fingerprint(cfg)
     cache_file = _cache_path(fp)
+    variant = _angle_variant()
+    print(f"angle extraction      {variant}", flush=True)
+    print(f"tree                  {_tree_state()}", flush=True)
     print(f"algorithm fingerprint {fp}", flush=True)
-    print(f"cache {cache_file}", flush=True)
+    print(f"cache                 {cache_file}", flush=True)
     trials = batch.discover_trials()
     print(f"{len(trials)} trials discovered", flush=True)
 
@@ -163,6 +232,11 @@ def main() -> int:
                     rec["release_t_s"] = None
                     rec["post_release_s"] = None
                 cache[key] = rec
+        # Stamped into the cache so retest_compare.py can label each side
+        # without being told which variant it is looking at. Keys beginning
+        # "__" are never trial keys, so the scoring loop above never sees it.
+        cache["__meta__"] = {"fingerprint": fp, "angle_extraction": variant,
+                             "tree": _tree_state()}
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         tmp = cache_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -198,23 +272,6 @@ def main() -> int:
     if r.empty:
         return 1
 
-    def icc1(frame, col):
-        """ICC(1,1): one-way random effects, single measurement."""
-        groups = [g[col].dropna().values for _, g in frame.groupby("group")]
-        groups = [g for g in groups if len(g) >= 2]
-        if len(groups) < 3:
-            return None
-        k = np.mean([len(g) for g in groups])
-        allv = np.concatenate(groups)
-        n = len(groups)
-        gm = allv.mean()
-        msb = sum(len(g) * (g.mean() - gm) ** 2 for g in groups) / (n - 1)
-        msw = sum(((g - g.mean()) ** 2).sum() for g in groups) / (len(allv) - n)
-        icc = (msb - msw) / (msb + (k - 1) * msw) if (msb + (k - 1) * msw) else np.nan
-        sem = math.sqrt(msw)
-        return {"icc": icc, "sem": sem, "mdc95": 1.96 * math.sqrt(2) * sem,
-                "mean": gm, "n_groups": n, "n_trials": len(allv)}
-
     print(f"{'parameter':16s} {'ICC(1,1)':>9s} {'SEM':>9s} {'MDC95':>9s} "
           f"{'mean':>9s} {'CV%':>7s} {'groups':>7s}")
     out = []
@@ -230,7 +287,8 @@ def main() -> int:
               f"{s['mean']:9.3f} {cv:7.1f} {s['n_groups']:7d}")
 
     out_csv = _out_csv(fp)
-    pd.DataFrame([{**o, "fingerprint": fp} for o in out]).to_csv(out_csv, index=False)
+    pd.DataFrame([{**o, "fingerprint": fp, "angle_extraction": variant,
+                   "tree": _tree_state()} for o in out]).to_csv(out_csv, index=False)
     print(f"\nwrote {out_csv}")
 
     # ---- where A0's scatter comes from -----------------------------------
