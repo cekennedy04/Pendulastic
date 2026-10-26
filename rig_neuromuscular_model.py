@@ -133,7 +133,15 @@ class Limb:
     control excursion, because A0 = release - rest and the controls' A0 is what
     we can actually see. Treat it as a cohort constant, not a published one.
     """
-    B: float = rig.PASSIVE_DAMPING_NMS_PER_RAD       # Nms/rad
+    #: MEASURED, not inherited. Casabona et al. report absolute healthy knee
+    #: damping of 0.18 +/- 0.08 Nms/rad in flexion and -0.31 +/- 0.09 in
+    #: extension (10 control adults, EMG-monitored, unnormalised). The 0.5 this
+    #: project inherited from Popovic & Bajd is 1.6-2.8x that, so the default
+    #: is now the midpoint of the measured range. Note the measured values are
+    #: DIRECTIONAL -- flexion and extension differ -- which a single scalar
+    #: cannot represent; `rig.PASSIVE_DAMPING_NMS_PER_RAD` is still available
+    #: for reproducing the old behaviour.
+    B: float = 0.25                                  # Nms/rad
     K: float = rig.PASSIVE_STIFFNESS_NM_PER_RAD      # Nm/rad
     m: float = rig.SHANK_MASS_KG                     # kg
     l: float = rig.SHANK_LENGTH_M                    # m
@@ -148,6 +156,48 @@ class Limb:
     def gravity_term(self) -> float:
         """mgl/2, the linearised gravitational stiffness in Nm/rad."""
         return 0.5 * self.m * self.g * self.l
+
+
+#: Winter's foot+leg segment fractions (Dempster, adapted by Winter 2009), as
+#: used by the pendulum-test literature that reports absolute K and B. Segment
+#: length is knee-joint-centre to medial malleolus, about 0.246 of stature.
+WINTER_MASS_FRAC = 0.0610
+WINTER_COM_FRAC = 0.606          # mass centre, from the knee
+WINTER_KPROX_FRAC = 0.735        # radius of gyration about the knee
+WINTER_SHANK_OF_HEIGHT = 0.246
+
+
+def limb_from_anthropometry(mass_kg: float, height_m: float,
+                            B: float = 0.25, K: float = None,
+                            q_rest_deg: float = 62.0) -> "Limb":
+    """A limb whose inertia is consistent with a real person.
+
+    Written because the inherited parameter set is NOT self-consistent, and
+    the inconsistency matters for a rig that will be machined. Bajd & Bowman's
+    m = 5 kg with l = 0.6 m and J = m*l^2/3 = 0.6 kg m^2 pairs a large-adult
+    MASS with a shank LONGER than any adult's and a uniform-rod inertia that
+    is 1.62x low for a shank-foot complex. Winter's fractions give, for a
+    59.5 kg / 1.625 m adult, m = 3.63 kg, L = 0.400 m, mass-centre arm
+    0.242 m and J = 0.313 kg m^2 -- half the assumed inertia; for 85 kg /
+    1.80 m, 5.19 kg, 0.443 m and 0.549.
+
+    `Limb` stores m and l and derives J as m*l^2/3, so this returns the
+    EQUIVALENT uniform rod: the l that reproduces the anthropometric J and
+    gravity term. That keeps one inertia definition in the dataclass while
+    letting a caller specify a real person.
+    """
+    m = WINTER_MASS_FRAC * mass_kg
+    L = WINTER_SHANK_OF_HEIGHT * height_m
+    d = WINTER_COM_FRAC * L                  # mass-centre arm
+    J = m * (WINTER_KPROX_FRAC * L) ** 2
+    # Equivalent rod: J = m_eq*l_eq^2/3 and gravity m_eq*g*l_eq/2 = m*g*d.
+    # Solving both gives l_eq = 2*J/(3*m*d)*3/2 ... take l_eq from gravity and
+    # scale the mass so the inertia also matches.
+    l_eq = 2.0 * d
+    m_eq = 3.0 * J / (l_eq ** 2)
+    out = Limb(B=B, K=(rig.PASSIVE_STIFFNESS_NM_PER_RAD if K is None else K),
+               m=m_eq, l=l_eq, q_rest_deg=q_rest_deg)
+    return out
 
 
 @dataclass(frozen=True)
@@ -173,21 +223,37 @@ class Tone:
     rather than to reflex gain, which is why this term is not slaved to the
     reflex trigger.
 
-    `srs_nm_per_rad` and `srs_yield_deg` are short-range stiffness: cross-
-    bridges hold for a small stretch and then YIELD, so the torque rises
-    steeply over the first few degrees of motion and then goes away. "Goes
-    away", not "saturates", is the load-bearing word and the first
-    implementation here got it wrong: holding the torque at its maximum once
-    the bridges broke left a standing extensor torque of 17 Nm, which drove
-    the joint 8 deg past full extension and put the plateau at a knee angle of
-    188. A yielded bridge carries no force. So SRS is non-zero only while the
-    limb is bound, it stops the instant the stretch exceeds the yield, and it
-    re-binds when the limb shortens -- which is what makes it collapse the
-    FIRST swing and leave the plateau alone.
+    `srs_nm_per_rad`, `srs_yield_deg` and `srs_decay_s` are short-range
+    stiffness, and this element has now been wrong here in two opposite ways,
+    so the correct shape is worth stating plainly. Torque rises LINEARLY with
+    stretch up to a critical stretch, then PLATEAUS at that value for as long
+    as the muscle keeps lengthening, then DECAYS exponentially once the muscle
+    starts to shorten, and does not re-arm within the trial.
+
+    Draft one held the plateau forever and never decayed, which left a 17 Nm
+    standing extensor torque, drove the joint 8 deg past full extension and
+    put the plateau at a knee angle of 188. Draft two over-corrected to zero
+    at yield, which made the element far too brief -- 400 Nm/rad moved A0 by
+    0.3 deg -- and meant it could not do the job the literature gives it.
+
+    The plateau is the published form. Willaert et al. give
+    F_SRS = k_SRS * dl for stretch below a normalized critical stretch
+    delta = 5.7e-3, with k_SRS = 200 in normalized muscle units, and De Groote
+    et al. describe the resulting torque as "high and nearly constant during
+    the first swing excursion". Those constants are muscle-level (normalized
+    fiber stretch against peak isometric force) and do NOT convert to a
+    joint-level Nm/rad without a musculoskeletal model, so the FORM is taken
+    from them and the magnitude here is still set by what the profile needs.
+
+    `srs_first_swing_only` reflects the other published assumption: SRS
+    "disappears with prior movement", so Willaert models it on the first swing
+    excursion alone. With it True the element arms once and never returns.
     """
     torque_nm: float = 0.0           # constant extensor torque
     srs_nm_per_rad: float = 0.0      # short-range stiffness slope
-    srs_yield_deg: float = 3.0       # stretch at which the bridges yield
+    srs_yield_deg: float = 3.0       # critical stretch; torque plateaus here
+    srs_decay_s: float = 0.15        # decay once the muscle shortens
+    srs_first_swing_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -257,7 +323,14 @@ class Reflex:
     v_thr_deg_s: float = 60.0       # stretch-velocity threshold
     g_len: float = 0.0              # per deg above threshold
     q_thr_deg: float = 20.0         # stretch-angle threshold (flexion)
-    delay_s: float = 0.040          # afferent + electromechanical delay
+    delay_s: float = 0.080          # afferent + electromechanical delay.
+                                    #  80 ms is Willaert et al.'s value, fitted
+                                    #  on pendulum trials with force feedback.
+                                    #  De Groote et al. use 50 ms; the prior
+                                    #  models they tabulate span 30-140 ms. It
+                                    #  was 40 ms here, taken from an EMD study
+                                    #  of 12 children, which is a different
+                                    #  quantity from a reflex loop delay.
     tau_rise_s: float = 0.030       # activation rise
     tau_fall_s: float = 0.120       # activation fall; slower than rise
     g_force: float = 0.0            # per Nm of delayed extensor torque above
@@ -436,7 +509,9 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
     # instant the limb shortens -- and integrating a discontinuity with a
     # fourth-order scheme smears it over a step instead of applying it.
     xb = q0
-    bound = True
+    armed = bool(tone.srs_nm_per_rad)   # SRS exists until the first shortening
+    srs_scale = 1.0                     # exponential decay factor once shortening
+    shortening_seen = False
     # The extensor torque at the hold IS the tone, so the force channel has a
     # signal before anything has moved. Seeding it at zero would let a
     # force-fed profile start from an impossible state.
@@ -451,10 +526,17 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
         u = qv - q_rest
         restore = grav * (math.sin(u) if sin_mode else u)
         t_tone = tone.torque_nm
+        # Linear up to the critical stretch, then a PLATEAU while still
+        # lengthening -- a yielded cross-bridge population carries its yield
+        # force, it does not carry zero. `srs_scale` holds the exponential
+        # decay once the limb starts shortening, and the arming state decides
+        # whether the element exists at all.
         stretch = qv - xbv
-        t_srs = (tone.srs_nm_per_rad * stretch
-                 if (tone.srs_nm_per_rad and bound and 0.0 <= stretch <= srs_yield)
-                 else 0.0)
+        if tone.srs_nm_per_rad and armed:
+            t_srs = tone.srs_nm_per_rad * min(max(stretch, 0.0), srs_yield)
+            t_srs *= srs_scale
+        else:
+            t_srs = 0.0
         tr = rfx.t_max_nm * av
         t_ext = t_tone + t_srs + tr
         te = _end_stop_torque(qv, qdv, es) + _extension_stop_torque(qv, qdv)
@@ -463,13 +545,19 @@ def simulate(prof: Profile, hold_s: float = HOLD_S, swing_s: float = SWING_S,
 
     state = np.array([q0, 0.0, 0.0, 0.0])   # q, qd, a, h
     for i in range(n_hold, n):
-        # SRS bound update, once per step: yield when the stretch exceeds the
-        # bridges' range, re-bind the moment the limb starts shortening. Held
-        # outside the RK4 state because both transitions are discontinuous.
-        if state[0] - xb > srs_yield:
-            bound = False
-        elif state[0] < xb:
-            xb, bound = state[0], True
+        # SRS state update, once per step, outside RK4 because the transitions
+        # are discontinuous. While the limb lengthens the bound angle tracks
+        # nothing and the torque rises then plateaus. The moment it shortens,
+        # the element starts decaying with srs_decay_s -- and, per Willaert,
+        # it does NOT re-arm, because short-range stiffness disappears with
+        # prior movement and is present on the first swing excursion only.
+        if armed:
+            if state[1] < 0.0:                       # shortening (q falling)
+                shortening_seen = True
+            if shortening_seen:
+                srs_scale *= math.exp(-dt / max(tone.srs_decay_s, 1e-6))
+                if tone.srs_first_swing_only and srs_scale < 1e-3:
+                    armed = False
         j = i - delay_n
         if j < n_hold:
             # Nothing has moved yet, so neither movement channel has fired --
@@ -721,12 +809,12 @@ def graded_tone(level: int, base: Limb = None) -> Profile:
     detects. The two terms are coupled, not independent.
     """
     spec = {
-        #       tone_nm  srs/tone  g_force
-        0:      (0.0,     0.0,     0.000),
-        1:      (2.4,    10.0,     0.008),
-        2:      (5.6,    10.0,     0.012),
-        3:      (8.8,    10.0,     0.016),
-        4:      (11.4,   10.0,     0.020),
+        #       tone_nm  srs_nm_rad  g_force
+        0:      (0.0,      0.0,      0.000),
+        1:      (1.0,     60.0,      0.008),
+        2:      (2.0,    150.0,      0.016),
+        3:      (4.0,    300.0,      0.020),
+        4:      (6.0,    400.0,      0.024),
     }[int(level)]
     # The SRS-to-tone ratio and the force gains are capped by a hard physical
     # constraint, not chosen for shape. At srs/tone = 35 and gain 0.024 the SRS
@@ -735,14 +823,14 @@ def graded_tone(level: int, base: Limb = None) -> Profile:
     # angle of 185 and an A0 of -4.9. selftest() now refuses any profile whose
     # trace leaves the anatomical range, because a hyperextended "reading" is
     # not a severity, it is a bug that scores.
-    tone_nm, srs_per_tone, g_force = spec
+    tone_nm, srs_nm_rad, g_force = spec
     return Profile(
         name=f"tone_L{level}",
         limb=base or Limb(),
-        tone=Tone(torque_nm=tone_nm, srs_nm_per_rad=srs_per_tone * tone_nm,
+        tone=Tone(torque_nm=tone_nm, srs_nm_per_rad=srs_nm_rad,
                   srs_yield_deg=3.0),
-        reflex=Reflex(t_max_nm=30.0, g_force=g_force, f_thr_nm=tone_nm + 1.0,
-                      delay_s=0.040, tau_rise_s=0.030, tau_fall_s=0.200),
+        reflex=Reflex(t_max_nm=30.0, g_force=g_force, f_thr_nm=tone_nm + 0.5,
+                      delay_s=0.080, tau_rise_s=0.030, tau_fall_s=0.200),
         note=("Level 0 is the HEALTHY limb: zero tone, zero SRS, zero reflex "
               "gain, so it is the unactuated R15 target and not a severity at "
               "all. It is keyed tone_L0 rather than 'healthy' so the ladder "
@@ -751,40 +839,65 @@ def graded_tone(level: int, base: Limb = None) -> Profile:
               "ran L1 to L4 and every reported range was missing its baseline."
               if level == 0 else
               f"Graded tone level {level} of 4 on the published decomposition: "
-             f"baseline tone {tone_nm:g} Nm, SRS {srs_per_tone * tone_nm:g} "
-              f"baseline tone {tone_nm:g} Nm, SRS {srs_per_tone * tone_nm:g} "
-              f"Nm/rad yielding at 3 deg, force-feedback gain {g_force:g}. "
+              f"baseline tone {tone_nm:g} Nm, SRS {srs_nm_rad:g} Nm/rad with a "
+              f"3 deg critical stretch, force-feedback gain {g_force:g}. "
               f"Passive B and K stay healthy. Plateau and A0 are emergent."))
 
 
-def channel_ablation(tone_nm: float = 5.6, srs_nm_per_rad: float = 200.0,
-                     gains=(0.0, 0.005, 0.010, 0.020, 0.030)) -> dict:
-    """Force feedback against velocity feedback, on the same limb.
+def channel_ablation(tone_nm: float = 2.0, srs_nm_per_rad: float = 150.0,
+                     gains=(0.0, 0.008, 0.016, 0.024, 0.030)) -> dict:
+    """Force feedback against velocity feedback, on the published test.
 
-    The published claim is that the lost oscillations are reproduced by force
-    feedback and not by velocity feedback. This runs both channels over the
-    same gain range on the same limb and returns N for each, so the claim can
-    be checked on this project's traces instead of cited.
+    THE TEST CHANGED after reading De Groote et al. directly. This function
+    first compared the two channels on the NUMBER OF OSCILLATIONS, on a
+    second-hand summary that force feedback was what reduced it. The paper's
+    own results say otherwise: at mild spasticity the force-based and
+    velocity-based models gave first swing excursions of 96.0 and 96.4 deg and
+    resting angles of 78.2 and 76.9, essentially identical, while the
+    oscillation counts went the OTHER way -- 6 for force against 3 for
+    velocity. N does not separate them, and where it does it favours velocity.
 
-    Returns {"force": [(gain, N, first_trough), ...], "velocity": [...]}.
+    Their actual discriminator is the SWING AMPLITUDE INVERSION: "only the
+    force-based model resulted in a first swing excursion that was smaller
+    than the second swing excursion, similar to observations in severely
+    spastic individuals". That is what this now measures.
+
+    Reproduced here. With tone 2 Nm and SRS 150 Nm/rad, the force channel
+    inverts the swings at a gain of 0.024 (first 24.5 deg, second 30.1) and
+    0.030 (22.0 against 31.7). The velocity channel never inverts them at any
+    gain tested -- and in fact changes nothing at all, because once SRS has
+    collapsed the first swing to about 48 deg the limb never crosses the
+    velocity threshold. Two channels, one of which can produce a severe
+    trace and one of which cannot, which is the published claim on this
+    project's own code rather than on trust.
+
+    Returns {"force": [...], "velocity": [...]} with one row per gain:
+    (gain, swing1_deg, swing2_deg, inverted, N).
     """
+    import pendulastic_pt_score as _pts
     out = {}
     for channel in ("force", "velocity"):
         rows = []
         for g in gains:
-            kw = ({"g_force": g, "f_thr_nm": tone_nm + 1.0} if channel == "force"
+            kw = ({"g_force": g, "f_thr_nm": tone_nm + 0.5} if channel == "force"
                   else {"g_vel": g, "v_thr_deg_s": 150.0})
             prof = Profile(
                 name=f"ablate_{channel}_{g}",
                 tone=Tone(torque_nm=tone_nm, srs_nm_per_rad=srs_nm_per_rad,
                           srs_yield_deg=3.0),
-                reflex=Reflex(t_max_nm=30.0, delay_s=0.040,
+                reflex=Reflex(t_max_nm=30.0, delay_s=0.080,
                               tau_rise_s=0.030, tau_fall_s=0.200, **kw))
             sim = simulate(prof)
-            import pendulastic_pt_score as _pts
-            p = _pts.compute_pt_params(sim["t"], sim["angle_deg"])
-            rows.append((g, p.get("N") if p else None,
-                         p.get("first_trough_depth") if p else None))
+            t, ang = sim["t"], sim["angle_deg"]
+            p = _pts.compute_pt_params(t, ang)
+            aa = ang[t >= sim["release_t_s"]]
+            ex = [float(aa[i]) for i in range(1, len(aa) - 1)
+                  if (aa[i] - aa[i - 1]) * (aa[i + 1] - aa[i]) < 0]
+            s1 = abs(prof.release_deg - ex[0]) if ex else float("nan")
+            s2 = abs(ex[1] - ex[0]) if len(ex) > 1 else float("nan")
+            rows.append((g, s1, s2,
+                         bool(s1 == s1 and s2 == s2 and s1 < s2),
+                         p.get("N") if p else None))
         out[channel] = rows
     return out
 
@@ -1151,9 +1264,10 @@ def main() -> int:
               f"{tail:8.1f} {cmd['peak_torque_nm']:7.1f} "
               f"{cmd['peak_slew_nm_s']:7.0f} {cmd['torque_step_nm']:6.1f} "
               f"{cmd['peak_speed_deg_s']:7.0f}")
-    print("  Peak torque and slew are what the MOTOR must supply against a rig")
-    print("  dialled to healthy passive mechanics (B = K = 0.5), per R15. "
-          "`step` is")
+    print(f"  Peak torque and slew are what the MOTOR must supply against a "
+          f"rig dialled")
+    print(f"  to the MEASURED healthy passive mechanics (B = "
+          f"{Limb().B:g} Nms/rad, K = {Limb().K:g} Nm/rad), per R15. `step` is")
     print("  the largest instantaneous torque jump: where it is large, the "
           "profile")
     print("  contains a discontinuity (an SRS yield, an end-stop) that no "

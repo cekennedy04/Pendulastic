@@ -33,28 +33,30 @@ decomposition. Five are distinct mechanisms: a catch that releases, two holds at
 different plateaus, a critically damped fall with no ring-down, and a mechanical
 end-stop.
 
-## Finding 1 -- across the whole severity range, the app prints one grade
+## Finding 1 -- the app resolves almost nothing through the mild range, then saturates
 
 | profile | A0 | plateau | first trough | N | PT7 | grade |
 |---|---|---|---|---|---|---|
-| tone_L0 (healthy) | 63.0 | 116.7 | 46.7 | 5.50 | 0.204 | **1** |
-| tone_L1 | 53.8 | 126.0 | 39.7 | 5.50 | 0.205 | **1** |
-| tone_L2 | 41.6 | 138.3 | 29.8 | 5.50 | 0.212 | **1** |
-| tone_L3 | 29.3 | 150.6 | 18.7 | 5.50 | 0.234 | **1** |
-| tone_L4 | 19.3 | 160.7 | 6.8 | 4.00 | 0.371 | **REFUSED** |
+| tone_L0 (healthy) | 61.6 | 118.3 | 54.7 | 10.50 | 0.156 | **1** |
+| tone_L1 | 58.0 | 122.1 | 24.9 | 10.00 | 0.234 | **1** |
+| tone_L2 | 50.6 | 130.4 | 21.3 | 9.00 | 0.240 | **1** |
+| tone_L3 | 50.6 | 134.1 | 0.2 | 7.00 | 0.387 | **1+** |
+| tone_L4 | 43.8 | 140.7 | 0.0 | 0.50 | 1.898 | **4** |
 
-Peak excursion falls by 70 per cent. The resting plateau moves 44 degrees. The
-first flexion amplitude falls by 85 per cent. The app's output does not change.
-Levels 0 through 3 all come out "1" -- the healthy limb and the MAS-3-intent
-limb get the same verdict -- and level 4 is refused by the excursion gate.
+So the app does move with severity: three distinct grades, monotone, severe
+graded severe. The earlier claim that it prints ONE grade across the whole
+range was an artifact of the mis-specified SRS, and is withdrawn.
 
-PT7 is not non-monotone here. Over this ladder it is perfectly monotone,
-rho = 1.00. It is simply **flat**: 0.204 to 0.371, entirely inside the single
-threshold band that reports "1" (the bands are 0.12 / 0.28 / 0.44 / 0.60 /
-0.78). A correlation of 1.00 and a constant output are not in tension; a
-monotone metric compressed inside one band produces exactly this.
+Two problems remain, and they are the same problem twice. The healthy limb is
+graded **"1"**, not "0" -- PT7 0.156 against a MAS-0 band ending at 0.12. And
+the grades are badly distributed: L0 through L2 all read "1", then L3 to L4
+jumps from "1+" straight to "4", skipping "2" and "3" entirely, because PT7
+leaps 0.387 to 1.898 the moment the oscillations collapse. Almost no resolution
+through the mild range, then saturation. That is the shape of a collapse
+detector, not of a scale -- and the mild range is where this cohort's legs
+actually sit.
 
-## Finding 2 -- PT7 responds 8x more to the KIND of impairment than to its amount
+## Finding 2 -- PT7 responds as much to the KIND of impairment as to its amount
 
 At one intended severity, changing only the mechanism:
 
@@ -73,8 +75,10 @@ A 9.2x spread and three different grades at one intended severity. Expressed as
 a ratio of the two effects -- the range PT7 covers across the entire severity
 ladder, divided by its largest spread among profiles at one severity:
 
-**0.167 / 1.738 = 0.10.** PT7 moves ten times further when the kind of
-impairment changes than when its amount goes from none to severe.
+**1.742 / 1.710 = 1.02** on the corrected model, up from the 0.10 first
+reported. PT7's response to a full sweep of severity is now about equal to its
+response to a change of mechanism at one severity. That is not the tenfold
+failure first claimed; it is still a score that cannot tell the two apart.
 
 ## Finding 3 -- every metric that works is unnormalised; every ratio fails
 
