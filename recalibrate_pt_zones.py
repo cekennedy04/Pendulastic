@@ -121,12 +121,90 @@ def _rank(mas) -> int:
     return pts.MAS_RANK.get(str(mas).strip(), 0)
 
 
+def smoke(verbose: bool = True) -> bool:
+    """Run the whole thing against a synthetic corpus, so it is known to work.
+
+    This script cannot be exercised in a clean checkout -- the recordings are
+    gitignored live data -- so its first real run would otherwise be on the
+    machine that has them, at the moment the answer is wanted. That is the
+    worst time to find a path bug. Same reasoning, and the same tree shape, as
+    severity_grading_test.smoke_cohort_arm.
+
+    It is a PLUMBING test, not a calibration: the limbs are noiseless model
+    traces, so the thresholds it prints mean nothing. What it proves is that
+    discovery, the MAS join, the condition filter, the loader, the scorer and
+    the percentile arithmetic all connect.
+    """
+    import csv as _c
+    import shutil
+    import tempfile
+    import numpy as _np
+    import pt_report_common as prc
+    import spasticity_grouping as sg
+    from neuromech import profiles as PR
+
+    root = tempfile.mkdtemp(prefix="pendulastic-recal-smoke-")
+    saved = (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV)
+    try:
+        opti = os.path.join(root, "OptiTrack_Recordings")
+        # Six legs per arm: derive() refuses below five, and that floor is the
+        # point -- a calibration from four legs is not one.
+        plan = ([(str(i), leg, "0", "tone_L0") for i in range(1, 4) for leg in ("left", "right")] +
+                [(str(i), leg, "2", prof) for i, prof in ((4, "tone_L2"), (5, "tone_L3"), (6, "tone_L2"))
+                 for leg in ("left", "right")])
+        rng = _np.random.default_rng(20261026)
+        for pid, leg, _grade, prof in plan:
+            d = os.path.join(opti, f"Participant_{pid}_{leg}_pre", "Session_pre",
+                             "Position_1", "Height_Joint-Level")
+            os.makedirs(d, exist_ok=True)
+            sim = PR.simulate(PR.PROFILES[prof])
+            for tr in (1, 2):
+                # Motive exports FLEXION (0 = extended); the loader converts.
+                flex = 180.0 - sim["angle_deg"] + rng.normal(0.0, 0.15, len(sim["angle_deg"]))
+                with open(os.path.join(d, f"trial_{tr}_optitrack.csv"), "w",
+                          newline="", encoding="utf-8") as fh:
+                    w = _c.writer(fh)
+                    w.writerow(["frame", "time_sec", "knee_angle_deg"])
+                    for i, (ti, fi) in enumerate(zip(sim["t"], flex)):
+                        w.writerow([i, f"{ti:.4f}", f"{fi:.4f}"])
+        mas_path = os.path.join(root, "mas_scores.csv")
+        with open(mas_path, "w", newline="", encoding="utf-8") as fh:
+            w = _c.writer(fh)
+            w.writerow(["participant", "leg", "condition", "mas_grade",
+                        "mas_flexion", "mas_extension", "assessed_by"])
+            for pid, leg, grade, _p in plan:
+                w.writerow([pid, leg, "pre", grade, "", "", "CLINICIAN"])
+
+        prc.OPTI_ROOT = opti
+        prc.ARCHIVE_ROOT = os.path.join(root, "no-archive")
+        prc.EXCLUDED_TRIALS_PATH = os.path.join(root, "excluded.json")
+        sg.MAS_CSV = mas_path
+        legs = leg_scores(None, None, verbose=verbose)
+        h, b = derive(legs, verbose=verbose)
+    finally:
+        (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV) = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+    ok = len(legs) == len(plan) and 0.0 < h < b
+    if verbose:
+        print()
+        print(f"  smoke: {'PASS' if ok else 'FAIL'} -- expected {len(plan)} legs and "
+              f"0 < healthy < borderline, got {len(legs)} legs, {h:.4f} < {b:.4f}")
+        print("  (synthetic limbs: the THRESHOLDS above are meaningless, the plumbing is not)")
+    return bool(ok)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--opti-root", help="where OptiTrack_Recordings actually is")
     ap.add_argument("--mas-csv", help="where mas_scores.csv actually is")
+    ap.add_argument("--smoke", action="store_true",
+                    help="run against a synthetic corpus to prove the plumbing, then exit")
     a = ap.parse_args(argv)
+
+    if a.smoke:
+        return 0 if smoke() else 1
 
     print(f"Re-deriving the zone thresholds for {pts.SCORE_FORMULA_ID}")
     print(f"  scored parameters ({pts._N_PARAMS}): {', '.join(pts._PARAM_KEYS)}")
