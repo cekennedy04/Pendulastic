@@ -60,25 +60,52 @@ def _hold(pendulastic_deg: float) -> Params:
     return catch_and_hold(pendulastic_deg - 180.0)
 
 
-PROFILES: dict[str, Params] = {
-    "tone_L0": _tone(0),
-    "tone_L1": _tone(1),
-    "tone_L2": _tone(2),
-    "tone_L3": _tone(3),
-    "tone_L4": _tone(4),
-    # A velocity catch that LETS GO past a stretch length: the clasp-knife.
-    "catch_release_high": Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=25.0),
-    # Falls, then arrests and holds -- no oscillation about the arrest point.
-    "catch_and_hold_140": _hold(_HOLD_PENDULASTIC["catch_and_hold_140"]),
-    "catch_and_hold_127": _hold(_HOLD_PENDULASTIC["catch_and_hold_127"]),
-    # Drops to the hang and stops dead: no ring-down at all.
-    "fall_no_ringdown": Params(rigid_nm=0.9),
-    # A unilateral elastic stop 25 deg past the hang.
-    "contracture_stop": Params(contract_k=25.0, contract_deg=-80.0),
-    # The rig itself, healthy limb, bearing friction on. Not a pathology --
-    # carried here so a grading test can see what the hardware contributes.
-    "rig_passive": rig_params(),
-}
+def _build_profiles() -> dict[str, Params]:
+    return {
+        "tone_L0": _tone(0),
+        "tone_L1": _tone(1),
+        "tone_L2": _tone(2),
+        "tone_L3": _tone(3),
+        "tone_L4": _tone(4),
+        # A velocity catch that LETS GO past a stretch length: the clasp-knife.
+        "catch_release_high": Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=25.0),
+        # Falls, then arrests and holds -- no oscillation about the arrest point.
+        "catch_and_hold_140": _hold(_HOLD_PENDULASTIC["catch_and_hold_140"]),
+        "catch_and_hold_127": _hold(_HOLD_PENDULASTIC["catch_and_hold_127"]),
+        # Drops to the hang and stops dead: no ring-down at all.
+        "fall_no_ringdown": Params(rigid_nm=0.9),
+        # A unilateral elastic stop 25 deg past the hang.
+        "contracture_stop": Params(contract_k=25.0, contract_deg=-80.0),
+        # The rig itself, healthy limb, bearing friction on. Not a pathology --
+        # carried here so a grading test can see what the hardware contributes.
+        "rig_passive": rig_params(),
+    }
+
+
+_PROFILES: dict[str, Params] | None = None
+
+
+def __getattr__(name: str):
+    """Build PROFILES on first access, not at import.
+
+    Two of these profiles come from `catch_and_hold`, which bisects on a
+    simulated settle -- up to 40 runs of a 25 s simulation each. Built at
+    module scope that cost 12 s of silent work on every `import
+    neuromech.profiles`, paid by callers that never touch PROFILES at all:
+    severity_grading_test's cohort arm scores recordings, and
+    recalibrate_pt_zones scores recordings, and neither needs a single
+    profile. A module import should not run a numerical solve.
+
+    PEP 562, so the name still resolves as a plain attribute --
+    `PR.PROFILES[...]`, `from neuromech.profiles import PROFILES` and
+    `PR.PROFILES.items()` all work unchanged, and the dict is built once.
+    """
+    if name == "PROFILES":
+        global _PROFILES
+        if _PROFILES is None:
+            _PROFILES = _build_profiles()
+        return _PROFILES
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 #: Clinician-intended MAS grade per profile, for rank agreement. Profiles
 #: without an entry are deliberately ungraded: they are measurement artefacts

@@ -202,3 +202,46 @@ def test_gain_scale_reaches_the_new_channels():
     full = _peak_reflex(M.Params(tone=2.0, k_v=3.0, k_v_thr=0.5))
     half = _peak_reflex(M.Params(tone=2.0, k_v=3.0, k_v_thr=0.5, gain_scale=0.5))
     assert half < full
+
+
+# ── Importing the profile library must not run a numerical solve ─────────────
+
+def test_importing_profiles_does_not_build_them():
+    """Two profiles come from catch_and_hold, which bisects on a simulated
+    settle. Built at module scope that was 12 s of silent work on every
+    import, paid by callers that never touch PROFILES -- the cohort arm and
+    the zone recalibration both score recordings and need no profile at all.
+
+    Run in a subprocess because this process has almost certainly imported
+    the module already, and the cache would hide the regression.
+    """
+    import subprocess
+    import textwrap
+    src = textwrap.dedent("""
+        import sys, time
+        sys.path.insert(0, %r)
+        t0 = time.perf_counter()
+        from neuromech import profiles
+        print(time.perf_counter() - t0)
+    """) % os.path.join(os.path.dirname(__file__), "..", "..")
+    out = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True, timeout=300)
+    assert out.returncode == 0, out.stderr
+    elapsed = float(out.stdout.strip().splitlines()[-1])
+    # Generous: the point is 0.1 s versus 12 s, not a benchmark.
+    assert elapsed < 3.0, f"importing neuromech.profiles took {elapsed:.2f} s -- is PROFILES eager again?"
+
+
+def test_profiles_are_still_reachable_and_cached():
+    from neuromech import profiles as PR
+    first = PR.PROFILES
+    assert len(first) == 11
+    assert first is PR.PROFILES, "PROFILES must be built once, not per access"
+    from neuromech.profiles import PROFILES as direct
+    assert direct is first, "`from ... import PROFILES` must resolve to the same dict"
+
+
+def test_a_missing_profiles_attribute_still_raises():
+    """__getattr__ must not swallow typos into None."""
+    from neuromech import profiles as PR
+    with pytest.raises(AttributeError):
+        PR.PROFLIES          # noqa: B018  (deliberate typo)
