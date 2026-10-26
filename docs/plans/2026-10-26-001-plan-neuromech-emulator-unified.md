@@ -106,7 +106,7 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
 | B8 | LabVIEW VIs for Mode A | **owner/LabVIEW** — spec in `neuromech/labview/LABVIEW_PROGRAM_SPEC.md` |
 | B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — group H, 60 scenarios; §5b |
-| B10 | Corpus rest geometry by the validated scorer | next (needs the recordings; ~25 min run) |
+| B10 | Corpus rest geometry by the validated scorer | **measured** — §5c; the disagreement is between instruments, not estimates |
 
 ## 5a. What the dry run established (2026-10-26)
 
@@ -141,6 +141,37 @@ brings the hard catch inside the ≥ 20 N·m gearbox of O2.
 
 The deep hold is at knee 132, not 125: this geometry rests at 125, and an extensor hold can only
 arrest short of rest (A's own constraint). Rest geometry stays an input (D7).
+
+## 5c. Where real legs rest (B10, 2026-10-26)
+
+`python -m neuromech.corpus_rest`: every phone trial (206) replayed and scored by the validated
+scorer, production convention; rest depth = pre-release angle − settled neutral, per participant
+median, then per cohort. Run on the corpus-safe **abs-fold** extraction (`bench/retest-abs` @ fa3d651,
+via `PENDULASTIC_PIPELINE_DIR`); this branch's signed extraction mirrors the rest across 180° on
+trials that cross the zero reference (resting "at 250°"), so it is reported for comparison only.
+
+| Cohort | People (trials) | Rest depth | Rest knee (released at 180°) |
+|---|---|---|---|
+| Controls | 2 (11) | 67.7° (66, 70) | **112.3°** |
+| Stroke | 4 (25) | 62.4° (52–69) | 117.6° |
+| MS | 8 (124) | 62.5° (45–75) | 117.5° |
+
+Signed extraction (magnitude): controls 71.1° → 108.9°. Detrend default moves each cohort 1–3°.
+Only Control_16 and Control_23 have raw phone sensor files; controls 2, 6, 7, 8, 9, 10, 12 were
+recorded as video only and cannot enter this measurement.
+
+**The instruments disagree, by about 30°.** OptiTrack A0 on the same trials is 28.8° smaller than
+the phone's (median; n = 104; 4 % within 5°), i.e. a rest near 140°, which is where the 142° came
+from. It cannot referee: 10 of 104 trials have ≥ 90 % camera coverage and every one of those carries
+a poorly-conditioned-hinge warning, which shrinks a projected angle. MediaPipe video scatters too
+far to use (control medians 3–62°; Control_16 at 3° against the phone's 66°). The phone's rotation
+magnitude is the measurement verified on the bench (0.58°).
+
+So the three rests were never three estimates of one number: phone ≈ 112°, cameras ≈ 140°.
+**Decision:** the model default stays at 125° (incline −35°) for now; `Params.incline_deg` sets it
+per scenario (`pendulum_sim.thigh_incline_from_resting_deg(112.3)` = −22.3°). **What settles it:** a
+goniometer reading of the resting knee after a drop on one or two people, alongside the phone, in
+the same session (minutes, not a study). Until then, report A0 by instrument, never pooled.
 
 ## 6. Validation, in order
 
