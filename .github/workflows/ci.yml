@@ -88,7 +88,11 @@ jobs:
             tests/test_mas_validation.py \
             tests/test_spasticity_grouping.py \
             tests/test_pt_zone_parity.py \
-            tests/test_optitrack_marker_angle.py
+            tests/test_optitrack_marker_angle.py \
+            tests/test_labview_bin_reader.py \
+            tests/test_motor_bench.py \
+            tests/test_motor_reference.py \
+            neuromech/tests
 
   webapp:
     runs-on: ubuntu-latest
