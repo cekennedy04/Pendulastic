@@ -360,8 +360,12 @@ const PARAM_PLAIN_NAME = {
 // and does not swing back; that is the finding, not a mistake, and the trial
 // is kept and scored. The trial worth retaking is the one where the leg never
 // moved, and that never reaches here -- it is rejected in compute_pt_params.
-// The excursion gate's refusal, from mobile-imu-core's excursion_reason()
-// (a port of pendulastic_pt_score.excursion_ok / mas_estimate). Distinct from
+// The scorer's refusal, from mobile-imu-core's refusal_reason() -- the
+// excursion gate, or (since 2026-10-26) the oscillation gate, which catches a
+// limb that drops and holds without swinging. The JSON key is still
+// `excursion_reason` because that name is on the wire; this renderer shows
+// whichever message came back. A port of
+// pendulastic_pt_score.excursion_ok / oscillation_ok / mas_estimate. Distinct from
 // unmeasuredNotice: that one QUALIFIES the number, this one says the swing
 // cannot support reading a band off it at all -- too collapsed to be
 // interpretable, or arithmetically impossible.
@@ -1482,13 +1486,17 @@ if (typeof document !== 'undefined') {
   // without this every stored trial rendered as uniformly healthy.
   function ptScoreForStoredTrial(trial) {
     const p = (trial && trial.params) || {};
+    // a1_deg joined this list 2026-10-26 with the oscillation gate: the
+    // scorer now refuses a trial whose first swing has no amplitude, and a
+    // stored trial that did not carry A1 would have been refused for having
+    // none rather than for being one.
     const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
-      'f', 'area_ratio', 'first_trough_depth', 'a0_deg'];
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg', 'a1_deg'];
     if (!wasmApi || need.some((k) => !Number.isFinite(p[k]))) return null;
     try {
       return JSON.parse(wasmApi.pt_score_from_params(
         p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
-        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg, p.a1_deg,
       ));
     } catch {
       return null;
@@ -1498,12 +1506,12 @@ if (typeof document !== 'undefined') {
   function scoreStoredTrial(trial) {
     const p = (trial && trial.params) || {};
     const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
-      'f', 'area_ratio', 'first_trough_depth', 'a0_deg'];
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg', 'a1_deg'];
     if (!wasmApi || need.some((k) => !Number.isFinite(p[k]))) return null;
     try {
       return JSON.parse(wasmApi.pt_score_from_params(
         p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
-        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg, p.a1_deg,
       )).score;
     } catch {
       return null;

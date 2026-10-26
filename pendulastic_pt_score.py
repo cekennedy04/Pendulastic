@@ -14,9 +14,14 @@ Parameters (Bajd & Bowman 1982 + Popovic 2018):
   2. N       — full oscillation cycles with amplitude > 1 deg
   3. phi_max_ratio = A2 / A0            — first return-to-extension / initial drop
   4. omega_max_n   = omega_max / A0
-  5. omega_min_n   = omega_min / A0     (during active swing)
-  6. f       — oscillation frequency (Hz)
-  7. area_ratio = |P+ - P-| / P_total   — symmetry index
+  5. f       — oscillation frequency (Hz)
+  6. area_ratio = |P+ - P-| / P_total   — symmetry index
+
+  Computed and reported, NOT scored:
+     omega_min_n   = omega_min / A0     (during active swing)
+       Dropped from the score 2026-10-26: it is -omega_max_n for any limb
+       dropped from the extension extreme, so the published 7-term sum was
+       weighting one velocity measurement twice. See _PARAM_KEYS.
 
 Run:
   $env:OPENBLAS_NUM_THREADS="1"
@@ -290,8 +295,35 @@ HEALTHY_REF = {
 #     OptiTrack_Recordings/ are gitignored live data that has changed since
 #     (P13/P14 gained post-treatment sessions, P15-P18 were recorded), so
 #     this is data drift rather than a scoring discrepancy.
+# STALE AS OF 2026-10-26, and knowingly left in place. Both numbers are
+# percentiles of cohort SCORES computed under the 7-term sum that included
+# omega_min_n. Dropping that term (see _PARAM_KEYS) changes every score, so
+# these two no longer mark the boundaries they were derived to mark.
+#
+# They are not rescaled, because rescaling them is not defensible. Fitting a
+# single factor to the old->new score mapping across the 53-scenario emulator
+# library leaves a 44.6% worst-case residual, and the worst cases are all low
+# scorers at 0.12-0.14 -- exactly the healthy boundary. The error also has a
+# direction: scores fall by roughly 0.05 near that boundary, so a stale
+# threshold reads some borderline limbs as healthy. A false negative is the
+# wrong way to be wrong.
+#
+# Nothing clinical renders from them today: webapp/src/app.js holds
+# ZONE_CLASSIFICATION_CALIBRATED = false and zoneDisplay() shows an
+# "uncalibrated" label instead of a zone, which is why this change could land
+# before the recalibration rather than after it.
+#
+# TO RE-DERIVE (needs the control cohort, so not runnable in CI):
+#   python recalibrate_pt_zones.py --opti-root <OptiTrack_Recordings>
+# then set CALIBRATED_FOR to SCORE_FORMULA_ID in the same commit.
 PT_HEALTHY_MAX    = 0.1709  # MAS-0 75th-pct (n=23 legs); below this = healthy
 PT_BORDERLINE_MAX = 0.3528  # midpoint between PT_HEALTHY_MAX and the MAS>=1 median
+
+#: Which scored set the two thresholds above were calibrated against. While
+#: this differs from SCORE_FORMULA_ID they are stale, and
+#: tests/test_pt_zone_parity.py refuses to let zone classification be switched
+#: on. "pt7-2026-08-24" is the 7-term sum including omega_min_n.
+PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24"
 
 # ── MAS thresholds (Popovic 2018, kept for historical comparison only) ─────────
 _MAS = [(0.12,"0"),(0.28,"1"),(0.44,"1+"),(0.60,"2"),(0.78,"3")]
@@ -609,6 +641,46 @@ INSUFFICIENT_EXCURSION = (
     "release and sensor placement before reading anything into the score."
 )
 
+NO_OSCILLATION = (
+    "No measurable oscillation: the leg moved {a0:.1f} deg and then stopped, "
+    "with no first swing to measure (A1 = 0, N = 0). Five of PT7's parameters "
+    "are properties OF the oscillation -- the relaxation index, the cycle "
+    "count, the frequency and the return ratio -- so when there is none they "
+    "are not small, they are undefined. Scoring them as zero makes a limb that "
+    "never swung look maximally spastic by arithmetic rather than by "
+    "measurement. A leg that drops and holds is a real and severe clinical "
+    "finding; it is just not a finding PT7 can grade. Record it as an arrest "
+    "and note the angle."
+)
+
+
+def oscillation_ok(params: Optional[dict]) -> bool:
+    """False when there is no first swing, so the oscillation parameters are
+    undefined rather than small.
+
+    A limb that falls and arrests returns A1 = 0, which forces R2n, N, f and
+    phi_max_ratio to exactly 0.0. Four of the six scored parameters are
+    "penalise if BELOW reference", so all four saturate at once and the trial
+    scores ~1.85-2.14 -- read as MAS 4, and marked interpretable, off four
+    zeros that mean "not measured" rather than "measured as nothing". The
+    emulator reaches this three ways (a tonic arrest, lead-pipe rigidity, and a
+    saturated reflex), so it is not a corner case.
+
+    A0 is deliberately NOT consulted: that is the excursion gate's job, and a
+    leg can have a perfectly good A0 and still never swing -- which is exactly
+    the case this catches.
+
+    A1 is the single primitive the other four derive from, so it is the thing
+    to test. A missing or non-finite A1 counts as not ok, on the same reasoning
+    as `excursion_ok`: unmeasurable is not interpretable.
+    """
+    if not params:
+        return False
+    a1 = params.get("A1_deg")
+    if a1 is None or not np.isfinite(a1):
+        return False
+    return float(a1) > 0.0
+
 
 def excursion_ok(params: Optional[dict]) -> bool:
     """False when the swing is too small -- or too large -- to mean anything.
@@ -660,6 +732,12 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
                     a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"),
                     gate=MIN_INTERPRETABLE_A0_DEG, mean=EXCURSION_REF_MEAN_DEG,
                     sd=EXCURSION_REF_SD_DEG, n=EXCURSION_REF_N)}
+    if not oscillation_ok(params):
+        a0 = params.get("A0_deg")
+        return {"mas": None, "zone": None, "pt7": score,
+                "interpretable": False,
+                "reason": NO_OSCILLATION.format(
+                    a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"))}
     return {"mas": pt_to_mas(score), "zone": pt_zone(score), "pt7": score,
             "interpretable": True, "reason": ""}
 
@@ -670,8 +748,84 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
 MAS_ORDER = ["0", "1", "1+", "2", "3", "4"]
 MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 
-_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","omega_min_n","f","area_ratio"]
-_N_PARAMS    = len(_PARAM_KEYS)   # 7 parameters (full Popovic 2018 formula)
+# ── The scored set, and why omega_min_n is no longer in it ────────────────────
+#
+# omega_min_n was DROPPED from the score on 2026-10-26. It is not independent
+# of omega_max_n -- it is the same measurement with a sign flip:
+#
+#   omega_max_n = max(|omega|) / A0      direction-blind peak speed
+#   omega_min_n = min(omega)   / A0      peak speed in the FLEXION direction
+#
+# For any limb released from the extension extreme the fastest motion IS the
+# first fall, so max(|omega|) = |min(omega)| and the two are exact mirrors.
+# Measured across the 53-scenario emulator library (neuromech/, whose engine is
+# checked against De Groote's own MATLAB): 51 of 53 agree to 4 decimal places,
+# omega_max_n + omega_min_n = 0.0000. The only exceptions need energy injected
+# into the return -- B-clonus (6 Hz beats, residual 2.24) and the two
+# near-undamped probes (residuals 0.0035 and 0.0056).
+#
+# The cohort medians say the same thing more quietly: +9.5672 and -9.4152,
+# mirrors to 1.6%, which a23606a noted approvingly as "what a pendulum should
+# do". It is what a pendulum should do, and that is the problem -- a parameter
+# that a pendulum FORCES to mirror another carries no information the other
+# does not.
+#
+# The effect was double weight, not a harmless duplicate. On a healthy passive
+# limb the two terms contributed 0.0665 and 0.0653 of a total 0.1417 -- 94% of
+# the score of a leg with nothing wrong with it, from one measurement counted
+# twice against a reference that is separately disputed (see HEALTHY_REF's
+# omega_max_n note and docs/reports/2026-10-26-*).
+#
+# Dropping it, rather than redefining it, is deliberate: a redefinition needs a
+# new reference constant from the control cohort, and inventing one here would
+# be fitting a constant to a model. The better redefinition is known and
+# measured -- see OMEGA_SIGNED_PAIR_NOTE below -- and is a cohort job.
+#
+# omega_min_n is still COMPUTED and still REPORTED. It moved from the scored
+# set to the diagnostic set, alongside omega_peak_deg_s and A0_deg, so nothing
+# that reads it breaks and the duplication is visible rather than weighted.
+_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
+_N_PARAMS    = len(_PARAM_KEYS)   # 6 scored parameters
+
+#: Reported beside the scored set, never summed into it.
+_DIAGNOSTIC_KEYS = ["omega_min_n"]
+
+#: Identifies the scored set a calibrated threshold belongs to. Bump it
+#: whenever _PARAM_KEYS changes: PT_HEALTHY_MAX and PT_BORDERLINE_MAX are
+#: percentiles of cohort SCORES, so they are only meaningful for the formula
+#: they were computed under, and a stale pair shifts the healthy boundary in
+#: the false-negative direction. tests/test_pt_zone_parity.py fails if the
+#: thresholds' recorded id does not match this one while zone classification
+#: is switched on.
+SCORE_FORMULA_ID = "pt6-2026-10-26"
+
+OMEGA_SIGNED_PAIR_NOTE = """\
+The upgrade this drop makes room for, measured but not landed.
+
+Popovic's pair is a SIGNED max and min -- which is why the published omega-min
+range is negative, the clue a23606a used. Implemented that way the two stop
+mirroring and start measuring different halves of the swing:
+
+    omega_max_n = max(omega)/A0    peak velocity of the RETURN  (positive)
+    omega_min_n = min(omega)/A0    peak velocity of the FALL     (negative)
+
+On the emulator, at matched A0, the return is the far better discriminator:
+
+    leg          return   fall    return/fall
+    healthy        4.12  -5.11       0.806
+    tone L1        3.27  -4.62       0.707
+    tone L2        2.14  -3.96       0.539
+    tone L3        0.87  -3.15       0.278
+
+Falls span 5.11 -> 3.15 across the ladder (x0.62). Returns span 4.12 -> 0.87
+(x0.21) -- three times the dynamic range -- because spasticity destroys the
+return, not the drop. The direction-blind max(|omega|) throws exactly that
+away and then counts the drop twice.
+
+Landing it needs a control-cohort reference for the redefined omega_max_n,
+which cannot be derived from a model. Until then the fall is scored once,
+through omega_max_n, and the return is not scored at all.
+"""
 
 # Simplified 4-parameter score: excludes area_ratio (unreliable for marker-based
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
@@ -692,10 +846,15 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
 
     Penalty directions (impaired = deviated from healthy reference):
       N, R2n, phi_max_ratio, omega_max_n → penalise only if BELOW reference
-      omega_min_n, area_ratio             → penalise only if ABOVE reference
-        (higher omega_min_n = velocity never fully decelerates at oscillation
-         peaks = spastic catch present; higher area_ratio = asymmetric areas)
+      area_ratio                          → penalise only if ABOVE reference
+                                            (higher = asymmetric areas)
       f                                   → bidirectional; skip if uncomputable
+
+    omega_min_n is absent: it is `-omega_max_n` for any limb dropped from the
+    extension extreme, so scoring both counted one measurement twice. See
+    `_PARAM_KEYS`. The one-sided-above direction it used is kept in the code
+    below so a caller that passes it explicitly still gets a sensible answer,
+    but it is not in `_PARAM_KEYS` and so never reaches the total.
     """
     _DENOM_FLOOR = 0.1
     breakdown = {}

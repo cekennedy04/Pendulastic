@@ -988,8 +988,12 @@ def test_a_normal_swing_is_graded_as_before():
     """The gate must be inert on trials it has no business touching -- it fires
     on 2 of 53 control trials, not on the population."""
     import pendulastic_pt_score as p
-    params = {"A0_deg": 48.0, "R2n": 1.0, "N": 3.0, "phi_max_ratio": 0.7,
-              "omega_max_n": 1.0, "omega_min_n": 1.0, "f": 1.0, "area_ratio": 0.05}
+    # A1_deg joined this fixture 2026-10-26: mas_estimate now also refuses a
+    # trial with no first swing (A1 = 0), and a fixture that omitted A1
+    # described a limb that never moved, not a normal swing.
+    params = {"A0_deg": 48.0, "A1_deg": 81.6, "R2n": 1.0, "N": 3.0,
+              "phi_max_ratio": 0.7, "omega_max_n": 1.0, "omega_min_n": 1.0,
+              "f": 1.0, "area_ratio": 0.05}
     out = p.mas_estimate(params)
     assert out["interpretable"] is True
     assert out["mas"] == p.pt_to_mas(out["pt7"]), "unchanged grading above the gate"
