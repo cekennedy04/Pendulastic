@@ -6,23 +6,72 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pinned deliberately, and it is `-D warnings` below that makes the pin
+      # necessary: arming the lint gate makes clippy's lint SET part of the
+      # gate, and every Rust release ships new lints. Unpinned, this job fails
+      # on release days for reasons that have nothing to do with this repo --
+      # exactly the "fails for the wrong reason" problem the gate exists to
+      # end. This bit immediately: the runner moved to 1.99.0 and flagged a
+      # `chunks_exact` in a test that 1.97.0 does not mention.
+      #
+      # Raise this version deliberately, with any new lint fixes in the same
+      # commit, so the move is a decision rather than a surprise.
+      - run: rustup toolchain install 1.99.0 --profile minimal --component clippy
+      - run: rustup default 1.99.0
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo test --manifest-path mobile-imu-core/Cargo.toml
-      - run: cargo clippy --manifest-path mobile-imu-core/Cargo.toml --all-targets
+      # -D warnings is what makes this a gate. Without it the step reported
+      # lints and exited 0, so the pipeline read as enforcing a lint standard
+      # it did not enforce -- and the crate had drifted to 12 of them while the
+      # instrument-validation plan's Verification Contract still described it
+      # as "kept at zero warnings deliberately". The existing sites are
+      # suppressed individually, each with the reason at the site; two of them
+      # are cases where clippy's suggested rewrite would be wrong.
+      - run: cargo clippy --manifest-path mobile-imu-core/Cargo.toml --all-targets -- -D warnings
       # Proves the veneer compiles for the target that actually ships.
       - run: cargo build --manifest-path mobile-imu-core/Cargo.toml
               --release --target wasm32-unknown-unknown
 
-  export-contract:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install numpy scipy pytest
+      # matplotlib and pandas are not optional here, however odd that reads for
+      # a scoring test: pendulastic_pt_score imports both at module scope (and
+      # calls matplotlib.use("Agg") there), so the production scorer cannot be
+      # imported without them. Their absence is why this job failed even after
+      # the import path was fixed. scikit-learn is the same story for
+      # mas_validation. Each was found by running these exact steps against a
+      # venv holding only the previous line's packages, not by reading imports.
+      - run: pip install numpy scipy pytest matplotlib pandas scikit-learn
       # Guards a SILENT failure: a malformed export replays as an unscorable
       # trial, or worse, as a plausible wrong one.
-      - run: pytest tests/test_web_export_contract.py -q
+      #
+      # Invoked as `python -m pytest`, not the bare `pytest` script. The bare
+      # script does not put the current directory on sys.path, so this step
+      # failed for 79 consecutive runs with "No module named
+      # 'imu_calibration_tuner'" while the same command passed locally under
+      # `python -m pytest`. tests/conftest.py now bootstraps the repo root too,
+      # so either form works; this one states the dependency rather than
+      # relying on it.
+      - run: python -m pytest tests/test_web_export_contract.py -q
+      # The scoring and reporting suite -- the files the instrument-validation
+      # plan names in its own Verification Contract, which until now it had to
+      # note were "run locally and the result stated in the change that makes
+      # it" because CI gated exactly one file.
+      #
+      # Deliberately a file list and not `pytest tests/`: the GUI suite needs a
+      # display, and three non-GUI files have failures unrelated to scoring
+      # (see the changeset notes). Widening this is a follow-up, not a silent
+      # inclusion.
+      - run: |
+          python -m pytest -q \
+            tests/test_pt_score.py \
+            tests/test_pt_report_common.py \
+            tests/test_mas_validation.py \
+            tests/test_spasticity_grouping.py
 
   webapp:
     runs-on: ubuntu-latest
@@ -74,7 +123,7 @@ jobs:
       # module specifier on Node 24 and throws before anything runs).
       # Confirm default discovery still finds the full known-good count
       # rather than silently running a subset.
-      - name: Run webapp tests and verify default discovery finds all 108
+      - name: Run webapp tests and verify discovery has not lost files
         working-directory: webapp
         run: |
           set -euo pipefail
@@ -82,7 +131,24 @@ jobs:
           TESTS_COUNT=$(grep -oE '(ℹ|#) tests [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
           PASS_COUNT=$(grep -oE '(ℹ|#) pass [0-9]+' /tmp/webapp-test-output.log | grep -oE '[0-9]+' | tail -1 || true)
           echo "Discovered tests: ${TESTS_COUNT:-unknown}, passed: ${PASS_COUNT:-unknown}"
-          if [ "$TESTS_COUNT" != "108" ] || [ "$PASS_COUNT" != "108" ]; then
-            echo "::error::Default 'node --test' discovery found tests=${TESTS_COUNT:-?} pass=${PASS_COUNT:-?}, expected exactly 108 passing. Discovery is finding a different set of test files than the known-good baseline -- investigate, don't assume this is fine."
+          # A FLOOR, not an exact count. The check exists to catch `node --test`
+          # silently discovering fewer files than it should, so it must fail
+          # when the count DROPS and must not fail merely because tests were
+          # added. The exact-count form this replaces was written when the
+          # suite had 108 tests and went stale the moment it grew; it has been
+          # failing on a suite of 392 passing tests, which is a chore rather
+          # than a canary. Raise the floor when the suite grows enough that a
+          # regression could hide under it.
+          MIN_TESTS=392
+          if [ -z "${TESTS_COUNT:-}" ] || [ -z "${PASS_COUNT:-}" ]; then
+            echo "::error::Could not parse test counts from 'node --test' output. The reporter format may have changed -- fix the parse, do not delete the check."
+            exit 1
+          fi
+          if [ "$TESTS_COUNT" -lt "$MIN_TESTS" ]; then
+            echo "::error::Default 'node --test' discovery found only ${TESTS_COUNT} tests, below the floor of ${MIN_TESTS}. Discovery is finding fewer test files than the known-good baseline -- investigate, don't assume this is fine."
+            exit 1
+          fi
+          if [ "$PASS_COUNT" != "$TESTS_COUNT" ]; then
+            echo "::error::${TESTS_COUNT} tests discovered but only ${PASS_COUNT} passed."
             exit 1
           fi

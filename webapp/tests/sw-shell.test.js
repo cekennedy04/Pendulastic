@@ -56,10 +56,12 @@ test('the offline shell includes the web app manifest', () => {
 // move whenever any shell file's bytes move -- otherwise an installed phone
 // serves its old app.js forever and a shipped fix reaches nobody.
 //
-// Driven against a temp directory rather than the real webapp/: the real
-// shell contains the generated .wasm, whose bytes differ per build machine
-// (see scripts/build-wasm.mjs's header), so anything asserted about its hash
-// would be true only on the machine that last built it.
+// Driven against a temp directory rather than the real webapp/ so each case
+// can move one file and assert the consequence, without a rebuild. The real
+// shell's id IS assertable now -- see the two tests at the bottom of this
+// file -- because computeBuildId folds in the core's Rust SOURCE rather than
+// the generated .wasm, whose bytes differ per build machine (see
+// scripts/build-wasm.mjs's header).
 
 function fixtureShell() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'pendulastic-shell-'));
@@ -69,14 +71,23 @@ function fixtureShell() {
   writeFileSync(path.join(dir, 'src', 'app.css'), 'body { color: red; }');
   // Present on disk but excluded from the hash -- the id is written into it.
   writeFileSync(path.join(dir, 'src', 'build-id.js'), "export const BUILD_ID = 'old';");
+  // A stand-in for mobile-imu-core/. computeBuildId folds the core's Rust
+  // source in where the generated wasm used to go, so every case needs one;
+  // building it inside the temp tree keeps these tests hermetic rather than
+  // coupling their ids to the repository's real core.
+  const coreDir = path.join(dir, 'core');
+  mkdirSync(path.join(coreDir, 'src'), { recursive: true });
+  writeFileSync(path.join(coreDir, 'src', 'lib.rs'), 'pub fn a() -> f64 { 1.0 }\n');
+  writeFileSync(path.join(coreDir, 'Cargo.toml'), '[package]\nname = "core"\n');
+  writeFileSync(path.join(coreDir, 'Cargo.lock'), '# lock\n');
   const shell = ['./', './index.html', './src/app.css', './src/app.js', './src/build-id.js'];
-  return { dir, shell, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, coreDir, shell, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 test('an unchanged shell produces the same build id (a rebuild must not churn the cache)', () => {
-  const { dir, shell, cleanup } = fixtureShell();
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
   try {
-    assert.equal(computeBuildId(dir, shell), computeBuildId(dir, shell));
+    assert.equal(computeBuildId(dir, shell, coreDir), computeBuildId(dir, shell, coreDir));
   } finally { cleanup(); }
 });
 
@@ -84,29 +95,29 @@ test('a JS-only change produces a NEW build id -- the whole of finding I2', () =
   // The regression this replaces: BUILD_ID hashed the wasm alone, so a fix to
   // app.js left the cache key identical, build-id.js unchanged, the service
   // worker's install event unfired, and the fix stranded on the build machine.
-  const { dir, shell, cleanup } = fixtureShell();
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
   try {
-    const before = computeBuildId(dir, shell);
+    const before = computeBuildId(dir, shell, coreDir);
     writeFileSync(path.join(dir, 'src', 'app.js'), 'export const a = 2;');
-    assert.notEqual(computeBuildId(dir, shell), before, 'a JS fix that does not move the cache key can never reach an installed device');
+    assert.notEqual(computeBuildId(dir, shell, coreDir), before, 'a JS fix that does not move the cache key can never reach an installed device');
   } finally { cleanup(); }
 });
 
 test('a CSS-only change produces a new build id too', () => {
-  const { dir, shell, cleanup } = fixtureShell();
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
   try {
-    const before = computeBuildId(dir, shell);
+    const before = computeBuildId(dir, shell, coreDir);
     writeFileSync(path.join(dir, 'src', 'app.css'), 'body { color: blue; }');
-    assert.notEqual(computeBuildId(dir, shell), before);
+    assert.notEqual(computeBuildId(dir, shell, coreDir), before);
   } finally { cleanup(); }
 });
 
 test('adding a file to the shell changes the build id', () => {
-  const { dir, shell, cleanup } = fixtureShell();
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
   try {
-    const before = computeBuildId(dir, shell);
+    const before = computeBuildId(dir, shell, coreDir);
     writeFileSync(path.join(dir, 'src', 'db.js'), 'export const b = 1;');
-    assert.notEqual(computeBuildId(dir, [...shell, './src/db.js']), before);
+    assert.notEqual(computeBuildId(dir, [...shell, './src/db.js'], coreDir), before);
   } finally { cleanup(); }
 });
 
@@ -114,11 +125,61 @@ test('build-id.js\'s own contents are excluded, so the id cannot chase its own t
   // Hashing the file the id is written into would make each build depend on
   // the previous build's id, minting a new cache key on every rebuild even
   // with nothing changed.
-  const { dir, shell, cleanup } = fixtureShell();
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
   try {
-    const before = computeBuildId(dir, shell);
+    const before = computeBuildId(dir, shell, coreDir);
     writeFileSync(path.join(dir, 'src', 'build-id.js'), "export const BUILD_ID = 'totally different';");
-    assert.equal(computeBuildId(dir, shell), before);
+    assert.equal(computeBuildId(dir, shell, coreDir), before);
+  } finally { cleanup(); }
+});
+
+test('a change to the core\'s Rust source produces a new build id', () => {
+  // The half of the contract that the wasm bytes used to carry: a rebuilt
+  // algorithm has to rotate the cache key, or an installed phone keeps
+  // scoring with the old maths. Folding the source in preserves it without
+  // depending on a binary that differs per machine.
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell, coreDir);
+    writeFileSync(path.join(coreDir, 'src', 'lib.rs'), 'pub fn a() -> f64 { 2.0 }\n');
+    assert.notEqual(computeBuildId(dir, shell, coreDir), before,
+      'a changed scoring core that does not move the cache key can never reach an installed device');
+  } finally { cleanup(); }
+});
+
+test('a change to Cargo.lock produces a new build id', () => {
+  // A dependency bump recompiles the wasm without touching src/.
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
+  try {
+    const before = computeBuildId(dir, shell, coreDir);
+    writeFileSync(path.join(coreDir, 'Cargo.lock'), '# lock v2\n');
+    assert.notEqual(computeBuildId(dir, shell, coreDir), before);
+  } finally { cleanup(); }
+});
+
+test('the generated wasm\'s bytes do NOT move the build id', () => {
+  // The regression this file exists to prevent from coming back. The .wasm
+  // and its JS glue embed the building machine's cargo registry path, path
+  // separators, and rustc version, so two machines building identical source
+  // produce different bytes. While those bytes were in the fold, BUILD_ID
+  // was a property of the build machine: one commit hashed to 500cc645b5ca
+  // where it was generated, b040e88f79b4 on the CI runner and 065da6ebf2c3
+  // in a container, so `the real BUILD_ID equals a fresh hash` could not hold
+  // anywhere but the generating machine -- and CI had been red on it ever
+  // since. The source digest above is what keeps the key reproducible.
+  const { dir, coreDir, shell, cleanup } = fixtureShell();
+  try {
+    mkdirSync(path.join(dir, 'src', 'wasm'));
+    const glue = path.join(dir, 'src', 'wasm', 'mobile_imu_core.js');
+    const binary = path.join(dir, 'src', 'wasm', 'mobile_imu_core_bg.wasm');
+    writeFileSync(glue, '// built at /home/alice/.cargo/registry\n');
+    writeFileSync(binary, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01]));
+    const withWasm = [...shell, './src/wasm/mobile_imu_core.js', './src/wasm/mobile_imu_core_bg.wasm'];
+    const before = computeBuildId(dir, withWasm, coreDir);
+    writeFileSync(glue, '// built at /Users/bob/.cargo/registry\n');
+    writeFileSync(binary, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x02]));
+    assert.equal(computeBuildId(dir, withWasm, coreDir), before,
+      'BUILD_ID must not depend on which machine compiled the wasm');
   } finally { cleanup(); }
 });
 

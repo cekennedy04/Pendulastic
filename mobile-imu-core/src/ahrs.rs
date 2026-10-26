@@ -124,6 +124,11 @@ impl MadgwickAhrs {
     /// magnetometer correction (KTD10 — the live desktop path deliberately
     /// excludes it; see `lib.rs`'s crate-level docs). `dt`: seconds since
     /// previous update.
+    // Indexed loops over the 4-element quaternion and its derivative. They
+    // mirror the Python reference's `for i in range(4)` line for line, and the
+    // cross-language parity tests are read against that correspondence, so the
+    // iterator rewrite clippy suggests would cost more than it buys here.
+    #[allow(clippy::needless_range_loop)]
     pub fn update(&mut self, gyro: Vec3, accel: Vec3, mag: Option<Vec3>, dt: f64) {
         let (q1, q2, q3, q4) = (self.q[0], self.q[1], self.q[2], self.q[3]);
         let (gx, gy, gz) = (gyro[0], gyro[1], gyro[2]);
