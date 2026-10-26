@@ -87,14 +87,32 @@ webapp is more conservative still: `zoneDisplay` refuses to show the raw zone
 at all while `ZONE_CLASSIFICATION_CALIBRATED` is false, which is what KD8/R16
 requires.
 
-What IS a real defect, and it is one of hygiene rather than of grading: the
-project has **two threshold systems that disagree on every profile**, and the
-Python reporting path (`mas_estimate` -> `pt_to_mas`) is wired to the one its
-own comment calls historical, while the app uses the data-derived one. Anything
-reading PT7 grades out of the Python pipeline -- `hpe_mas_evaluation.py` among
-them -- is reporting against Popovic's 2018 boundaries, not this cohort's.
-That should be settled one way or the other, and it needs no change to the
-score.
+**FIXED 2026-10-26.** The real defect was hygiene rather than grading: the
+project carried **two threshold systems that disagreed on every profile**, with
+the Python reporting path (`mas_estimate` -> `pt_to_mas`) wired to the one its
+own comment calls historical while the app used the data-derived one.
+
+The data decided which to keep. `PT_BORDERLINE_MAX` is defined as the midpoint
+of `PT_HEALTHY_MAX` and this cohort's MAS>=1 median, which puts that median at
+about **0.535** -- and Popovic's table maps 0.535 to **"2"**, though those legs
+are graded MAS 1 or 1+. It over-grades the affected end as well as the healthy
+end. And it cannot be refitted: `fit_mas_thresholds.py` exists for exactly that
+and refuses without enough paired observations across enough distinct grades,
+and this cohort has no leg above MAS 1+. **A six-grade table is not supportable
+on this data. Three zones are.**
+
+So `pt_zone` now exists in Python, matching the Rust byte for byte, and
+`mas_estimate` returns it as the primary verdict. `pt_to_mas` is retained and
+documented as the historical MAS-grade predictor -- it is genuinely needed,
+because `mas_validation.py` scores weighted kappa against clinician GRADES and
+a three-zone classifier cannot do that. The legacy web API reports the zone
+beside the old field rather than replacing it.
+
+`tests/test_pt_zone_parity.py` is what keeps the two honest: it reads the Rust
+source for the constants and the label set, checks both bounds are strict the
+way the Rust is, and checks a non-finite score reads "unknown" rather than
+collapsing to "healthy", which is the dangerous direction. 243 tests pass,
+including the existing 75 in `test_pt_score.py`.
 
 **A fix I tested and rejected.** Dropping `omega_max_n` and `omega_min_n` from
 the scored set -- which Finding 4 shows have badly wrong reference constants --
