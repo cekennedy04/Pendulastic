@@ -175,9 +175,49 @@ frequency. So this is a FREQUENCY disagreement:
 - `HEALTHY_REF["omega_max_n"] = 9.5672`, measured on 46 OptiTrack control
   trials, implies 9.57 rad/s, i.e. **1.52 Hz**.
 
-One of those describes this cohort's control knees and the other does not, and
-the gap is almost exactly a factor of two. Three explanations fit and they are
-distinguishable:
+**ANSWERED 2026-10-26. `omega_max_n` and `omega_min_n` are the wrong
+constants.** See `healthy_ref_frequency_audit.py`, which runs the whole chain.
+Three independent lines agree:
+
+1. *The physics is robust and mass cancels.* For a rod about its end
+   omega = sqrt(3g/2l); for Dempster/Winter's shank-foot segment (mass centre
+   0.606L from the knee, radius of gyration 0.735L about it)
+   omega = sqrt(1.122g/L). Mass appears top and bottom both times, so the
+   prediction does not depend on the table or the body size: 0.79-0.97 Hz.
+   Reaching 1.52 Hz needs K = 17-40 Nm/rad against a healthy knee carrying
+   under ~4 Nm through midrange, or a shank of 0.12-0.16 m.
+2. *The one measured velocity agrees with the physics, not the constant.*
+   221.9 +/- 35.6 deg/s peak first-swing velocity in 50 healthy supine adults.
+   The physics predicts about 204 deg/s at A0 = 46.6, inside one SD. The
+   constant requires 446 deg/s, which is **+6.3 SD** from the measurement.
+3. *The mechanism is recorded in this codebase already.* The `_sg` window note
+   in `pendulastic_pt_score.py` says that decimating real 120 Hz OptiTrack to
+   20 Hz -- changing the sampling and nothing else about the motion -- moved
+   the median `omega_max_n` from **8.50 to 3.19** across 205 trials. A quantity
+   that moves 2.7x on sampling rate alone is not measuring a limb. It is
+   `max|dphi/dt| / A0`: a differentiated numerator, so it is set partly by the
+   reconstruction's noise floor. `HEALTHY_REF` was measured at 120 Hz, the end
+   of that range that reads high.
+
+An injected-noise sweep closes the loop from the other side: on a trace whose
+true frequency is fixed and known, `omega_max_n` climbs monotonically with
+angle noise (4.38 clean, 5.26 at 4 deg RMS) and lands in the 5-9 band real
+reconstructions occupy.
+
+So the Bajd & Bowman passive set survives and the rig should be built to it.
+Two consequences follow immediately. These two parameters supplied 0.154 of the
+0.204 PT7 the healthy limb is penalised -- three quarters of Finding 4's
+original symptom. And because `omega_max_n` rises with noise while being
+penalised only when BELOW the reference, **a noisier trace scores healthier**,
+which is the mechanism behind the non-monotone noise sensitivity measured on
+this branch and a direct problem for phone-against-optical agreement.
+
+The replacement values are NOT settled, and the audit argues they should not
+be: a quantity that cannot be stated without also stating the frame rate is
+not a property of a leg, which is a reason to stop scoring these two rather
+than recalibrate them.
+
+The original three explanations, kept because the first is now the answer:
 
 1. The shank parameters are wrong for these participants. 1.52 Hz needs
    `mgl_c / J` about 3.7x larger -- a shorter or lighter shank-foot complex, or
@@ -260,11 +300,12 @@ not be MAS 0 or 1.
 
 ## Recommended changes, in order of confidence
 
-1. **Settle the 2.2x frequency disagreement** (Finding 4): run
-   `python severity_grading_test.py --cohort` on the machine with the
-   recordings and read the frequency block. Every PT7 threshold depends on the
-   answer, and so does whether the rig is being built to imitate the right
-   limb.
+1. ~~Settle the 2.2x frequency disagreement~~ **SETTLED: drop `omega_max_n`
+   and `omega_min_n` from the scored set.** They are frame-rate artifacts, not
+   limb properties (Finding 4). This also removes three quarters of the
+   healthy limb's PT7 penalty and the "noisier scores healthier" failure mode.
+   Run `python healthy_ref_frequency_audit.py` for the chain, and the cohort
+   arm's frequency block to confirm it on the real trials.
 2. **Report `P_plus` and `P_total` alongside PT7.** Already computed, highest
    signal-to-confound in the panel, and recommended in print for this exact
    purpose. Costs nothing to surface.

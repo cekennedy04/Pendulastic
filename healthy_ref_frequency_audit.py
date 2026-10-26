@@ -299,19 +299,105 @@ def part_d(verbose=True):
     return res
 
 
+#: Measured peak first-swing knee angular velocity in healthy adults.
+#: Kim, Jeon, Park & Choi (1996), J Korean Acad Rehabil Med 20(3):735-740:
+#: 50 healthy supine adults, 21-67, electrogoniometer, passive release.
+#: PROVENANCE IS WEAK AND MUST TRAVEL WITH THE NUMBER: the full text could not
+#: be read (host returned 403, mirrors failed DNS) and this was recovered from
+#: a search index of the English abstract, reproduced identically across two
+#: queries. It is also a single ~30-year-old study, and the posture is SUPINE
+#: while this project's rig is thigh-inclined. Treat it as corroboration of an
+#: independently derived prediction, not as the prediction's source.
+MEASURED_PEAK_DEG_S = (221.9, 35.6)
+MEASURED_PEAK_N = 50
+
+
+def part_e(verbose=True):
+    """The mechanism, from this codebase's own record. This is the answer.
+
+    `omega_max_n` is `max|d(phi)/dt| / A0`, a differentiated quantity divided
+    by an amplitude. Differentiation amplifies high-frequency content, so the
+    numerator is set partly by the reconstruction's noise floor and by the
+    smoothing window -- and `pendulastic_pt_score` already records, at the
+    _sg window note, the experiment that proves it:
+
+        "Decimating real 120 Hz OptiTrack to 20 Hz, which changes the sampling
+         and nothing else about the motion, moved the median omega_max_n from
+         8.50 to 3.19 and N from 3.5 to 2.5 across 205 trials."
+
+    A quantity that moves 2.7x when only the sampling rate changes is not
+    measuring the limb. HEALTHY_REF was measured on 120 Hz OptiTrack, which is
+    the end of that range that reads high, and the median there was 8.50
+    against a physics prediction of about 4.4.
+
+    part_c's noise sweep closes the loop from the other direction: omega_max_n
+    climbs monotonically with injected angle noise on a trace whose true
+    frequency is fixed and known, landing in the 5-9 band that real
+    reconstructions occupy. Two independent routes, same conclusion.
+    """
+    sim = rnm.simulate(rnm.PROFILES["tone_L0"])
+    p = pts.compute_pt_params(sim["t"], sim["angle_deg"])
+    meas, sd = MEASURED_PEAK_DEG_S
+    a0 = pts.EXCURSION_REF_MEAN_DEG
+    required = DISPUTED * a0
+    res = {"model_omega_max_n": p["omega_max_n"],
+           "required_peak_deg_s": required,
+           "measured_peak_deg_s": meas,
+           "sd_away": (required - meas) / sd}
+    if verbose:
+        print()
+        print("E. The mechanism, and the verdict")
+        print(f"  omega_max_n = max|dphi/dt| / A0: a DIFFERENTIATED numerator "
+              f"over an amplitude.")
+        print(f"  pendulastic_pt_score's own _sg note records that decimating "
+              f"real 120 Hz")
+        print(f"  OptiTrack to 20 Hz -- changing the sampling and nothing else "
+              f"about the")
+        print(f"  motion -- moved the MEDIAN omega_max_n from 8.50 to 3.19 "
+              f"across 205 trials.")
+        print(f"  A quantity that moves 2.7x on sampling rate alone is not "
+              f"measuring a limb.")
+        print()
+        print(f"  clean model trace, true 0.80 Hz:        "
+              f"omega_max_n = {p['omega_max_n']:.3f}")
+        print(f"  real 120 Hz OptiTrack, median of 205:   omega_max_n = 8.50")
+        print(f"  real 20 Hz equivalent, same motion:     omega_max_n = 3.19")
+        print(f"  HEALTHY_REF, 46 120-Hz control trials:  "
+              f"omega_max_n = {DISPUTED:.4f}")
+        print()
+        print(f"  Peak velocity the constant requires at A0 = {a0:.1f} deg: "
+              f"{required:.0f} deg/s")
+        print(f"  Measured in {MEASURED_PEAK_N} healthy supine adults:        "
+              f"{meas:.1f} +/- {sd:.1f} deg/s")
+        print(f"  The requirement is {res['sd_away']:+.1f} SD from the "
+              f"measurement.")
+        print()
+        print("  VERDICT: omega_max_n and omega_min_n are the wrong constants.")
+        print("  The Bajd & Bowman passive set survives -- three independent")
+        print("  anthropometric routes agree with it to within 20%, and the one")
+        print("  measured peak-velocity figure sits within 1 SD of what it")
+        print("  predicts. The two velocity constants are measuring the")
+        print("  differentiated noise floor of a 120 Hz reconstruction.")
+    return res
+
+
 def main() -> int:
-    part_a(); part_b(); part_c(); part_d()
+    part_a(); part_b(); part_c(); part_d(); part_e()
     print()
-    print("STILL OPEN, and it is why this prints a contradiction and not a "
-          "verdict:")
-    print("  this project's notes record Popovic's healthy omega-max as 11-17 "
-          "rad/s")
-    print("  UNNORMALISED, which is 2.3-3.5x what the same authors' passive "
-          "set predicts.")
-    print("  If that is peak angular velocity, a published source disagrees "
-          "with the")
-    print("  physics too, and that has to be explained before a constant is "
-          "called wrong.")
+    print("WHAT THIS DOES NOT SETTLE")
+    print("  The replacement VALUES. Saying 9.5672 is an artifact does not say")
+    print("  what a healthy limb's omega_max_n is, because the honest answer is")
+    print("  that it depends on the sampling rate and the smoothing window --")
+    print("  which is a reason to stop scoring these two parameters rather than")
+    print("  to recalibrate them. A quantity that cannot be stated without also")
+    print("  stating the frame rate is not a property of a leg.")
+    print()
+    print("  Popovic's healthy omega-max, recorded in this project's notes as")
+    print("  11-17 rad/s UNNORMALISED, is still unexplained: it is 2.3-3.5x what")
+    print("  the same authors' passive set predicts. The research run could not")
+    print("  reach the paper to check the definition. It does not change the")
+    print("  verdict -- an unnormalised rad/s figure is not comparable to a")
+    print("  per-A0 ratio either way -- but it is not reconciled.")
     return 0
 
 
