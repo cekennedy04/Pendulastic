@@ -103,6 +103,47 @@ PUBLISHED_SEVERITY_AUC_BAND = (0.59, 0.71)
 
 # ── The production path, called once, in one place ───────────────────────────
 
+def angle_noise_deg(t, angle) -> float:
+    """High-frequency residual of a trace, in degrees RMS.
+
+    RMS of (raw minus Savitzky-Golay smoothed), using the scorer's own `_sg`
+    with the scorer's own window, so this is the noise the scoring actually
+    sees rather than a separate estimate of it.
+
+    This exists to test one specific hypothesis about
+    `HEALTHY_REF["omega_max_n"] = 9.5672`. Measured on clean model traces that
+    quantity is 4.38, and the constant implies 9.57 -- so the controls it came
+    from must have had peak velocities around 446 deg/s where the passive model
+    predicts about 204. Two artifacts were ruled out here before proposing a
+    third: Gaussian angle noise reaches only 6.01 at 4 deg RMS, which is an
+    order of magnitude above optical noise, and isolated spikes do not move it
+    at all (Savitzky-Golay absorbs them; omega_peak stayed at 275.8 through 30
+    spikes of 10 deg).
+
+    What DOES reach it is broadband noise at IMU scale. At 8 deg RMS -- which
+    is this project's own measured IMU-against-OptiTrack RMSE -- omega_max_n
+    comes back at 7.90, within reach of 9.57. So the hypothesis is that the
+    constant is partly a noise artifact, and it is testable on the real trials
+    without any new data: if `omega_max_n` correlates with this residual across
+    the control trials, the constant is measuring the tracking and not the leg.
+
+    SCALE. The smoother keeps part of the noise, so the residual UNDERSTATES
+    the true white-noise RMS by a near-constant factor. Checked against
+    injected noise on a model trace: 0.5 -> 0.43, 1.0 -> 0.87, 2.0 -> 1.73,
+    4.0 -> 3.46, 8.0 -> 6.92, i.e. 0.866x throughout. Divide by 0.87 to read
+    this as an angle-noise figure; left unscaled here because the raw residual
+    is what the correlation needs and a scaled one invites being quoted as a
+    measurement of the tracking.
+    """
+    t = np.asarray(t, float); angle = np.asarray(angle, float)
+    ok = np.isfinite(t) & np.isfinite(angle)
+    t, angle = t[ok], angle[ok]
+    if len(angle) < 40:
+        return float("nan")
+    sm = pts._sg(angle, dt=pts._median_dt(t), p=3)
+    return float(np.sqrt(np.mean((angle - sm) ** 2)))
+
+
 def dominant_freq_hz(params) -> float:
     """Measured ring-down frequency of one scored trial, in Hz.
 
@@ -548,6 +589,7 @@ def cohort_arm(verbose: bool = True, opti_root: str = None,
             "pt7": res["pt7"], "app_grade": res["mas"],
             "interpretable": res["interpretable"],
             "freq_hz": dominant_freq_hz(p),
+            "noise_deg": angle_noise_deg(t, ang),
             **{m: p.get(m) for m in METRICS},
         })
     stage("trials the scorer could measure", len(rows),
@@ -673,6 +715,36 @@ def cohort_arm(verbose: bool = True, opti_root: str = None,
                       "before the rig is")
                 print("     built to them, and R15's envelope check would fail "
                       "as specified.")
+    # Is omega_max_n measuring the leg or the tracking? See angle_noise_deg.
+    nz = [(r["noise_deg"], r["omega_max_n"]) for r in rows
+          if r["noise_deg"] == r["noise_deg"]
+          and r["omega_max_n"] is not None
+          and np.isfinite(r["omega_max_n"])]
+    noise = {"n": len(nz)}
+    if len(nz) >= 5:
+        noise["median_noise_deg"] = float(np.median([a for a, _ in nz]))
+        noise["rho_noise_vs_omega_max_n"] = spearman([a for a, _ in nz],
+                                                     [b for _, b in nz])
+        noise["rho_noise_vs_pt7"] = spearman(
+            [r["noise_deg"] for r in rows if r["noise_deg"] == r["noise_deg"]],
+            [r["pt7"] for r in rows if r["noise_deg"] == r["noise_deg"]])
+        if verbose:
+            print()
+            print("Is omega_max_n measuring the leg, or the tracking?")
+            print(f"  median high-frequency residual over {noise['n']} trials: "
+                  f"{noise['median_noise_deg']:.2f} deg RMS")
+            print(f"  rho(residual, omega_max_n) = "
+                  f"{noise['rho_noise_vs_omega_max_n']:+.2f}")
+            print(f"  rho(residual, PT7)         = "
+                  f"{noise['rho_noise_vs_pt7']:+.2f}")
+            print(f"  HEALTHY_REF['omega_max_n'] = "
+                  f"{pts.HEALTHY_REF['omega_max_n']:.4f}; clean model traces "
+                  f"give 4.38, and")
+            print(f"  8 deg RMS of added noise gives 7.90. A strong positive "
+                  f"rho here means the")
+            print(f"  constant is partly a property of the tracking, not of "
+                  f"healthy legs.")
+    out["noise"] = noise
     out["frequency"] = freq
     out["discrimination"] = disc
     return out
@@ -761,18 +833,19 @@ def write_csv(path, model, cohort):
     can be checked by hand against the printed tables rather than taken from
     them."""
     cols = (["arm", "label", "intent_or_mas", "pt7", "app_grade",
-             "interpretable"] + METRICS)
+             "interpretable", "freq_hz", "noise_deg"] + METRICS)
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = _csv.writer(fh)
         w.writerow(cols)
         for r in model["rows"]:
             w.writerow(["model", r["profile"], r["intent"], r["pt7"],
-                        r["mas"], r["interpretable"]]
+                        r["mas"], r["interpretable"], "", ""]
                        + [r.get(m) for m in METRICS])
         for r in cohort.get("rows", []):
             w.writerow(["cohort",
                         f"{r['participant']}_{r['leg']}_{r['condition']}_T{r['trial']}",
-                        r["mas"], r["pt7"], r["app_grade"], r["interpretable"]]
+                        r["mas"], r["pt7"], r["app_grade"], r["interpretable"],
+                        r.get("freq_hz"), r.get("noise_deg")]
                        + [r.get(m) for m in METRICS])
     return path
 
