@@ -13,7 +13,7 @@ is at the end of this document.
 
 | Mode | What runs on the RT target | What it can emulate | Needs | Build when |
 |---|---|---|---|---|
-| **A — Scenario player** | Plays a precomputed 1 kHz setpoint file through the existing position PID (+ feedforward) | Everything kinematic: all 55 scenarios, PT7-band presets, behaviours, out-of-range | One new capability: a setpoint **array** input (the "set point input that can accept a sequence of values" already on the Notion wish-list) | **Now** — critical path |
+| **A — Scenario player** | Plays a precomputed 1 kHz setpoint file through the existing position PID (+ feedforward) | Everything kinematic: all 60 scenarios, PT7-band presets, behaviours, out-of-range | One new capability: a setpoint **array** input (the "set point input that can accept a sequence of values" already on the Notion wish-list) | **Now** — critical path |
 | **B — Real-time model** | The Formula Node model (`model_step_formula_node.txt`) integrated every tick; its angle is the setpoint | Same as A, but parameters live on the front panel; with the torque sensor added to the model it becomes interactive (a PT can push the virtual leg — admittance rendering) | Mode A's feedforward; torque-sensor calibration for the interactive variant | After A is validated |
 | **C — Torque mode on a real shank** | Motor in torque control supplies **only the active muscle torques** (tone, SRS, reflex, modules); gravity and inertia are physical | The most faithful: real pendulum + emulated muscle; phone sees true gravity, so the app's **fused** angle is gradable | Vertical mount, prosthetic shank + weights matched to J and mgl, gearbox, motor torque ≥ ~5 N·m continuous (MAS 0–3 needs 0.8–3.7 N·m peak; severe cases 15 N·m; real-size clonus 26 N·m) | With the tilted/vertical rig |
 
@@ -85,11 +85,11 @@ parameters for every run.
 
 Paste `model_step_formula_node.txt` into a Formula Node inside the Timed Loop. Outside the node:
 
-- shift registers for the 6 states (`th w ts tr tf tc`) and 3 flags (`srs_on rev clon_t0`), initialised
+- shift registers for the 8 states (`th w ts tr tf tc ah hh`) and 3 flags (`srs_on rev clon_t0`), initialised
   at release to `th = th0, w = omega0`, others 0, `srs_on = 1, rev = 0, clon_t0 = -1`;
-- two ring buffers of length **52** (omega, T_SRS). Each tick read `idx = (head-50) mod 52` →
-  `wd, sd` and `(head-51) mod 52` → `wd_prev, sd_prev`; after the node write `w_o, ts_o` at
-  `head+1`. (Length 52, not 51: with 51 the "one older" index wraps onto the newest sample and the
+- three ring buffers of length **52** (omega, T_SRS, theta). Each tick read `idx = (head-50) mod 52` →
+  `wd, sd, thd` and `(head-51) mod 52` → `wd_prev, sd_prev`; after the node write `w_o, ts_o, th_o` at
+  `head+1`. The theta buffer (initialised to `th0`) feeds the tonic hold's length channel. (Length 52, not 51: with 51 the "one older" index wraps onto the newest sample and the
   reflex runs away — the bug found while building the Python twin.)
 - host-computed constants from `Params`: `J = 0.446 s⁴`, `mgl = 4.96 s² · 9.81 · 0.256 s`,
   `inc = rad(incline)`, `clon_nm = rad(clonus_deg) · J · (2π clonus_hz)²`, `k_f · gain_scale`,
@@ -127,7 +127,7 @@ parameters against the **encoder-scored** ones, run by run.
 
 | # | Item | Why it blocks | Owner action |
 |---|---|---|---|
-| 1 | **Angle range.** Clinical geometry releases at +55° (rest depth) and swings to −35°…−52° below rest; 52 of 55 scenarios exceed today's ±45° software limits | Without it the ladder cannot be played at full scale | Confirm the arm's *mechanical* range; set limits to ±65° if safe. Fallback: render at 0.75× amplitude (A0 ≈ 41°, still above the 25° gate; every ratio parameter is amplitude-invariant) |
+| 1 | **Angle range.** Clinical geometry releases at +55° (rest depth) and swings to −35°…−52° below rest; 57 of 60 scenarios exceed today's ±45° software limits | Without it the ladder cannot be played at full scale | Confirm the arm's *mechanical* range; set limits to ±65° if safe. Fallback: render at 0.75× amplitude (A0 ≈ 41°, still above the 25° gate; every ratio parameter is amplitude-invariant) |
 | 2 | **Setpoint-array input** on the RT target | Mode A does not exist without it | Add a file-read + array-index path beside the Stretch profile generator |
 | 3 | **Re-tune + feedforward** | 2× over-rendering above 4 Hz (§4) | Chirp run, then gains |
 | 4 | **Motor torque rating and gearbox** | Mode C needs ≥ 4 N·m for MAS 0–3, 15 N·m for severe, 26 N·m for real-size clonus | Read the ServoDisc model's continuous/peak torque; size a gearbox |
@@ -140,7 +140,7 @@ parameters against the **encoder-scored** ones, run by run.
 |---|---|---|
 | Published model (De Groote 2018), RK4, checked vs the authors' MATLAB | `neuromech/pendulum_sim.py` | 21 tests pass |
 | LabVIEW-portable model + 9 behaviour modules | `neuromech/model_rt.py` | matches the reference within 0.34° (euler4) / 0.30° (rk4); 8 tests pass |
-| Formula Node port | `labview/model_step_formula_node.txt` | verified to 1e-11 vs Python on 2 × 3 000 ticks |
+| Formula Node port | `labview/model_step_formula_node.txt` | verified to 1e-11 vs Python on 4 × 3 000 ticks, every module firing (`make_test_vectors.py` regenerates them and refuses a vector where a module never fires) |
 | Scenario library (45) + expected scorer output | `scenarios.py`, `build.py` → `out/` | built; manifest + 1 kHz setpoint files |
 | ILC tool | `ilc.py` | self-test converges; untested on hardware |
 | Figures | `nm_figs.py` → `out/figures`, publication set | done |

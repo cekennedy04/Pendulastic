@@ -83,7 +83,7 @@ def fig_matrix():
     keys = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"]
     ref = dict(P.HEALTHY_REF)
     lab = {"R2n": "R2n", "N": "N", "phi_max_ratio": "φmax", "omega_max_n": "ωmax", "omega_min_n": "ωmin", "f": "f", "area_ratio": "area"}
-    d = M[M.group.isin(["A", "S", "B", "C", "D", "M"])].copy()
+    d = M[M.group.isin(["A", "S", "B", "C", "D", "M", "H"])].copy()
     Z = np.zeros((len(d), len(keys)))
     for j, k in enumerate(keys):
         floor = 0.002 if k == "omega_min_n" else 0.02

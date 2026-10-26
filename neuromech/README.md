@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 55 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 60 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -22,6 +22,7 @@ python -m neuromech.build                # 55 scenarios -> neuromech/out/ (manif
 | C | each of the 7 parameters and the A0 gate pushed out of range | De Groote core + kinematic transforms |
 | D | release artefacts: push, wobble, short record, low lift | De Groote core |
 | M | severity AND kind of severity: tone ladder, catch-release, catch-and-hold, no-ringdown fall, end-stop | `rig_neuromuscular_model.py` |
+| H | the same mechanisms ported onto the core (tonic hold with adaptation, velocity catch, end-stop, capsule), so Mode B can render them live | De Groote core + ported modules |
 
 `out/scenario_manifest.csv` holds, per scenario, the expected 7 parameters, PT7, band or refusal, flags,
 the rig range and speed it needs, and the peak active muscle torque (for Mode C).
@@ -78,7 +79,8 @@ plant recovered (6.35 Hz, ζ 0.232, R² 0.999), ILC converging on every scenario
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests tests/test_rig_calibration.py      # 61 tests
+python -m pytest neuromech/tests tests/test_rig_calibration.py      # 73 tests
+python -m neuromech.labview.make_test_vectors                       # regenerate the 4 Formula Node vectors
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
@@ -87,11 +89,11 @@ node neuromech/labview/verify_formula_node.js                       # Formula No
 | File | Role |
 |---|---|
 | `pendulum_sim.py` | De Groote et al. 2018, RK4, checked against the authors' MATLAB (reference) |
-| `model_rt.py` | the same model at 1 kHz for LabVIEW, plus nine behaviour modules |
+| `model_rt.py` | the same model at 1 kHz for LabVIEW, plus nine behaviour modules and three ported mechanisms (`hold_for_arrest`, `critically_damped`) |
 | `scenarios.py`, `build.py` | the library and its expected scorer output; `build.score_angle` is the one scoring call |
 | `session.py` | plan / score a rig session |
 | `ilc.py` | plant identification and trajectory correction |
 | `dryrun.py` | the whole program on synthetic hardware |
 | `nm_figs.py`, `pubstyle.py` | figures (deck and publication) |
-| `labview/` | Formula Node step, test vectors, verifier, program spec |
+| `labview/` | Formula Node step, test vectors and their generator, verifier, program spec |
 | `data/rig_frf_2026-10-26.npz` | measured setpoint→encoder response of the current tune |

@@ -5,23 +5,26 @@
 
    Paste into a Formula Node inside the Timed Loop (dt = 1 ms). Every name below is a
    Formula Node terminal:
-     INPUT  state   : th, w, ts, tr, tf, tc            (rad, rad/s, N.m x4)  -- shift registers
+     INPUT  state   : th, w, ts, tr, tf, tc, ah, hh    (rad, rad/s, N.m x4, 0..1 x2) -- shift registers
      INPUT  flags   : srs_on, rev, clon_t0             (1/0, 1/0, s; clon_t0 = -1 until triggered)
      INPUT  time    : t                                (s since release)
-     INPUT  delayed : wd, wd_prev, sd, sd_prev         (omega and T_SRS 50 and 51 samples ago,
-                                                        read from the ring buffers OUTSIDE this node)
+     INPUT  delayed : wd, wd_prev, sd, sd_prev, thd    (omega and T_SRS 50 and 51 samples ago, theta
+                                                        50 ago; read from the ring buffers OUTSIDE this node)
      INPUT  geometry: J, mgl, inc, th0                 (kg.m^2, N.m, rad, rad) -- from Params.s, incline
      INPUT  params  : B, tone, k_f, k_df, k_srs, flex_g, flex_vth, catch_g, catch_vth, catch_rel,
                       clon_nm, clon_hz, clon_tau, rigid, cog_d, cog_hz, con_k, con_th,
-                      guard, gph0, gph1, gph2, gph3, spasm, spasm_t, spasm_w, use_lim
-     OUTPUT         : th_o, w_o, ts_o, tr_o, tf_o, tc_o, srs_on_o, rev_o, clon_t0_o, tau_o
-   Afterwards (outside the node): push w_o and ts_o into the two ring buffers (length 52),
+                      guard, gph0, gph1, gph2, gph3, spasm, spasm_t, spasm_w, use_lim,
+                      hold_nm, hold_glen, hold_qthr, hold_gvel, hold_vthr, hold_rise, hold_fall,
+                      ad_k, ad_tau, es_k, es_deg, es_w, es_b, cap          (angles in deg, as in Params)
+     OUTPUT         : th_o, w_o, ts_o, tr_o, tf_o, tc_o, ah_o, hh_o, srs_on_o, rev_o, clon_t0_o, tau_o
+   Afterwards (outside the node): push w_o, ts_o and th_o into the three ring buffers (length 52),
    and send rad2deg(th_o) - rest_deg as the position setpoint (Mode B) or tau_o's active part
    as the torque command (Mode C).
    =========================================================================== */
 
 float64 h, q, tt, dth, s_vneg, s_lt, s_gt, drive, d_ts, e_r, d_tr, e_f, d_tf, stretch, inhib, e_c, d_tc;
 float64 grav, damp, wall, clon, rig, con, grd, spm, tau, dw, wdd, sdd, k;
+float64 e_h, e1, e2, a_cl, h_cl, e_eff, d_ah, d_hh, hld, es, cps, over, R2D;
 float64 TAU_A, TAU_SRS, DTH_C, DT, TWO_PI;
 DT = 0.001; h = DT / 4.0; TAU_A = 0.010; TAU_SRS = 0.050; DTH_C = 0.0261799387799; TWO_PI = 6.28318530718;
 
@@ -35,7 +38,17 @@ wdd = (wd - wd_prev) / DT;
 sdd = (sd - sd_prev) / DT;
 if (t < 0.051) { wdd = 0; sdd = 0; }
 
-th_o = th; w_o = w; ts_o = ts; tr_o = tr; tf_o = tf; tc_o = tc;
+/* tonic stretch reflex drive, from delayed flexion and flexion velocity; held over the tick */
+R2D = 57.2957795131;
+e_h = 0;
+if (hold_nm != 0) {
+    e1 = -thd * R2D - hold_qthr; if (e1 < 0) e1 = 0;
+    e2 = -wd * R2D - hold_vthr;  if (e2 < 0) e2 = 0;
+    e_h = hold_glen * e1 + hold_gvel * e2;
+    if (e_h > 1) e_h = 1;
+}
+
+th_o = th; w_o = w; ts_o = ts; tr_o = tr; tf_o = tf; tc_o = tc; ah_o = ah; hh_o = hh;
 for (q = 0; q < 4; q++) {
     tt = t + q * h;
     /* passive */
@@ -84,8 +97,28 @@ for (q = 0; q < 4; q++) {
     /* single spasm pulse */
     spm = 0;
     if (spasm != 0 && tt >= spasm_t && tt <= spasm_t + spasm_w) spm = spasm * sin(3.14159265359 * (tt - spasm_t) / spasm_w);
+    /* tonic stretch reflex: activation chases the adapted drive, adaptation chases activation */
+    a_cl = ah_o; if (a_cl < 0) a_cl = 0; if (a_cl > 1) a_cl = 1;
+    h_cl = hh_o; if (h_cl < 0) h_cl = 0; if (h_cl > 1) h_cl = 1;
+    e_eff = e_h * (1 - ad_k * h_cl);
+    if (e_eff > ah_o) d_ah = (e_eff - ah_o) / hold_rise; else d_ah = (e_eff - ah_o) / hold_fall;
+    d_hh = (a_cl - hh_o) / ad_tau;
+    hld = hold_nm * a_cl;
+    /* exponential flexion end-stop, exponent clamped at 40 widths */
+    es = 0;
+    over = -th_o * R2D - es_deg;
+    if (es_k != 0 && over > 0) {
+        if (over / es_w < 40) es = es_k * (exp(over / es_w) - 1); else es = es_k * (exp(40.0) - 1);
+        if (w_o < 0) es = es - es_b * w_o;
+    }
+    /* hyperextension capsule */
+    cps = 0;
+    if (cap == 1 && th_o > 0) {
+        if (th_o * R2D / 2.5 < 40) cps = -1.2 * (exp(th_o * R2D / 2.5) - 1); else cps = -1.2 * (exp(40.0) - 1);
+        if (w_o > 0) cps = cps - 3.0 * w_o;
+    }
     /* sum and step */
-    tau = grav + damp + wall + tone + ts_o + tr_o - tf_o + tc_o + clon + rig + con + grd + spm;
+    tau = grav + damp + wall + tone + ts_o + tr_o - tf_o + tc_o + clon + rig + con + grd + spm + hld + es + cps;
     dw = tau / J;
     th_o = th_o + h * w_o;
     w_o  = w_o  + h * dw;
@@ -93,5 +126,9 @@ for (q = 0; q < 4; q++) {
     tr_o = tr_o + h * d_tr;
     tf_o = tf_o + h * d_tf;
     tc_o = tc_o + h * d_tc;
+    ah_o = ah_o + h * d_ah;
+    hh_o = hh_o + h * d_hh;
 }
+if (ah_o < 0) ah_o = 0; if (ah_o > 1) ah_o = 1;
+if (hh_o < 0) hh_o = 0; if (hh_o > 1) hh_o = 1;
 tau_o = tau;

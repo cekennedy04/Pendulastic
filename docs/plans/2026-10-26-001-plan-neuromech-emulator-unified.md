@@ -105,7 +105,7 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
 | B8 | LabVIEW VIs for Mode A | **owner/LabVIEW** — spec in `neuromech/labview/LABVIEW_PROGRAM_SPEC.md` |
-| B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | next |
+| B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — group H, 60 scenarios; §5b |
 | B10 | Corpus rest geometry by the validated scorer | next (needs the recordings; ~25 min run) |
 
 ## 5a. What the dry run established (2026-10-26)
@@ -121,6 +121,26 @@ runs. And **the phone's agreement is bias-limited**: estimating gyro bias only f
 can see before release (what the app does) leaves ~0.01–0.02 °/s, which through the settled tail and
 area ratio moves PT7 by up to ~0.15 — one band at bands 2–3. Recommendation for the app: re-estimate bias
 at the settled tail before scoring (the settle feature already detects it).
+
+## 5b. What the port established (B9, 2026-10-26)
+
+A's tonic reflex (length + velocity channels, saturating ceiling, rise/fall activation, adaptation),
+its exponential end-stop and its hyperextension capsule now run on the De Groote core and in the
+Formula Node. All default off: the 45 existing core scenarios are bit-identical (max |Δ| = 0.0).
+The Formula Node matches to < 1.5e-11 on four vectors in which every module fires, and three
+deliberate errors in the node each fail the verifier. The old `all_modules` vector never engaged
+the contracture in its 3 s window (the leg reaches −60°, the stop sat at −70°); it now does.
+
+The port keeps A's signatures on a different limb and gravity law: a tonic hold pins the first stop
+(0.08° spread over 20° of release height) and stays; a velocity catch fires on a full drop and not
+on a low one (the release-height discontinuity); adaptation lets a hold catch, then give 5° deeper.
+Scored on the validated scorer it keeps A's grades — holds 4, no-ringdown fall 4, catch-and-release
+band 2 — so the mechanism confound is not an artefact of A's model. One number moves: the catch
+needs **13.9 N·m** here against 61.8 in A, because this limb's inertia is a quarter of A's. That
+brings the hard catch inside the ≥ 20 N·m gearbox of O2.
+
+The deep hold is at knee 132, not 125: this geometry rests at 125, and an extensor hold can only
+arrest short of rest (A's own constraint). Rest geometry stays an input (D7).
 
 ## 6. Validation, in order
 

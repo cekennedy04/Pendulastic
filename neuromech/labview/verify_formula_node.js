@@ -8,11 +8,14 @@ const src = fs.readFileSync(path.join(dir, "model_step_formula_node.txt"), "utf8
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\bfloat64\b/g, "let")
   .replace(/\b(cos|sin|exp|tanh)\(/g, "Math.$1(");
-const OUT = ["th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o", "srs_on_o", "rev_o", "clon_t0_o", "tau_o"];
-const INPUTS = ["th", "w", "ts", "tr", "tf", "tc", "srs_on", "rev", "clon_t0", "t", "wd", "wd_prev", "sd", "sd_prev",
+const OUT = ["th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o", "ah_o", "hh_o", "srs_on_o", "rev_o", "clon_t0_o", "tau_o"];
+const STATE = ["th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o", "ah_o", "hh_o"];
+const INPUTS = ["th", "w", "ts", "tr", "tf", "tc", "ah", "hh", "srs_on", "rev", "clon_t0", "t", "wd", "wd_prev", "sd", "sd_prev", "thd",
   "J", "mgl", "inc", "th0", "B", "tone", "k_f", "k_df", "k_srs", "flex_g", "flex_vth", "catch_g", "catch_vth", "catch_rel",
   "clon_nm", "clon_hz", "clon_tau", "rigid", "cog_d", "cog_hz", "con_k", "con_th", "guard", "gph0", "gph1", "gph2", "gph3",
-  "spasm", "spasm_t", "spasm_w", "use_lim"];
+  "spasm", "spasm_t", "spasm_w", "use_lim",
+  "hold_nm", "hold_glen", "hold_qthr", "hold_gvel", "hold_vthr", "hold_rise", "hold_fall", "ad_k", "ad_tau",
+  "es_k", "es_deg", "es_w", "es_b", "cap"];
 const step = new Function(...INPUTS, `let ${OUT.join(", ")};\n${src}\nreturn {${OUT.join(", ")}};`);
 const rad = d => d * Math.PI / 180;
 let worst = 0, failed = false;
@@ -23,12 +26,15 @@ for (const f of fs.readdirSync(dir).filter(n => n.startsWith("test_vector_") && 
     k_srs: h.k_srs, flex_g: h.flex_gain, flex_vth: h.flex_vth, catch_g: h.catch_gain, catch_vth: h.catch_vth, catch_rel: rad(h.catch_release_deg),
     clon_nm: h.clon_nm, clon_hz: h.clonus_hz, clon_tau: h.clonus_tau, rigid: h.rigid_nm, cog_d: h.cog_depth, cog_hz: h.cog_hz,
     con_k: h.contract_k, con_th: rad(h.contract_deg), guard: h.guard_nm, gph0: h["gph0..3"][0], gph1: h["gph0..3"][1],
-    gph2: h["gph0..3"][2], gph3: h["gph0..3"][3], spasm: h.spasm_nm, spasm_t: h.spasm_t, spasm_w: h.spasm_w, use_lim: h.use_limit ? 1 : 0 };
+    gph2: h["gph0..3"][2], gph3: h["gph0..3"][3], spasm: h.spasm_nm, spasm_t: h.spasm_t, spasm_w: h.spasm_w, use_lim: h.use_limit ? 1 : 0,
+    hold_nm: h.hold_nm, hold_glen: h.hold_glen, hold_qthr: h.hold_qthr_deg, hold_gvel: h.hold_gvel, hold_vthr: h.hold_vthr,
+    hold_rise: h.hold_rise, hold_fall: h.hold_fall, ad_k: h.adapt_kappa, ad_tau: h.adapt_tau,
+    es_k: h.es_k, es_deg: h.es_deg, es_w: h.es_w, es_b: h.es_b, cap: h.capsule ? 1 : 0 };
   let maxErr = 0, at = -1;
   for (const line of lines.slice(2)) {
     const v = Object.fromEntries(line.split(",").map((x, i) => [cols[i], parseFloat(x)]));
     const r = step(...INPUTS.map(k => (k in v ? v[k] : P[k])));
-    for (const k of ["th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o"]) {
+    for (const k of STATE) {
       const e = Math.abs(r[k] - v[k]); if (e > maxErr) { maxErr = e; at = v.t; }
     }
   }

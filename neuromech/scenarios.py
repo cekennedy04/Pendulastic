@@ -17,6 +17,9 @@ Groups:
                       right for phone-vs-encoder testing, circular for validating grades
   M  mechanism profiles   rig_neuromuscular_model.PROFILES (severity AND kind of severity),
                       rendered by that module and played the same way (plan D1)
+  H  mechanism profiles PORTED onto this core (plan B9): the same mechanisms as M
+                      (tonic hold, velocity catch with give, no-ringdown fall, end-stop),
+                      now in model_rt + the Formula Node, so Mode B can render them live
   S  severity axis     the published model's tone+reflex path, incl. the inverting branch
   B  behaviours        flexor/extensor dominance, catch, clonus, rigidity, contracture,
                        hypotonia, guarding, spasm, habituation
@@ -27,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from neuromech.model_rt import Params
+from neuromech.model_rt import Params, hold_for_arrest, critically_damped
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,24 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         Scenario("D-wobble", "D", "Pre-release wobble (3 deg, 2.5 Hz during hold)", base, hold_wobble_deg=3.0, probes="release detection"),
         Scenario("D-short", "D", "Recording stopped 3 s after release", base, truncate_s=3.0, probes="settle / N on a cut record"),
         Scenario("D-lowlift", "D", "Released from 30 deg short of full extension", base, theta0_deg=-30.0, probes="A0 and ratios on a partial lift"),
+    ]
+    # ── H: the mechanism profiles, ported onto this core ──────────────────
+    # Same mechanisms and intents as their M counterparts; the angles differ where the geometry
+    # does. This core rests at knee 125, so the deep hold is 132 (7 deg short of rest, the same
+    # margin as M's 125 against its 118 rest); 140 is kept as an absolute angle.
+    capsule = Params(capsule=True)
+    sc += [
+        Scenario("H-catch_and_hold_140", "H", "Tonic hold: falls to knee 140 and stays (no ring-down)",
+                 hold_for_arrest(140.0, capsule), intent=3, probes="first stop pinned whatever the release; N, R2n"),
+        Scenario("H-catch_and_hold_132", "H", "Tonic hold near rest: knee 132, 7 deg short of rest",
+                 hold_for_arrest(132.0, capsule), intent=2, probes="hold vs rest geometry; neutral_deg"),
+        Scenario("H-catch_release", "H", "Velocity catch that gives (clasp-knife-like): caught high, swing continues",
+                 replace(capsule, hold_nm=20.0, hold_gvel=0.03, hold_vthr=180.0, hold_rise=0.015, hold_fall=0.020,
+                         adapt_kappa=0.98, adapt_tau=0.04), intent=2, probes="phi_max, first trough; release-height discontinuity"),
+        Scenario("H-fall_no_ringdown", "H", "Critically damped: falls to rest, no oscillation, no reflex",
+                 critically_damped(capsule), probes="a damping effect read as severity"),
+        Scenario("H-contracture_stop", "H", "Exponential end-stop at 80 deg flexion truncates the first overshoot",
+                 replace(capsule, es_k=0.5, es_deg=80.0, es_w=8.0, es_b=4.0), probes="looks like tone; release height tells them apart"),
     ]
     # ── M: mechanism profiles from rig_neuromuscular_model ────────────────
     try:

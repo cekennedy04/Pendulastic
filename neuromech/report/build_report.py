@@ -15,7 +15,7 @@ for f in ("nm_ladder", "nm_behaviours", "nm_matrix", "nm_rig_ilc", "nm_range", "
     shutil.copy(os.path.join(NM, "out", "figures", f + ".png"), os.path.join(OUT, "fig", f + ".png"))
 
 M = pd.read_csv(os.path.join(NM, "out", "scenario_manifest.csv"))
-GROUP = {"A": "PT7-band preset", "S": "Severity axis", "B": "Behaviour", "C": "Out of range", "D": "Artefact", "M": "Mechanism profile"}
+GROUP = {"A": "PT7-band preset", "S": "Severity axis", "B": "Behaviour", "C": "Out of range", "D": "Artefact", "M": "Mechanism profile", "H": "Mechanism, ported"}
 rows = []
 for _, r in M.iterrows():
     mas = r.mas if isinstance(r.mas, str) else "refused"

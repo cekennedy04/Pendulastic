@@ -97,10 +97,10 @@ summary { cursor: pointer; font-weight: 600; }
   <h2 id="ans">The short answer</h2>
   <p class="col">Build it in three modes. <b>First, a scenario player</b>: the model runs offline in Python, LabVIEW plays the resulting 1 kHz angle file through the existing position loop, and the encoder log scores every run. That needs one new LabVIEW capability, a setpoint-array input, plus a re-tune and feedforward, because the rig as tuned today over-renders anything above 3 Hz. Then put the same model in the real-time loop (verified Formula Node code is ready). Last, run it in torque mode on a real shank on the vertical rig, where the motor supplies only the muscle torques.</p>
   <div class="facts">
-    <div class="fact"><b>55 scenarios</b><span>PT7-band presets, 11 behaviours, out-of-range cases, release artefacts, and 10 mechanism profiles from the vertical-rig model</span></div>
+    <div class="fact"><b>60 scenarios</b><span>PT7-band presets, 11 behaviours, out-of-range cases, release artefacts, 10 mechanism profiles from the vertical-rig model, and 5 of them ported onto the core</span></div>
     <div class="fact"><b>0.30° max error</b><span>portable 1 kHz model vs the published model over 10 s, strong spasticity</span></div>
     <div class="fact"><b>1×10⁻¹¹</b><span>Formula Node code vs the Python twin, every state, 3 000 ticks</span></div>
-    <div class="fact"><b>±65° needed</b><span>52 of 55 scenarios exceed today's ±45° limits</span></div>
+    <div class="fact"><b>±65° needed</b><span>57 of 60 scenarios exceed today's ±45° limits</span></div>
     <div class="fact"><b>2× at 5 Hz</b><span>rig over-renders the catch and clonus band; ILC fixes it in 3–4 runs</span></div>
     <div class="fact"><b>9 of 9 runs</b><span>in their intended band in a full dry-run session on synthetic hardware; phone |ΔPT7| median 0.009</span></div>
   </div>
@@ -185,6 +185,7 @@ summary { cursor: pointer; font-weight: 600; }
 <div class="col" style="margin-top:12px">
   <div class="finding"><span class="tag">compression</span><p>On the vertical-rig tone ladder, five dialled severities from healthy to intended MAS 3 get one grade (band 0), then a refusal. The scorer does not rank severity across most of the range it is meant to cover.</p></div>
   <div class="finding"><span class="tag">mechanism</span><p>At one intended severity, catch-and-hold, catch-and-release and raised tone grade 4, 2 and 0. PT7 moves more than four times further when the <i>kind</i> of impairment changes than when its amount goes from none to severe. The quantities that do track severity are unnormalised: peak velocity, resting angle and A0. Every ratio parameter is confound-dominated.</p></div>
+  <div class="finding"><span class="tag">ported</span><p>The vertical-rig model's tonic hold, velocity catch, end-stop and capsule now run on the published core and in the LabVIEW Formula Node (group H). On a different limb and gravity law they keep their signatures (a hold pins the first stop whatever the release height) and their grades: holds and the no-ringdown fall grade 4, catch-and-release grades 2. The confound belongs to the scorer, not to one model. The hard catch needs 13.9 N·m here, not 62.</p></div>
   <div class="finding"><span class="tag">inversion</span><p>PT7 is non-monotonic along the published severity axis (figure above). Severe legs grade milder, or are refused. This matches the U-shaped relaxation index Whelan et al. report at MAS 3. A monotonic grade map cannot be calibrated past MAS 2 on PT7 alone.</p></div>
   <div class="finding"><span class="tag">rest drift</span><p>A healthy leg whose resting angle creeps 3 °/s after it has settled grades <b>MAS 4</b> (area ratio 0.84). This is the same failure seen with the phone on 2026-09-08, now reproduced with a perfect sensor. The scorer needs a settled-tail check, not only a better phone.</p></div>
   <div class="finding"><span class="tag">missed</span><p>A clasp-knife catch grades MAS 0, a contracture grades MAS 0, and a leg that is not relaxed (guarding) grades MAS 0 with no warning. The literature's relaxation check, by EMG or phase plane, is still absent.</p></div>
@@ -201,7 +202,7 @@ summary { cursor: pointer; font-weight: 600; }
 <div class="col stack">
   <p>Three constraints, all measurable now.</p>
   <ul class="tight">
-    <li><b>Range.</b> In clinical geometry the leg is released 55° above where it hangs and swings 35–52° below it. 52 of the 55 scenarios exceed today's ±45° software limits. Confirm the arm's mechanical range and set ±65°. Failing that, render at 0.75× amplitude: A0 stays above the 25° gate, and every ratio parameter is amplitude-invariant.</li>
+    <li><b>Range.</b> In clinical geometry the leg is released 55° above where it hangs and swings 35–52° below it. 57 of the 60 scenarios exceed today's ±45° software limits. Confirm the arm's mechanical range and set ±65°. Failing that, render at 0.75× amplitude: A0 stays above the 25° gate, and every ratio parameter is amplitude-invariant.</li>
     <li><b>Speed.</b> The clinical scenarios need 160–330 °/s. The rig has already reached 440 °/s. Only the deliberately extreme kinematic cases (560–700 °/s) are score-only.</li>
     <li><b>Tracking.</b> Measured from the setpoint and encoder already in 23 SSR logs: the arm follows the command at 1 Hz, overshoots it by 10 % at 2 Hz and 26 % at 3 Hz, by about 2× at 5 Hz, and resonates at 6.35 Hz. That is exactly the band of the spastic catch and clonus.</li>
   </ul>
@@ -290,7 +291,7 @@ summary { cursor: pointer; font-weight: 600; }
 <tr><td>Published model (RK4, checked against the authors' MATLAB)</td><td class=mono>neuromech/pendulum_sim.py</td><td>21 tests pass</td></tr>
 <tr><td>Portable 1 kHz model and nine modules</td><td class=mono>neuromech/model_rt.py</td><td>8 tests pass</td></tr>
 <tr><td>Formula Node port, test vectors, verifier</td><td class=mono>neuromech/labview/</td><td>matches to 1×10⁻¹¹</td></tr>
-<tr><td>Scenario library and build</td><td class=mono>python -m neuromech.build</td><td>55 setpoint files and a manifest</td></tr>
+<tr><td>Scenario library and build</td><td class=mono>python -m neuromech.build</td><td>60 setpoint files and a manifest</td></tr>
 <tr><td>ILC tool</td><td class=mono>python -m neuromech.ilc CMD.csv RUN.bin</td><td>converges on self-test; untested on hardware</td></tr>
 <tr><td>Session planner and scorer</td><td class=mono>python -m neuromech.session plan | score</td><td>built; dry-run verified</td></tr>
 <tr><td>Dry run on synthetic hardware</td><td class=mono>python -m neuromech.dryrun</td><td>9/9 runs in band</td></tr>
