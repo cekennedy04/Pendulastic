@@ -186,10 +186,40 @@ Three independent lines agree:
    prediction does not depend on the table or the body size: 0.79-0.97 Hz.
    Reaching 1.52 Hz needs K = 17-40 Nm/rad against a healthy knee carrying
    under ~4 Nm through midrange, or a shank of 0.12-0.16 m.
-2. *The one measured velocity agrees with the physics, not the constant.*
-   221.9 +/- 35.6 deg/s peak first-swing velocity in 50 healthy supine adults.
-   The physics predicts about 204 deg/s at A0 = 46.6, inside one SD. The
-   constant requires 446 deg/s, which is **+6.3 SD** from the measurement.
+2. *Two independent measured velocities agree with the physics, not the
+   constant.* **CONFIRMED 2026-10-26 from the papers themselves**, once network
+   access was opened and the pages could be read rather than summarised:
+
+   | quantity | value | source |
+   |---|---|---|
+   | peak first-swing velocity | **241.7 +/- 17.7 deg/s** | PMC3544505, 10 control adults, unnormalised, EMG-monitored |
+   | peak first-swing velocity | 221.9 +/- 35.6 deg/s | Kim 1996, n = 50 |
+   | mean velocity, first flexion | 157.6 +/- 11.4 deg/s | PMC3544505 controls |
+   | relaxation index | 1.91 +/- 0.16 / 1.678 +/- 0.090 | PMC3544505 / Kim |
+   | first swing, onset to first flexion peak | **735 +/- 87 ms** | PMC3544505 |
+   | damping B, absolute | 0.18 +/- 0.08 flexion, -0.31 +/- 0.09 extension Nms/rad | PMC3544505 controls |
+
+   That 735 ms is a HALF period -- the paper states the time axis is "the
+   interval time between movement onset and the first flexion peak" -- so the
+   full period is 1.47 s and **the measured healthy frequency is 0.68 Hz**.
+   `omega_max_n` from these numbers is **~4.3**, against this model's 4.38 and
+   `HEALTHY_REF`'s 9.5672. The constant needs 446 deg/s at A0 = 46.6, which is
+   **+11.5 SD** from the measured 241.7.
+
+   **One paper appeared to vindicate the constant, and it is wrong by a factor
+   of two.** Casabona et al.'s rheumatoid-arthritis pendulum paper reports
+   control stiffness 1.26-1.34 N/rad m^4 normalised by stature^5; denormalised
+   at their controls' 1.625 m that is **14.3-15.2 Nm/rad**, twenty-nine times
+   Bajd & Bowman's 0.5, which would put the healthy frequency near 1.36 Hz and
+   make the constant defensible. The denormalisation is sound -- checked
+   against the same group's unnormalised viscosity, 0.113-0.601 denormalised
+   against 0.18-0.31 measured, overlapping. But their equation
+   `omega = sqrt(K'/J) = 2*pi/T` defines T as "the period of one cycle" and
+   their methods then apply it per HALF-cycle. Evaluating it on the half-cycle
+   doubles omega, so `K' = J*omega^2` is four times too large -- and
+   reconstructing it that way reproduces **14.27 Nm/rad against their published
+   14.3**. With the correct full period, K lands at or below zero, i.e. 0.5
+   within the error of the anthropometry.
 3. *The quantity is not reproducible in the real pipeline.* The `_sg` window
    note in `pendulastic_pt_score.py` records that decimating real 120 Hz
    OptiTrack to 20 Hz -- changing the sampling and nothing else about the

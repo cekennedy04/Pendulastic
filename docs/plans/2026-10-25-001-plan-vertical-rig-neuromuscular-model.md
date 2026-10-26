@@ -453,12 +453,50 @@ ratio and natural frequency from the period T and the amplitude ratio D of each
 half-cycle, half-cycle by half-cycle, rather than fitting a whole trace. Worth
 matching, because it is what any comparison figure will have been computed with.
 
-**Not obtainable through this channel.** No measured healthy-adult ring-down
-frequency in Hz, and no healthy K in Nm/rad or B in Nms/rad. The control-group
-tables that hold them were located in three specific papers (PMC1693559
-rheumatoid arthritis, PMC3544505 Down syndrome, PMC4397198 spinal cord injury)
-and all three are refused by the policy. These are the fetches to do first once
-the hosts are allowed.
+### OBTAINED 2026-10-26, network access opened
+
+The three control-group tables were fetched and read. Numbers for the build
+spec, all from adult controls:
+
+| quantity | value | source |
+|---|---|---|
+| ring-down frequency | **0.68 Hz** (period 1.47 s, from a 735 +/- 87 ms half period) | PMC3544505, 10 control adults |
+| peak first-swing angular velocity | **241.7 +/- 17.7 deg/s** | same |
+| mean velocity, first flexion | 157.6 +/- 11.4 deg/s | same |
+| mean acceleration, first flexion | 283.2 +/- 25.5 deg/s^2 | same |
+| second peak acceleration | 1817.1 +/- 222.3 deg/s^2 | same |
+| relaxation index | 1.91 +/- 0.16 | same |
+| damping B, absolute | **0.18 +/- 0.08** (flexion), **-0.31 +/- 0.09** (extension) Nms/rad | same |
+| relaxation index | 1.678 +/- 0.090 | Kim 1996, n = 50 |
+| peak first-swing velocity | 221.9 +/- 35.6 deg/s | Kim 1996, n = 50 |
+
+**Two corrections to the passive spec this rig is being built to.**
+
+`B = 0.5 Nms/rad` is **1.6 to 2.8x too high.** Measured healthy damping is
+0.18-0.31 Nms/rad absolute. Dial the rig to about **0.25 Nms/rad**, and expect
+flexion and extension to differ -- the measured values are directional, which
+a single scalar B cannot represent.
+
+`l = 0.6 m` and `J = m*l^2/3 = 0.6 kg m^2` describe a limb much larger than a
+typical adult shank. Winter's foot+leg for a 59.5 kg, 1.625 m adult gives
+m = 3.63 kg, shank length 0.400 m, mass-centre arm 0.242 m and
+**J = 0.313 kg m^2** -- half the inertia the project's parameter set assumes.
+For an 85 kg, 1.80 m adult it is m = 5.19 kg, L = 0.443 m, J = 0.549. So
+m = 5 kg is a large-adult value while l = 0.6 m is longer than any adult shank,
+and the pairing is not self-consistent. The rig's arm should be specified from
+the anthropometry of the population it will represent, with J quoted explicitly
+rather than derived from a uniform-rod assumption that is 1.62x low.
+
+`K = 0.5 Nm/rad` **survives**, and the one published figure that appeared to
+refute it is an arithmetic artifact -- see the companion report's Finding 4 for
+the factor-of-two in T that inflates a control stiffness to 14.3 Nm/rad.
+
+**Still unobtained.** Willaert's per-subject parameter table, De Groote's sweep
+ranges, Riener & Edrich's knee coefficients and the disputed sign, and any
+published realism tolerance for a limb simulator. europepmc.org,
+sciencedirect.com and journals.physiology.org answer 403 to the fetcher itself
+(publisher bot-blocking, not the environment policy now), so those need another
+route.
 
 ### Still unsourced, and now known to be unsourced
 

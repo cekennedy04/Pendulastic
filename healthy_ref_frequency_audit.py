@@ -427,8 +427,116 @@ def part_e(verbose=True):
     return res
 
 
+#: MEASURED healthy-adult values, read from the papers' own text (network access
+#: opened 2026-10-26, pages fetched and read rather than summarised).
+#:
+#: Casabona et al., J Appl Physiol 2013, PMC3544505 -- 10 control adults,
+#: Wartenberg test, UNNORMALISED, EMG-monitored for relaxation:
+MEASURED = {
+    "peak_velocity_deg_s":   (241.7, 17.7, "PMC3544505 controls, n=10"),
+    "mean_velocity_deg_s":   (157.6, 11.4, "PMC3544505 controls, n=10"),
+    "relaxation_index":      (1.91,  0.16, "PMC3544505 controls, n=10"),
+    "first_swing_ms":        (735.0, 87.0, "PMC3544505, onset to first flexion peak"),
+    "damping_flex_nms_rad":  (0.18,  0.08, "PMC3544505 controls, F1->F2"),
+    "damping_ext_nms_rad":   (-0.31, 0.09, "PMC3544505 controls, E1->E2"),
+    # Kim et al. 1996, n=50 healthy supine adults -- independent cohort.
+    "peak_velocity_kim":     (221.9, 35.6, "Kim 1996, n=50"),
+    "relaxation_index_kim":  (1.678, 0.090, "Kim 1996, n=50"),
+}
+
+
+def part_f(verbose=True):
+    """Measured values, and a factor-of-two error in a published paper.
+
+    This part replaces guesswork with read numbers, and it had to resolve a
+    conflict that nearly overturned the verdict.
+
+    THE CONFLICT. Casabona et al.'s rheumatoid-arthritis pendulum paper
+    (PMC1693559) reports control knee stiffness as 1.26-1.34 N/rad m^4,
+    normalised by the fifth power of stature. Denormalised at their controls'
+    1.625 m that is 14.3-15.2 Nm/rad -- twenty-nine times Bajd & Bowman's
+    K = 0.5. Taken at face value it raises the healthy frequency to about
+    1.36 Hz and makes omega_max_n near 7.5 defensible, which would have sunk
+    the verdict.
+
+    THE DENORMALISATION IS RIGHT. Checked against the same group's Down-
+    syndrome paper (PMC3544505), which reports the same quantities
+    UNNORMALISED: viscosity 0.18 +/- 0.08 Nms/rad in flexion and
+    -0.31 +/- 0.09 in extension for controls. The RA paper's normalised
+    viscosity denormalises to 0.113-0.601 Nms/rad. Overlapping, so the
+    stature^5 conversion is sound and the 14.3 Nm/rad figure is what that
+    paper really claims.
+
+    THE PAPER IS WRONG, AND BY EXACTLY A FACTOR OF TWO IN T. The same group
+    measured the first swing -- onset to first flexion peak, which is a HALF
+    period -- at 735 +/- 87 ms. That gives a full period of 1.47 s and
+    omega = 4.27 rad/s. Their equation (2) is omega = sqrt(K'/J) = 2*pi/T with
+    T "the period of one cycle", but their methods then apply it per
+    half-cycle. Evaluate 2*pi/T with T = the half-cycle and omega comes out
+    8.55 rad/s, twice too high, so K' = J*omega^2 is four times too high --
+    and that reproduces their reported stiffness at 14.27 Nm/rad against a
+    published 14.3. With the correct full period, K lands at or below zero,
+    which is K = 0.5 within the error of the anthropometry.
+
+    So the one piece of evidence that appeared to vindicate the constant is an
+    arithmetic artifact, and the measured timing from the same group refutes
+    it.
+
+    THE DIRECT NUMBER. PMC3544505 reports control peak first-swing angular
+    velocity as 241.7 +/- 17.7 deg/s, unnormalised and EMG-monitored. Kim's
+    independent n=50 cohort gives 221.9 +/- 35.6. The constant needs 446 deg/s
+    at A0 = 46.6, which is 11.5 SD from the first figure.
+    """
+    import math as _m
+    pv, pv_sd, pv_src = MEASURED["peak_velocity_deg_s"]
+    hs, hs_sd, _ = MEASURED["first_swing_ms"]
+    T = 2.0 * hs / 1000.0
+    w = 2.0 * _m.pi / T
+    a0_implied = pv / (w * 180.0 / _m.pi) * (180.0 / _m.pi)
+    required = DISPUTED * pts.EXCURSION_REF_MEAN_DEG
+    res = {"period_s": T, "freq_hz": 1.0 / T, "omega_rad_s": w,
+           "omega_max_n_implied": pv / a0_implied,
+           "required_peak_deg_s": required,
+           "sd_away": (required - pv) / pv_sd}
+    if verbose:
+        print()
+        print("F. Measured values, read from the papers")
+        print(f"  first swing (onset -> first flexion peak) {hs:.0f} +/- "
+              f"{hs_sd:.0f} ms, a HALF period")
+        print(f"    -> full period {T:.3f} s, {1.0/T:.3f} Hz, "
+              f"omega {w:.2f} rad/s")
+        print(f"  peak first-swing velocity   {pv:.1f} +/- {pv_sd:.1f} deg/s  "
+              f"({pv_src})")
+        pk, pk_sd, pk_src = MEASURED["peak_velocity_kim"]
+        print(f"                              {pk:.1f} +/- {pk_sd:.1f} deg/s  "
+              f"({pk_src})")
+        ri, ri_sd, _ = MEASURED["relaxation_index"]
+        rk, rk_sd, _ = MEASURED["relaxation_index_kim"]
+        print(f"  relaxation index            {ri:.2f} +/- {ri_sd:.2f} and "
+              f"{rk:.3f} +/- {rk_sd:.3f}")
+        bf, bf_sd, _ = MEASURED["damping_flex_nms_rad"]
+        be, be_sd, _ = MEASURED["damping_ext_nms_rad"]
+        print(f"  damping B, absolute         {bf:.2f} +/- {bf_sd:.2f} "
+              f"(flexion), {be:.2f} +/- {be_sd:.2f} (extension) Nms/rad")
+        print()
+        print(f"  omega_max_n from these numbers: ~{w:.2f}")
+        print(f"  this model:                     "
+              f"{pts.compute_pt_params(*[rnm.simulate(rnm.PROFILES['tone_L0'])[k] for k in ('t','angle_deg')])['omega_max_n']:.2f}")
+        print(f"  HEALTHY_REF:                    {DISPUTED:.4f}")
+        print(f"  peak velocity the constant needs at A0 = "
+              f"{pts.EXCURSION_REF_MEAN_DEG:.1f}: {required:.0f} deg/s, "
+              f"{res['sd_away']:+.1f} SD from measurement")
+        print()
+        print("  A published paper's 14.3 Nm/rad control stiffness LOOKED like")
+        print("  it vindicated the constant. It is a factor-of-two error in T:")
+        print("  omega = 2*pi/T evaluated on the half-cycle, so K' = J*omega^2")
+        print("  comes out 4x high. Reconstructing it that way reproduces 14.27")
+        print("  against their published 14.3. With the full period, K ~ 0.")
+    return res
+
+
 def main() -> int:
-    part_a(); part_b(); part_c(); part_d(); part_e()
+    part_a(); part_b(); part_c(); part_d(); part_e(); part_f()
     print()
     print("WHAT THIS DOES NOT SETTLE")
     print("  The replacement VALUES. The physics puts a healthy limb's")
