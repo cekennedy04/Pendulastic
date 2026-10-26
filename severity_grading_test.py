@@ -760,7 +760,7 @@ def cohort_arm(verbose: bool = True, opti_root: str = None,
             print(f"  HEALTHY_REF['omega_max_n'] = "
                   f"{pts.HEALTHY_REF['omega_max_n']:.4f}; clean model traces "
                   f"give 4.38, and")
-            print(f"  8 deg RMS of added noise gives 7.90. A strong positive "
+            print(f"  8 deg RMS of noise spans 1.48-12.53 per draw. A strong positive "
                   f"rho here means the")
             print(f"  constant is partly a property of the tracking, not of "
                   f"healthy legs.")

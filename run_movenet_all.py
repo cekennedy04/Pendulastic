@@ -19,6 +19,8 @@ import glob
 
 import cv2
 import numpy as np
+
+import participant_paths
 import tensorflow as tf
 import tensorflow_hub as hub
 
@@ -33,7 +35,9 @@ VIDEO_ROOTS = [
 # Matches raw trial videos: trial_1.mp4, Trial_2.avi, etc.
 _VID_RE    = re.compile(r"^trial_(\d+)\.(mp4|avi)$", re.IGNORECASE)
 # Matches participant / position in the path
-_PID_RE    = re.compile(r"Participant_(\w+)", re.IGNORECASE)
+# See pendulastic_pipeline.py: a legacy-only participant regex silently drops
+# every study-prefixed folder. Resolved through participant_paths instead.
+#   _PID_RE = re.compile(r"Participant_(\w+)", re.IGNORECASE)
 _POS_RE    = re.compile(r"Position_(\w+)",   re.IGNORECASE)
 _HEIGHT_RE = re.compile(r"Height_(.+)",      re.IGNORECASE)
 
@@ -70,9 +74,9 @@ def discover_videos():
             parts = path.replace("\\", "/").split("/")
             pid = pos = height = None
             for p in parts:
-                pm = _PID_RE.match(p)
-                if pm:
-                    pid = pm.group(1)
+                _pid = participant_paths.pid_from_dir_name(p)
+                if _pid:
+                    pid = _pid
                 pm = _POS_RE.match(p)
                 if pm:
                     pos = pm.group(1)
