@@ -43,6 +43,8 @@ import pandas as pd
 from scipy.signal import find_peaks, savgol_filter
 from scipy.spatial.transform import Rotation as _R
 
+import participant_paths
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 OPTI_ROOT = os.path.join(BASE_DIR, "OptiTrack_Recordings")
@@ -3001,18 +3003,22 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
         # Post-treatment sessions nest an extra Session_post/ level that pre-treatment
         # sessions don't have, so search recursively rather than assuming a fixed depth.
         def _find_rec_dir(root):
-            direct = os.path.join(root, f"Participant_{pid_str}",
-                                  f"Position_{pos}", "Height_Joint-Level")
-            if os.path.isdir(direct):
-                return direct
-            matches = glob.glob(os.path.join(
-                root, f"Participant_{pid_str}", "**",
-                f"Position_{pos}", "Height_Joint-Level"), recursive=True)
-            if matches:
-                return matches[0]
+            # Folder names carry a study prefix (Control_/CHAT_/MINT_) or the
+            # legacy Participant_ one, so resolve by id rather than by name.
+            pid_dir = participant_paths.find_participant_dir(root, pid_str)
+            if pid_dir:
+                direct = os.path.join(pid_dir, f"Position_{pos}",
+                                      "Height_Joint-Level")
+                if os.path.isdir(direct):
+                    return direct
+                matches = glob.glob(os.path.join(
+                    pid_dir, "**",
+                    f"Position_{pos}", "Height_Joint-Level"), recursive=True)
+                if matches:
+                    return matches[0]
 
             # Newer "simplified recording folder structure" (merged into main
-            # 2026-08): Recordings/Participant_{N}/{Leg}/{characterization}/,
+            # 2026-08): Recordings/{prefix}_{N}/{Leg}/{characterization}/,
             # no Position_N/Height_Joint-Level nesting at all. pid_str here is
             # "{N}_{leg}_{cond}" (pt_report_common.score_trial's rec["pid"]);
             # split it back apart and match the Leg/characterization
@@ -3021,8 +3027,8 @@ def load_hpe_model_curves(pid_str: str, pos: str, trial: str,
             parts = pid_str.split("_", 2)
             if len(parts) == 3:
                 num, leg, cond = parts
-                participant_dir = os.path.join(root, f"Participant_{num}")
-                if os.path.isdir(participant_dir):
+                participant_dir = participant_paths.find_participant_dir(root, num)
+                if participant_dir and os.path.isdir(participant_dir):
                     for leg_name in os.listdir(participant_dir):
                         if leg_name.lower() != leg.lower():
                             continue

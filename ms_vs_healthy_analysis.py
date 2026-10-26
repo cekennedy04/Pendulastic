@@ -5,7 +5,7 @@ Compare Wartenberg Pendulum Test parameters between MS and healthy control
 participants using OptiTrack ground-truth PT scores.
 
 Group assignment:
-  Priority 1 — reads diagnosis from  Recordings/Participant_<pid>/metadata.json
+  Priority 1 — reads diagnosis from  Recordings/<participant folder>/metadata.json
   Fallback  — "MS" / "Stroke" if pid numeric prefix >= 4 (odd convention)
               "healthy" otherwise
 Classification map:
@@ -41,6 +41,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
+import participant_paths
 
 # ── optional scipy for Mann-Whitney U ─────────────────────────────────────────
 try:
@@ -85,12 +86,11 @@ PARAMS = [
 
 def _load_metadata_diagnosis() -> dict[str, str]:
     """
-    Scan all Recordings/Participant_*/metadata.json files.
+    Scan every Recordings/<participant folder>/metadata.json file.
     Returns {participant_id: "MS" | "Healthy" | "Unknown"}.
     """
     result = {}
-    pattern = os.path.join(REC_ROOT, "Participant_*", "metadata.json")
-    for path in glob.glob(pattern):
+    for path in participant_paths.glob_participants(REC_ROOT, "metadata.json"):
         try:
             with open(path, encoding="utf-8") as f:
                 meta = json.load(f)

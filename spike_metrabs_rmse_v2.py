@@ -55,6 +55,7 @@ from calibrate import (INPUT_JSON, DEFAULT_MIN_R, DEFAULT_EXCLUDE_FLIPPED,
                         DEFAULT_DEGREE, DEFAULT_ALPHA, loto_cv,
                         print_loto_table, _rmse)
 from mediapipe_preprocessing import knee_angle_from_points
+import participant_paths
 
 ROOT = Path(__file__).parent
 REC_ROOT = ROOT / "Recordings"
@@ -69,7 +70,7 @@ def resolve_video(trial_name: str) -> Path | None:
     if not m:
         return None
     pnum, side, tnum = m.group(1), m.group(2), m.group(3)
-    pdir = REC_ROOT / f"Participant_{pnum}"
+    pdir = Path(participant_paths.participant_dir(str(REC_ROOT), pnum))
     if not pdir.exists():
         return None
     cands = sorted(set(pdir.rglob(f"Trial_{tnum}.avi")) |

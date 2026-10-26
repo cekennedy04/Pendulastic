@@ -131,6 +131,8 @@ _MAS_COLORS = {
 
 # ─── configuration ────────────────────────────────────────────────────────────
 
+import participant_paths   # group-prefixed folder naming (Control_/CHAT_/MINT_)
+
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 SEL_FILE   = os.path.join(BASE_DIR, "tracking_selections.json")
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -5704,17 +5706,21 @@ class PendulaticViewer(tk.Tk):
             self._skip_marker_check = False
             part = self._get_participant()
             pid  = part["id"] if part else "Unknown"
-            # Find or create participant folder: Participant_{pid}_{label}
+            # Find or create the participant folder. An existing folder always
+            # wins (whatever prefix it uses); a new one takes the study prefix
+            # for this participant's diagnosis -- Control_/CHAT_/MINT_ -- and
+            # falls back to Participant_{pid}_{label} when there is no study.
             rec_root = os.path.join(BASE_DIR, "Recordings")
             os.makedirs(rec_root, exist_ok=True)
-            part_folder = None
-            for d in os.listdir(rec_root):
-                if os.path.isdir(os.path.join(rec_root, d)) and \
-                        d.lower().startswith(f"participant_{pid.lower()}"):
-                    part_folder = d
-                    break
-            if part_folder is None:
-                label = (part.get("diagnosis") or part.get("name") or "").lower().replace(" ", "_")
+            diagnosis = (part.get("diagnosis") if part else None)
+            existing = participant_paths.find_participant_dir(rec_root, pid)
+            if existing is not None:
+                part_folder = os.path.basename(existing)
+            elif participant_paths.group_for_diagnosis(diagnosis):
+                part_folder = participant_paths.participant_dir_name(
+                    pid, rec_root, diagnosis=diagnosis)
+            else:
+                label = (diagnosis or (part.get("name") if part else "") or "").lower().replace(" ", "_")
                 part_folder = f"Participant_{pid}" + (f"_{label}" if label else "")
             pos = self._pos_var.get()
             rec_dir = os.path.join(rec_root, part_folder,
@@ -5769,7 +5775,7 @@ class PendulaticViewer(tk.Tk):
             if self._var_motive.get():
                 _start_msg = (
                     f"START|id={pid}|position={pos}|height=Viewer|"
-                    f"trial={trial_n}|relpath=Participant_{pid}"
+                    f"trial={trial_n}|relpath={part_folder}"
                 )
                 try:
                     import motive_sync as _ms

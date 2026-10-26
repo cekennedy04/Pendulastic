@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation as R, Slerp
+import participant_paths
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -578,7 +579,7 @@ def discover_trials():
             continue
 
         # Derive the short pid token used in model filenames
-        pid_short = pid.replace("Participant_", "")   # e.g. "2_left_duo"
+        pid_short = participant_paths.strip_prefix(pid)   # e.g. "2_left_duo"
 
         for opti_csv in sorted(glob.glob(
             os.path.join(opti_pid_dir, "**", "trial_*_optitrack.csv"),
