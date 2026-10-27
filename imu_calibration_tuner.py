@@ -110,6 +110,31 @@ def _recently_calm(gyro_hold_buf: list, now: float) -> bool:
               for _, v in gyro_hold_buf)
 
 
+# An above-guard excursion that settles without reaching the capture threshold
+# revokes a qualified calm hold -- unless it is small and brief enough to be
+# sensor noise grazing the guard rather than handling. Without this, a single
+# 0.30-0.35 rad/s sample during an otherwise calm hold revoked eligibility,
+# and when the real release followed within the 0.95 s needed to re-qualify,
+# no zero was captured at all: 20 of 206 corpus trials (2026-10-27), each with
+# a real swing after a 1.0-4.0 s hold. The live server has no calm gate at all
+# (it zeroes on the first _FLEX_CAPTURE_THRESHOLD burst), so this moves the
+# replay toward what the app actually did, not away from it.
+#
+# Swept over all 211 phone trials: 0.5 rad/s / 0.2 s recovers 13 trials and
+# changes no already-scored trial's A0, neutral or release angle by more than
+# 0.5 deg. Recovered trials over-read OptiTrack by the same factor as the rest
+# of the corpus (A0 ratio ~1.3-2.9 vs corpus median 1.78), and each one's first
+# 1 rad/s crossing sits 0.06-0.42 s before its swing peak, as a release does.
+# Wider thresholds (0.8 rad/s) recover 3 more but start to admit handling.
+_NOISE_EXCURSION_PEAK_RAD_S = 0.5
+_NOISE_EXCURSION_MAX_S = 0.2
+
+
+def _is_noise_excursion(peak_rad_s: float, duration_s: float) -> bool:
+    return (peak_rad_s < _NOISE_EXCURSION_PEAK_RAD_S
+            and duration_s < _NOISE_EXCURSION_MAX_S)
+
+
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
      "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
@@ -175,6 +200,10 @@ class _RoleState:
         # into zeroing on that burst instead of the true release.
         self.calm_qualified = False
         self.pending_departure = False
+        # Start time and peak |omega| of the current above-guard excursion,
+        # so one that settles can be told apart as noise or handling.
+        self.excursion_t0 = 0.0
+        self.excursion_peak = 0.0
 
     def calibrate_accel_bias(self) -> None:
         """Estimate accel bias from the current accel_hold_buf during a
@@ -368,14 +397,22 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                 # allowed to keep climbing from here to the capture
                 # threshold.
                 st.pending_departure = True
+                st.excursion_t0 = samp["t"]
+                st.excursion_peak = omega_mag
+            elif st.pending_departure and not is_calm_sample:
+                st.excursion_peak = max(st.excursion_peak, omega_mag)
 
             if st.pending_departure and is_calm_sample:
                 # The above-guard episode settled back down without ever
-                # reaching the capture threshold: handling, not a
-                # release. Revoke eligibility -- a fresh full calm window
-                # is required before the next excursion can be trusted.
+                # reaching the capture threshold. If it was handling, revoke
+                # eligibility -- a fresh full calm window is required before
+                # the next excursion can be trusted. If it was too small and
+                # brief to be handling, it is sensor noise grazing the guard
+                # and the hold stays qualified (see _NOISE_EXCURSION_*).
                 st.pending_departure = False
-                st.calm_qualified = False
+                if not _is_noise_excursion(st.excursion_peak,
+                                           samp["t"] - st.excursion_t0):
+                    st.calm_qualified = False
 
             # Only a qualifying role's burst may arm/capture — a
             # non-qualifying role's motion is ignored entirely
