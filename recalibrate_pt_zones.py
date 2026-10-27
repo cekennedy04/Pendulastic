@@ -158,6 +158,48 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
     return out, by_leg_params
 
 
+#: omega_max_n = omega_peak_deg_s / A0_deg. Reported alongside the scored set
+#: so the table can say WHICH factor disagrees with physics, not just that the
+#: product does. Neither is scored; neither has a HEALTHY_REF entry (A0 has
+#: EXCURSION_REF_MEAN_DEG instead, which _decompose uses).
+_DECOMPOSE_KEYS = ["omega_peak_deg_s", "A0_deg"]
+
+#: Measured healthy peak first-swing knee velocity, for the one comparison that
+#: decides whether the pipeline's peak is inflated. Both read from the papers;
+#: provenance and the filtering caveat are in healthy_ref_frequency_audit
+#: (MEASURED_PEAK_DEG_S and part_e's caveat) -- peak velocity has no asymptote
+#: as the smoothing window shrinks and neither source reports its filtering, so
+#: a gap here is suggestive, not a measurement conflict.
+_LIT_PEAK_DEG_S = ((221.9, 35.6, "Kim 1996, n=50 supine"),
+                   (241.7, 17.7, "PMC3544505 controls, n=10"))
+
+
+def _decompose(by_key: dict) -> None:
+    """Say which factor of omega_max_n the pipeline and physics disagree on.
+
+    healthy_ref_frequency_audit part_g puts the whole disagreement at 1.85x,
+    splitting as ~1.59x in peak velocity and ~1.17x in A0 against the emulator.
+    Those were the EMULATOR's numbers. These are the cohort's, which is the
+    comparison that actually decides it.
+    """
+    peak = by_key.get("omega_peak_deg_s")
+    a0 = by_key.get("A0_deg")
+    if not peak or not a0:
+        return
+    print()
+    print("    DECOMPOSED -- omega_max_n = omega_peak_deg_s / A0_deg:")
+    print(f"      A0_deg            {a0[0]:8.2f} deg   vs EXCURSION_REF "
+          f"{pts.EXCURSION_REF_MEAN_DEG:.1f} +/- {pts.EXCURSION_REF_SD_DEG:.1f} "
+          f"(n={pts.EXCURSION_REF_N})")
+    print(f"      omega_peak_deg_s  {peak[0]:8.2f} deg/s")
+    for lit, sd, src in _LIT_PEAK_DEG_S:
+        print(f"        vs {lit:6.1f} +/- {sd:4.1f} ({src}): "
+              f"{peak[0] / lit:.2f}x, {(peak[0] - lit) / sd:+.1f} SD")
+    print("      A0 should match EXCURSION_REF closely -- both come from this")
+    print("      cohort -- so a disagreement with physics that survives here")
+    print("      lands on the PEAK, i.e. on what the 0.10 s window admits.")
+
+
 def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
     """What the control cohort actually measures for each scored parameter.
 
@@ -179,7 +221,11 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
     """
     import statistics as st
     by_key = {}
-    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS:
+    # A0_deg and omega_peak_deg_s are in neither list -- they are reported-only
+    # scalars -- but they are the two FACTORS omega_max_n is built from
+    # (omega_max_n = omega_peak_deg_s / A0_deg), and without them this table
+    # says the pipeline disagrees with physics without saying which half does.
+    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS + _DECOMPOSE_KEYS:
         vals = [p[k] for key, plist in per_leg_params.items() if _rank(legs[key][0]) == 0
                 for p in plist if k in p and np.isfinite(p[k])]
         if vals:
@@ -191,10 +237,17 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
               f"{'HEALTHY_REF':>12} {'ratio':>7}")
         for k, (med, lo, hi, n) in by_key.items():
             ref = pts.HEALTHY_REF.get(k)
-            r = (med / ref) if ref not in (None, 0) else float("nan")
-            star = "  <-- scored" if k in pts._PARAM_KEYS else "  (reported only)"
+            has_ref = ref not in (None, 0)
+            ref_s = f"{ref:12.4f}" if has_ref else f"{'--':>12}"
+            r_s = f"{med / ref:7.2f}" if has_ref else f"{'--':>7}"
+            if k in pts._PARAM_KEYS:
+                star = "  <-- scored"
+            elif k in _DECOMPOSE_KEYS:
+                star = "  (factor of omega_max_n)"
+            else:
+                star = "  (reported only)"
             print(f"    {k:16} {med:16.4f} {f'[{lo:.3f} - {hi:.3f}]':>20} "
-                  f"{ref if ref is None else f'{ref:12.4f}'} {r:7.2f}{star}")
+                  f"{ref_s} {r_s}{star}")
         print(f"    (n = {max(v[3] for v in by_key.values())} control trials)")
         print()
         print("    omega_max_n is the one to look at. If the measured median is")
@@ -202,6 +255,7 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
         print("    itself is inflated -- fix the extraction, not the constant.")
         print("    If it is near 4.8 the constant is simply stale and can be")
         print("    replaced. Nothing is written either way.")
+        _decompose(by_key)
     return by_key
 
 
