@@ -733,6 +733,16 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     the score does not support -- which is the failure this whole block exists
     to prevent.
 
+    `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
+    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-2026-10-27",
+    not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
+    renamed. It is a column name in generated CSVs and in the neuromech
+    manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
+    `enc_pt7`, `int_pt7`), so renaming it would silently invalidate stored
+    artifacts to fix a spelling. SCORE_FORMULA_ID is the authority on how many
+    terms a given number was built from, and it travels with any score worth
+    comparing.
+
     `zone` is the verdict to use and the one the app shows: it comes from this
     project's own data-derived bands. `mas` is the historical Popovic
     prediction, retained for MAS-agreement studies only -- see `pt_to_mas` for
