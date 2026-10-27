@@ -19,9 +19,18 @@ Parameters (Bajd & Bowman 1982 + Popovic 2018):
 
   Computed and reported, NOT scored:
      omega_min_n   = omega_min / A0     (during active swing)
-       Dropped from the score 2026-10-26: it is -omega_max_n for any limb
-       dropped from the extension extreme, so the published 7-term sum was
-       weighting one velocity measurement twice. See _PARAM_KEYS.
+       Dropped from the score 2026-10-26: it is ALGEBRAICALLY -omega_max_n for
+       any limb dropped from the extension extreme (exact mirrors on 51 of 53
+       emulator scenarios), so the published 7-term sum weighted one velocity
+       measurement twice. A duplicate is not fixable by a reference value,
+       which is why this drop stands. See _PARAM_KEYS.
+
+  This is six of Popovic's seven, and the implementation already diverged from
+  the published formula in two further ways that predate 2026-10-26: the
+  penalties are ONE-SIDED (max(0, ref - measured)) where the paper takes the
+  absolute value of the whole term, and five of the seven reference values are
+  medians of this project's own controls because no published value exists for
+  them. Both are documented at HEALTHY_REF and compute_pt_score_breakdown.
 
 Run:
   $env:OPENBLAS_NUM_THREADS="1"
@@ -784,62 +793,72 @@ MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 # omega_min_n is still COMPUTED and still REPORTED. It moved from the scored
 # set to the diagnostic set, alongside omega_peak_deg_s and A0_deg, so nothing
 # that reads it breaks and the duplication is visible rather than weighted.
-# ── omega_max_n was dropped too, on 2026-10-27 ───────────────────────────────
+# ── omega_max_n: RESTORED to the scored set on 2026-10-27 ────────────────────
 #
-# Not for a wrong constant. The term does not measure severity at all: it is a
-# PEDESTAL. Contribution of every scored term along the severity axis, on the
-# validated emulator at matched geometry:
+# It was dropped earlier the same day on the grounds that it is a pedestal:
+# 0.0776 of a healthy limb's 0.0892 total, growing only 0.038 across the whole
+# severity ladder, signal/pedestal 0.49 -- the only scored term whose offset
+# exceeded its signal. All of those numbers are correct. The conclusion drawn
+# from them was not.
 #
-#   term            healthy (lam=0)   range across ladder   signal/pedestal
-#   R2n                      0.0000                0.0623              inf
-#   N                        0.0000                0.1154              inf
-#   phi_max_ratio            0.0059                0.1337            22.59
-#   f                        0.0057                0.0200             3.50
-#   area_ratio               0.0000                0.1362              inf
-#   omega_max_n              0.0776                0.0382             0.49
+# The pedestal is caused by the REFERENCE, not by the parameter. The penalty is
+# one-sided -- max(0, ref - measured) -- so a reference set far above what a
+# healthy limb produces charges every limb, healthy ones included, for the gap.
+# Re-run against a physics-anchored reference instead of 9.5672:
 #
-# Every other term starts at ~zero for a limb with nothing wrong with it and
-# grows as the limb gets worse. omega_max_n starts at 0.0776 -- 87% of that
-# healthy limb's entire 0.0892 score -- and grows by 0.038 over the whole
-# range. It is the only scored term whose offset exceeds its signal. Removing
-# it takes the healthy floor from 0.0892 to 0.0140 while leaving the most
-# severe rung at 0.575, so the score's dynamic range goes from 6.7x to 41x.
+#   profile     omega_max_n   term @ 9.5672   term @ 4.76
+#   tone_L0           5.114          0.0776        0.0000
+#   tone_L1           4.621          0.0862        0.0049
+#   tone_L2           3.958          0.0977        0.0281
+#   tone_L3           3.149          0.1118        0.0564
+#   tone_L4           2.920          0.1158        0.0644
 #
-# Three further reasons, each independent:
+#   ref 9.5672: pedestal 0.0776, signal 0.0382, signal/pedestal 0.49
+#   ref 4.7600: pedestal 0.0000, signal 0.0644, signal/pedestal inf
 #
-#  1. The reference cannot be defended. 9.5672 is 1.7-2.2x above every estimate
-#     of a healthy limb: this emulator reads 5.11 and cannot exceed 5.55 at any
-#     damping, anthropometry predicts ~4.3, and the one measured peak-velocity
-#     figure (221.9 +/- 35.6 deg/s, n=50) gives ~4.76 at the control mean A0.
-#  2. The MEASUREMENT is not stable. This project's own experiment moved the
-#     median from 8.50 to 3.19 across 205 trials by decimating 120 Hz OptiTrack
-#     to 20 Hz -- the same motion, resampled. A quantity that more than halves
-#     when you resample is not a property of a leg. The mechanism is still
-#     unidentified: the emulator reads 5.05-5.16 from 20 Hz to 240 Hz and
-#     5.16-5.56 under 0-2 deg of added noise, so it reproduces neither end.
-#     That is exactly why no replacement constant is offered here -- it would
-#     be fitted to an unexplained artifact.
-#  3. It was the last scored parameter built on a DIFFERENTIATED signal
-#     (omega_s = savgol(gradient(phi))). The five that remain are amplitude
-#     ratios (R2n, phi_max_ratio), a cycle count (N), extremum timing (f) and
-#     integrated areas (area_ratio). None differentiates the angle, so none
-#     inherits the noise amplification that makes a velocity term track the
-#     capture device as much as the limb.
+# The pedestal goes to exactly zero and the signal nearly doubles. Far from
+# being a parameter that cannot measure severity, it becomes one of the better
+# discriminators. Dropping it threw away a real measurement to avoid fixing a
+# constant -- and it changed the published parameter set, which is a much
+# larger claim than correcting a reference value.
 #
-# CONSEQUENCE, stated plainly: this is no longer Popovic-Maneski's published
-# 7-parameter formula and must not be described as one. It is a 5-parameter
-# score derived from it, with both velocity terms withheld for the reasons
-# above. The published formula is still what `pt_to_mas`'s table was built for,
-# which is a further reason that table is historical only.
-_PARAM_KEYS  = ["R2n","N","phi_max_ratio","f","area_ratio"]
-_N_PARAMS    = len(_PARAM_KEYS)   # 5 scored parameters
+# So the term stays, and 9.5672 is the thing that is wrong. It is 1.7-2.2x
+# above every independent estimate of a healthy limb: this emulator reads 5.11
+# and cannot exceed 5.55 at any damping, anthropometry predicts ~4.3, and the
+# one measured peak-velocity figure (221.9 +/- 35.6 deg/s, n=50) gives ~4.76 at
+# the control mean A0.
+#
+# It is NOT replaced here with any of those three numbers, for a reason that
+# needs the cohort to settle. 9.5672 is the median of 46 control trials scored
+# by THIS pipeline, which reads 8.50 across 205 trials -- so the reference and
+# the measurement are consistent with each other even though both sit far above
+# physics. Setting the reference to 4.76 while the pipeline still reads 8.50 for
+# healthy limbs would make the term inert for every real trial: always above
+# reference, always zero penalty. That is the exact failure omega_min_n had
+# before a23606a, and swapping one silent failure for another is not a fix.
+#
+# What settles it is one number from the control cohort: what this pipeline
+# measures for omega_max_n once the trials are scored on the current path.
+# recalibrate_pt_zones.py --opti-root <...> now reports it alongside the two
+# zone thresholds, so the constant gets re-derived from data in the same run
+# rather than guessed here.
+#
+# The separate, unexplained problem stands and is recorded in
+# healthy_ref_frequency_audit: decimating 120 Hz OptiTrack to 20 Hz moved the
+# median 8.50 -> 3.19 across 205 trials, the same motion resampled, and no
+# mechanism reproduces it (this emulator reads 5.05-5.16 from 20 Hz to 240 Hz
+# and 5.16-5.56 under 0-2 deg of noise). A parameter that moves 2.7x on
+# sampling rate cannot be compared between a 60 Hz phone and a 120 Hz optical
+# capture against one reference. That is an argument for identifying the
+# mechanism, not for deleting the parameter.
+_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
+_N_PARAMS    = len(_PARAM_KEYS)   # 6 scored parameters
 
-#: Computed and reported, never summed into the score. Both of PT7's velocity
-#: parameters now live here: omega_min_n because it duplicated omega_max_n,
-#: omega_max_n because it is a pedestal (see above). They remain in the JSON,
-#: the persisted record and the report tables -- withholding them from the
-#: SCORE is not the same as refusing to show a measurement.
-_DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
+#: Computed and reported, never summed into the score. Only omega_min_n, and
+#: only because it is ALGEBRAICALLY -omega_max_n for a limb dropped from full
+#: extension -- no reference value can fix a duplicate, which is why that drop
+#: stands where omega_max_n's did not.
+_DIAGNOSTIC_KEYS = ["omega_min_n"]
 
 #: Identifies the scored set a calibrated threshold belongs to. Bump it
 #: whenever _PARAM_KEYS changes: PT_HEALTHY_MAX and PT_BORDERLINE_MAX are
@@ -848,7 +867,7 @@ _DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt5-2026-10-27"
+SCORE_FORMULA_ID = "pt6-2026-10-26"   # back to the 6-term set; see omega_max_n above
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.
@@ -881,24 +900,10 @@ through omega_max_n, and the return is not scored at all.
 # Simplified 4-parameter score: excludes area_ratio (unreliable for marker-based
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
 #
-# DELIBERATELY NOT CHANGED on 2026-10-27, and that needs flagging rather than
-# leaving quiet: this list still contains omega_max_n, which the main score
-# dropped as a pedestal (see _PARAM_KEYS). Here it is 1 of 4 rather than 1 of
-# 6, so it carries MORE weight -- roughly 0.12 of pedestal on a healthy limb,
-# against a simple score that runs ~0.73 at the severe end.
-#
-# It is left alone because this score exists for one purpose: webapp/src/app.js
-# shows it beside the composite specifically because pendulastic_app.py's live
-# view displays THIS number, and without it the phone and the desktop capture
-# app report different figures for the same trial with neither saying so.
-# Changing it silently re-opens that disagreement. Changing BOTH scores in one
-# commit would also make it impossible to attribute a shift in any recorded
-# result to either change.
-#
-# So it is a separate decision, and the honest options are: drop omega_max_n
-# here too and update pendulastic_app.py in the same commit, or retire the
-# 4-parameter score altogether now that the composite is down to 5. Not mine
-# to pick -- it changes a number a clinician has been reading.
+# omega_max_n is 1 of 4 here rather than 1 of 6, so whatever is wrong with its
+# reference (see _PARAM_KEYS) weighs MORE in this score than in the composite.
+# Nothing to change until that constant is re-derived; noted so the next person
+# re-deriving it checks both denominators.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
 _N_SIMPLE    = len(_SIMPLE_KEYS)
 
@@ -915,7 +920,7 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     number (values sum to compute_pt_score(params, ref)).
 
     Penalty directions (impaired = deviated from healthy reference):
-      N, R2n, phi_max_ratio → penalise only if BELOW reference
+      N, R2n, phi_max_ratio, omega_max_n → penalise only if BELOW reference
       area_ratio                          → penalise only if ABOVE reference
                                             (higher = asymmetric areas)
       f                                   → bidirectional; skip if uncomputable

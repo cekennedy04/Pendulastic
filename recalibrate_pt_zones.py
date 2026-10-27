@@ -58,6 +58,7 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
 
     mas = sg.load_mas_by_leg(condition_prefix="pre")
     by_leg: dict[tuple, list[float]] = {}
+    by_leg_params: dict[tuple, list[dict]] = {}
     refused = unscorable = 0
     for rec in prc.discover_all_trials():
         cond = str(rec["condition"]).lower()
@@ -84,13 +85,61 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
             refused += 1
             continue
         by_leg.setdefault(key, []).append(float(est["pt7"]))
+        by_leg_params.setdefault(key, []).append(params)
 
     out = {k: (mas[k], statistics.median(v)) for k, v in by_leg.items()}
     if verbose:
         print(f"  {len(out)} participant-legs, "
               f"{sum(len(v) for v in by_leg.values())} interpretable trials "
               f"({refused} refused, {unscorable} unscorable)")
-    return out
+    return out, by_leg_params
+
+
+def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
+    """What the control cohort actually measures for each scored parameter.
+
+    This exists for omega_max_n, and the rest come free. HEALTHY_REF's
+    omega_max_n is 9.5672 and is 1.7-2.2x above every independent estimate of a
+    healthy limb (emulator 5.11 with a 5.55 ceiling, anthropometry ~4.3,
+    measured peak velocity ~4.76). But the penalty is one-sided, so the
+    reference cannot simply be lowered to a physics value: 9.5672 is the median
+    THIS pipeline produces, and if the pipeline still reads ~8.5 for healthy
+    limbs then a reference of 4.76 sits below every real reading and the term
+    goes inert -- a silent zero, the same failure omega_min_n had before
+    a23606a, reached from the other side.
+
+    The one number that settles it is what the control legs measure on the
+    current scoring path. That is what this prints. It does NOT write anything:
+    changing HEALTHY_REF changes every score, so it is a decision, and the
+    decision needs to see the gap between what the cohort measures and what
+    physics predicts before anyone picks a value.
+    """
+    import statistics as st
+    by_key = {}
+    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS:
+        vals = [p[k] for key, plist in per_leg_params.items() if _rank(legs[key][0]) == 0
+                for p in plist if k in p and np.isfinite(p[k])]
+        if vals:
+            by_key[k] = (st.median(vals), min(vals), max(vals), len(vals))
+    if verbose and by_key:
+        print()
+        print("  What the MAS-0 control legs measure, against the shipped reference:")
+        print(f"    {'parameter':16} {'measured median':>16} {'[min - max]':>20} "
+              f"{'HEALTHY_REF':>12} {'ratio':>7}")
+        for k, (med, lo, hi, n) in by_key.items():
+            ref = pts.HEALTHY_REF.get(k)
+            r = (med / ref) if ref not in (None, 0) else float("nan")
+            star = "  <-- scored" if k in pts._PARAM_KEYS else "  (reported only)"
+            print(f"    {k:16} {med:16.4f} {f'[{lo:.3f} - {hi:.3f}]':>20} "
+                  f"{ref if ref is None else f'{ref:12.4f}'} {r:7.2f}{star}")
+        print(f"    (n = {max(v[3] for v in by_key.values())} control trials)")
+        print()
+        print("    omega_max_n is the one to look at. If the measured median is")
+        print("    near 9.57 the reference is self-consistent and the quantity")
+        print("    itself is inflated -- fix the extraction, not the constant.")
+        print("    If it is near 4.8 the constant is simply stale and can be")
+        print("    replaced. Nothing is written either way.")
+    return by_key
 
 
 def derive(legs: dict, verbose: bool = True):
@@ -179,7 +228,8 @@ def smoke(verbose: bool = True) -> bool:
         prc.ARCHIVE_ROOT = os.path.join(root, "no-archive")
         prc.EXCLUDED_TRIALS_PATH = os.path.join(root, "excluded.json")
         sg.MAS_CSV = mas_path
-        legs = leg_scores(None, None, verbose=verbose)
+        legs, per_leg_params = leg_scores(None, None, verbose=verbose)
+        healthy_reference(legs, per_leg_params, verbose=verbose)
         h, b = derive(legs, verbose=verbose)
     finally:
         (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV) = saved
@@ -210,8 +260,8 @@ def main(argv=None) -> int:
     print(f"  scored parameters ({pts._N_PARAMS}): {', '.join(pts._PARAM_KEYS)}")
     print(f"  reported, not scored: {', '.join(pts._DIAGNOSTIC_KEYS)}")
     print()
-    legs = leg_scores(a.opti_root, a.mas_csv)
-    print()
+    legs, per_leg_params = leg_scores(a.opti_root, a.mas_csv)
+    healthy_reference(legs, per_leg_params)
     h_max, b_max = derive(legs)
     print()
     print("  To apply, in pendulastic_pt_score.py AND mobile-imu-core/src/pt_score.rs:")
