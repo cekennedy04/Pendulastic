@@ -418,7 +418,7 @@ fn release_is_the_drop_not_the_lift_when_a_trial_starts_at_rest() {
     // first threshold crossing is the lift; measured from there, A0 is rest
     // minus rest and the trial used to be discarded (15 real Control_6/7/8
     // baseline trials, 2026-10-27).
-    assert!(!golden::TRIAL_LIFT_HOLD_IS_NONE);
+    const { assert!(!golden::TRIAL_LIFT_HOLD_IS_NONE) };
     let p = compute_pt_params(golden::TRIAL_LIFT_HOLD_T, golden::TRIAL_LIFT_HOLD_ANG, None, false)
         .expect("a 55 degree swing after a lift-and-hold is scorable");
     close(p.a0_deg, golden::TRIAL_LIFT_HOLD_A0_DEG, 1e-6, "A0");
