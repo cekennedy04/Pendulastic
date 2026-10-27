@@ -993,3 +993,57 @@ def test_analysis_grid_is_the_native_sensor_rate():
     # on that grid; TICK_S stays the app's 20 Hz display poll.
     assert tuner.ANALYSIS_TICK_S == 0.01
     assert tuner.ANALYSIS_TICK_S < tuner.TICK_S
+
+
+def _hold_excursion_gap_then_release_samples(exc_mag, exc_n):
+    """2.5 s calm hold, then an above-guard excursion of exc_n samples at
+    exc_mag rad/s, then 0.3 s calm -- shorter than the ~0.95 s needed to
+    re-qualify -- then a real release burst and rest."""
+    samples, t, ts = [], 0.0, 0
+
+    def add(n, gyro):
+        nonlocal t, ts
+        for _ in range(n):
+            samples.append({"t": t, "role": "distal", "sensor": "accel",
+                            "v": [0.0, 0.0, 9.81], "phone_ts_ms": ts})
+            samples.append({"t": t, "role": "distal", "sensor": "gyro",
+                            "v": list(gyro), "phone_ts_ms": ts})
+            t += 0.01; ts += 10
+
+    add(250, (0.0, 0.0, 0.0))
+    add(exc_n, (exc_mag, 0.0, 0.0))
+    add(30, (0.0, 0.0, 0.0))
+    add(50, (0.0, 2.0, 0.0))
+    add(100, (0.0, 0.0, 0.0))
+    return samples
+
+
+_GATE_PARAMS = {"beta": 0.041, "ema_alpha": 0.3,
+                "flex_axis_capture": True, "gravity_seed": True}
+
+
+def test_noise_blip_during_hold_does_not_revoke_zero_capture():
+    """One sample grazing the guard is sensor noise, not handling: the hold
+    stays qualified and the release that follows is zeroed. 20 of 206 corpus
+    trials were lost to exactly this before the fix."""
+    samples = _hold_excursion_gap_then_release_samples(0.35, 1)
+    t, angle = tuner.replay_trial(samples, _GATE_PARAMS)
+    assert len(t) > 0 and np.isfinite(angle).any()
+
+
+def test_noise_blip_revoked_before_the_fix(monkeypatch):
+    """Guards the test above: with noise forgiveness disabled, the same trial
+    is refused, so the test is exercising the new branch."""
+    monkeypatch.setattr(tuner, "_NOISE_EXCURSION_PEAK_RAD_S", 0.0)
+    samples = _hold_excursion_gap_then_release_samples(0.35, 1)
+    t, angle = tuner.replay_trial(samples, _GATE_PARAMS)
+    assert len(t) == 0
+
+
+@pytest.mark.parametrize("exc_mag,exc_n", [(0.7, 1), (0.4, 30)])
+def test_handling_excursion_still_revokes_zero_capture(exc_mag, exc_n):
+    """Handling -- too large (0.7 rad/s) or too long (0.3 s) to be noise --
+    still revokes the hold, so a release before re-qualifying is not trusted."""
+    samples = _hold_excursion_gap_then_release_samples(exc_mag, exc_n)
+    t, angle = tuner.replay_trial(samples, _GATE_PARAMS)
+    assert len(t) == 0
