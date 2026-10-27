@@ -4,11 +4,16 @@
                              [--plant PLANT.json | --wn-hz 6.35 --zeta 0.23] [--gain 0.8] [--q-hz 15]
     python -m neuromech.ilc  --identify RUN.bin [--out PLANT.json]      (fit the plant from any run)
 
-CMD.csv      the setpoint file the rig just played (neuromech/out/setpoints/<sid>.csv, or a previous ILC output)
+CMD.csv      the setpoint file the rig just played (neuromech/out/setpoints/<sid>.csv, a session's
+             commands/<run>.csv, or a previous ILC output)
 RUN.bin      the LabVIEW encoder log of that run (position + position_setpoint on one 1 kHz clock)
 DESIRED.csv  the trajectory you actually want the arm to follow (defaults to the original scenario,
-             found by sid in the CMD file name); the error is always measured against THIS, so iterations
-             never drift toward each other's mistakes.
+             found by sid in the CMD file name, or through the session's key.csv for a run id); the
+             error is always measured against THIS, so iterations never drift toward each other's mistakes.
+
+Every output is written twice: NEXT.csv (five columns, header; the input to the next iteration) and
+the file the Pendulum Player plays -- <session>/player/<name>.csv for a command inside a session's
+commands/ folder, otherwise NEXT_player.csv beside it (two columns, no header, see write_player).
 
 Update (plant-inversion ILC with a zero-phase robustness filter Q):
     u_{k+1} = u_k + gain * Q( G^-1 e_k ),   G^-1 e = e + (2 zeta / wn) e' + e'' / wn^2
@@ -43,11 +48,46 @@ def read_cmd(path):
     return a["t_s"], a["setpoint_deg"], a["phase"].astype(int)
 
 
+def write_player(path, t, sp):
+    """The Pendulum Player VI's input (Read From Spreadsheet File, comma delimiter): t_s, setpoint_deg.
+
+    The Player starts with the arm parked at the rig's zero and indexes the file by the clock, so a
+    file that does not start at 0 deg would make its first setpoint a step. Refused rather than fixed.
+    """
+    if abs(float(sp[0])) > 1e-6:
+        raise ValueError(f"{os.path.basename(path)} starts at {sp[0]:.3f} deg; the Player needs a command that starts at 0")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    np.savetxt(path, np.column_stack([t, sp]), fmt="%.4f", delimiter=",")
+
+
+def player_path(cmd_path):
+    """Where the Player file for a command file goes: the session's player/ folder, or beside it."""
+    d, f = os.path.split(os.path.abspath(cmd_path))
+    if os.path.basename(d) == "commands":
+        return os.path.join(os.path.dirname(d), "player", f)
+    return os.path.splitext(cmd_path)[0] + "_player.csv"
+
+
 def write_cmd(path, t, sp, phase):
     dt = t[1] - t[0]; vel = np.gradient(sp, dt); acc = np.gradient(vel, dt)
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh); w.writerow(["t_s", "setpoint_deg", "vel_dps", "acc_dps2", "phase"])
         for row in zip(np.round(t, 4), np.round(sp, 4), np.round(vel, 3), np.round(acc, 2), phase): w.writerow(row)
+    write_player(player_path(path), t, sp)
+
+
+def desired_for(cmd_path, name):
+    """The scenario a command file was made from: by sid, or by run id through the session's key.csv."""
+    own = os.path.join(OUT, "setpoints", f"{name}.csv")
+    if os.path.exists(own):
+        return own
+    key = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cmd_path))), "key.csv")
+    if os.path.exists(key):
+        with open(key, newline="") as fh:
+            for r in csv.DictReader(fh):
+                if r["run_id"] == name:
+                    return os.path.join(OUT, "setpoints", f"{r['sid']}.csv")
+    raise SystemExit(f"no scenario found for {name}; pass --desired")
 
 
 def locate(cmd_sp, log_sp, fs=1000.0):
@@ -129,7 +169,7 @@ def main(argv=None):
         pl = json.load(open(a.plant)); a.wn_hz, a.zeta = pl["wn_hz"], pl["zeta"]
     t, sp, phase = read_cmd(a.cmd)
     sid = re.sub(r"(_ilc\d+)?\.csv$", "", os.path.basename(a.cmd))
-    desired = a.desired or os.path.join(OUT, "setpoints", f"{sid}.csv")
+    desired = a.desired or desired_for(a.cmd, sid)
     _, dsp, _ = read_cmd(desired)
     e = read_labview_bin(a.run); fs = 1.0 / np.median(np.diff(e["time"]))
     k0 = locate(sp, e["position_setpoint"], fs)
@@ -140,7 +180,8 @@ def main(argv=None):
     it = int(m.group(1)) + 1 if (m := re.search(r"_ilc(\d+)\.csv$", a.cmd)) else 1
     out = a.out or os.path.join(os.path.dirname(a.cmd), f"{sid}_ilc{it}.csv")
     write_cmd(out, t, new, phase)
-    print(f"{sid}: swing tracking RMSE this run {rms:.3f} deg -> wrote {out}  (iteration {it})")
+    print(f"{sid}: swing tracking RMSE this run {rms:.3f} deg -> wrote {out}  (iteration {it});"
+          f" play {player_path(out)}")
 
 
 if __name__ == "__main__":

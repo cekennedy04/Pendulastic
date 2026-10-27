@@ -205,3 +205,44 @@ pub fn pt_score_from_params(
         a1_deg,
     )
 }
+
+/// The same stored parameters scored over a CALLER-CHOSEN selection, for the
+/// app's per-parameter toggles.
+///
+/// `keys_csv` is a comma-separated selection drawn from
+/// `pt_score::ALL_PT_KEYS`, which is wider than the canonical scored set: it
+/// also offers `omega_min_n`, excluded from the score for being algebraically
+/// `-omega_max_n`. The reply carries `canonical: false` for any selection
+/// that is not exactly the scored set, and the UI must not present such a
+/// number as a verdict.
+///
+/// Logic-free, per this module's contract.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn pt_score_from_params_selected(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+    a1_deg: f64,
+    keys_csv: &str,
+) -> String {
+    crate::pt_score::pt_score_selected_from_scalars_json(
+        r2n,
+        n,
+        phi_max_ratio,
+        omega_max_n,
+        omega_min_n,
+        f,
+        area_ratio,
+        first_trough_depth,
+        a0_deg,
+        a1_deg,
+        keys_csv,
+    )
+}

@@ -716,8 +716,181 @@ def part_g(verbose=True):
     return res
 
 
+#: What the 2026-10-27 control cohort measured for f, QUOTED from that run's
+#: output rather than recomputed: this module has no access to the recordings.
+#: median, [min, max], n trials. The 0.000 is the estimator declining, not a
+#: limb with no frequency.
+COHORT_F = (0.9189, 0.000, 1.067, 30)
+
+
+def _spearman(a, b):
+    """Rank correlation, with average ranks for ties.
+
+    Written out rather than imported: scipy is not a dependency of this module
+    and the figures here are quoted in a report, so they should not depend on
+    whether it happens to be installed.
+    """
+    def ranks(v):
+        order = sorted(range(len(v)), key=lambda i: v[i])
+        r = [0.0] * len(v)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0 + 1.0
+            for k in range(i, j + 1):
+                r[order[k]] = avg
+            i = j + 1
+        return r
+    ra, rb = ranks(list(a)), ranks(list(b))
+    n = len(ra)
+    ma, mb = sum(ra) / n, sum(rb) / n
+    num = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    da = math.sqrt(sum((x - ma) ** 2 for x in ra))
+    db = math.sqrt(sum((y - mb) ** 2 for y in rb))
+    return num / (da * db) if da and db else float("nan")
+
+
+def part_h(verbose=True):
+    """Every figure docs/reports/2026-10-27-dropping-f.md cites about f.
+
+    This part exists because that report was written and merged with its
+    central evidence produced by throwaway scripts, while its own Reproduce
+    line pointed here -- at a module that computed none of it. A report whose
+    numbers no committed code reproduces is exactly what this project's
+    standard is against, and it was my own report.
+
+    Computed here, on the dialled tone ladder and the graded profile set:
+
+      the ladder table      f, N, their terms, and the total per rung
+      discriminative weight f's range and term travel against N's
+      rank order           Spearman of each against dialled severity
+      f's share            of the composite, across every graded profile
+      removal              the ladder's dynamic range with and without f,
+                           and whether either is monotone
+      mechanism spread     f across other mechanisms, with and without the
+                           profile whose f is SKIPPED -- the distinction that
+                           turned an 8.84x "confound" into 0.16x
+
+    The cohort figures are QUOTED (see COHORT_F), since the recordings are not
+    reachable from here. Everything else is computed.
+    """
+    ladder = ["tone_L0", "tone_L1", "tone_L2", "tone_L3", "tone_L4"]
+    rows = []
+    for name in ladder:
+        sim = rnm.simulate(rnm.PROFILES[name])
+        pr = pts.compute_pt_params(sim["t"], sim["angle_deg"])
+        bd = pts.compute_pt_score_breakdown(pr)
+        rows.append((name, pr, bd, sum(bd.values())))
+
+    f_vals = [r[1]["f"] for r in rows]
+    n_vals = [r[1]["N"] for r in rows]
+    f_term = [r[2]["f"] for r in rows]
+    n_term = [r[2]["N"] for r in rows]
+    tot6 = [r[3] for r in rows]
+    rank = list(range(len(rows)))
+
+    # The five-term score: drop f and let the divisor follow, which is what
+    # compute_pt_score_breakdown now does when handed a selection.
+    keys5 = [k for k in pts._PARAM_KEYS if k != "f"]
+    tot5 = [sum(pts.compute_pt_score_breakdown(r[1], keys=keys5).values()) for r in rows]
+
+    # f's share of the composite, over every profile the app grades.
+    shares = []
+    for name in sorted(rnm.PROFILES):
+        sim = rnm.simulate(rnm.PROFILES[name])
+        pr = pts.compute_pt_params(sim["t"], sim["angle_deg"])
+        if not pr or not pts.mas_estimate(pr)["interpretable"]:
+            continue
+        bd = pts.compute_pt_score_breakdown(pr)
+        t = sum(bd.values())
+        if t > 0:
+            shares.append((name, pr["f"], 100.0 * bd["f"] / t))
+
+    # Mechanism spread, with and without the profile whose f was never
+    # estimated. Including it was the error; it is kept here so the error
+    # cannot be made again silently.
+    mech = [(n, f) for n, f, _ in shares if n not in ladder]
+    mech_ok = [(n, f) for n, f in mech if f >= 0.1]
+    sev_spread = max(f_vals) - min(f_vals)
+    mech_all = (max(f for _, f in mech) - min(f for _, f in mech)) if mech else float("nan")
+    mech_est = (max(f for _, f in mech_ok) - min(f for _, f in mech_ok)) if mech_ok else float("nan")
+
+    def monotone(v):
+        return all(b >= a for a, b in zip(v, v[1:]))
+
+    res = {
+        "f_range": (min(f_vals), max(f_vals)),
+        "n_range": (min(n_vals), max(n_vals)),
+        "f_term_travel": max(f_term) - min(f_term),
+        "n_term_travel": max(n_term) - min(n_term),
+        "spearman_f": _spearman(rank, f_vals),
+        "spearman_n": _spearman(rank, n_vals),
+        "share_min": min(s for _, _, s in shares),
+        "share_max": max(s for _, _, s in shares),
+        "range6": max(tot6) / min(tot6),
+        "range5": max(tot5) / min(tot5),
+        "monotone6": monotone(tot6),
+        "monotone5": monotone(tot5),
+        "sev_spread": sev_spread,
+        "mech_spread_all": mech_all,
+        "mech_spread_estimated": mech_est,
+    }
+
+    if verbose:
+        print()
+        print("H. The evidence behind docs/reports/2026-10-27-dropping-f.md")
+        print(f"  {'profile':10} {'f (Hz)':>8} {'N':>6} {'f term':>8} {'N term':>8} "
+              f"{'pt6':>8} {'pt5':>8}")
+        for (name, pr, bd, t), t5 in zip(rows, tot5):
+            print(f"  {name:10} {pr['f']:8.3f} {pr['N']:6.2f} {bd['f']:8.4f} "
+                  f"{bd['N']:8.4f} {t:8.4f} {t5:8.4f}")
+        print()
+        print(f"  f spans {res['f_range'][0]:.3f}-{res['f_range'][1]:.3f} Hz, "
+              f"{res['f_range'][1] / res['f_range'][0]:.2f}x; its term travels "
+              f"{res['f_term_travel']:.4f}")
+        print(f"  N spans {res['n_range'][1]:.2f}-{res['n_range'][0]:.2f},     "
+              f"{res['n_range'][1] / res['n_range'][0]:.2f}x; its term travels "
+              f"{res['n_term_travel']:.4f}")
+        print(f"  Spearman vs dialled severity: f {res['spearman_f']:+.3f}, "
+              f"N {res['spearman_n']:+.3f}")
+        print(f"  f's share of the composite across {len(shares)} graded profiles: "
+              f"{res['share_min']:.1f}% to {res['share_max']:.1f}%")
+        print()
+        print(f"  ladder dynamic range WITH f:    {res['range6']:.2f}x  "
+              f"({min(tot6):.4f} -> {max(tot6):.4f})   monotone {res['monotone6']}")
+        print(f"  ladder dynamic range WITHOUT f: {res['range5']:.2f}x  "
+              f"({min(tot5):.4f} -> {max(tot5):.4f})   monotone {res['monotone5']}")
+        print()
+        print("  MECHANISM SPREAD, and the error that nearly went into the report:")
+        print(f"    across {len(ladder)} dialled severities:        "
+              f"{res['sev_spread']:.3f} Hz")
+        print(f"    across {len(mech)} other mechanisms, ALL:       "
+              f"{res['mech_spread_all']:.3f} Hz  "
+              f"({res['mech_spread_all'] / res['sev_spread']:.2f}x)")
+        print(f"    across {len(mech_ok)} where f was ESTIMATED:    "
+              f"{res['mech_spread_estimated']:.3f} Hz  "
+              f"({res['mech_spread_estimated'] / res['sev_spread']:.2f}x)")
+        skipped = [n for n, f in mech if f < 0.1]
+        print(f"    the whole difference is {skipped}, whose f is SKIPPED, not")
+        print("    measured. f is NOT mechanism-confounded; it is weak.")
+        print()
+        med, lo, hi, n = COHORT_F
+        at_med = pts.compute_pt_score_breakdown(
+            {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667,
+             "omega_max_n": 9.5672, "f": med, "area_ratio": 0.0945})["f"]
+        print(f"  QUOTED from the 2026-10-27 cohort run, not computed here:")
+        print(f"    median f over {n} control trials {med:.4f} Hz against the "
+              f"{pts.HEALTHY_REF['f']:.4f} reference")
+        print(f"    range [{lo:.3f} - {hi:.3f}]; the {lo:.3f} is the estimator declining")
+        print(f"    at that median f contributes {at_med:.4f} of a possible "
+              f"{1.0 / pts._N_PARAMS:.4f}")
+    return res
+
+
 def main() -> int:
-    part_a(); part_b(); part_c(); part_d(); part_e(); part_f(); part_g()
+    part_a(); part_b(); part_c(); part_d(); part_e(); part_f(); part_g(); part_h()
     print()
     print("WHAT THIS DOES NOT SETTLE")
     print("  The replacement VALUES. The physics puts a healthy limb's")

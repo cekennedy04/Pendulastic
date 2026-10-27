@@ -241,6 +241,26 @@
       <div id="metric-list" hidden></div>
         <p id="pt-score-breakdown-label">largest driver first</p>
         <table id="pt-score-breakdown"></table>
+        <details id="param-select">
+          <summary>Which parameters are in this score?</summary>
+          <p id="param-select-intro">
+            All seven Popovi&cacute; parameters are computed. Switch one off to
+            see what it was contributing &mdash; the remaining terms take over
+            its share, so the total is always a mean over what is selected,
+            never a sum with a hole in it.
+          </p>
+          <p id="param-select-notice" hidden></p>
+          <table id="param-select-rows"></table>
+          <p id="param-select-total"></p>
+          <div id="param-select-actions">
+            <button type="button" id="param-select-canonical" class="btn btn--secondary">
+              Scored set
+            </button>
+            <button type="button" id="param-select-all" class="btn btn--secondary">
+              All seven
+            </button>
+          </div>
+        </details>
       </div>
       <div id="export-actions" hidden>
         <button id="export-btn">Export raw log</button>

@@ -47,7 +47,7 @@ import itertools
 import math
 import os
 import re
-from typing import NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -754,6 +754,16 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     the score does not support -- which is the failure this whole block exists
     to prevent.
 
+    `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
+    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-10-27",
+    not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
+    renamed. It is a column name in generated CSVs and in the neuromech
+    manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
+    `enc_pt7`, `int_pt7`), so renaming it would silently invalidate stored
+    artifacts to fix a spelling. SCORE_FORMULA_ID is the authority on how many
+    terms a given number was built from, and it travels with any score worth
+    comparing.
+
     `zone` is the verdict to use and the one the app shows: it comes from this
     project's own data-derived bands. `mas` is the historical Popovic
     prediction, retained for MAS-agreement studies only -- see `pt_to_mas` for
@@ -951,7 +961,13 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6-ref-2026-10-27"   # back to the 6-term set; see omega_max_n above
+SCORE_FORMULA_ID = "pt6rescaled-ref-2026-10-27"   # 6-term set, divisor = terms
+#                                                 actually scored; see the
+#                                                 n_scored note in
+#                                                 compute_pt_score_breakdown.
+#                                                 "-ref-": HEALTHY_REF
+#                                                 re-derived 2026-10-27
+#                                                 (derive_healthy_ref.py).
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.
@@ -989,6 +1005,21 @@ through omega_max_n, and the return is not scored at all.
 # Nothing to change until that constant is re-derived; noted so the next person
 # re-deriving it checks both denominators.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
+
+#: Every Popovic parameter the pipeline can score, in publication order --
+#: the SELECTABLE superset, not the scored set.
+#:
+#: `_PARAM_KEYS` is what the canonical score sums. This is what a caller may
+#: ask for explicitly, and it is deliberately wider: it still contains
+#: omega_min_n, which left the scored set on 2026-10-26 for being
+#: algebraically -omega_max_n on any limb dropped from full extension.
+#:
+#: The app exposes all seven as toggles so the contribution of each is
+#: visible, including the two the canonical score excludes. A selection that
+#: is not `_PARAM_KEYS` produces a number that is NOT comparable to a
+#: calibrated threshold, which is why `mas_estimate` never takes a selection
+#: and the app labels such a score as exploratory.
+ALL_PT_KEYS = ["R2n","N","phi_max_ratio","omega_max_n","omega_min_n","f","area_ratio"]
 _N_SIMPLE    = len(_SIMPLE_KEYS)
 
 # area_ratio above this threshold suggests the phi trace is heavily one-sided,
@@ -996,7 +1027,8 @@ _N_SIMPLE    = len(_SIMPLE_KEYS)
 # separate thigh vs shank clusters ("duo" sessions with mixed-leg markers).
 AREA_RATIO_WARN = 0.55
 
-def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
+def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF,
+                               keys: Optional[Sequence[str]] = None) -> dict:
     """
     Per-parameter deviation contribution behind compute_pt_score's total --
     same per-key penalty-direction logic, factored out so a caller can show
@@ -1016,8 +1048,43 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     but it is not in `_PARAM_KEYS` and so never reaches the total.
     """
     _DENOM_FLOOR = 0.1
+    # The divisor is the number of terms this trial can actually score, not
+    # _N_PARAMS. A term is STRUCTURALLY skipped when it has no reference to
+    # deviate from (phj == 0) or when f could not be estimated; the remaining
+    # terms then share the full scale instead of the trial keeping a hole.
+    #
+    # Scoring the skipped term as 0.0 against a fixed _N_PARAMS divisor made
+    # the score fall as the limb worsened: f is dropped at `f < 0.1 or N < 2.0`
+    # -- the low-oscillation end -- so crossing that boundary DELETED a penalty
+    # instead of redistributing it. Measured on a sweep where f degrades with
+    # N: N=2.0 scored 0.1878 and the worse N=1.5 scored 0.1282, a 32% drop in
+    # apparent severity. Rescaling lifts that to 0.1538.
+    #
+    # This does NOT make the score monotone. The f term's own contribution
+    # still vanishes discontinuously at the boundary, so a residual inversion
+    # of about 18% remains (0.1878 -> 0.1538), and it still runs on the
+    # impaired arm. Only dropping f from the scored set removes the boundary,
+    # which was considered and rejected on 2026-10-27 in favour of keeping
+    # Popovic's parameter set intact. See
+    # tests/test_pt_zone_parity.test_the_f_skip_makes_the_score_non_monotone_in_severity,
+    # which still xfails and prints the residual.
+    def _scorable(k):
+        if ref.get(k, 0.0) == 0:
+            return False
+        if k == "f":
+            return not (params.get(k, 0.0) < 0.1 or params.get("N", 0.0) < 2.0)
+        return True
+
+    # `keys` selects WHICH parameters are summed. None means the canonical
+    # scored set. Anything else is an exploratory selection -- the app's
+    # per-parameter toggles -- and the divisor follows the selection, which is
+    # the whole reason the rescale above had to land first: without it,
+    # deselecting a term would leave a hole rather than redistributing it, and
+    # every toggle would read as "less impaired".
+    sel = list(_PARAM_KEYS if keys is None else keys)
+    n_scored = sum(1 for k in sel if _scorable(k)) or len(sel) or _N_PARAMS
     breakdown = {}
-    for k in _PARAM_KEYS:
+    for k in sel:
         pij = params.get(k, 0.0)
         phj = ref.get(k, 0.0)
         # `== 0`, not `<= 0`. A NEGATIVE reference is legitimate:
@@ -1031,7 +1098,7 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
             breakdown[k] = 0.0
             continue
         delta = pij - phj
-        denom = _N_PARAMS * max(abs(phj), _DENOM_FLOOR)
+        denom = n_scored * max(abs(phj), _DENOM_FLOOR)
         if k in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
             dev = max(0.0, -delta) / denom   # penalise only if below healthy
         elif k in ("area_ratio", "omega_min_n"):
@@ -1045,11 +1112,12 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     return breakdown
 
 
-def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
+def compute_pt_score(params: dict, ref: dict = HEALTHY_REF,
+                     keys: Optional[Sequence[str]] = None) -> float:
     """Full 7-parameter Popovic (2018) PT score -- see
     compute_pt_score_breakdown for the per-key penalty-direction rationale
     and a per-parameter view of what this total is made of."""
-    return sum(compute_pt_score_breakdown(params, ref).values())
+    return sum(compute_pt_score_breakdown(params, ref, keys).values())
 
 
 def compute_pt_score_simple(params: dict, ref: dict = HEALTHY_REF) -> float:
