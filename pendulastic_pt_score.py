@@ -843,14 +843,61 @@ MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 # zone thresholds, so the constant gets re-derived from data in the same run
 # rather than guessed here.
 #
-# The separate, unexplained problem stands and is recorded in
-# healthy_ref_frequency_audit: decimating 120 Hz OptiTrack to 20 Hz moved the
-# median 8.50 -> 3.19 across 205 trials, the same motion resampled, and no
-# mechanism reproduces it (this emulator reads 5.05-5.16 from 20 Hz to 240 Hz
-# and 5.16-5.56 under 0-2 deg of noise). A parameter that moves 2.7x on
-# sampling rate cannot be compared between a 60 Hz phone and a 120 Hz optical
-# capture against one reference. That is an argument for identifying the
-# mechanism, not for deleting the parameter.
+# ── The 8.50 -> 3.19 instability: WITHDRAWN 2026-10-27 ───────────────────────
+#
+# This block used to end by citing an unexplained 2.7x move -- decimating real
+# 120 Hz OptiTrack to 20 Hz took the median omega_max_n from 8.50 to 3.19
+# across 205 trials -- and calling it a reason the parameter cannot be compared
+# between a 60 Hz phone and a 120 Hz capture against one reference. That
+# argument is withdrawn. It was describing a bug that had already been fixed
+# when the argument was written.
+#
+# The cause is the _sg window note further down this file: until 2026-08-31 the
+# smoothing window was a SAMPLE COUNT, so 15 samples meant 0.125 s at 120 Hz
+# and 0.750 s at 20 Hz. The project's own re-run attributed it at the time --
+# 120 Hz data re-processed with 20 Hz-EQUIVALENT durations reproduced the 20 Hz
+# values, closing the omega_max_n gap 153.8% -> 7.2% and N's 25.0% -> 0.0%.
+#
+# healthy_ref_frequency_audit then tested the wrong variable and concluded the
+# mechanism was UNIDENTIFIED. It swept SAMPLING RATE with the window already
+# fixed in seconds -- which is post-fix behaviour -- and so correctly found
+# almost nothing, a 1.02x spread from 20 to 240 Hz. It never swept the window.
+# Sweeping the window the way the pre-fix code did reproduces the divergence in
+# the emulator; part_g of that audit now computes this rather than quoting it:
+#
+#   window                        omega_max_n      N
+#   0.125 s (15 samples @ 120 Hz)       5.160   7.50
+#   0.750 s (15 samples @  20 Hz)       3.509   6.00
+#   emulator spread                     1.47x   1.25x
+#   real pipeline, pre-fix              2.66x   1.40x
+#
+# Same direction, and N almost exactly. A real reconstruction carries content
+# above the swing band that a clean analytic trace does not, so a 0.750 s
+# window takes more away from it -- which is the direction the residual
+# difference between 1.47x and 2.66x goes.
+#
+# The dates settle whether 9.5672 inherited the bug. It did not: no commit in
+# this repository's history contains a sample-count window -- the file arrives
+# in 63db1b5 (2026-09-04) already smoothing over seconds -- and 9.5672 was
+# written in 7256784 (2026-09-09). It was measured under the rate-invariant
+# filter. ef508b9 (2026-09-08) fixed a second, independent rate dependence
+# (the A0 release back-off rounding to zero at or below 40 Hz) and also
+# predates the constant.
+#
+# What is left is NARROWER, and it is rate-invariant. At the shipped 0.10 s
+# window the pipeline reads 1.85x what this emulator reads -- 9.5672 against
+# 5.16 -- and that factor decomposes into two independent ones:
+#
+#   ~1.59x in peak velocity   446 deg/s required at the reference A0, against
+#                             the emulator's 281 deg/s
+#   ~1.17x in A0 itself       the emulator reads 54.5 deg, the control cohort
+#                             mean is 46.6 deg
+#
+# 1.59 * 1.17 = 1.86, i.e. the whole gap, with nothing left for sampling. So
+# the question is no longer "why is this parameter unstable" but "is the
+# pipeline's peak velocity inflated, or is this reference stale" -- and those
+# are distinguishable from the cohort, which is why recalibrate_pt_zones
+# reports the measured median instead of this module guessing.
 _PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
 _N_PARAMS    = len(_PARAM_KEYS)   # 6 scored parameters
 
