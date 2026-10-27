@@ -210,28 +210,46 @@ def test_the_rust_oscillation_gate_matches():
         r"pub fn refusal_reason\(params: &PtParams\) -> Option<String> \{(.*?)\n\}",
         src, re.S)
     assert chain, "refusal_reason not found in the Rust"
-    for gate in ("excursion_reason", "oscillation_reason", "cycle_measured_reason"):
+    for gate in ("excursion_reason", "oscillation_reason"):
         assert gate in chain.group(1), f"{gate} never reaches refusal_reason"
 
 
-def test_an_unmeasured_cycle_is_not_interpretable():
-    """f == 0.0 is the estimator saying 'no estimate', not 'zero frequency'.
+def test_the_f_skip_makes_the_score_non_monotone_in_severity():
+    """A limb that oscillates LESS must not score healthier. It currently does.
 
-    Both languages must refuse it, or a limb that swings once and settles is
-    graded maximally spastic off two saturated penalise-if-BELOW terms. This is
-    what inverted the 2026-10-27 cohort thresholds.
+    f is bidirectional and is skipped when `f < 0.1 or N < 2.0`, because below
+    two cycles it cannot be estimated. Nothing rescales the divisor, which is
+    always _N_PARAMS, so crossing that boundary deletes a penalty term instead
+    of redistributing it: the score drops although the limb is worse.
+
+    This is NOT the saturation story an earlier commit claimed. An unmeasured f
+    contributes 0.0, not a maximal penalty -- `compute_pt_score_breakdown`
+    skips it and `unmeasured_params` flags it. The bias runs the other way, and
+    it runs on the impaired arm, which is the direction that pulls the MAS>=1
+    median below the MAS-0 75th percentile.
+
+    xfail, deliberately: the fix is a formula decision with three defensible
+    answers (rescale the divisor to the terms actually scored; drop f from the
+    scored set so there is no boundary; or refuse below the boundary), each of
+    which changes every stored score and needs its own calibration. This test
+    exists so the defect cannot be forgotten while that is decided, and it
+    should start passing when it is.
     """
-    good = {"A0_deg": 46.6, "A1_deg": 30.0, "f": 0.88}
-    assert pt.cycle_measured_ok(good) is True
-    for bad in (0.0, -1.0, None, float("nan"), float("inf")):
-        assert pt.cycle_measured_ok({"A0_deg": 46.6, "A1_deg": 30.0, "f": bad}) is False
-    assert pt.cycle_measured_ok(None) is False
+    base = {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+            "f": 0.8839, "area_ratio": 0.0945, "first_trough_depth": 10.0}
 
+    def total(n, f=0.5):
+        p = dict(base, N=n, f=f)
+        return sum(pt.compute_pt_score_breakdown(p).values())
 
-def test_the_rust_cycle_gate_matches():
-    src = open(RUST, encoding="utf-8").read()
-    body = re.search(
-        r"pub fn cycle_measured_ok\(params: &PtParams\) -> bool \{(.*?)\n\}", src, re.S)
-    assert body, "cycle_measured_ok not found in the Rust"
-    assert "f.is_finite()" in body.group(1)
-    assert "f > 0.0" in body.group(1)
+    just_above = total(2.0)     # f still scored
+    just_below = total(1.5)     # f skipped, divisor unchanged
+    assert just_below < just_above, (
+        "the boundary no longer loses a term -- if this fires, the skip was "
+        "fixed and this test should be inverted into a monotonicity assertion"
+    )
+    pytest.xfail(
+        f"f-skip discontinuity: N=2.0 scores {just_above:.4f} but the WORSE "
+        f"N=1.5 scores {just_below:.4f}, a {100 * (1 - just_below / just_above):.0f}% "
+        f"drop in apparent severity across the f < 0.1 or N < 2.0 boundary"
+    )

@@ -279,6 +279,15 @@ def derive(legs: dict, verbose: bool = True):
     # that (0.2979 > 0.2435) together with instructions to apply it, because
     # the only refusal here was on n. A non-separating cohort is a finding
     # about the cohort or the scorer, never a threshold.
+    #
+    # There is a known scorer defect that produces this inversion by itself,
+    # so read it before concluding anything about the cohort: f is skipped
+    # when it cannot be estimated (f < 0.1 or N < 2.0) and nothing rescales
+    # the divisor, so crossing that boundary DELETES a penalty term. The score
+    # therefore falls as the limb worsens -- N=2.0 scores 0.1878 where the
+    # worse N=1.5 scores 0.1282 -- and it fires on the low-oscillation end,
+    # i.e. on the impaired arm. See
+    # tests/test_pt_zone_parity.test_the_f_skip_makes_the_score_non_monotone_in_severity.
     if not (h_max < imp_med):
         raise SystemExit(
             f"the arms do not separate: MAS-0 75th percentile {h_max:.4f} is not "
@@ -288,9 +297,11 @@ def derive(legs: dict, verbose: bool = True):
             f"  MAS 0   n={len(healthy)}  median {statistics.median(healthy):.4f}  "
             f"75th pct {h_max:.4f}\n"
             f"  MAS>=1  n={len(impaired)}  median {imp_med:.4f}\n"
-            f"  Look at the refusal breakdown above before anything else: a gate that "
-            f"lets an UNMEASURED parameter through as 0.0 scores healthy legs as "
-            f"maximally spastic and inverts the arms by itself."
+            f"  Before concluding this is the cohort: the f-skip discontinuity "
+            f"inverts the arms by itself. f is dropped from the sum when it cannot "
+            f"be estimated (f < 0.1 or N < 2.0) with no divisor rescale, so a WORSE "
+            f"limb scores lower (N=2.0 -> 0.1878, N=1.5 -> 0.1282) and it fires on "
+            f"the impaired arm. Check how many MAS>=1 legs sit below N=2 first."
         )
     if verbose:
         print(f"  MAS 0   n={len(healthy):3d}  median {statistics.median(healthy):.4f}  "
