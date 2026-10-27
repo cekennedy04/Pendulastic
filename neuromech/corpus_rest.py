@@ -1,6 +1,6 @@
 """Where do real legs rest? The corpus measurement behind plan D7 (build item B10).
 
-    python -m neuromech.corpus_rest            # ~25 min cold, seconds once cached
+    python -m neuromech.corpus_rest            # ~25 min cold, seconds once cached (abs-fold on main)
     PENDULASTIC_PIPELINE_DIR=<checkout> python -m neuromech.corpus_rest
                                                # replay with another checkout's IMU pipeline
                                                # (e.g. the abs-fold extraction); the scorer is
@@ -96,14 +96,21 @@ def score_corpus(verbose=True) -> list[dict]:
         cache = json.load(open(cache_file, encoding="utf-8"))
     except (OSError, ValueError):
         cache = {}
-    trials = batch.discover_trials(analysis="phone")
+    import inspect
+    scoped = "analysis" in inspect.signature(batch.discover_trials).parameters
+    # analysis="phone" keeps trials whose only recorded fault is a missing optical reference; a
+    # checkout without exclusion scopes drops those too, so say which one this is
+    trials = batch.discover_trials(analysis="phone") if scoped else batch.discover_trials()
     rec_root = os.path.join(batch.BASE_DIR, "Recordings")
     if verbose:
         print(f"{len(trials)} phone trials; pipeline {pipe or ROOT} ({_variant()}); "
               f"fingerprint {fp}; {len(cache)} cached", flush=True)
+        if not scoped:
+            print("  note: no exclusion scopes here -- trials excluded only for a missing OptiTrack match "
+                  "are dropped as well", flush=True)
     rows = []
     for i, tr in enumerate(trials):
-        key = tr["trial_key"]
+        key = tr["trial_key"] or os.path.relpath(tr["imu"], batch.BASE_DIR)   # one archived trial has no parseable key
         pid = pp.pid_from_dir_name(tr["participant"]) or tr["participant"]
         if key not in cache:
             rec = {}
