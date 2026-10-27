@@ -259,6 +259,88 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
     return by_key
 
 
+def f_boundary_census(legs: dict, per_leg_params: dict, verbose: bool = True):
+    """How often `f` is dropped, split by MAS arm.
+
+    This answers the first of the two questions
+    docs/reports/2026-10-27-dropping-f.md says would settle whether `f` belongs
+    in the scored set, and it can only be answered from the recordings.
+
+    `f` leaves the sum when it cannot be estimated (`f < 0.1 or N < 2.0`).
+    Since the divisor now follows the terms a trial can score, dropping it no
+    longer leaves a hole -- but `f`'s own contribution still vanishes at that
+    boundary, so the score can still fall as a limb worsens (N=2.0 -> 0.1878,
+    N=1.5 -> 0.1538 on the report's sweep).
+
+    What matters is WHERE it fires. The boundary is at the low-oscillation end,
+    so if it fires mostly on the MAS>=1 arm it is compressing impaired scores
+    toward healthy ones, which is the direction that inverts the thresholds. If
+    it fires about equally in both arms, or in neither, then the inversion has
+    another cause and `f` is merely weak -- which the report says is not on its
+    own sufficient reason to remove a published parameter.
+
+    Reports trials AND legs, because a leg whose every trial crosses the
+    boundary is a different problem from a leg with one such trial among five.
+    """
+    arms = {0: {"trials": 0, "fired": 0, "legs": set(), "legs_all": set()},
+            1: {"trials": 0, "fired": 0, "legs": set(), "legs_all": set()}}
+    for key, plist in per_leg_params.items():
+        if key not in legs:
+            continue
+        arm = 0 if _rank(legs[key][0]) == 0 else 1
+        n_fired = 0
+        for pr in plist:
+            arms[arm]["trials"] += 1
+            # Exactly the scorer's condition, not a paraphrase of it.
+            if pr.get("f", 0.0) < 0.1 or pr.get("N", 0.0) < 2.0:
+                n_fired += 1
+                arms[arm]["fired"] += 1
+        if n_fired:
+            arms[arm]["legs"].add(key)
+        if plist and n_fired == len(plist):
+            arms[arm]["legs_all"].add(key)
+
+    if verbose:
+        print()
+        print("  Where the f boundary fires (f < 0.1 or N < 2.0), by MAS arm:")
+        print(f"    {'arm':8} {'trials':>7} {'f dropped':>10} {'share':>7} "
+              f"{'legs hit':>9} {'legs all':>9}")
+        for arm, label in ((0, "MAS 0"), (1, "MAS>=1")):
+            d = arms[arm]
+            share = (100.0 * d["fired"] / d["trials"]) if d["trials"] else float("nan")
+            print(f"    {label:8} {d['trials']:7d} {d['fired']:10d} {share:6.1f}% "
+                  f"{len(d['legs']):9d} {len(d['legs_all']):9d}")
+        h, i = arms[0], arms[1]
+        hs = (h["fired"] / h["trials"]) if h["trials"] else float("nan")
+        isr = (i["fired"] / i["trials"]) if i["trials"] else float("nan")
+        print()
+        if not (h["trials"] and i["trials"]):
+            print("    One arm has no trials, so this says nothing yet.")
+        elif i["fired"] == 0 and h["fired"] == 0:
+            print("    It never fires. The f-skip is NOT inverting these thresholds,")
+            print("    and f's weakness is the only charge left against it.")
+        elif isr > 2 * hs:
+            # `hs` is zero whenever the boundary fires on the impaired arm
+            # ONLY, which is both the most informative case and the one that
+            # divided by zero and killed the run before this was tested.
+            times = f"{isr / hs:.1f}x more often" if hs else "ONLY"
+            print(f"    It fires {times} on the impaired arm, which is")
+            print("    the direction that compresses impaired scores toward healthy")
+            print("    ones. That is the report's case for removing f or")
+            print("    re-estimating it from fewer turning points.")
+        elif hs > 2 * isr:
+            times = f"{hs / isr:.1f}x more often" if isr else "ONLY"
+            print(f"    It fires {times} on the UNAFFECTED arm, which")
+            print("    pushes the healthy percentile DOWN, i.e. the opposite way.")
+            print("    Worth understanding before touching f.")
+        else:
+            print("    It fires at a similar rate in both arms, so it is not")
+            print("    obviously the cause of an inversion. See the report's")
+            print("    second question before acting on f.")
+        print("    See docs/reports/2026-10-27-dropping-f.md.")
+    return arms
+
+
 def derive(legs: dict, verbose: bool = True):
     """(PT_HEALTHY_MAX, PT_BORDERLINE_MAX) by the documented arithmetic."""
     healthy = [pt for rank, pt in legs.values() if _rank(rank) == 0]
@@ -380,6 +462,7 @@ def smoke(verbose: bool = True) -> bool:
         sg.MAS_CSV = mas_path
         legs, per_leg_params = leg_scores(None, None, verbose=verbose)
         healthy_reference(legs, per_leg_params, verbose=verbose)
+        f_boundary_census(legs, per_leg_params, verbose=verbose)
         h, b = derive(legs, verbose=verbose)
     finally:
         (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV) = saved
@@ -412,6 +495,7 @@ def main(argv=None) -> int:
     print()
     legs, per_leg_params = leg_scores(a.opti_root, a.mas_csv)
     healthy_reference(legs, per_leg_params)
+    f_boundary_census(legs, per_leg_params)
     h_max, b_max = derive(legs)
     print()
     print("  To apply, in pendulastic_pt_score.py AND mobile-imu-core/src/pt_score.rs:")

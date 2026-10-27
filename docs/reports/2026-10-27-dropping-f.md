@@ -6,8 +6,10 @@
 document is the argument for the further step, with the counter-arguments that
 were raised against it, so the decision can be revisited on evidence rather
 than re-derived.
-**Reproduce:** `python healthy_ref_frequency_audit.py`;
-`python -m pytest tests/test_pt_zone_parity.py -k f_skip`
+**Reproduce:** `python healthy_ref_frequency_audit.py` — every figure below
+about `f` is computed in its `part_h`, except the cohort medians, which are
+quoted from the 2026-10-27 run and marked as such there. The inversion sweep in
+§1 is pinned by `python -m pytest tests/test_pt_zone_parity.py -k f_skip`.
 
 ---
 
@@ -76,7 +78,10 @@ checked against De Groote's own MATLAB:
 
 `f`'s term travels 5.8x less than `N`'s across the whole severity range, and
 its rank correlation with dialled severity is not monotone. Across every
-profile the app grades, `f` contributes between **2.4% and 9.6%** of the total.
+profile the app grades *where `f` is estimated*, `f` contributes between
+**2.4% and 9.6%** of the total. Across all nine graded profiles the range
+starts at **0.0%**, because `fall_no_ringdown`'s `f` is skipped and contributes
+nothing at all.
 
 On real trials it is quieter still. The control cohort's median `f` is
 0.9189 Hz against a 0.8839 reference — a ratio of 1.04, which contributes
@@ -104,15 +109,27 @@ swinging sooner, and that is `N`, already in the set.
 
 ## 4. Removing it costs no discrimination — it gains a little
 
-| | ladder dynamic range | monotone? |
+| | ladder dynamic range | monotone on the ladder? |
 |---|---|---|
-| with `f` | 6.16x (0.0905 → 0.5577) | no |
-| without `f` | **6.37x** (0.1002 → 0.6384) | **yes** |
+| with `f` | 6.16x (0.0905 → 0.5577) | yes |
+| without `f` | **6.37x** (0.1002 → 0.6384) | yes |
 
-This is the argument's strongest point and the easiest to check: dropping the
-parameter does not blunt the instrument. The score separates the ladder
-slightly *better* without it, because removing a near-constant term removes
-something that was near-constant across severity too.
+Dropping the parameter does not blunt the instrument. The score separates the
+ladder slightly *better* without it, because removing a near-constant term
+removes something that was near-constant across severity too.
+
+**CORRECTION, 2026-10-27.** An earlier version of this table claimed the ladder
+is non-monotone *with* `f`. It is not. Every rung has N ≥ 2.0 — `tone_L4` sits
+exactly at 2.00 — so no rung crosses the boundary where `f` is dropped, and the
+ladder is monotone either way. The inversion in §1 is demonstrated on a sweep
+built to cross that boundary, which is the only place it appears. The error was
+found by committing the computation behind these figures (`part_h` of
+`healthy_ref_frequency_audit.py`), which is what the Reproduce line should have
+pointed at from the start.
+
+So the monotonicity argument rests entirely on §1's sweep, not on the ladder.
+What the ladder shows is the weaker claim, which still holds: removal costs no
+discrimination.
 
 ## 5. No published healthy value is being discarded
 
