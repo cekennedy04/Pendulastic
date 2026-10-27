@@ -92,14 +92,15 @@ Three sources, three rests: it becomes a measured input.
 ## 4. The program
 
 ```
-OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment + additions)
+OFFLINE (Python, this branch)                         HOST VI (StretchExperiment is not edited)
  model  : neuromech.model_rt (+ A's profiles)  ─┐
- library: neuromech.scenarios  ─────────────────┼─> session plan ──> <runid>.csv / .bin ──> Mode A player
- build  : expected params (validated scorer)  ──┘     (blinded run ids,                     (feedforward, trips,
-                                                       randomised, reps)                     phase+run id logged)
- session score: encoder .bin + phone JSONL ──> delivered vs intended, phone vs encoder <── <runid>.bin + phone
- ILC / identify: next command, plant fit  <── chirp run, any run
- Formula Node (Mode B): verified step function
+ library: neuromech.scenarios  ─────────────────┼─> session plan ──> player/<run>.csv ──> Pendulum Player
+ build  : expected params (validated scorer)  ──┘     (blinded run ids,                   writes M1JointAngleDesired
+                                                       randomised, reps, peak_deg)        every 10 ms -> RT PID
+ check-log: does the log record under the Player?  <── one .bin + the file played (once, before session 1)
+ session score: encoder .bin + phone JSONL ──> delivered vs intended, phone vs encoder <── logs named on the run sheet
+ ILC / identify: next command + its player file, plant fit  <── chirp run, any run   (ILC = the feedforward)
+ Formula Node (Mode B): verified step function, steppable inside the Player
 ```
 
 ## 5. Build list
@@ -113,7 +114,7 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B5 | Session scorer: encoder `.bin` + phone JSONL → delivered vs intended, phone vs encoder, flags | **done** — `python -m neuromech.session score` |
 | B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
-| B8 | LabVIEW for Mode A | **Pendulum Player** host VI (StretchExperiment is not edited): build guide ready, program adapted to it (headerless player files, peak guard, logs paired by run-sheet name, 100 Hz staircase in the dry run). Building the VI is a bench task; interactive Mode B′ needs RT access |
+| B8 | LabVIEW for Mode A | **Pendulum Player** host VI (StretchExperiment is not edited): build guide ready, program adapted to it (headerless player files, peak guard, logs paired by run-sheet name, 100 Hz staircase in the dry run, ILC outputs playable, `session check-log` for the logging bench check). Building the VI is a bench task; interactive Mode B′ needs RT access |
 | B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — `coulomb_nm`, `k_v`/`k_l`/`reflex_max_nm`, `catch_and_hold()`, `limb_from_anthropometry()`; Formula Node re-verified at 1.7e-11; `Params()` bit-identical to before; A's module retired |
 | B10 | Corpus rest geometry by the validated scorer | **measured** — §5c; the disagreement is between instruments, not estimates |
 
