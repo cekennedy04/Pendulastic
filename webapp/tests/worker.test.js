@@ -252,8 +252,23 @@ test('finish posts a composite PT score alongside the existing result shape', as
   assert.ok(Number.isFinite(ptScore.score), 'the fixture is a well-formed trial, so the score must be finite');
   assert.ok(['healthy', 'borderline', 'impaired', 'unknown'].includes(ptScore.zone),
     `zone must be one of the four documented values, got ${ptScore.zone}`);
-  assert.ok(Array.isArray(ptScore.breakdown) && ptScore.breakdown.length === 7,
-    'breakdown must list all 7 scored parameters');
+  // Driven by the keys the engine returns, not by a literal count. It was
+  // `=== 7`, and that only held while the breakdown happened to carry every
+  // published parameter. omega_min_n left the scored set on 2026-10-26 (it is
+  // algebraically -omega_max_n for a limb dropped from full extension, so the
+  // 7-term sum weighted one measurement twice), and this assertion then failed
+  // -- but ONLY against a freshly built wasm. A stale webapp/src/wasm/ still
+  // returned seven fields, so every run that did not rebuild passed, and the
+  // first thing to see the failure would have been a deploy.
+  const SCORED = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'f', 'area_ratio'];
+  assert.ok(Array.isArray(ptScore.breakdown), 'breakdown must be an array');
+  assert.deepEqual(
+    ptScore.breakdown.map((b) => b.key).sort(),
+    [...SCORED].sort(),
+    'breakdown must list exactly the scored parameters -- mobile-imu-core '
+    + 'pt_score.rs N_PARAMS and pendulastic_pt_score._PARAM_KEYS are the '
+    + 'source of truth, and tests/test_pt_zone_parity.py pins those to '
+    + 'each other');
   for (const entry of ptScore.breakdown) {
     assert.equal(typeof entry.key, 'string');
     assert.equal(typeof entry.value, 'number');
