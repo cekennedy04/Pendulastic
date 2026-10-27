@@ -148,7 +148,8 @@ HEALTHY_REF = {
     # every control subset), so literature and data agree to within 0.5.
     # This replaces 3.5, which was never a control median: it was the old
     # 4-second active-oscillation cap, which returned N = 4.0 for any leg
-    # still swinging after four seconds. See evaluate_healthy_ref_v04.py.
+    # still swinging after four seconds. See evaluate_healthy_ref_v04.py; the
+    # 2026-10-27 corrected cohort reads 6.0 (leg median 6.25), still in range.
     "N":             6.5,
 
     # ---- DATA-DERIVED, no published value exists ----
@@ -166,10 +167,10 @@ HEALTHY_REF = {
     #
     # Flagged rather than cited. For each of these the published quantity is
     # either differently defined or was never published at all, so no
-    # literature anchor is available and these are OUR medians. Values are
-    # from evaluate_healthy_ref_v04.py: 46 OptiTrack control trials, 9
-    # participants, 15 legs, scored with the scoring that ships -- against
-    # the n=4 the previous set came from.
+    # literature anchor is available and these are OUR medians: since
+    # 2026-10-27 from derive_healthy_ref.py over the cohort above (the
+    # superseded set came from evaluate_healthy_ref_v04.py: 46 trials, 9
+    # participants, 15 legs, scored before the reconstruction fixes).
     #
     # The standing provenance limit applies to all five: every control leg in
     # mas_scores.csv is assessed_by=ASSUMED, and every clinician-EXAMINED leg
@@ -199,14 +200,15 @@ HEALTHY_REF = {
     # value sat at ~0.001 for every trial and one of the seven parameters was
     # a static zero-offset in the sum.
     #
-    # Median of 46 OptiTrack control trials; all 46 are negative, and it
-    # mirrors omega_max_n almost exactly, which is what a pendulum should do
-    # (2026-10-27: -6.3624 against +6.4839; was -9.4152 against +9.5672). Subset spread -7.26 to -9.82, far tighter than area_ratio's.
+    # Median of the 39 interpretable control trials, and it mirrors
+    # omega_max_n almost exactly, which is what a pendulum should do:
+    # -6.3624 against +6.4839 (leave-one-person-out -6.689 to -6.289). Was
+    # -9.4152 against +9.5672 on the superseded 46-trial set.
     #
-    # Worth noting but NOT claimed as a match: Popovic's published healthy
-    # range is -12 to -9 rad/s and this lands inside it. Ours is normalised by
-    # A0 (units 1/s) and theirs is not, so the agreement is suggestive rather
-    # than a like-for-like comparison.
+    # Popovic's published healthy range is -12 to -9 rad/s. The superseded
+    # value happened to land inside it; this one does not, and neither claim
+    # means much: ours is normalised by A0 (units 1/s) and theirs is not, so
+    # the two are not like-for-like. Diagnostic only -- not scored.
     "omega_min_n":   -6.3624,
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional

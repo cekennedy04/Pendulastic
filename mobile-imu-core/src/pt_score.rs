@@ -1132,13 +1132,13 @@ mod tests {
         // 1.896_321_590_796_999_47 against the pre-2026-10-27 HEALTHY_REF;
         // re-deriving it from the corrected control cohort moved every
         // data-derived entry (area_ratio 0.0945 -> 0.1766 most of all).
-        // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
-        // reads HIGHER on this fixture, not lower, which is the double count
-        // cutting the other way: dropping omega_min_n also drops the /7 in
-        // every other term's denominator, and this fixture's area_ratio is so
-        // far above reference (0.94 vs 0.0945) that widening its share
-        // outweighs losing a term whose own contribution here was small
-        // (omega_min_n = 0.004, barely above the -9.4152 reference).
+        // Before that it was 1.768_336_341_387_656_72 under the 7-term sum,
+        // and the 6-term sum read HIGHER, not lower: dropping omega_min_n also
+        // dropped the /7 in every other term's denominator, and this fixture's
+        // area_ratio sat so far above the then-reference (0.94 vs 0.0945)
+        // that widening its share outweighed losing a term whose own
+        // contribution was small (omega_min_n = 0.004 against the
+        // then-reference -9.4152). Those references are the superseded ones.
         assert!((full - 1.185_789_407_693_991_2_f64).abs() < 1e-15, "full={full:.17}");
     }
 
