@@ -41,8 +41,20 @@ header, starting at 0 deg) and `commands/<run>.csv` + `.dbl` (all five columns, 
 
 ## 3. At the bench (per run)
 
-The rig is driven by the **Pendulum Player** host VI, which writes StretchExperiment's position-setpoint
+The rig is driven by the **Pendulum Player**, which writes StretchExperiment's position-setpoint
 shared variable; StretchExperiment itself is not edited (see `labview/LABVIEW_PROGRAM_SPEC.md`).
+The Player does not have to be a VI: `labview/player/play_setpoints.ps1` does the same job from Windows
+PowerShell through NI DataSocket (installed with LabVIEW), so the rig PC needs neither Python nor any
+LabVIEW building. The analysis PC never touches the rig, so a session travels on a USB stick:
+
+```bash
+python -m neuromech.usb_kit --name <S> [--dest E:\]     # scripts + player files + run sheet + README.txt
+```
+
+On the rig PC: `PICK_VARIABLE.bat` once, then drag a file onto `DRYRUN.bat` (moves nothing) or
+`PLAY.bat`. It refuses files over 45 deg, with a header, or not starting at 0; q/Esc ramps back to 0;
+each run leaves `sent/<run>_<time>.csv`, what it wrote and when. Logs and the run sheet come back on
+the stick. The kit's `README.txt` is the bench procedure. `key.csv` never goes on the stick.
 
 **Once, before the first session:** play any player file with the log running, then
 
@@ -55,7 +67,7 @@ setpoint changed, ~10 ms for the Player). FAIL says which: the log never saw the
 logged something else, or it stopped early. Exit status 1 on FAIL.
 
 Check `peak_deg` against the arm's range -> Player `CSV Path` = `player/<run>.csv` -> start the phone ->
-start the log -> run the Player -> let the app auto-stop -> stop the phone -> stop the log -> **write the
+start the log -> run the Player (or drag the file onto `PLAY.bat`) -> let the app auto-stop -> stop the phone -> stop the log -> **write the
 log's file name in `encoder_file`** (StretchExperiment names its own logs; that column is the pairing).
 
 ## 4. Score the session
@@ -98,7 +110,7 @@ plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 77 tests
+python -m pytest neuromech/tests                                    # 81 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
