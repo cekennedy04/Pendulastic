@@ -220,34 +220,43 @@ def test_neutral_and_a0_inherit_the_tail(baseline):
 
 
 def test_the_committed_fixture_matches_the_current_python(baseline):
-    """XFAIL: it does not, from the very first tick.
+    """It does now. This guards the fix.
 
-    This is a separate and more serious defect than the tail instability
-    above, and it is the one that makes the port's check vacuous.
+    FIXED 2026-10-27 by porting three IMU angle fixes the Rust never received.
+    Until then this failed from the very first tick, and it was the defect that
+    made the port's check vacuous.
 
-    `mobile-imu-core/tests/fixtures/golden.rs` is what `pipeline_test.rs`
-    asserts the Rust against. Its `TRIAL_E2E_ANG[1]` is 178.34101788484165.
-    The Python in this tree computes 178.34922151412164 for the same input --
-    8.2e-3 deg apart at the FIRST tick, where the tail instability contributes
-    exactly nothing (a one-ULP perturbation of the initial condition moves
-    tick 1 by 0.0, see above).
+    WHAT IT WAS. golden.rs's `TRIAL_E2E_ANG[1]` read 178.34101788484165 while
+    this tree's Python computed 178.34922151412164 for the same input: 8.2e-3
+    deg apart at the FIRST tick, where the tail instability contributes exactly
+    nothing. So the Rust matched an older Python, and a fixture no current code
+    reproduced was the only thing hiding it.
 
-    So the Rust matches an older Python than the one in this tree, and the
-    only thing hiding it is a fixture that no current code reproduces.
-    Regenerating golden.rs turns `full_pipeline_reproduces_the_python_replay`
-    red on the swing, which is the test behaving correctly.
+    HOW IT WAS FOUND. `git log -S` dated the fixture value to 63db1b5
+    (2026-09-04), and the Python at that commit reproduces it exactly -- which
+    ruled out the environment and made it a code change. Bisecting 63db1b5
+    against 845fe6a with that value as the predicate named b37d927, "fix: three
+    IMU angle defects found from live phone trials", developed 2026-08-25 and
+    merged later, which is why the fixture written on main afterwards still
+    predates it.
 
-    NOT ATTRIBUTED. The last commit to touch pendulastic_imu_server.py is from
-    2026-09-11, and 849430e -- the only recent change to the replay -- touches
-    imu_calibration_tuner.py and not the server; reverting it leaves the
-    difference in place. So this is not a recent regression that can be
-    pointed at, and finding it means bisecting the replay against a fixture
-    that cannot be regenerated along the way.
+    WHAT THE RUST WAS MISSING, all three of b37d927's fixes:
 
-    Deliberately not papered over with a tolerance. 8.2e-3 deg is clinically
-    irrelevant and the swing tolerance could simply be widened to admit it,
-    but then the port would be asserted against nothing in particular, which
-    is the situation this test exists to make visible.
+      1. the gyro dt bound was 0.5 s, so any stream slower than 2 Hz
+         integrated a fabricated 10 ms. Now 2.0 s.
+      2. `calibrate_gyro_bias` returned the window mean outright, including
+         when the mean was mostly its own noise. Now applied per axis only at
+         >= 3 standard errors from zero.
+      3. the swing angle was total quaternion distance, which counts
+         unobservable yaw as knee flexion -- 86.9 deg of it on a still phone in
+         the live trial that prompted the fix. Now the rotation axis is
+         projected perpendicular to the zero-frame gravity direction, which
+         meant also capturing that direction at the instant the zero pose is
+         taken.
+
+    Only (3) moves this fixture, because its log is 100 Hz with a clean static
+    bias, so (1) and (2) are inert here. All three were ported regardless:
+    they are the same defects on the phone, where the logs are not clean.
     """
     import re
     from pathlib import Path
