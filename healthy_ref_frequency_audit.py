@@ -323,19 +323,39 @@ MEASURED_PEAK_N = 50
 
 
 def part_e(verbose=True):
-    """The verdict, and a mechanism claim RETRACTED.
+    """The verdict, after two rounds of correcting this part.
 
-    WHAT THIS PART ORIGINALLY SAID, AND WHY IT WAS WRONG. It attributed the
-    inflation to the frame rate and the differentiated noise floor, on the
-    strength of the _sg window note in pendulastic_pt_score (quoted below),
-    which records the median omega_max_n moving 8.50 -> 3.19 when real 120 Hz
-    OptiTrack is decimated to 20 Hz. Tested inside this model, sampling rate
-    does ESSENTIALLY NOTHING: omega_max_n reads 5.052 at 20 Hz and 5.164 at
-    240 Hz -- a 1.02x spread -- and even with 2 deg of added noise it only
-    spans 4.89 to 5.90. The
-    model cannot reproduce the 2.7x move, so whatever causes it in the real
-    pipeline is not sampling rate as such and is not white noise either. The
-    mechanism is UNIDENTIFIED and `part_c` only bounds what it is not.
+    ROUND 1, RETRACTED. This part first attributed the inflation to the frame
+    rate and the differentiated noise floor, on the strength of the _sg window
+    note in pendulastic_pt_score, which records the median omega_max_n moving
+    8.50 -> 3.19 when real 120 Hz OptiTrack is decimated to 20 Hz. Tested
+    inside this model, sampling rate does ESSENTIALLY NOTHING: omega_max_n
+    reads 5.052 at 20 Hz and 5.164 at 240 Hz -- a 1.02x spread -- and even
+    with 2 deg of added noise it only spans 4.89 to 5.90.
+
+    ROUND 2, 2026-10-27: the conclusion drawn from that -- "the mechanism is
+    UNIDENTIFIED" -- was wrong, and it was wrong because this part swept the
+    WRONG VARIABLE. It varied sampling rate with the smoothing window already
+    expressed in SECONDS, which is the behaviour AFTER the 2026-08-31 fix, and
+    therefore measured the fix working. The pre-fix code took a fixed SAMPLE
+    COUNT, so the window itself moved with the rate: 15 samples is 0.125 s at
+    120 Hz and 0.750 s at 20 Hz. `part_g` now sweeps that, and the divergence
+    reproduces here -- omega_max_n 1.47x and N 1.25x against the real
+    pipeline's 2.66x and 1.40x, same direction, N almost exactly.
+
+    So the mechanism was identified, attributed and FIXED before this audit was
+    written. The project's own re-run attributed it at the time: 120 Hz data
+    re-processed with 20 Hz-EQUIVALENT durations reproduced the 20 Hz values,
+    closing the omega_max_n gap 153.8% -> 7.2% and N's 25.0% -> 0.0%. And
+    9.5672 did not inherit the bug: no commit in this repository contains a
+    sample-count window (the file arrives in 63db1b5, 2026-09-04, already
+    smoothing over seconds) and 9.5672 was written in 7256784, 2026-09-09.
+
+    THE LEG THIS COSTS. "A quantity that halves when you resample the same
+    motion cannot be a property of a leg, whatever causes it" was the one leg
+    of the verdict that needed no model and no literature. It is GONE: post-fix
+    the real pipeline's residual rate gap is 7.2% and this model's is 1.02x.
+    Nothing halves any more.
 
     Fowler's definition point does not rescue the constant either. Fowler
     defines the relaxation-index denominator as starting angle minus resting
@@ -354,13 +374,28 @@ def part_e(verbose=True):
                    0.12-0.16 m shank
       measurement  221.9 +/- 35.6 deg/s peak first-swing velocity in 50
                    healthy supine adults, against the 446 deg/s the constant
-                   requires at A0 = 46.6: +6.3 SD
+                   requires at A0 = 46.6: +6.3 SD -- but see the caveat below,
+                   which is real and was not stated before
       this model   reproduces the measured RI and still reads 5.16
 
-      and the project's own 8.50 -> 3.19 experiment is disqualifying on its
-      own terms whatever causes it: a quantity that halves when you resample
-      the same motion cannot be a property of a leg, even if this module
-      cannot say why it halves.
+    THE CAVEAT ON THE MEASUREMENT LEG. Peak angular velocity has no asymptote
+    as the smoothing window shrinks, and the _sg note records what that costs
+    on real trials: the median reads 186 deg/s at a 0.75 s window, 343 at
+    0.25 s and 433 at 0.05 s on 40 trials at 120 Hz. The 1996 electrogoniometer
+    study does not report its filtering. So the +6.3 SD distance is partly a
+    difference of filter definition and must not be read as a 6.3 SD PHYSICAL
+    conflict. What survives that caveat is the comparison between two SMOOTH
+    signals, where the window barely matters: this model's geometry gives 281
+    deg/s at 0.10 s and 232 at 0.75 s, against the measured 221.9 +/- 35.6 --
+    1.7 SD, not 6.3. The constant's 446 deg/s is outside both.
+
+    WHAT IS ACTUALLY LEFT, and it is narrower and rate-invariant. At the
+    shipped 0.10 s window the pipeline reads 1.85x this model (9.5672 against
+    5.16), and `part_g` decomposes that into ~1.59x in peak velocity and ~1.17x
+    in A0 (this model's 54.5 deg against the cohort's 46.6). 1.59 * 1.17 =
+    1.86: the whole gap, with nothing left over for sampling. The live question
+    is whether the pipeline's peak velocity is inflated or this reference is
+    stale, and the cohort distinguishes them.
 
     The original text, kept because it is the claim being retracted:
 
@@ -400,28 +435,19 @@ def part_e(verbose=True):
         pr = pts.compute_pt_params(tg, ang)
         rates[fs_hz] = pr["omega_max_n"] if pr else float("nan")
     res = {"model_omega_max_n": p["omega_max_n"],
+           "model_peak_deg_s": p.get("omega_peak_deg_s", float("nan")),
            "required_peak_deg_s": required,
            "measured_peak_deg_s": meas,
            "sd_away": (required - meas) / sd,
            "by_rate": rates}
     if verbose:
         print()
-        print("E. The mechanism, and the verdict")
+        print("E. The verdict, and what two rounds of correction cost it")
         print(f"  omega_max_n = max|dphi/dt| / A0: a DIFFERENTIATED numerator "
               f"over an amplitude.")
-        print(f"  pendulastic_pt_score's own _sg note records that decimating "
-              f"real 120 Hz")
-        print(f"  OptiTrack to 20 Hz -- changing the sampling and nothing else "
-              f"about the")
-        print(f"  motion -- moved the MEDIAN omega_max_n from 8.50 to 3.19 "
-              f"across 205 trials.")
-        print(f"  A quantity that moves 2.7x on sampling rate alone is not "
-              f"measuring a limb.")
         print()
         print(f"  clean model trace, true 0.80 Hz:        "
               f"omega_max_n = {p['omega_max_n']:.3f}")
-        print(f"  real 120 Hz OptiTrack, median of 205:   omega_max_n = 8.50")
-        print(f"  real 20 Hz equivalent, same motion:     omega_max_n = 3.19")
         print(f"  HEALTHY_REF, 46 120-Hz control trials:  "
               f"omega_max_n = {DISPUTED:.4f}")
         print()
@@ -432,22 +458,41 @@ def part_e(verbose=True):
         print(f"  The requirement is {res['sd_away']:+.1f} SD from the "
               f"measurement.")
         print()
-        print("  RETRACTION: this part first blamed the frame rate. Tested in")
-        print("  this model, sampling rate does almost nothing:")
+        print("  ROUND 1, RETRACTED: this part first blamed the frame rate.")
+        print("  Tested in this model, sampling rate does almost nothing:")
         print("    " + "   ".join(f"{int(k)} Hz: {v:.3f}" for k, v in rates.items()))
         _lo, _hi = min(rates.values()), max(rates.values())
-        print(f"  a spread of {_hi / _lo:.2f}x against the real pipeline's 2.7x, so the")
-        print("  mechanism is UNIDENTIFIED. part_c bounds what it is not: noise,")
-        print("  spikes, release steps and marker freezes all fall short.")
+        print(f"  a spread of {_hi / _lo:.2f}x against the real pipeline's 2.7x.")
         print()
-        print("  VERDICT, which does not depend on the mechanism:")
+        print("  ROUND 2, 2026-10-27: that sweep varied the WRONG VARIABLE. It")
+        print("  moved the rate with the window already fixed in SECONDS, which")
+        print("  is the behaviour AFTER the 2026-08-31 fix -- so it measured the")
+        print("  fix working. The pre-fix window was a SAMPLE COUNT and moved")
+        print("  with the rate. part_g sweeps that, and it reproduces here.")
+        print("  The mechanism was identified, attributed and FIXED before this")
+        print("  audit was written; 9.5672 was measured after the fix (7256784,")
+        print("  2026-09-09; no commit here has a sample-count window).")
+        print()
+        print("  COST: the leg that needed neither model nor literature -- 'a")
+        print("  quantity that halves when the same motion is resampled cannot")
+        print("  be a property of a leg' -- is GONE. Post-fix the real")
+        print("  pipeline's residual rate gap is 7.2%. Nothing halves.")
+        print()
+        print("  VERDICT, on the two legs that survive:")
         print("  omega_max_n and omega_min_n cannot be properties of a healthy")
         print("  limb. The Bajd & Bowman passive set survives -- three")
         print("  anthropometric routes agree with it, the one measured")
         print("  peak-velocity figure is within 1 SD of it, and this model")
         print(f"  reproduces the measured relaxation index while still reading")
-        print(f"  {p['omega_max_n']:.2f}. And a quantity that halves when the same motion")
-        print("  is resampled is disqualified whatever the cause.")
+        print(f"  {p['omega_max_n']:.2f}.")
+        print()
+        print("  CAVEAT now stated on the measurement leg: peak velocity has no")
+        print("  asymptote as the window shrinks (the _sg note reads 186 deg/s")
+        print("  at 0.75 s, 343 at 0.25 s, 433 at 0.05 s on 40 real trials), and")
+        print("  the 1996 study does not report its filtering. So +6.3 SD is")
+        print("  partly a filter-definition difference. Smooth signal against")
+        print(f"  smooth signal it is 1.7 SD: this model's {res['model_peak_deg_s']:.0f} deg/s against")
+        print(f"  {meas:.1f} +/- {sd:.1f}. The constant's {required:.0f} deg/s is outside both.")
     return res
 
 
@@ -559,17 +604,134 @@ def part_f(verbose=True):
     return res
 
 
+#: The real pipeline's pre-fix divergence, from the _sg window note in
+#: pendulastic_pt_score: median omega_max_n and N on the SAME 205 trials, read
+#: at 120 Hz and after decimation to 20 Hz, while the smoothing window was a
+#: fixed sample count.
+REAL_PREFIX = {"omega_max_n": (8.50, 3.19), "N": (3.5, 2.5)}
+
+
+def _with_sg_window(win_s, fn):
+    """Run fn() with _sg's default window set to win_s seconds.
+
+    This reaches into _sg.__defaults__ rather than setting the module's
+    _SG_WINDOW_S, because the window is captured as a DEFAULT ARGUMENT at
+    definition time -- rebinding the global does nothing, which is how the
+    first version of this probe silently measured one window five times.
+    """
+    d = list(pts._sg.__defaults__)
+    was = d[0]
+    d[0] = win_s
+    pts._sg.__defaults__ = tuple(d)
+    try:
+        return fn()
+    finally:
+        d = list(pts._sg.__defaults__)
+        d[0] = was
+        pts._sg.__defaults__ = tuple(d)
+
+
+def part_g(verbose=True):
+    """The mechanism, swept on the variable that actually moved.
+
+    part_e's first retraction swept SAMPLING RATE and found a 1.02x spread,
+    then concluded the mechanism was unidentified. The window was already
+    expressed in seconds by then, so that sweep measured the post-2026-08-31
+    behaviour -- it measured the fix working.
+
+    The pre-fix code took a fixed SAMPLE COUNT (15 at the omega call sites), so
+    the physical window moved with the rate: 0.125 s at 120 Hz, 0.750 s at
+    20 Hz. Sweeping THAT reproduces the divergence here, in the same direction
+    and -- for N -- at nearly the same size. The residual (1.47x here against
+    the pipeline's 2.66x) goes the way the mechanism predicts: a real marker
+    reconstruction carries content above the swing band that a clean analytic
+    trace does not, so a 0.750 s window has more to take away from it.
+
+    It also decomposes what is LEFT once sampling is out of the way, which is
+    rate-invariant and is the live question: the pipeline reads 1.85x this
+    model at the shipped window, as ~1.59x in peak velocity times ~1.17x in A0.
+    """
+    sim = rnm.simulate(rnm.PROFILES["tone_L0"])
+    t, ang = sim["t"], sim["angle_deg"]
+
+    def at(fs_hz, win_s):
+        tg = np.arange(0.0, t[-1], 1.0 / fs_hz)
+        a = np.interp(tg, t, ang)
+        return _with_sg_window(win_s, lambda: pts.compute_pt_params(tg, a))
+
+    SAMPLES = 15.0          # the sample count the pre-fix omega call sites used
+    pre = {fs: at(fs, SAMPLES / fs) for fs in (120.0, 20.0)}
+    post = {fs: at(fs, 0.10) for fs in (20.0, 60.0, 120.0, 240.0)}
+
+    res = {"pre": pre, "post": post}
+    for k in ("omega_max_n", "N"):
+        res[f"pre_spread_{k}"] = pre[120.0][k] / pre[20.0][k]
+    vals = [v["omega_max_n"] for v in post.values()]
+    res["post_spread"] = max(vals) / min(vals)
+
+    model = post[120.0]
+    a0_ref = pts.EXCURSION_REF_MEAN_DEG
+    res["peak_factor"] = (DISPUTED * a0_ref) / model["omega_peak_deg_s"]
+    res["a0_factor"] = model["A0_deg"] / a0_ref
+    res["gap"] = DISPUTED / model["omega_max_n"]
+
+    if verbose:
+        print()
+        print("G. The window, which is the variable part_e should have swept")
+        print("  PRE-FIX: _sg took 15 SAMPLES, so the window moved with the rate.")
+        print(f"  {'rate':>7} {'window':>9} {'omega_max_n':>12} {'N':>6} "
+              f"{'peak deg/s':>11} {'A0 deg':>8}")
+        for fs in (120.0, 20.0):
+            q = pre[fs]
+            print(f"  {int(fs):6d}H {SAMPLES / fs:8.3f}s {q['omega_max_n']:12.3f} "
+                  f"{q['N']:6.2f} {q['omega_peak_deg_s']:11.1f} {q['A0_deg']:8.2f}")
+        print()
+        for k in ("omega_max_n", "N"):
+            hi, lo = REAL_PREFIX[k]
+            print(f"  {k:<12} this model {res[f'pre_spread_{k}']:.2f}x   "
+                  f"real pipeline {hi / lo:.2f}x   ({hi} -> {lo} across 205 trials)")
+        print("  Same direction both times, and N almost exactly. The mechanism")
+        print("  is the window, it was attributed in 2026-08-31's own re-run")
+        print("  (omega_max_n gap 153.8% -> 7.2%, N 25.0% -> 0.0%), and it was")
+        print("  FIXED there. part_e's 'UNIDENTIFIED' is withdrawn.")
+        print()
+        print("  POST-FIX: 0.10 s at every rate.")
+        print("    " + "   ".join(f"{int(k)} Hz: {v['omega_max_n']:.3f}"
+                                  for k, v in post.items()))
+        print(f"  spread {res['post_spread']:.2f}x. Nothing halves.")
+        print()
+        print("  WHAT IS LEFT, rate-invariant, at the shipped window:")
+        print(f"    pipeline / this model        {res['gap']:.2f}x "
+              f"({DISPUTED:.4f} vs {model['omega_max_n']:.3f})")
+        print(f"    of which peak velocity      {res['peak_factor']:.2f}x "
+              f"({DISPUTED * a0_ref:.0f} deg/s required vs "
+              f"{model['omega_peak_deg_s']:.0f} measured here)")
+        print(f"    of which A0                 {res['a0_factor']:.2f}x "
+              f"({model['A0_deg']:.1f} deg here vs {a0_ref:.1f} deg cohort)")
+        print(f"    product                     "
+              f"{res['peak_factor'] * res['a0_factor']:.2f}x -- the whole gap, "
+              f"nothing left for sampling")
+        print("  So: is the pipeline's peak velocity inflated, or is the")
+        print("  reference stale? The cohort separates them; this module cannot.")
+    return res
+
+
 def main() -> int:
-    part_a(); part_b(); part_c(); part_d(); part_e(); part_f()
+    part_a(); part_b(); part_c(); part_d(); part_e(); part_f(); part_g()
     print()
     print("WHAT THIS DOES NOT SETTLE")
     print("  The replacement VALUES. The physics puts a healthy limb's")
-    print("  omega_max_n near 4.3-4.4, and this model holds there from 20 Hz to")
-    print("  240 Hz. But the REAL pipeline does not: it reads 8.50 at 120 Hz")
-    print("  and 3.19 at 20 Hz on the same motion. Until that is explained, a")
-    print("  recalibrated constant would be fitted to whatever is causing it,")
-    print("  so the recommendation is to stop scoring these two rather than to")
-    print("  give them new numbers.")
+    print("  omega_max_n near 4.3-4.4 and this model holds there across rates.")
+    print("  The REAL pipeline reads 8.50-9.57 and -- since 2026-08-31 -- reads")
+    print("  it rate-invariantly, so the old reason for not recalibrating (an")
+    print("  unexplained 8.50 -> 3.19 move) is withdrawn: see part_g. What")
+    print("  replaces it is a narrower reason. The two numbers disagree by")
+    print("  1.85x at the same smoothing window, as ~1.59x in peak velocity")
+    print("  times ~1.17x in A0, and nothing in the pipeline's rate behaviour")
+    print("  explains either factor. Setting the constant from physics while")
+    print("  the pipeline still reads high would make the term inert; setting")
+    print("  it from the pipeline accepts whatever inflates the peak. Which of")
+    print("  the two is wrong is a COHORT question, not a model question.")
     print()
     print("  HALF ACTED ON. omega_min_n left the scored set 2026-10-26: it")
     print("  is ALGEBRAICALLY -omega_max_n for a limb dropped from full")
@@ -579,16 +741,27 @@ def main() -> int:
     print("  the argument for dropping it was wrong. It looked like a pedestal")
     print("  -- 0.0776 of a healthy limb's 0.0892 score, growing only 0.038")
     print("  across the ladder -- but that is the one-sided penalty charging")
-    print("  every limb for a reference set far above what a healthy limb")
-    print("  produces. At a reference of 4.76 the pedestal is 0.0000 and the")
-    print("  signal nearly doubles to 0.0644. The parameter is fine; 9.5672 is")
-    print("  not.")
+    print("  every limb for a reference set far above what the trace being")
+    print("  scored produces. At a reference of 4.76 the pedestal is 0.0000 and")
+    print("  the signal nearly doubles to 0.0644.")
     print()
-    print("  So this part's recommendation still stands for omega_max_n, and")
-    print("  deliberately is not acted on by guessing. 9.5672 is the median")
-    print("  this pipeline measures (8.50 across 205 trials), so a physics")
+    print("  CORRECTED 2026-10-27: those figures are all from EMULATOR traces,")
+    print("  and the reference is the median of REAL control trials. So the")
+    print("  pedestal is a cross-pipeline artifact -- a real healthy leg sits")
+    print("  at the reference by construction and pays ~0. The pedestal is")
+    print("  therefore not evidence against 9.5672. The case against it is now")
+    print("  only the 1.85x gap to physics and literature, which is open.")
+    print()
+    print("  So no new value is guessed here. 9.5672 is the median this")
+    print("  pipeline measures (8.50 across 205 mixed trials), so a physics")
     print("  value of 4.76 would sit BELOW every real reading and make the")
     print("  term inert -- the same silent failure, by the opposite route.")
+    print("  Note also that the pedestal computed on this emulator is a")
+    print("  CROSS-PIPELINE artifact: the reference is the median of real")
+    print("  control trials, so real healthy legs sit at it by construction")
+    print("  and pay ~0, while every emulator profile sits 1.85x below it and")
+    print("  pays the full gap. Emulator PT scores are therefore not")
+    print("  comparable to cohort-calibrated zone thresholds on this term.")
     print("  recalibrate_pt_zones.py now reports what the control cohort")
     print("  actually measures for it, which is the number that settles it.")
     print()
@@ -599,8 +772,11 @@ def main() -> int:
     print("  is not a normative range. An independent n = 50 normative sample")
     print("  measured 3.873 +/- 0.622 rad/s and does not reproduce it.")
     print()
-    print("  WHAT THE MECHANISM IS. Still open, and it matters: until it is")
-    print("  named, nobody can say which other parameters it touched.")
+    print("  WHAT THE MECHANISM IS. SETTLED, and not by this module: the")
+    print("  pre-fix _sg window was a sample count, the project's own re-run")
+    print("  attributed the divergence to it (153.8% -> 7.2%), and part_g")
+    print("  reproduces it here. What is still open is the narrower,")
+    print("  rate-invariant 1.59x in peak velocity, which the cohort answers.")
     return 0
 
 
