@@ -441,11 +441,11 @@ function formatValue(v) {
 // reach the pure `nextOutcome` above) must not throw under `node --test`,
 // which has no `document`.
 if (typeof document !== 'undefined') {
-  // Blocks recording until the app is opened from the Home Screen icon, not
-  // a browser tab (task-2 dispatch). See install-gate.js's doc comment for
-  // why both `matchMedia` and `navigator.standalone` are checked. This must
-  // run before any control below is wired -- Start is disabled synchronously
-  // rather than left clickable until some later check catches up.
+  // Warns -- never blocks -- when the app runs in a browser tab rather than
+  // from the Home Screen icon, where Safari's 7-day eviction can erase
+  // unexported trials. It used to hide Start until installed; recording is
+  // now never gated (user decision, 2026-10-27). See install-gate.js's doc
+  // comment for why both `matchMedia` and `navigator.standalone` are checked.
   const gateState = installState({
     matchMedia: window.matchMedia.bind(window),
     navigatorStandalone: window.navigator.standalone,
@@ -457,7 +457,6 @@ if (typeof document !== 'undefined') {
       ? 'This browser cannot run Pendulastic offline. Use Safari on iOS or Chrome on Android.'
       : installInstructions(navigator.userAgent);
     el('install-gate').hidden = false;
-    el('start').hidden = true;
   }
 
   // ---- View routing -------------------------------------------------------
