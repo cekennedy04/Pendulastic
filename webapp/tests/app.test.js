@@ -717,6 +717,15 @@ test('a trial with no params still lists', () => {
   assert.match(s.meta, /left/);
 });
 
+// A recording the engine could not score (params null, scorable false) is kept
+// and listed, but must say so -- a blank row reads as an ordinary trial, and
+// zeros would read as "scored healthy".
+test('an unscorable trial is labelled "not scorable" and still shows its side', () => {
+  const s = trialSummary({ ...historyTrial, scorable: false, params: null }, 0);
+  assert.match(s.meta, /not scorable/i);
+  assert.match(s.meta, /left/);
+});
+
 test('a trial with unmeasured parameters is flagged in the summary', () => {
   const s = trialSummary({ ...historyTrial, unmeasured: ['r2n', 'f'] }, 0);
   assert.match(s.meta, /2 unmeasured/);

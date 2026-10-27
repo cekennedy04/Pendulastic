@@ -105,6 +105,17 @@
             <span class="tile-sub">Over time &amp; figures</span>
           </span>
         </button>
+        <!-- Revealed only in research mode (?research=1); hidden otherwise. -->
+        <button class="tile" data-nav="research" id="research-tile" hidden>
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 12h4l2-6 4 12 2-6h6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Record (raw)</span>
+            <span class="tile-sub">research &mdash; no scoring</span>
+          </span>
+        </button>
       </div>
     </section>
 
@@ -384,6 +395,20 @@
         <input id="trend-import" type="file" accept=".json,.csv" multiple>
         <p id="trend-import-status" class="field-status"></p>
       </div>
+    </section>
+
+    <section class="view" id="view-research">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Raw recording</h2></div>
+      <div id="research-banner">RAW RECORDING &mdash; no scoring, filed under QUICK-TEST</div>
+      <div class="research-plot">
+        <canvas id="research-canvas"></canvas>
+        <p id="research-timer" class="waveform-caption">0.0 s</p>
+      </div>
+      <button id="research-start">Start recording</button>
+      <button id="research-stop" hidden>Stop</button>
+      <div id="research-status" class="field-status"></div>
+      <p id="research-count" class="field-status"></p>
     </section>
 
   </main>

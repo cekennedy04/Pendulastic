@@ -93,11 +93,24 @@ export function makeTrialRecord({
   unmeasured = [], driftCorrection = 'live', settleTargetS = 5.0,
   lateralMotion = null,
   quickTest = false,
+  // Whether the engine produced a score for this recording. A recording it
+  // could not score (no usable swing -- e.g. an SSR staircase) is KEPT with
+  // `params: null` and this flag false, never discarded: "measure everything,
+  // flag out-of-range, never exclude" applied at the most basic level.
+  // Inferred from `params == null` by default so the only callers that must
+  // think about it are the ones deliberately persisting an unscored trial.
+  scorable = params != null,
+  // True for a raw research recording (the gated bench/SSR recorder): a
+  // deliberately-unscored capture, distinct from a clinical trial the engine
+  // merely could not score. Both are `scorable:false`; this says WHY.
+  research = false,
 }) {
   // Copy only the known fields. Anything else the caller passes -- notably a
-  // composite score -- is dropped rather than persisted.
-  const kept = {};
-  for (const k of PARAM_FIELDS) kept[k] = params[k];
+  // composite score -- is dropped rather than persisted. An unscorable trial
+  // carries `params: null` rather than a zero-filled block: 0 reads as
+  // "measured, and healthy", exactly the misread the trials view guards.
+  const kept = params == null ? null : {};
+  if (kept) for (const k of PARAM_FIELDS) kept[k] = params[k];
   return {
     id: uuid(),
     session_id: sessionId,
@@ -146,6 +159,12 @@ export function makeTrialRecord({
     // claim from 0 ("measured, and perfectly planar") and must not be
     // collapsed into it by a reader.
     lateral_motion: lateralMotion,
+    // False only for a recording the engine could not score. A reader must
+    // treat `params: null` here as "not scorable", never coerce it to zeros.
+    scorable,
+    // True only for a deliberate raw research recording. Boolean-coerced so a
+    // reader never sees undefined on a record that predates the field.
+    research: Boolean(research),
     params: kept,
     // Plain object `{t, angle_deg, release_idx, peak_idx, trough_idx,
     // neutral_deg}` from worker.js's `result` message -- not an ArrayBuffer

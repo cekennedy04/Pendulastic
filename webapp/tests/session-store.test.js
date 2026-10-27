@@ -118,6 +118,43 @@ test('the protocol version is a number, not a string', () => {
   assert.equal(typeof r.capture_protocol_version, 'number');
 });
 
+// ---- unscorable trials are persisted, not discarded (2026-09-15) ---------
+// The project's "measure everything, flag out-of-range, never exclude" rule
+// applied at the most basic level: a recording the engine could not score
+// (no usable swing -- e.g. an SSR staircase) must be KEPT with its raw log
+// and marked not-scorable, not thrown away.
+
+test('an unscorable trial is recorded with scorable:false, null params, and its raw log', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: 'left', params: null, trajectory: null,
+    rawJsonl: 'raw-line\n', algorithmVersion: '0.1.0',
+  });
+  assert.equal(r.scorable, false);
+  assert.equal(r.params, null, 'null params must be stored as null, not a zero-filled block');
+  assert.equal(r.raw_jsonl, 'raw-line\n', 'the raw log is the whole reason to keep it');
+});
+
+test('a scored trial defaults to scorable:true', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: 'left', params, trajectory: {}, rawJsonl: 'x',
+    algorithmVersion: '0.1.0',
+  });
+  assert.equal(r.scorable, true);
+});
+
+test('a research recording is flagged research:true; ordinary trials default false', () => {
+  const rec = makeTrialRecord({
+    sessionId: 's1', side: 'left', params: null, trajectory: null,
+    rawJsonl: 'raw\n', algorithmVersion: '0.1.0', research: true,
+  });
+  assert.equal(rec.research, true);
+  const ordinary = makeTrialRecord({
+    sessionId: 's1', side: 'left', params, trajectory: {}, rawJsonl: 'x',
+    algorithmVersion: '0.1.0',
+  });
+  assert.equal(ordinary.research, false, 'a normal trial is not a research recording');
+});
+
 // ---- exclusion (Unit B item 4) ------------------------------------------
 
 const trial = (over = {}) => ({

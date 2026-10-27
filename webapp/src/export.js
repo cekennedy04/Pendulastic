@@ -59,7 +59,13 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
     // v4 adds excluded_at / excluded_reason / quick_test to each trial.
     // Bumped rather than widened in place: a consumer must not be handed a
     // different shape under an unchanged version string.
-    schema: 'pendulastic/session-export/v4',
+    // v5 adds `scorable` to each trial and allows `params: null` for an
+    // unscored recording (an SSR staircase or any non-swing kept for its raw
+    // log). Consumers that read the raw JSONL (bench_rescore.py, ssr_extract.py)
+    // are unaffected; a manifest reader must treat null params as "not scored".
+    // v6 adds `research` to each trial: true for a deliberate raw research
+    // recording from the gated bench recorder, false (or absent) otherwise.
+    schema: 'pendulastic/session-export/v6',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
@@ -95,10 +101,17 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       quick_test: Boolean(t.quick_test),
       // null = not measured; never defaulted to zeros.
       lateral_motion: t.lateral_motion ?? null,
+      // False only for a recording the engine could not score. Absent means
+      // scorable: a trial recorded before this field existed had params.
+      scorable: t.scorable ?? true,
+      // True only for a deliberate raw research recording. Absent means false.
+      research: Boolean(t.research),
       // The 21 scalars only. The composite score and zone are derived at read
       // time against the current HEALTHY_REF, which is still being
-      // recalibrated -- exporting one would freeze a moving reference.
-      params: Object.fromEntries(PARAM_FIELDS.map((k) => [k, t.params[k]])),
+      // recalibrated -- exporting one would freeze a moving reference. `null`
+      // for an unscored recording: a reader must not coerce it to zeros, which
+      // would read as "measured, and healthy".
+      params: t.params == null ? null : Object.fromEntries(PARAM_FIELDS.map((k) => [k, t.params[k]])),
     })),
     // The same rows as the CSV, projected through MAS_FIELDS so the two are
     // generated from one source in one pass and cannot disagree.

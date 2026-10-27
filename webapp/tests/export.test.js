@@ -36,6 +36,62 @@ test('each trial file is the raw log verbatim, not re-serialised', () => {
   assert.equal(files.find((f) => f.name.endsWith('.jsonl')).text, raw);
 });
 
+// ---- unscorable trials export too (2026-09-15) ---------------------------
+// An SSR staircase (or any non-swing) is unscorable, but its raw accel+gyro is
+// exactly the data the sensor-accuracy validation needs. It must ride out in
+// the normal session bundle: raw log always, a manifest entry with null params
+// rather than a zero-filled block that would misread as "scored healthy".
+const unscoredTrial = (id, raw) => ({
+  id, session_id: 's1', side: 'left', timestamp: 2, algorithm_version: '0.1.0',
+  capture_quality: 'clean', release_idx: 0, release_override_idx: null,
+  scorable: false, params: null, raw_jsonl: raw,
+});
+
+test('an unscorable trial exports its raw log plus a null-params manifest entry', () => {
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [unscoredTrial('u1', 'ssr\n')],
+  });
+  assert.equal(files.find((f) => f.name.endsWith('.jsonl')).text, 'ssr\n',
+    'the raw log must always be included');
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  assert.equal(manifest.trials.length, 1);
+  assert.equal(manifest.trials[0].params, null, 'params must be null, never zero-filled');
+  assert.equal(manifest.trials[0].scorable, false);
+});
+
+test('a research recording carries research:true in its manifest entry', () => {
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [{ ...unscoredTrial('r1', 'raw\n'), research: true }],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  assert.equal(manifest.trials[0].research, true);
+});
+
+test('an ordinary trial reads research:false', () => {
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [trial('t1', 'a\n')],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  assert.equal(manifest.trials[0].research, false);
+});
+
+test('a scored trial reads as scorable and keeps its params block', () => {
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [trial('t1', 'a\n')],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  assert.equal(manifest.trials[0].scorable, true, 'a trial without the flag defaults to scorable');
+  assert.equal(manifest.trials[0].params.f, params.f);
+});
+
 test('the manifest carries params but no composite score', () => {
   const files = buildExportFiles({
     session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
@@ -241,7 +297,7 @@ const masRecords = [{
   stronger_leg: '', notes: 'settled, no catch', mas_flexion: '2', mas_extension: '',
 }];
 
-// The schema string is asserted by 'the manifest schema is v3' further down;
+// The schema string is asserted by 'the manifest schema is v6' further down;
 // this one moved with the bump rather than being duplicated at two versions.
 
 test('a mas csv is emitted beside the trials', () => {
@@ -338,10 +394,10 @@ test('a text-backed file is unaffected by the blob support', () => {
 // Adding fields to the trial entries changes the manifest SHAPE, and the v2
 // spec's own rule was that a consumer must not be handed a different shape
 // under an unchanged version string.
-test('the manifest schema is v3', () => {
+test('the manifest schema is v6', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(m.schema, 'pendulastic/session-export/v4');
+  assert.equal(m.schema, 'pendulastic/session-export/v6');
 });
 
 // The shared masTrials fixture is deliberately legacy-shaped, to exercise the
