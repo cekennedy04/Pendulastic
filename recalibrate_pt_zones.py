@@ -32,6 +32,15 @@ from __future__ import annotations
 
 import argparse
 import os
+
+# Before numpy. Unset, OpenBLAS starts a thread per core and the per-trial work
+# here is far too small to pay for it -- on a machine already short of memory
+# that is how this goes from slow to apparently hung. run_pipeline.ps1 sets the
+# same variable, and recalibrate.ps1 does, but a direct
+# `python recalibrate_pt_zones.py` would not.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import statistics
 import sys
 
@@ -56,17 +65,34 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
             f"  These are gitignored live data: a fresh clone never has them."
         )
 
+    def step(msg):
+        # flush=True because this is the only sign of life for minutes at a
+        # time, and a block-buffered pipe would hold it all back to the end.
+        if verbose:
+            print(msg, flush=True)
+
+    step(f"  recordings: {prc.OPTI_ROOT}")
+    step(f"  MAS table:  {sg.MAS_CSV}")
     mas = sg.load_mas_by_leg(condition_prefix="pre")
+    step(f"  {len(mas)} leg(s) carry a pre-timepoint clinical MAS")
+    step("  walking the recordings tree (this is the slow part on a big corpus)...")
+    trials = list(prc.discover_all_trials())
+    step(f"  {len(trials)} trial(s) discovered; scoring the baseline ones now")
+
     by_leg: dict[tuple, list[float]] = {}
     by_leg_params: dict[tuple, list[dict]] = {}
     refused = unscorable = 0
-    for rec in prc.discover_all_trials():
+    seen = 0
+    for rec in trials:
         cond = str(rec["condition"]).lower()
         if not (cond.startswith("pre") or rec["condition"] == "default"):
             continue
         key = (str(rec["participant"]), rec["leg"])
         if key not in mas:
             continue
+        seen += 1
+        if seen % 10 == 0:
+            step(f"    scored {seen} ... ({refused} refused, {unscorable} unscorable so far)")
         try:
             t, ang = pts.load_optitrack(rec["path"])
         except Exception:                                   # noqa: BLE001
@@ -89,6 +115,7 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
 
     out = {k: (mas[k], statistics.median(v)) for k, v in by_leg.items()}
     if verbose:
+        print()
         print(f"  {len(out)} participant-legs, "
               f"{sum(len(v) for v in by_leg.values())} interpretable trials "
               f"({refused} refused, {unscorable} unscorable)")
