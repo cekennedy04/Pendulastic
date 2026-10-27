@@ -7,7 +7,9 @@ PowerShell + NI DataSocket, which LabVIEW installs). Logs come back on the same 
 
     <dest>/<name>/
       README.txt              the bench steps, in order
-      PLAY.bat  DRYRUN.bat  PICK_VARIABLE.bat  _run.bat  play_setpoints.ps1
+      PendulumDesigner.exe    design a movement (MAS grade / target parameters / by hand), see its scores
+      PendulumDesigner64.exe  and the waveform, play it, keep the trial log (trials.csv) -- the main tool
+      PLAY.bat  DRYRUN.bat  PICK_VARIABLE.bat  _run.bat  play_setpoints.ps1   play a ready-made file
       smoke_5deg.csv          a slow 5 deg sine: first contact with the rig, and the check-log file
       player/<run>.csv        the session's runs
       runsheet.csv            fill in encoder_file at the bench, bring it back
@@ -36,6 +38,25 @@ README = """\
 PENDULUM PLAYER KIT  -  session {name}
 ====================================
 
+THE DESIGNER (PendulumDesigner.exe)  -  start here
+  Copy this folder to the rig PC's desktop and double-click PendulumDesigner.exe (if it says DataSocket is
+  not registered for its width, use PendulumDesigner64.exe). Nothing to install on Windows 7.
+  1  What movement?  Aim at a MAS grade, or tick parameters and type target values (R2n, N, f, ...), or
+     turn the knobs by hand. Press "Design it". It shows the PT7 score, the zone, a rough MAS, all seven
+     parameters, the rig's motion and the knee angle the phone should show.
+  2  Type a trial label (e.g. "MAS 3 slow"), Pick... the setpoint variable once, set up the arm, phone and
+     log, press PLAY. The trial number and label show in big letters while it plays, with a red cursor
+     moving along both curves. STOP returns the arm to 0.
+  3  The trial log at the bottom fills itself in. Type each StretchExperiment log's file name into
+     encoder_file, and (if you can read it off the phone) the phone file's trial number into phone_trial.
+     It saves trials.csv beside the program on every change; each played movement is kept in trial_files\\.
+  On this flat rig, compare only f and N with the phone: its angle reads inverted and drifts in this plane.
+  Back on the analysis PC:
+      python -m neuromech.match_trials --kit <this folder> --phone-manifest <export>-manifest.json --encoder-dir <this folder>\\logs
+  pairs every trial with its phone recording (by capture order, skipping false starts; phone_trial wins)
+  and its encoder log, and writes trials_matched.csv: designed vs delivered vs phone, side by side.
+
+THE PLAIN PLAYER (PLAY.bat) plays the session's ready-made files in player\\.
 Plays the emulator's angle files into the rig through StretchExperiment's own setpoint variable.
 Nothing in StretchExperiment is changed and nothing is built in LabVIEW. Copy this whole folder
 to the rig PC's desktop first (do not run it from the stick).
@@ -95,6 +116,8 @@ def build(name, dest=DEFAULT_DEST):
     os.makedirs(os.path.join(out, "logs"))
     for f in SCRIPTS:
         shutil.copy(os.path.join(PLAYER, f), out)
+    from neuromech.designer.build_designer import build as build_designer
+    build_designer(out)
     shutil.copytree(os.path.join(src, "player"), os.path.join(out, "player"))
     shutil.copy(os.path.join(src, "runsheet.csv"), out)
     smoke_file(os.path.join(out, "smoke_5deg.csv"))

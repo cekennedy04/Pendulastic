@@ -110,7 +110,7 @@ plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 81 tests
+python -m pytest neuromech/tests                                    # 90 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

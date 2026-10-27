@@ -5,3 +5,4 @@ sessions/DRYRUN-*/
 usb/
 labview/player/sent/
 labview/player/variable_url.txt
+designer/*.exe
