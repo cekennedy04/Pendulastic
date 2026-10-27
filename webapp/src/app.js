@@ -2107,19 +2107,21 @@ if (typeof document !== 'undefined') {
   }
 
   el('start').addEventListener('click', async () => {
-    // Checked before any capture starts rather than at persist time: a trial
-    // recorded with nowhere to file it would be scored, shown, and then
-    // silently dropped by persistTrial.
-    if (!currentPatient || !currentSide) {
-      el('guide').className = 'fault';
-      el('guide').textContent = 'Set a participant and leg\nin Session first';
-      return;
-    }
     // Synchronous, and before every `await` below: iOS only permits an
     // AudioContext to start inside a user gesture, and the first await ends
-    // that window. It sits after the participant gate on purpose -- that path
-    // returns without starting a trial, so there is nothing to cue.
+    // that window.
     cues.unlock();
+    // Recording never waits on a participant or a leg. With no participant
+    // set, the trial is filed as unassigned under the built-in QUICK-TEST
+    // participant -- kept and exported, left out of per-person trends -- so a
+    // trial always has somewhere to be saved. The leg stays optional and is
+    // stored as "not set".
+    if (!currentPatient) {
+      await ensureSessionReady();
+      const patient = (await getOne(db, STORES.patients, QUICK_TEST_PATIENT_ID)) ?? makeQuickTestPatient();
+      await put(db, STORES.patients, patient);
+      await applyParticipantAction({ type: 'select', patient });
+    }
     faulted = false; // fresh trial: the previous trial's latch must not carry over
     el('start').hidden = true;
     el('stop').hidden = false;

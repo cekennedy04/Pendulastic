@@ -673,6 +673,15 @@ test('switching participant is refused while the session holds trials', () => {
   assert.match(s.error, /export and close/i);
 });
 
+// Unassigned trials belong to no one, so setting a real participant after
+// recording some must never be blocked.
+test('setting a participant after unassigned recordings is allowed', () => {
+  const unassigned = { ...participantBase, patient: { id: 'quick-test', quick_test: true }, trialCount: 3 };
+  const s = nextParticipantState(unassigned, { type: 'select', patient: { id: 'p2' } });
+  assert.equal(s.patient.id, 'p2');
+  assert.equal(s.error, undefined);
+});
+
 test('switching participant is allowed once the session is empty', () => {
   const empty = { ...participantBase, patient: { id: 'p1' }, trialCount: 0 };
   assert.equal(nextParticipantState(empty, { type: 'select', patient: { id: 'p2' } }).patient.id, 'p2');
@@ -736,20 +745,17 @@ test('a null side reads as unset rather than "null"', () => {
   assert.ok(!s.meta.includes('null'));
 });
 
-// ---- participant-first gate (unit A) -------------------------------------
-// A trial recorded against an unchosen participant is unattributable after
-// the fact, so the app opens on selection rather than on the tiles.
-test('a device with no participant opens on the session view', () => {
-  assert.equal(initialView({ patient: null }), 'session');
+// ---- record-first landing -------------------------------------------------
+// The app opens on Record whatever is or is not set: a participant, a leg and
+// a session are optional additions, never a gate in front of recording.
+test('the app opens on Record with no participant', () => {
+  assert.equal(initialView({ patient: null }), 'capture');
+  assert.equal(initialView(), 'capture');
+  assert.equal(initialView({}), 'capture');
 });
 
-test('a device with a participant opens on home', () => {
-  assert.equal(initialView({ patient: { id: 'p1', clinic_patient_id: 'P-1' } }), 'home');
-});
-
-test('a missing or empty argument is treated as no participant', () => {
-  assert.equal(initialView(), 'session');
-  assert.equal(initialView({}), 'session');
+test('the app opens on Record with a participant too', () => {
+  assert.equal(initialView({ patient: { id: 'p1', clinic_patient_id: 'P-1' } }), 'capture');
 });
 
 // The three-way distinction that makes Close Session re-prompt without
