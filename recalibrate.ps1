@@ -1,7 +1,13 @@
 # One command to re-derive the PT zone thresholds and report what the control
 # cohort measures for every scored parameter.
 #
-#     .\recalibrate.ps1
+# From PowerShell:   .\recalibrate.ps1
+# From cmd.exe:      recalibrate.bat
+#
+# cmd.exe will NOT run a .ps1 by typing its name -- it hands the file to its
+# default association and returns instantly with no output, which is
+# indistinguishable from the script having run and found nothing. That is what
+# recalibrate.bat is for.
 #
 # Written because this run kept failing on everything except the analysis:
 # the wrong working directory, a branch without the script, cmd.exe passing
