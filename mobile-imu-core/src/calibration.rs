@@ -33,8 +33,9 @@ fn mean3(buf: &SampleBuf) -> Vec3 {
 }
 
 /// Estimate gyroscope static bias from the trailing hold-buffer mean.
-/// Returns `None` when the buffer has too few samples to trust — the caller
-/// should leave any previously-calibrated bias unchanged in that case,
+/// Returns `None` when the buffer has too few samples to trust, or when the
+/// estimate exceeds `GYRO_BIAS_MAX_RAD_S` (the window held motion) — the
+/// caller should leave any previously-calibrated bias unchanged in that case,
 /// mirroring `calibrate_gyro_bias()`'s "leaves gyro_bias at its previous
 /// value" behavior.
 pub fn calibrate_gyro_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
@@ -74,6 +75,10 @@ pub fn calibrate_gyro_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
         } else {
             0.0
         };
+    }
+    // Plausibility bound: see GYRO_BIAS_MAX_RAD_S.
+    if norm3(out) > GYRO_BIAS_MAX_RAD_S {
+        return None;
     }
     Some(out)
 }
@@ -144,6 +149,15 @@ pub const NOISE_EXCURSION_MAX_S: f64 = 0.2;
 /// it and why 3.0 rather than 2.0 (swept over a still trial, a 2 sigma gate
 /// accepts 8.7% of axes on pure noise and 3 sigma accepts 0.3%).
 pub const GYRO_BIAS_MIN_SNR: f64 = 3.0;
+
+/// Largest gyro-bias estimate (rad/s, vector magnitude) accepted as bias
+/// rather than motion — `GYRO_BIAS_MAX_RAD_S` in the reference. The stillness
+/// gate allows 0.9 rad/s peak-to-peak, so a window cut from a decaying swing's
+/// tail can pass it, and its mean (real rotation over an incomplete cycle)
+/// would be subtracted for the rest of the trial. On the phone bench, trials
+/// starting mid-swing gave 0.11-0.17 rad/s "biases" and read A0 at 50-76°
+/// against a commanded 30°; quiet holds measured < 0.02 rad/s.
+pub const GYRO_BIAS_MAX_RAD_S: f64 = 0.05;
 
 fn is_noise_excursion(peak_rad_s: f64, duration_s: f64) -> bool {
     peak_rad_s < NOISE_EXCURSION_PEAK_RAD_S && duration_s < NOISE_EXCURSION_MAX_S

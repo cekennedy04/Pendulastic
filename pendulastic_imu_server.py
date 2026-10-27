@@ -90,6 +90,16 @@ _NOMINAL_GYRO_DT_S = 0.01
 # large bias clears 3 sigma comfortably.
 GYRO_BIAS_MIN_SNR = 3.0
 
+# Largest gyro-bias estimate (rad/s, vector magnitude) accepted as bias rather
+# than motion. The stillness gate allows 0.9 rad/s peak-to-peak, so a window
+# cut from the tail of a decaying swing can pass it, and its mean -- real
+# rotation over an incomplete cycle -- would otherwise be subtracted for the
+# rest of the trial. Measured on the phone bench (Session_3, commanded A0 30
+# deg): trials that start mid-swing produced "biases" of 0.11-0.17 rad/s and
+# read A0 at 50-76 deg; every quiet hold measured < 0.02 rad/s. An estimate
+# above this bound is discarded and the previous bias kept.
+GYRO_BIAS_MAX_RAD_S = 0.05
+
 # Madgwick filter gain. Higher = trusts accel/mag more (faster drift correction,
 # noisier); lower = trusts gyro more. 0.041 is Madgwick's suggested MARG value.
 BETA = 0.041
@@ -551,7 +561,11 @@ class _IMUDevice:
             # accumulates without bound in yaw, which has no other anchor.
             sem = vals.std(axis=0, ddof=1) / math.sqrt(len(vals))
             resolvable = np.abs(mean) >= GYRO_BIAS_MIN_SNR * sem
-            self.gyro_bias = np.where(resolvable, mean, 0.0)
+            estimate = np.where(resolvable, mean, 0.0)
+            # Too large to be sensor bias: the window held motion, not
+            # stillness. Keep the previous value (see GYRO_BIAS_MAX_RAD_S).
+            if np.linalg.norm(estimate) <= GYRO_BIAS_MAX_RAD_S:
+                self.gyro_bias = estimate
 
     def calibrate_accel_bias(self, accel_hold_buf: list[tuple[float, np.ndarray]]) -> None:
         """Estimate this device's accelerometer static bias from a

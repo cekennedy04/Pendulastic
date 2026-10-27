@@ -1393,13 +1393,31 @@ def test_gyro_bias_still_applied_when_clearly_resolvable(monkeypatch):
     real, measurable bias -- only on estimates buried in their own noise."""
     dev = _solo_device(monkeypatch)
     rng = np.random.default_rng(1)
-    true_bias = np.array([0.08, -0.06, 0.05])          # ~4 deg/s, well resolvable
-    samples = true_bias + rng.normal(0.0, 0.05, size=(60, 3))
+    # ~2.5 deg/s: under GYRO_BIAS_MAX_RAD_S and still ~10x the 0.00376 rad/s
+    # bias measured on a still phone, with phone-grade noise.
+    true_bias = np.array([0.03, -0.025, 0.02])
+    samples = true_bias + rng.normal(0.0, 0.02, size=(60, 3))
     dev._gyro_hold_buf = [(float(i), v) for i, v in enumerate(samples)]
     dev.calibrate_gyro_bias()
     assert np.linalg.norm(dev.gyro_bias - true_bias) < 0.02, (
         "a clearly resolvable bias %s was not applied (got %s)"
         % (true_bias, dev.gyro_bias))
+
+
+def test_gyro_bias_too_large_to_be_bias_is_discarded(monkeypatch):
+    """A window cut from a decaying swing's tail passes the stillness gate
+    (0.9 rad/s peak-to-peak) and its mean clears the SNR gate easily, but it
+    is real rotation. Measured on the phone bench: such "biases" of 0.11-0.17
+    rad/s made trials read A0 at 50-76 deg against a commanded 30. An
+    estimate above GYRO_BIAS_MAX_RAD_S must leave the previous bias in place."""
+    dev = _solo_device(monkeypatch)
+    previous = np.array([0.004, 0.0, -0.002])
+    dev.gyro_bias = previous.copy()
+    rng = np.random.default_rng(2)
+    samples = np.array([0.0, 0.12, 0.0]) + rng.normal(0.0, 0.02, size=(57, 3))
+    dev._gyro_hold_buf = [(float(i), v) for i, v in enumerate(samples)]
+    dev.calibrate_gyro_bias()
+    np.testing.assert_array_equal(dev.gyro_bias, previous)
 
 
 def _settle_flat(dev, n=60):
