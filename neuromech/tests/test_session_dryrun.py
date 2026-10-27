@@ -130,3 +130,52 @@ def test_logs_are_paired_by_the_name_on_the_run_sheet(session, tmp_path):
     finally:
         orig.to_csv(os.path.join(d, "runsheet.csv"), index=False)
     assert (rep.status.isin(["scored", "identified"])).all(), rep.status.tolist()
+
+
+def _one_run(session):
+    rep, d = session
+    rid = rep[rep.sid == "A-P2"].run_id.iloc[0]
+    return d, rid, os.path.join(d, "player", rid + ".csv")
+
+
+def test_check_log_passes_a_log_that_recorded_the_player(session):
+    d, rid, player = _one_run(session)
+    r = SS.check_log(os.path.join(d, "synthetic_encoder", rid + ".bin"), player, verbose=False)
+    assert r["ok"], r["reason"]
+    assert 9.0 <= r["update_ms"] <= 14.0, r["update_ms"]        # the Player's ~10 ms writes, seen in the log
+
+
+def test_check_log_fails_a_log_that_never_saw_the_player(session, tmp_path):
+    d, rid, player = _one_run(session)
+    n = len(np.loadtxt(player, delimiter=","))
+    flat = str(tmp_path / "flat.bin")
+    DR.write_encoder_bin(flat, np.zeros(n), np.zeros(n), np.zeros(n), 0, np.random.default_rng(0))
+    r = SS.check_log(flat, player, verbose=False)
+    assert not r["ok"] and "did not see" in r["reason"], r["reason"]
+
+
+def test_check_log_fails_the_wrong_file_and_a_short_log(session, tmp_path):
+    rep, d = session
+    d, rid, player = _one_run(session)
+    other = rep[rep.sid == "M-catch_release_high"].run_id.iloc[0]
+    r = SS.check_log(os.path.join(d, "synthetic_encoder", other + ".bin"), player, verbose=False)
+    assert not r["ok"], r["reason"]
+    sp = np.loadtxt(player, delimiter=",")[:, 1]; k = int(0.6 * len(sp))
+    short = str(tmp_path / "short.bin")
+    DR.write_encoder_bin(short, sp[:k], np.gradient(sp[:k], 0.001), np.zeros(k), 0, np.random.default_rng(1), post_s=0.0)
+    r = SS.check_log(short, player, verbose=False)
+    assert not r["ok"] and "stopped" in r["reason"], r["reason"]
+
+
+def test_ilc_output_is_playable_and_finds_its_scenario_from_a_run_id(session, tmp_path):
+    """A session command is named by run id; ILC resolves the scenario through key.csv and writes the
+    Player's file into the session's player/ folder."""
+    d, rid, _player = _one_run(session)
+    import shutil
+    work = tmp_path / "S"; shutil.copytree(d, work)
+    cmd = str(work / "commands" / f"{rid}.csv")
+    ilc.main([cmd, str(work / "synthetic_encoder" / f"{rid}.bin")])
+    nxt = work / "player" / f"{rid}_ilc1.csv"
+    x = np.loadtxt(nxt, delimiter=",")
+    assert x.shape[1] == 2 and x[0, 1] == 0.0
+    assert ilc.desired_for(cmd, rid).endswith("A-P2.csv")

@@ -68,8 +68,10 @@ two EMG, velocity_setpoint), so `position_setpoint` records the staircase the ta
 `neuromech.ilc.locate` finds each run in its log from it. StretchExperiment names the file itself:
 write the real name in the run sheet's `encoder_file` column; `session score` pairs by that column.
 **Bench check before the first session:** confirm the log records while the Player drives the
-setpoint. If it only logs inside a Stretch trial, start a long Stretch-mode hold and play over it —
-test this with a 10° file first.
+setpoint — play a file, then `python -m neuromech.session check-log --bin <log> --player <file>`
+(PASS / FAIL with the reason: never saw the Player's writes, logged something else, or stopped early;
+it also reports the setpoint update period, ~10 ms for the Player). If it only logs inside a Stretch
+trial, start a long Stretch-mode hold and play over it — test this with a 10° file first.
 
 ## 4. Tracking: the rig cannot render the swing faithfully as tuned today
 
@@ -80,7 +82,8 @@ clonus (3–8 Hz) are over-rendered up to 2×. Two fixes, both needed:
 
 1. **Re-tune for tracking, not settling** (front-panel gains; the guide's first run uses P 2 / I 0.1 / D 0).
 2. **Iterative learning control** — because every scenario is repeated, correct the command from the
-   encoder log of the previous run: `python -m neuromech.ilc CMD.csv RUN.bin` writes `<sid>_ilc1.csv`.
+   encoder log of the previous run: `python -m neuromech.ilc CMD.csv RUN.bin` writes `<name>_ilc1.csv`
+   and the Player's copy of it (`player/<name>_ilc1.csv` inside a session); play that one next.
    On the identified plant it cuts swing tracking error 0.37° → 0.07° in four runs (self-test).
    Re-identify the plant after any gain change.
 
@@ -138,7 +141,7 @@ parameters against the **encoder-scored** ones, run by run.
 |---|---|---|---|
 | 1 | **Angle range.** Clinical geometry releases at +55° (rest depth) and swings to −35°…−52° below rest; 57 of 60 scenarios exceed today's ±45° software limits | Without it the ladder cannot be played at full scale | Confirm the arm's *mechanical* range; set limits to ±65° if safe. Fallback: render at 0.75× amplitude (A0 ≈ 41°, still above the 25° gate; every ratio parameter is amplitude-invariant) |
 | 2 | **Build the Pendulum Player** (host VI, no StretchExperiment edit) | Mode A does not exist without it | Follow the build guide; add the `Max abs setpoint` guard (§3); confirm the shared variable in DSM |
-| 3 | **Logging under the Player** | No encoder log, no score | One bench check (§3, last paragraph) |
+| 3 | **Logging under the Player** | No encoder log, no score | One bench check: `session check-log` (§3, last paragraph) |
 | 3b | **Re-tune + ILC** | 2× over-rendering above 4 Hz (§4); no feedforward path | Chirp run, gains on the front panel, ILC-corrected files |
 | 4 | **Motor torque rating and gearbox** | Mode C needs ≥ 4 N·m for MAS 0–3, 15 N·m for severe, 26 N·m for real-size clonus | Read the ServoDisc model's continuous/peak torque; size a gearbox |
 | 5 | **Horizontal plane** | Modes A/B validate the phone's gyro channel only; the app's fused angle needs gravity in-plane | Tilted/vertical rig (already planned) — Mode C is the end state |

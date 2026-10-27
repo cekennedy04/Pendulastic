@@ -44,6 +44,16 @@ header, starting at 0 deg) and `commands/<run>.csv` + `.dbl` (all five columns, 
 The rig is driven by the **Pendulum Player** host VI, which writes StretchExperiment's position-setpoint
 shared variable; StretchExperiment itself is not edited (see `labview/LABVIEW_PROGRAM_SPEC.md`).
 
+**Once, before the first session:** play any player file with the log running, then
+
+```bash
+python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv
+```
+
+PASS means the log recorded the Player's setpoint for the whole file (it also reports how often the
+setpoint changed, ~10 ms for the Player). FAIL says which: the log never saw the Player's writes, it
+logged something else, or it stopped early. Exit status 1 on FAIL.
+
 Check `peak_deg` against the arm's range -> Player `CSV Path` = `player/<run>.csv` -> start the phone ->
 start the log -> run the Player -> let the app auto-stop -> stop the phone -> stop the log -> **write the
 log's file name in `encoder_file`** (StretchExperiment names its own logs; that column is the pairing).
@@ -67,6 +77,9 @@ python -m neuromech.ilc --identify <R000.bin>                     # -> plant JSO
 python -m neuromech.ilc commands/R014.csv R014.bin --plant <plant.json>   # -> R014_ilc1.csv
 ```
 
+A run id is resolved to its scenario through the session's `key.csv`, and every ILC output is also
+written as a Player file (`player/R014_ilc1.csv`): play that one next.
+
 Error is always measured against the original scenario, so iterations converge on the scenario, not on
 each other. Re-identify after any gain change.
 
@@ -85,7 +98,7 @@ plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests tests/test_rig_calibration.py      # 76 tests
+python -m pytest neuromech/tests tests/test_rig_calibration.py      # 80 tests
 python -m neuromech.labview.make_test_vectors                       # regenerate the 4 Formula Node vectors
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```

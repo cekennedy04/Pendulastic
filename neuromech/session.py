@@ -3,6 +3,12 @@
     python -m neuromech.session plan  --name S1 [--sids A-P0,A-P2 | --groups A,M] [--reps 3]
                                       [--repeat A-P2:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
+    python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
+
+CHECK-LOG answers the one bench question the program cannot answer itself: does StretchExperiment's log
+record while the Pendulum Player drives the setpoint? Play any player file, then point this at the log.
+It finds the file in the log's position_setpoint channel and reports coverage, match, how often the
+setpoint changed (the Player writes every ~10 ms), and tracking. Exit status 1 if the log is unusable.
 
 PLAN writes neuromech/sessions/<name>/:
   runsheet.csv          what the operator sees: run id, order, duration, blank columns to fill.
@@ -15,7 +21,8 @@ PLAN writes neuromech/sessions/<name>/:
                         LabVIEW "Read from Binary File" (DBL, big-endian is its default), reshape to N x 5.
   session.json          seed, scorer constants, manifest snapshot path
 
-SCORE reads <encoder-dir>/<run>.bin (LabVIEW log, one per run, named by run id) and, optionally, the
+SCORE reads each run's LabVIEW log from <encoder-dir>, by the name written in the run sheet's
+encoder_file column (StretchExperiment names its own logs; <run>.bin if left blank), and, optionally, the
 phone session manifest (one phone recording per run, in run order). For every run it reports:
   delivered   the 7 parameters + PT7 + band scored from the ENCODER (the truth, plan D4)
   intended    the same from the scenario manifest
@@ -67,16 +74,7 @@ def chirp_command(f0=0.2, f1=10.0, dur=20.0, amp=8.0):
     return ts, sp, vel, acc, phase
 
 
-def _write_player(path, t, sp):
-    """The Pendulum Player VI's input (Read From Spreadsheet File, comma delimiter): t_s, setpoint_deg.
-
-    The Player starts with the arm parked at the rig's zero and indexes the file by the clock, so a
-    file that does not start at 0 deg would make its first setpoint a step. Refused rather than fixed.
-    """
-    if abs(float(sp[0])) > 1e-6:
-        raise ValueError(f"{os.path.basename(path)} starts at {sp[0]:.3f} deg; the Player needs a command that starts at 0")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    np.savetxt(path, np.column_stack([t, sp]), fmt="%.4f", delimiter=",")
+_write_player = ilc.write_player
 
 
 def _write_command(dst_base, t, sp, vel, acc, phase):
@@ -264,6 +262,52 @@ def score(name, encoder_dir, phone_manifest=None):
     _print(rep); return rep
 
 
+# ── check-log ───────────────────────────────────────────────────────────────
+def check_log(bin_path, player_csv, verbose=True):
+    """Is this log usable for scoring the run that played player_csv? -> dict(ok, reason, ...)."""
+    with open(player_csv) as fh:
+        header = not fh.readline()[:1].lstrip("-").isdigit()       # a commands/<run>.csv works too
+    sp = (np.genfromtxt(player_csv, delimiter=",", names=True)["setpoint_deg"] if header
+          else np.loadtxt(player_csv, delimiter=",")[:, 1])
+    e = read_labview_bin(bin_path); log_sp = np.asarray(e["position_setpoint"], float)
+    fs = 1.0 / float(np.median(np.diff(e["time"]))) if "time" in e and len(e["time"]) > 1 else FS
+    out = dict(ok=False, log_s=len(log_sp) / fs, file_s=len(sp) / FS, fs_hz=fs)
+    span_f, span_l = float(np.ptp(sp)), float(np.ptp(log_sp))
+    if span_l < 0.1 * span_f:
+        out["reason"] = (f"position_setpoint barely moved ({span_l:.2f} of the file's {span_f:.1f} deg): the log ran "
+                         "but did not see the Player's writes. Check the variable in DSM, or play inside a Stretch-mode hold")
+    else:
+        # a log that stopped early is shorter than the file, and locate would then truncate the file to fit
+        # and misplace it; pad with the last logged value so the part that WAS recorded is found
+        padded = np.concatenate([log_sp, np.full(len(sp), log_sp[-1])])
+        k0 = ilc.locate(sp, padded, fs); n = min(len(sp), len(log_sp) - k0)
+        seg = log_sp[k0:k0 + n]; ref = sp[:n]
+        r = float(np.corrcoef(seg, ref)[0, 1]) if n > 10 and np.std(seg) > 0 else 0.0
+        moving = np.flatnonzero(np.abs(np.diff(seg)) > 1e-9)
+        period_ms = float(np.median(np.diff(moving)) * 1000.0 / fs) if len(moving) > 2 else float("nan")
+        pos = np.asarray(e["position"], float)[k0:k0 + n]
+        out.update(start_s=k0 / fs, coverage=n / len(sp), r=r, max_err_deg=float(np.max(np.abs(seg - ref))),
+                   update_ms=period_ms, tracking_rmse_deg=float(np.sqrt(np.mean((pos - ref) ** 2))))
+        if r < 0.99:
+            out["reason"] = (f"position_setpoint moved but does not follow this file (r = {r:.3f}): StretchExperiment "
+                             "logged its own profile, or a different file was played")
+        elif out["coverage"] < 0.98:
+            out["reason"] = f"the log stopped {(1 - out['coverage']) * out['file_s']:.1f} s before the file ended"
+        else:
+            out["ok"] = True
+            out["reason"] = "usable: the log recorded the Player's setpoint for the whole file"
+            if period_ms > 25:
+                out["reason"] += f" (but it changed only every {period_ms:.0f} ms; the Player should write every ~10)"
+    if verbose:
+        print(f"log {os.path.basename(bin_path)}: {out['log_s']:.1f} s at {fs:.0f} Hz; file {os.path.basename(player_csv)}: {out['file_s']:.1f} s")
+        if "r" in out:
+            print(f"  found at {out['start_s']:.2f} s, coverage {out['coverage'] * 100:.0f}%, r {out['r']:.4f}, "
+                  f"max |log - file| {out['max_err_deg']:.2f} deg, setpoint changes every {out['update_ms']:.1f} ms, "
+                  f"tracking RMSE {out['tracking_rmse_deg']:.2f} deg")
+        print(("PASS  " if out["ok"] else "FAIL  ") + out["reason"])
+    return out
+
+
 def _print(rep):
     sc = rep[rep.get("status", "") == "scored"] if "status" in rep else rep
     print(f"\n{'run':5s} {'scenario':24s} {'track':>6s}  {'PT7 int':>7s} {'enc':>6s} {'phone':>6s}   band int/enc/phone")
@@ -288,7 +332,10 @@ def main(argv=None):
     a.add_argument("--reps", type=int, default=1); a.add_argument("--repeat"); a.add_argument("--seed", type=int, default=7)
     a.add_argument("--chirp", action="store_true"); a.add_argument("--no-blind", action="store_true")
     b = sub.add_parser("score"); b.add_argument("--name", required=True); b.add_argument("--encoder-dir", required=True); b.add_argument("--phone-manifest")
+    c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
     x = ap.parse_args(argv)
+    if x.cmd == "check-log":
+        sys.exit(0 if check_log(x.bin, x.player)["ok"] else 1)
     if x.cmd == "plan":
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
