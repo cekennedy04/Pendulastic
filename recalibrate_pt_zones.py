@@ -83,6 +83,14 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
     by_leg_params: dict[tuple, list[dict]] = {}
     refused = unscorable = 0
     seen = 0
+    # Why each trial dropped out, and from which arm. Totals are not enough:
+    # these thresholds are percentiles over legs, so if one arm loses trials at
+    # a different rate than the other the percentiles are computed on a
+    # non-representative subset and the numbers are quietly biased. A leg that
+    # loses ALL its trials leaves the cohort entirely and changes n without
+    # saying so.
+    dropped: dict[tuple, int] = {}
+    legs_attempted: set = set()
     for rec in trials:
         cond = str(rec["condition"]).lower()
         if not (cond.startswith("pre") or rec["condition"] == "default"):
@@ -91,16 +99,22 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         if key not in mas:
             continue
         seen += 1
+        legs_attempted.add(key)
+        arm = "MAS 0" if _rank(mas[key]) == 0 else "MAS>=1"
         if seen % 10 == 0:
             step(f"    scored {seen} ... ({refused} refused, {unscorable} unscorable so far)")
         try:
             t, ang = pts.load_optitrack(rec["path"])
-        except Exception:                                   # noqa: BLE001
+        except Exception as exc:                            # noqa: BLE001
             unscorable += 1
+            dropped[(arm, f"load failed: {type(exc).__name__}")] = \
+                dropped.get((arm, f"load failed: {type(exc).__name__}"), 0) + 1
             continue
         params = pts.compute_pt_params(t, ang)
         if not params:
             unscorable += 1
+            dropped[(arm, "compute_pt_params returned nothing")] = \
+                dropped.get((arm, "compute_pt_params returned nothing"), 0) + 1
             continue
         est = pts.mas_estimate(params)
         # Only interpretable trials: a refusal is not a low score, and
@@ -109,6 +123,8 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         # which is correct -- an arrested limb has no PT7 to percentile.
         if not est["interpretable"]:
             refused += 1
+            why = (est["reason"] or "refused").split(":")[0]
+            dropped[(arm, why)] = dropped.get((arm, why), 0) + 1
             continue
         by_leg.setdefault(key, []).append(float(est["pt7"]))
         by_leg_params.setdefault(key, []).append(params)
@@ -119,6 +135,26 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         print(f"  {len(out)} participant-legs, "
               f"{sum(len(v) for v in by_leg.values())} interpretable trials "
               f"({refused} refused, {unscorable} unscorable)")
+        if dropped:
+            print()
+            print("  Why trials dropped out, by arm. Read this before the")
+            print("  thresholds: they are percentiles over LEGS, so an arm that")
+            print("  loses trials faster than the other biases them.")
+            for arm in ("MAS 0", "MAS>=1"):
+                rows = sorted(((w, n) for (a, w), n in dropped.items() if a == arm),
+                              key=lambda wn: -wn[1])
+                if rows:
+                    print(f"    {arm}:")
+                    for why, n in rows:
+                        print(f"      {n:4d}  {why}")
+        # A leg with no interpretable trial left the cohort silently.
+        lost = sorted(legs_attempted - set(out))
+        if lost:
+            print()
+            print(f"  {len(lost)} leg(s) had trials but NONE interpretable, so they")
+            print("  are absent from the thresholds entirely:")
+            for pid, leg in lost:
+                print(f"      {pid} {leg}  (clinical MAS {mas[(pid, leg)]})")
     return out, by_leg_params
 
 
