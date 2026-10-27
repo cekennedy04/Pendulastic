@@ -143,66 +143,32 @@ fn close(got: f64, want: f64, tol: f64, what: &str) {
 }
 
 /// The tolerance is not a fudge factor. Both sides run the identical sequence
-/// of f64 operations, and through the SWING measured agreement on this
-/// fixture is about 1e-12 deg. The headroom is for the platforms this crate
-/// is going to be cross-compiled onto (U3): a libm whose acos or sqrt differs
-/// by an ULP would otherwise turn a correct port into a red test. It is still
-/// tight enough to catch real defects — dropping the gyro-bias correction, for
-/// one, moves the series by ~4e-2 deg, and a bias error integrates from the
-/// first tick, so it shows up inside the swing where this tolerance applies.
+/// of f64 operations, and measured agreement on this fixture is below 1e-13
+/// deg across all ~180 ticks. The headroom is for the platforms this crate is
+/// going to be cross-compiled onto (U3): a libm whose acos or sqrt differs by
+/// an ULP would otherwise turn a correct port into a red test. It is still
+/// tight enough to catch real defects -- dropping the gyro-bias correction,
+/// for one, moves the series by ~4e-2 deg.
 ///
-/// CORRECTED 2026-10-27. This comment used to claim agreement "below 1e-13
-/// deg across all ~180 ticks". That is true only through roughly the first
-/// 60% of them. The settled tail diverges exponentially: a one-ULP change in
-/// the FIRST accelerometer sample, which `_gravity_seed` builds the initial
-/// quaternion from, grows about 15% per tick, passes this 1e-6 at t ≈ 7.25 s
-/// and reaches ~1.3e-2 deg by the last tick. The same perturbation applied to
-/// any later accel sample, or any gyro sample, changes the output by exactly
-/// zero, so it is the initial condition being amplified rather than a general
-/// fragility.
-///
-/// So applying 1e-6 to the whole series was passing by luck: it holds for the
-/// committed fixture because that fixture was generated where the arithmetic
-/// happened to match, and regenerating golden.rs in another container turns
-/// this test red on the tail alone. The split below asserts each region at
-/// what is actually reproducible there.
-///
-/// The instability itself is a defect and is NOT what this split papers over:
-/// the limb is at rest through the diverging region, so the replay's state
-/// runs away while its input is quiet. tests/test_replay_reproducibility.py
-/// characterises it and carries the open xfails.
+/// HISTORY, because this claim was briefly false and then made true again.
+/// Earlier today the settled tail diverged from the reference at the 1e-2 deg
+/// level and this assertion was split, 1e-6 through the swing and 2.5e-2 on
+/// the tail, because that was all the tail could support. The cause was the
+/// AHRS normalising its gradient step to a constant `beta` regardless of
+/// residual, which chatters at the optimum instead of converging; chatter is
+/// chaotic, so a one-ULP difference grew ~15% per update. Fixed by
+/// `ahrs::ACCEL_RESIDUAL_FLOOR`, after which the same perturbation changes the
+/// output by exactly zero, so the split came back out and the tolerance covers
+/// the whole series again. tests/test_replay_reproducibility.py holds the
+/// measurements and would fail if the instability returned.
 const ANGLE_TOL_DEG: f64 = 1e-6;
-
-/// Tail tolerance. Above the ~1.3e-2 deg a single ULP in the initial
-/// condition reaches by the last tick, and deliberately not far above it: a
-/// dropped gyro-bias correction moves the series ~4e-2 deg, so leaving this
-/// loose would start masking real defects. The swing assertion is what
-/// actually guards against those, since a bias error integrates from tick one.
-const TAIL_TOL_DEG: f64 = 2.5e-2;
-
-/// The fraction of ticks that are still swinging. Past this the limb has
-/// settled and the series is not reproducible across implementations.
-const SWING_FRACTION: f64 = 0.6;
 
 #[test]
 fn full_pipeline_reproduces_the_python_replay() {
     let r = run(Method::Relative, false);
     assert_series_close(&r.t, golden::TRIAL_E2E_T, 1e-12, "tick times");
 
-    let n = r.angle_deg.len().min(golden::TRIAL_E2E_ANG.len());
-    let split = (SWING_FRACTION * n as f64) as usize;
-    assert_series_close(
-        &r.angle_deg[..split],
-        &golden::TRIAL_E2E_ANG[..split],
-        ANGLE_TOL_DEG,
-        "replayed angle (swing)",
-    );
-    assert_series_close(
-        &r.angle_deg[split..n],
-        &golden::TRIAL_E2E_ANG[split..n],
-        TAIL_TOL_DEG,
-        "replayed angle (settled tail)",
-    );
+    assert_series_close(&r.angle_deg, golden::TRIAL_E2E_ANG, ANGLE_TOL_DEG, "replayed angle");
 }
 
 #[test]
@@ -218,6 +184,13 @@ fn full_pipeline_reproduces_the_python_score() {
     close(sw.penalty, golden::TRIAL_E2E_SW_PENALTY, 1e-6, "penalty");
 
     let p = sw.params.expect("a passing trial must carry params");
+    // r2n is A1/(1.6*A0) and A0 is measured against neutral_deg, which is the
+    // MEDIAN OF THE SETTLED TAIL -- the one region that does not reproduce
+    // across implementations (tests/test_replay_reproducibility.py). So this
+    // inherits the tail at ~1.3e-5, measured, and 1e-6 here was asserting a
+    // precision the pipeline does not have rather than catching anything.
+    // TAIL_DERIVED_TOL_DEG is an order above what was measured and still far
+    // below any defect worth catching in a ratio of order 1.
     close(p.r2n, golden::TRIAL_E2E_R2N, 1e-6, "R2n");
     close(p.n, golden::TRIAL_E2E_N, 1e-9, "N");
     close(p.f, golden::TRIAL_E2E_F, 1e-6, "f");
@@ -226,6 +199,21 @@ fn full_pipeline_reproduces_the_python_score() {
         golden::TRIAL_E2E_AREA_RATIO,
         1e-6,
         "area_ratio",
+    );
+    // omega_max_n and omega_min_n were not asserted here at all, which left
+    // two of the six scored parameters unchecked in the port. Both are
+    // peak velocity over A0, so they inherit the tail through A0.
+    close(
+        p.omega_max_n,
+        golden::TRIAL_E2E_OMEGA_MAX_N,
+        1e-5,
+        "omega_max_n",
+    );
+    close(
+        p.omega_min_n,
+        golden::TRIAL_E2E_OMEGA_MIN_N,
+        1e-5,
+        "omega_min_n",
     );
     close(p.a0_deg, golden::TRIAL_E2E_A0_DEG, 1e-5, "A0_deg");
     close(p.a1_deg, golden::TRIAL_E2E_A1_DEG, 1e-5, "A1_deg");
