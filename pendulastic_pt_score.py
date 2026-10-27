@@ -740,8 +740,8 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     to prevent.
 
     `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
-    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-2026-10-27",
-    not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
+    sums, which is five terms under SCORE_FORMULA_ID "pt5rescaled-2026-10-27",
+    not seven: omega_min_n left on 2026-10-26 and omega_max_n on 2026-10-27. The name is deliberately NOT
     renamed. It is a column name in generated CSVs and in the neuromech
     manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
     `enc_pt7`, `int_pt7`), so renaming it would silently invalidate stored
