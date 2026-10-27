@@ -34,8 +34,9 @@ def test_derive_refuses_on_a_tie():
 
 
 def test_main_does_not_print_apply_instructions_when_inverted(monkeypatch, capsys):
-    monkeypatch.setattr(rz, "leg_scores", lambda *a, **k: _legs(
-        [.06, .09, .14, .30, .44], [.14, .15, .19, .42, .56]))
+    monkeypatch.setattr(rz, "leg_scores", lambda *a, **k: (_legs(
+        [.06, .09, .14, .30, .44], [.14, .15, .19, .42, .56]), {}))
+    monkeypatch.setattr(rz, "healthy_reference", lambda *a, **k: None)
     with pytest.raises(SystemExit):
         rz.main(["--opti-root", "x"])
     assert "To apply" not in capsys.readouterr().out
