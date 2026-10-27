@@ -367,6 +367,20 @@ _FIELDNAMES = ["participant", "trial_key", "position", "trial", "imu_path", "opt
               "optical_absolute_zero", "error"]
 
 
+def comparable_rmse(row: dict) -> float:
+    """The RMSE that means the same thing on every reference.
+
+    A marker-path reference has no origin (87d7645 returns a relative curve),
+    so its raw rmse_deg is dominated by the missing zero -- MINT_13 Left/post
+    trial_4 reads 143.9 raw against 16.7 offset-removed. Only there is the
+    offset taken out. A rigid-body reference is bone-grounded, so a constant
+    offset against it is real disagreement and stays in the number. Rows
+    from before these fields existed fall back to rmse_deg."""
+    if row.get("optical_absolute_zero") is False and row.get("rmse_deg_offset_removed") is not None:
+        return row["rmse_deg_offset_removed"]
+    return row["rmse_deg"]
+
+
 def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) -> dict:
     """Given evaluate_trial() rows (each must have 'status', 'rmse_deg',
     'trial_key') and trial_quality_tags.json's loaded dict, compute RMSE
@@ -379,7 +393,7 @@ def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) ->
     ok_rows = [r for r in rows if r["status"] == "ok"]
 
     def _stats(subset):
-        vals = [r["rmse_deg"] for r in subset]
+        vals = [comparable_rmse(r) for r in subset]
         if not vals:
             return None
         return {
@@ -416,7 +430,7 @@ def _evaluate_all(matched, verbose=True):
             continue
         if row["status"] == "ok":
             print(f"  [ok]   {row['participant']} {row['position']} {row['trial']}: "
-                  f"rmse={row['rmse_deg']:.3f} deg (n={row['n_samples']}, "
+                  f"rmse={comparable_rmse(row):.3f} deg (n={row['n_samples']}, "
                   f"optitrack_method={row['optitrack_method']})")
         else:
             print(f"  [error] {row['participant']} {row['position']} {row['trial']}: "
@@ -473,11 +487,14 @@ def _report_comparison(before, after):
         print("  No trial evaluated successfully under BOTH settings, so the")
         print("  comparison says nothing. Not writing a verdict.")
         return
-    deltas = [a["rmse_deg"] - b["rmse_deg"] for b, a in pairs]
+    # Paired on comparable_rmse: raw rmse_deg against a marker-path reference
+    # is ~sqrt(offset^2 + error^2) with a ~150 deg offset, which compresses a
+    # real tracking change toward zero and would let this gate pass anything.
+    deltas = [comparable_rmse(a) - comparable_rmse(b) for b, a in pairs]
     improved = sum(1 for d in deltas if d < 0)
     worsened = sum(1 for d in deltas if d > 0)
-    mean_b = statistics.mean(b["rmse_deg"] for b, _ in pairs)
-    mean_a = statistics.mean(a["rmse_deg"] for _, a in pairs)
+    mean_b = statistics.mean(comparable_rmse(b) for b, _ in pairs)
+    mean_a = statistics.mean(comparable_rmse(a) for _, a in pairs)
     print(f"  PAIRED COMPARISON over {len(pairs)} trial(s):")
     print(f"    mean RMSE before {mean_b:.4f} deg -> after {mean_a:.4f} deg "
           f"({mean_a - mean_b:+.4f})")
@@ -574,7 +591,7 @@ def main():
         writer.writerows(rows)
     print(f"\nSaved: {OUT_CSV}")
 
-    ok_rmse = [r["rmse_deg"] for r in rows if r["status"] == "ok"]
+    ok_rmse = [comparable_rmse(r) for r in rows if r["status"] == "ok"]
     n_error = len(rows) - len(ok_rmse)
     print(f"\nSummary: {len(trials)} trial(s) discovered, "
           f"{len(unmatched)} skipped (no OptiTrack match), "
@@ -583,7 +600,7 @@ def main():
         mean_rmse = statistics.mean(ok_rmse)
         median_rmse = statistics.median(ok_rmse)
         n_under_goal = sum(1 for r in ok_rmse if r < RMSE_GOAL_DEG)
-        print(f"RMSE (deg): mean={mean_rmse:.3f}, median={median_rmse:.3f}, "
+        print(f"RMSE (deg, offset removed where the reference has no zero): mean={mean_rmse:.3f}, median={median_rmse:.3f}, "
               f"{n_under_goal}/{len(ok_rmse)} trial(s) under the "
               f"{RMSE_GOAL_DEG}-degree goal.")
     else:

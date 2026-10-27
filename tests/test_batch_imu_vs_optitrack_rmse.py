@@ -518,3 +518,37 @@ def test_find_optitrack_match_anchor_not_under_rec_root_returns_none(tmp_path):
 
     match = batch.find_optitrack_match(str(outside), str(rec_root), str(opti_root))
     assert match is None
+
+
+def test_summary_reads_offset_removed_rmse_only_where_the_reference_has_no_zero():
+    """The headline must compare like with like. A marker-path reference is
+    relative (87d7645), so its raw RMSE is ~99% missing origin: MINT_13
+    Left/post trial_4 reads 143.9 raw vs 16.7 offset-removed. A rigid-body
+    reference IS bone-grounded, so there a constant offset is real
+    disagreement and must stay in the number."""
+    rows = [
+        {"status": "ok", "trial_key": "a", "rmse_deg": 143.9,
+         "rmse_deg_offset_removed": 16.7, "optical_absolute_zero": False},
+        {"status": "ok", "trial_key": "b", "rmse_deg": 9.0,
+         "rmse_deg_offset_removed": 3.0, "optical_absolute_zero": True},
+        {"status": "ok", "trial_key": "c", "rmse_deg": 4.0},   # legacy row
+    ]
+    assert [batch.comparable_rmse(r) for r in rows] == [16.7, 9.0, 4.0]
+    s = batch.compute_stratified_stats(rows, {}, 5.0)["all"]
+    assert s["median"] == 9.0 and s["n_under_goal"] == 1
+
+
+def test_compare_floor_pairs_offset_removed_rmse(capsys):
+    # A marker-path reference's raw rmse_deg is mostly its missing zero; a
+    # tracking change of 10 -> 5 deg moves it by under 0.2 deg. The paired
+    # gate must see the 5 deg, not the 0.2.
+
+    def row(raw, off):
+        return {"participant": "P1", "position": "Left", "trial": "t1",
+                "status": "ok", "rmse_deg": raw, "rmse_deg_offset_removed": off,
+                "optical_absolute_zero": False}
+
+    batch._report_comparison([row(150.33, 10.0)], [row(150.08, 5.0)])
+    out = capsys.readouterr().out
+    assert "median delta -5.0000" in out
+    assert "IMPROVES" in out
