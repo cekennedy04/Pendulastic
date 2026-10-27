@@ -143,19 +143,66 @@ fn close(got: f64, want: f64, tol: f64, what: &str) {
 }
 
 /// The tolerance is not a fudge factor. Both sides run the identical sequence
-/// of f64 operations, and measured agreement on this fixture is actually
-/// below 1e-13 deg across all ~180 ticks. The headroom is for the platforms
-/// this crate is going to be cross-compiled onto (U3): a libm whose acos or
-/// sqrt differs by an ULP would otherwise turn a correct port into a red
-/// test. It is still tight enough to catch real defects — dropping the
-/// gyro-bias correction, for one, moves the series by ~4e-2 deg.
+/// of f64 operations, and through the SWING measured agreement on this
+/// fixture is about 1e-12 deg. The headroom is for the platforms this crate
+/// is going to be cross-compiled onto (U3): a libm whose acos or sqrt differs
+/// by an ULP would otherwise turn a correct port into a red test. It is still
+/// tight enough to catch real defects — dropping the gyro-bias correction, for
+/// one, moves the series by ~4e-2 deg, and a bias error integrates from the
+/// first tick, so it shows up inside the swing where this tolerance applies.
+///
+/// CORRECTED 2026-10-27. This comment used to claim agreement "below 1e-13
+/// deg across all ~180 ticks". That is true only through roughly the first
+/// 60% of them. The settled tail diverges exponentially: a one-ULP change in
+/// the FIRST accelerometer sample, which `_gravity_seed` builds the initial
+/// quaternion from, grows about 15% per tick, passes this 1e-6 at t ≈ 7.25 s
+/// and reaches ~1.3e-2 deg by the last tick. The same perturbation applied to
+/// any later accel sample, or any gyro sample, changes the output by exactly
+/// zero, so it is the initial condition being amplified rather than a general
+/// fragility.
+///
+/// So applying 1e-6 to the whole series was passing by luck: it holds for the
+/// committed fixture because that fixture was generated where the arithmetic
+/// happened to match, and regenerating golden.rs in another container turns
+/// this test red on the tail alone. The split below asserts each region at
+/// what is actually reproducible there.
+///
+/// The instability itself is a defect and is NOT what this split papers over:
+/// the limb is at rest through the diverging region, so the replay's state
+/// runs away while its input is quiet. tests/test_replay_reproducibility.py
+/// characterises it and carries the open xfails.
 const ANGLE_TOL_DEG: f64 = 1e-6;
+
+/// Tail tolerance. Above the ~1.3e-2 deg a single ULP in the initial
+/// condition reaches by the last tick, and deliberately not far above it: a
+/// dropped gyro-bias correction moves the series ~4e-2 deg, so leaving this
+/// loose would start masking real defects. The swing assertion is what
+/// actually guards against those, since a bias error integrates from tick one.
+const TAIL_TOL_DEG: f64 = 2.5e-2;
+
+/// The fraction of ticks that are still swinging. Past this the limb has
+/// settled and the series is not reproducible across implementations.
+const SWING_FRACTION: f64 = 0.6;
 
 #[test]
 fn full_pipeline_reproduces_the_python_replay() {
     let r = run(Method::Relative, false);
     assert_series_close(&r.t, golden::TRIAL_E2E_T, 1e-12, "tick times");
-    assert_series_close(&r.angle_deg, golden::TRIAL_E2E_ANG, ANGLE_TOL_DEG, "replayed angle");
+
+    let n = r.angle_deg.len().min(golden::TRIAL_E2E_ANG.len());
+    let split = (SWING_FRACTION * n as f64) as usize;
+    assert_series_close(
+        &r.angle_deg[..split],
+        &golden::TRIAL_E2E_ANG[..split],
+        ANGLE_TOL_DEG,
+        "replayed angle (swing)",
+    );
+    assert_series_close(
+        &r.angle_deg[split..n],
+        &golden::TRIAL_E2E_ANG[split..n],
+        TAIL_TOL_DEG,
+        "replayed angle (settled tail)",
+    );
 }
 
 #[test]
