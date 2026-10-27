@@ -612,10 +612,24 @@ def pt_zone(score: Optional[float]) -> str:
 # excursion also comes from poor positioning, an incomplete release, guarding
 # or pain, mechanical obstruction, and sensor failure. Reporting "severe
 # spasticity" on those would trade one wrong answer for another.
+#
+# RAISED 25 -> 30, 2026-10-27, by user direction ("if iffy, exclude to be
+# safe"). The premise above -- every spastic leg sits at A0 >= 28.7 and is
+# graded correctly -- no longer holds. After the seed-window, lift-and-hold
+# release and drift-fit fixes, the 81 MAS-matched baseline OptiTrack trials
+# put exactly three MAS>=1 trials in the HEALTHY zone, and they are exactly
+# the three with A0 between 25 and 30 (P13 L T2 27.3, P13 R T5 27.2, P14 L T1
+# 28.4). At 25 two MAS 1 legs (P13 L/R) were graded healthy; at 30 they are
+# refused instead and no MAS>=1 leg is graded healthy. Cost: 4 more MAS-0
+# trials refused (17/60 vs 13/60) and one examined MAS-0 leg (P5 L) loses its
+# grade. Refusing a grade is the recoverable error; a spastic leg reported
+# healthy is not. Evidence is 3 trials from 2 people -- re-derive with more
+# clinician-examined MAS>=1 legs, and the message now names high tone as one
+# possible cause so a refusal is not read as "bad trial, repeat until it passes".
 EXCURSION_REF_MEAN_DEG = 46.6
 EXCURSION_REF_SD_DEG = 11.1
 EXCURSION_REF_N = 53
-MIN_INTERPRETABLE_A0_DEG = 25.0
+MIN_INTERPRETABLE_A0_DEG = 30.0
 
 # Upper bound on a believable excursion. The floor above catches a swing that
 # collapsed; this catches a number that is not a swing at all.
@@ -646,8 +660,10 @@ INSUFFICIENT_EXCURSION = (
     "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
     "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
     "PT7's parameters are ratios normalised on the swing, so they stop tracking "
-    "severity once the swing collapses. Repeat the trial and check positioning, "
-    "release and sensor placement before reading anything into the score."
+    "severity once the swing collapses -- a stiff, high-tone leg and a poorly "
+    "positioned trial both swing too little to grade. Repeat the trial and check "
+    "positioning, release and sensor placement; if a full lift still swings this "
+    "little, record the reduced excursion and assess tone clinically."
 )
 
 NO_OSCILLATION = (
