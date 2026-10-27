@@ -2475,8 +2475,61 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
     for i in range(bi, len(t)):
         if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
-            return max(0, i - back)
+            drop = _lift_hold_end(t, ang, i, baseline, thresh_deg)
+            return max(0, (i if drop is None else drop) - back)
     return bi
+
+
+# A trial that opens at rest has a LIFT before its drop: the leg rises
+# monotonically from rest, sits still in extension, and only then is
+# released. The first threshold crossing is the lift, and measuring phi[0]
+# from there gives rest-minus-rest ~ 0 deg, so compute_pt_params discarded
+# the trial (15 Control_6/7/8 baseline trials, 2026-10-27). A real release
+# reverses within a fraction of a second -- a pendulum overshoots -- and an
+# arrested limb drops once and stays near where it landed, so "monotonic to
+# a still plateau, then leaves it and swings back through the starting
+# angle" only matches a lift-and-hold. The return is what separates the two:
+# an arrested limb with tremor in its resting tail also "leaves" its plateau.
+_LIFT_HOLD_MIN_S = 0.5     # shortest still window that counts as a hold
+_LIFT_REACH_MAX_S = 2.5    # the lift must reach its hold within this
+_LIFT_HOLD_MAX_S = 8.0     # and the drop must come within this of the hold
+_LIFT_RETURN_MAX_S = 2.0   # and pass back through the starting angle within this
+
+
+def _lift_hold_end(t: np.ndarray, ang: np.ndarray, i: int,
+                   baseline: float, thresh: float) -> Optional[int]:
+    """Index where a lift-and-hold starting at crossing `i` is released, or
+    None when the crossing at `i` is not a lift (it is the release itself)."""
+    dt = _median_dt(t)
+    hold_n = max(3, int(round(_LIFT_HOLD_MIN_S / dt)))
+    reach_end = int(np.searchsorted(t, t[i] + _LIFT_REACH_MAX_S))
+    peak = 0.0
+    for k in range(i, min(reach_end, len(t) - hold_n)):
+        a = ang[k]
+        if not np.isfinite(a):
+            continue
+        dev = abs(float(a) - baseline)
+        if dev < peak - thresh:
+            return None                     # reversed before holding: a swing
+        peak = max(peak, dev)
+        win = ang[k:k + hold_n]
+        win = win[np.isfinite(win)]
+        if len(win) < hold_n // 2 or float(np.ptp(win)) >= 0.5 * thresh:
+            continue
+        level = float(np.median(win))
+        if abs(level - baseline) <= thresh:
+            continue
+        leave_end = int(np.searchsorted(t, t[k] + _LIFT_HOLD_MAX_S))
+        for m in range(k + hold_n, min(leave_end, len(t))):
+            if np.isfinite(ang[m]) and abs(float(ang[m]) - level) > thresh:
+                back_end = int(np.searchsorted(t, t[m] + _LIFT_RETURN_MAX_S))
+                seg = ang[m:back_end]
+                seg = seg[np.isfinite(seg)]
+                if len(seg) and float(np.min(np.abs(seg - baseline))) <= thresh:
+                    return m
+                return None                 # left, but never came back
+        return None                         # never left: an arrested limb
+    return None
 
 
 def detect_release_t0(t: np.ndarray, signal: np.ndarray,
@@ -2798,10 +2851,22 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     slope = None
     if detrend:
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
-        if slope is None and baseline_end >= _MIN_BASELINE:
+        # Only the still hold is baseline. A trial that opens at rest has a
+        # lift before it (see _lift_hold_end), and fitting through that ramp
+        # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
+        # from its first frame stays within the band throughout, so its
+        # window is unchanged.
+        baseline_start = baseline_end
+        if baseline_end > 0:
+            band = 0.08 * float(np.nanpercentile(ang_s_raw, 97) - np.nanpercentile(ang_s_raw, 3))
+            ref = ang_s_raw[baseline_end - 1]
+            while baseline_start > 0 and abs(ang_s_raw[baseline_start - 1] - ref) <= band:
+                baseline_start -= 1
+        if slope is None and baseline_end - baseline_start >= _MIN_BASELINE:
             # Tail unusable (trial ended mid-swing, too short, still ringing).
             # Fall back to the historical baseline fit rather than to nothing.
-            slope = float(np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)[0])
+            slope = float(np.polyfit(t_c[baseline_start:baseline_end],
+                                     ang_c_raw[baseline_start:baseline_end], 1)[0])
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:

@@ -411,3 +411,31 @@ fn n_counts_every_swing_rather_than_capping_at_a_clock() {
     // And the lightly damped leg must not sit near the old 4.0 ceiling.
     assert!(got[0] > 8.0, "N still looks capped: {}", got[0]);
 }
+
+#[test]
+fn release_is_the_drop_not_the_lift_when_a_trial_starts_at_rest() {
+    // The leg opens at rest, is lifted to extension, held, then dropped. The
+    // first threshold crossing is the lift; measured from there, A0 is rest
+    // minus rest and the trial used to be discarded (15 real Control_6/7/8
+    // baseline trials, 2026-10-27).
+    assert!(!golden::TRIAL_LIFT_HOLD_IS_NONE);
+    let p = compute_pt_params(golden::TRIAL_LIFT_HOLD_T, golden::TRIAL_LIFT_HOLD_ANG, None, false)
+        .expect("a 55 degree swing after a lift-and-hold is scorable");
+    close(p.a0_deg, golden::TRIAL_LIFT_HOLD_A0_DEG, 1e-6, "A0");
+    assert!(p.a0_deg > 45.0, "A0 {} -- release fired on the lift", p.a0_deg);
+    close(p.neutral_deg, golden::TRIAL_LIFT_HOLD_NEUTRAL_DEG, 1e-6, "neutral");
+    close(p.n, golden::TRIAL_LIFT_HOLD_N, 1e-9, "N");
+    close(p.r2n, golden::TRIAL_LIFT_HOLD_R2N, 1e-6, "R2n");
+    assert_eq!(p.pk_i, golden::TRIAL_LIFT_HOLD_PK_I.to_vec(), "peak indices");
+    assert_eq!(p.tr_i, golden::TRIAL_LIFT_HOLD_TR_I.to_vec(), "trough indices");
+}
+
+#[test]
+fn lift_ramp_stays_out_of_the_baseline_drift_fit() {
+    // Still ringing at the end, so the settled-tail slope is unusable and the
+    // pre-release baseline fit takes over -- which must see only the hold.
+    let p = compute_pt_params(golden::TRIAL_LIFT_RING_T, golden::TRIAL_LIFT_RING_ANG, None, true)
+        .expect("scorable");
+    close(p.a0_deg, golden::TRIAL_LIFT_RING_DETREND_A0_DEG, 1e-6, "A0 (detrend)");
+    close(p.neutral_deg, golden::TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG, 1e-6, "neutral (detrend)");
+}
