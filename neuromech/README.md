@@ -107,10 +107,23 @@ jitter, reversed mount, real-size bias), and scores it like a real session. Resu
 every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
 plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
 
+## 7. Does the emulator fall like a real leg?
+
+```bash
+python -m neuromech.fall_speed --opti-root <OptiTrack_Recordings> --rec-root <Recordings> [--limit 20]
+```
+
+Compares peak fall speed against the first excursion A0 on the real OptiTrack cohort with the
+same comparison on the built scenario library (run `neuromech.build` first). The log-log slope is
+the number to read: 1.0 means peak speed scales with the swing, 0 means it does not.
+2026-10-27: real legs read ~0 per leg and the emulator ladder ~3, because the severity axis's `tone`
+torque slows the whole fall. See `docs/reports/2026-10-27-emulator-fall-speed.md`. The cohort half caches per
+trial, so `--limit` runs it in chunks on a low-memory machine.
+
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 90 tests
+python -m pytest neuromech/tests                                    # 93 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
@@ -124,6 +137,7 @@ node neuromech/labview/verify_formula_node.js                       # Formula No
 | `session.py` | plan / score a rig session |
 | `ilc.py` | plant identification and trajectory correction |
 | `dryrun.py` | the whole program on synthetic hardware |
+| `fall_speed.py` | peak fall speed vs A0, real cohort beside the emulator |
 | `nm_figs.py`, `pubstyle.py` | figures (deck and publication) |
 | `labview/` | Formula Node step, test vectors, verifier, program spec |
 | `data/rig_frf_2026-10-26.npz` | measured setpoint→encoder response of the current tune |
