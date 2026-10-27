@@ -325,7 +325,11 @@ pub fn pt_score_simple(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// it. Low excursion also comes from poor positioning, an incomplete release,
 /// guarding, pain, mechanical obstruction and sensor failure, so the refusal
 /// is phrased about the MEASUREMENT, never about the patient.
-pub const MIN_INTERPRETABLE_A0_DEG: f64 = 25.0;
+///
+/// Raised 25 -> 30 on 2026-10-27: the only MAS>=1 trials graded HEALTHY in the
+/// corrected cohort were exactly the three with A0 27.2-28.4. See the
+/// reference's comment block for the evidence and its cost.
+pub const MIN_INTERPRETABLE_A0_DEG: f64 = 30.0;
 
 /// `pendulastic_pt_score.MAX_INTERPRETABLE_A0_DEG` — the ceiling above which a
 /// number is not a swing at all. A0 is the initial extension of an INTERIOR
@@ -365,8 +369,10 @@ pub fn excursion_reason(params: &PtParams) -> Option<String> {
     Some(format!(
         "Insufficient excursion: the leg moved {:.1} deg, below the {:.0} deg floor for \
          interpreting PT7 (control mean 46.6, sd 11.1, n=53). PT7's parameters are ratios \
-         normalised on the swing, so they stop tracking severity once the swing collapses. \
-         Repeat the trial and check positioning, release and sensor placement.",
+         normalised on the swing, so they stop tracking severity once the swing collapses -- \
+         a stiff, high-tone leg and a poorly positioned trial both swing too little to grade. \
+         Repeat the trial and check positioning, release and sensor placement; if a full lift \
+         still swings this little, record the reduced excursion and assess tone clinically.",
         params.a0_deg, MIN_INTERPRETABLE_A0_DEG
     ))
 }
@@ -962,11 +968,11 @@ mod tests {
 
     #[test]
     fn the_gate_boundaries_match_the_python_reference() {
-        assert_eq!(MIN_INTERPRETABLE_A0_DEG, 25.0);
+        assert_eq!(MIN_INTERPRETABLE_A0_DEG, 30.0);
         assert_eq!(MAX_INTERPRETABLE_A0_DEG, 120.0);
-        assert!(excursion_ok(&params(|p| p.a0_deg = 25.0)), "floor is inclusive");
+        assert!(excursion_ok(&params(|p| p.a0_deg = 30.0)), "floor is inclusive");
         assert!(excursion_ok(&params(|p| p.a0_deg = 120.0)), "ceiling is inclusive");
-        assert!(!excursion_ok(&params(|p| p.a0_deg = 24.999)));
+        assert!(!excursion_ok(&params(|p| p.a0_deg = 29.999)));
         assert!(!excursion_ok(&params(|p| p.a0_deg = 120.001)));
     }
 
