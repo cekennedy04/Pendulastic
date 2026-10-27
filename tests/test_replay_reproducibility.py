@@ -7,7 +7,10 @@ agreement "is actually below 1e-13 deg across all ~180 ticks", with the
 remaining headroom there for a cross-compiled libm whose `acos` or `sqrt`
 differs by an ULP.
 
-That claim is false in the settled tail, and these tests pin where.
+That claim was false in the settled tail when these tests were written. It
+is true again: the cause was found and fixed the same day, and these tests now
+guard it rather than document it. What each one covers is below, with the
+measurements that drove the fix.
 
 HOW IT WAS FOUND. Regenerating golden.rs in a different container rewrote 99
 constants. 95 of them moved by less than 1e-12 relative -- ordinary last-bit
@@ -161,21 +164,26 @@ def test_only_the_initial_condition_is_amplified(baseline):
 
 
 def test_the_settled_tail_is_not_reproducible(baseline):
-    """XFAIL: the known instability, pinned with live numbers.
+    """FIXED 2026-10-27. This guards against its return.
 
     A one-ULP change in the initial condition grows at roughly 15% per tick
     and passes 1e-6 deg -- `pipeline_test`'s tolerance for the whole series --
     about three quarters of the way through a 9 s replay, ending near
     1.3e-2 deg.
 
-    This is a real defect, not a tolerance to widen and forget: the limb is at
-    REST through the diverging region, so the replay's state is running away
-    while its input is quiet. That points at a feedback path with a gain above
-    one somewhere in the bias correction or the EMA, and fixing it would change
-    every replayed angle, so it belongs in its own change with its own
-    validation rather than at the end of an unrelated one.
+    The cause was in the AHRS, not the bias correction or the EMA. Madgwick's
+    published step is `beta * step / |step|` -- a CONSTANT magnitude whatever
+    the residual -- so at the optimum the filter chatters rather than
+    converging, taking a full beta-sized step every update in a direction set
+    by the residual's last bits. Chatter is chaotic, which is where the
+    positive exponent came from. The quaternion difference itself grew 9.7e-19
+    to 2.5e-5 over 900 updates, so it was the filter diverging and not the
+    angle computation amplifying.
 
-    This test flips to a pass when the tail stops diverging.
+    Dividing by `max(|step|, ACCEL_RESIDUAL_FLOOR)` leaves the step untouched
+    where the filter is doing real work and makes it proportional near the
+    optimum, so it contracts. The perturbation now changes the output by
+    exactly zero rather than by 1.3e-2 deg.
     """
     raw, t, ang = baseline
     _, perturbed = replay_trial(_nudge(raw, "accel", 0, 2), PARAMS)
@@ -195,11 +203,13 @@ def test_the_settled_tail_is_not_reproducible(baseline):
 
 
 def test_neutral_and_a0_inherit_the_tail(baseline):
-    """XFAIL: why the instability reaches the score at all.
+    """Why the instability reached the score, and that it no longer does.
 
     `neutral_deg` is the median of the settled tail, and A0 is measured
-    against neutral, so the one region that does not reproduce is the one the
-    normalisation is anchored to. Every parameter divided by A0 carries it.
+    against neutral, so the one region that did not reproduce was the one the
+    normalisation is anchored to, and every parameter divided by A0 carried it.
+    Before the fix a single ULP moved neutral_deg by 1.8e-2 deg and A0 by
+    1.3e-2; it now moves both by zero.
     """
     import pendulastic_pt_score as pts
     raw, t, ang = baseline
