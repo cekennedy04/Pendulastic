@@ -31,6 +31,7 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import glob
 import os
@@ -43,7 +44,11 @@ import workbench_engine as engine
 import participant_paths
 import pt_report_common
 
-BASE_DIR = r"C:\Users\cladi\Pendulastic"
+# One developer's layout, kept only as the default. Everything below can be
+# pointed elsewhere with --rec-root / --opti-root / --out, because a hardcoded
+# absolute path is why this script wrote a CSV of zeros when run anywhere else
+# (see main()'s refusal).
+BASE_DIR = os.environ.get("PENDULASTIC_BASE_DIR", r"C:\Users\cladi\Pendulastic")
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
 OPTI_ROOT = os.path.join(BASE_DIR, "OptiTrack_Recordings")
 OUT_CSV = os.path.join(BASE_DIR, "Model_Analysis_Outputs", "imu_vs_optitrack_rmse.csv")
@@ -391,7 +396,137 @@ def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) ->
     return result
 
 
+def _evaluate_all(matched, verbose=True):
+    """Evaluate every matched trial and return its rows."""
+    rows = []
+    for t in matched:
+        row = evaluate_trial(t["imu"], t["accel"], t["gyro"], t["mag"],
+                             t["optitrack_path"], ids=t)
+        rows.append(row)
+        if not verbose:
+            continue
+        if row["status"] == "ok":
+            print(f"  [ok]   {row['participant']} {row['position']} {row['trial']}: "
+                  f"rmse={row['rmse_deg']:.3f} deg (n={row['n_samples']}, "
+                  f"optitrack_method={row['optitrack_method']})")
+        else:
+            print(f"  [error] {row['participant']} {row['position']} {row['trial']}: "
+                  f"{row['error']}")
+    return rows
+
+
+def _compare_floors(matched, floor):
+    """Paired RMSE for the AHRS correction floor off versus on.
+
+    This is the gate on 2026-10-27's AHRS change. The filter used to normalise
+    its gradient step to a constant beta whatever the residual, which does not
+    converge -- it chatters at the optimum, and chatter is chaotic, so the
+    settled tail of a replay was irreproducible between the reference and the
+    Rust port. Dividing by max(|step|, floor) fixes that, but it moves the
+    replayed angle by up to 4.6e-2 deg on the synthetic fixture, which is the
+    same order as a dropped gyro-bias correction. Only the OptiTrack corpus
+    can say whether that is an improvement or a regression.
+
+    Both passes run on the SAME trials so the comparison is paired: a
+    difference in which trials happened to evaluate would otherwise swamp a
+    4e-2 deg effect.
+
+    A floor of 0.0 reproduces the old behaviour exactly, since
+    max(|step|, 0.0) is |step|.
+    """
+    import pendulastic_imu_server as srv
+    was = srv.ACCEL_RESIDUAL_FLOOR
+    out = {}
+    try:
+        for label, value in (("before", 0.0), ("after", floor)):
+            srv.ACCEL_RESIDUAL_FLOOR = value
+            print(f"\n  pass '{label}' (ACCEL_RESIDUAL_FLOOR = {value:g}) ...")
+            out[label] = _evaluate_all(matched, verbose=False)
+    finally:
+        srv.ACCEL_RESIDUAL_FLOOR = was
+    return out
+
+
+def _report_comparison(before, after):
+    """Paired per-trial deltas, and whether the change helps or hurts."""
+    by_key = {}
+    for row in before:
+        by_key[(row["participant"], row["position"], row["trial"])] = [row, None]
+    for row in after:
+        k = (row["participant"], row["position"], row["trial"])
+        if k in by_key:
+            by_key[k][1] = row
+    pairs = [(b, a) for b, a in by_key.values()
+             if b is not None and a is not None
+             and b["status"] == "ok" and a["status"] == "ok"]
+    print()
+    if not pairs:
+        print("  No trial evaluated successfully under BOTH settings, so the")
+        print("  comparison says nothing. Not writing a verdict.")
+        return
+    deltas = [a["rmse_deg"] - b["rmse_deg"] for b, a in pairs]
+    improved = sum(1 for d in deltas if d < 0)
+    worsened = sum(1 for d in deltas if d > 0)
+    mean_b = statistics.mean(b["rmse_deg"] for b, _ in pairs)
+    mean_a = statistics.mean(a["rmse_deg"] for _, a in pairs)
+    print(f"  PAIRED COMPARISON over {len(pairs)} trial(s):")
+    print(f"    mean RMSE before {mean_b:.4f} deg -> after {mean_a:.4f} deg "
+          f"({mean_a - mean_b:+.4f})")
+    print(f"    median delta {statistics.median(deltas):+.4f} deg   "
+          f"worst {max(deltas, key=abs):+.4f} deg")
+    print(f"    improved on {improved}, worsened on {worsened}, "
+          f"unchanged on {len(pairs) - improved - worsened}")
+    print()
+    if abs(mean_a - mean_b) < 1e-3:
+        print("    The change is below 1e-3 deg on real trials: it buys the")
+        print("    port's reproducibility at no measurable accuracy cost.")
+    elif mean_a < mean_b:
+        print("    Accuracy IMPROVES against OptiTrack as well as making the")
+        print("    replay reproducible.")
+    else:
+        print("    Accuracy is WORSE against OptiTrack. The reproducibility fix")
+        print("    should not ship on this evidence -- revisit the floor, or")
+        print("    reconsider whether chatter was doing useful work.")
+
+
 def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--rec-root", help="where Recordings actually is")
+    ap.add_argument("--opti-root", help="where OptiTrack_Recordings actually is")
+    ap.add_argument("--out", help="where to write the per-trial CSV")
+    ap.add_argument("--accel-residual-floor", type=float, default=None,
+                    help="override the AHRS correction floor for this run; "
+                         "0 reproduces the pre-2026-10-27 behaviour")
+    ap.add_argument("--compare-floor", action="store_true",
+                    help="run the corpus twice, with the floor off and on, and "
+                         "report the paired per-trial RMSE difference")
+    a = ap.parse_args()
+
+    global REC_ROOT, OPTI_ROOT, OUT_CSV
+    if a.rec_root:
+        REC_ROOT = os.path.abspath(os.path.expanduser(a.rec_root))
+    if a.opti_root:
+        OPTI_ROOT = os.path.abspath(os.path.expanduser(a.opti_root))
+    if a.out:
+        OUT_CSV = os.path.abspath(os.path.expanduser(a.out))
+
+    if not os.path.isdir(REC_ROOT):
+        raise SystemExit(
+            f"recordings not found at {REC_ROOT}\n"
+            f"  pass --rec-root, and --opti-root if OptiTrack_Recordings is "
+            f"elsewhere.\n"
+            f"  Refusing to run: with no recordings this writes a CSV of zeros "
+            f"over whatever is already there."
+        )
+
+    import pendulastic_imu_server as srv
+    if a.accel_residual_floor is not None:
+        srv.ACCEL_RESIDUAL_FLOOR = a.accel_residual_floor
+        print(f"ACCEL_RESIDUAL_FLOOR overridden to "
+              f"{a.accel_residual_floor:g} for this run")
+
     trials = discover_trials()
     print(f"Discovered {len(trials)} Trial_*_imu.csv anchor(s) under {REC_ROOT}")
 
@@ -401,18 +536,27 @@ def main():
         print(f"  [skip] {t['participant']} {t['position']} {t['trial']}: "
               f"no matching OptiTrack CSV found")
 
-    rows = []
-    for t in matched:
-        row = evaluate_trial(t["imu"], t["accel"], t["gyro"], t["mag"],
-                             t["optitrack_path"], ids=t)
-        rows.append(row)
-        if row["status"] == "ok":
-            print(f"  [ok]   {row['participant']} {row['position']} {row['trial']}: "
-                  f"rmse={row['rmse_deg']:.3f} deg (n={row['n_samples']}, "
-                  f"optitrack_method={row['optitrack_method']})")
-        else:
-            print(f"  [error] {row['participant']} {row['position']} {row['trial']}: "
-                  f"{row['error']}")
+    if a.compare_floor:
+        passes = _compare_floors(matched, srv.ACCEL_RESIDUAL_FLOOR
+                                 if a.accel_residual_floor is None
+                                 else a.accel_residual_floor)
+        _report_comparison(passes["before"], passes["after"])
+        rows = passes["after"]
+    else:
+        rows = _evaluate_all(matched)
+
+    # A CSV of zeros over a real result is worse than no CSV. This script used
+    # to write unconditionally, so running it with the wrong --rec-root
+    # destroyed the previous run's output and reported "0 evaluated
+    # successfully" as though that were a result.
+    if not any(r["status"] == "ok" for r in rows):
+        raise SystemExit(
+            f"\nno trial evaluated successfully out of {len(trials)} discovered "
+            f"({len(unmatched)} had no OptiTrack match). Refusing to write "
+            f"{OUT_CSV}:\n"
+            f"  an empty CSV would overwrite the last real run with zeros.\n"
+            f"  Check --rec-root and --opti-root point at the recordings."
+        )
 
     os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
     with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
