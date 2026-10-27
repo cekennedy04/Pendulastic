@@ -42,7 +42,7 @@ pub const N_PARAMS: usize = 6;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6-2026-10-26";
+pub const SCORE_FORMULA_ID: &str = "pt6rescaled-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -237,7 +237,33 @@ fn dev_above(pij: f64, phj: f64, denom: f64) -> f64 {
 /// contribution for that key, matching the reference's `if phj <= 0: ...
 /// continue`.
 pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBreakdown {
-    let denom = |phj: f64| N_PARAMS as f64 * phj.abs().max(DENOM_FLOOR);
+    // The divisor is the number of terms this trial can actually score, not
+    // N_PARAMS. A term is STRUCTURALLY skipped when it has no reference to
+    // deviate from (phj == 0) or when f could not be estimated; the rest then
+    // share the full scale instead of the trial keeping a hole.
+    //
+    // Scoring a skipped term as 0.0 against a fixed N_PARAMS divisor made the
+    // score fall as the limb worsened: f is dropped at `f < 0.1 || n < 2.0` --
+    // the low-oscillation end -- so crossing that boundary DELETED a penalty
+    // rather than redistributing it. On a sweep where f degrades with n,
+    // n=2.0 scored 0.1878 and the worse n=1.5 scored 0.1282. Rescaling lifts
+    // that to 0.1538. It does NOT make the score monotone: the f term's own
+    // contribution still vanishes discontinuously, leaving ~18% of the
+    // inversion. Mirrors `pendulastic_pt_score`'s `n_scored`.
+    let f_scorable = !(healthy.f <= 0.0 || params.f < 0.1 || params.n < 2.0);
+    let n_scored = [
+        healthy.r2n != 0.0,
+        healthy.n != 0.0,
+        healthy.phi_max_ratio != 0.0,
+        healthy.omega_max_n != 0.0,
+        f_scorable,
+        healthy.area_ratio != 0.0,
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    let n_scored = if n_scored == 0 { N_PARAMS } else { n_scored };
+    let denom = |phj: f64| n_scored as f64 * phj.abs().max(DENOM_FLOOR);
 
     let r2n = if healthy.r2n == 0.0 { 0.0 } else { dev_below(params.r2n, healthy.r2n, denom(healthy.r2n)) };
     let n = if healthy.n == 0.0 { 0.0 } else { dev_below(params.n, healthy.n, denom(healthy.n)) };
@@ -260,7 +286,7 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     // trial's own f, not the reference's) or `N < 2.0` — matching the
     // reference's `if pij < 0.1 or params.get("N", 0.0) < 2.0`. Folded into
     // one condition with the `phj <= 0` guard since both yield the same 0.0.
-    let f = if healthy.f <= 0.0 || params.f < 0.1 || params.n < 2.0 {
+    let f = if !f_scorable {
         0.0
     } else {
         (params.f - healthy.f).abs() / denom(healthy.f)
@@ -1120,14 +1146,18 @@ mod tests {
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
-        // reads HIGHER on this fixture, not lower, which is the double count
-        // cutting the other way: dropping omega_min_n also drops the /7 in
-        // every other term's denominator, and this fixture's area_ratio is so
-        // far above reference (0.94 vs 0.0945) that widening its share
-        // outweighs losing a term whose own contribution here was small
-        // (omega_min_n = 0.004, barely above the -9.4152 reference).
-        assert!((full - 1.896_321_590_796_999_47_f64).abs() < 1e-15, "full={full:.17}");
+        // 1.768_336_341_387_656_72 under the 7-term sum, then
+        // 1.896_321_590_796_999_47 under the 6-term sum -- dropping
+        // omega_min_n also dropped the /7 in every other denominator, and this
+        // fixture's area_ratio is so far above reference (0.94 vs 0.0945) that
+        // widening its share outweighed losing a small term.
+        //
+        // Now higher again, because this fixture is exactly the case the
+        // divisor rescale was for: f = 0.0 and n = 1.5, so f is unscorable and
+        // only FIVE terms carry the scale. area_ratio's share widens from /6 to
+        // /5 and its term goes 1.409 -> 1.691. The old value was the score
+        // keeping a hole where f should have been.
+        assert!((full - 2.275_585_908_956_399_45_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

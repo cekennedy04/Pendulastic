@@ -914,7 +914,10 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6-2026-10-26"   # back to the 6-term set; see omega_max_n above
+SCORE_FORMULA_ID = "pt6rescaled-2026-10-27"   # 6-term set, divisor = terms
+#                                             actually scored; see the
+#                                             n_scored note in
+#                                             compute_pt_score_breakdown
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.
@@ -979,6 +982,34 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     but it is not in `_PARAM_KEYS` and so never reaches the total.
     """
     _DENOM_FLOOR = 0.1
+    # The divisor is the number of terms this trial can actually score, not
+    # _N_PARAMS. A term is STRUCTURALLY skipped when it has no reference to
+    # deviate from (phj == 0) or when f could not be estimated; the remaining
+    # terms then share the full scale instead of the trial keeping a hole.
+    #
+    # Scoring the skipped term as 0.0 against a fixed _N_PARAMS divisor made
+    # the score fall as the limb worsened: f is dropped at `f < 0.1 or N < 2.0`
+    # -- the low-oscillation end -- so crossing that boundary DELETED a penalty
+    # instead of redistributing it. Measured on a sweep where f degrades with
+    # N: N=2.0 scored 0.1878 and the worse N=1.5 scored 0.1282, a 32% drop in
+    # apparent severity. Rescaling lifts that to 0.1538.
+    #
+    # This does NOT make the score monotone. The f term's own contribution
+    # still vanishes discontinuously at the boundary, so a residual inversion
+    # of about 18% remains (0.1878 -> 0.1538), and it still runs on the
+    # impaired arm. Only dropping f from the scored set removes the boundary,
+    # which was considered and rejected on 2026-10-27 in favour of keeping
+    # Popovic's parameter set intact. See
+    # tests/test_pt_zone_parity.test_the_f_skip_makes_the_score_non_monotone_in_severity,
+    # which still xfails and prints the residual.
+    def _scorable(k):
+        if ref.get(k, 0.0) == 0:
+            return False
+        if k == "f":
+            return not (params.get(k, 0.0) < 0.1 or params.get("N", 0.0) < 2.0)
+        return True
+
+    n_scored = sum(1 for k in _PARAM_KEYS if _scorable(k)) or _N_PARAMS
     breakdown = {}
     for k in _PARAM_KEYS:
         pij = params.get(k, 0.0)
@@ -994,7 +1025,7 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
             breakdown[k] = 0.0
             continue
         delta = pij - phj
-        denom = _N_PARAMS * max(abs(phj), _DENOM_FLOOR)
+        denom = n_scored * max(abs(phj), _DENOM_FLOOR)
         if k in ("N", "R2n", "phi_max_ratio", "omega_max_n"):
             dev = max(0.0, -delta) / denom   # penalise only if below healthy
         elif k in ("area_ratio", "omega_min_n"):

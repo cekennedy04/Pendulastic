@@ -228,12 +228,18 @@ def test_the_f_skip_makes_the_score_non_monotone_in_severity():
     it runs on the impaired arm, which is the direction that pulls the MAS>=1
     median below the MAS-0 75th percentile.
 
-    xfail, deliberately: the fix is a formula decision with three defensible
-    answers (rescale the divisor to the terms actually scored; drop f from the
-    scored set so there is no boundary; or refuse below the boundary), each of
-    which changes every stored score and needs its own calibration. This test
-    exists so the defect cannot be forgotten while that is decided, and it
-    should start passing when it is.
+    PARTLY FIXED 2026-10-27: the divisor is now the number of terms actually
+    scored, which was chosen over dropping f so that Popovic's parameter set
+    stays intact. That removed the deleted-term bias and lifted N=1.5 from
+    0.1282 to 0.1538, but the f term's own contribution still vanishes
+    discontinuously at the boundary, so ~18% of the inversion remains
+    (0.1878 -> 0.1538) and it still runs on the impaired arm.
+
+    Still xfail, therefore. Only removing the boundary makes the score
+    monotone, and that means dropping f from the scored set -- a decision
+    already taken the other way. This test holds the residual on the record
+    with live numbers so it cannot quietly become the accepted behaviour, and
+    it flips to a pass if the boundary ever stops losing a term.
     """
     base = {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
             "f": 0.8839, "area_ratio": 0.0945, "first_trough_depth": 10.0}
