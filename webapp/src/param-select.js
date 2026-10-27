@@ -28,7 +28,9 @@
 
 /// Every parameter the app can score, in publication order. Mirrors
 /// `pendulastic_pt_score.ALL_PT_KEYS` and `pt_score::ALL_PT_KEYS`;
-/// tests/test_pt_zone_parity.py pins all three to each other.
+/// tests/test_pt_zone_parity.py reads this file and pins all three to each
+/// other. That claim was false when first written -- the test compared only
+/// Python and Rust -- so the list below could have drifted from both.
 export const ALL_PT_KEYS = [
   'r2n',
   'n',
@@ -42,6 +44,11 @@ export const ALL_PT_KEYS = [
 /// The canonical scored set -- what `PT_HEALTHY_MAX` and `PT_BORDERLINE_MAX`
 /// are (eventually) calibrated against. Deliberately NOT the default
 /// selection: the app shows all seven so nothing is hidden, and says so.
+///
+/// Pinned to `_PARAM_KEYS` and `pt_score::CANONICAL_PT_KEYS` by
+/// tests/test_pt_zone_parity.py. A drift here would let the phone call a
+/// selection canonical that the scorer does not, which is exactly what the
+/// `canonical` flag exists to prevent.
 export const CANONICAL_KEYS = [
   'r2n',
   'n',

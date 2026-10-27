@@ -231,6 +231,22 @@ fn dev_above(pij: f64, phj: f64, denom: f64) -> f64 {
     (pij - phj).max(0.0) / denom
 }
 
+/// `pendulastic_pt_score._PARAM_KEYS` — the canonical scored set, as key
+/// names, in the order `PtScoreBreakdown::total` sums them.
+///
+/// One definition. It was previously spelled out again inside
+/// `pt_score_selected_from_scalars`' canonicity check and a third time as
+/// `CANONICAL_KEYS` in webapp/src/param-select.js, with nothing pinning them
+/// together; tests/test_pt_zone_parity.py now compares all three.
+pub const CANONICAL_PT_KEYS: [&str; N_PARAMS] = [
+    "r2n",
+    "n",
+    "phi_max_ratio",
+    "omega_max_n",
+    "f",
+    "area_ratio",
+];
+
 /// `pendulastic_pt_score.ALL_PT_KEYS` — every parameter the pipeline can
 /// score, in publication order: the SELECTABLE superset, not the scored set.
 ///
@@ -262,7 +278,10 @@ fn scorable(key: &str, params: &PtParams, healthy: &HealthyRef) -> bool {
         "omega_max_n" => healthy.omega_max_n != 0.0,
         "omega_min_n" => healthy.omega_min_n != 0.0,
         "area_ratio" => healthy.area_ratio != 0.0,
-        "f" => healthy.f != 0.0 && !(params.f < 0.1 || params.n < 2.0),
+        // `> 0.0`, not `!= 0.0`: a negative reference frequency is not a
+        // reference, and the bidirectional penalty would divide by its
+        // absolute value and read as a deviation from a physical impossibility.
+        "f" => healthy.f > 0.0 && !(params.f < 0.1 || params.n < 2.0),
         _ => false,
     }
 }
@@ -347,7 +366,12 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     // that to 0.1538. It does NOT make the score monotone: the f term's own
     // contribution still vanishes discontinuously, leaving ~18% of the
     // inversion. Mirrors `pendulastic_pt_score`'s `n_scored`.
-    let f_scorable = !(healthy.f <= 0.0 || params.f < 0.1 || params.n < 2.0);
+    // Deliberately `scorable`, not a second copy of its condition. These were
+    // two spellings of the same rule -- `healthy.f != 0.0` here against
+    // `healthy.f <= 0.0` there -- which agree on HEALTHY_REF and diverge on a
+    // negative reference f. The parity test only exercises HEALTHY_REF, so
+    // nothing would have caught it.
+    let f_scorable = scorable("f", params, healthy);
     let n_scored = [
         healthy.r2n != 0.0,
         healthy.n != 0.0,
@@ -631,12 +655,22 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 
     format!(
         "{{\"score\":{},\"score_simple\":{},\"zone\":\"{}\",\"breakdown\":[{}],\
-         \"unmeasured\":[{}],\"excursion_reason\":{}}}",   // key name is wire-frozen
+         \"unmeasured\":[{}],\"n_scored\":{},\"excursion_reason\":{}}}",   // key name is wire-frozen
         fmt_f64(total),
         fmt_f64(pt_score_simple(params, healthy)),
         zone_str,
         items,
         unmeasured,
+        // The per-term scale is no longer a fixed 1/N_PARAMS: it is
+        // 1/n_scored, and n_scored falls to 5 when f cannot be estimated. Any
+        // consumer colouring or thresholding a single term's contribution
+        // needs this, and webapp/src/metric-rows.js was reading a hardcoded
+        // 1/7 -- stale since omega_min_n left the set, and wrong per-trial
+        // since the divisor started following the selection.
+        ALL_PT_KEYS
+            .iter()
+            .filter(|k| CANONICAL_PT_KEYS.contains(*k) && scorable(k, params, healthy))
+            .count(),
         reason_json,
     )
 }
@@ -800,10 +834,8 @@ pub fn pt_score_selected_from_scalars(
     let total: f64 = breakdown.iter().map(|(_, v)| v).sum();
     let n_scored = known.len() - unscorable.len();
 
-    let canonical = {
-        let c: Vec<&str> = vec!["r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"];
-        known.len() == c.len() && c.iter().all(|k| known.contains(k))
-    };
+    let canonical = known.len() == CANONICAL_PT_KEYS.len()
+        && CANONICAL_PT_KEYS.iter().all(|k| known.contains(k));
 
     let items: Vec<String> = breakdown
         .iter()

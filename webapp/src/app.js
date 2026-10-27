@@ -1071,7 +1071,8 @@ if (typeof document !== 'undefined') {
     const host = el('metric-list');
     if (!host) return;
     ensureReference(() => renderMetricList(params, ptScore));
-    const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown);
+    const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown,
+      ptScore && ptScore.n_scored);
     host.hidden = rows.length === 0;
     if (rows.length === 0) return;
     host.textContent = '';
@@ -1540,9 +1541,14 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  function renderParamSelect() {
+  // async because it needs the wasm module, which was previously loaded from
+  // exactly one place (the trends view's loadHistory). On the capture path
+  // wasmApi was still null when this ran, so the panel hid itself and only
+  // appeared if the operator had happened to open Trends first.
+  async function renderParamSelect() {
     const panel = el('param-select');
     if (!panel) return;
+    if (!wasmApi) await ensureWasm();
     const reply = ptScoreForSelection(paramSelectParams, paramSelection);
     if (!reply) {
       // An older wasm build, or a trial without the full parameter set. Hide
@@ -1563,10 +1569,16 @@ if (typeof document !== 'undefined') {
       const value = r.unmeasured
         ? 'not measured'
         : (r.value === null ? '' : formatValue(r.value));
+      // The caveat is the reason someone would switch a parameter off, so it
+      // belongs next to the switch. It was built and unit-tested but never
+      // rendered.
+      const caveat = r.caveat
+        ? `<p class="param-caveat">${r.caveat}</p>`
+        : '';
       return `<tr class="${r.selected ? '' : 'param-off'}">`
         + `<td><label><input type="checkbox" data-param-key="${r.key}"`
         + `${r.selected ? ' checked' : ''}> ${r.label}`
-        + `${r.inCanonical ? '' : ' <em>(not scored)</em>'}</label></td>`
+        + `${r.inCanonical ? '' : ' <em>(not scored)</em>'}</label>${caveat}</td>`
         + `<td>${value}</td><td>${share}</td></tr>`;
     }).join('');
 
@@ -1581,16 +1593,33 @@ if (typeof document !== 'undefined') {
     noticeEl.textContent = notice ? notice.text : '';
     noticeEl.className = notice && !notice.canonical ? 'param-exploratory' : '';
 
-    // The selection's own total, always shown here even when it equals the
-    // headline score, so the two numbers are never silently different.
-    const label = el('param-select-intro');
-    if (label) {
-      label.dataset.total = reply.total.toFixed(4);
+    // The selection's own total, shown even when it equals the headline score,
+    // so the two numbers are never silently different. This was written to
+    // `dataset.total` with no CSS reading it back, so the number the comment
+    // claimed was always shown was never rendered at all.
+    const totalEl = el('param-select-total');
+    if (totalEl) {
+      const t = reply.total;
+      totalEl.textContent = typeof t === 'number' && Number.isFinite(t)
+        ? `Total over this selection: ${t.toFixed(4)} (${reply.n_scored} of `
+          + `${paramSelection.length} selected terms measurable)`
+        // fmt_f64 emits JSON null for a non-finite total, so this is reachable.
+        : 'Total over this selection: not computable';
     }
   }
 
   function setParamSelection(next) {
     paramSelection = next;
+    renderParamSelect();
+  }
+
+  // Point the panel at a trial. Resets the selection, because the module's own
+  // comment says a remembered selection would silently change what the next
+  // trial's number means -- and nothing was resetting it, so a selection made
+  // on one trial carried into every later one.
+  function showParamSelectFor(params) {
+    paramSelectParams = params;
+    paramSelection = defaultSelection();
     renderParamSelect();
   }
 
@@ -1682,6 +1711,9 @@ if (typeof document !== 'undefined') {
       renderResult(t.params);
       renderLateral(t.lateral_motion);
       renderMetricList(t.params, ptScoreForStoredTrial(t));
+      // Without this the panel kept rendering whichever trial was last
+      // captured, beside this trial's metric list and waveform.
+      showParamSelectFor(t.params);
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
@@ -1921,8 +1953,7 @@ if (typeof document !== 'undefined') {
     el('guide').textContent = 'scored';
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
-    paramSelectParams = p;
-    renderParamSelect();
+    showParamSelectFor(p);
     renderResult(p);
     renderLateral(action.lateralMotion);
     renderMetricList(p, action.ptScore);

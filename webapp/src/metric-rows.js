@@ -68,14 +68,29 @@ export const METRIC_INFO = {
 };
 
 /// The per-parameter contribution at which a metric is treated as fully
-/// impaired. compute_pt_score_breakdown divides each deviation by
-/// `7 * reference`, so one parameter contributing its whole share of a
-/// severe composite is 1/7. Above that the colour is simply pinned.
-export const DEV_FULL = 1 / 7;
+/// impaired, for a trial scoring `nScored` terms.
+///
+/// compute_pt_score_breakdown divides each deviation by `n_scored * reference`,
+/// so one parameter contributing its whole share is `1 / n_scored`. This was a
+/// hardcoded `1 / 7` and had been wrong twice over: the scored set dropped to
+/// six when omega_min_n left on 2026-10-26, and the divisor became per-trial on
+/// 2026-10-27 when it started following the terms a trial can actually score.
+/// At a fixed 1/7 the colours saturated about 20% early on exactly the
+/// low-oscillation trials where f is unscorable and n_scored is 5.
+export const DEV_FULL_DEFAULT_N = 6;
 
-export function severityOf(dev) {
+export function devFull(nScored = DEV_FULL_DEFAULT_N) {
+  const n = Number.isFinite(nScored) && nScored > 0 ? nScored : DEV_FULL_DEFAULT_N;
+  return 1 / n;
+}
+
+/// Kept for callers that have no n_scored to hand. It is the canonical-set
+/// value, not the per-trial one.
+export const DEV_FULL = devFull();
+
+export function severityOf(dev, nScored = DEV_FULL_DEFAULT_N) {
   if (typeof dev !== 'number' || !Number.isFinite(dev) || dev <= 0) return 0;
-  return Math.min(1, dev / DEV_FULL);
+  return Math.min(1, dev / devFull(nScored));
 }
 
 /// Words, so the colour is never carrying the meaning on its own.
@@ -112,7 +127,7 @@ export function severityStyle(sev) {
 /// already encodes each parameter's penalty DIRECTION -- some penalise only
 /// below the reference, some only above, `f` in both. Reusing it means the
 /// colours and the composite can never disagree about which way is worse.
-export function metricRows(params, refPayload, breakdown) {
+export function metricRows(params, refPayload, breakdown, nScored) {
   if (!params || !refPayload || !refPayload.reference) return [];
   const ref = refPayload.reference;
   const dev = new Map((breakdown || []).map((b) => [b.key, b.value]));
@@ -122,7 +137,7 @@ export function metricRows(params, refPayload, breakdown) {
     const hasMeasured = typeof measured === 'number' && Number.isFinite(measured);
     const refValue = ref[key];
     const hasRef = typeof refValue === 'number' && Number.isFinite(refValue);
-    const sev = severityOf(dev.get(key));
+    const sev = severityOf(dev.get(key), nScored);
     const info = METRIC_INFO[key] || { label: key, what: '', lowIsImpaired: null };
     return {
       key,

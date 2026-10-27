@@ -261,6 +261,43 @@ def test_the_f_skip_makes_the_score_non_monotone_in_severity():
     )
 
 
+JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                  "webapp", "src", "param-select.js")
+
+
+def _js_list(name):
+    """The string entries of `export const <name> = [...]` in param-select.js."""
+    src = open(JS, encoding="utf-8").read()
+    m = re.search(r"export const " + name + r"\s*=\s*\[(.*?)\];", src, re.S)
+    assert m, f"{name} not found in {JS}"
+    return re.findall(r"'([a-z0-9_]+)'", m.group(1))
+
+
+def test_all_three_languages_agree_on_the_canonical_scored_set():
+    """The claim param-select.js makes about this test, made true.
+
+    That module said "tests/test_pt_zone_parity.py pins all three to each
+    other" while this file compared only Python and Rust. The canonical set was
+    meanwhile spelled out four times: _PARAM_KEYS, Rust's CANONICAL_PT_KEYS, an
+    inline vec in the canonicity check, and JS's CANONICAL_KEYS. The inline vec
+    is gone; these three are pinned here.
+
+    A JS list that drifts would let the phone call a selection canonical that
+    the scorer does not, which is the one thing the `canonical` flag exists to
+    prevent.
+    """
+    rust = re.search(
+        # The array size is `N_PARAMS`, not a literal, so match either.
+        r"pub const CANONICAL_PT_KEYS: \[&str; [A-Za-z_0-9]+\] = \[(.*?)\];",
+        open(RUST, encoding="utf-8").read(), re.S)
+    assert rust, "CANONICAL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', rust.group(1))
+    py_keys = [k.lower() for k in pt._PARAM_KEYS]
+    assert rust_keys == py_keys, f"Rust {rust_keys} != Python {py_keys}"
+    assert _js_list("CANONICAL_KEYS") == py_keys, (
+        f"JS {_js_list('CANONICAL_KEYS')} != Python {py_keys}")
+
+
 def test_the_selectable_superset_matches_between_languages():
     """ALL_PT_KEYS is wider than the scored set and must agree in both.
 
@@ -275,6 +312,8 @@ def test_the_selectable_superset_matches_between_languages():
     # The Rust spells keys in snake_case; Python uses its own param names.
     py_keys = [k.lower() for k in pt.ALL_PT_KEYS]
     assert rust_keys == py_keys, f"{rust_keys} != {py_keys}"
+    assert _js_list("ALL_PT_KEYS") == py_keys, (
+        f"JS {_js_list('ALL_PT_KEYS')} != Python {py_keys}")
     # The canonical scored set must be a strict subset of the selectable one.
     assert set(k.lower() for k in pt._PARAM_KEYS) < set(rust_keys)
     # omega_min_n is selectable but NOT scored -- that is the whole point.
