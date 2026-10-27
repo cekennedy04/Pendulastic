@@ -2,3 +2,7 @@ out/
 report/out/
 __pycache__/
 sessions/DRYRUN-*/
+usb/
+labview/player/sent/
+labview/player/variable_url.txt
+designer/*.exe
