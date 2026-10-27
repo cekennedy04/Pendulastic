@@ -107,7 +107,7 @@ namespace Pendulastic
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
-        public const double MIN_INTERPRETABLE_A0_DEG = 25.0;
+        public const double MIN_INTERPRETABLE_A0_DEG = 30.0;   // 25 -> 30 on 2026-10-27, see pendulastic_pt_score
         public const double MAX_INTERPRETABLE_A0_DEG = 120.0;
 
         /// <summary>_PARAM_KEYS: the scored set (omega_min_n is diagnostic only since pt6).</summary>
@@ -457,8 +457,10 @@ namespace Pendulastic
                         + "floor for interpreting PT7 (control mean " + Fmt(EXCURSION_REF_MEAN_DEG, 1) + ", sd " + Fmt(EXCURSION_REF_SD_DEG, 1) + ", n="
                         + EXCURSION_REF_N.ToString(CultureInfo.InvariantCulture) + "). "
                         + "PT7's parameters are ratios normalised on the swing, so they stop tracking "
-                        + "severity once the swing collapses. Repeat the trial and check positioning, "
-                        + "release and sensor placement before reading anything into the score.";
+                        + "severity once the swing collapses -- a stiff, high-tone leg and a poorly "
+                        + "positioned trial both swing too little to grade. Repeat the trial and check "
+                        + "positioning, release and sensor placement; if a full lift still swings this "
+                        + "little, record the reduced excursion and assess tone clinically.";
                 r.Interpretable = false; r.Mas = null; r.Zone = null; r.Refused = r.Reason;
                 return;
             }
