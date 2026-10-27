@@ -28,9 +28,19 @@
 use crate::params_json::fmt_f64;
 use crate::scoring::PtParams;
 
-/// `pendulastic_pt_score._N_PARAMS` — the 6 scored parameters.
+/// `pendulastic_pt_score._N_PARAMS` — the 5 scored parameters.
 ///
-/// Was 7. `omega_min_n` was dropped from the scored set on 2026-10-26: it is
+/// Was 6, and 7 before that. `omega_max_n` was dropped on 2026-10-27: it is a
+/// PEDESTAL, not a severity measurement. On the validated emulator it
+/// contributes 0.0776 of a healthy limb's 0.0892 total — 87% of the score of
+/// a limb with nothing wrong with it — and grows only 0.038 across the entire
+/// severity ladder, the only scored term whose offset exceeds its signal
+/// (signal/pedestal 0.49; every other term is 3.5 or higher). Its reference is
+/// also 1.7–2.2× above every estimate of a healthy limb, and the pipeline's
+/// own measurement moved 8.50 → 3.19 across 205 trials on resampling alone. It
+/// was the last scored parameter built on a differentiated signal.
+///
+/// `omega_min_n` was dropped on 2026-10-26: it is
 /// `-omega_max_n` for any limb dropped from the extension extreme, because
 /// `omega_max_n` is `max(|omega|)` while `omega_min_n` is `min(omega)` and the
 /// fastest motion is the first fall. Measured on 53 emulator scenarios, 51
@@ -38,11 +48,11 @@ use crate::scoring::PtParams;
 /// 0.0665 + 0.0653 of a 0.1417 total — 94% of the score, from one measurement
 /// weighted twice. See `pendulastic_pt_score._PARAM_KEYS` for the full note.
 /// The field is still computed and still reported; it is not summed.
-pub const N_PARAMS: usize = 6;
+pub const N_PARAMS: usize = 5;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6-2026-10-26";
+pub const SCORE_FORMULA_ID: &str = "pt5-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -163,11 +173,11 @@ pub fn pt_zone(score: f64) -> PtZone {
 /// for field (`R2n`->`r2n`, `N`->`n`; the other five match by name).
 ///
 /// Penalty directions (impaired = deviated from healthy reference):
-///   `n`, `r2n`, `phi_max_ratio`, `omega_max_n` → penalise only if BELOW
-///   reference. `area_ratio` → penalise only if ABOVE reference. `f` →
-///   bidirectional, skipped when uncomputable.
+///   `n`, `r2n`, `phi_max_ratio` → penalise only if BELOW reference.
+///   `area_ratio` → penalise only if ABOVE reference. `f` → bidirectional,
+///   skipped when uncomputable.
 ///
-/// `omega_min_n` has no field here. `pendulastic_pt_score.compute_pt_score_breakdown`
+/// Neither velocity term has a field here. `pendulastic_pt_score.compute_pt_score_breakdown`
 /// iterates `_PARAM_KEYS`, so its dict has six entries and no `omega_min_n`
 /// key at all — a seventh field here would be a parity break, not a
 /// convenience. The raw PARAMETER is untouched: `PtParams::omega_min_n` is
@@ -179,23 +189,22 @@ pub struct PtScoreBreakdown {
     pub r2n: f64,
     pub n: f64,
     pub phi_max_ratio: f64,
-    pub omega_max_n: f64,
     pub f: f64,
     pub area_ratio: f64,
 }
 
 impl PtScoreBreakdown {
-    /// Sum of the six SCORED contributions — `pendulastic_pt_score.compute_pt_score`
+    /// Sum of the five SCORED contributions — `pendulastic_pt_score.compute_pt_score`
     /// is exactly `sum(compute_pt_score_breakdown(...).values())` over
     /// `_PARAM_KEYS`, so this sums in that same order (`R2n, N, phi_max_ratio,
     /// omega_max_n, f, area_ratio`) rather than field-declaration order that
     /// happens to differ, to match the reference bit-for-bit.
     ///
-    /// `omega_min_n` is deliberately absent: it duplicates `omega_max_n` (see
-    /// [`N_PARAMS`]). Adding it back would silently restore the double weight,
-    /// which `tests/test_pt_zone_parity.py` now checks for.
+    /// Both velocity terms are deliberately absent (see [`N_PARAMS`]). Adding
+    /// either back would silently restore a double weight or a pedestal, which
+    /// `tests/test_pt_zone_parity.py` now checks for.
     pub fn total(&self) -> f64 {
-        self.r2n + self.n + self.phi_max_ratio + self.omega_max_n + self.f + self.area_ratio
+        self.r2n + self.n + self.phi_max_ratio + self.f + self.area_ratio
     }
 
     /// `(key, contribution)` pairs ordered by DESCENDING contribution, so a
@@ -207,7 +216,6 @@ impl PtScoreBreakdown {
             ("r2n", self.r2n),
             ("n", self.n),
             ("phi_max_ratio", self.phi_max_ratio),
-            ("omega_max_n", self.omega_max_n),
             ("f", self.f),
             ("area_ratio", self.area_ratio),
         ];
@@ -246,11 +254,6 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     } else {
         dev_below(params.phi_max_ratio, healthy.phi_max_ratio, denom(healthy.phi_max_ratio))
     };
-    let omega_max_n = if healthy.omega_max_n == 0.0 {
-        0.0
-    } else {
-        dev_below(params.omega_max_n, healthy.omega_max_n, denom(healthy.omega_max_n))
-    };
     let area_ratio = if healthy.area_ratio == 0.0 {
         0.0
     } else {
@@ -266,7 +269,7 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
         (params.f - healthy.f).abs() / denom(healthy.f)
     };
 
-    PtScoreBreakdown { r2n, n, phi_max_ratio, omega_max_n, f, area_ratio }
+    PtScoreBreakdown { r2n, n, phi_max_ratio, f, area_ratio }
 }
 
 /// `pendulastic_pt_score.compute_pt_score(params, ref)` — the sum of
@@ -417,7 +420,7 @@ pub fn refusal_reason(params: &PtParams) -> Option<String> {
     excursion_reason(params).or_else(|| oscillation_reason(params))
 }
 
-/// Which of the six scored parameters are placeholders rather than
+/// Which of the five scored parameters are placeholders rather than
 /// measurements, in `_PARAM_KEYS` order.
 ///
 /// The distinction matters clinically. A limb with high tone legitimately
@@ -519,7 +522,7 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 /// the whole scoring path reads only these TEN scalars and touches no vector
 /// field --
 ///
-///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, omega_max_n, f, area_ratio
+///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, f, area_ratio
 ///   [`unmeasured_params`]  : f, first_trough_depth, n
 ///   [`refusal_reason`]     : a0_deg, a1_deg
 ///
@@ -830,7 +833,7 @@ mod tests {
             p.area_ratio = 0.5;
         });
         let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
-        let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio + breakdown.omega_max_n
+        let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio
             + breakdown.f + breakdown.area_ratio;
         assert_eq!(pt_score(&p, &HEALTHY_REF), manual);
     }
@@ -1120,14 +1123,14 @@ mod tests {
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
-        // reads HIGHER on this fixture, not lower, which is the double count
-        // cutting the other way: dropping omega_min_n also drops the /7 in
-        // every other term's denominator, and this fixture's area_ratio is so
-        // far above reference (0.94 vs 0.0945) that widening its share
-        // outweighs losing a term whose own contribution here was small
-        // (omega_min_n = 0.004, barely above the -9.4152 reference).
-        assert!((full - 1.896_321_590_796_999_47_f64).abs() < 1e-15, "full={full:.17}");
+        // 1.768_336_341_387_656_72 under the published 7-term sum,
+        // 1.896_321_590_796_999_47 under the 6-term sum. It climbs again with
+        // the 5-term sum, and the reason is this fixture rather than the
+        // change: its area_ratio is 0.94 against a 0.0945 reference, so that
+        // one term dominates, and every narrowing of the denominator widens
+        // its share faster than dropping a small term shrinks the total. A
+        // real healthy limb moves the other way -- 0.1417 to 0.0892 to 0.0140.
+        assert!((full - 2.127_847_803_763_657_90_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

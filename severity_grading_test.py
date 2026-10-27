@@ -419,16 +419,32 @@ def model_arm(verbose: bool = True) -> dict:
     # anything else. So divide the range PT7 covers across the full severity
     # ladder by the largest spread it shows among profiles at a single
     # severity. Below 1 the metric is reading the confound.
+    # Only INTERPRETABLE rows, and that correction matters more than it looks.
+    # A refused profile still has a pt7 -- the arithmetic ran, the app just
+    # declines to turn it into a verdict -- and counting that number as a
+    # "mechanism confound" double-counts the refusal, which Q3 already reports
+    # as part of the answer. It also inflated this table by a lot: the two
+    # arrested profiles (catch_and_hold_*, refused for no measurable
+    # oscillation) score above 2.2 against tone_L3's 0.5, so they, not any
+    # mechanism the app actually grades, were setting pt7's spread.
+    #
+    # The question Q4 asks is whether the metric responds more to severity
+    # than to a change of KIND at the same severity. A profile the app will
+    # not grade is not part of its response to either.
+    def _graded(rows):
+        return [r for r in rows if r.get("interpretable")]
+
+    n_excluded = sum(1 for g in by_intent.values() for r in g if not r.get("interpretable"))
     q4 = {}
     for m in ["pt7"] + METRICS:
-        lv = [r[m] for r in ladder
+        lv = [r[m] for r in _graded(ladder)
               if isinstance(r[m], float) and math.isfinite(r[m])]
         sev_range = (max(lv) - min(lv)) if len(lv) >= 2 else float("nan")
         worst = float("nan")
         for group in by_intent.values():
             if len(group) < 2:
                 continue
-            gv = [r[m] for r in group
+            gv = [r[m] for r in _graded(group)
                   if isinstance(r[m], float) and math.isfinite(r[m])]
             if len(gv) >= 2:
                 s = max(gv) - min(gv)
@@ -459,6 +475,12 @@ def model_arm(verbose: bool = True) -> dict:
               "the KIND")
         print("  of impairment changes than when its AMOUNT goes from none to "
               "severe.")
+        print(f"  Graded profiles only: {n_excluded} refused row(s) excluded. A "
+              f"refused trial")
+        print("  has a pt7 but no verdict, so counting it here would double-count "
+              "the")
+        print("  refusal Q3 already reports -- and the arrested profiles score "
+              "above 2.2.")
 
     # Q5. What grade does the app actually print along the ladder?
     #

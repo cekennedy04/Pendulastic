@@ -26,6 +26,35 @@
 > withdrawn. Finding 3 is weakened: PT7's signal-to-confound ratio is 1.08, not
 > 0.10, and only `area_ratio` is still confound-dominated.
 >
+> **FINDING 3 IS WITHDRAWN ENTIRELY, 2026-10-27, and so is the table in §5.**
+> The ratio was computed over every profile sharing an intended severity,
+> including ones the app REFUSES to grade. A refused trial still has a pt7 --
+> the arithmetic ran, the app just declines to turn it into a verdict -- and
+> the two arrested profiles (`catch_and_hold_*`) score above 2.2 against
+> `tone_L3`'s 0.5, so they, not any mechanism the app actually grades, were
+> setting the spread. Q3 already reports the refusal rate as part of the
+> answer, so counting it again here was double-counting it.
+>
+> Restricted to profiles the app grades, the same harness on the same traces:
+>
+> | scored set | all rows (as published) | graded profiles only |
+> |---|---|---|
+> | 7-parameter | 0.27 | **6.52** |
+> | 6-parameter | 0.26 | **5.76** |
+> | 5-parameter | 0.24 | **5.07** |
+>
+> So severity dominates by 5-6x and always did; the published 0.10 and the
+> 1.08 above are both artifacts of the same mistake. Note the direction of the
+> other effect: dropping the two velocity parameters slightly *lowers* this
+> ratio, because removing a near-constant term removes something that was
+> near-constant across mechanisms too. Their removal is justified elsewhere
+> (the healthy floor falls 0.1417 -> 0.0140 and the dynamic range goes 6.7x ->
+> 41x), not here.
+>
+> Finding 5 -- "a healthy, critically damped limb is graded 4" -- is also
+> withdrawn as of 2026-10-27: that limb is an arrest with no oscillation, and
+> the scorer now refuses it instead of grading it off four zeros.
+>
 > **Findings 2 and 5 survive untouched and now carry the argument.** PT7 still
 > differs 6.9x between mechanisms at one intended severity, and a healthy,
 > critically damped limb is still graded "4". Neither depended on the ladder's
