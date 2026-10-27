@@ -352,9 +352,9 @@ const PARAM_PLAIN_NAME = {
 //
 // This exists because the arithmetic is actively misleading without it. An
 // unmeasured parameter sits at 0.0, and the score penalises `r2n`,
-// `phi_max_ratio`, `n` and `omega_max_n` for being BELOW the healthy
+// `phi_max_ratio` and `n` for being BELOW the healthy
 // reference -- so a value that is 0.0 because nothing could be computed
-// contributes the largest penalty that parameter can produce, exactly 1/7 of
+// contributes the largest penalty that parameter can produce, a full share of
 // the scale each. The score therefore reads MORE impaired the less was
 // measurable, which is backwards, and nothing on screen said so.
 //
