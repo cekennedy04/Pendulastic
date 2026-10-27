@@ -612,10 +612,24 @@ def pt_zone(score: Optional[float]) -> str:
 # excursion also comes from poor positioning, an incomplete release, guarding
 # or pain, mechanical obstruction, and sensor failure. Reporting "severe
 # spasticity" on those would trade one wrong answer for another.
+#
+# RAISED 25 -> 30, 2026-10-27, by user direction ("if iffy, exclude to be
+# safe"). The premise above -- every spastic leg sits at A0 >= 28.7 and is
+# graded correctly -- no longer holds. After the seed-window, lift-and-hold
+# release and drift-fit fixes, the 81 MAS-matched baseline OptiTrack trials
+# put exactly three MAS>=1 trials in the HEALTHY zone, and they are exactly
+# the three with A0 between 25 and 30 (P13 L T2 27.3, P13 R T5 27.2, P14 L T1
+# 28.4). At 25 two MAS 1 legs (P13 L/R) were graded healthy; at 30 they are
+# refused instead and no MAS>=1 leg is graded healthy. Cost: 4 more MAS-0
+# trials refused (17/60 vs 13/60) and one examined MAS-0 leg (P5 L) loses its
+# grade. Refusing a grade is the recoverable error; a spastic leg reported
+# healthy is not. Evidence is 3 trials from 2 people -- re-derive with more
+# clinician-examined MAS>=1 legs, and the message now names high tone as one
+# possible cause so a refusal is not read as "bad trial, repeat until it passes".
 EXCURSION_REF_MEAN_DEG = 46.6
 EXCURSION_REF_SD_DEG = 11.1
 EXCURSION_REF_N = 53
-MIN_INTERPRETABLE_A0_DEG = 25.0
+MIN_INTERPRETABLE_A0_DEG = 30.0
 
 # Upper bound on a believable excursion. The floor above catches a swing that
 # collapsed; this catches a number that is not a swing at all.
@@ -646,8 +660,10 @@ INSUFFICIENT_EXCURSION = (
     "Insufficient excursion: the leg moved {a0:.1f} deg, below the {gate:.0f} deg "
     "floor for interpreting PT7 (control mean {mean:.1f}, sd {sd:.1f}, n={n}). "
     "PT7's parameters are ratios normalised on the swing, so they stop tracking "
-    "severity once the swing collapses. Repeat the trial and check positioning, "
-    "release and sensor placement before reading anything into the score."
+    "severity once the swing collapses -- a stiff, high-tone leg and a poorly "
+    "positioned trial both swing too little to grade. Repeat the trial and check "
+    "positioning, release and sensor placement; if a full lift still swings this "
+    "little, record the reduced excursion and assess tone clinically."
 )
 
 NO_OSCILLATION = (
@@ -2577,8 +2593,61 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
     back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
     for i in range(bi, len(t)):
         if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
-            return max(0, i - back)
+            drop = _lift_hold_end(t, ang, i, baseline, thresh_deg)
+            return max(0, (i if drop is None else drop) - back)
     return bi
+
+
+# A trial that opens at rest has a LIFT before its drop: the leg rises
+# monotonically from rest, sits still in extension, and only then is
+# released. The first threshold crossing is the lift, and measuring phi[0]
+# from there gives rest-minus-rest ~ 0 deg, so compute_pt_params discarded
+# the trial (15 Control_6/7/8 baseline trials, 2026-10-27). A real release
+# reverses within a fraction of a second -- a pendulum overshoots -- and an
+# arrested limb drops once and stays near where it landed, so "monotonic to
+# a still plateau, then leaves it and swings back through the starting
+# angle" only matches a lift-and-hold. The return is what separates the two:
+# an arrested limb with tremor in its resting tail also "leaves" its plateau.
+_LIFT_HOLD_MIN_S = 0.5     # shortest still window that counts as a hold
+_LIFT_REACH_MAX_S = 2.5    # the lift must reach its hold within this
+_LIFT_HOLD_MAX_S = 8.0     # and the drop must come within this of the hold
+_LIFT_RETURN_MAX_S = 2.0   # and pass back through the starting angle within this
+
+
+def _lift_hold_end(t: np.ndarray, ang: np.ndarray, i: int,
+                   baseline: float, thresh: float) -> Optional[int]:
+    """Index where a lift-and-hold starting at crossing `i` is released, or
+    None when the crossing at `i` is not a lift (it is the release itself)."""
+    dt = _median_dt(t)
+    hold_n = max(3, int(round(_LIFT_HOLD_MIN_S / dt)))
+    reach_end = int(np.searchsorted(t, t[i] + _LIFT_REACH_MAX_S))
+    peak = 0.0
+    for k in range(i, min(reach_end, len(t) - hold_n)):
+        a = ang[k]
+        if not np.isfinite(a):
+            continue
+        dev = abs(float(a) - baseline)
+        if dev < peak - thresh:
+            return None                     # reversed before holding: a swing
+        peak = max(peak, dev)
+        win = ang[k:k + hold_n]
+        win = win[np.isfinite(win)]
+        if len(win) < hold_n // 2 or float(np.ptp(win)) >= 0.5 * thresh:
+            continue
+        level = float(np.median(win))
+        if abs(level - baseline) <= thresh:
+            continue
+        leave_end = int(np.searchsorted(t, t[k] + _LIFT_HOLD_MAX_S))
+        for m in range(k + hold_n, min(leave_end, len(t))):
+            if np.isfinite(ang[m]) and abs(float(ang[m]) - level) > thresh:
+                back_end = int(np.searchsorted(t, t[m] + _LIFT_RETURN_MAX_S))
+                seg = ang[m:back_end]
+                seg = seg[np.isfinite(seg)]
+                if len(seg) and float(np.min(np.abs(seg - baseline))) <= thresh:
+                    return m
+                return None                 # left, but never came back
+        return None                         # never left: an arrested limb
+    return None
 
 
 def detect_release_t0(t: np.ndarray, signal: np.ndarray,
@@ -2900,10 +2969,22 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     slope = None
     if detrend:
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
-        if slope is None and baseline_end >= _MIN_BASELINE:
+        # Only the still hold is baseline. A trial that opens at rest has a
+        # lift before it (see _lift_hold_end), and fitting through that ramp
+        # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
+        # from its first frame stays within the band throughout, so its
+        # window is unchanged.
+        baseline_start = baseline_end
+        if baseline_end > 0:
+            band = 0.08 * float(np.nanpercentile(ang_s_raw, 97) - np.nanpercentile(ang_s_raw, 3))
+            ref = ang_s_raw[baseline_end - 1]
+            while baseline_start > 0 and abs(ang_s_raw[baseline_start - 1] - ref) <= band:
+                baseline_start -= 1
+        if slope is None and baseline_end - baseline_start >= _MIN_BASELINE:
             # Tail unusable (trial ended mid-swing, too short, still ringing).
             # Fall back to the historical baseline fit rather than to nothing.
-            slope = float(np.polyfit(t_c[:baseline_end], ang_c_raw[:baseline_end], 1)[0])
+            slope = float(np.polyfit(t_c[baseline_start:baseline_end],
+                                     ang_c_raw[baseline_start:baseline_end], 1)[0])
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:

@@ -279,30 +279,6 @@ def derive(legs: dict, verbose: bool = True):
     # that (0.2979 > 0.2435) together with instructions to apply it, because
     # the only refusal here was on n. A non-separating cohort is a finding
     # about the cohort or the scorer, never a threshold.
-    #
-    # There is a known scorer defect that produces this inversion by itself,
-    # so read it before concluding anything about the cohort: f is skipped
-    # when it cannot be estimated (f < 0.1 or N < 2.0) and nothing rescales
-    # the divisor, so crossing that boundary DELETES a penalty term. The score
-    # therefore falls as the limb worsens -- N=2.0 scores 0.1878 where the
-    # worse N=1.5 scores 0.1282 -- and it fires on the low-oscillation end,
-    # i.e. on the impaired arm. See
-    # tests/test_pt_zone_parity.test_the_f_skip_makes_the_score_non_monotone_in_severity.
-    if not (h_max < imp_med):
-        raise SystemExit(
-            f"the arms do not separate: MAS-0 75th percentile {h_max:.4f} is not "
-            f"below the MAS>=1 median {imp_med:.4f}, so the thresholds would come "
-            f"out inverted ({h_max:.4f} > {0.5 * (h_max + imp_med):.4f}). Refusing to "
-            f"emit a threshold pair from this.\n"
-            f"  MAS 0   n={len(healthy)}  median {statistics.median(healthy):.4f}  "
-            f"75th pct {h_max:.4f}\n"
-            f"  MAS>=1  n={len(impaired)}  median {imp_med:.4f}\n"
-            f"  Before concluding this is the cohort: the f-skip discontinuity "
-            f"inverts the arms by itself. f is dropped from the sum when it cannot "
-            f"be estimated (f < 0.1 or N < 2.0) with no divisor rescale, so a WORSE "
-            f"limb scores lower (N=2.0 -> 0.1878, N=1.5 -> 0.1282) and it fires on "
-            f"the impaired arm. Check how many MAS>=1 legs sit below N=2 first."
-        )
     if verbose:
         print(f"  MAS 0   n={len(healthy):3d}  median {statistics.median(healthy):.4f}  "
               f"75th pct {h_max:.4f}")
@@ -310,6 +286,30 @@ def derive(legs: dict, verbose: bool = True):
         print()
         print(f"  PT_HEALTHY_MAX    = {h_max:.4f}   (was {pts.PT_HEALTHY_MAX})")
         print(f"  PT_BORDERLINE_MAX = {b_max:.4f}   (was {pts.PT_BORDERLINE_MAX})")
+    # The borderline is the midpoint up to the impaired median, so it only
+    # sits above the healthy cut when that median does. On the 2026-10-26
+    # cohort it did not (0.1892 vs 0.2979) and main() printed "To apply"
+    # for a pair that would grade every borderline leg healthy.
+    #
+    # Deliberately AFTER the print: the operator should see the two arms'
+    # numbers and then the refusal, not a refusal with nothing to read it
+    # against. A second copy of this check arrived from the other side of the
+    # 2026-10-27 merge, placed before the print; it was removed rather than
+    # kept, since the first to fire makes the other dead code.
+    if imp_med <= h_max:
+        raise SystemExit(
+            f"groups do not separate: MAS>=1 median {imp_med:.4f} "
+            f"<= MAS 0 75th pct {h_max:.4f}, so borderline {b_max:.4f} <= healthy "
+            f"{h_max:.4f}. Refusing to emit a threshold from this.\n"
+            f"  Before concluding this is the cohort: the f-skip discontinuity can "
+            f"invert the arms by itself. f leaves the sum when it cannot be "
+            f"estimated (f < 0.1 or N < 2.0), and while the divisor now follows the "
+            f"terms actually scored, f's own contribution still vanishes at that "
+            f"boundary -- so a WORSE limb can score lower (N=2.0 -> 0.1878, "
+            f"N=1.5 -> 0.1538) and it fires on the impaired arm. Check how many "
+            f"MAS>=1 legs sit below N=2 first. "
+            f"See docs/reports/2026-10-27-dropping-f.md."
+        )
     return h_max, b_max
 
 

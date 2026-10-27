@@ -1008,13 +1008,18 @@ def test_excursion_gate_stays_clear_of_the_lowest_spastic_leg():
     floor of 31.5 -- ABOVE the lowest spastic leg (28.7), so a clean control
     bound would refuse grades on the study's own cases.
 
-    The real constraint is therefore the spastic minimum, and it is the one
-    worth pinning: the gate must stay below 28.7 or it starts reclassifying
-    the cases the study exists to measure.
+    The constraint was the spastic minimum (28.7) until 2026-10-27, when the
+    corrected reconstruction showed the spastic trials just above 25 (A0
+    27.2-28.4, P13 L/R and P14 L) were exactly the MAS>=1 trials graded
+    HEALTHY. Refusing them is the recoverable error, so the gate now sits
+    above them. Pin both sides: high enough to refuse those trials, low
+    enough to keep grading the bulk of controls (median A0 ~52).
     """
     import pendulastic_pt_score as p
-    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7, (
-        "gate would refuse grades on real spastic legs")
+    assert p.MIN_INTERPRETABLE_A0_DEG > 28.4, (
+        "gate would grade the 2026-10-27 MAS>=1 trials (A0 27.2-28.4) as healthy")
+    assert p.MIN_INTERPRETABLE_A0_DEG < 40.0, (
+        "gate so high it refuses a large share of normal controls")
     assert p.MIN_INTERPRETABLE_A0_DEG > 12.0, (
         "gate so low it would stop catching collapsed swings")
 
@@ -1066,7 +1071,7 @@ def test_every_excursion_measured_in_this_corpus_is_still_accepted():
     import pendulastic_pt_score as pt
     """The ceiling must reject nothing that was ever really measured. Across 218
     scored optical trials the largest genuine A0 is 89.8 deg."""
-    for a0 in (25.0, 46.6, 63.5, 89.8):
+    for a0 in (pt.MIN_INTERPRETABLE_A0_DEG, 46.6, 63.5, 89.8):
         assert pt.excursion_ok(_plausible_params(a0)), a0
 
 
@@ -1461,3 +1466,122 @@ def test_the_centred_frame_leaves_a_clean_swing_alone():
     assert r["area_ratio"] < 0.1, r["area_ratio"]
     assert abs(r["A0_deg"] - a0) < 1.5, r["A0_deg"]
     assert r["N"] > 5.0, r["N"]
+
+
+# ── Release detection on a trial that starts AT REST (2026-10-27) ──────────
+# Motive often starts recording before the examiner lifts the leg: the trial
+# opens at rest (0 deg), the leg is lifted to extension, held ~2 s, then
+# dropped. _detect_release used to fire on the LIFT -- the first threshold
+# crossing -- so phi[0] measured from rest to rest came out ~0 and
+# compute_pt_params discarded the trial under its sub-3 deg floor. 15
+# Control_6/7/8 baseline trials were lost this way (A0 ~ -1.8..+1.1 deg at the
+# detected "release" vs 41-70 deg at the real drop).
+
+def _rest_lift_hold_drop(fps=120.0, rest_s=1.5, lift_s=0.7, hold_s=2.0,
+                         swing_s=8.0, hold_deg=-55.0, freq=0.9, decay=0.45):
+    t_parts, a_parts = [], []
+    n_rest, n_lift, n_hold = int(rest_s * fps), int(lift_s * fps), int(hold_s * fps)
+    a_parts.append(np.zeros(n_rest))
+    a_parts.append(hold_deg * 0.5 * (1 - np.cos(np.pi * np.arange(n_lift) / n_lift)))
+    a_parts.append(np.full(n_hold, hold_deg))
+    ts = np.arange(int(swing_s * fps)) / fps
+    a_parts.append(hold_deg * np.exp(-decay * ts) * np.cos(2 * np.pi * freq * ts))
+    ang = np.concatenate(a_parts)
+    t = np.arange(len(ang)) / fps
+    drop_t = (n_rest + n_lift + n_hold) / fps
+    return t, ang, drop_t
+
+
+def test_release_found_at_drop_not_lift_when_trial_starts_at_rest():
+    t, ang, drop_t = _rest_lift_hold_drop()
+    p = compute_pt_params(t, ang)
+    assert p is not None, "a real 55 deg swing after a lift-and-hold must be scored"
+    assert abs(p["t_r"][0] - drop_t) < 0.2, (
+        f"release at t={p['t_r'][0]:.2f}, expected the drop at ~{drop_t:.2f}, "
+        "not the lift at ~1.5")
+    assert p["A0_deg"] > 45.0
+
+
+def test_release_at_drop_holds_for_lift_in_either_direction():
+    t, ang, drop_t = _rest_lift_hold_drop(hold_deg=+60.0)
+    p = compute_pt_params(t, ang)
+    assert p is not None
+    assert abs(p["t_r"][0] - drop_t) < 0.2
+
+
+def test_held_start_trial_release_unchanged():
+    """A trial that opens IN the hold has no lift: the first crossing is the
+    drop, and the swing reverses straight away, so nothing changes."""
+    from pendulastic_pt_score import _detect_release
+    t, ang, drop_t = _rest_lift_hold_drop(rest_s=0.0, lift_s=0.0, hold_s=2.0)
+    i = _detect_release(t, ang)
+    assert abs(t[i] - drop_t) < 0.2
+
+
+def test_arrested_limb_release_unchanged():
+    """Hold -> one monotonic drop -> stays put (the near-rigid limb the
+    no-oscillation gate exists for). The still segment after the drop looks
+    like a hold but the leg never leaves it, so the first crossing stands."""
+    from pendulastic_pt_score import _detect_release
+    fps = 120.0
+    hold = np.full(int(2.0 * fps), -60.0)
+    n = int(0.6 * fps)
+    drop = -60.0 * 0.5 * (1 + np.cos(np.pi * np.arange(n) / n))
+    ang = np.concatenate([hold, drop, np.zeros(int(6.0 * fps))])
+    t = np.arange(len(ang)) / fps
+    i = _detect_release(t, ang)
+    assert abs(t[i] - 2.0) < 0.2
+
+
+def test_lift_hold_drop_on_imperfect_hold_jitter():
+    """Real holds jitter by a degree or so; the lift must still be skipped."""
+    rng = np.random.default_rng(0)
+    t, ang, drop_t = _rest_lift_hold_drop()
+    ang = ang + rng.normal(0, 0.4, len(ang))
+    p = compute_pt_params(t, ang)
+    assert p is not None
+    assert abs(p["t_r"][0] - drop_t) < 0.2
+
+
+def test_lift_does_not_enter_the_baseline_drift_fit(monkeypatch):
+    """When the settled tail is unusable (still ringing at the end of the
+    recording), the drift slope falls back to a fit over the pre-release
+    baseline. For a trial that starts at rest, everything before the drop
+    includes the LIFT -- a 55 deg ramp -- and fitting through it made A0 read
+    134-352 deg on real Control_6/7/8 trials. Only the still hold is baseline.
+    The tail estimate is forced to None so the fallback is what's tested."""
+    import pendulastic_pt_score as pts
+    monkeypatch.setattr(pts, "_settled_tail_drift_slope", lambda *a, **k: None)
+    t, ang, drop_t = _rest_lift_hold_drop()
+    p = pts.compute_pt_params(t, ang)
+    assert p is not None
+    assert 50.0 < p["A0_deg"] < 60.0, f"A0 {p['A0_deg']:.1f}: the lift leaked into the drift fit"
+
+
+def test_held_start_baseline_fit_unchanged(monkeypatch):
+    """A trial held from its first frame keeps its whole pre-release window."""
+    import pendulastic_pt_score as pts
+    monkeypatch.setattr(pts, "_settled_tail_drift_slope", lambda *a, **k: None)
+    t, ang, hold = _long_hold_signal(n=1600, fps=120.0, hold_frac=0.23,
+                                     total_drop=55.0, freq=0.6, decay=0.35)
+    ang = ang + 0.3 * t                     # a slow drift the hold must see
+    p = pts.compute_pt_params(t, ang)
+    assert p is not None and p["A0_deg"] > 30.0
+
+
+def test_arrested_limb_with_late_tremor_is_not_a_lift():
+    """A single drop that stops, then tremor in the resting tail (golden
+    fixture TRIAL_NOISY_TAIL). The still segment after the drop is followed
+    by movement, but the leg never comes back to where it started -- a lift's
+    drop always swings back through the starting rest angle."""
+    from pendulastic_pt_score import _detect_release
+    n, fs = 1400, 100.0
+    t = np.arange(n) / fs
+    a = np.full(n, 180.0)
+    d = t[60:] - t[60]
+    a[60:] = 180.0 - 50.0 * (1.0 - np.exp(-d / 0.8))
+    tail = t >= 5.0
+    a[tail] += 3.5 * np.sin(2 * np.pi * 0.9 * (t[tail] - 5.0))
+    i = _detect_release(t, a)
+    assert t[i] < 1.0, f"release moved to t={t[i]:.2f}, into the resting tail"
+    assert compute_pt_params(t, a, detrend=False) is not None
