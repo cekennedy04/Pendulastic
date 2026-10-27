@@ -9,6 +9,8 @@ PLAN writes neuromech/sessions/<name>/:
                         Scenario ids are NOT on it (R3: assessors and operators grade blind).
   key.csv               run id -> scenario id. Keep it away from anyone grading.
   commands/<run>.csv    1 kHz command (t_s, setpoint_deg, vel_dps, acc_dps2, phase)
+  player/<run>.csv      what the Pendulum Player VI reads: two columns (t_s, setpoint_deg), NO header
+                        (a header row reads as zeros, makes dt = 0 and ends playback at once)
   commands/<run>.dbl    the same five columns, big-endian float64, interleaved, no header --
                         LabVIEW "Read from Binary File" (DBL, big-endian is its default), reshape to N x 5.
   session.json          seed, scorer constants, manifest snapshot path
@@ -65,11 +67,24 @@ def chirp_command(f0=0.2, f1=10.0, dur=20.0, amp=8.0):
     return ts, sp, vel, acc, phase
 
 
+def _write_player(path, t, sp):
+    """The Pendulum Player VI's input (Read From Spreadsheet File, comma delimiter): t_s, setpoint_deg.
+
+    The Player starts with the arm parked at the rig's zero and indexes the file by the clock, so a
+    file that does not start at 0 deg would make its first setpoint a step. Refused rather than fixed.
+    """
+    if abs(float(sp[0])) > 1e-6:
+        raise ValueError(f"{os.path.basename(path)} starts at {sp[0]:.3f} deg; the Player needs a command that starts at 0")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    np.savetxt(path, np.column_stack([t, sp]), fmt="%.4f", delimiter=",")
+
+
 def _write_command(dst_base, t, sp, vel, acc, phase):
     with open(dst_base + ".csv", "w", newline="") as fh:
         w = csv.writer(fh); w.writerow(["t_s", "setpoint_deg", "vel_dps", "acc_dps2", "phase"])
         for row in zip(np.round(t, 4), np.round(sp, 4), np.round(vel, 3), np.round(acc, 2), phase): w.writerow(row)
     np.column_stack([t, sp, vel, acc, phase]).astype(">f8").tofile(dst_base + ".dbl")
+    _write_player(os.path.join(os.path.dirname(os.path.dirname(dst_base)), "player", os.path.basename(dst_base) + ".csv"), t, sp)
 
 
 def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False, blind=True):
@@ -92,20 +107,26 @@ def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False,
     runs = []
     if chirp:
         t, sp, vel, acc, ph = chirp_command(); _write_command(os.path.join(cmd_dir, "R000"), t, sp, vel, acc, ph)
-        runs.append(dict(run_id="R000", sid="R-chirp", duration_s=round(float(t[-1]), 1)))
+        runs.append(dict(run_id="R000", sid="R-chirp", duration_s=round(float(t[-1]), 1), peak_deg=round(float(np.max(np.abs(sp))), 1)))
     for i, sid in enumerate(order, start=1):
         rid = f"R{i:03d}"
         src = os.path.join(OUT, "setpoints", f"{sid}.csv")
         shutil.copy(src, os.path.join(cmd_dir, rid + ".csv"))
         a = np.genfromtxt(src, delimiter=",", names=True)
         np.column_stack([a["t_s"], a["setpoint_deg"], a["vel_dps"], a["acc_dps2"], a["phase"]]).astype(">f8").tofile(os.path.join(cmd_dir, rid + ".dbl"))
-        runs.append(dict(run_id=rid, sid=sid, duration_s=round(float(a["t_s"][-1]), 1)))
+        _write_player(os.path.join(d, "player", rid + ".csv"), a["t_s"], a["setpoint_deg"])
+        runs.append(dict(run_id=rid, sid=sid, duration_s=round(float(a["t_s"][-1]), 1),
+                         peak_deg=round(float(np.max(np.abs(a["setpoint_deg"]))), 1)))
     with open(os.path.join(d, "runsheet.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["order", "run_id", "duration_s", "encoder_file", "phone_started", "app_auto_stopped", "notes"] + ([] if blind else ["scenario"]))
+        # peak_deg: the furthest the run commands the arm from zero, so the operator can check it
+        # against the arm's range before pressing run (the Angle Limit fields do not bound the Player).
+        # encoder_file: StretchExperiment names its own logs; write the real name here at the bench.
+        w.writerow(["order", "run_id", "duration_s", "peak_deg", "encoder_file", "phone_started", "app_auto_stopped", "notes"]
+                   + ([] if blind else ["scenario"]))
         for k, r in enumerate(runs):
-            w.writerow([k, r["run_id"], r["duration_s"], f"{r['run_id']}.bin", "", "", ""] + ([] if blind else [r["sid"]]))
-    pd.DataFrame(runs).to_csv(os.path.join(d, "key.csv"), index=False)
+            w.writerow([k, r["run_id"], r["duration_s"], r["peak_deg"], f"{r['run_id']}.bin", "", "", ""] + ([] if blind else [r["sid"]]))
+    pd.DataFrame(runs)[["run_id", "sid", "duration_s"]].to_csv(os.path.join(d, "key.csv"), index=False)
     json.dump(dict(name=name, created=datetime.now().isoformat(timespec="seconds"), seed=seed, reps=reps, repeat=repeat,
                    chirp=chirp, blind=blind, n_runs=len(runs), scorer=dict(HEALTHY_REF=P.HEALTHY_REF, F_PLAUSIBLE_MAX_HZ=getattr(P, "F_PLAUSIBLE_MAX_HZ", None))),
               open(os.path.join(d, "session.json"), "w"), indent=1, default=float)
@@ -203,11 +224,14 @@ def score(name, encoder_dir, phone_manifest=None):
         if len(phones) != len(key):
             print(f"WARNING: {len(phones)} phone recordings for {len(key)} runs -- pairing by order is unsafe; phone columns skipped")
             phones = []
+    sheet = pd.read_csv(os.path.join(d, "runsheet.csv"), dtype=str).set_index("run_id")
     rows = []
     for i, r in key.iterrows():
         rid, sid = r.run_id, r.sid
         row = dict(run_id=rid, sid=sid)
-        encf = os.path.join(encoder_dir, f"{rid}.bin")
+        # the log's real name, as the operator wrote it on the run sheet (StretchExperiment names its own)
+        fname = sheet.loc[rid, "encoder_file"] if rid in sheet.index and isinstance(sheet.loc[rid, "encoder_file"], str) else f"{rid}.bin"
+        encf = os.path.join(encoder_dir, fname.strip())
         if not os.path.exists(encf):
             row["status"] = "no encoder log"; rows.append(row); continue
         a = np.genfromtxt(os.path.join(d, "commands", rid + ".csv"), delimiter=",", names=True)

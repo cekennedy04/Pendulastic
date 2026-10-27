@@ -113,7 +113,7 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B5 | Session scorer: encoder `.bin` + phone JSONL → delivered vs intended, phone vs encoder, flags | **done** — `python -m neuromech.session score` |
 | B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
-| B8 | LabVIEW VIs for Mode A | **owner/LabVIEW** — spec in `neuromech/labview/LABVIEW_PROGRAM_SPEC.md` |
+| B8 | LabVIEW for Mode A | **Pendulum Player** host VI (StretchExperiment is not edited): build guide ready, program adapted to it (headerless player files, peak guard, logs paired by run-sheet name, 100 Hz staircase in the dry run). Building the VI is a bench task; interactive Mode B′ needs RT access |
 | B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — `coulomb_nm`, `k_v`/`k_l`/`reflex_max_nm`, `catch_and_hold()`, `limb_from_anthropometry()`; Formula Node re-verified at 1.7e-11; `Params()` bit-identical to before; A's module retired |
 | B10 | Corpus rest geometry by the validated scorer | **measured** — §5c; the disagreement is between instruments, not estimates |
 

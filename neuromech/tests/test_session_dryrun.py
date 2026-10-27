@@ -91,3 +91,42 @@ def test_ilc_converges_through_the_real_tools(session):
     r = DR.ilc_demo(d, [rid], iters=3)
     first, last = r.tracking_rmse_deg.iloc[0], r.tracking_rmse_deg.iloc[-1]
     assert last < 0.4 * first and last < 0.2, r.tracking_rmse_deg.tolist()
+
+
+def test_player_files_are_what_the_pendulum_player_reads(session):
+    """Two columns, no header, starting at 0 deg: the Player derives dt from rows 0 and 1, so a header
+    row (read as zeros) would make dt = 0 and end playback at once."""
+    d = session[1]
+    for rid in [l.split(",")[0] for l in open(os.path.join(d, "key.csv"))][1:]:
+        path = os.path.join(d, "player", rid + ".csv")
+        first = open(path).readline()
+        assert all(c.isdigit() or c in ".,-\n" for c in first), first      # numeric, so not a header
+        x = np.loadtxt(path, delimiter=",")
+        assert x.shape[1] == 2 and x[0, 1] == 0.0
+        assert abs((x[1, 0] - x[0, 0]) - 0.001) < 1e-9                      # the dt the Player computes
+        cmd = np.genfromtxt(os.path.join(d, "commands", rid + ".csv"), delimiter=",", names=True)
+        assert np.max(np.abs(x[:, 1] - cmd["setpoint_deg"])) < 1e-3
+
+
+def test_player_refuses_a_command_that_does_not_start_at_zero(tmp_path):
+    with pytest.raises(ValueError):
+        SS._write_player(str(tmp_path / "R001.csv"), np.arange(3) / 1000.0, np.array([5.0, 5.0, 5.0]))
+
+
+def test_logs_are_paired_by_the_name_on_the_run_sheet(session, tmp_path):
+    """StretchExperiment names its own logs; the operator writes the real name on the run sheet."""
+    import shutil
+    import pandas as pd
+    d = session[1]; name = os.path.basename(d)
+    enc = tmp_path / "enc"; shutil.copytree(os.path.join(d, "synthetic_encoder"), enc)
+    sheet = pd.read_csv(os.path.join(d, "runsheet.csv"), dtype=str)
+    orig = sheet.copy()
+    for k, rid in enumerate(sheet.run_id):
+        os.rename(enc / f"{rid}.bin", enc / f"ck_StretchTrial{70 + k}Fast.bin")
+        sheet.loc[sheet.run_id == rid, "encoder_file"] = f"ck_StretchTrial{70 + k}Fast.bin"
+    sheet.to_csv(os.path.join(d, "runsheet.csv"), index=False)
+    try:
+        rep = SS.score(name, str(enc))
+    finally:
+        orig.to_csv(os.path.join(d, "runsheet.csv"), index=False)
+    assert (rep.status.isin(["scored", "identified"])).all(), rep.status.tolist()
