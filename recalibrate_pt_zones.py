@@ -277,6 +277,16 @@ def derive(legs: dict, verbose: bool = True):
         print()
         print(f"  PT_HEALTHY_MAX    = {h_max:.4f}   (was {pts.PT_HEALTHY_MAX})")
         print(f"  PT_BORDERLINE_MAX = {b_max:.4f}   (was {pts.PT_BORDERLINE_MAX})")
+    # The borderline is the midpoint up to the impaired median, so it only
+    # sits above the healthy cut when that median does. On the 2026-10-26
+    # cohort it did not (0.1892 vs 0.2979) and main() printed "To apply"
+    # for a pair that would grade every borderline leg healthy.
+    if statistics.median(impaired) <= h_max:
+        raise SystemExit(
+            f"groups do not separate: MAS>=1 median {statistics.median(impaired):.4f} "
+            f"<= MAS 0 75th pct {h_max:.4f}, so borderline {b_max:.4f} <= healthy "
+            f"{h_max:.4f}. Refusing to emit a threshold from this."
+        )
     return h_max, b_max
 
 
