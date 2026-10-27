@@ -23,6 +23,7 @@ python -m neuromech.build                # 55 scenarios -> neuromech/out/ (manif
 | D | release artefacts: push, wobble, short record, low lift | De Groote core |
 | M | severity AND kind of severity: tone ladder, catch-release, catch-and-hold, no-ringdown fall, end-stop | De Groote core, via `profiles.py` |
 | R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel | De Groote core |
+| H | HESS's four haptic models (Park et al. 2012, Table III), elbow values unscaled: the three-phase catch on a pendulum | De Groote core + `hess_*` module |
 
 `out/scenario_manifest.csv` holds, per scenario, the expected 7 parameters, PT7, band or refusal, flags,
 the rig range and speed it needs, and the peak active muscle torque (for Mode C).
