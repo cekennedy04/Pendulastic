@@ -24,6 +24,8 @@ import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
+import { ALL_PT_KEYS, CANONICAL_KEYS, defaultSelection, selectionToCsv,
+  toggleKey, selectionNotice, selectionRows } from './param-select.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1503,6 +1505,118 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  // ---- per-parameter selection panel -------------------------------------
+  //
+  // Which parameters belong in the score is an open question (see
+  // docs/reports/2026-10-27-dropping-f.md), and every argument about it so far
+  // was made from aggregate numbers because nobody could see a single trial
+  // rescored without a given parameter. This panel is that view.
+  //
+  // The selection is deliberately NOT persisted. It is an inspection tool, and
+  // a remembered selection would silently change what the next trial's number
+  // means -- the one failure mode this whole panel exists to prevent.
+  let paramSelection = defaultSelection();
+  // The params of whatever trial is on screen, so a toggle can rescore without
+  // re-reading the store.
+  let paramSelectParams = null;
+
+  // The same stored parameters scored over `selection`. Returns the Rust reply
+  // verbatim -- including `canonical`, which the UI must take from the scorer
+  // rather than recompute, or the two could disagree about which set is the
+  // scored one.
+  function ptScoreForSelection(p, selection) {
+    const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg', 'a1_deg'];
+    if (!wasmApi || !p || need.some((k) => !Number.isFinite(p[k]))) return null;
+    if (typeof wasmApi.pt_score_from_params_selected !== 'function') return null;
+    try {
+      return JSON.parse(wasmApi.pt_score_from_params_selected(
+        p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg, p.a1_deg,
+        selectionToCsv(selection),
+      ));
+    } catch {
+      return null;
+    }
+  }
+
+  function renderParamSelect() {
+    const panel = el('param-select');
+    if (!panel) return;
+    const reply = ptScoreForSelection(paramSelectParams, paramSelection);
+    if (!reply) {
+      // An older wasm build, or a trial without the full parameter set. Hide
+      // rather than render an empty table that looks like "no contributions".
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+
+    const rows = selectionRows({
+      selection: paramSelection,
+      breakdown: reply.breakdown,
+      unscorable: reply.unscorable,
+      total: reply.total,
+    });
+    el('param-select-rows').innerHTML = rows.map((r) => {
+      const share = r.share === null ? '' : `${(100 * r.share).toFixed(0)}%`;
+      const value = r.unmeasured
+        ? 'not measured'
+        : (r.value === null ? '' : formatValue(r.value));
+      return `<tr class="${r.selected ? '' : 'param-off'}">`
+        + `<td><label><input type="checkbox" data-param-key="${r.key}"`
+        + `${r.selected ? ' checked' : ''}> ${r.label}`
+        + `${r.inCanonical ? '' : ' <em>(not scored)</em>'}</label></td>`
+        + `<td>${value}</td><td>${share}</td></tr>`;
+    }).join('');
+
+    const notice = selectionNotice({
+      canonical: reply.canonical,
+      nScored: reply.n_scored,
+      unscorable: reply.unscorable,
+      zonesEnabled: ZONE_CLASSIFICATION_CALIBRATED,
+    });
+    const noticeEl = el('param-select-notice');
+    noticeEl.hidden = notice === null;
+    noticeEl.textContent = notice ? notice.text : '';
+    noticeEl.className = notice && !notice.canonical ? 'param-exploratory' : '';
+
+    // The selection's own total, always shown here even when it equals the
+    // headline score, so the two numbers are never silently different.
+    const label = el('param-select-intro');
+    if (label) {
+      label.dataset.total = reply.total.toFixed(4);
+    }
+  }
+
+  function setParamSelection(next) {
+    paramSelection = next;
+    renderParamSelect();
+  }
+
+  // Delegated, because the rows are re-rendered on every toggle -- a listener
+  // bound to each checkbox would be lost the moment one was clicked.
+  document.addEventListener('change', (e) => {
+    const key = e.target && e.target.dataset && e.target.dataset.paramKey;
+    if (!key) return;
+    const next = toggleKey(paramSelection, key);
+    if (next === paramSelection) {
+      // toggleKey refused to empty the selection. Re-render so the checkbox
+      // the user just cleared goes visibly back to checked rather than
+      // leaving the DOM disagreeing with the state.
+      renderParamSelect();
+      return;
+    }
+    setParamSelection(next);
+  });
+
+  el('param-select-canonical')?.addEventListener('click', () => {
+    setParamSelection(CANONICAL_KEYS.slice());
+  });
+  el('param-select-all')?.addEventListener('click', () => {
+    setParamSelection(ALL_PT_KEYS.slice());
+  });
+
   function scoreStoredTrial(trial) {
     const p = (trial && trial.params) || {};
     const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
@@ -1807,6 +1921,8 @@ if (typeof document !== 'undefined') {
     el('guide').textContent = 'scored';
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
+    paramSelectParams = p;
+    renderParamSelect();
     renderResult(p);
     renderLateral(action.lateralMotion);
     renderMetricList(p, action.ptScore);

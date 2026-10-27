@@ -259,3 +259,63 @@ def test_the_f_skip_makes_the_score_non_monotone_in_severity():
         f"N=1.5 scores {just_below:.4f}, a {100 * (1 - just_below / just_above):.0f}% "
         f"drop in apparent severity across the f < 0.1 or N < 2.0 boundary"
     )
+
+
+def test_the_selectable_superset_matches_between_languages():
+    """ALL_PT_KEYS is wider than the scored set and must agree in both.
+
+    The app's toggles are driven by this list, so a language that offers a
+    different seven would let the phone score a selection the record cannot
+    reproduce.
+    """
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(r"pub const ALL_PT_KEYS: \[&str; 7\] = \[(.*?)\];", src, re.S)
+    assert m, "ALL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    # The Rust spells keys in snake_case; Python uses its own param names.
+    py_keys = [k.lower() for k in pt.ALL_PT_KEYS]
+    assert rust_keys == py_keys, f"{rust_keys} != {py_keys}"
+    # The canonical scored set must be a strict subset of the selectable one.
+    assert set(k.lower() for k in pt._PARAM_KEYS) < set(rust_keys)
+    # omega_min_n is selectable but NOT scored -- that is the whole point.
+    assert "omega_min_n" in rust_keys
+    assert "omega_min_n" not in [k.lower() for k in pt._PARAM_KEYS]
+
+
+def test_selecting_the_canonical_set_reproduces_the_canonical_score():
+    """The toggle path must not be a second scorer.
+
+    If an explicit canonical selection ever differs from the default, the app
+    and the record disagree while both claim to be the scored set.
+    """
+    for params in (
+        {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+         "omega_min_n": -9.4152, "f": 0.8839, "area_ratio": 0.0945},
+        {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+         "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2},
+        # f unscorable
+        {"R2n": 0.42, "N": 1.5, "phi_max_ratio": 0.11, "omega_max_n": 2.5,
+         "omega_min_n": 0.004, "f": 0.0, "area_ratio": 0.94},
+    ):
+        default = pt.compute_pt_score_breakdown(params)
+        explicit = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+        assert default == explicit
+        assert pt.compute_pt_score(params) == pt.compute_pt_score(params, keys=pt._PARAM_KEYS)
+
+
+def test_deselecting_a_term_redistributes_its_share():
+    """The property that makes a toggle honest.
+
+    With a fixed divisor, removing ANY parameter would always lower the score,
+    so every toggle would read as "less impaired" whatever it removed -- the
+    panel would teach the opposite of the truth.
+    """
+    params = {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+              "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2}
+    six = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+    five = pt.compute_pt_score_breakdown(
+        params, keys=[k for k in pt._PARAM_KEYS if k != "f"])
+    for k, v in five.items():
+        assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
+    alone = pt.compute_pt_score_breakdown(params, keys=["N"])
+    assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)

@@ -47,7 +47,7 @@ import itertools
 import math
 import os
 import re
-from typing import NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -955,6 +955,21 @@ through omega_max_n, and the return is not scored at all.
 # Nothing to change until that constant is re-derived; noted so the next person
 # re-deriving it checks both denominators.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
+
+#: Every Popovic parameter the pipeline can score, in publication order --
+#: the SELECTABLE superset, not the scored set.
+#:
+#: `_PARAM_KEYS` is what the canonical score sums. This is what a caller may
+#: ask for explicitly, and it is deliberately wider: it still contains
+#: omega_min_n, which left the scored set on 2026-10-26 for being
+#: algebraically -omega_max_n on any limb dropped from full extension.
+#:
+#: The app exposes all seven as toggles so the contribution of each is
+#: visible, including the two the canonical score excludes. A selection that
+#: is not `_PARAM_KEYS` produces a number that is NOT comparable to a
+#: calibrated threshold, which is why `mas_estimate` never takes a selection
+#: and the app labels such a score as exploratory.
+ALL_PT_KEYS = ["R2n","N","phi_max_ratio","omega_max_n","omega_min_n","f","area_ratio"]
 _N_SIMPLE    = len(_SIMPLE_KEYS)
 
 # area_ratio above this threshold suggests the phi trace is heavily one-sided,
@@ -962,7 +977,8 @@ _N_SIMPLE    = len(_SIMPLE_KEYS)
 # separate thigh vs shank clusters ("duo" sessions with mixed-leg markers).
 AREA_RATIO_WARN = 0.55
 
-def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
+def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF,
+                               keys: Optional[Sequence[str]] = None) -> dict:
     """
     Per-parameter deviation contribution behind compute_pt_score's total --
     same per-key penalty-direction logic, factored out so a caller can show
@@ -1009,9 +1025,16 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
             return not (params.get(k, 0.0) < 0.1 or params.get("N", 0.0) < 2.0)
         return True
 
-    n_scored = sum(1 for k in _PARAM_KEYS if _scorable(k)) or _N_PARAMS
+    # `keys` selects WHICH parameters are summed. None means the canonical
+    # scored set. Anything else is an exploratory selection -- the app's
+    # per-parameter toggles -- and the divisor follows the selection, which is
+    # the whole reason the rescale above had to land first: without it,
+    # deselecting a term would leave a hole rather than redistributing it, and
+    # every toggle would read as "less impaired".
+    sel = list(_PARAM_KEYS if keys is None else keys)
+    n_scored = sum(1 for k in sel if _scorable(k)) or len(sel) or _N_PARAMS
     breakdown = {}
-    for k in _PARAM_KEYS:
+    for k in sel:
         pij = params.get(k, 0.0)
         phj = ref.get(k, 0.0)
         # `== 0`, not `<= 0`. A NEGATIVE reference is legitimate:
@@ -1039,11 +1062,12 @@ def compute_pt_score_breakdown(params: dict, ref: dict = HEALTHY_REF) -> dict:
     return breakdown
 
 
-def compute_pt_score(params: dict, ref: dict = HEALTHY_REF) -> float:
+def compute_pt_score(params: dict, ref: dict = HEALTHY_REF,
+                     keys: Optional[Sequence[str]] = None) -> float:
     """Full 7-parameter Popovic (2018) PT score -- see
     compute_pt_score_breakdown for the per-key penalty-direction rationale
     and a per-parameter view of what this total is made of."""
-    return sum(compute_pt_score_breakdown(params, ref).values())
+    return sum(compute_pt_score_breakdown(params, ref, keys).values())
 
 
 def compute_pt_score_simple(params: dict, ref: dict = HEALTHY_REF) -> float:
