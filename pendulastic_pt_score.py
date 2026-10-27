@@ -663,6 +663,18 @@ NO_OSCILLATION = (
 )
 
 
+UNMEASURED_CYCLE = (
+    "Oscillation too brief to measure: the leg swung {a1:.1f} deg but produced "
+    "fewer than four significant turning points, so f and phi_max_ratio were "
+    "not measured -- they are reported as 0.0, which is the estimator saying "
+    "'no estimate', not 'a frequency of zero'. Both are penalise-if-BELOW "
+    "parameters, so two of the six saturate at once and a well-damped limb is "
+    "graded maximally spastic by arithmetic. A limb that swings once and "
+    "settles is a real finding, and a common one in an unaffected leg; it is "
+    "just not one these six parameters can grade. Record the swing and N, and "
+    "repeat with a longer capture if the cycle count matters."
+)
+
 def oscillation_ok(params: Optional[dict]) -> bool:
     """False when there is no first swing, so the oscillation parameters are
     undefined rather than small.
@@ -689,6 +701,41 @@ def oscillation_ok(params: Optional[dict]) -> bool:
     if a1 is None or not np.isfinite(a1):
         return False
     return float(a1) > 0.0
+
+
+def cycle_measured_ok(params: Optional[dict]) -> bool:
+    """False when f was never estimated, so f and phi_max_ratio are undefined.
+
+    This is oscillation_ok's bug reached through a different primitive, and it
+    survived that fix. oscillation_ok tests A1 > 0, which a limb that swings
+    once and settles passes. But f's estimator needs FOUR significant turning
+    points -- two full cycles' worth -- and returns a literal 0.0 below that,
+    and phi_max_ratio needs a return peak inside a window sized from f, so it
+    returns 0.0 too. Both are penalise-if-BELOW terms, so two of the six
+    saturate together.
+
+    Measured, not argued: a 0.85 Hz swing with a 0.35 s decay envelope scores
+    pt 1.109, "interpretable": True, MAS "4", reason "" -- a well-damped limb
+    graded maximally spastic off two zeros that mean "not measured". That is
+    also what inverted the 2026-10-27 cohort thresholds: assumed-healthy
+    control legs hit this, which put the MAS-0 75th percentile (0.2979) above
+    the MAS>=1 median (0.1892).
+
+    f is the primitive to test. It is exactly 0.0 only when the estimator took
+    the fewer-than-four-extrema branch, so f <= 0 IS "not measured" and nothing
+    else reaches it -- the period guard rejects a degenerate period separately.
+
+    The better fix is to score the terms a trial can measure and divide by that
+    many, which is a formula change and needs its own calibration. Refusing is
+    what this module already does with an unmeasurable primitive (see
+    oscillation_ok and excursion_ok) and is what keeps the two consistent.
+    """
+    if not params:
+        return False
+    f = params.get("f")
+    if f is None or not np.isfinite(f):
+        return False
+    return float(f) > 0.0
 
 
 def excursion_ok(params: Optional[dict]) -> bool:
@@ -747,6 +794,12 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
                 "interpretable": False,
                 "reason": NO_OSCILLATION.format(
                     a0=float(a0) if a0 is not None and np.isfinite(a0) else float("nan"))}
+    if not cycle_measured_ok(params):
+        a1 = params.get("A1_deg")
+        return {"mas": None, "zone": None, "pt7": score,
+                "interpretable": False,
+                "reason": UNMEASURED_CYCLE.format(
+                    a1=float(a1) if a1 is not None and np.isfinite(a1) else float("nan"))}
     return {"mas": pt_to_mas(score), "zone": pt_zone(score), "pt7": score,
             "interpretable": True, "reason": ""}
 

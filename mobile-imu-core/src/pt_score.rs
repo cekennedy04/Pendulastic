@@ -413,8 +413,39 @@ pub fn oscillation_reason(params: &PtParams) -> Option<String> {
 /// oscillation gate. A limb that both under-swings and never oscillates (the
 /// emulator's `R-hold-90`) therefore reports the excursion, which is the
 /// finding an operator can act on.
+/// False when `f` was never estimated, so `f` and `phi_max_ratio` are
+/// undefined rather than zero.
+///
+/// This is `oscillation_ok`'s bug reached through a different primitive, and
+/// it survived that fix. `oscillation_ok` tests `a1_deg > 0`, which a limb
+/// that swings once and settles passes. But f's estimator needs FOUR
+/// significant turning points and returns a literal 0.0 below that, and
+/// `phi_max_ratio` needs a return peak inside a window sized from f, so it
+/// returns 0.0 too. Both are penalise-if-BELOW terms, so two of the six
+/// saturate together and a well-damped limb is graded maximally spastic by
+/// arithmetic. Measured: a 0.85 Hz swing with a 0.35 s envelope scored
+/// pt 1.109, interpretable, MAS "4".
+///
+/// f is exactly 0.0 only on the fewer-than-four-extrema branch, so `f <= 0`
+/// IS "not measured" and nothing else reaches it.
+pub fn cycle_measured_ok(params: &PtParams) -> bool {
+    params.f.is_finite() && params.f > 0.0
+}
+
+pub fn cycle_measured_reason(params: &PtParams) -> Option<String> {
+    if cycle_measured_ok(params) {
+        return None;
+    }
+    Some(format!(
+        "Oscillation too brief to measure: the leg swung {:.1} deg but produced fewer          than four significant turning points, so f and phi_max_ratio were not measured          -- they are reported as 0.0, which is the estimator saying 'no estimate', not 'a          frequency of zero'. Both are penalise-if-BELOW parameters, so two of the six          saturate at once and a well-damped limb is graded maximally spastic by          arithmetic. A limb that swings once and settles is a real finding, and a common          one in an unaffected leg; it is just not one these six parameters can grade.          Record the swing and N, and repeat with a longer capture if the cycle count          matters.",
+        params.a1_deg
+    ))
+}
+
 pub fn refusal_reason(params: &PtParams) -> Option<String> {
-    excursion_reason(params).or_else(|| oscillation_reason(params))
+    excursion_reason(params)
+        .or_else(|| oscillation_reason(params))
+        .or_else(|| cycle_measured_reason(params))
 }
 
 /// Which of the six scored parameters are placeholders rather than

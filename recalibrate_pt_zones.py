@@ -269,11 +269,33 @@ def derive(legs: dict, verbose: bool = True):
             f"{len(impaired)} at MAS>=1. Refusing to emit a threshold from this."
         )
     h_max = float(np.percentile(healthy, 75))
-    b_max = float(0.5 * (h_max + statistics.median(impaired)))
+    imp_med = float(statistics.median(impaired))
+    b_max = float(0.5 * (h_max + imp_med))
+    # The arithmetic ASSUMES the arms separate: b_max is the midpoint of the
+    # healthy 75th percentile and the impaired median, so if the impaired
+    # median sits below that percentile the midpoint lands below h_max and the
+    # pair comes out INVERTED -- a healthy ceiling above the borderline
+    # ceiling, which classifies nothing. The 2026-10-27 run emitted exactly
+    # that (0.2979 > 0.2435) together with instructions to apply it, because
+    # the only refusal here was on n. A non-separating cohort is a finding
+    # about the cohort or the scorer, never a threshold.
+    if not (h_max < imp_med):
+        raise SystemExit(
+            f"the arms do not separate: MAS-0 75th percentile {h_max:.4f} is not "
+            f"below the MAS>=1 median {imp_med:.4f}, so the thresholds would come "
+            f"out inverted ({h_max:.4f} > {0.5 * (h_max + imp_med):.4f}). Refusing to "
+            f"emit a threshold pair from this.\n"
+            f"  MAS 0   n={len(healthy)}  median {statistics.median(healthy):.4f}  "
+            f"75th pct {h_max:.4f}\n"
+            f"  MAS>=1  n={len(impaired)}  median {imp_med:.4f}\n"
+            f"  Look at the refusal breakdown above before anything else: a gate that "
+            f"lets an UNMEASURED parameter through as 0.0 scores healthy legs as "
+            f"maximally spastic and inverts the arms by itself."
+        )
     if verbose:
         print(f"  MAS 0   n={len(healthy):3d}  median {statistics.median(healthy):.4f}  "
               f"75th pct {h_max:.4f}")
-        print(f"  MAS>=1  n={len(impaired):3d}  median {statistics.median(impaired):.4f}")
+        print(f"  MAS>=1  n={len(impaired):3d}  median {imp_med:.4f}")
         print()
         print(f"  PT_HEALTHY_MAX    = {h_max:.4f}   (was {pts.PT_HEALTHY_MAX})")
         print(f"  PT_BORDERLINE_MAX = {b_max:.4f}   (was {pts.PT_BORDERLINE_MAX})")

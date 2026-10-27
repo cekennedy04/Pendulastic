@@ -202,5 +202,36 @@ def test_the_rust_oscillation_gate_matches():
     assert "a1_deg.is_finite()" in body.group(1)
     assert "a1_deg > 0.0" in body.group(1)
     assert "a0_deg" not in body.group(1), "the oscillation gate must not read A0"
-    # and both gates must reach the JSON the phone renders
-    assert "excursion_reason(params).or_else(|| oscillation_reason(params))" in src
+    # and EVERY gate must reach the JSON the phone renders. Asserted by name
+    # against refusal_reason's body rather than as one literal line, because
+    # the literal broke the moment a third gate made the chain wrap -- a
+    # formatting change failing a test about behaviour.
+    chain = re.search(
+        r"pub fn refusal_reason\(params: &PtParams\) -> Option<String> \{(.*?)\n\}",
+        src, re.S)
+    assert chain, "refusal_reason not found in the Rust"
+    for gate in ("excursion_reason", "oscillation_reason", "cycle_measured_reason"):
+        assert gate in chain.group(1), f"{gate} never reaches refusal_reason"
+
+
+def test_an_unmeasured_cycle_is_not_interpretable():
+    """f == 0.0 is the estimator saying 'no estimate', not 'zero frequency'.
+
+    Both languages must refuse it, or a limb that swings once and settles is
+    graded maximally spastic off two saturated penalise-if-BELOW terms. This is
+    what inverted the 2026-10-27 cohort thresholds.
+    """
+    good = {"A0_deg": 46.6, "A1_deg": 30.0, "f": 0.88}
+    assert pt.cycle_measured_ok(good) is True
+    for bad in (0.0, -1.0, None, float("nan"), float("inf")):
+        assert pt.cycle_measured_ok({"A0_deg": 46.6, "A1_deg": 30.0, "f": bad}) is False
+    assert pt.cycle_measured_ok(None) is False
+
+
+def test_the_rust_cycle_gate_matches():
+    src = open(RUST, encoding="utf-8").read()
+    body = re.search(
+        r"pub fn cycle_measured_ok\(params: &PtParams\) -> bool \{(.*?)\n\}", src, re.S)
+    assert body, "cycle_measured_ok not found in the Rust"
+    assert "f.is_finite()" in body.group(1)
+    assert "f > 0.0" in body.group(1)
