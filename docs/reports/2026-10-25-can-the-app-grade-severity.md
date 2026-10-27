@@ -26,11 +26,61 @@
 > withdrawn. Finding 3 is weakened: PT7's signal-to-confound ratio is 1.08, not
 > 0.10, and only `area_ratio` is still confound-dominated.
 >
-> **Findings 2 and 5 survive untouched and now carry the argument.** PT7 still
-> differs 6.9x between mechanisms at one intended severity, and a healthy,
-> critically damped limb is still graded "4". Neither depended on the ladder's
-> range. Finding 4, on the two velocity constants, rests on measured values and
-> is unaffected.
+> **FINDING 3 IS WITHDRAWN ENTIRELY, 2026-10-27, and so is the table in §5.**
+> The ratio was computed over every profile sharing an intended severity,
+> including ones the app REFUSES to grade. A refused trial still has a pt7 --
+> the arithmetic ran, the app just declines to turn it into a verdict -- and
+> the two arrested profiles (`catch_and_hold_*`) score above 2.2 against
+> `tone_L3`'s 0.5, so they, not any mechanism the app actually grades, were
+> setting the spread. Q3 already reports the refusal rate as part of the
+> answer, so counting it again here was double-counting it.
+>
+> Restricted to profiles the app grades, the same harness on the same traces:
+>
+> | scored set | all rows (as published) | graded profiles only |
+> |---|---|---|
+> | 7-parameter | 0.27 | **6.52** |
+> | 6-parameter | 0.26 | **5.76** |
+> | 5-parameter | 0.24 | **5.07** |
+>
+> So severity dominates by 5-6x and always did; the published 0.10 and the
+> 1.08 above are both artifacts of the same mistake. Note the direction of the
+> other effect: dropping the two velocity parameters slightly *lowers* this
+> ratio, because removing a near-constant term removes something that was
+> near-constant across mechanisms too. Their removal is justified elsewhere
+> (the healthy floor falls 0.1417 -> 0.0140 and the dynamic range goes 6.7x ->
+> 41x), not here.
+>
+> Finding 5 -- "a healthy, critically damped limb is graded 4" -- is also
+> withdrawn as of 2026-10-27: that limb is an arrest with no oscillation, and
+> the scorer now refuses it instead of grading it off four zeros.
+>
+> **Finding 2 survives untouched and now carries the argument.** PT7 still
+> differs 6.9x between mechanisms at one intended severity, which never
+> depended on the ladder's range. (An earlier version of this line said
+> "Findings 2 and 5" and restated Finding 5's claim as surviving, two sentences
+> after withdrawing it. Finding 5 is withdrawn; only Finding 2 survives here.)
+>
+> **FINDING 4 IS WEAKENED, 2026-10-27 (second revision of the day).** Its
+> strongest leg -- that `omega_max_n` moves 2.66x on sampling rate alone, so it
+> cannot be a property of a leg -- is **withdrawn**. That instability was a
+> smoothing window expressed as a sample count, it was attributed and **fixed
+> on 2026-08-31**, and `9.5672` was measured a week after the fix. Post-fix the
+> rate spread is 1.02x in the model and 7.2% in the pipeline. The **+11.5 SD**
+> and **+6.3 SD** peak-velocity distances are withdrawn too: peak angular
+> velocity has no asymptote as the smoothing window shrinks, neither source
+> reports its filtering, and those distances are therefore partly a
+> filter-definition difference rather than a physical conflict. §4 carries the
+> full correction and the new `part_g` that computes it.
+>
+> What survives of Finding 4 is narrower and still unresolved: at one shared
+> smoothing window the pipeline reads **1.85x** what the model reads, as
+> ~1.59x in peak velocity times ~1.17x in A0. That is rate-invariant, so the
+> cohort -- not the model -- has to say whether the pipeline inflates peak
+> velocity or the reference is stale. The recommendation it was used to support
+> (drop both velocity parameters) was already reversed on 2026-10-27:
+> `omega_min_n` stays dropped because it is algebraically `-omega_max_n`, and
+> `omega_max_n` was restored.
 
 ## The question and why it could not be answered before
 
@@ -275,7 +325,8 @@ Three independent lines agree:
    full period is 1.47 s and **the measured healthy frequency is 0.68 Hz**.
    `omega_max_n` from these numbers is **~4.3**, against this model's 4.38 and
    `HEALTHY_REF`'s 9.5672. The constant needs 446 deg/s at A0 = 46.6, which is
-   **+11.5 SD** from the measured 241.7.
+   ~~**+11.5 SD**~~ from the measured 241.7 (that SD distance is withdrawn --
+   see "One more correction" below).
 
    **One paper appeared to vindicate the constant, and it is wrong by a factor
    of two.** Casabona et al.'s rheumatoid-arthritis pendulum paper reports
@@ -291,22 +342,71 @@ Three independent lines agree:
    reconstructing it that way reproduces **14.27 Nm/rad against their published
    14.3**. With the correct full period, K lands at or below zero, i.e. 0.5
    within the error of the anthropometry.
-3. *The quantity is not reproducible in the real pipeline.* The `_sg` window
-   note in `pendulastic_pt_score.py` records that decimating real 120 Hz
-   OptiTrack to 20 Hz -- changing the sampling and nothing else about the
-   motion -- moved the median `omega_max_n` from **8.50 to 3.19** across 205
-   trials. A quantity that halves when the same motion is resampled cannot be
-   a property of a leg, whatever causes it.
+3. ~~*The quantity is not reproducible in the real pipeline.*~~ **WITHDRAWN
+   2026-10-27 -- see below.** This leg read: the `_sg` window note in
+   `pendulastic_pt_score.py` records that decimating real 120 Hz OptiTrack to
+   20 Hz moved the median `omega_max_n` from **8.50 to 3.19** across 205
+   trials, and a quantity that halves when the same motion is resampled cannot
+   be a property of a leg. It was the only leg needing neither model nor
+   literature, and it is gone.
 
-**A mechanism claim here is RETRACTED.** An earlier version of this section
-blamed the frame rate and the differentiated noise floor. Tested inside the
-model, sampling rate does almost nothing: `omega_max_n` reads 4.324 at 20 Hz
-and 4.381 at 240 Hz, and with 2 deg of noise only spans 4.29-5.18. The model
-cannot reproduce the real pipeline's 2.7x move, so **the mechanism is
-unidentified** -- `healthy_ref_frequency_audit.py` part_c only bounds what it
-is not (noise, spikes, release steps and marker freezes all fall short). That
-matters beyond this constant: until the cause is named, nobody can say which
-other parameters it touched.
+**Both mechanism claims here are now RETRACTED, in opposite directions.**
+
+*Round 1.* An earlier version blamed the frame rate and the differentiated
+noise floor. Tested inside the model, sampling rate does almost nothing:
+`omega_max_n` reads 4.324 at 20 Hz and 4.381 at 240 Hz, and with 2 deg of noise
+only spans 4.29-5.18. From that this section concluded **the mechanism is
+unidentified**.
+
+*Round 2, 2026-10-27.* That conclusion was wrong, because the sweep varied the
+wrong thing. It moved the sampling rate with the smoothing window **already
+expressed in seconds** -- which is the behaviour after the 2026-08-31 fix -- so
+it measured the fix working. The pre-fix code took a fixed **sample count**, so
+the physical window moved with the rate: 15 samples is 0.125 s at 120 Hz and
+0.750 s at 20 Hz. Sweeping *that*, in the new `part_g` of
+`healthy_ref_frequency_audit.py`, reproduces the divergence:
+
+| window | `omega_max_n` | `N` |
+|---|---|---|
+| 0.125 s (15 samples @ 120 Hz) | 5.160 | 7.50 |
+| 0.750 s (15 samples @ 20 Hz) | 3.509 | 6.00 |
+| spread, this model | **1.47x** | **1.25x** |
+| spread, real pipeline pre-fix | **2.66x** | **1.40x** |
+
+Same direction both times, and `N` almost exactly. The residual goes the way
+the mechanism predicts: a real marker reconstruction carries content above the
+swing band that a clean analytic trace does not, so a 0.750 s window has more
+to take away from it.
+
+So the mechanism was **identified, attributed and fixed before this report was
+written**. The project's own 2026-08-31 re-run attributed it -- 120 Hz data
+re-processed with 20 Hz-equivalent durations closed the `omega_max_n` gap
+**153.8% -> 7.2%** and `N`'s **25.0% -> 0.0%**. And `9.5672` did not inherit the
+bug: no commit in this repository contains a sample-count window (the file
+arrives in `63db1b5`, 2026-09-04, already smoothing over seconds) and `9.5672`
+was written in `7256784`, 2026-09-09. Post-fix the model's rate spread is
+**1.02x** and the pipeline's residual is **7.2%**. Nothing halves.
+
+**What replaces the withdrawn leg** is narrower and rate-invariant. At the
+shipped 0.10 s window the pipeline reads **1.85x** this model (9.5672 against
+5.16), decomposing as **~1.59x in peak velocity** (446 deg/s required at the
+reference A0, against 281 measured here) times **~1.17x in A0** (54.5 deg here
+against the cohort's 46.6). 1.59 x 1.17 = 1.86: the whole gap, with nothing
+left for sampling. Whether the pipeline's peak velocity is inflated or the
+reference is stale is a **cohort** question, and `recalibrate_pt_zones.py`
+reports the measured median so the run answers it.
+
+**One more correction, to the +11.5 SD figure above.** Peak angular velocity
+has no asymptote as the smoothing window shrinks, and the `_sg` note records
+the cost on real trials: the median reads 186 deg/s at a 0.75 s window, 343 at
+0.25 s and 433 at 0.05 s on 40 trials at 120 Hz. Neither the 1996 nor the 2013
+source reports its filtering. So the SD distances between the constant's
+required 446 deg/s and those measurements are **partly a difference of filter
+definition** and must not be read as a physical conflict of that size. Smooth
+signal against smooth signal the gap is small: this model gives 281 deg/s at
+0.10 s and 232 at 0.75 s against a measured 221.9 +/- 35.6 and 241.7 +/- 17.7.
+The constant's 446 is outside both; the **+11.5 SD** is not a defensible
+number and is withdrawn.
 
 Nor does the obvious rescue work. Fowler defines the relaxation-index
 denominator as starting angle minus resting angle -- exactly this project's

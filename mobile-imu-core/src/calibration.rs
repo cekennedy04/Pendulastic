@@ -75,6 +75,17 @@ pub fn calibrate_accel_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
     Some([mean[0] - mean[0] * scale, mean[1] - mean[1] * scale, mean[2] - mean[2] * scale])
 }
 
+/// An above-guard excursion that settles without reaching the capture
+/// threshold revokes a qualified hold -- unless it is small and brief enough to
+/// be sensor noise grazing the guard. Mirrors `imu_calibration_tuner.py`'s
+/// `_NOISE_EXCURSION_*`; see there for the corpus sweep behind the values.
+pub const NOISE_EXCURSION_PEAK_RAD_S: f64 = 0.5;
+pub const NOISE_EXCURSION_MAX_S: f64 = 0.2;
+
+fn is_noise_excursion(peak_rad_s: f64, duration_s: f64) -> bool {
+    peak_rad_s < NOISE_EXCURSION_PEAK_RAD_S && duration_s < NOISE_EXCURSION_MAX_S
+}
+
 /// Two-state zero-capture eligibility machine (KTD9). `calm_qualified`: a
 /// genuine trailing-window calm period has been confirmed and not yet spent.
 /// `pending_departure`: an above-guard excursion is currently in progress
@@ -91,6 +102,10 @@ pub fn calibrate_accel_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
 pub struct ReleaseDetector {
     calm_qualified: bool,
     pending_departure: bool,
+    /// Start time and peak |omega| of the current above-guard excursion, so
+    /// one that settles can be told apart as noise or handling.
+    excursion_t0: f64,
+    excursion_peak: f64,
     /// Becomes `false` forever once a release is captured — only the first
     /// qualifying crossing matters for a given trial (mirrors
     /// `flex_axis_armed` in the Python source).
@@ -108,6 +123,8 @@ impl ReleaseDetector {
         Self {
             calm_qualified: false,
             pending_departure: false,
+            excursion_t0: 0.0,
+            excursion_peak: 0.0,
             armed: true,
         }
     }
@@ -145,13 +162,21 @@ impl ReleaseDetector {
             // First above-guard sample after a qualified calm period: a
             // candidate release ramp begins.
             self.pending_departure = true;
+            self.excursion_t0 = now;
+            self.excursion_peak = omega_mag;
+        } else if self.pending_departure && !is_calm_sample {
+            self.excursion_peak = self.excursion_peak.max(omega_mag);
         }
 
         if self.pending_departure && is_calm_sample {
-            // Settled back down without reaching the capture threshold:
-            // handling, not a release. Revoke eligibility.
+            // Settled back down without reaching the capture threshold. If it
+            // was handling, revoke eligibility; if it was too small and brief
+            // to be handling, it is sensor noise grazing the guard and the
+            // hold stays qualified (see NOISE_EXCURSION_*).
             self.pending_departure = false;
-            self.calm_qualified = false;
+            if !is_noise_excursion(self.excursion_peak, now - self.excursion_t0) {
+                self.calm_qualified = false;
+            }
         }
 
         if self.pending_departure && omega_mag >= FLEX_CAPTURE_THRESHOLD {

@@ -275,10 +275,69 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let back = round_half_even(RELEASE_BACKOFF_S / median_dt(t)) as usize;
     for (offset, &a) in ang[bi..].iter().enumerate() {
         if a.is_finite() && (a - baseline).abs() > thresh {
-            return (bi + offset).saturating_sub(back);
+            let i = bi + offset;
+            let drop = lift_hold_end(t, ang, i, baseline, thresh);
+            return drop.unwrap_or(i).saturating_sub(back);
         }
     }
     bi
+}
+
+/// `_LIFT_HOLD_MIN_S`, `_LIFT_REACH_MAX_S`, `_LIFT_HOLD_MAX_S`.
+const LIFT_HOLD_MIN_S: f64 = 0.5;
+const LIFT_REACH_MAX_S: f64 = 2.5;
+const LIFT_HOLD_MAX_S: f64 = 8.0;
+const LIFT_RETURN_MAX_S: f64 = 2.0;
+
+/// `_lift_hold_end`: where a lift-and-hold that starts at crossing `i` is
+/// released, or `None` when the crossing is the release itself.
+///
+/// A trial that opens at rest has a lift before its drop, and the first
+/// threshold crossing is the lift — measured from there, A0 is rest minus
+/// rest and the trial was discarded. A real release reverses within a
+/// fraction of a second, and an arrested limb stays near where it landed, so
+/// "monotonic to a still plateau, then leaves it and swings back through the
+/// starting angle" only matches a lift-and-hold. The return is what separates
+/// the two: an arrested limb with tremor in its resting tail also "leaves".
+fn lift_hold_end(t: &[f64], ang: &[f64], i: usize, baseline: f64, thresh: f64) -> Option<usize> {
+    let n = t.len();
+    let dt = median_dt(t);
+    let hold_n = (round_half_even(LIFT_HOLD_MIN_S / dt) as usize).max(3);
+    let reach_end = t.partition_point(|&x| x < t[i] + LIFT_REACH_MAX_S);
+    let mut peak = 0.0_f64;
+    for k in i..reach_end.min(n.saturating_sub(hold_n)) {
+        let a = ang[k];
+        if !a.is_finite() {
+            continue;
+        }
+        let dev = (a - baseline).abs();
+        if dev < peak - thresh {
+            return None; // reversed before holding: a swing
+        }
+        peak = peak.max(dev);
+        let win: Vec<f64> = ang[k..k + hold_n].iter().copied().filter(|v| v.is_finite()).collect();
+        if win.len() < hold_n / 2 {
+            continue;
+        }
+        let lo = win.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = win.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo >= 0.5 * thresh {
+            continue;
+        }
+        let level = nanmedian(&win);
+        if (level - baseline).abs() <= thresh {
+            continue;
+        }
+        let leave_end = t.partition_point(|&x| x < t[k] + LIFT_HOLD_MAX_S);
+        let m = (k + hold_n..leave_end.min(n))
+            .find(|&m| ang[m].is_finite() && (ang[m] - level).abs() > thresh)?;
+        let back_end = t.partition_point(|&x| x < t[m] + LIFT_RETURN_MAX_S);
+        let returns = ang[m..back_end]
+            .iter()
+            .any(|&a| a.is_finite() && (a - baseline).abs() <= thresh);
+        return if returns { Some(m) } else { None };
+    }
+    None
 }
 
 
@@ -534,10 +593,26 @@ pub fn compute_pt_params(
     // trusted. Rust previously had the fallback ALONE, so a detrended trial
     // here would not have matched the desktop even though both said
     // "detrend=true".
+    // Only the still hold is baseline: a trial that opens at rest has a lift
+    // before it (see lift_hold_end), and fitting through that ramp inflated A0
+    // to 134-352 deg on real trials. A trial held from its first frame stays
+    // within the band throughout, so its window is unchanged.
+    let mut baseline_start = baseline_end;
+    if baseline_end > 0 {
+        let band = 0.08 * (nanpercentile(&ang_s_raw, 97.0) - nanpercentile(&ang_s_raw, 3.0));
+        let reference = ang_s_raw[baseline_end - 1];
+        while baseline_start > 0 && (ang_s_raw[baseline_start - 1] - reference).abs() <= band {
+            baseline_start -= 1;
+        }
+    }
     let slope: Option<f64> = if detrend {
         settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i).or_else(|| {
-            if baseline_end >= MIN_BASELINE {
-                polyfit1(&t_c[..baseline_end], &ang_c_raw[..baseline_end]).map(|(s, _)| s)
+            if baseline_end - baseline_start >= MIN_BASELINE {
+                polyfit1(
+                    &t_c[baseline_start..baseline_end],
+                    &ang_c_raw[baseline_start..baseline_end],
+                )
+                .map(|(s, _)| s)
             } else {
                 None
             }

@@ -32,6 +32,15 @@ from __future__ import annotations
 
 import argparse
 import os
+
+# Before numpy. Unset, OpenBLAS starts a thread per core and the per-trial work
+# here is far too small to pay for it -- on a machine already short of memory
+# that is how this goes from slow to apparently hung. run_pipeline.ps1 sets the
+# same variable, and recalibrate.ps1 does, but a direct
+# `python recalibrate_pt_zones.py` would not.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import statistics
 import sys
 
@@ -56,24 +65,56 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
             f"  These are gitignored live data: a fresh clone never has them."
         )
 
+    def step(msg):
+        # flush=True because this is the only sign of life for minutes at a
+        # time, and a block-buffered pipe would hold it all back to the end.
+        if verbose:
+            print(msg, flush=True)
+
+    step(f"  recordings: {prc.OPTI_ROOT}")
+    step(f"  MAS table:  {sg.MAS_CSV}")
     mas = sg.load_mas_by_leg(condition_prefix="pre")
+    step(f"  {len(mas)} leg(s) carry a pre-timepoint clinical MAS")
+    step("  walking the recordings tree (this is the slow part on a big corpus)...")
+    trials = list(prc.discover_all_trials())
+    step(f"  {len(trials)} trial(s) discovered; scoring the baseline ones now")
+
     by_leg: dict[tuple, list[float]] = {}
+    by_leg_params: dict[tuple, list[dict]] = {}
     refused = unscorable = 0
-    for rec in prc.discover_all_trials():
+    seen = 0
+    # Why each trial dropped out, and from which arm. Totals are not enough:
+    # these thresholds are percentiles over legs, so if one arm loses trials at
+    # a different rate than the other the percentiles are computed on a
+    # non-representative subset and the numbers are quietly biased. A leg that
+    # loses ALL its trials leaves the cohort entirely and changes n without
+    # saying so.
+    dropped: dict[tuple, int] = {}
+    legs_attempted: set = set()
+    for rec in trials:
         cond = str(rec["condition"]).lower()
         if not (cond.startswith("pre") or rec["condition"] == "default"):
             continue
         key = (str(rec["participant"]), rec["leg"])
         if key not in mas:
             continue
+        seen += 1
+        legs_attempted.add(key)
+        arm = "MAS 0" if _rank(mas[key]) == 0 else "MAS>=1"
+        if seen % 10 == 0:
+            step(f"    scored {seen} ... ({refused} refused, {unscorable} unscorable so far)")
         try:
             t, ang = pts.load_optitrack(rec["path"])
-        except Exception:                                   # noqa: BLE001
+        except Exception as exc:                            # noqa: BLE001
             unscorable += 1
+            dropped[(arm, f"load failed: {type(exc).__name__}")] = \
+                dropped.get((arm, f"load failed: {type(exc).__name__}"), 0) + 1
             continue
         params = pts.compute_pt_params(t, ang)
         if not params:
             unscorable += 1
+            dropped[(arm, "compute_pt_params returned nothing")] = \
+                dropped.get((arm, "compute_pt_params returned nothing"), 0) + 1
             continue
         est = pts.mas_estimate(params)
         # Only interpretable trials: a refusal is not a low score, and
@@ -82,15 +123,140 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         # which is correct -- an arrested limb has no PT7 to percentile.
         if not est["interpretable"]:
             refused += 1
+            why = (est["reason"] or "refused").split(":")[0]
+            dropped[(arm, why)] = dropped.get((arm, why), 0) + 1
             continue
         by_leg.setdefault(key, []).append(float(est["pt7"]))
+        by_leg_params.setdefault(key, []).append(params)
 
     out = {k: (mas[k], statistics.median(v)) for k, v in by_leg.items()}
     if verbose:
+        print()
         print(f"  {len(out)} participant-legs, "
               f"{sum(len(v) for v in by_leg.values())} interpretable trials "
               f"({refused} refused, {unscorable} unscorable)")
-    return out
+        if dropped:
+            print()
+            print("  Why trials dropped out, by arm. Read this before the")
+            print("  thresholds: they are percentiles over LEGS, so an arm that")
+            print("  loses trials faster than the other biases them.")
+            for arm in ("MAS 0", "MAS>=1"):
+                rows = sorted(((w, n) for (a, w), n in dropped.items() if a == arm),
+                              key=lambda wn: -wn[1])
+                if rows:
+                    print(f"    {arm}:")
+                    for why, n in rows:
+                        print(f"      {n:4d}  {why}")
+        # A leg with no interpretable trial left the cohort silently.
+        lost = sorted(legs_attempted - set(out))
+        if lost:
+            print()
+            print(f"  {len(lost)} leg(s) had trials but NONE interpretable, so they")
+            print("  are absent from the thresholds entirely:")
+            for pid, leg in lost:
+                print(f"      {pid} {leg}  (clinical MAS {mas[(pid, leg)]})")
+    return out, by_leg_params
+
+
+#: omega_max_n = omega_peak_deg_s / A0_deg. Reported alongside the scored set
+#: so the table can say WHICH factor disagrees with physics, not just that the
+#: product does. Neither is scored; neither has a HEALTHY_REF entry (A0 has
+#: EXCURSION_REF_MEAN_DEG instead, which _decompose uses).
+_DECOMPOSE_KEYS = ["omega_peak_deg_s", "A0_deg"]
+
+#: Measured healthy peak first-swing knee velocity, for the one comparison that
+#: decides whether the pipeline's peak is inflated. Both read from the papers;
+#: provenance and the filtering caveat are in healthy_ref_frequency_audit
+#: (MEASURED_PEAK_DEG_S and part_e's caveat) -- peak velocity has no asymptote
+#: as the smoothing window shrinks and neither source reports its filtering, so
+#: a gap here is suggestive, not a measurement conflict.
+_LIT_PEAK_DEG_S = ((221.9, 35.6, "Kim 1996, n=50 supine"),
+                   (241.7, 17.7, "PMC3544505 controls, n=10"))
+
+
+def _decompose(by_key: dict) -> None:
+    """Say which factor of omega_max_n the pipeline and physics disagree on.
+
+    healthy_ref_frequency_audit part_g puts the whole disagreement at 1.85x,
+    splitting as ~1.59x in peak velocity and ~1.17x in A0 against the emulator.
+    Those were the EMULATOR's numbers. These are the cohort's, which is the
+    comparison that actually decides it.
+    """
+    peak = by_key.get("omega_peak_deg_s")
+    a0 = by_key.get("A0_deg")
+    if not peak or not a0:
+        return
+    print()
+    print("    DECOMPOSED -- omega_max_n = omega_peak_deg_s / A0_deg:")
+    print(f"      A0_deg            {a0[0]:8.2f} deg   vs EXCURSION_REF "
+          f"{pts.EXCURSION_REF_MEAN_DEG:.1f} +/- {pts.EXCURSION_REF_SD_DEG:.1f} "
+          f"(n={pts.EXCURSION_REF_N})")
+    print(f"      omega_peak_deg_s  {peak[0]:8.2f} deg/s")
+    for lit, sd, src in _LIT_PEAK_DEG_S:
+        print(f"        vs {lit:6.1f} +/- {sd:4.1f} ({src}): "
+              f"{peak[0] / lit:.2f}x, {(peak[0] - lit) / sd:+.1f} SD")
+    print("      A0 should match EXCURSION_REF closely -- both come from this")
+    print("      cohort -- so a disagreement with physics that survives here")
+    print("      lands on the PEAK, i.e. on what the 0.10 s window admits.")
+
+
+def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
+    """What the control cohort actually measures for each scored parameter.
+
+    This exists for omega_max_n, and the rest come free. HEALTHY_REF's
+    omega_max_n is 9.5672 and is 1.7-2.2x above every independent estimate of a
+    healthy limb (emulator 5.11 with a 5.55 ceiling, anthropometry ~4.3,
+    measured peak velocity ~4.76). But the penalty is one-sided, so the
+    reference cannot simply be lowered to a physics value: 9.5672 is the median
+    THIS pipeline produces, and if the pipeline still reads ~8.5 for healthy
+    limbs then a reference of 4.76 sits below every real reading and the term
+    goes inert -- a silent zero, the same failure omega_min_n had before
+    a23606a, reached from the other side.
+
+    The one number that settles it is what the control legs measure on the
+    current scoring path. That is what this prints. It does NOT write anything:
+    changing HEALTHY_REF changes every score, so it is a decision, and the
+    decision needs to see the gap between what the cohort measures and what
+    physics predicts before anyone picks a value.
+    """
+    import statistics as st
+    by_key = {}
+    # A0_deg and omega_peak_deg_s are in neither list -- they are reported-only
+    # scalars -- but they are the two FACTORS omega_max_n is built from
+    # (omega_max_n = omega_peak_deg_s / A0_deg), and without them this table
+    # says the pipeline disagrees with physics without saying which half does.
+    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS + _DECOMPOSE_KEYS:
+        vals = [p[k] for key, plist in per_leg_params.items() if _rank(legs[key][0]) == 0
+                for p in plist if k in p and np.isfinite(p[k])]
+        if vals:
+            by_key[k] = (st.median(vals), min(vals), max(vals), len(vals))
+    if verbose and by_key:
+        print()
+        print("  What the MAS-0 control legs measure, against the shipped reference:")
+        print(f"    {'parameter':16} {'measured median':>16} {'[min - max]':>20} "
+              f"{'HEALTHY_REF':>12} {'ratio':>7}")
+        for k, (med, lo, hi, n) in by_key.items():
+            ref = pts.HEALTHY_REF.get(k)
+            has_ref = ref not in (None, 0)
+            ref_s = f"{ref:12.4f}" if has_ref else f"{'--':>12}"
+            r_s = f"{med / ref:7.2f}" if has_ref else f"{'--':>7}"
+            if k in pts._PARAM_KEYS:
+                star = "  <-- scored"
+            elif k in _DECOMPOSE_KEYS:
+                star = "  (factor of omega_max_n)"
+            else:
+                star = "  (reported only)"
+            print(f"    {k:16} {med:16.4f} {f'[{lo:.3f} - {hi:.3f}]':>20} "
+                  f"{ref_s} {r_s}{star}")
+        print(f"    (n = {max(v[3] for v in by_key.values())} control trials)")
+        print()
+        print("    omega_max_n is the one to look at. If the measured median is")
+        print("    near 9.57 the reference is self-consistent and the quantity")
+        print("    itself is inflated -- fix the extraction, not the constant.")
+        print("    If it is near 4.8 the constant is simply stale and can be")
+        print("    replaced. Nothing is written either way.")
+        _decompose(by_key)
+    return by_key
 
 
 def derive(legs: dict, verbose: bool = True):
@@ -111,6 +277,16 @@ def derive(legs: dict, verbose: bool = True):
         print()
         print(f"  PT_HEALTHY_MAX    = {h_max:.4f}   (was {pts.PT_HEALTHY_MAX})")
         print(f"  PT_BORDERLINE_MAX = {b_max:.4f}   (was {pts.PT_BORDERLINE_MAX})")
+    # The borderline is the midpoint up to the impaired median, so it only
+    # sits above the healthy cut when that median does. On the 2026-10-26
+    # cohort it did not (0.1892 vs 0.2979) and main() printed "To apply"
+    # for a pair that would grade every borderline leg healthy.
+    if statistics.median(impaired) <= h_max:
+        raise SystemExit(
+            f"groups do not separate: MAS>=1 median {statistics.median(impaired):.4f} "
+            f"<= MAS 0 75th pct {h_max:.4f}, so borderline {b_max:.4f} <= healthy "
+            f"{h_max:.4f}. Refusing to emit a threshold from this."
+        )
     return h_max, b_max
 
 
@@ -179,7 +355,8 @@ def smoke(verbose: bool = True) -> bool:
         prc.ARCHIVE_ROOT = os.path.join(root, "no-archive")
         prc.EXCLUDED_TRIALS_PATH = os.path.join(root, "excluded.json")
         sg.MAS_CSV = mas_path
-        legs = leg_scores(None, None, verbose=verbose)
+        legs, per_leg_params = leg_scores(None, None, verbose=verbose)
+        healthy_reference(legs, per_leg_params, verbose=verbose)
         h, b = derive(legs, verbose=verbose)
     finally:
         (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV) = saved
@@ -210,8 +387,8 @@ def main(argv=None) -> int:
     print(f"  scored parameters ({pts._N_PARAMS}): {', '.join(pts._PARAM_KEYS)}")
     print(f"  reported, not scored: {', '.join(pts._DIAGNOSTIC_KEYS)}")
     print()
-    legs = leg_scores(a.opti_root, a.mas_csv)
-    print()
+    legs, per_leg_params = leg_scores(a.opti_root, a.mas_csv)
+    healthy_reference(legs, per_leg_params)
     h_max, b_max = derive(legs)
     print()
     print("  To apply, in pendulastic_pt_score.py AND mobile-imu-core/src/pt_score.rs:")
