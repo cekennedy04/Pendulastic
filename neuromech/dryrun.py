@@ -130,4 +130,11 @@ def ilc_demo(session_dir, run_ids, iters=3, seed=5):
             out.append(dict(run_id=rid, sid=sid, iteration=k, tracking_rmse_deg=rms, enc_pt7=dl["pt7"], enc_band=dl["band"],
                             int_pt7=float(man.loc[sid, "pt7"]), int_band=man.loc[sid, "mas"]))
             cmd, _ = ilc.update(t, cmd, ph, des, meas)
-    return pd.DataFrame(out)
+    df = pd.DataFrame(out)
+    # Write it where nm_figs.fig_dryrun looks. That figure has always read
+    # <session>/ilc_demo.csv and nothing in the repo has ever written it --
+    # this function returned the frame and every caller (one test) only
+    # asserted on the return value -- so the figure could not be built at all
+    # and said "run python -m neuromech.dryrun first", which never helped.
+    df.to_csv(os.path.join(session_dir, "ilc_demo.csv"), index=False)
+    return df

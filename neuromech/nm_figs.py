@@ -29,17 +29,33 @@ def save(fig, name): _save(fig, name, FIG)
 M = pd.read_csv(os.path.join(OUT, "scenario_manifest.csv"))
 def trace(sid):
     z = np.load(os.path.join(OUT, "traces", f"{sid}.npz")); return z["t"], 180.0 + z["theta"]
+
+
+#: The A-group sids that this build ACTUALLY produced, in band order, read off
+#: the manifest instead of hard-coded. calibrate_ladder omits any PT7 band the
+#: severity axis cannot reach -- band 3's target (0.69) is above the rising-
+#: branch peak, so `A-P3` does not exist and zipping a literal five-sid tuple
+#: died on FileNotFoundError for its trace. Deriving it means a figure covers
+#: whatever rungs the scorer supports and never asserts a rung that does not.
+_BAND_ORDER = ["0", "1", "1p", "2", "3"]
+
+
+def ladder_sids():
+    have = set(M.sid)
+    return [(b.replace("p", "+"), f"A-P{b}") for b in _BAND_ORDER if f"A-P{b}" in have]
 MAS_COL = {"0": TEAL, "1": SEA, "1+": GOLD, "2": "#F08A3C", "3": CORAL, "4": "#9B2226"}
 BANDS = [(0, .12, "0"), (.12, .28, "1"), (.28, .44, "1+"), (.44, .60, "2"), (.60, .78, "3"), (.78, 1.8, "4")]
 
 
 def fig_ladder():
     fig, (a, b) = plt.subplots(1, 2, figsize=(13, 4.6), gridspec_kw=dict(width_ratios=[1.15, 1]))
-    for g, sid in zip(("0", "1", "1+", "2", "3"), ("A-P0", "A-P1", "A-P1p", "A-P2", "A-P3")):
+    rungs = ladder_sids()
+    for g, sid in rungs:
         t, th = trace(sid); r = M[M.sid == sid].iloc[0]
         a.plot(t, th, color=MAS_COL[g], lw=1.7, label=f"band {g}  (PT7 {r.pt7:.2f})")
     a.set_xlim(0, 7); a.set_xlabel("time from release (s)"); a.set_ylabel("knee angle (deg, 180 = full extension)")
-    a.set_title("PT7-band presets: one model, five severities"); a.legend(frameon=False, loc="lower right"); style(a)
+    a.set_title(f"PT7-band presets: one model, {len(rungs)} reachable severities")
+    a.legend(frameon=False, loc="lower right"); style(a)
     lams = np.r_[np.linspace(0, 1.0, 21), [1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]]
     pts = []
     for lam in lams:
@@ -66,7 +82,7 @@ SHORT = {"B-extensor": "Extensor-dominant", "B-flexor": "Flexor-dominant", "B-mi
 def fig_behaviours():
     sids = ["B-extensor", "B-flexor", "B-mixed", "B-claspknife", "B-clonus", "B-leadpipe", "B-cogwheel", "B-contracture",
             "B-hypotonic", "B-guarding", "B-spasm", "C-area-high"]
-    t0, h0 = trace("A-P0")
+    t0, h0 = trace(ladder_sids()[0][1])          # the healthiest rung that exists
     fig, axs = plt.subplots(3, 4, figsize=(14, 8.2), sharex=True, sharey=True); axs = axs.ravel()
     for ax, sid in zip(axs, sids):
         t, th = trace(sid); r = M[M.sid == sid].iloc[0]; g = r.mas if isinstance(r.mas, str) else "refused"
@@ -106,12 +122,22 @@ def fig_matrix():
     save(fig, "nm_matrix")
 
 
+#: Measured plant response from the chirp identification run. NOT in the
+#: repository and not committable where it is looked for: `neuromech/data/` is
+#: covered by the root .gitignore's `data/`, so a clean clone can never have
+#: it. The measurement does exist -- `neuromech_rig_frf.npz` at the repo root
+#: on bench/retest-abs (fa3d651) -- under a different name in a different
+#: place, which is why nothing noticed. Re-identify with
+#: `neuromech.ilc --identify <chirp run>.bin`, or copy that file here.
+RIG_FRF = os.path.join(ROOT, "neuromech", "data", "rig_frf_2026-10-26.npz")
+
+
 def fig_rig_ilc():
-    z = np.load(os.path.join(ROOT, "neuromech", "data", "rig_frf_2026-10-26.npz"))
+    z = np.load(RIG_FRF)
     f, g, ph, coh = z["f_200"], z["g_200"], z["ph_200"], z["coh_200"]
     wn, zeta = 2 * np.pi * 6.35, 1 / (2 * 2.17)                      # identified from the resonance
     num, den = [wn ** 2], [1, 2 * zeta * wn, wn ** 2]
-    t, th = trace("A-P2"); dt = 1e-3
+    t, th = trace(ladder_sids()[-1][1]); dt = 1e-3    # the most severe rung that exists
     tg = np.arange(0, 8, dt); y_des = np.interp(tg, t, th - th[-1])
     from scipy.signal import tf2ss, lsim as _lsim
     A, Bm, C, D = tf2ss(num, den)
@@ -188,6 +214,23 @@ def fig_dryrun():
 
 if __name__ == "__main__":
     only = [x for x in os.environ.get("ONLY", "").split(",") if x]
+    # A figure whose INPUT DATA is absent is skipped by name; a figure that
+    # raises for any other reason still stops the run. The distinction matters:
+    # fig_rig_ilc needs a measured rig response that a clean clone cannot have
+    # (see RIG_FRF), and losing the five figures that built fine because the
+    # sixth has no hardware data behind it is not a useful failure. A bug in a
+    # figure is still a failure.
+    missing = []
     for fn in (fig_ladder, fig_behaviours, fig_matrix, fig_rig_ilc, fig_range, fig_dryrun):
         if only and fn.__name__ not in only: continue
-        print("==", fn.__name__); fn()
+        print("==", fn.__name__)
+        try:
+            fn()
+        except FileNotFoundError as exc:
+            missing.append((fn.__name__, exc.filename or str(exc)))
+            print(f"   SKIPPED -- input data not present: {exc.filename or exc}")
+    if missing:
+        print()
+        print(f"{len(missing)} figure(s) skipped for missing input data, not for a bug:")
+        for name, path in missing:
+            print(f"  {name}: {os.path.relpath(path, ROOT) if os.path.isabs(path) else path}")
