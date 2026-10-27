@@ -63,7 +63,11 @@ export function neverStartedHandle(reason) {
   };
 }
 
-export async function startCapture({ onState, onResult, onError }) {
+// `onSamples` is optional and used only by the research recorder: it is handed
+// each flushed batch (the same Float64Array that is about to be transferred to
+// the worker) so a live strip chart can read it. The clinical capture path
+// passes no `onSamples`, so its behaviour is byte-for-byte unchanged.
+export async function startCapture({ onState, onResult, onError, onSamples }) {
   if (typeof DeviceMotionEvent === 'undefined') {
     onError('This browser does not expose motion sensors.');
     return neverStartedHandle('capture never started: this browser does not expose motion sensors');
@@ -129,6 +133,10 @@ export async function startCapture({ onState, onResult, onError }) {
     if (n === 0) return;
     const out = buf.subarray(0, n * FLOATS_PER_SAMPLE).slice();
     n = 0;
+    // Read by the live-chart hook BEFORE the transfer below detaches the
+    // buffer -- `onSamples` must consume it synchronously (foldGyroBatch does).
+    // Wrapped so a throwing chart handler can never break the capture pipeline.
+    if (onSamples) { try { onSamples(out); } catch { /* chart is best-effort */ } }
     // Transfer ownership -- no copy, and no COOP/COEP isolation required.
     // `out.buffer` is detached by this call; it must not be read again.
     worker.postMessage({ type: 'batch', buf: out.buffer }, [out.buffer]);
