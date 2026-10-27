@@ -37,7 +37,6 @@ Torque modules (all default off; parameters in Params):
   catch     clasp-knife: velocity catch with length-dependent release  NEW
   hess      HESS three-phase catch: velocity-dependent onset angle,
             peak + residual torque, post-catch stiffness (Park 2012)  NEW
-            (Python twin only: not yet in the Formula Node)
   friction  dry (Coulomb) bearing friction of the RIG itself            NEW
   vel/len   delayed velocity and length drives on the extensor reflex,
             and a saturation ceiling on its summed excitation           NEW
@@ -291,6 +290,11 @@ def _guard_components(seed: int):
     return freqs, phases
 
 
+#: The HESS phase machine's registers, in the order the tick trace and the
+#: Formula Node (hph, ht0, hwc, hs0, hsp, hlv, hte, hta) carry them.
+HESS_REGS = ("hess_phase", "hess_t0", "hess_wc", "hess_s0", "hess_spost", "hess_level", "hess_t_end", "hess_tau_end")
+
+
 def _advance_hess(p: Params, st: "State", t: float, theta0: float) -> None:
     """Step the HESS phase machine once per tick, from the state at the tick's start.
 
@@ -479,6 +483,10 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
             st.swing_reversed = True
             if p.clonus_deg:
                 st.clonus_t0 = t
+        # HESS registers as they ENTER the tick: the Formula Node advances them
+        # itself, and unlike the SRS and reversal flags the advance is not
+        # idempotent, so the vector must carry the pre-advance values
+        h_in = [getattr(st, k) for k in HESS_REGS] if ticks is not None and i < trace_ticks else None
         if p.hess_H:
             _advance_hess(p, st, t, theta0)
         # delayed inputs (zero-order hold over the step)
@@ -489,7 +497,7 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
         s_del_dot = (buf_s[idx] - buf_s[idx_prev]) / DT if i > DELAY_STEPS else 0.0
         y = (st.theta, st.omega, st.t_srs, st.t_r, st.t_flex, st.t_catch)
         if ticks is not None and i < trace_ticks:
-            ticks.append([t, *y, int(st.srs_active), int(st.swing_reversed), st.clonus_t0, w_del, buf_w[idx_prev], s_del, buf_s[idx_prev], th_del])
+            ticks.append([t, *y, int(st.srs_active), int(st.swing_reversed), st.clonus_t0, w_del, buf_w[idx_prev], s_del, buf_s[idx_prev], th_del, *h_in])
         dl = (w_del, w_del_dot, s_del, s_del_dot, th_del)
         if integrator == "euler4":
             new = list(y); h = DT / 4.0
@@ -504,7 +512,7 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
             new = [a + DT / 6.0 * (b1 + 2 * b2 + 2 * b3 + b4) for a, b1, b2, b3, b4 in zip(y, k1, k2, k3, k4)]
         st.theta, st.omega, st.t_srs, st.t_r, st.t_flex, st.t_catch = new
         if ticks is not None and i < trace_ticks:
-            ticks[-1] += list(new)
+            ticks[-1] += list(new) + [getattr(st, k) for k in HESS_REGS]
         head = (head + 1) % L
         buf_w[head] = st.omega; buf_s[head] = st.t_srs; buf_t[head] = st.theta
         out[i + 1] = math.degrees(st.theta)

@@ -85,8 +85,10 @@ parameters for every run.
 
 Paste `model_step_formula_node.txt` into a Formula Node inside the Timed Loop. Outside the node:
 
-- shift registers for the 6 states (`th w ts tr tf tc`) and 3 flags (`srs_on rev clon_t0`), initialised
-  at release to `th = th0, w = omega0`, others 0, `srs_on = 1, rev = 0, clon_t0 = -1`;
+- shift registers for the 6 states (`th w ts tr tf tc`), 3 flags (`srs_on rev clon_t0`) and the 8 HESS
+  catch registers (`hph ht0 hwc hs0 hsp hlv hte hta`), initialised at release to `th = th0, w = omega0`,
+  others 0, `srs_on = 1, rev = 0, clon_t0 = -1`, all HESS registers 0. A rig that never sets `hess_H` can
+  wire `hH = 0` and leave the HESS registers unconnected;
 - **three** ring buffers of length **52** (omega, T_SRS, theta). Each tick read
   `idx = (head-50) mod 52` → `wd, sd, thd` and `(head-51) mod 52` → `wd_prev, sd_prev`; after the
   node write `w_o, ts_o, th_o` at `head+1`. Initialise the theta buffer to `th0`, not 0, so the
@@ -103,16 +105,17 @@ Paste `model_step_formula_node.txt` into a Formula Node inside the Timed Loop. O
 - setpoint = `rad2deg(th_o) − rest_deg` into the Mode A path (feedforward from the model's own
   `w_o` and `dw`).
 
-**Verify before use:** feed `test_vector_MAS2.csv` and `test_vector_all_modules.csv` (inputs per tick)
+**Verify before use:** feed `test_vector_MAS2.csv`, `test_vector_all_modules.csv` and `test_vector_hess.csv` (inputs per tick)
 through the node and compare its outputs with the files' `*_o` columns. The same text, executed as
-JavaScript by `verify_formula_node.js`, matches the Python twin to 1e-11 on every state for all 3 000
-ticks, so any LabVIEW mismatch is a wiring error, not a model error.
+JavaScript by `verify_formula_node.js`, matches the Python twin to 1e-11 on every state (and every HESS
+register) for all 3 000 ticks, so any LabVIEW mismatch is a wiring error, not a model error.
 
-Regenerate both vectors with `python neuromech/labview/make_test_vectors.py` after ANY change to
+Regenerate the vectors with `python neuromech/labview/make_test_vectors.py` after ANY change to
 `model_rt.simulate`, then re-run the verifier. Their parameter sets are pinned in that script rather
 than read from the calibrated ladder, so a parity failure can never be confused with a
 recalibration. `test_vector_all_modules` exercises every branch including `coulomb_nm`, `k_v`, `k_l`
-and `reflex_max_nm`.
+and `reflex_max_nm`, plus the HESS module gated out (its "never caught" phase 4); `test_vector_hess`
+walks the HESS catch through phases 0 -> 1 -> 2 -> 3 (onset 0.170 s, post-catch 0.242 s, relax 0.427 s).
 
 Interactive variant (PT training): add the measured interaction torque to `tau` (calibrated torque
 channel, sign: + extends). This is admittance rendering; it is stable while the virtual inertia
@@ -152,7 +155,7 @@ parameters against the **encoder-scored** ones, run by run.
 |---|---|---|
 | Published model (De Groote 2018), RK4, checked vs the authors' MATLAB | `neuromech/pendulum_sim.py` | 21 tests pass |
 | LabVIEW-portable model + 9 behaviour modules | `neuromech/model_rt.py` | matches the reference within 0.34° (euler4) / 0.30° (rk4); 8 tests pass |
-| Formula Node port | `labview/model_step_formula_node.txt` | verified to 1e-11 vs Python on 2 × 3 000 ticks |
+| Formula Node port | `labview/model_step_formula_node.txt` | verified to 1e-11 vs Python on 3 × 3 000 ticks, HESS catch included (2026-10-27) |
 | Scenario library (45) + expected scorer output | `scenarios.py`, `build.py` → `out/` | built; manifest + 1 kHz setpoint files |
 | ILC tool | `ilc.py` | self-test converges; untested on hardware |
 | Figures | `nm_figs.py` → `out/figures`, publication set | done |
