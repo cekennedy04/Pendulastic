@@ -3,7 +3,10 @@
     python -m neuromech.dryrun [--sids A-P0,A-P2,...] [--keep]
 
 Plans a real session (neuromech.session.plan), then stands in for the bench:
-  encoder  each command is passed through the identified closed-loop plant (2nd order, 6.35 Hz,
+  player   each command as the Pendulum Player VI delivers it: a Windows loop that reads the clock every
+           10 ms (+ up to 3 ms of scheduling lateness) and writes the interpolated angle to the rig's
+           shared variable, which the RT loop then holds -- a 100 Hz staircase, not the 1 kHz file
+  encoder  that staircase is passed through the identified closed-loop plant (2nd order, 6.35 Hz,
            zeta 0.23, as measured from the SSR logs 2026-10-26) with 0.02 deg sensor noise and
            written as a LabVIEW 7-channel big-endian .bin, idle time on both ends
   phone    the encoder motion as a gyro: ~59 Hz with jitter, mounted REVERSED (sign -1),
@@ -43,9 +46,25 @@ def plant_response(sp, fs=1000.0, plant=PLANT):
     return np.concatenate([np.zeros(d), y[: len(y) - d]]) if d else y
 
 
-def write_encoder_bin(path, sp, vel, phase, run_index, rng, fs=1000.0, pre_s=1.5, post_s=1.0, noise_deg=0.02):
+def player_hold(sp, rng, fs=1000.0, period_ms=10.0, late_ms=3.0):
+    """What the RT loop receives from the Pendulum Player: every ~10 ms (Wait Until Next ms Multiple, plus
+    Windows lateness up to late_ms) the Player reads the clock, interpolates the file at that time and
+    writes it; the shared variable holds that value until the next write. A late write uses a LATER
+    clock reading, so jitter costs a held step, never accumulated time."""
+    n = len(sp); t = np.arange(n) / fs
+    writes, k = [], 0.0
+    while k * period_ms / 1000.0 < t[-1]:
+        writes.append(k * period_ms / 1000.0 + rng.uniform(0.0, late_ms) / 1000.0); k += 1
+    writes = np.clip(np.array(writes), 0, t[-1])
+    vals = np.interp(writes, t, sp)
+    idx = np.searchsorted(writes, t, side="right") - 1
+    return np.where(idx >= 0, vals[np.clip(idx, 0, None)], 0.0)
+
+
+def write_encoder_bin(path, sp, vel, phase, run_index, rng, fs=1000.0, pre_s=1.5, post_s=1.0, noise_deg=0.02, player=True):
     pad0, pad1 = int(pre_s * fs), int(post_s * fs)
-    spp = np.concatenate([np.zeros(pad0), sp, np.full(pad1, sp[-1])])
+    held = player_hold(sp, rng, fs) if player else sp      # what the rig actually receives
+    spp = np.concatenate([np.zeros(pad0), held, np.full(pad1, held[-1])])
     true = plant_response(spp, fs)                   # the arm's actual motion
     pos = true + rng.normal(0, noise_deg, len(spp))  # what the encoder records
     ch = np.vstack([pos, np.gradient(pos, 1 / fs), spp, np.zeros_like(spp),
