@@ -172,6 +172,11 @@ HEALTHY_REF = {
 
     # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
     # Ours is divided by A0. Different quantity.
+    #
+    # NOT in the canonical score since 2026-10-27 (see _PARAM_KEYS); kept so the
+    # parameter panel and the simple score still have a reference. It no longer
+    # reproduces -- today's Control_ legs read 6.18 -- but do not "fix" it to
+    # that: the term's direction is wrong at any reference.
     "omega_max_n":   9.5672,
 
     # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
@@ -684,8 +689,9 @@ def oscillation_ok(params: Optional[dict]) -> bool:
     undefined rather than small.
 
     A limb that falls and arrests returns A1 = 0, which forces R2n, N, f and
-    phi_max_ratio to exactly 0.0. Four of the six scored parameters are
-    "penalise if BELOW reference", so all four saturate at once and the trial
+    phi_max_ratio to exactly 0.0. Four of the six then-scored parameters were
+    "penalise if BELOW reference" (three of the five since omega_max_n left
+    the canonical set), so they saturate at once and the trial
     scores ~1.85-2.14 -- read as MAS 4, and marked interpretable, off four
     zeros that mean "not measured" rather than "measured as nothing". The
     emulator reaches this three ways (a tonic arrest, lead-pipe rigidity, and a
@@ -924,14 +930,50 @@ MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 # pipeline's peak velocity inflated, or is this reference stale" -- and those
 # are distinguishable from the cohort, which is why recalibrate_pt_zones
 # reports the measured median instead of this module guessing.
-_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
-_N_PARAMS    = len(_PARAM_KEYS)   # 6 scored parameters
+#
+# ── omega_max_n LEFT the canonical set, 2026-10-27, on the REAL cohort ──────
+#
+# The cohort answered, and the answer made "inflated or stale" moot for the
+# score. Measured on the OptiTrack cohort (51 interpretable baseline trials at
+# the then-25-deg gate, #73's release fix, exclusions applied):
+#
+#   peak velocity vs A0      Spearman +0.02, log-log slope -0.06   (physics: 1.0)
+#   omega_max_n vs A0        Spearman -0.78 per trial, -0.91 per leg
+#   peak velocity            median ~350 deg/s, flat across A0 27-75 deg
+#
+#   group (leg medians)          omega_max_n    A0     peak deg/s
+#   Control_ legs (n=10)               6.18     54.0       349
+#   MS legs graded MAS 0 (n=4)        12.39     36.5       416
+#   MAS >= 1 legs (n=4)               11.97     33.3       356
+#
+# Peak speed is set by the release, not by the swing, so omega_max_n is
+# ~350/A0: a re-expression of the excursion, inverted. A0 SHRINKS with tone
+# (it is the spasticity grouping variable), so omega_max_n RISES with severity
+# and a penalise-below term charges the loosest legs most -- at ANY reference.
+# At 9.5672 the mean penalty was 0.052 on Control_ legs and 0 on the MS legs;
+# at 6.18 (today's control median) the direction is the same, only smaller; at
+# 4.76 the term is zero on 42 of 44 healthy trials. The emulator cannot show
+# this: it ties peak velocity to A0 by construction, which is why 9b5c511's
+# emulator argument for keeping the term was sound there and wrong here.
+#
+# NOT claimed as an accuracy gain: no variant separated MAS 0 from MAS >= 1 on
+# this cohort (leg AUC 0.48 / 0.55 / 0.54 current / re-derived / dropped), and
+# the impaired arm is 4 legs from 2 people. It removes a term whose direction
+# is demonstrably wrong; it does not show the remaining five are right.
+#
+# It stays in ALL_PT_KEYS, so the parameter panel can still score it on any
+# trial and anyone can see what it would have contributed. It is no longer in
+# the canonical score, mas_estimate or the zone thresholds. A velocity term
+# can come back if it is normalised by something the release does not set and
+# shown to FALL with clinician-examined MAS.
+_PARAM_KEYS  = ["R2n","N","phi_max_ratio","f","area_ratio"]
+_N_PARAMS    = len(_PARAM_KEYS)   # 5 scored parameters
 
-#: Computed and reported, never summed into the score. Only omega_min_n, and
-#: only because it is ALGEBRAICALLY -omega_max_n for a limb dropped from full
-#: extension -- no reference value can fix a duplicate, which is why that drop
-#: stands where omega_max_n's did not.
-_DIAGNOSTIC_KEYS = ["omega_min_n"]
+#: Computed and reported, never summed into the canonical score. omega_min_n
+#: because it is ALGEBRAICALLY -omega_max_n for a limb dropped from full
+#: extension; omega_max_n because on real legs it is ~350/A0 and penalises the
+#: wrong direction (see above). Both remain selectable via ALL_PT_KEYS.
+_DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
 
 #: Identifies the scored set a calibrated threshold belongs to. Bump it
 #: whenever _PARAM_KEYS changes: PT_HEALTHY_MAX and PT_BORDERLINE_MAX are
@@ -940,7 +982,7 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6rescaled-2026-10-27"   # 6-term set, divisor = terms
+SCORE_FORMULA_ID = "pt5rescaled-2026-10-27"   # 5-term set, divisor = terms
 #                                             actually scored; see the
 #                                             n_scored note in
 #                                             compute_pt_score_breakdown
@@ -976,10 +1018,13 @@ through omega_max_n, and the return is not scored at all.
 # Simplified 4-parameter score: excludes area_ratio (unreliable for marker-based
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
 #
-# omega_max_n is 1 of 4 here rather than 1 of 6, so whatever is wrong with its
-# reference (see _PARAM_KEYS) weighs MORE in this score than in the composite.
-# Nothing to change until that constant is re-derived; noted so the next person
-# re-deriving it checks both denominators.
+# STILL CONTAINS omega_max_n, which left the canonical set on 2026-10-27 for
+# penalising the wrong direction on real legs (see _PARAM_KEYS). Here it is 1
+# of 4, so the defect weighs MORE than it did in the composite. Deliberately
+# not changed in the same commit: pendulastic_app.py's live view displays this
+# number, so changing it is a separate, visible decision about a figure a
+# clinician has been reading -- and changing both scores at once would make any
+# shift in a recorded result unattributable.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
 
 #: Every Popovic parameter the pipeline can score, in publication order --

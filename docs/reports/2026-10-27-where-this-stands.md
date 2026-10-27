@@ -127,6 +127,27 @@ limb has no PT7 to take a percentile of — but if it refuses much of the MAS≥
 arm, the impaired median shifts and I want to see which trials. The script
 refuses to emit below 5 legs per arm.
 
+> **Update, later on 2026-10-27: all three are resolved or handed off.**
+> The recordings turned out to be reachable from the analysis machine, so
+> the cohort side was measured directly (51 interpretable baseline trials,
+> #73's release fix).
+>
+> 1. **`omega_max_n`: dropped (PR #76).** On real legs, peak velocity does
+>    not scale with A0 (Spearman +0.02; ~350 deg/s flat). So the term is
+>    ~350/A0, rises as tone shrinks A0, and penalises the loosest legs at
+>    any reference: Control_ legs read 6.18, MS and MAS>=1 legs ~12. The
+>    zone recalibration still cannot run: the impaired arm is 4 legs from
+>    2 people (fewer under #75's 30-degree gate).
+> 2. **Thigh incline: needs a goniometer, not a run.** B10 finished (plan
+>    section 5c). Phone ~112 deg against cameras ~140 deg is a disagreement
+>    between instruments. One goniometer reading of a resting knee after a
+>    drop, beside the phone, settles it. The default stays at -35 deg.
+> 3. **Signed pair: do not land.** The return velocity inverts on real legs
+>    too (AUC 0.32 the wrong way). The emulator's x0.21 dynamic range does
+>    not replicate.
+>
+> The original text follows, unchanged.
+
 **Three decisions, in order of how much they change.**
 
 1. **`omega_max_n = 9.5672` is unreachable.** The model's healthy passive limb

@@ -91,7 +91,8 @@ def test_scored_parameter_count_matches_the_rust():
     )
 
 
-def test_omega_min_n_is_not_scored():
+@pytest.mark.parametrize("key", ["omega_min_n", "omega_max_n"])
+def test_velocity_term_is_not_scored(key):
     """The collinearity fix, pinned.
 
     omega_min_n is -omega_max_n for any limb dropped from the extension
@@ -100,21 +101,28 @@ def test_omega_min_n_is_not_scored():
     twice -- 94% of a healthy limb's score came from the pair. If someone adds
     it back, this fails rather than the score quietly growing a double weight
     again.
+
+    omega_max_n joined it 2026-10-27: on real legs it is ~350/A0 and its
+    penalise-below term charges the loosest legs most (see _PARAM_KEYS). Both
+    stay selectable through ALL_PT_KEYS; neither may re-enter the canonical set
+    without this test being changed on purpose.
     """
-    assert "omega_min_n" not in pt._PARAM_KEYS
-    assert "omega_min_n" in pt._DIAGNOSTIC_KEYS
-    assert "omega_min_n" not in pt.compute_pt_score_breakdown(
+    assert key not in pt._PARAM_KEYS
+    assert key in pt._DIAGNOSTIC_KEYS
+    assert key in pt.ALL_PT_KEYS
+    assert key not in pt.compute_pt_score_breakdown(
         dict.fromkeys(pt._PARAM_KEYS + pt._DIAGNOSTIC_KEYS, 1.0))
 
 
-def test_the_rust_breakdown_has_no_omega_min_n_field():
-    """Python's breakdown dict has six keys and no omega_min_n at all, so a
-    seventh field on the Rust struct would be a parity break."""
+def test_the_rust_breakdown_has_no_velocity_field():
+    """Python's breakdown dict has five keys and neither velocity term
+    (omega_min_n left 2026-10-26, omega_max_n 2026-10-27), so an extra field
+    on the Rust struct would be a parity break."""
     src = open(RUST, encoding="utf-8").read()
     body = re.search(r"pub struct PtScoreBreakdown \{(.*?)\n\}", src, re.S)
     assert body, "PtScoreBreakdown not found"
     fields = set(re.findall(r"pub (\w+): f64", body.group(1)))
-    assert fields == {"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"}, fields
+    assert fields == {"r2n", "n", "phi_max_ratio", "f", "area_ratio"}, fields
 
 
 def test_the_rust_total_sums_exactly_the_scored_fields():
@@ -124,7 +132,7 @@ def test_the_rust_total_sums_exactly_the_scored_fields():
     body = re.search(r"pub fn total\(&self\) -> f64 \{(.*?)\n    \}", src, re.S)
     assert body, "total() not found"
     summed = re.findall(r"self\.(\w+)", body.group(1))
-    assert sorted(summed) == sorted({"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"})
+    assert sorted(summed) == sorted({"r2n", "n", "phi_max_ratio", "f", "area_ratio"})
     assert len(summed) == len(set(summed)), f"a term is summed twice: {summed}"
     assert len(summed) == pt._N_PARAMS
 
@@ -351,10 +359,16 @@ def test_deselecting_a_term_redistributes_its_share():
     """
     params = {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
               "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2}
-    six = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
-    five = pt.compute_pt_score_breakdown(
+    n = len(pt._PARAM_KEYS)
+    full = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+    less = pt.compute_pt_score_breakdown(
         params, keys=[k for k in pt._PARAM_KEYS if k != "f"])
-    for k, v in five.items():
-        assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
+    for k, v in less.items():
+        assert v == pytest.approx(full[k] * n / (n - 1), abs=1e-15), k
     alone = pt.compute_pt_score_breakdown(params, keys=["N"])
-    assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)
+    assert alone["N"] == pytest.approx(full["N"] * n, abs=1e-15)
+    # And the reverse: re-adding omega_max_n (selectable, not canonical) widens
+    # the divisor rather than stacking a term on top of the canonical five.
+    plus = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS + ["omega_max_n"])
+    for k in pt._PARAM_KEYS:
+        assert plus[k] == pytest.approx(full[k] * n / (n + 1), abs=1e-15), k

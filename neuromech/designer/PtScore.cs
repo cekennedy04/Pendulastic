@@ -103,15 +103,15 @@ namespace Pendulastic
         public const double PT_HEALTHY_MAX = 0.1709;
         public const double PT_BORDERLINE_MAX = 0.3528;
         public const string PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24";
-        public const string SCORE_FORMULA_ID = "pt6rescaled-2026-10-27";
+        public const string SCORE_FORMULA_ID = "pt5rescaled-2026-10-27";
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
         public const double MIN_INTERPRETABLE_A0_DEG = 30.0;   // 25 -> 30 on 2026-10-27, see pendulastic_pt_score
         public const double MAX_INTERPRETABLE_A0_DEG = 120.0;
 
-        /// <summary>_PARAM_KEYS: the scored set (omega_min_n is diagnostic only since pt6).</summary>
-        public static readonly string[] ScoredKeys = new string[] { "R2n", "N", "phi_max_ratio", "omega_max_n", "f", "area_ratio" };
+        /// <summary>_PARAM_KEYS: the scored set (omega_min_n diagnostic since pt6, omega_max_n since pt5).</summary>
+        public static readonly string[] ScoredKeys = new string[] { "R2n", "N", "phi_max_ratio", "f", "area_ratio" };
 
         /// <summary>HEALTHY_REF, same keys and values as the Python.</summary>
         public static readonly Dictionary<string, double> HEALTHY_REF = MakeRef();
