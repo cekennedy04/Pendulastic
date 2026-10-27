@@ -153,6 +153,17 @@ HEALTHY_REF = {
 
     # ---- DATA-DERIVED, no published value exists ----
     #
+    # RE-DERIVED 2026-10-27 by derive_healthy_ref.py: 39 INTERPRETABLE
+    # baseline control trials, 12 legs, 7 people, on the reconstruction and
+    # release detection that ship (seed-window, lift-and-hold and drift-fit
+    # fixes). The 2026-09-09 values below each entry came from 46 trials
+    # scored before those fixes and without the excursion/oscillation gates,
+    # so they included trials whose release was mis-detected -- which shrinks
+    # A0 and inflates every A0-normalised ratio. On the corrected cohort the
+    # old set charged a healthy leg a median PT7 of 0.270, over half of it
+    # area_ratio; against this set the same legs score 0.100. Leave-one-
+    # person-out ranges are in derive_healthy_ref.py's docstring.
+    #
     # Flagged rather than cited. For each of these the published quantity is
     # either differently defined or was never published at all, so no
     # literature anchor is available and these are OUR medians. Values are
@@ -168,11 +179,19 @@ HEALTHY_REF = {
     # Popovic's phi-max is the first goniogram maximum in RADIANS (published
     # healthy 0.34-0.61 rad). Ours is A2/A0, a dimensionless ratio. Different
     # quantity; the published range cannot be used.
-    "phi_max_ratio": 0.6667,
+    "phi_max_ratio": 0.6407,   # was 0.6667 (2026-09-09)
 
     # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
     # Ours is divided by A0. Different quantity.
-    "omega_max_n":   9.5672,
+    #
+    # Was 9.5672 (2026-09-09), which healthy_ref_frequency_audit.py showed
+    # physics cannot reach; this value sits 1.26x above its 5.16 model rather
+    # than 1.85x. Caveat that matters for interpretation: across control
+    # trials this ratio falls steeply with A0 (rho -0.88) because peak
+    # velocity is roughly fixed by the release height while A0 varies, so it
+    # is largely 1/A0 -- and a below-reference-only penalty therefore never
+    # charges a small-A0 spastic leg for it.
+    "omega_max_n":   6.4839,
 
     # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
     # velocity in the return direction. Until 2026-09-09 this module computed
@@ -181,24 +200,24 @@ HEALTHY_REF = {
     # a static zero-offset in the sum.
     #
     # Median of 46 OptiTrack control trials; all 46 are negative, and it
-    # mirrors omega_max_n (+9.5672) almost exactly, which is what a pendulum
-    # should do. Subset spread -7.26 to -9.82, far tighter than area_ratio's.
+    # mirrors omega_max_n almost exactly, which is what a pendulum should do
+    # (2026-10-27: -6.3624 against +6.4839; was -9.4152 against +9.5672). Subset spread -7.26 to -9.82, far tighter than area_ratio's.
     #
     # Worth noting but NOT claimed as a match: Popovic's published healthy
     # range is -12 to -9 rad/s and this lands inside it. Ours is normalised by
     # A0 (units 1/s) and theirs is not, so the agreement is suggestive rather
     # than a like-for-like comparison.
-    "omega_min_n":   -9.4152,
+    "omega_min_n":   -6.3624,
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
-    "f":             0.8839,
+    "f":             0.9511,   # was 0.8839 (2026-09-09)
 
     # Same: introduced in that study, no published healthy value. ALSO the
     # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
     # 90% swing, depending purely on which controls are included. This cohort
     # cannot pin it, and it is the parameter the swing-centred frame changed.
-    "area_ratio":    0.0945,
+    "area_ratio":    0.1766,   # was 0.0945; LOO 0.154-0.213, still least stable
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
@@ -930,7 +949,7 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6-2026-10-26"   # back to the 6-term set; see omega_max_n above
+SCORE_FORMULA_ID = "pt6-ref-2026-10-27"   # back to the 6-term set; see omega_max_n above
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.

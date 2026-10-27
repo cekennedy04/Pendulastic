@@ -42,7 +42,7 @@ pub const N_PARAMS: usize = 6;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6-2026-10-26";
+pub const SCORE_FORMULA_ID: &str = "pt6-ref-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -78,22 +78,25 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // DATA-DERIVED. No published value exists for any of these five: the
     // published quantity is either differently defined (phi-max is an angle
     // in rad, omega-max is unnormalised rad/s) or was introduced by
-    // Popovic-Maneski with no healthy value given (f, area_ratio). Medians
-    // from 46 OptiTrack control trials, 9 participants, 15 legs. Every
-    // control leg in that cohort is assessed_by=ASSUMED -- no clinician
-    // examined a healthy leg in this dataset.
-    phi_max_ratio: 0.6667,
-    omega_max_n: 9.5672,
+    // Popovic-Maneski with no healthy value given (f, area_ratio).
+    // Re-derived 2026-10-27 by derive_healthy_ref.py: medians of 39
+    // INTERPRETABLE baseline control trials, 12 legs, 7 people, on the
+    // corrected reconstruction and release detection. The previous set
+    // (46 trials, pre-fix, ungated) is noted per entry. Every control leg is
+    // assessed_by=ASSUMED -- no clinician examined a healthy leg.
+    phi_max_ratio: 0.6407, // was 0.6667
+    // Was 9.5672. Largely 1/A0 in practice: peak velocity is roughly fixed by
+    // the release height, so this falls steeply as A0 rises (rho -0.88).
+    omega_max_n: 6.4839,
     // NOW Popovic's omega-min: the SIGNED minimum angular velocity, peak
     // velocity in the return direction. Until 2026-09-09 this was
     // min(abs(omega))/A0, the near-zero speed at a turning point, so the
     // parameter sat at ~0.001 for every trial and contributed nothing.
-    // Median of 46 control trials, all negative, mirroring omega_max_n.
-    omega_min_n: -9.4152,
-    f: 0.8839,
-    // Least trustworthy entry: moves 0.082-0.156 depending purely on which
-    // controls are included, so this cohort cannot pin it.
-    area_ratio: 0.0945,
+    // Mirrors omega_max_n. Was -9.4152.
+    omega_min_n: -6.3624,
+    f: 0.9511, // was 0.8839
+    // Least trustworthy entry: leave-one-person-out 0.154-0.213. Was 0.0945.
+    area_ratio: 0.1766,
 };
 
 /// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
@@ -1125,7 +1128,10 @@ mod tests {
         });
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
-        assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
+        assert!((simple - 0.697_993_284_813_920_31_f64).abs() < 1e-15, "simple={simple:.17}");
+        // 1.896_321_590_796_999_47 against the pre-2026-10-27 HEALTHY_REF;
+        // re-deriving it from the corrected control cohort moved every
+        // data-derived entry (area_ratio 0.0945 -> 0.1766 most of all).
         // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
         // reads HIGHER on this fixture, not lower, which is the double count
         // cutting the other way: dropping omega_min_n also drops the /7 in
@@ -1133,7 +1139,7 @@ mod tests {
         // far above reference (0.94 vs 0.0945) that widening its share
         // outweighs losing a term whose own contribution here was small
         // (omega_min_n = 0.004, barely above the -9.4152 reference).
-        assert!((full - 1.896_321_590_796_999_47_f64).abs() < 1e-15, "full={full:.17}");
+        assert!((full - 1.185_789_407_693_991_2_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }
