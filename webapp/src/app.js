@@ -27,6 +27,8 @@ import { createAudioCues } from './audio-cues.js';
 import { parseManifest, parseMasCsv, masIdentityKey, planImport, importSummary } from './trend-import.js';
 import { renderFigure, figureName } from './trend-charts.js';
 import { isPending, makeMasRecord } from './mas-store.js';
+import { ALL_PT_KEYS, CANONICAL_KEYS, defaultSelection, selectionToCsv,
+  toggleKey, selectionNotice, selectionRows } from './param-select.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -1074,7 +1076,8 @@ if (typeof document !== 'undefined') {
     // letting metricRows read keys off null params.
     if (!params) { host.hidden = true; return; }
     ensureReference(() => renderMetricList(params, ptScore));
-    const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown);
+    const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown,
+      ptScore && ptScore.n_scored);
     host.hidden = rows.length === 0;
     if (rows.length === 0) return;
     host.textContent = '';
@@ -1667,6 +1670,146 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  // ---- per-parameter selection panel -------------------------------------
+  //
+  // Which parameters belong in the score is an open question (see
+  // docs/reports/2026-10-27-dropping-f.md), and every argument about it so far
+  // was made from aggregate numbers because nobody could see a single trial
+  // rescored without a given parameter. This panel is that view.
+  //
+  // The selection is deliberately NOT persisted. It is an inspection tool, and
+  // a remembered selection would silently change what the next trial's number
+  // means -- the one failure mode this whole panel exists to prevent.
+  let paramSelection = defaultSelection();
+  // The params of whatever trial is on screen, so a toggle can rescore without
+  // re-reading the store.
+  let paramSelectParams = null;
+
+  // The same stored parameters scored over `selection`. Returns the Rust reply
+  // verbatim -- including `canonical`, which the UI must take from the scorer
+  // rather than recompute, or the two could disagree about which set is the
+  // scored one.
+  function ptScoreForSelection(p, selection) {
+    const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
+      'f', 'area_ratio', 'first_trough_depth', 'a0_deg', 'a1_deg'];
+    if (!wasmApi || !p || need.some((k) => !Number.isFinite(p[k]))) return null;
+    if (typeof wasmApi.pt_score_from_params_selected !== 'function') return null;
+    try {
+      return JSON.parse(wasmApi.pt_score_from_params_selected(
+        p.r2n, p.n, p.phi_max_ratio, p.omega_max_n, p.omega_min_n,
+        p.f, p.area_ratio, p.first_trough_depth, p.a0_deg, p.a1_deg,
+        selectionToCsv(selection),
+      ));
+    } catch {
+      return null;
+    }
+  }
+
+  // async because it needs the wasm module, which was previously loaded from
+  // exactly one place (the trends view's loadHistory). On the capture path
+  // wasmApi was still null when this ran, so the panel hid itself and only
+  // appeared if the operator had happened to open Trends first.
+  async function renderParamSelect() {
+    const panel = el('param-select');
+    if (!panel) return;
+    if (!wasmApi) await ensureWasm();
+    const reply = ptScoreForSelection(paramSelectParams, paramSelection);
+    if (!reply) {
+      // An older wasm build, or a trial without the full parameter set. Hide
+      // rather than render an empty table that looks like "no contributions".
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+
+    const rows = selectionRows({
+      selection: paramSelection,
+      breakdown: reply.breakdown,
+      unscorable: reply.unscorable,
+      total: reply.total,
+    });
+    el('param-select-rows').innerHTML = rows.map((r) => {
+      const share = r.share === null ? '' : `${(100 * r.share).toFixed(0)}%`;
+      const value = r.unmeasured
+        ? 'not measured'
+        : (r.value === null ? '' : formatValue(r.value));
+      // The caveat is the reason someone would switch a parameter off, so it
+      // belongs next to the switch. It was built and unit-tested but never
+      // rendered.
+      const caveat = r.caveat
+        ? `<p class="param-caveat">${r.caveat}</p>`
+        : '';
+      return `<tr class="${r.selected ? '' : 'param-off'}">`
+        + `<td><label><input type="checkbox" data-param-key="${r.key}"`
+        + `${r.selected ? ' checked' : ''}> ${r.label}`
+        + `${r.inCanonical ? '' : ' <em>(not scored)</em>'}</label>${caveat}</td>`
+        + `<td>${value}</td><td>${share}</td></tr>`;
+    }).join('');
+
+    const notice = selectionNotice({
+      canonical: reply.canonical,
+      nScored: reply.n_scored,
+      unscorable: reply.unscorable,
+      zonesEnabled: ZONE_CLASSIFICATION_CALIBRATED,
+    });
+    const noticeEl = el('param-select-notice');
+    noticeEl.hidden = notice === null;
+    noticeEl.textContent = notice ? notice.text : '';
+    noticeEl.className = notice && !notice.canonical ? 'param-exploratory' : '';
+
+    // The selection's own total, shown even when it equals the headline score,
+    // so the two numbers are never silently different. This was written to
+    // `dataset.total` with no CSS reading it back, so the number the comment
+    // claimed was always shown was never rendered at all.
+    const totalEl = el('param-select-total');
+    if (totalEl) {
+      const t = reply.total;
+      totalEl.textContent = typeof t === 'number' && Number.isFinite(t)
+        ? `Total over this selection: ${t.toFixed(4)} (${reply.n_scored} of `
+          + `${paramSelection.length} selected terms measurable)`
+        // fmt_f64 emits JSON null for a non-finite total, so this is reachable.
+        : 'Total over this selection: not computable';
+    }
+  }
+
+  function setParamSelection(next) {
+    paramSelection = next;
+    renderParamSelect();
+  }
+
+  // Point the panel at a trial. Resets the selection, because the module's own
+  // comment says a remembered selection would silently change what the next
+  // trial's number means -- and nothing was resetting it, so a selection made
+  // on one trial carried into every later one.
+  function showParamSelectFor(params) {
+    paramSelectParams = params;
+    paramSelection = defaultSelection();
+    renderParamSelect();
+  }
+
+  // Delegated, because the rows are re-rendered on every toggle -- a listener
+  // bound to each checkbox would be lost the moment one was clicked.
+  document.addEventListener('change', (e) => {
+    const key = e.target && e.target.dataset && e.target.dataset.paramKey;
+    if (!key) return;
+    const next = toggleKey(paramSelection, key);
+    if (next === paramSelection) {
+      // toggleKey refused to empty the selection. Re-render so the checkbox
+      // the user just cleared goes visibly back to checked rather than
+      // leaving the DOM disagreeing with the state.
+      renderParamSelect();
+      return;
+    }
+    setParamSelection(next);
+  });
+
+  el('param-select-canonical')?.addEventListener('click', () => {
+    setParamSelection(CANONICAL_KEYS.slice());
+  });
+  el('param-select-all')?.addEventListener('click', () => {
+    setParamSelection(ALL_PT_KEYS.slice());
+  });
+
   function scoreStoredTrial(trial) {
     const p = (trial && trial.params) || {};
     const need = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'omega_min_n',
@@ -1732,6 +1875,9 @@ if (typeof document !== 'undefined') {
       renderResult(t.params);
       renderLateral(t.lateral_motion);
       renderMetricList(t.params, ptScoreForStoredTrial(t));
+      // Without this the panel kept rendering whichever trial was last
+      // captured, beside this trial's metric list and waveform.
+      showParamSelectFor(t.params);
       drawWaveform(t.trajectory);
       router.navigate('capture');
     },
@@ -1971,6 +2117,7 @@ if (typeof document !== 'undefined') {
     el('guide').textContent = 'scored';
     drawWaveform(action.trajectory);
     renderPtScore(action.ptScore);
+    showParamSelectFor(p);
     renderResult(p);
     renderLateral(action.lateralMotion);
     renderMetricList(p, action.ptScore);

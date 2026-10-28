@@ -1008,13 +1008,18 @@ def test_excursion_gate_stays_clear_of_the_lowest_spastic_leg():
     floor of 31.5 -- ABOVE the lowest spastic leg (28.7), so a clean control
     bound would refuse grades on the study's own cases.
 
-    The real constraint is therefore the spastic minimum, and it is the one
-    worth pinning: the gate must stay below 28.7 or it starts reclassifying
-    the cases the study exists to measure.
+    The constraint was the spastic minimum (28.7) until 2026-10-27, when the
+    corrected reconstruction showed the spastic trials just above 25 (A0
+    27.2-28.4, P13 L/R and P14 L) were exactly the MAS>=1 trials graded
+    HEALTHY. Refusing them is the recoverable error, so the gate now sits
+    above them. Pin both sides: high enough to refuse those trials, low
+    enough to keep grading the bulk of controls (median A0 ~52).
     """
     import pendulastic_pt_score as p
-    assert p.MIN_INTERPRETABLE_A0_DEG < 28.7, (
-        "gate would refuse grades on real spastic legs")
+    assert p.MIN_INTERPRETABLE_A0_DEG > 28.4, (
+        "gate would grade the 2026-10-27 MAS>=1 trials (A0 27.2-28.4) as healthy")
+    assert p.MIN_INTERPRETABLE_A0_DEG < 40.0, (
+        "gate so high it refuses a large share of normal controls")
     assert p.MIN_INTERPRETABLE_A0_DEG > 12.0, (
         "gate so low it would stop catching collapsed swings")
 
@@ -1066,7 +1071,7 @@ def test_every_excursion_measured_in_this_corpus_is_still_accepted():
     import pendulastic_pt_score as pt
     """The ceiling must reject nothing that was ever really measured. Across 218
     scored optical trials the largest genuine A0 is 89.8 deg."""
-    for a0 in (25.0, 46.6, 63.5, 89.8):
+    for a0 in (pt.MIN_INTERPRETABLE_A0_DEG, 46.6, 63.5, 89.8):
         assert pt.excursion_ok(_plausible_params(a0)), a0
 
 

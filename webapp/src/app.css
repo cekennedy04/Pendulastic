@@ -1089,3 +1089,70 @@ main { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 }
 .metric-what { margin: 0; line-height: 1.45; }
 .metric-range { margin: 8px 0 0; line-height: 1.45; color: var(--fg3); }
+
+/* ---- per-parameter selection panel ------------------------------------- */
+/* A collapsed <details> by default: the headline score stays the headline,
+   and the panel is opened by someone asking the question it answers. */
+/* Both are toggled with the `hidden` attribute, and this stylesheet's own
+   note (see the [hidden] block above) exists to keep that guard list
+   exhaustive: an id selector outranks a bare `[hidden]`, so a rule here
+   silently defeats it. */
+#param-select[hidden],
+#param-select-notice[hidden] { display: none; }
+
+#param-select {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--rule, #d8d8d8);
+  padding-top: 0.5rem;
+}
+#param-select summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+#param-select-intro,
+#param-select-notice {
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+/* A non-canonical total is not comparable to anything. Marked, not hidden --
+   the panel's whole purpose is to let someone build one deliberately. */
+#param-select-notice.param-exploratory {
+  border-left: 3px solid var(--warn, #b26a00);
+  padding-left: 0.5rem;
+}
+#param-select-rows {
+  width: 100%;
+  font-size: 0.85rem;
+}
+#param-select-rows td:nth-child(2),
+#param-select-rows td:nth-child(3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* A deselected row stays visible and legible, just clearly out of the sum --
+   removing it would hide the comparison the panel is for. */
+#param-select-rows tr.param-off {
+  opacity: 0.55;
+}
+#param-select-rows em {
+  font-size: 0.78rem;
+  opacity: 0.8;
+}
+#param-select-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* The reason a parameter might be switched off, next to its switch. */
+.param-caveat {
+  margin: 0.15rem 0 0 1.4rem;
+  font-size: 0.74rem;
+  line-height: 1.3;
+  opacity: 0.75;
+}
+#param-select-total {
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}

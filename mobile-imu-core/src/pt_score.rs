@@ -42,7 +42,7 @@ pub const N_PARAMS: usize = 6;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6-2026-10-26";
+pub const SCORE_FORMULA_ID: &str = "pt6rescaled-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -231,13 +231,160 @@ fn dev_above(pij: f64, phj: f64, denom: f64) -> f64 {
     (pij - phj).max(0.0) / denom
 }
 
+/// `pendulastic_pt_score._PARAM_KEYS` — the canonical scored set, as key
+/// names, in the order `PtScoreBreakdown::total` sums them.
+///
+/// One definition. It was previously spelled out again inside
+/// `pt_score_selected_from_scalars`' canonicity check and a third time as
+/// `CANONICAL_KEYS` in webapp/src/param-select.js, with nothing pinning them
+/// together; tests/test_pt_zone_parity.py now compares all three.
+pub const CANONICAL_PT_KEYS: [&str; N_PARAMS] = [
+    "r2n",
+    "n",
+    "phi_max_ratio",
+    "omega_max_n",
+    "f",
+    "area_ratio",
+];
+
+/// `pendulastic_pt_score.ALL_PT_KEYS` — every parameter the pipeline can
+/// score, in publication order: the SELECTABLE superset, not the scored set.
+///
+/// Wider than [`ordered`](PtScoreBreakdown::ordered) on purpose. It still
+/// contains `omega_min_n`, which left the canonical score on 2026-10-26 for
+/// being algebraically `-omega_max_n` on any limb dropped from full
+/// extension. The app offers all seven as toggles so each one's contribution
+/// is visible; a selection that is not the canonical set yields a number that
+/// is NOT comparable to a calibrated threshold.
+pub const ALL_PT_KEYS: [&str; 7] = [
+    "r2n",
+    "n",
+    "phi_max_ratio",
+    "omega_max_n",
+    "omega_min_n",
+    "f",
+    "area_ratio",
+];
+
+/// Whether `key` can be scored on this trial at all: it needs a non-zero
+/// reference, and `f` additionally needs to have been estimated.
+///
+/// Mirrors `pendulastic_pt_score.compute_pt_score_breakdown`'s `_scorable`.
+fn scorable(key: &str, params: &PtParams, healthy: &HealthyRef) -> bool {
+    match key {
+        "r2n" => healthy.r2n != 0.0,
+        "n" => healthy.n != 0.0,
+        "phi_max_ratio" => healthy.phi_max_ratio != 0.0,
+        "omega_max_n" => healthy.omega_max_n != 0.0,
+        "omega_min_n" => healthy.omega_min_n != 0.0,
+        "area_ratio" => healthy.area_ratio != 0.0,
+        // `> 0.0`, not `!= 0.0`: a negative reference frequency is not a
+        // reference, and the bidirectional penalty would divide by its
+        // absolute value and read as a deviation from a physical impossibility.
+        "f" => healthy.f > 0.0 && !(params.f < 0.1 || params.n < 2.0),
+        _ => false,
+    }
+}
+
+/// One key's contribution, given the divisor the whole selection shares.
+fn contribution(key: &str, params: &PtParams, healthy: &HealthyRef, n_scored: usize) -> f64 {
+    if !scorable(key, params, healthy) {
+        return 0.0;
+    }
+    let den = |phj: f64| n_scored as f64 * phj.abs().max(DENOM_FLOOR);
+    match key {
+        // penalise only if BELOW the healthy reference
+        "r2n" => dev_below(params.r2n, healthy.r2n, den(healthy.r2n)),
+        "n" => dev_below(params.n, healthy.n, den(healthy.n)),
+        "phi_max_ratio" => {
+            dev_below(params.phi_max_ratio, healthy.phi_max_ratio, den(healthy.phi_max_ratio))
+        }
+        "omega_max_n" => dev_below(params.omega_max_n, healthy.omega_max_n, den(healthy.omega_max_n)),
+        // penalise only if ABOVE
+        "area_ratio" => dev_above(params.area_ratio, healthy.area_ratio, den(healthy.area_ratio)),
+        "omega_min_n" => dev_above(params.omega_min_n, healthy.omega_min_n, den(healthy.omega_min_n)),
+        // bidirectional
+        "f" => (params.f - healthy.f).abs() / den(healthy.f),
+        _ => 0.0,
+    }
+}
+
+/// `pendulastic_pt_score.compute_pt_score_breakdown(params, ref, keys)` — the
+/// breakdown over an ARBITRARY selection of parameters, for the app's
+/// per-parameter toggles.
+///
+/// The divisor follows the selection, which is why the rescale in
+/// [`pt_score_breakdown`] had to land first: without it, deselecting a term
+/// would leave a hole instead of redistributing it, and every toggle would
+/// read as "less impaired" no matter which parameter was removed.
+///
+/// Unknown keys contribute nothing and are not counted in the divisor.
+pub fn pt_score_breakdown_selected(
+    params: &PtParams,
+    healthy: &HealthyRef,
+    selected: &[&str],
+) -> Vec<(String, f64)> {
+    let n_scored = selected
+        .iter()
+        .filter(|k| scorable(k, params, healthy))
+        .count();
+    let n_scored = if n_scored == 0 {
+        selected.len().max(1)
+    } else {
+        n_scored
+    };
+    selected
+        .iter()
+        .map(|k| ((*k).to_string(), contribution(k, params, healthy, n_scored)))
+        .collect()
+}
+
+/// Total over an arbitrary selection. See [`pt_score_breakdown_selected`].
+pub fn pt_score_selected(params: &PtParams, healthy: &HealthyRef, selected: &[&str]) -> f64 {
+    pt_score_breakdown_selected(params, healthy, selected)
+        .iter()
+        .map(|(_, v)| v)
+        .sum()
+}
+
 /// `pendulastic_pt_score.compute_pt_score_breakdown(params, ref)`.
 ///
 /// `phj <= 0.0` (a reference value of zero or less) yields a `0.0`
 /// contribution for that key, matching the reference's `if phj <= 0: ...
 /// continue`.
 pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBreakdown {
-    let denom = |phj: f64| N_PARAMS as f64 * phj.abs().max(DENOM_FLOOR);
+    // The divisor is the number of terms this trial can actually score, not
+    // N_PARAMS. A term is STRUCTURALLY skipped when it has no reference to
+    // deviate from (phj == 0) or when f could not be estimated; the rest then
+    // share the full scale instead of the trial keeping a hole.
+    //
+    // Scoring a skipped term as 0.0 against a fixed N_PARAMS divisor made the
+    // score fall as the limb worsened: f is dropped at `f < 0.1 || n < 2.0` --
+    // the low-oscillation end -- so crossing that boundary DELETED a penalty
+    // rather than redistributing it. On a sweep where f degrades with n,
+    // n=2.0 scored 0.1878 and the worse n=1.5 scored 0.1282. Rescaling lifts
+    // that to 0.1538. It does NOT make the score monotone: the f term's own
+    // contribution still vanishes discontinuously, leaving ~18% of the
+    // inversion. Mirrors `pendulastic_pt_score`'s `n_scored`.
+    // Deliberately `scorable`, not a second copy of its condition. These were
+    // two spellings of the same rule -- `healthy.f != 0.0` here against
+    // `healthy.f <= 0.0` there -- which agree on HEALTHY_REF and diverge on a
+    // negative reference f. The parity test only exercises HEALTHY_REF, so
+    // nothing would have caught it.
+    let f_scorable = scorable("f", params, healthy);
+    let n_scored = [
+        healthy.r2n != 0.0,
+        healthy.n != 0.0,
+        healthy.phi_max_ratio != 0.0,
+        healthy.omega_max_n != 0.0,
+        f_scorable,
+        healthy.area_ratio != 0.0,
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    let n_scored = if n_scored == 0 { N_PARAMS } else { n_scored };
+    let denom = |phj: f64| n_scored as f64 * phj.abs().max(DENOM_FLOOR);
 
     let r2n = if healthy.r2n == 0.0 { 0.0 } else { dev_below(params.r2n, healthy.r2n, denom(healthy.r2n)) };
     let n = if healthy.n == 0.0 { 0.0 } else { dev_below(params.n, healthy.n, denom(healthy.n)) };
@@ -260,7 +407,7 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     // trial's own f, not the reference's) or `N < 2.0` — matching the
     // reference's `if pij < 0.1 or params.get("N", 0.0) < 2.0`. Folded into
     // one condition with the `phj <= 0` guard since both yield the same 0.0.
-    let f = if healthy.f <= 0.0 || params.f < 0.1 || params.n < 2.0 {
+    let f = if !f_scorable {
         0.0
     } else {
         (params.f - healthy.f).abs() / denom(healthy.f)
@@ -325,7 +472,11 @@ pub fn pt_score_simple(params: &PtParams, healthy: &HealthyRef) -> f64 {
 /// it. Low excursion also comes from poor positioning, an incomplete release,
 /// guarding, pain, mechanical obstruction and sensor failure, so the refusal
 /// is phrased about the MEASUREMENT, never about the patient.
-pub const MIN_INTERPRETABLE_A0_DEG: f64 = 25.0;
+///
+/// Raised 25 -> 30 on 2026-10-27: the only MAS>=1 trials graded HEALTHY in the
+/// corrected cohort were exactly the three with A0 27.2-28.4. See the
+/// reference's comment block for the evidence and its cost.
+pub const MIN_INTERPRETABLE_A0_DEG: f64 = 30.0;
 
 /// `pendulastic_pt_score.MAX_INTERPRETABLE_A0_DEG` — the ceiling above which a
 /// number is not a swing at all. A0 is the initial extension of an INTERIOR
@@ -365,8 +516,10 @@ pub fn excursion_reason(params: &PtParams) -> Option<String> {
     Some(format!(
         "Insufficient excursion: the leg moved {:.1} deg, below the {:.0} deg floor for \
          interpreting PT7 (control mean 46.6, sd 11.1, n=53). PT7's parameters are ratios \
-         normalised on the swing, so they stop tracking severity once the swing collapses. \
-         Repeat the trial and check positioning, release and sensor placement.",
+         normalised on the swing, so they stop tracking severity once the swing collapses -- \
+         a stiff, high-tone leg and a poorly positioned trial both swing too little to grade. \
+         Repeat the trial and check positioning, release and sensor placement; if a full lift \
+         still swings this little, record the reduced excursion and assess tone clinically.",
         params.a0_deg, MIN_INTERPRETABLE_A0_DEG
     ))
 }
@@ -502,12 +655,22 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 
     format!(
         "{{\"score\":{},\"score_simple\":{},\"zone\":\"{}\",\"breakdown\":[{}],\
-         \"unmeasured\":[{}],\"excursion_reason\":{}}}",   // key name is wire-frozen
+         \"unmeasured\":[{}],\"n_scored\":{},\"excursion_reason\":{}}}",   // key name is wire-frozen
         fmt_f64(total),
         fmt_f64(pt_score_simple(params, healthy)),
         zone_str,
         items,
         unmeasured,
+        // The per-term scale is no longer a fixed 1/N_PARAMS: it is
+        // 1/n_scored, and n_scored falls to 5 when f cannot be estimated. Any
+        // consumer colouring or thresholding a single term's contribution
+        // needs this, and webapp/src/metric-rows.js was reading a hardcoded
+        // 1/7 -- stale since omega_min_n left the set, and wrong per-trial
+        // since the divisor started following the selection.
+        ALL_PT_KEYS
+            .iter()
+            .filter(|k| CANONICAL_PT_KEYS.contains(*k) && scorable(k, params, healthy))
+            .count(),
         reason_json,
     )
 }
@@ -548,7 +711,33 @@ pub fn pt_score_from_scalars(
     // whole reason it exists.
     a1_deg: f64,
 ) -> String {
-    let params = PtParams {
+    let params = params_from_scalars(
+        r2n, n, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio,
+        first_trough_depth, a0_deg, a1_deg,
+    );
+    pt_score_to_json(&params, &HEALTHY_REF)
+}
+
+/// The `PtParams` a stored trial's scalars imply, shared by every scalar
+/// entry point so a new one cannot drift from the canonical one.
+///
+/// The fields left at defaults are unread by the scoring path --- see
+/// `pt_score_from_scalars`' note and
+/// `trajectory_vectors_do_not_affect_the_score`.
+#[allow(clippy::too_many_arguments)]
+fn params_from_scalars(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+    a1_deg: f64,
+) -> PtParams {
+    PtParams {
         r2n,
         n,
         phi_max_ratio,
@@ -577,8 +766,101 @@ pub fn pt_score_from_scalars(
         omega_s: Vec::new(),
         pk_i: Vec::new(),
         tr_i: Vec::new(),
+    }
+}
+
+/// Scalar-taking wrapper for [`pt_score_selected_from_scalars`], so the wasm
+/// veneer stays logic-free and the `PtParams` construction stays shared.
+#[allow(clippy::too_many_arguments)]
+pub fn pt_score_selected_from_scalars_json(
+    r2n: f64,
+    n: f64,
+    phi_max_ratio: f64,
+    omega_max_n: f64,
+    omega_min_n: f64,
+    f: f64,
+    area_ratio: f64,
+    first_trough_depth: f64,
+    a0_deg: f64,
+    a1_deg: f64,
+    keys_csv: &str,
+) -> String {
+    let params = params_from_scalars(
+        r2n, n, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio,
+        first_trough_depth, a0_deg, a1_deg,
+    );
+    pt_score_selected_from_scalars(&params, keys_csv)
+}
+
+/// The breakdown over a CALLER-CHOSEN selection of parameters, as JSON, for
+/// the app's per-parameter toggles.
+///
+/// `keys_csv` is a comma-separated selection drawn from [`ALL_PT_KEYS`];
+/// unknown names are reported in `"unknown"` and contribute nothing. The
+/// response carries `"canonical": true` only when the selection is exactly
+/// the scored set, which is the flag the UI uses to decide whether the number
+/// may be presented as a verdict or only as an exploration.
+///
+/// `"unscorable"` names selected keys this trial cannot score at all --- a
+/// zero reference, or an f that was never estimated. They are excluded from
+/// the divisor rather than contributing zero, so the panel can say "not
+/// measured" instead of showing a term that looks perfect.
+pub fn pt_score_selected_from_scalars(
+    params: &PtParams,
+    keys_csv: &str,
+) -> String {
+    let requested: Vec<&str> = keys_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .collect();
+    let known: Vec<&str> = requested
+        .iter()
+        .copied()
+        .filter(|k| ALL_PT_KEYS.contains(k))
+        .collect();
+    let unknown: Vec<&str> = requested
+        .iter()
+        .copied()
+        .filter(|k| !ALL_PT_KEYS.contains(k))
+        .collect();
+    let unscorable: Vec<&str> = known
+        .iter()
+        .copied()
+        .filter(|k| !scorable(k, params, &HEALTHY_REF))
+        .collect();
+
+    let breakdown = pt_score_breakdown_selected(params, &HEALTHY_REF, &known);
+    let total: f64 = breakdown.iter().map(|(_, v)| v).sum();
+    let n_scored = known.len() - unscorable.len();
+
+    let canonical = known.len() == CANONICAL_PT_KEYS.len()
+        && CANONICAL_PT_KEYS.iter().all(|k| known.contains(k));
+
+    let items: Vec<String> = breakdown
+        .iter()
+        .map(|(k, v)| format!("{{\"key\":\"{k}\",\"value\":{}}}", fmt_f64(*v)))
+        .collect();
+    let quote = |v: &Vec<&str>| {
+        v.iter()
+            .map(|k| format!("\"{k}\""))
+            .collect::<Vec<_>>()
+            .join(",")
     };
-    pt_score_to_json(&params, &HEALTHY_REF)
+    format!(
+        "{{\"breakdown\":[{}],\"total\":{},\"n_scored\":{},\"canonical\":{},\
+         \"unscorable\":[{}],\"unknown\":[{}],\"refusal\":{}}}",
+        items.join(","),
+        fmt_f64(total),
+        n_scored,
+        canonical,
+        quote(&unscorable),
+        quote(&unknown),
+        match refusal_reason(params) {
+            Some(r) => format!("\"{}\"", r.replace('"', "\\\"")),
+            None => "null".to_string(),
+        }
+    )
 }
 
 // WITHDRAWN_REFS and healthy_ref_to_json sit below this module. Moving ~30
@@ -962,11 +1244,11 @@ mod tests {
 
     #[test]
     fn the_gate_boundaries_match_the_python_reference() {
-        assert_eq!(MIN_INTERPRETABLE_A0_DEG, 25.0);
+        assert_eq!(MIN_INTERPRETABLE_A0_DEG, 30.0);
         assert_eq!(MAX_INTERPRETABLE_A0_DEG, 120.0);
-        assert!(excursion_ok(&params(|p| p.a0_deg = 25.0)), "floor is inclusive");
+        assert!(excursion_ok(&params(|p| p.a0_deg = 30.0)), "floor is inclusive");
         assert!(excursion_ok(&params(|p| p.a0_deg = 120.0)), "ceiling is inclusive");
-        assert!(!excursion_ok(&params(|p| p.a0_deg = 24.999)));
+        assert!(!excursion_ok(&params(|p| p.a0_deg = 29.999)));
         assert!(!excursion_ok(&params(|p| p.a0_deg = 120.001)));
     }
 
@@ -1098,6 +1380,122 @@ mod tests {
 
 
     #[test]
+    /// The selection path and the canonical path must not be two scorers.
+    ///
+    /// `pt_score_breakdown` has the six terms written out by hand; the
+    /// selection path dispatches on a key string. If they ever disagree on the
+    /// canonical set, one of them is wrong and the app would show a different
+    /// number from the record. Checked per term, not just on the total, so an
+    /// error that cancels between terms still fails.
+    fn the_selection_path_reproduces_the_canonical_breakdown() {
+        for (label, mutate) in [
+            ("healthy-ish", (|p: &mut PtParams| {
+                p.r2n = 1.0; p.n = 6.5; p.phi_max_ratio = 0.6667;
+                p.omega_max_n = 9.5672; p.omega_min_n = -9.4152;
+                p.f = 0.8839; p.area_ratio = 0.0945;
+            }) as fn(&mut PtParams)),
+            ("mid", |p: &mut PtParams| {
+                p.r2n = 0.8; p.n = 4.0; p.phi_max_ratio = 0.4;
+                p.omega_max_n = 6.0; p.omega_min_n = -5.0;
+                p.f = 0.7; p.area_ratio = 0.2;
+            }),
+            ("f unscorable", |p: &mut PtParams| {
+                p.r2n = 0.42; p.n = 1.5; p.phi_max_ratio = 0.11;
+                p.omega_max_n = 2.5; p.omega_min_n = 0.004;
+                p.f = 0.0; p.area_ratio = 0.94;
+            }),
+        ] {
+            let p = params(mutate);
+            let c = pt_score_breakdown(&p, &HEALTHY_REF);
+            // The canonical set in `total()`'s own field order. NOT
+            // `ordered()`, which sorts by magnitude for display -- summing in
+            // that order differs from `total()` in the last bit, since f64
+            // addition is not associative. That is a property of the display
+            // helper, not a formula difference, and asserting through it would
+            // have made this test fail for the wrong reason.
+            let keys = ["r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"];
+            let selected = pt_score_breakdown_selected(&p, &HEALTHY_REF, &keys);
+            let expect = [c.r2n, c.n, c.phi_max_ratio, c.omega_max_n, c.f, c.area_ratio];
+            for (i, (k, v)) in selected.iter().enumerate() {
+                assert_eq!(*k, keys[i], "{label}: key order diverged");
+                assert_eq!(
+                    *v, expect[i],
+                    "{label}: {k} canonical {:.17} vs selected {v:.17}", expect[i]
+                );
+            }
+            assert_eq!(
+                c.total(),
+                pt_score_selected(&p, &HEALTHY_REF, &keys),
+                "{label}: totals diverged"
+            );
+        }
+    }
+
+    #[test]
+    /// The JSON the app reads must flag a non-canonical selection, and must
+    /// distinguish "not measured" from "measured as perfect".
+    fn the_selection_json_flags_canonicity_and_unscorable_terms() {
+        // f unscorable on this trial: f = 0.0 and n = 1.5.
+        let p = params(|p| {
+            p.r2n = 0.42; p.n = 1.5; p.phi_max_ratio = 0.11;
+            p.omega_max_n = 2.5; p.omega_min_n = 0.004; p.f = 0.0; p.area_ratio = 0.94;
+        });
+
+        let canon = pt_score_selected_from_scalars(
+            &p, "r2n,n,phi_max_ratio,omega_max_n,f,area_ratio");
+        assert!(canon.contains("\"canonical\":true"), "{canon}");
+        // f is selected but cannot be scored, so it is named and left out of
+        // the divisor rather than silently contributing a flattering zero.
+        assert!(canon.contains("\"unscorable\":[\"f\"]"), "{canon}");
+        assert!(canon.contains("\"n_scored\":5"), "{canon}");
+
+        // Order must not decide canonicity -- the UI emits toggle order.
+        let shuffled = pt_score_selected_from_scalars(
+            &p, "area_ratio,f,omega_max_n,phi_max_ratio,n,r2n");
+        assert!(shuffled.contains("\"canonical\":true"), "{shuffled}");
+
+        // All seven is NOT canonical: omega_min_n is not in the scored set.
+        let all7 = pt_score_selected_from_scalars(&p, &ALL_PT_KEYS.join(","));
+        assert!(all7.contains("\"canonical\":false"), "{all7}");
+
+        // A subset is not canonical either, and unknown names are reported.
+        let odd = pt_score_selected_from_scalars(&p, "n,area_ratio,not_a_param");
+        assert!(odd.contains("\"canonical\":false"), "{odd}");
+        assert!(odd.contains("\"unknown\":[\"not_a_param\"]"), "{odd}");
+    }
+
+    #[test]
+    /// Deselecting a term must REDISTRIBUTE its share, not leave a hole.
+    ///
+    /// This is the property that makes a toggle honest. If the divisor stayed
+    /// fixed, removing any parameter would always lower the score, so every
+    /// toggle would read as "less impaired" regardless of what it removed and
+    /// the panel would teach the opposite of the truth.
+    fn deselecting_a_term_redistributes_rather_than_leaving_a_hole() {
+        let p = params(|p| {
+            p.r2n = 0.8; p.n = 4.0; p.phi_max_ratio = 0.4;
+            p.omega_max_n = 6.0; p.omega_min_n = -5.0; p.f = 0.7; p.area_ratio = 0.2;
+        });
+        let six = ["r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"];
+        let five = ["r2n", "n", "phi_max_ratio", "omega_max_n", "area_ratio"];
+        let b6 = pt_score_breakdown_selected(&p, &HEALTHY_REF, &six);
+        let b5 = pt_score_breakdown_selected(&p, &HEALTHY_REF, &five);
+        // Every surviving term grows by exactly 6/5.
+        for (k, v5) in &b5 {
+            let v6 = b6.iter().find(|(kk, _)| kk == k).map(|(_, v)| *v).unwrap();
+            let expected = v6 * 6.0 / 5.0;
+            assert!(
+                (v5 - expected).abs() < 1e-15,
+                "{k}: dropping f gave {v5:.17}, expected {expected:.17}"
+            );
+        }
+        // And a single-term selection carries the whole scale.
+        let one = pt_score_breakdown_selected(&p, &HEALTHY_REF, &["n"]);
+        let n6 = b6.iter().find(|(k, _)| k == "n").map(|(_, v)| *v).unwrap();
+        assert!((one[0].1 - n6 * 6.0).abs() < 1e-15, "n alone should be 6x its 1/6 share");
+    }
+
+    #[test]
     // The golden values carry every digit the reference prints, and the
     // assertion formats the measured value at the same 17 digits so a mismatch
     // is legible. Trimming the literals to f64's representable width, as
@@ -1120,14 +1518,18 @@ mod tests {
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
         assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        // Was 1.768_336_341_387_656_72 under the 7-term sum. The 6-term sum
-        // reads HIGHER on this fixture, not lower, which is the double count
-        // cutting the other way: dropping omega_min_n also drops the /7 in
-        // every other term's denominator, and this fixture's area_ratio is so
-        // far above reference (0.94 vs 0.0945) that widening its share
-        // outweighs losing a term whose own contribution here was small
-        // (omega_min_n = 0.004, barely above the -9.4152 reference).
-        assert!((full - 1.896_321_590_796_999_47_f64).abs() < 1e-15, "full={full:.17}");
+        // 1.768_336_341_387_656_72 under the 7-term sum, then
+        // 1.896_321_590_796_999_47 under the 6-term sum -- dropping
+        // omega_min_n also dropped the /7 in every other denominator, and this
+        // fixture's area_ratio is so far above reference (0.94 vs 0.0945) that
+        // widening its share outweighed losing a small term.
+        //
+        // Now higher again, because this fixture is exactly the case the
+        // divisor rescale was for: f = 0.0 and n = 1.5, so f is unscorable and
+        // only FIVE terms carry the scale. area_ratio's share widens from /6 to
+        // /5 and its term goes 1.409 -> 1.691. The old value was the score
+        // keeping a hole where f should have been.
+        assert!((full - 2.275_585_908_956_399_45_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }
