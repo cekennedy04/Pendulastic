@@ -28,9 +28,17 @@
 use crate::params_json::fmt_f64;
 use crate::scoring::PtParams;
 
-/// `pendulastic_pt_score._N_PARAMS` — the 6 scored parameters.
+/// `pendulastic_pt_score._N_PARAMS` — the 5 scored parameters.
 ///
-/// Was 7. `omega_min_n` was dropped from the scored set on 2026-10-26: it is
+/// Was 6, and 7 before that. `omega_max_n` left the canonical set on
+/// 2026-10-27, on the real OptiTrack cohort: peak velocity does not scale with
+/// the first excursion (Spearman +0.02 over 51 trials, ~350 deg/s flat), so
+/// `omega_max_n` is ~350/A0 and RISES as tone shrinks A0 — a penalise-below
+/// term charged the loosest legs most, at any reference value. It remains in
+/// [`ALL_PT_KEYS`] for the selection path. Full note at
+/// `pendulastic_pt_score._PARAM_KEYS`.
+///
+/// `omega_min_n` was dropped from the scored set on 2026-10-26: it is
 /// `-omega_max_n` for any limb dropped from the extension extreme, because
 /// `omega_max_n` is `max(|omega|)` while `omega_min_n` is `min(omega)` and the
 /// fastest motion is the first fall. Measured on 53 emulator scenarios, 51
@@ -38,11 +46,11 @@ use crate::scoring::PtParams;
 /// 0.0665 + 0.0653 of a 0.1417 total — 94% of the score, from one measurement
 /// weighted twice. See `pendulastic_pt_score._PARAM_KEYS` for the full note.
 /// The field is still computed and still reported; it is not summed.
-pub const N_PARAMS: usize = 6;
+pub const N_PARAMS: usize = 5;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6rescaled-2026-10-27";
+pub const SCORE_FORMULA_ID: &str = "pt5rescaled-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -167,9 +175,9 @@ pub fn pt_zone(score: f64) -> PtZone {
 ///   reference. `area_ratio` → penalise only if ABOVE reference. `f` →
 ///   bidirectional, skipped when uncomputable.
 ///
-/// `omega_min_n` has no field here. `pendulastic_pt_score.compute_pt_score_breakdown`
-/// iterates `_PARAM_KEYS`, so its dict has six entries and no `omega_min_n`
-/// key at all — a seventh field here would be a parity break, not a
+/// Neither velocity term has a field here. `pendulastic_pt_score.compute_pt_score_breakdown`
+/// iterates `_PARAM_KEYS`, so its dict has five entries and no `omega_min_n`
+/// or `omega_max_n` key at all — an extra field here would be a parity break, not a
 /// convenience. The raw PARAMETER is untouched: `PtParams::omega_min_n` is
 /// still measured and still emitted by `params_json`, which is where a
 /// diagnostic belongs. A score breakdown holds contributions, and this one
@@ -179,23 +187,22 @@ pub struct PtScoreBreakdown {
     pub r2n: f64,
     pub n: f64,
     pub phi_max_ratio: f64,
-    pub omega_max_n: f64,
     pub f: f64,
     pub area_ratio: f64,
 }
 
 impl PtScoreBreakdown {
-    /// Sum of the six SCORED contributions — `pendulastic_pt_score.compute_pt_score`
+    /// Sum of the five SCORED contributions — `pendulastic_pt_score.compute_pt_score`
     /// is exactly `sum(compute_pt_score_breakdown(...).values())` over
     /// `_PARAM_KEYS`, so this sums in that same order (`R2n, N, phi_max_ratio,
-    /// omega_max_n, f, area_ratio`) rather than field-declaration order that
+    /// f, area_ratio`) rather than field-declaration order that
     /// happens to differ, to match the reference bit-for-bit.
     ///
     /// `omega_min_n` is deliberately absent: it duplicates `omega_max_n` (see
     /// [`N_PARAMS`]). Adding it back would silently restore the double weight,
     /// which `tests/test_pt_zone_parity.py` now checks for.
     pub fn total(&self) -> f64 {
-        self.r2n + self.n + self.phi_max_ratio + self.omega_max_n + self.f + self.area_ratio
+        self.r2n + self.n + self.phi_max_ratio + self.f + self.area_ratio
     }
 
     /// `(key, contribution)` pairs ordered by DESCENDING contribution, so a
@@ -207,7 +214,6 @@ impl PtScoreBreakdown {
             ("r2n", self.r2n),
             ("n", self.n),
             ("phi_max_ratio", self.phi_max_ratio),
-            ("omega_max_n", self.omega_max_n),
             ("f", self.f),
             ("area_ratio", self.area_ratio),
         ];
@@ -242,7 +248,6 @@ pub const CANONICAL_PT_KEYS: [&str; N_PARAMS] = [
     "r2n",
     "n",
     "phi_max_ratio",
-    "omega_max_n",
     "f",
     "area_ratio",
 ];
@@ -376,7 +381,6 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
         healthy.r2n != 0.0,
         healthy.n != 0.0,
         healthy.phi_max_ratio != 0.0,
-        healthy.omega_max_n != 0.0,
         f_scorable,
         healthy.area_ratio != 0.0,
     ]
@@ -393,11 +397,6 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
     } else {
         dev_below(params.phi_max_ratio, healthy.phi_max_ratio, denom(healthy.phi_max_ratio))
     };
-    let omega_max_n = if healthy.omega_max_n == 0.0 {
-        0.0
-    } else {
-        dev_below(params.omega_max_n, healthy.omega_max_n, denom(healthy.omega_max_n))
-    };
     let area_ratio = if healthy.area_ratio == 0.0 {
         0.0
     } else {
@@ -413,7 +412,7 @@ pub fn pt_score_breakdown(params: &PtParams, healthy: &HealthyRef) -> PtScoreBre
         (params.f - healthy.f).abs() / denom(healthy.f)
     };
 
-    PtScoreBreakdown { r2n, n, phi_max_ratio, omega_max_n, f, area_ratio }
+    PtScoreBreakdown { r2n, n, phi_max_ratio, f, area_ratio }
 }
 
 /// `pendulastic_pt_score.compute_pt_score(params, ref)` — the sum of
@@ -439,9 +438,11 @@ pub const N_SIMPLE: usize = 4;
 
 /// `pendulastic_pt_score.compute_pt_score_simple` — the 4-parameter score.
 ///
-/// This exists because `pendulastic_app.py:1799` displays THIS number, not the
-/// seven-parameter one, so without it the phone and the capture app report
-/// different scores for the same trial. It drops `area_ratio` (the reference
+/// It existed because the desktop live view displayed THIS number, so without
+/// it the phone and the capture app reported different scores for the same
+/// trial. Since 2026-10-27 the live view shows the canonical score through
+/// `pendulastic_pt_score.live_verdict`, so this is kept for research
+/// reproducibility and the `score_simple` JSON field, not for display. It drops `area_ratio` (the reference
 /// calls it unreliable for marker-based "duo" angles) and `f`, and every
 /// remaining key is penalise-below-only — so unlike the full score there is no
 /// bidirectional term and no uncomputable-`f` special case.
@@ -1112,7 +1113,7 @@ mod tests {
             p.area_ratio = 0.5;
         });
         let breakdown = pt_score_breakdown(&p, &HEALTHY_REF);
-        let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio + breakdown.omega_max_n
+        let manual = breakdown.r2n + breakdown.n + breakdown.phi_max_ratio
             + breakdown.f + breakdown.area_ratio;
         assert_eq!(pt_score(&p, &HEALTHY_REF), manual);
     }
@@ -1306,7 +1307,7 @@ mod tests {
 
 
     // -- Simple 4-parameter score (pendulastic_app's live view) -------------
-    // pendulastic_app.py:1799 displays compute_pt_score_simple, not the full
+    // pendulastic_app.py's live view USED TO display compute_pt_score_simple, not the full
     // seven-parameter score, so the phone and the capture app were reporting
     // different numbers for the same trial. The simple score deliberately drops
     // area_ratio and f -- which are precisely the two that saturate or go
@@ -1413,9 +1414,9 @@ mod tests {
             // addition is not associative. That is a property of the display
             // helper, not a formula difference, and asserting through it would
             // have made this test fail for the wrong reason.
-            let keys = ["r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"];
+            let keys = CANONICAL_PT_KEYS;
             let selected = pt_score_breakdown_selected(&p, &HEALTHY_REF, &keys);
-            let expect = [c.r2n, c.n, c.phi_max_ratio, c.omega_max_n, c.f, c.area_ratio];
+            let expect = [c.r2n, c.n, c.phi_max_ratio, c.f, c.area_ratio];
             for (i, (k, v)) in selected.iter().enumerate() {
                 assert_eq!(*k, keys[i], "{label}: key order diverged");
                 assert_eq!(
@@ -1442,17 +1443,23 @@ mod tests {
         });
 
         let canon = pt_score_selected_from_scalars(
-            &p, "r2n,n,phi_max_ratio,omega_max_n,f,area_ratio");
+            &p, "r2n,n,phi_max_ratio,f,area_ratio");
         assert!(canon.contains("\"canonical\":true"), "{canon}");
         // f is selected but cannot be scored, so it is named and left out of
         // the divisor rather than silently contributing a flattering zero.
         assert!(canon.contains("\"unscorable\":[\"f\"]"), "{canon}");
-        assert!(canon.contains("\"n_scored\":5"), "{canon}");
+        assert!(canon.contains("\"n_scored\":4"), "{canon}");
 
         // Order must not decide canonicity -- the UI emits toggle order.
         let shuffled = pt_score_selected_from_scalars(
-            &p, "area_ratio,f,omega_max_n,phi_max_ratio,n,r2n");
+            &p, "area_ratio,f,phi_max_ratio,n,r2n");
         assert!(shuffled.contains("\"canonical\":true"), "{shuffled}");
+
+        // Adding omega_max_n back is NOT canonical: it left the scored set on
+        // 2026-10-27 and is selectable for inspection only.
+        let with_omega = pt_score_selected_from_scalars(
+            &p, "r2n,n,phi_max_ratio,omega_max_n,f,area_ratio");
+        assert!(with_omega.contains("\"canonical\":false"), "{with_omega}");
 
         // All seven is NOT canonical: omega_min_n is not in the scored set.
         let all7 = pt_score_selected_from_scalars(&p, &ALL_PT_KEYS.join(","));
@@ -1529,7 +1536,11 @@ mod tests {
         // only FIVE terms carry the scale. area_ratio's share widens from /6 to
         // /5 and its term goes 1.409 -> 1.691. The old value was the score
         // keeping a hole where f should have been.
-        assert!((full - 2.275_585_908_956_399_45_f64).abs() < 1e-15, "full={full:.17}");
+        //
+        // 2.275_585_908_956_399_45 until omega_max_n left the canonical set
+        // (2026-10-27): with f unscorable only FOUR terms now carry the scale,
+        // and area_ratio's share widens again, /5 -> /4.
+        assert!((full - 2.659_809_754_704_572_3_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

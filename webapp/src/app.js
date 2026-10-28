@@ -352,9 +352,9 @@ const PARAM_PLAIN_NAME = {
 //
 // This exists because the arithmetic is actively misleading without it. An
 // unmeasured parameter sits at 0.0, and the score penalises `r2n`,
-// `phi_max_ratio`, `n` and `omega_max_n` for being BELOW the healthy
+// `phi_max_ratio` and `n` for being BELOW the healthy
 // reference -- so a value that is 0.0 because nothing could be computed
-// contributes the largest penalty that parameter can produce, exactly 1/7 of
+// contributes the largest penalty that parameter can produce, a full share of
 // the scale each. The score therefore reads MORE impaired the less was
 // measurable, which is backwards, and nothing on screen said so.
 //
@@ -1824,12 +1824,9 @@ if (typeof document !== 'undefined') {
     const badge = zoneDisplay(zone);
     zoneEl.textContent = badge.text;
     zoneEl.className = badge.className;
-    // The 4-parameter score, shown alongside the 7-parameter one because
-    // pendulastic_app.py's live view displays THIS number -- without it the
-    // phone and the desktop capture app report different figures for the same
-    // trial and neither says so. It drops area_ratio and f, which are exactly
-    // the two that saturate or go unmeasurable on a limb that never swings
-    // back, so it runs markedly lower on those trials.
+    // The breakdown of the canonical score. The desktop live view shows the
+    // same canonical score (pendulastic_pt_score.live_verdict), so the phone
+    // and the capture app agree on one number for the same trial.
     el('pt-score-breakdown').innerHTML = (ptScore.breakdown || [])
       .map(({ key, value }) => `<tr><td>${key}</td><td>${formatValue(value)}</td></tr>`)
       .join('');
