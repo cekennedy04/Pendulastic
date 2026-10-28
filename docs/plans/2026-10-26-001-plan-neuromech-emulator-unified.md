@@ -79,7 +79,8 @@ Three sources, three rests: it becomes a measured input.
 - **D5 — R3 blindness.** No mapping from rig setting to grade is ever fitted on instrument output.
   The scenario "MAS ladder" is renamed **PT7-band presets** (P0–P3): they are calibrated to the
   scorer's own bands, which is right for phone-vs-encoder testing and circular for validating grades.
-  As of 2026-10-28 the calibrated ladder reaches only P0, P1, P1+ and P2 (P3 is unreachable and
+  As of 2026-10-28 the calibrated ladder reaches only P0, P1, P1+ and P2 (targeting the MAS 0, 1,
+  1+ and 2 bands; P3 is unreachable and
   omitted), and the severity λ behind each label moves whenever the scorer changes (rung 0 is
   λ 0.0 under main's scorer and 0.19 under #76's). Run sheets therefore record λ and the formula
   ID, not just the label.
@@ -96,7 +97,7 @@ Three sources, three rests: it becomes a measured input.
 
 | # | Decision | Options and what each costs |
 |---|---|---|
-| O1 | Arm range | ±65° full scale (measure mechanical limit) **or** 0.75× amplitude render (A0 ≈ 41°; ratio invariance to be verified in the model at 0.75× before choosing it, since gravity, end-stop and capsule are nonlinear) |
+| O1 | Arm range | ±65° full scale (measure mechanical limit) **or** 0.75× amplitude render (A0 ≈ 41°; ratio invariance to be verified in the model at 0.75× before choosing it, since gravity, end-stop and capsule are nonlinear). Either choice regenerates the player files and re-runs the dry run (B4–B6), which were built at full amplitude |
 | O2 | Actuator for Mode C | C's estimate: 0.8–3.7 N·m (P0–P3 as of 10-26; P3 no longer exists, see D5), 15 severe, 26 clonus. A's: 18 N·m tone ladder, 62 N·m @ 1854 N·m/s for a hard catch. Pei's elbow ladder 0.9–9.8 N·m. → ≥ 20 N·m with a gearbox covers all but A's hard catch |
 | O3 | Vertical rig timing | Mode A/B run now on the horizontal rig (sensor channel only); fused-angle validation waits for it |
 | O4 | Clinician access | Two blind assessors per profile (A §validation step 2) to calibrate grades |
@@ -121,17 +122,19 @@ OFFLINE (Python, this branch)                         HOST VI (StretchExperiment
 | # | Item | State |
 |---|---|---|
 | B1 | Unified branch with A, B, C; all tests green | done (29 + 23 tests, A's selftest, Formula Node) |
-| B2 | Re-score A's profiles on the validated scorer | done (§1.1) |
+| B2 | Re-score A's profiles on the validated scorer | done 2026-10-26 (§1.1); **re-run on the current scorer pending** |
 | B3 | One library: A's 10 profiles rendered into the scenario format (group M), PT7-band rename | **done** — 55 scenarios |
 | B4 | Session planner: blinded run ids, randomised order, reps, run sheet, LabVIEW files (CSV + raw float64 .dbl) | **done** — `python -m neuromech.session plan` |
 | B5 | Session scorer: encoder `.bin` + phone JSONL → delivered vs intended, phone vs encoder, flags | **done** — `python -m neuromech.session score` |
-| B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
+| B6 | End-to-end dry run without hardware | **done 2026-10-26** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009. **Re-run on the current scorer pending**; a green dry run shows delivery, not a realistic severity axis (§6 step 5) |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
 | B8 | LabVIEW for Mode A | **Pendulum Player** host VI (StretchExperiment is not edited): build guide ready, program adapted to it (headerless player files, peak guard, logs paired by run-sheet name, 100 Hz staircase in the dry run, ILC outputs playable, `session check-log` for the logging bench check). Building the VI is a bench task; interactive Mode B′ needs RT access |
 | B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — `coulomb_nm`, `k_v`/`k_l`/`reflex_max_nm`, `catch_and_hold()`, `limb_from_anthropometry()`; Formula Node re-verified at 1.7e-11; `Params()` bit-identical to before; A's module retired |
-| B10 | Corpus rest geometry by the validated scorer | **measured** — §5c; the disagreement is between instruments, not estimates |
-| B11 | Rest geometry settled: goniometer reading of the resting knee after a drop on 1–2 people alongside the phone, and the rig's unactuated rest | **open**: prerequisite for §6 step 0 |
-| B12 | Settled-tail gyro-bias re-estimate in the app (§5a), Python + Rust parity | **open**: verified by the dry run's phone ΔPT7 at bands 2–3 |
+| B10 | Corpus rest geometry by the validated scorer | **measured** — §5b; the disagreement is between instruments, not estimates |
+| B11 | Rest geometry and angle reference: goniometer reading of the resting knee after a drop on 1–2 people alongside the phone; the rig's unactuated rest; and the encoder's zero and scale against the same goniometer at two positions, within a tolerance fixed beforehand | **open**: prerequisite for §6 step 0 |
+| B12 | Settled-tail gyro-bias re-estimate in the app (§5a). **Its own app PR**, not emulator work: Python + Rust parity and a golden re-diff. Verified on the 206-trial real corpus replay (§5b) by counting trials whose PT7 band changes; the dry run's phone ΔPT7 stays as a regression check (band 2; band 3 no longer exists) | **open**: lands before §6 step 2, then expected values are rebuilt under the new formula ID (D2) |
+| B13 | Make the §6 step 5 check runnable: land `neuromech.fall_speed` (open PR), add an emulator-only mode against a pinned real reference, re-measure both sides on the current scorer, recompute the reference on settled geometry (B11) or phone A0 rather than OptiTrack alone, and fix the mismatch threshold (e.g. a bootstrap 95 % CI over legs) before any revised axis is measured | **open** |
+| B14 | Provenance in code, as D2/D5 require: `SCORE_FORMULA_ID` plus a model and geometry hash written into the ladder, the scenario manifest and session.json; `build` recalibrates when the cached ID differs; `session score` refuses a mismatch | **open** |
 
 ## 5a. What the dry run established (2026-10-26)
 
@@ -147,7 +150,7 @@ can see before release (what the app does) leaves ~0.01–0.02 °/s, which throu
 area ratio moves PT7 by up to ~0.15 — one band at bands 2–3. Recommendation for the app: re-estimate bias
 at the settled tail before scoring (the settle feature already detects it). Tracked as B12.
 
-## 5c. Where real legs rest (B10, 2026-10-26)
+## 5b. Where real legs rest (B10, 2026-10-26)
 
 `python -m neuromech.corpus_rest`: every phone trial (206) replayed and scored by the validated
 scorer, production convention; rest depth = pre-release angle − settled neutral, per participant
@@ -196,15 +199,21 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
 3. **Repeatability**: P2 × 10; between-day ICC ≥ 0.84 (the field's between-session bar, not
    Bohannon's within-session 0.96).
 4. **Phone vs encoder** per run on the scored parameters (+ A0, plateau, F1amp, which carry
-   severity). Per-parameter tolerances, and whether B12 must land first, are fixed before session 1.
-5. **Severity realism gate.** A profile set enters the clinician and calibration steps only if its
-   peak-fall-speed vs A0 log-log slope sits near the real per-leg value (≈ 0;
-   `python -m neuromech.fall_speed`). The current tone-based ladder is at 3.4 and the M profiles at
-   3.0, so both are delivery and instrument tests only until a revised severity axis passes (fall-speed
-   report, 2026-10-27, open PR).
-6. **Blind clinician grading** (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
+   severity). Per-parameter tolerances are fixed before session 1 (still open, see Open Questions);
+   B12 has landed by then (it precedes step 2).
+5. **Severity mismatch check** (B13). The current tone-based ladder (log-log slope of peak fall speed
+   on A0: 3.4) and the M profiles (3.0) couple fall speed to swing far more strongly than any real leg
+   set (per-leg -0.01, 20 legs / 11 people, mostly controls; fall-speed report 2026-10-27, open PR,
+   measured before #79, so re-measure on the current scorer). Both stay delivery and instrument tests
+   only, and a revised axis must not reintroduce that coupling, judged against a threshold fixed
+   before it is measured (B13). This is a **mismatch flag, not a realism certificate**: how spasticity
+   itself changes the fall is not established (the two MAS ≥ 1 people go opposite ways), the real
+   reference is OptiTrack A0, which §5b says shrinks angles and so pulls a slope toward 0, and passing
+   says nothing about realism. That still rests on step 6.
+6. **Blind clinician grading** (blocked: no current profile set clears step 5, and no build item yet
+   produces a revised severity axis; see Open Questions) (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
    agreement 76–86 % from the elbow simulators.
-7. **Re-run `severity_grading_test.py` on rig-delivered profiles.** Its pass/fail criteria are fixed
+7. **Re-run `severity_grading_test.py` on rig-delivered profiles** (blocked with step 6). Its pass/fail criteria are fixed
    before any rig data is seen. A failure is reported as a failure, not absorbed into calibration;
    delivery inside the scorer's own bands (step 2) cannot by itself show the severity axis is right.
 
@@ -235,3 +244,23 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
 - **Actuator sizing waits on the severity mechanism** — O2 (P2, feasibility, adversarial, confidence 75)
 
   The ≥ 20 N·m figure comes from the constant tone torque, the part of the model the fall-speed check found unrealistic. A delayed, velocity-gated catch may need a different torque and rate.
+
+- **Is building a revised severity axis in scope, and who owns it?** — §6 steps 5–7 (P1, product-lens, scope-guardian, confidence 100)
+
+  Clinician grading and the severity re-test are blocked until a profile set clears the step 5 mismatch check, and no build item produces one. The fall-speed report's candidate is a delayed, velocity-gated catch acting after peak velocity, in place of constant tone. Recording more MAS ≥ 1 legs may be the better route to knowing what realistic looks like.
+
+- **Phone-vs-encoder tolerances are still unset** — §6 step 4 (P1, cross-model Codex, confidence 75)
+
+  Round 1 required them before session 1 but gave no numbers. Because the known bias moves PT7 up to one band, tolerances chosen at the bench invite post-hoc acceptance.
+
+- **Repeatability protocol** — §6 step 3 (P1, cross-model Codex, confidence 75)
+
+  "P2 × 10" doesn't fix the day split, scored metrics, ICC form, or missing-run rule, and ICC ≥ 0.84 is a human-limb benchmark. An absolute per-parameter tolerance may say more for a motor.
+
+- **Nothing discriminates the physics core** — D1, §1.1 (P1, cross-model Codex, confidence 75)
+
+  Three models give opposite PT7-vs-severity predictions, and the choice of De Groote is justified by passive frequency and hallmark features, not by a test that separates them.
+
+- **Results across formula IDs** — D2, D5 (P2, cross-model Codex, confidence 75)
+
+  Recording the ID prevents silent mismatch but sets no rule for comparing results collected under different scorers.
