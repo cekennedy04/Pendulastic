@@ -782,6 +782,31 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     return {"mas": pt_to_mas(score), "zone": pt_zone(score), "pt7": score,
             "interpretable": True, "reason": ""}
 
+
+def live_verdict(params: Optional[dict]) -> tuple:
+    """(score, label) for a one-line live display, through mas_estimate.
+
+    The desktop live view used to print pt_to_mas(compute_pt_score_simple(p)):
+    a MAS read off a non-canonical 4-term score, gated only on excursion. So it
+    could grade an arrested limb that every other surface refuses (the
+    oscillation gate), and it carried omega_max_n after the canonical score had
+    dropped it. Routing it here gives it the same score, the same gates and the
+    same verdict as the phone and the reports.
+
+    `score` is the canonical score, or None when there are no params. `label` is
+    the MAS grade, or the refusal's own first clause ("Insufficient excursion",
+    "No measurable oscillation", "Impossible excursion") with A0, so a refusal
+    says WHICH one rather than a generic "not interpretable".
+    """
+    est = mas_estimate(params)
+    if est["interpretable"]:
+        return est["pt7"], str(est["mas"])
+    head = est["reason"].split(":", 1)[0] if est["reason"] else "Not interpretable"
+    a0 = (params or {}).get("A0_deg")
+    if a0 is not None and np.isfinite(a0):
+        return est["pt7"], f"not interpretable: {head.lower()} (A0 {float(a0):.1f} deg)"
+    return est["pt7"], f"not interpretable: {head.lower()}"
+
 # Ordinal MAS scale, single source of truth for anything that needs a numeric
 # rank (Spearman correlation, weighted Cohen's kappa) rather than the raw
 # label -- e.g. mas_validation.py. pt_to_mas() above only ever returns one of
@@ -1019,12 +1044,12 @@ through omega_max_n, and the return is not scored at all.
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
 #
 # STILL CONTAINS omega_max_n, which left the canonical set on 2026-10-27 for
-# penalising the wrong direction on real legs (see _PARAM_KEYS). Here it is 1
-# of 4, so the defect weighs MORE than it did in the composite. Deliberately
-# not changed in the same commit: pendulastic_app.py's live view displays this
-# number, so changing it is a separate, visible decision about a figure a
-# clinician has been reading -- and changing both scores at once would make any
-# shift in a recorded result unattributable.
+# penalising the wrong direction on real legs (see _PARAM_KEYS). It is no
+# longer DISPLAYED anywhere: the desktop live view, its last clinical consumer,
+# now shows the canonical score through live_verdict, and the phone stopped
+# showing it earlier. It is kept unchanged for research reproducibility
+# (hpe_mas_evaluation.py and the score_simple JSON field); do not read a grade
+# off it.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
 
 #: Every Popovic parameter the pipeline can score, in publication order --

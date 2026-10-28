@@ -438,9 +438,11 @@ pub const N_SIMPLE: usize = 4;
 
 /// `pendulastic_pt_score.compute_pt_score_simple` — the 4-parameter score.
 ///
-/// This exists because `pendulastic_app.py:1799` displays THIS number, not the
-/// seven-parameter one, so without it the phone and the capture app report
-/// different scores for the same trial. It drops `area_ratio` (the reference
+/// It existed because the desktop live view displayed THIS number, so without
+/// it the phone and the capture app reported different scores for the same
+/// trial. Since 2026-10-27 the live view shows the canonical score through
+/// `pendulastic_pt_score.live_verdict`, so this is kept for research
+/// reproducibility and the `score_simple` JSON field, not for display. It drops `area_ratio` (the reference
 /// calls it unreliable for marker-based "duo" angles) and `f`, and every
 /// remaining key is penalise-below-only — so unlike the full score there is no
 /// bidirectional term and no uncomputable-`f` special case.
@@ -1305,7 +1307,7 @@ mod tests {
 
 
     // -- Simple 4-parameter score (pendulastic_app's live view) -------------
-    // pendulastic_app.py:1799 displays compute_pt_score_simple, not the full
+    // pendulastic_app.py's live view USED TO display compute_pt_score_simple, not the full
     // seven-parameter score, so the phone and the capture app were reporting
     // different numbers for the same trial. The simple score deliberately drops
     // area_ratio and f -- which are precisely the two that saturate or go
