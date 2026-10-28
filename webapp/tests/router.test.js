@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { VIEWS, resolveView, planTransition, createRouter } from '../src/router.js';
 
 test('the six views are the ones index.html defines', () => {
-  assert.deepEqual(VIEWS, ['home', 'capture', 'trials', 'mas', 'session', 'trends']);
+  assert.deepEqual(VIEWS, ['home', 'capture', 'trials', 'mas', 'session', 'trends', 'research']);
 });
 
 test('an unknown view falls back to home rather than a blank screen', () => {
