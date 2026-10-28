@@ -217,7 +217,10 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     # band with H +/-5 %. No single factor on all four H values gives 1/1+/2/3
     # (best, x0.15, gives 0/1/1/2), so the fit is per model. HM#4 is absent: no
     # H reaches MAS 3 -- at H ~0.66 PT7 jumps 0.57 -> 1.1 as the catch arrests
-    # the leg before rest and nothing rings down (MAS 4 or refused).
+    # the leg before rest and nothing rings down (MAS 4 or refused). Q, D,
+    # k_post and L shift the jump but never remove it: 300 random settings
+    # gave no PT7 in 0.596-1.19, and MAS 3 shows only within 0.001 % of H
+    # below it.
     sc += [
         Scenario("K-HM1", "K", "HESS HM#1 on the knee (MAS 1): H 0.896 = 0.64x elbow",
                  _hess(0.896, 0.15, 60.0, 130.0), probes="a HESS catch graded at its intended MAS 1"),
