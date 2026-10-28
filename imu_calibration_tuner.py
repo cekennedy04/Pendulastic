@@ -21,7 +21,7 @@ from pendulastic_imu_server import (
     MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
     GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES, _is_stationary_window,
-    GYRO_BIAS_MIN_SNR, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
+    GYRO_BIAS_MIN_SNR, GYRO_BIAS_MAX_RAD_S, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
     _gravity_dir_from_hold,
 )
 from pendulastic_pt_score import compute_pt_params
@@ -479,8 +479,12 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                         _vals = np.array([vv for _, vv in st.gyro_hold_buf])
                         _mean = _vals.mean(axis=0)
                         _sem = _vals.std(axis=0, ddof=1) / math.sqrt(len(_vals))
-                        st.gyro_bias = np.where(
+                        _est = np.where(
                             np.abs(_mean) >= GYRO_BIAS_MIN_SNR * _sem, _mean, 0.0)
+                        # Mirrors calibrate_gyro_bias()'s motion bound: an
+                        # estimate this large is a swing's tail, not bias.
+                        if np.linalg.norm(_est) <= GYRO_BIAS_MAX_RAD_S:
+                            st.gyro_bias = _est
                         if _os.environ.get("IMU_DEBUG_BIAS"):
                             print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
                     st.calibrate_accel_bias()
