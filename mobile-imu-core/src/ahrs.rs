@@ -97,6 +97,40 @@ pub fn gravity_seed(accel: Vec3) -> Quat {
     [(1.0 + gz) / denom, -gy / denom, gx / denom, 0.0]
 }
 
+/// Residual floor for the gradient-descent correction, below which the step
+/// scales with the residual instead of being normalised to a full `beta`.
+///
+/// WHY. Madgwick's published step is `beta * step / |step|`, a CONSTANT
+/// magnitude whatever the residual. That does not converge: once the filter
+/// reaches the optimum it chatters around it, taking a full `beta`-sized step
+/// every update in a direction set by the residual's last bits. Chatter is
+/// chaotic, and the measured consequence was that a one-ULP change in the
+/// first accelerometer sample grew about 15% per update -- 9.7e-19 to 2.5e-5
+/// in the quaternion over 900 updates -- which made the settled tail of a
+/// replay irreproducible between this port and the reference at the 1e-2 deg
+/// level. `neutral_deg` is the median of that tail, so it reached the score.
+///
+/// Dividing by `max(|step|, FLOOR)` leaves the step untouched wherever the
+/// filter is doing real work and makes it proportional near the optimum, so
+/// the filter contracts instead of chattering. With this in place the same
+/// one-ULP perturbation changes the output by exactly zero.
+///
+/// THE VALUE. `|J^T f|` is about `2|f|`, and `f` is the residual of a
+/// NORMALISED accelerometer reading, so it is dimensionless and this floor
+/// needs no unit handling. Phone-grade accelerometer noise is of order 1e-3 of
+/// g per axis, so a residual under ~2e-3 is within noise and its direction is
+/// not worth a full-rate correction -- the same argument the gyro-bias SNR
+/// gate already makes for bias. Set it from the deployment's own measured
+/// accel noise if that is known.
+///
+/// NOT YET VALIDATED AGAINST THE CORPUS. On the end-to-end fixture this moves
+/// the replayed angle by up to 4.6e-2 deg, which is the same order as the
+/// ~4e-2 deg signature of a dropped gyro-bias correction. That is tiny against
+/// a 40-60 deg swing, but it is a change to a shipped filter and
+/// batch_imu_vs_optitrack_rmse.py over the OptiTrack corpus is the gate before
+/// it should be trusted on patients.
+pub const ACCEL_RESIDUAL_FLOOR: f64 = 2e-3;
+
 /// Quaternion orientation filter with gyroscope prediction and
 /// accelerometer/magnetometer gradient-descent correction (the two-step
 /// predict/correct structure described in Madgwick's reference paper).
@@ -228,8 +262,12 @@ impl MadgwickAhrs {
 
             let s_norm = norm4(step);
             if s_norm > 1e-9 {
+                // max(s_norm, FLOOR): see ACCEL_RESIDUAL_FLOOR. Normalising by
+                // s_norm alone made this a constant-magnitude step that
+                // chattered rather than converged.
+                let denom = s_norm.max(ACCEL_RESIDUAL_FLOOR);
                 for i in 0..4 {
-                    q_dot[i] -= self.beta * (step[i] / s_norm);
+                    q_dot[i] -= self.beta * (step[i] / denom);
                 }
             }
         }
