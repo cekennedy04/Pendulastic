@@ -103,7 +103,7 @@ namespace Pendulastic
         public const double PT_HEALTHY_MAX = 0.1709;
         public const double PT_BORDERLINE_MAX = 0.3528;
         public const string PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24";
-        public const string SCORE_FORMULA_ID = "pt5rescaled-2026-10-27";
+        public const string SCORE_FORMULA_ID = "pt5rescaled-ref-2026-10-27";
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
@@ -121,11 +121,11 @@ namespace Pendulastic
             Dictionary<string, double> d = new Dictionary<string, double>();
             d["R2n"] = 1.0;
             d["N"] = 6.5;
-            d["phi_max_ratio"] = 0.6667;
-            d["omega_max_n"] = 9.5672;
-            d["omega_min_n"] = -9.4152;
-            d["f"] = 0.8839;
-            d["area_ratio"] = 0.0945;
+            d["phi_max_ratio"] = 0.6407;
+            d["omega_max_n"] = 6.4839;
+            d["omega_min_n"] = -6.3624;
+            d["f"] = 0.9511;
+            d["area_ratio"] = 0.1766;
             return d;
         }
 

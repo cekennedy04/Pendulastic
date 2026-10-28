@@ -50,7 +50,7 @@ pub const N_PARAMS: usize = 5;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt5rescaled-2026-10-27";
+pub const SCORE_FORMULA_ID: &str = "pt5rescaled-ref-2026-10-27";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -86,22 +86,25 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // DATA-DERIVED. No published value exists for any of these five: the
     // published quantity is either differently defined (phi-max is an angle
     // in rad, omega-max is unnormalised rad/s) or was introduced by
-    // Popovic-Maneski with no healthy value given (f, area_ratio). Medians
-    // from 46 OptiTrack control trials, 9 participants, 15 legs. Every
-    // control leg in that cohort is assessed_by=ASSUMED -- no clinician
-    // examined a healthy leg in this dataset.
-    phi_max_ratio: 0.6667,
-    omega_max_n: 9.5672,
+    // Popovic-Maneski with no healthy value given (f, area_ratio).
+    // Re-derived 2026-10-27 by derive_healthy_ref.py: medians of 39
+    // INTERPRETABLE baseline control trials, 12 legs, 7 people, on the
+    // corrected reconstruction and release detection. The previous set
+    // (46 trials, pre-fix, ungated) is noted per entry. Every control leg is
+    // assessed_by=ASSUMED -- no clinician examined a healthy leg.
+    phi_max_ratio: 0.6407, // was 0.6667
+    // Was 9.5672. Largely 1/A0 in practice: peak velocity is roughly fixed by
+    // the release height, so this falls steeply as A0 rises (rho -0.88).
+    omega_max_n: 6.4839,
     // NOW Popovic's omega-min: the SIGNED minimum angular velocity, peak
     // velocity in the return direction. Until 2026-09-09 this was
     // min(abs(omega))/A0, the near-zero speed at a turning point, so the
     // parameter sat at ~0.001 for every trial and contributed nothing.
-    // Median of 46 control trials, all negative, mirroring omega_max_n.
-    omega_min_n: -9.4152,
-    f: 0.8839,
-    // Least trustworthy entry: moves 0.082-0.156 depending purely on which
-    // controls are included, so this cohort cannot pin it.
-    area_ratio: 0.0945,
+    // Mirrors omega_max_n. Was -9.4152.
+    omega_min_n: -6.3624,
+    f: 0.9511, // was 0.8839
+    // Least trustworthy entry: leave-one-person-out 0.154-0.213. Was 0.0945.
+    area_ratio: 0.1766,
 };
 
 /// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
@@ -683,7 +686,8 @@ pub fn pt_score_to_json(params: &PtParams, healthy: &HealthyRef) -> String {
 /// the whole scoring path reads only these TEN scalars and touches no vector
 /// field --
 ///
-///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, omega_max_n, f, area_ratio
+///   [`pt_score_breakdown`] : r2n, n, phi_max_ratio, f, area_ratio (plus
+///                            omega_max_n under a selection that includes it)
 ///   [`unmeasured_params`]  : f, first_trough_depth, n
 ///   [`refusal_reason`]     : a0_deg, a1_deg
 ///
@@ -1524,23 +1528,23 @@ mod tests {
         });
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
-        assert!((simple - 0.730_732_386_195_499_74_f64).abs() < 1e-15, "simple={simple:.17}");
-        // 1.768_336_341_387_656_72 under the 7-term sum, then
-        // 1.896_321_590_796_999_47 under the 6-term sum -- dropping
-        // omega_min_n also dropped the /7 in every other denominator, and this
-        // fixture's area_ratio is so far above reference (0.94 vs 0.0945) that
-        // widening its share outweighed losing a small term.
+        assert!((simple - 0.697_993_284_813_920_31_f64).abs() < 1e-15, "simple={simple:.17}");
+        // History of `full` on this fixture, all against the then-current
+        // HEALTHY_REF: 1.768_336_341_387_656_72 under the 7-term sum, then
+        // 1.896_321_590_796_999_47 under the 6-term sum (dropping omega_min_n
+        // also dropped the /7 in every other denominator, and area_ratio sat
+        // far above the then-reference, 0.94 vs 0.0945), then
+        // 2.275_585_908_956_399_45 under the divisor rescale: f = 0.0 and
+        // n = 1.5, so f is unscorable and only FIVE terms carry the scale.
         //
-        // Now higher again, because this fixture is exactly the case the
-        // divisor rescale was for: f = 0.0 and n = 1.5, so f is unscorable and
-        // only FIVE terms carry the scale. area_ratio's share widens from /6 to
-        // /5 and its term goes 1.409 -> 1.691. The old value was the score
-        // keeping a hole where f should have been.
+        // 2.275_585_908_956_399_45 under the divisor rescale (f = 0.0 and
+        // n = 1.5, so f is unscorable), then 1.422_947_289_232_789_7 once
+        // HEALTHY_REF was re-derived from the corrected control cohort
+        // (2026-10-27): area_ratio's reference rose 0.0945 -> 0.1766.
         //
-        // 2.275_585_908_956_399_45 until omega_max_n left the canonical set
-        // (2026-10-27): with f unscorable only FOUR terms now carry the scale,
-        // and area_ratio's share widens again, /5 -> /4.
-        assert!((full - 2.659_809_754_704_572_3_f64).abs() < 1e-15, "full={full:.17}");
+        // Now: omega_max_n left the canonical set (2026-10-27), so with f
+        // unscorable only FOUR terms carry the scale.
+        assert!((full - 1.625_076_714_758_186_6_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }
