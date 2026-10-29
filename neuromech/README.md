@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 69 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 67 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -24,7 +24,7 @@ python -m neuromech.build                # 69 scenarios -> neuromech/out/ (manif
 | M | severity AND kind of severity: tone ladder, catch-release, catch-and-hold, no-ringdown fall, end-stop | De Groote core, via `profiles.py` |
 | R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel | De Groote core |
 | H | HESS's four haptic models (Park et al. 2012, Table III), elbow values unscaled: the three-phase catch on a pendulum | De Groote core + `hess_*` module |
-| K | HESS HM#1–3 on the knee: H alone refitted so each lands on its intended MAS 1 / 1+ / 2 (HM#4's MAS 3 is unreachable by H) | De Groote core + `hess_*` module |
+| K | HESS HM#1–2 on the knee: H alone refitted so each holds its intended MAS 1 / 1+ (HM#3's MAS 2 and HM#4's MAS 3 exist only in a sliver below the arrest jump) | De Groote core + `hess_*` module |
 
 `out/scenario_manifest.csv` holds, per scenario, the expected 7 parameters, PT7, band or refusal, flags,
 the rig range and speed it needs, and the peak active muscle torque (for Mode C).
