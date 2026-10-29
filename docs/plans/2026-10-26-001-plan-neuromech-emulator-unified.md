@@ -92,14 +92,15 @@ Three sources, three rests: it becomes a measured input.
 ## 4. The program
 
 ```
-OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment + additions)
+OFFLINE (Python, this branch)                         HOST VI (StretchExperiment is not edited)
  model  : neuromech.model_rt (+ A's profiles)  ─┐
- library: neuromech.scenarios  ─────────────────┼─> session plan ──> <runid>.csv / .bin ──> Mode A player
- build  : expected params (validated scorer)  ──┘     (blinded run ids,                     (feedforward, trips,
-                                                       randomised, reps)                     phase+run id logged)
- session score: encoder .bin + phone JSONL ──> delivered vs intended, phone vs encoder <── <runid>.bin + phone
- ILC / identify: next command, plant fit  <── chirp run, any run
- Formula Node (Mode B): verified step function
+ library: neuromech.scenarios  ─────────────────┼─> session plan ──> player/<run>.csv ──> Pendulum Player
+ build  : expected params (validated scorer)  ──┘     (blinded run ids,                   writes M1JointAngleDesired
+                                                       randomised, reps, peak_deg)        every 10 ms -> RT PID
+ check-log: does the log record under the Player?  <── one .bin + the file played (once, before session 1)
+ session score: encoder .bin + phone JSONL ──> delivered vs intended, phone vs encoder <── logs named on the run sheet
+ ILC / identify: next command + its player file, plant fit  <── chirp run, any run   (ILC = the feedforward)
+ Formula Node (Mode B): verified step function, steppable inside the Player
 ```
 
 ## 5. Build list
@@ -113,9 +114,9 @@ OFFLINE (Python, this branch)                         LABVIEW (StretchExperiment
 | B5 | Session scorer: encoder `.bin` + phone JSONL → delivered vs intended, phone vs encoder, flags | **done** — `python -m neuromech.session score` |
 | B6 | End-to-end dry run without hardware | **done** — `python -m neuromech.dryrun`; 9/9 runs in band, phone \|ΔPT7\| median 0.009 |
 | B7 | Chirp scenario + `ilc --identify` | **done** — recovers 6.35 Hz / ζ 0.232 / R² 0.999 |
-| B8 | LabVIEW VIs for Mode A | **owner/LabVIEW** — spec in `neuromech/labview/LABVIEW_PROGRAM_SPEC.md` |
+| B8 | LabVIEW for Mode A | **Pendulum Player** host VI (StretchExperiment is not edited): build guide ready, program adapted to it (headerless player files, peak guard, logs paired by run-sheet name, 100 Hz staircase in the dry run, ILC outputs playable, `session check-log` for the logging bench check). Building the VI is a bench task; interactive Mode B′ needs RT access |
 | B9 | Port A's tonic-hold, velocity channel, end-stop, capsule into `model_rt` (+ Formula Node) for Mode B | **done** — `coulomb_nm`, `k_v`/`k_l`/`reflex_max_nm`, `catch_and_hold()`, `limb_from_anthropometry()`; Formula Node re-verified at 1.7e-11; `Params()` bit-identical to before; A's module retired |
-| B10 | Corpus rest geometry by the validated scorer | next (needs the recordings; ~25 min run) |
+| B10 | Corpus rest geometry by the validated scorer | **measured** — §5c; the disagreement is between instruments, not estimates |
 
 ## 5a. What the dry run established (2026-10-26)
 
@@ -130,6 +131,37 @@ runs. And **the phone's agreement is bias-limited**: estimating gyro bias only f
 can see before release (what the app does) leaves ~0.01–0.02 °/s, which through the settled tail and
 area ratio moves PT7 by up to ~0.15 — one band at bands 2–3. Recommendation for the app: re-estimate bias
 at the settled tail before scoring (the settle feature already detects it).
+
+## 5c. Where real legs rest (B10, 2026-10-26)
+
+`python -m neuromech.corpus_rest`: every phone trial (206) replayed and scored by the validated
+scorer, production convention; rest depth = pre-release angle − settled neutral, per participant
+median, then per cohort. Run on the corpus-safe **abs-fold** extraction (`bench/retest-abs` @ fa3d651,
+via `PENDULASTIC_PIPELINE_DIR`); this branch's signed extraction mirrors the rest across 180° on
+trials that cross the zero reference (resting "at 250°"), so it is reported for comparison only.
+
+| Cohort | People (trials) | Rest depth | Rest knee (released at 180°) |
+|---|---|---|---|
+| Controls | 2 (11) | 67.7° (66, 70) | **112.3°** |
+| Stroke | 4 (25) | 62.4° (52–69) | 117.6° |
+| MS | 8 (124) | 62.5° (45–75) | 117.5° |
+
+Signed extraction (magnitude): controls 71.1° → 108.9°. Detrend default moves each cohort 1–3°.
+Only Control_16 and Control_23 have raw phone sensor files; controls 2, 6, 7, 8, 9, 10, 12 were
+recorded as video only and cannot enter this measurement.
+
+**The instruments disagree, by about 30°.** OptiTrack A0 on the same trials is 28.8° smaller than
+the phone's (median; n = 104; 4 % within 5°), i.e. a rest near 140°, which is where the 142° came
+from. It cannot referee: 10 of 104 trials have ≥ 90 % camera coverage and every one of those carries
+a poorly-conditioned-hinge warning, which shrinks a projected angle. MediaPipe video scatters too
+far to use (control medians 3–62°; Control_16 at 3° against the phone's 66°). The phone's rotation
+magnitude is the measurement verified on the bench (0.58°).
+
+So the three rests were never three estimates of one number: phone ≈ 112°, cameras ≈ 140°.
+**Decision:** the model default stays at 125° (incline −35°) for now; `Params.incline_deg` sets it
+per scenario (`pendulum_sim.thigh_incline_from_resting_deg(112.3)` = −22.3°). **What settles it:** a
+goniometer reading of the resting knee after a drop on one or two people, alongside the phone, in
+the same session (minutes, not a study). Until then, report A0 by instrument, never pooled.
 
 ## 6. Validation, in order
 

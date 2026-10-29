@@ -14,7 +14,9 @@
 // 0x0. Refusing the transition is the only outcome that neither discards a
 // trial in progress nor orphans one.
 
-export const VIEWS = ['home', 'capture', 'trials', 'mas', 'session', 'trends'];
+// 'research' is the gated raw-recorder view; its home tile is revealed only in
+// research mode, but the view is always registered so a direct navigate resolves.
+export const VIEWS = ['home', 'capture', 'trials', 'mas', 'session', 'trends', 'research'];
 
 // An unknown name lands on home rather than hiding every section and
 // leaving a blank page under the banner.

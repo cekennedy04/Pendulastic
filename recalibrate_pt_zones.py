@@ -83,24 +83,38 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
     by_leg_params: dict[tuple, list[dict]] = {}
     refused = unscorable = 0
     seen = 0
+    # Why each trial dropped out, and from which arm. Totals are not enough:
+    # these thresholds are percentiles over legs, so if one arm loses trials at
+    # a different rate than the other the percentiles are computed on a
+    # non-representative subset and the numbers are quietly biased. A leg that
+    # loses ALL its trials leaves the cohort entirely and changes n without
+    # saying so.
+    dropped: dict[tuple, int] = {}
+    legs_attempted: set = set()
     for rec in trials:
         cond = str(rec["condition"]).lower()
-        if not (cond.startswith("pre") or rec["condition"] == "default"):
+        if not (cond.startswith("pre") or cond == "default"):
             continue
         key = (str(rec["participant"]), rec["leg"])
         if key not in mas:
             continue
         seen += 1
+        legs_attempted.add(key)
+        arm = "MAS 0" if _rank(mas[key]) == 0 else "MAS>=1"
         if seen % 10 == 0:
             step(f"    scored {seen} ... ({refused} refused, {unscorable} unscorable so far)")
         try:
             t, ang = pts.load_optitrack(rec["path"])
-        except Exception:                                   # noqa: BLE001
+        except Exception as exc:                            # noqa: BLE001
             unscorable += 1
+            dropped[(arm, f"load failed: {type(exc).__name__}")] = \
+                dropped.get((arm, f"load failed: {type(exc).__name__}"), 0) + 1
             continue
         params = pts.compute_pt_params(t, ang)
         if not params:
             unscorable += 1
+            dropped[(arm, "compute_pt_params returned nothing")] = \
+                dropped.get((arm, "compute_pt_params returned nothing"), 0) + 1
             continue
         est = pts.mas_estimate(params)
         # Only interpretable trials: a refusal is not a low score, and
@@ -109,6 +123,8 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         # which is correct -- an arrested limb has no PT7 to percentile.
         if not est["interpretable"]:
             refused += 1
+            why = (est["reason"] or "refused").split(":")[0]
+            dropped[(arm, why)] = dropped.get((arm, why), 0) + 1
             continue
         by_leg.setdefault(key, []).append(float(est["pt7"]))
         by_leg_params.setdefault(key, []).append(params)
@@ -119,7 +135,69 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
         print(f"  {len(out)} participant-legs, "
               f"{sum(len(v) for v in by_leg.values())} interpretable trials "
               f"({refused} refused, {unscorable} unscorable)")
+        if dropped:
+            print()
+            print("  Why trials dropped out, by arm. Read this before the")
+            print("  thresholds: they are percentiles over LEGS, so an arm that")
+            print("  loses trials faster than the other biases them.")
+            for arm in ("MAS 0", "MAS>=1"):
+                rows = sorted(((w, n) for (a, w), n in dropped.items() if a == arm),
+                              key=lambda wn: -wn[1])
+                if rows:
+                    print(f"    {arm}:")
+                    for why, n in rows:
+                        print(f"      {n:4d}  {why}")
+        # A leg with no interpretable trial left the cohort silently.
+        lost = sorted(legs_attempted - set(out))
+        if lost:
+            print()
+            print(f"  {len(lost)} leg(s) had trials but NONE interpretable, so they")
+            print("  are absent from the thresholds entirely:")
+            for pid, leg in lost:
+                print(f"      {pid} {leg}  (clinical MAS {mas[(pid, leg)]})")
     return out, by_leg_params
+
+
+#: omega_max_n = omega_peak_deg_s / A0_deg. Reported alongside the scored set
+#: so the table can say WHICH factor disagrees with physics, not just that the
+#: product does. Neither is scored; neither has a HEALTHY_REF entry (A0 has
+#: EXCURSION_REF_MEAN_DEG instead, which _decompose uses).
+_DECOMPOSE_KEYS = ["omega_peak_deg_s", "A0_deg"]
+
+#: Measured healthy peak first-swing knee velocity, for the one comparison that
+#: decides whether the pipeline's peak is inflated. Both read from the papers;
+#: provenance and the filtering caveat are in healthy_ref_frequency_audit
+#: (MEASURED_PEAK_DEG_S and part_e's caveat) -- peak velocity has no asymptote
+#: as the smoothing window shrinks and neither source reports its filtering, so
+#: a gap here is suggestive, not a measurement conflict.
+_LIT_PEAK_DEG_S = ((221.9, 35.6, "Kim 1996, n=50 supine"),
+                   (241.7, 17.7, "PMC3544505 controls, n=10"))
+
+
+def _decompose(by_key: dict) -> None:
+    """Say which factor of omega_max_n the pipeline and physics disagree on.
+
+    healthy_ref_frequency_audit part_g puts the whole disagreement at 1.85x,
+    splitting as ~1.59x in peak velocity and ~1.17x in A0 against the emulator.
+    Those were the EMULATOR's numbers. These are the cohort's, which is the
+    comparison that actually decides it.
+    """
+    peak = by_key.get("omega_peak_deg_s")
+    a0 = by_key.get("A0_deg")
+    if not peak or not a0:
+        return
+    print()
+    print("    DECOMPOSED -- omega_max_n = omega_peak_deg_s / A0_deg:")
+    print(f"      A0_deg            {a0[0]:8.2f} deg   vs EXCURSION_REF "
+          f"{pts.EXCURSION_REF_MEAN_DEG:.1f} +/- {pts.EXCURSION_REF_SD_DEG:.1f} "
+          f"(n={pts.EXCURSION_REF_N})")
+    print(f"      omega_peak_deg_s  {peak[0]:8.2f} deg/s")
+    for lit, sd, src in _LIT_PEAK_DEG_S:
+        print(f"        vs {lit:6.1f} +/- {sd:4.1f} ({src}): "
+              f"{peak[0] / lit:.2f}x, {(peak[0] - lit) / sd:+.1f} SD")
+    print("      A0 should match EXCURSION_REF closely -- both come from this")
+    print("      cohort -- so a disagreement with physics that survives here")
+    print("      lands on the PEAK, i.e. on what the 0.10 s window admits.")
 
 
 def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
@@ -143,7 +221,11 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
     """
     import statistics as st
     by_key = {}
-    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS:
+    # A0_deg and omega_peak_deg_s are in neither list -- they are reported-only
+    # scalars -- but they are the two FACTORS omega_max_n is built from
+    # (omega_max_n = omega_peak_deg_s / A0_deg), and without them this table
+    # says the pipeline disagrees with physics without saying which half does.
+    for k in pts._PARAM_KEYS + pts._DIAGNOSTIC_KEYS + _DECOMPOSE_KEYS:
         vals = [p[k] for key, plist in per_leg_params.items() if _rank(legs[key][0]) == 0
                 for p in plist if k in p and np.isfinite(p[k])]
         if vals:
@@ -155,10 +237,17 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
               f"{'HEALTHY_REF':>12} {'ratio':>7}")
         for k, (med, lo, hi, n) in by_key.items():
             ref = pts.HEALTHY_REF.get(k)
-            r = (med / ref) if ref not in (None, 0) else float("nan")
-            star = "  <-- scored" if k in pts._PARAM_KEYS else "  (reported only)"
+            has_ref = ref not in (None, 0)
+            ref_s = f"{ref:12.4f}" if has_ref else f"{'--':>12}"
+            r_s = f"{med / ref:7.2f}" if has_ref else f"{'--':>7}"
+            if k in pts._PARAM_KEYS:
+                star = "  <-- scored"
+            elif k in _DECOMPOSE_KEYS:
+                star = "  (factor of omega_max_n)"
+            else:
+                star = "  (reported only)"
             print(f"    {k:16} {med:16.4f} {f'[{lo:.3f} - {hi:.3f}]':>20} "
-                  f"{ref if ref is None else f'{ref:12.4f}'} {r:7.2f}{star}")
+                  f"{ref_s} {r_s}{star}")
         print(f"    (n = {max(v[3] for v in by_key.values())} control trials)")
         print()
         print("    omega_max_n is the one to look at. If the measured median is")
@@ -166,7 +255,90 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
         print("    itself is inflated -- fix the extraction, not the constant.")
         print("    If it is near 4.8 the constant is simply stale and can be")
         print("    replaced. Nothing is written either way.")
+        _decompose(by_key)
     return by_key
+
+
+def f_boundary_census(legs: dict, per_leg_params: dict, verbose: bool = True):
+    """How often `f` is dropped, split by MAS arm.
+
+    This answers the first of the two questions
+    docs/reports/2026-10-27-dropping-f.md says would settle whether `f` belongs
+    in the scored set, and it can only be answered from the recordings.
+
+    `f` leaves the sum when it cannot be estimated (`f < 0.1 or N < 2.0`).
+    Since the divisor now follows the terms a trial can score, dropping it no
+    longer leaves a hole -- but `f`'s own contribution still vanishes at that
+    boundary, so the score can still fall as a limb worsens (N=2.0 -> 0.1878,
+    N=1.5 -> 0.1538 on the report's sweep).
+
+    What matters is WHERE it fires. The boundary is at the low-oscillation end,
+    so if it fires mostly on the MAS>=1 arm it is compressing impaired scores
+    toward healthy ones, which is the direction that inverts the thresholds. If
+    it fires about equally in both arms, or in neither, then the inversion has
+    another cause and `f` is merely weak -- which the report says is not on its
+    own sufficient reason to remove a published parameter.
+
+    Reports trials AND legs, because a leg whose every trial crosses the
+    boundary is a different problem from a leg with one such trial among five.
+    """
+    arms = {0: {"trials": 0, "fired": 0, "legs": set(), "legs_all": set()},
+            1: {"trials": 0, "fired": 0, "legs": set(), "legs_all": set()}}
+    for key, plist in per_leg_params.items():
+        if key not in legs:
+            continue
+        arm = 0 if _rank(legs[key][0]) == 0 else 1
+        n_fired = 0
+        for pr in plist:
+            arms[arm]["trials"] += 1
+            # Exactly the scorer's condition, not a paraphrase of it.
+            if pr.get("f", 0.0) < 0.1 or pr.get("N", 0.0) < 2.0:
+                n_fired += 1
+                arms[arm]["fired"] += 1
+        if n_fired:
+            arms[arm]["legs"].add(key)
+        if plist and n_fired == len(plist):
+            arms[arm]["legs_all"].add(key)
+
+    if verbose:
+        print()
+        print("  Where the f boundary fires (f < 0.1 or N < 2.0), by MAS arm:")
+        print(f"    {'arm':8} {'trials':>7} {'f dropped':>10} {'share':>7} "
+              f"{'legs hit':>9} {'legs all':>9}")
+        for arm, label in ((0, "MAS 0"), (1, "MAS>=1")):
+            d = arms[arm]
+            share = (100.0 * d["fired"] / d["trials"]) if d["trials"] else float("nan")
+            print(f"    {label:8} {d['trials']:7d} {d['fired']:10d} {share:6.1f}% "
+                  f"{len(d['legs']):9d} {len(d['legs_all']):9d}")
+        h, i = arms[0], arms[1]
+        hs = (h["fired"] / h["trials"]) if h["trials"] else float("nan")
+        isr = (i["fired"] / i["trials"]) if i["trials"] else float("nan")
+        print()
+        if not (h["trials"] and i["trials"]):
+            print("    One arm has no trials, so this says nothing yet.")
+        elif i["fired"] == 0 and h["fired"] == 0:
+            print("    It never fires. The f-skip is NOT inverting these thresholds,")
+            print("    and f's weakness is the only charge left against it.")
+        elif isr > 2 * hs:
+            # `hs` is zero whenever the boundary fires on the impaired arm
+            # ONLY, which is both the most informative case and the one that
+            # divided by zero and killed the run before this was tested.
+            times = f"{isr / hs:.1f}x more often" if hs else "ONLY"
+            print(f"    It fires {times} on the impaired arm, which is")
+            print("    the direction that compresses impaired scores toward healthy")
+            print("    ones. That is the report's case for removing f or")
+            print("    re-estimating it from fewer turning points.")
+        elif hs > 2 * isr:
+            times = f"{hs / isr:.1f}x more often" if isr else "ONLY"
+            print(f"    It fires {times} on the UNAFFECTED arm, which")
+            print("    pushes the healthy percentile DOWN, i.e. the opposite way.")
+            print("    Worth understanding before touching f.")
+        else:
+            print("    It fires at a similar rate in both arms, so it is not")
+            print("    obviously the cause of an inversion. See the report's")
+            print("    second question before acting on f.")
+        print("    See docs/reports/2026-10-27-dropping-f.md.")
+    return arms
 
 
 def derive(legs: dict, verbose: bool = True):
@@ -179,14 +351,47 @@ def derive(legs: dict, verbose: bool = True):
             f"{len(impaired)} at MAS>=1. Refusing to emit a threshold from this."
         )
     h_max = float(np.percentile(healthy, 75))
-    b_max = float(0.5 * (h_max + statistics.median(impaired)))
+    imp_med = float(statistics.median(impaired))
+    b_max = float(0.5 * (h_max + imp_med))
+    # The arithmetic ASSUMES the arms separate: b_max is the midpoint of the
+    # healthy 75th percentile and the impaired median, so if the impaired
+    # median sits below that percentile the midpoint lands below h_max and the
+    # pair comes out INVERTED -- a healthy ceiling above the borderline
+    # ceiling, which classifies nothing. The 2026-10-27 run emitted exactly
+    # that (0.2979 > 0.2435) together with instructions to apply it, because
+    # the only refusal here was on n. A non-separating cohort is a finding
+    # about the cohort or the scorer, never a threshold.
     if verbose:
         print(f"  MAS 0   n={len(healthy):3d}  median {statistics.median(healthy):.4f}  "
               f"75th pct {h_max:.4f}")
-        print(f"  MAS>=1  n={len(impaired):3d}  median {statistics.median(impaired):.4f}")
+        print(f"  MAS>=1  n={len(impaired):3d}  median {imp_med:.4f}")
         print()
         print(f"  PT_HEALTHY_MAX    = {h_max:.4f}   (was {pts.PT_HEALTHY_MAX})")
         print(f"  PT_BORDERLINE_MAX = {b_max:.4f}   (was {pts.PT_BORDERLINE_MAX})")
+    # The borderline is the midpoint up to the impaired median, so it only
+    # sits above the healthy cut when that median does. On the 2026-10-26
+    # cohort it did not (0.1892 vs 0.2979) and main() printed "To apply"
+    # for a pair that would grade every borderline leg healthy.
+    #
+    # Deliberately AFTER the print: the operator should see the two arms'
+    # numbers and then the refusal, not a refusal with nothing to read it
+    # against. A second copy of this check arrived from the other side of the
+    # 2026-10-27 merge, placed before the print; it was removed rather than
+    # kept, since the first to fire makes the other dead code.
+    if imp_med <= h_max:
+        raise SystemExit(
+            f"groups do not separate: MAS>=1 median {imp_med:.4f} "
+            f"<= MAS 0 75th pct {h_max:.4f}, so borderline {b_max:.4f} <= healthy "
+            f"{h_max:.4f}. Refusing to emit a threshold from this.\n"
+            f"  Before concluding this is the cohort: the f-skip discontinuity can "
+            f"invert the arms by itself. f leaves the sum when it cannot be "
+            f"estimated (f < 0.1 or N < 2.0), and while the divisor now follows the "
+            f"terms actually scored, f's own contribution still vanishes at that "
+            f"boundary -- so a WORSE limb can score lower (N=2.0 -> 0.1878, "
+            f"N=1.5 -> 0.1538) and it fires on the impaired arm. Check how many "
+            f"MAS>=1 legs sit below N=2 first. "
+            f"See docs/reports/2026-10-27-dropping-f.md."
+        )
     return h_max, b_max
 
 
@@ -257,6 +462,7 @@ def smoke(verbose: bool = True) -> bool:
         sg.MAS_CSV = mas_path
         legs, per_leg_params = leg_scores(None, None, verbose=verbose)
         healthy_reference(legs, per_leg_params, verbose=verbose)
+        f_boundary_census(legs, per_leg_params, verbose=verbose)
         h, b = derive(legs, verbose=verbose)
     finally:
         (prc.OPTI_ROOT, prc.ARCHIVE_ROOT, prc.EXCLUDED_TRIALS_PATH, sg.MAS_CSV) = saved
@@ -289,6 +495,7 @@ def main(argv=None) -> int:
     print()
     legs, per_leg_params = leg_scores(a.opti_root, a.mas_csv)
     healthy_reference(legs, per_leg_params)
+    f_boundary_census(legs, per_leg_params)
     h_max, b_max = derive(legs)
     print()
     print("  To apply, in pendulastic_pt_score.py AND mobile-imu-core/src/pt_score.rs:")

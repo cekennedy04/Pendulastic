@@ -125,3 +125,7 @@ webapp/dist/
 # HEALTHY_REF moves and is worse than no copy at all.
 neuromech/out/
 neuromech/report/out/
+
+# neuromech rig sessions: generated per bench day (regenerable from session.json
+# seed), and key.csv is the blinding key -- never publish it in this public repo.
+neuromech/sessions/

@@ -35,20 +35,47 @@ the rig range and speed it needs, and the peak active muscle torque (for Mode C)
 python -m neuromech.session plan --name S2026-10-28 --groups A,M --reps 3 --repeat A-P2:10 --chirp
 ```
 
-Writes `neuromech/sessions/<name>/`: `runsheet.csv` (what the operator sees — run ids only, R3 blind),
-`key.csv` (run → scenario; keep it from anyone grading), and `commands/<run>.csv` + `<run>.dbl`
-(big-endian float64, 5 interleaved columns: t, setpoint, velocity, acceleration, phase — LabVIEW
-"Read from Binary File"). `R000` is the 20 s identification chirp.
+Writes `neuromech/sessions/<name>/`: `runsheet.csv` (what the operator sees: run ids only, R3 blind,
+with each run's `peak_deg` and an `encoder_file` column to fill in), `key.csv` (run -> scenario; keep it
+from anyone grading), `player/<run>.csv` (what the Pendulum Player VI plays: `t_s, setpoint_deg`, no
+header, starting at 0 deg) and `commands/<run>.csv` + `.dbl` (all five columns, for scoring and ILC).
+`R000` is the 20 s identification chirp.
 
 ## 3. At the bench (per run)
 
-Start the phone → start the LabVIEW log, **named `<run>.bin`** → play `commands/<run>.dbl` →
-let the app auto-stop → stop the phone → stop the log. The file name is the pairing; nothing else is.
+The rig is driven by the **Pendulum Player**, which writes StretchExperiment's position-setpoint
+shared variable; StretchExperiment itself is not edited (see `labview/LABVIEW_PROGRAM_SPEC.md`).
+The Player does not have to be a VI: `labview/player/play_setpoints.ps1` does the same job from Windows
+PowerShell through NI DataSocket (installed with LabVIEW), so the rig PC needs neither Python nor any
+LabVIEW building. The analysis PC never touches the rig, so a session travels on a USB stick:
+
+```bash
+python -m neuromech.usb_kit --name <S> [--dest E:\]     # scripts + player files + run sheet + README.txt
+```
+
+On the rig PC: `PICK_VARIABLE.bat` once, then drag a file onto `DRYRUN.bat` (moves nothing) or
+`PLAY.bat`. It refuses files over 45 deg, with a header, or not starting at 0; q/Esc ramps back to 0;
+each run leaves `sent/<run>_<time>.csv`, what it wrote and when. Logs and the run sheet come back on
+the stick. The kit's `README.txt` is the bench procedure. `key.csv` never goes on the stick.
+
+**Once, before the first session:** play any player file with the log running, then
+
+```bash
+python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv
+```
+
+PASS means the log recorded the Player's setpoint for the whole file (it also reports how often the
+setpoint changed, ~10 ms for the Player). FAIL says which: the log never saw the Player's writes, it
+logged something else, or it stopped early. Exit status 1 on FAIL.
+
+Check `peak_deg` against the arm's range -> Player `CSV Path` = `player/<run>.csv` -> start the phone ->
+start the log -> run the Player (or drag the file onto `PLAY.bat`) -> let the app auto-stop -> stop the phone -> stop the log -> **write the
+log's file name in `encoder_file`** (StretchExperiment names its own logs; that column is the pairing).
 
 ## 4. Score the session
 
 ```bash
-python -m neuromech.session score --name S2026-10-28 --encoder-dir <folder of R*.bin> \
+python -m neuromech.session score --name S2026-10-28 --encoder-dir <folder of the logs> \
        --phone-manifest <phone session>-manifest.json
 ```
 
@@ -64,6 +91,9 @@ python -m neuromech.ilc --identify <R000.bin>                     # -> plant JSO
 python -m neuromech.ilc commands/R014.csv R014.bin --plant <plant.json>   # -> R014_ilc1.csv
 ```
 
+A run id is resolved to its scenario through the session's `key.csv`, and every ILC output is also
+written as a Player file (`player/R014_ilc1.csv`): play that one next.
+
 Error is always measured against the original scenario, so iterations converge on the scenario, not on
 each other. Re-identify after any gain change.
 
@@ -73,15 +103,16 @@ each other. Re-identify after any gain change.
 python -m neuromech.dryrun
 ```
 
-Plans a session, synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
+Plans a session, plays each command as the Player delivers it (a 100 Hz staircase with Windows
+lateness), synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
 jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-10-26:
-every run in its intended band, median tracking 0.57°, phone |ΔPT7| median 0.009 (max 0.16, bias-limited),
-plant recovered (6.35 Hz, ζ 0.232, R² 0.999), ILC converging on every scenario including the 2.3 Hz case.
+every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
+plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
 
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests tests/test_rig_calibration.py      # 61 tests
+python -m pytest neuromech/tests                                    # 90 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

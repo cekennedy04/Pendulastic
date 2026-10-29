@@ -202,5 +202,159 @@ def test_the_rust_oscillation_gate_matches():
     assert "a1_deg.is_finite()" in body.group(1)
     assert "a1_deg > 0.0" in body.group(1)
     assert "a0_deg" not in body.group(1), "the oscillation gate must not read A0"
-    # and both gates must reach the JSON the phone renders
-    assert "excursion_reason(params).or_else(|| oscillation_reason(params))" in src
+    # and EVERY gate must reach the JSON the phone renders. Asserted by name
+    # against refusal_reason's body rather than as one literal line, because
+    # the literal broke the moment a third gate made the chain wrap -- a
+    # formatting change failing a test about behaviour.
+    chain = re.search(
+        r"pub fn refusal_reason\(params: &PtParams\) -> Option<String> \{(.*?)\n\}",
+        src, re.S)
+    assert chain, "refusal_reason not found in the Rust"
+    for gate in ("excursion_reason", "oscillation_reason"):
+        assert gate in chain.group(1), f"{gate} never reaches refusal_reason"
+
+
+def test_the_f_skip_makes_the_score_non_monotone_in_severity():
+    """A limb that oscillates LESS must not score healthier. It currently does.
+
+    f is bidirectional and is skipped when `f < 0.1 or N < 2.0`, because below
+    two cycles it cannot be estimated. Nothing rescales the divisor, which is
+    always _N_PARAMS, so crossing that boundary deletes a penalty term instead
+    of redistributing it: the score drops although the limb is worse.
+
+    This is NOT the saturation story an earlier commit claimed. An unmeasured f
+    contributes 0.0, not a maximal penalty -- `compute_pt_score_breakdown`
+    skips it and `unmeasured_params` flags it. The bias runs the other way, and
+    it runs on the impaired arm, which is the direction that pulls the MAS>=1
+    median below the MAS-0 75th percentile.
+
+    PARTLY FIXED 2026-10-27: the divisor is now the number of terms actually
+    scored, which was chosen over dropping f so that Popovic's parameter set
+    stays intact. That removed the deleted-term bias and lifted N=1.5 from
+    0.1282 to 0.1538, but the f term's own contribution still vanishes
+    discontinuously at the boundary, so ~18% of the inversion remains
+    (0.1878 -> 0.1538) and it still runs on the impaired arm.
+
+    Still xfail, therefore. Only removing the boundary makes the score
+    monotone, and that means dropping f from the scored set -- a decision
+    already taken the other way. This test holds the residual on the record
+    with live numbers so it cannot quietly become the accepted behaviour, and
+    it flips to a pass if the boundary ever stops losing a term.
+    """
+    base = {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+            "f": 0.8839, "area_ratio": 0.0945, "first_trough_depth": 10.0}
+
+    def total(n, f=0.5):
+        p = dict(base, N=n, f=f)
+        return sum(pt.compute_pt_score_breakdown(p).values())
+
+    just_above = total(2.0)     # f still scored
+    just_below = total(1.5)     # f skipped, divisor unchanged
+    assert just_below < just_above, (
+        "the boundary no longer loses a term -- if this fires, the skip was "
+        "fixed and this test should be inverted into a monotonicity assertion"
+    )
+    pytest.xfail(
+        f"f-skip discontinuity: N=2.0 scores {just_above:.4f} but the WORSE "
+        f"N=1.5 scores {just_below:.4f}, a {100 * (1 - just_below / just_above):.0f}% "
+        f"drop in apparent severity across the f < 0.1 or N < 2.0 boundary"
+    )
+
+
+JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                  "webapp", "src", "param-select.js")
+
+
+def _js_list(name):
+    """The string entries of `export const <name> = [...]` in param-select.js."""
+    src = open(JS, encoding="utf-8").read()
+    m = re.search(r"export const " + name + r"\s*=\s*\[(.*?)\];", src, re.S)
+    assert m, f"{name} not found in {JS}"
+    return re.findall(r"'([a-z0-9_]+)'", m.group(1))
+
+
+def test_all_three_languages_agree_on_the_canonical_scored_set():
+    """The claim param-select.js makes about this test, made true.
+
+    That module said "tests/test_pt_zone_parity.py pins all three to each
+    other" while this file compared only Python and Rust. The canonical set was
+    meanwhile spelled out four times: _PARAM_KEYS, Rust's CANONICAL_PT_KEYS, an
+    inline vec in the canonicity check, and JS's CANONICAL_KEYS. The inline vec
+    is gone; these three are pinned here.
+
+    A JS list that drifts would let the phone call a selection canonical that
+    the scorer does not, which is the one thing the `canonical` flag exists to
+    prevent.
+    """
+    rust = re.search(
+        # The array size is `N_PARAMS`, not a literal, so match either.
+        r"pub const CANONICAL_PT_KEYS: \[&str; [A-Za-z_0-9]+\] = \[(.*?)\];",
+        open(RUST, encoding="utf-8").read(), re.S)
+    assert rust, "CANONICAL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', rust.group(1))
+    py_keys = [k.lower() for k in pt._PARAM_KEYS]
+    assert rust_keys == py_keys, f"Rust {rust_keys} != Python {py_keys}"
+    assert _js_list("CANONICAL_KEYS") == py_keys, (
+        f"JS {_js_list('CANONICAL_KEYS')} != Python {py_keys}")
+
+
+def test_the_selectable_superset_matches_between_languages():
+    """ALL_PT_KEYS is wider than the scored set and must agree in both.
+
+    The app's toggles are driven by this list, so a language that offers a
+    different seven would let the phone score a selection the record cannot
+    reproduce.
+    """
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(r"pub const ALL_PT_KEYS: \[&str; 7\] = \[(.*?)\];", src, re.S)
+    assert m, "ALL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    # The Rust spells keys in snake_case; Python uses its own param names.
+    py_keys = [k.lower() for k in pt.ALL_PT_KEYS]
+    assert rust_keys == py_keys, f"{rust_keys} != {py_keys}"
+    assert _js_list("ALL_PT_KEYS") == py_keys, (
+        f"JS {_js_list('ALL_PT_KEYS')} != Python {py_keys}")
+    # The canonical scored set must be a strict subset of the selectable one.
+    assert set(k.lower() for k in pt._PARAM_KEYS) < set(rust_keys)
+    # omega_min_n is selectable but NOT scored -- that is the whole point.
+    assert "omega_min_n" in rust_keys
+    assert "omega_min_n" not in [k.lower() for k in pt._PARAM_KEYS]
+
+
+def test_selecting_the_canonical_set_reproduces_the_canonical_score():
+    """The toggle path must not be a second scorer.
+
+    If an explicit canonical selection ever differs from the default, the app
+    and the record disagree while both claim to be the scored set.
+    """
+    for params in (
+        {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+         "omega_min_n": -9.4152, "f": 0.8839, "area_ratio": 0.0945},
+        {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+         "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2},
+        # f unscorable
+        {"R2n": 0.42, "N": 1.5, "phi_max_ratio": 0.11, "omega_max_n": 2.5,
+         "omega_min_n": 0.004, "f": 0.0, "area_ratio": 0.94},
+    ):
+        default = pt.compute_pt_score_breakdown(params)
+        explicit = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+        assert default == explicit
+        assert pt.compute_pt_score(params) == pt.compute_pt_score(params, keys=pt._PARAM_KEYS)
+
+
+def test_deselecting_a_term_redistributes_its_share():
+    """The property that makes a toggle honest.
+
+    With a fixed divisor, removing ANY parameter would always lower the score,
+    so every toggle would read as "less impaired" whatever it removed -- the
+    panel would teach the opposite of the truth.
+    """
+    params = {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+              "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2}
+    six = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+    five = pt.compute_pt_score_breakdown(
+        params, keys=[k for k in pt._PARAM_KEYS if k != "f"])
+    for k, v in five.items():
+        assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
+    alone = pt.compute_pt_score_breakdown(params, keys=["N"])
+    assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)

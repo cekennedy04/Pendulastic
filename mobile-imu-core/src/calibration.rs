@@ -41,7 +41,63 @@ pub fn calibrate_gyro_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
     if hold_buf.len() < GYRO_BIAS_MIN_SAMPLES {
         return None;
     }
-    Some(mean3(hold_buf))
+    // Per-axis significance gate, ported from the reference 2026-10-27. This
+    // returned the window mean outright, which is what the reference did
+    // before b37d927: on a trial where the phone lay still for 20.5 s the
+    // true bias is 0.00376 rad/s while a 1 s window's mean errs by 0.0119 --
+    // three times the quantity being measured. Subtracting such an estimate
+    // injected 23 deg of yaw drift where leaving the bias at zero gave 1.8.
+    //
+    // Lengthening the window does not rescue it (5 s still errs by 0.005):
+    // the limit is sensor noise, ~0.05 rad/s per axis, not window length. An
+    // axis that fails the gate is left at zero, because subtracting noise is
+    // strictly worse than subtracting nothing and the error grows without
+    // bound in yaw, which has no other anchor. Roll and pitch are held by
+    // gravity regardless.
+    let mean = mean3(hold_buf);
+    let n = hold_buf.len() as f64;
+    let mut out = [0.0_f64; 3];
+    for axis in 0..3 {
+        // Sample standard deviation (ddof = 1), matching numpy's
+        // `std(axis=0, ddof=1)` in the reference.
+        let var = hold_buf
+            .iter()
+            .map(|(_, v)| {
+                let d = v[axis] - mean[axis];
+                d * d
+            })
+            .sum::<f64>()
+            / (n - 1.0);
+        let sem = var.sqrt() / n.sqrt();
+        out[axis] = if mean[axis].abs() >= GYRO_BIAS_MIN_SNR * sem {
+            mean[axis]
+        } else {
+            0.0
+        };
+    }
+    Some(out)
+}
+
+/// Unit gravity direction in the sensor frame from a stillness window, or
+/// `None` when the window is empty or its mean has no direction.
+///
+/// During a genuine hold the mean accel IS gravity, so its direction is the
+/// vertical expressed in that sensor's own frame. Normalising makes it
+/// unit-agnostic, so the g (iOS) versus m/s² (Android) scale difference needs
+/// no detection here.
+///
+/// Ported from the reference's `_gravity_dir_from_hold` 2026-10-27, with the
+/// across-gravity projection it feeds in `replay::swing_deg`.
+pub fn gravity_dir_from_hold(hold_buf: &SampleBuf) -> Option<Vec3> {
+    if hold_buf.is_empty() {
+        return None;
+    }
+    let mean = mean3(hold_buf);
+    let n = norm3(mean);
+    if n < 1e-9 {
+        return None;
+    }
+    Some([mean[0] / n, mean[1] / n, mean[2] / n])
 }
 
 /// Estimate accelerometer static bias from a verified-stillness window.
@@ -75,6 +131,24 @@ pub fn calibrate_accel_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
     Some([mean[0] - mean[0] * scale, mean[1] - mean[1] * scale, mean[2] - mean[2] * scale])
 }
 
+/// An above-guard excursion that settles without reaching the capture
+/// threshold revokes a qualified hold -- unless it is small and brief enough to
+/// be sensor noise grazing the guard. Mirrors `imu_calibration_tuner.py`'s
+/// `_NOISE_EXCURSION_*`; see there for the corpus sweep behind the values.
+pub const NOISE_EXCURSION_PEAK_RAD_S: f64 = 0.5;
+pub const NOISE_EXCURSION_MAX_S: f64 = 0.2;
+
+/// A gyro-bias estimate is applied per-axis only when the axis mean is at
+/// least this many standard errors from zero. Mirrors the reference's
+/// `GYRO_BIAS_MIN_SNR`; see `calibrate_gyro_bias` for the measurement behind
+/// it and why 3.0 rather than 2.0 (swept over a still trial, a 2 sigma gate
+/// accepts 8.7% of axes on pure noise and 3 sigma accepts 0.3%).
+pub const GYRO_BIAS_MIN_SNR: f64 = 3.0;
+
+fn is_noise_excursion(peak_rad_s: f64, duration_s: f64) -> bool {
+    peak_rad_s < NOISE_EXCURSION_PEAK_RAD_S && duration_s < NOISE_EXCURSION_MAX_S
+}
+
 /// Two-state zero-capture eligibility machine (KTD9). `calm_qualified`: a
 /// genuine trailing-window calm period has been confirmed and not yet spent.
 /// `pending_departure`: an above-guard excursion is currently in progress
@@ -91,6 +165,10 @@ pub fn calibrate_accel_bias(hold_buf: &SampleBuf) -> Option<Vec3> {
 pub struct ReleaseDetector {
     calm_qualified: bool,
     pending_departure: bool,
+    /// Start time and peak |omega| of the current above-guard excursion, so
+    /// one that settles can be told apart as noise or handling.
+    excursion_t0: f64,
+    excursion_peak: f64,
     /// Becomes `false` forever once a release is captured — only the first
     /// qualifying crossing matters for a given trial (mirrors
     /// `flex_axis_armed` in the Python source).
@@ -108,6 +186,8 @@ impl ReleaseDetector {
         Self {
             calm_qualified: false,
             pending_departure: false,
+            excursion_t0: 0.0,
+            excursion_peak: 0.0,
             armed: true,
         }
     }
@@ -145,13 +225,21 @@ impl ReleaseDetector {
             // First above-guard sample after a qualified calm period: a
             // candidate release ramp begins.
             self.pending_departure = true;
+            self.excursion_t0 = now;
+            self.excursion_peak = omega_mag;
+        } else if self.pending_departure && !is_calm_sample {
+            self.excursion_peak = self.excursion_peak.max(omega_mag);
         }
 
         if self.pending_departure && is_calm_sample {
-            // Settled back down without reaching the capture threshold:
-            // handling, not a release. Revoke eligibility.
+            // Settled back down without reaching the capture threshold. If it
+            // was handling, revoke eligibility; if it was too small and brief
+            // to be handling, it is sensor noise grazing the guard and the
+            // hold stays qualified (see NOISE_EXCURSION_*).
             self.pending_departure = false;
-            self.calm_qualified = false;
+            if !is_noise_excursion(self.excursion_peak, now - self.excursion_t0) {
+                self.calm_qualified = false;
+            }
         }
 
         if self.pending_departure && omega_mag >= FLEX_CAPTURE_THRESHOLD {
