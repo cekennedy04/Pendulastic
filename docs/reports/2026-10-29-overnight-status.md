@@ -188,8 +188,8 @@ off for. That is exactly what the corpus run covers.
 - **1347** Python tests passing (3.13, the interpreter here that has cv2 and
   mediapipe), **426** webapp, **16** Rust suites, clippy clean under
   `-D warnings`.
-- CI green on `main` at `611dc42` (run 267); the tuner work above landed after
-  it.
+- CI green on `main` at `aff4a3c` (run 271), which is everything in this note.
+  All three jobs, including the python job now that it gates the tuner file.
 - **12 pre-existing Python failures**, all in
   `test_capture_coverage_hpe_session` (a worker consuming 0 frames), confirmed
   identical to clean `origin/main` by diffing both full-suite failure lists
