@@ -83,6 +83,13 @@ jobs:
       # nothing compared them. An ungated parity test would not have caught
       # that either.
       #
+      # test_imu_calibration_tuner.py is gated because its absence hid a real
+      # one. test_score_waveform_plateau_during_active_swing_fails sat FAILING
+      # on main -- a sensor freeze during active swing scored a clean pass --
+      # and CI stayed green throughout, because this list did not name the
+      # file and `pytest tests/` is not what runs. An ungated test is worth
+      # less than no test: it reads as coverage while asserting nothing.
+      #
       # Deliberately a file list and not `pytest tests/`: the GUI suite needs a
       # display, and three non-GUI files have failures unrelated to scoring
       # (see the changeset notes). Widening this is a follow-up, not a silent
@@ -98,6 +105,7 @@ jobs:
             tests/test_labview_bin_reader.py \
             tests/test_motor_bench.py \
             tests/test_motor_reference.py \
+            tests/test_imu_calibration_tuner.py \
             neuromech/tests
       # Two files in neuromech/tests carry the model's own contract, and both
       # are load-bearing:

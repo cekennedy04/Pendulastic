@@ -589,6 +589,94 @@ def test_score_waveform_plateau_during_active_swing_fails():
     assert not result["passes"]
 
 
+def _frozen_mid_swing(freeze_len, dt=0.05):
+    """The plateau fixture above, with the freeze length as a parameter.
+
+    Same construction: freeze `freeze_len` samples two samples after
+    release, then shift the remainder by a constant so it resumes
+    continuously from the frozen value. The shift is what keeps the clip
+    check out of it, so a failure here is the plateau check's own work.
+    """
+    t, angle = _damped_pendulum_series(dt=dt)
+    angle = angle.copy()
+    freeze_start = int(1.0 / dt) + 2
+    freeze_end = freeze_start + freeze_len
+    frozen_value = angle[freeze_start]
+    angle[freeze_start:freeze_end] = frozen_value
+    angle[freeze_end:] += frozen_value - angle[freeze_end]
+    return t, angle
+
+
+@pytest.mark.parametrize("freeze_len,freeze_s",
+                         [(6, 0.30), (10, 0.50), (20, 1.00), (40, 2.00), (60, 3.00)])
+def test_score_waveform_rejects_a_mid_swing_freeze_of_any_length(freeze_len, freeze_s):
+    """Every one of these scored a CLEAN PASS before 2026-10-29.
+
+    The continuity check derives BOTH edges of its active-swing window from
+    the same signal it is checking, so a freeze had two ways to move the
+    window off itself:
+
+      left edge   `_lift_hold_end` read the freeze as a lift-and-hold -- its
+                  hold window is exactly 0.5 s, which is why 0.5 s is where
+                  this starts -- and reported release at the freeze's END,
+                  putting the artifact before the window began.
+      right edge  a freeze of 2 s or more also destroyed extrema detection,
+                  leaving one lone extremum 0.15 s after release, which
+                  collapsed the window to four samples, all of them before
+                  the freeze.
+
+    Fixed by requiring a lift's hold to sit at least 24 % of the signal
+    range from rest (`_LIFT_MIN_HOLD_DEV`), which a sensor step of 4.9 deg
+    in a 60 deg range is not, and by treating one extremum as no
+    oscillation for the window's purposes.
+
+    The penalty rises monotonically with freeze length here (1, 5, 15, 35,
+    55), which is the behaviour to preserve: a longer dropout must not score
+    better than a shorter one.
+    """
+    t, angle = _frozen_mid_swing(freeze_len)
+    result = tuner.score_waveform(t, angle)
+    assert not result["passes"], (
+        f"a {freeze_s:.2f} s sensor freeze mid-swing scored a pass "
+        f"(penalty {result['penalty']:.1f})"
+    )
+    assert result["penalty"] > 0.0
+
+
+def test_the_freeze_sweep_has_teeth():
+    """The same series without a freeze must pass, or the sweep above proves
+    nothing about freezes -- only that this fixture fails to score."""
+    t, angle = _damped_pendulum_series()
+    assert tuner.score_waveform(t, angle)["passes"]
+
+
+@pytest.mark.xfail(reason="unfixed: a dropout this long corrupts every "
+                          "quantity used to judge it", strict=True)
+@pytest.mark.parametrize("freeze_len", [80, 120])
+def test_score_waveform_rejects_a_very_long_mid_swing_freeze(freeze_len):
+    """KNOWN GAP, recorded rather than papered over.
+
+    At 4 s and 6 s of a 12 s trial the freeze passes, and chasing it with
+    more waveform forensics is the wrong move: release detection, extrema
+    detection and the signal-range estimate that sets the detection
+    threshold are ALL computed from the corrupted waveform, so each
+    successive guard gets undermined by a longer dropout. At this length the
+    trace is also genuinely ambiguous -- a flat 4 s starting 0.1 s after the
+    apparent release, with the swing beginning afterwards, reads equally
+    well as a trial released at 5.1 s after a small lift.
+
+    The fix is upstream, not here: the capture layer KNOWS when it dropped
+    samples, and inferring it from the waveform is strictly weaker than
+    being told. A dropped-sample count or gap list in the trial payload
+    would make this check exact instead of heuristic.
+
+    strict=True on purpose: if a change makes these pass, that is news and
+    this test should be promoted, not left silently xpassing.
+    """
+    t, angle = _frozen_mid_swing(freeze_len)
+    assert not tuner.score_waveform(t, angle)["passes"]
+
+
 def test_score_waveform_long_resting_tail_after_one_drop_still_passes():
     """Severe-spasticity case: one real drop, then genuinely locked/motionless
     for the rest of a long trial. Must NOT be misclassified as a staircase."""

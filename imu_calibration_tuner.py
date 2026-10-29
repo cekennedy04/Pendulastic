@@ -646,7 +646,25 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     t_r = pt_params["t_r"]
     pk_i, tr_i = pt_params["pk_i"], pt_params["tr_i"]
     extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
-    if len(extrema):
+    # `>= 2`, not `>= 1`: ONE detected extremum is not an oscillation, and
+    # using it as the end of the active-swing window makes this check
+    # vacuous exactly when it is needed most. A dropout long enough to
+    # destroy extrema detection (2.0 s on the 20 Hz synthetic) leaves a
+    # single extremum 0.15 s after release, which collapsed the window to
+    # four samples -- all of them BEFORE the dropout -- and the frozen trial
+    # scored a clean pass with zero penalty. The longer the dropout, the
+    # more certainly it hid itself.
+    #
+    # A lone extremum is the same situation as none at all: the oscillation
+    # detector has not found a swing to bound. So it takes the same
+    # settle-based bound below, which is derived from the trial's OWN
+    # resting value and is therefore robust here -- a freeze held away from
+    # neutral does not count as settled, so the window extends across it,
+    # while a limb that genuinely locks up and stays put makes that locked
+    # value the tail median and settles immediately, keeping its window
+    # short. That is what preserves the severe-spasticity protection this
+    # whole window exists for.
+    if len(extrema) >= 2:
         last_extremum_t = float(t_r[int(extrema.max())])
         window_end_t = t_r[0] + min(4.0, max(0.0, last_extremum_t - t_r[0]))
     else:
