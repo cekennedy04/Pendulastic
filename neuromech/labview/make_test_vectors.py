@@ -35,7 +35,9 @@ TICKS = 3000          # 3 s at 1 kHz: covers the drop, the first reversal and th
 
 COLS = ["t", "th", "w", "ts", "tr", "tf", "tc", "srs_on", "rev", "clon_t0",
         "wd", "wd_prev", "sd", "sd_prev", "thd",
-        "th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o"]
+        "hph", "ht0", "hwc", "hs0", "hsp", "hlv", "hte", "hta",
+        "th_o", "w_o", "ts_o", "tr_o", "tf_o", "tc_o",
+        "hph_o", "ht0_o", "hwc_o", "hs0_o", "hsp_o", "hlv_o", "hte_o", "hta_o"]
 
 #: lambda 0.5872 is the MAS-2 rung of the ladder as it stood on
 #: bench/retest-abs, kept verbatim so this fixture's numbers are comparable
@@ -53,7 +55,18 @@ VECTORS = {
         coulomb_nm=0.15, k_v=1.2, k_v_thr=0.4, k_l=2.0, k_l_thr_deg=4.0, reflex_max_nm=6.0,
         flex_gain=1.5, catch_gain=2.0, clonus_deg=3.0, rigid_nm=0.2, cog_depth=0.5,
         contract_k=10.0, contract_deg=-70.0, guard_nm=0.3, guard_seed=3,
-        spasm_nm=2.0, spasm_t=1.2),
+        spasm_nm=2.0, spasm_t=1.2,
+        # HESS on but gated out (no drop is that fast): reaches the phase-4
+        # "never caught" branch at the first reversal while adding no torque.
+        hess_H=1.0, hess_wL_dps=1.0e6),
+    # The HESS three-phase catch on its own leg, set so 3 s visit every phase:
+    # onset at ~0.16 s, a 12 deg catch, post-catch, then the stall that ends
+    # the stretch and the relax. A short D is what reaches phase 2 inside the
+    # drop; on its own vector because one-shot phase logic would otherwise be
+    # tested only on a trace already crowded by eight other modules.
+    "test_vector_hess": Params(
+        tone=0.5, k_f=0.2, k_df=0.007,
+        hess_H=2.0, hess_Q=0.3, hess_D_deg=12.0, hess_L_deg=60.0, hess_min_deg=10.0),
 }
 
 

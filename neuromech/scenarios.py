@@ -27,6 +27,10 @@ Groups:
                        hypotonia, guarding, spasm, habituation
   C  out-of-range      each of the 7 parameters (and the A0 gate) pushed past its bounds
   D  artefacts         push release, low release, pre-release wobble, short recording
+  H  HESS catch        Park et al. 2012's four haptic models (Table III), elbow values on
+                       the knee unscaled: what the three-phase catch does to a pendulum
+  K  HESS on the knee  HM#1-2 with H alone recalibrated to the knee (the rest of Table III
+                       kept) so each holds its intended band; HM#3-4 (MAS 2, 3) have no H
 """
 from __future__ import annotations
 
@@ -187,5 +191,43 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
                  Params(tone=2.0, k_v=8.0, k_v_thr=0.2, reflex_max_nm=4.0),
                  probes="saturation: a muscle cannot produce unbounded force, and an unbounded "
                         "force-feedback loop above gain 1 is a numerical artefact, not a patient"),
+    ]
+    # ── H: HESS's four haptic models (Park, Kim & Damiano 2012, Table III) ──
+    # H, Q and D as published. L is an absolute elbow angle there; here it is
+    # knee stretch from release, kept as its distance above HESS's 60 deg
+    # floor on a 10 deg knee floor, so the spread and ordering carry over.
+    # These are ELBOW values fitted to clinician-imposed motion, played on a
+    # gravity-driven knee unscaled: the probe is what that port does, not a
+    # claim that these legs are MAS 1-3.
+    def _hess(H, Q, D, L_elbow):
+        return Params(hess_H=H, hess_Q=Q, hess_D_deg=D, hess_L_deg=10.0 + (L_elbow - 60.0), hess_min_deg=10.0)
+    sc += [
+        Scenario("H-HM1", "H", "HESS HM#1 (intended MAS 1): small peak, long catch, no post-catch",
+                 _hess(1.4, 0.15, 60.0, 130.0), probes="R2n, A1; catch-and-release with little residual"),
+        Scenario("H-HM2", "H", "HESS HM#2 (intended MAS 1+): catch then post-catch resistance",
+                 _hess(2.0, 0.30, 50.0, 120.0), probes="the 1 vs 1+ distinction HESS made by k_post"),
+        Scenario("H-HM3", "H", "HESS HM#3 (intended MAS 2)", _hess(2.8, 0.60, 30.0, 115.0),
+                 probes="larger residual, shorter catch"),
+        Scenario("H-HM4", "H", "HESS HM#4 (intended MAS 3): 15 N.m peak against ~5 N.m of gravity",
+                 _hess(3.8, 0.80, 10.0, 110.0), probes="an elbow-scale catch arresting a knee drop"),
+    ]
+    # ── K: HESS HM#1-2 on the knee ────────────────────────────────────────
+    # Only H is refitted, per model, against the scorer with the re-derived
+    # HEALTHY_REF (#79); Q, D, L and k_post stay as Table III. H sits at the
+    # geometric middle of the H range that grades the intended MAS (HM#1
+    # 0.672-1.596, HM#2 1.362-1.684), so each holds its band with H +/-10 %;
+    # at the band's PT7 centre HM#2 would sit 4 % below the 1+/2 edge. HM#3
+    # and HM#4 are absent: as H rises PT7 jumps from under 0.40 to over 0.79
+    # once the catch arrests the leg before rest and nothing rings down (MAS 4
+    # or refused), so MAS 2 (HM#3: H 1.164-1.199, +/-1.5 %) and MAS 3 show
+    # only in a sliver just below the jump, narrower than a rig's tracking
+    # error. Q, D, k_post and L move the jump but never remove it: 300 random
+    # settings gave no MAS 3 and one MAS 2, which flips to 1+ at -2 % H and
+    # to MAS 4 at +2 %.
+    sc += [
+        Scenario("K-HM1", "K", "HESS HM#1 on the knee (MAS 1): H 1.036 = 0.74x elbow",
+                 _hess(1.036, 0.15, 60.0, 130.0), probes="a HESS catch graded at its intended MAS 1"),
+        Scenario("K-HM2", "K", "HESS HM#2 on the knee (MAS 1+): H 1.514 = 0.76x elbow",
+                 _hess(1.514, 0.30, 50.0, 120.0), probes="a HESS catch graded at its intended MAS 1+"),
     ]
     return sc
