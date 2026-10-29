@@ -118,6 +118,43 @@ test('the protocol version is a number, not a string', () => {
   assert.equal(typeof r.capture_protocol_version, 'number');
 });
 
+// ---- unscorable trials are persisted, not discarded (2026-09-15) ---------
+// The project's "measure everything, flag out-of-range, never exclude" rule
+// applied at the most basic level: a recording the engine could not score
+// (no usable swing -- e.g. an SSR staircase) must be KEPT with its raw log
+// and marked not-scorable, not thrown away.
+
+test('an unscorable trial is recorded with scorable:false, null params, and its raw log', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: 'left', params: null, trajectory: null,
+    rawJsonl: 'raw-line\n', algorithmVersion: '0.1.0',
+  });
+  assert.equal(r.scorable, false);
+  assert.equal(r.params, null, 'null params must be stored as null, not a zero-filled block');
+  assert.equal(r.raw_jsonl, 'raw-line\n', 'the raw log is the whole reason to keep it');
+});
+
+test('a scored trial defaults to scorable:true', () => {
+  const r = makeTrialRecord({
+    sessionId: 's1', side: 'left', params, trajectory: {}, rawJsonl: 'x',
+    algorithmVersion: '0.1.0',
+  });
+  assert.equal(r.scorable, true);
+});
+
+test('a research recording is flagged research:true; ordinary trials default false', () => {
+  const rec = makeTrialRecord({
+    sessionId: 's1', side: 'left', params: null, trajectory: null,
+    rawJsonl: 'raw\n', algorithmVersion: '0.1.0', research: true,
+  });
+  assert.equal(rec.research, true);
+  const ordinary = makeTrialRecord({
+    sessionId: 's1', side: 'left', params, trajectory: {}, rawJsonl: 'x',
+    algorithmVersion: '0.1.0',
+  });
+  assert.equal(ordinary.research, false, 'a normal trial is not a research recording');
+});
+
 // ---- exclusion (Unit B item 4) ------------------------------------------
 
 const trial = (over = {}) => ({
@@ -203,6 +240,14 @@ test('quick tests never reach a trend, even when not excluded', () => {
   const quick = trial({ quick_test: true });
   assert.equal(activeTrials([real, quick]).length, 2, 'a quick test still counts in-session');
   assert.equal(trendEligible([real, quick]).length, 1, 'a quick test leaked into a trend');
+});
+
+test('unscored and research recordings are kept but never reach a trend', () => {
+  const real = trial();
+  const unscored = trial({ params: null, scorable: false });
+  const research = trial({ research: true });
+  assert.equal(activeTrials([real, unscored, research]).length, 3, 'kept in-session, never dropped');
+  assert.equal(trendEligible([real, unscored, research]).length, 1, 'an unscored or research trial would inflate n');
 });
 
 test('un-excluding a quick test does not make it trend-eligible', () => {
