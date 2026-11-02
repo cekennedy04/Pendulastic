@@ -85,6 +85,28 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### Headless Linux also needs two system libraries
+
+On Windows and macOS `pip install` is enough. On a headless Linux box — a CI
+runner, a container, a cloud dev session — MediaPipe additionally needs the
+GL dispatch libraries, which are not Python packages and so are not in
+`requirements.txt`:
+
+```bash
+sudo apt-get install -y libegl1 libgles2
+```
+
+Without them `mediapipe.Image(...)` raises
+`OSError: libEGL.so.1: cannot open shared object file` (and then
+`libGLESv2.so.2`) the first time a frame is handed to the pose detector.
+Nothing else fails, and the message never mentions MediaPipe, so the symptom
+is **12 failures in `tests/test_capture_coverage_hpe_session.py`** —
+all of them stopping at the same line, `_pump`'s
+`"worker stopped consuming after 0 frames"`, because the worker catches the
+error per frame and the detector is therefore never called. The code is fine;
+the box is missing a library. Diagnosed 2026-11-02, after those 12 had been
+carried as unexplained pre-existing failures.
+
 ---
 
 ## Mobile app (`webapp/`)
