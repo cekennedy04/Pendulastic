@@ -209,9 +209,11 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
    before it is measured (B13). This is a **mismatch flag, not a realism certificate**: how spasticity
    itself changes the fall is not established (the two MAS ≥ 1 people go opposite ways), the real
    reference is OptiTrack A0, which §5b says shrinks angles and so pulls a slope toward 0, and passing
-   says nothing about realism. That still rests on step 6.
-6. **Blind clinician grading** (blocked: no current profile set clears step 5, and no build item yet
-   produces a revised severity axis; see Open Questions) (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
+   says nothing about realism. That still rests on step 6. The HESS catch (#85, group K: K-HM1 at
+   MAS 1, K-HM2 at MAS 1+) is the first candidate profile set; it has not been measured here, and
+   it should be measured only after B13 fixes the threshold.
+6. **Blind clinician grading** (blocked: no profile set has cleared step 5 yet; group K is the
+   candidate, and it covers only MAS 1 and 1+; see Open Questions) (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
    agreement 76–86 % from the elbow simulators.
 7. **Re-run `severity_grading_test.py` on rig-delivered profiles** (blocked with step 6). Its pass/fail criteria are fixed
    before any rig data is seen. A failure is reported as a failure, not absorbed into calibration;
@@ -243,11 +245,11 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
 
 - **Actuator sizing waits on the severity mechanism** — O2 (P2, feasibility, adversarial, confidence 75)
 
-  The ≥ 20 N·m figure comes from the constant tone torque, the part of the model the fall-speed check found unrealistic. A delayed, velocity-gated catch may need a different torque and rate.
+  The ≥ 20 N·m figure comes from the constant tone torque, the part of the model the fall-speed check found unrealistic. A delayed, velocity-gated catch may need a different torque and rate; group K's HESS catch (#85) peaks near 6.4 N·m for MAS 1+, and MAS 2–3 have no usable catch settings yet.
 
 - **Is building a revised severity axis in scope, and who owns it?** — §6 steps 5–7 (P1, product-lens, scope-guardian, confidence 100)
 
-  Clinician grading and the severity re-test are blocked until a profile set clears the step 5 mismatch check, and no build item produces one. The fall-speed report's candidate is a delayed, velocity-gated catch acting after peak velocity, in place of constant tone. Recording more MAS ≥ 1 legs may be the better route to knowing what realistic looks like.
+  Clinician grading and the severity re-test are blocked until a profile set clears the step 5 mismatch check. Since this review, #85 (merged 2026-10-29) added the HESS three-phase velocity-gated catch and knee-calibrated scenarios for MAS 1 and 1+ (group K). That is the fall-speed report's candidate mechanism, but it is not yet measured against step 5. On the current scorer it reaches no usable MAS 2 or 3: HM#3's MAS 2 holds for only ±1.5 % of H, and PT7 jumps from under 0.40 to over 0.79. So the open questions are whether MAS 2–3 need another mechanism and who owns that work. Recording more MAS ≥ 1 legs may be the better route to knowing what realistic looks like.
 
 - **Phone-vs-encoder tolerances are still unset** — §6 step 4 (P1, cross-model Codex, confidence 75)
 
