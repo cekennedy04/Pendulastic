@@ -133,7 +133,7 @@ OFFLINE (Python, this branch)                         HOST VI (StretchExperiment
 | B10 | Corpus rest geometry by the validated scorer | **measured** — §5b; the disagreement is between instruments, not estimates |
 | B11 | Rest geometry and angle reference: goniometer reading of the resting knee after a drop on 1–2 people alongside the phone; the rig's unactuated rest; and the encoder's zero and scale against the same goniometer at two positions, within a tolerance fixed beforehand | **open**: prerequisite for §6 step 0 |
 | B12 | Settled-tail gyro-bias re-estimate in the app (§5a). **Its own app PR**, not emulator work: Python + Rust parity and a golden re-diff. Verified on the 206-trial real corpus replay (§5b) by counting trials whose PT7 band changes; the dry run's phone ΔPT7 stays as a regression check (band 2; band 3 no longer exists) | **open**: lands before §6 step 2, then expected values are rebuilt under the new formula ID (D2) |
-| B13 | Make the §6 step 5 check runnable: land `neuromech.fall_speed` (open PR), add an emulator-only mode against a pinned real reference, re-measure both sides on the current scorer, recompute the reference on settled geometry (B11) or phone A0 rather than OptiTrack alone, and fix the mismatch threshold (e.g. a bootstrap 95 % CI over legs) before any revised axis is measured | **open** |
+| B13 | Make the §6 step 5 check runnable: land `neuromech.fall_speed` (open PR), add an emulator-only mode against a pinned real reference, re-measure both sides on the current scorer, recompute the reference on settled geometry (B11) or phone A0 rather than OptiTrack alone, and fix the mismatch threshold (e.g. a bootstrap 95 % CI over legs) before any revised axis is measured | **PR #90** (2026-11-02, stacked on #82): rule committed before group K was measured; reference re-measured (per-leg slope −0.00, CI −0.28 to +0.16) and pinned. Still open: re-pin on B11 geometry |
 | B14 | Provenance in code, as D2/D5 require: `SCORE_FORMULA_ID` plus a model and geometry hash written into the ladder, the scenario manifest and session.json; `build` recalibrates when the cached ID differs; `session score` refuses a mismatch | **PR #87** (2026-11-02) |
 
 ## 5a. What the dry run established (2026-10-26)
@@ -210,10 +210,12 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
    itself changes the fall is not established (the two MAS ≥ 1 people go opposite ways), the real
    reference is OptiTrack A0, which §5b says shrinks angles and so pulls a slope toward 0, and passing
    says nothing about realism. That still rests on step 6. The HESS catch (#85, group K: K-HM1 at
-   MAS 1, K-HM2 at MAS 1+) is the first candidate profile set; it has not been measured here, and
-   it should be measured only after B13 fixes the threshold.
-6. **Blind clinician grading** (blocked: no profile set has cleared step 5 yet; group K is the
-   candidate, and it covers only MAS 1 and 1+; see Open Questions) (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
+   MAS 1, K-HM2 at MAS 1+) is the first candidate profile set. Measured after the rule was fixed
+   (PR #90): **NO FLAG (slope not judged)**. It slows the fall 4–12 % at unchanged A0, so it does not
+   bring back the tone coupling. Because it never moves A0, the check cannot speak to coupling for it,
+   and the two real MAS ≥ 1 people lose excursion instead. The ladder (A) and M profiles are MISMATCH.
+6. **Blind clinician grading** (group K raised no step 5 flag and is the first set that can go
+   forward, covering only MAS 1 and 1+; see Open Questions) (R3, ≥ 2 assessors) → the grade mapping; benchmarks κ 0.63–0.65,
    agreement 76–86 % from the elbow simulators.
 7. **Re-run `severity_grading_test.py` on rig-delivered profiles** (blocked with step 6). Its pass/fail criteria are fixed
    before any rig data is seen. A failure is reported as a failure, not absorbed into calibration;
@@ -249,7 +251,7 @@ the same session (minutes, not a study). Until then, report A0 by instrument, ne
 
 - **Is building a revised severity axis in scope, and who owns it?** — §6 steps 5–7 (P1, product-lens, scope-guardian, confidence 100)
 
-  Clinician grading and the severity re-test are blocked until a profile set clears the step 5 mismatch check. Since this review, #85 (merged 2026-10-29) added the HESS three-phase velocity-gated catch and knee-calibrated scenarios for MAS 1 and 1+ (group K). That is the fall-speed report's candidate mechanism, but it is not yet measured against step 5. On the current scorer it reaches no usable MAS 2 or 3: HM#3's MAS 2 holds for only ±1.5 % of H, and PT7 jumps from under 0.40 to over 0.79. So the open questions are whether MAS 2–3 need another mechanism and who owns that work. Recording more MAS ≥ 1 legs may be the better route to knowing what realistic looks like.
+  Clinician grading and the severity re-test were blocked until a profile set raised no step 5 mismatch flag; group K now has, for MAS 1 and 1+ only. Since this review, #85 (merged 2026-10-29) added the HESS three-phase velocity-gated catch and knee-calibrated scenarios for MAS 1 and 1+ (group K). That is the fall-speed report's candidate mechanism. Measured against step 5 on 2026-11-02 (PR #90), it raises no flag, but with its slope not judged. On the current scorer it reaches no usable MAS 2 or 3: HM#3's MAS 2 holds for only ±1.5 % of H, and PT7 jumps from under 0.40 to over 0.79. So the open questions are whether MAS 2–3 need another mechanism and who owns that work. Recording more MAS ≥ 1 legs may be the better route to knowing what realistic looks like.
 
 - **Phone-vs-encoder tolerances are still unset** — §6 step 4 (P1, cross-model Codex, confidence 75)
 
