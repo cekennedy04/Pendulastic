@@ -4,8 +4,8 @@
 // file changes. SHELL is every file sw.js must cache to run without a network.
 // ALGORITHM_VERSION identifies the source revision that produced a trial's
 // params (spec 3.2) and tracks the wasm alone, NOT the shell.
-export const BUILD_ID = 'a64dcdccd1fd';
-export const ALGORITHM_VERSION = '0.1.0+94e7d5bc8dde.19e005f5327a';
+export const BUILD_ID = '8117cc2fe43a';
+export const ALGORITHM_VERSION = '0.1.0+410edc34f10b.5f8a4ffc3590';
 export const SHELL = [
   './',
   './index.html',
