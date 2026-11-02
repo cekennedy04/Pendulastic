@@ -1,7 +1,7 @@
 """Rig sessions: plan one before the bench, score it after.
 
-    python -m neuromech.session plan  --name S1 [--sids A-P0,A-P2 | --groups A,M] [--reps 3]
-                                      [--repeat A-P2:10] [--seed 7] [--chirp] [--no-blind]
+    python -m neuromech.session plan  --name S1 [--sids A-P0,A-P1p | --groups A,M] [--reps 3]
+                                      [--repeat A-P1p:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
     python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
 
@@ -91,6 +91,8 @@ def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False,
     if sids: pick = man[man.sid.isin(sids)]
     elif groups: pick = man[man.group.isin(groups)]
     missing = set(sids or []) - set(pick.sid)
+    if repeat and repeat.split(":")[0] not in set(man.sid):   # before anything is written
+        missing.add(repeat.split(":")[0])
     if missing: raise SystemExit(f"unknown scenario ids: {sorted(missing)}")
     order = [sid for sid in pick.sid for _ in range(reps)]
     if repeat:
