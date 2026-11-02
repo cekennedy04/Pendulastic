@@ -95,26 +95,30 @@ jobs:
       # file and `pytest tests/` is not what runs. An ungated test is worth
       # less than no test: it reads as coverage while asserting nothing.
       #
-      # test_camera_utils.py and test_capture_quality_guard.py were two of the
-      # "three non-GUI files with failures unrelated to scoring" this comment
-      # used to defer. Neither had a failure in the code:
-      # test_capture_quality_guard only ever failed on `ModuleNotFoundError:
-      # cv2`, which the headless wheel above settles, and test_camera_utils
-      # had one genuinely flaky test, fixed 2026-11-02 (it raced its own new
-      # session). Both are gated now that they are deterministic -- the
-      # camera one especially, since it guards a frame from a previous
-      # recording session leaking into a newer one, and it has been gating
-      # nothing at all.
+      # test_camera_utils.py was one of the "three non-GUI files with failures
+      # unrelated to scoring" this comment used to defer. It had no failure in
+      # the code: it needed cv2, which the headless wheel above supplies, and
+      # it had one genuinely flaky test, fixed 2026-11-02 (it raced its own
+      # new session, and is now deterministic in both directions). It is
+      # gated because it guards a frame from a previous recording session
+      # leaking into a newer one, and it had been gating nothing at all.
       #
-      # The third, test_capture_coverage_hpe_session.py, is still NOT gated,
-      # and deliberately: it needs `mediapipe` (a ~100 MB wheel) plus the
-      # system libraries `libegl1` and `libgles2`, without which mp.Image()
-      # raises OSError and all 12 of its tests fail at the same assertion --
-      # which is exactly what they had been doing, see the README. Adding
-      # about a minute to every CI run for those is a cost worth deciding on
-      # deliberately rather than smuggling in here; the two lines needed are
-      # `opencv-python mediapipe` in the pip step and
-      # `sudo apt-get install -y libegl1 libgles2` before it.
+      # The other two are still NOT gated, and both for the same reason:
+      # mediapipe, a ~100 MB wheel.
+      #   test_capture_quality_guard.py        reaches it through
+      #     live_tracker. An attempt to gate this file on 2026-11-02 with only
+      #     opencv-python-headless failed CI on three guard-panel tests with
+      #     `ModuleNotFoundError: No module named 'mediapipe'` -- the cv2
+      #     import is not the whole dependency, which is what the earlier
+      #     "only ever failed on cv2" note here got wrong.
+      #   test_capture_coverage_hpe_session.py also needs the system libraries
+      #     libegl1 and libgles2, without which mp.Image() raises OSError and
+      #     all 12 of its tests fail at the same assertion -- which is exactly
+      #     what they had been doing for weeks; see the README.
+      # Spending about a minute of every run on mediapipe is a cost worth
+      # deciding on deliberately rather than smuggling in here. The lines it
+      # would take are `mediapipe` in the pip step above and, for the second
+      # file, `sudo apt-get install -y libegl1 libgles2` before it.
       #
       # Still a file list and not `pytest tests/`: the GUI suite needs a
       # display.
@@ -131,7 +135,6 @@ jobs:
             tests/test_motor_reference.py \
             tests/test_imu_calibration_tuner.py \
             tests/test_camera_utils.py \
-            tests/test_capture_quality_guard.py \
             neuromech/tests
       # Two files in neuromech/tests carry the model's own contract, and both
       # are load-bearing:
