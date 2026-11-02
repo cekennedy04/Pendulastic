@@ -260,7 +260,9 @@ test('finish posts a composite PT score alongside the existing result shape', as
   // -- but ONLY against a freshly built wasm. A stale webapp/src/wasm/ still
   // returned seven fields, so every run that did not rebuild passed, and the
   // first thing to see the failure would have been a deploy.
-  const SCORED = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'f', 'area_ratio'];
+  // omega_max_n left too on 2026-10-27: on real legs it is ~350/A0 and
+  // penalised the wrong direction (pendulastic_pt_score._PARAM_KEYS).
+  const SCORED = ['r2n', 'n', 'phi_max_ratio', 'f', 'area_ratio'];
   assert.ok(Array.isArray(ptScore.breakdown), 'breakdown must be an array');
   assert.deepEqual(
     ptScore.breakdown.map((b) => b.key).sort(),

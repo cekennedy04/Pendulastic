@@ -250,11 +250,11 @@ def healthy_reference(legs: dict, per_leg_params: dict, verbose: bool = True):
                   f"{ref_s} {r_s}{star}")
         print(f"    (n = {max(v[3] for v in by_key.values())} control trials)")
         print()
-        print("    omega_max_n is the one to look at. If the measured median is")
-        print("    near 9.57 the reference is self-consistent and the quantity")
-        print("    itself is inflated -- fix the extraction, not the constant.")
-        print("    If it is near 4.8 the constant is simply stale and can be")
-        print("    replaced. Nothing is written either way.")
+        print("    omega_max_n is reported, not scored, since 2026-10-27: on real")
+        print("    legs peak velocity does not scale with A0, so it is ~350/A0")
+        print("    and penalised the wrong direction at any reference (see")
+        print("    pendulastic_pt_score._PARAM_KEYS). Its row and the factor")
+        print("    breakdown below are for watching, not re-deriving.")
         _decompose(by_key)
     return by_key
 

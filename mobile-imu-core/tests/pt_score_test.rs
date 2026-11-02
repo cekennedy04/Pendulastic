@@ -34,7 +34,6 @@ fn check_trial(
     want_r2n: f64,
     want_n: f64,
     want_phi_max_ratio: f64,
-    want_omega_max_n: f64,
     want_f: f64,
     want_area_ratio: f64,
     want_total: f64,
@@ -51,12 +50,10 @@ fn check_trial(
         1e-6,
         &format!("{tag} phi_max_ratio"),
     );
-    close(
-        breakdown.omega_max_n,
-        want_omega_max_n,
-        1e-6,
-        &format!("{tag} omega_max_n"),
-    );
+    // No omega_max_n assertion: it left the canonical breakdown on 2026-10-27
+    // because on real legs it is ~350/A0 and penalises the wrong direction
+    // (see pendulastic_pt_score._PARAM_KEYS). The raw parameter is still
+    // asserted via the params goldens, and the selection path still scores it.
     // No omega_min_n assertion: it left the breakdown on 2026-10-26 because it
     // is -omega_max_n for any limb dropped from the extension extreme, so the
     // published 7-term sum weighted one velocity measurement twice. The RAW
@@ -86,7 +83,6 @@ fn nominal_decaying_swing_matches_the_python_reference() {
         golden::TRIAL_SWING_PT_SCORE_R2N,
         golden::TRIAL_SWING_PT_SCORE_N,
         golden::TRIAL_SWING_PT_SCORE_PHI_MAX_RATIO,
-        golden::TRIAL_SWING_PT_SCORE_OMEGA_MAX_N,
         golden::TRIAL_SWING_PT_SCORE_F,
         golden::TRIAL_SWING_PT_SCORE_AREA_RATIO,
         golden::TRIAL_SWING_PT_SCORE_TOTAL,
@@ -102,7 +98,6 @@ fn single_drop_severe_spasticity_matches_the_python_reference() {
         golden::TRIAL_SINGLE_DROP_PT_SCORE_R2N,
         golden::TRIAL_SINGLE_DROP_PT_SCORE_N,
         golden::TRIAL_SINGLE_DROP_PT_SCORE_PHI_MAX_RATIO,
-        golden::TRIAL_SINGLE_DROP_PT_SCORE_OMEGA_MAX_N,
         golden::TRIAL_SINGLE_DROP_PT_SCORE_F,
         golden::TRIAL_SINGLE_DROP_PT_SCORE_AREA_RATIO,
         golden::TRIAL_SINGLE_DROP_PT_SCORE_TOTAL,
@@ -118,7 +113,6 @@ fn noisy_tail_matches_the_python_reference() {
         golden::TRIAL_NOISY_TAIL_PT_SCORE_R2N,
         golden::TRIAL_NOISY_TAIL_PT_SCORE_N,
         golden::TRIAL_NOISY_TAIL_PT_SCORE_PHI_MAX_RATIO,
-        golden::TRIAL_NOISY_TAIL_PT_SCORE_OMEGA_MAX_N,
         golden::TRIAL_NOISY_TAIL_PT_SCORE_F,
         golden::TRIAL_NOISY_TAIL_PT_SCORE_AREA_RATIO,
         golden::TRIAL_NOISY_TAIL_PT_SCORE_TOTAL,
@@ -134,7 +128,6 @@ fn low_amplitude_swing_matches_the_python_reference() {
         golden::TRIAL_LOW_AMP_PT_SCORE_R2N,
         golden::TRIAL_LOW_AMP_PT_SCORE_N,
         golden::TRIAL_LOW_AMP_PT_SCORE_PHI_MAX_RATIO,
-        golden::TRIAL_LOW_AMP_PT_SCORE_OMEGA_MAX_N,
         golden::TRIAL_LOW_AMP_PT_SCORE_F,
         golden::TRIAL_LOW_AMP_PT_SCORE_AREA_RATIO,
         golden::TRIAL_LOW_AMP_PT_SCORE_TOTAL,
@@ -150,7 +143,6 @@ fn end_to_end_replayed_trial_matches_the_python_reference() {
         golden::TRIAL_E2E_PT_SCORE_R2N,
         golden::TRIAL_E2E_PT_SCORE_N,
         golden::TRIAL_E2E_PT_SCORE_PHI_MAX_RATIO,
-        golden::TRIAL_E2E_PT_SCORE_OMEGA_MAX_N,
         golden::TRIAL_E2E_PT_SCORE_F,
         golden::TRIAL_E2E_PT_SCORE_AREA_RATIO,
         golden::TRIAL_E2E_PT_SCORE_TOTAL,

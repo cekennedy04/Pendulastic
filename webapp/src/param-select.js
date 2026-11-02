@@ -4,7 +4,9 @@
 // which set that should be is an open research question this project has
 // changed its mind about three times in two days: omega_min_n left on
 // 2026-10-26 for being algebraically -omega_max_n, omega_max_n left and came
-// back the same day, and f is under argument now (see
+// back the same day and left again on 2026-10-27 on real-cohort evidence (on
+// real legs it is ~350/A0 and penalises the wrong direction; see
+// pendulastic_pt_score._PARAM_KEYS), and f is under argument now (see
 // docs/reports/2026-10-27-dropping-f.md). Every one of those arguments was
 // made from aggregate numbers, because nobody could see a single trial's
 // score recomputed without a given parameter.
@@ -53,7 +55,6 @@ export const CANONICAL_KEYS = [
   'r2n',
   'n',
   'phi_max_ratio',
-  'omega_max_n',
   'f',
   'area_ratio',
 ];
@@ -81,8 +82,9 @@ export const PARAM_CAVEAT = {
     + '(1.12x against the oscillation count’s 3.75x) and it is dropped '
     + 'entirely below two cycles, which makes the score fall as a limb worsens.',
   omega_max_n:
-    'Its healthy reference is disputed: the pipeline reads about 1.85x what '
-    + 'physics and the one measured peak-velocity study predict.',
+    'Not in the canonical score. On real legs peak speed does not change with '
+    + 'swing size, so this is roughly 350 divided by the first swing: it rises '
+    + 'as tone shrinks the swing, and its penalty lands on the loosest legs.',
   area_ratio:
     'The only term with no upper bound, so it can dominate a score on its own.',
 };

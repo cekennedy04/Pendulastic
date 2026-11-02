@@ -433,7 +433,7 @@ test('re-enabled zone labels name the band and nothing else', () => {
 
 // -- Unmeasured-parameter notice -------------------------------------------
 // An unmeasured parameter sits at 0.0, and the score penalises r2n,
-// phi_max_ratio, n and omega_max_n for being BELOW the healthy reference --
+// phi_max_ratio and n for being BELOW the healthy reference --
 // so "could not be computed" contributes the LARGEST penalty that parameter
 // can produce. The score reads more impaired the less was measurable. The
 // notice exists to say so; without it the number is actively misleading.
