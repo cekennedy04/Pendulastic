@@ -155,12 +155,23 @@ own docstring says it was modelled on `score_waveform`'s inline logic; the
 helper then evolved, Rust adopted the helper, and Python's `score_waveform`
 kept the original.
 
-So the desktop tuner and the shipped app apply different quality gates to the
-same waveform. They agree on the six golden trials, which is exactly why
-nothing noticed: the parity tests pin those six and nothing else. Unifying
-them means deciding which rule is right — the 4 s cap is the live question,
-since a 12 s trial with real motion at 5 s is outside the Python window
-entirely — and that is a decision I did not want to make for you overnight.
+They agree on the six golden trials, which is exactly why nothing noticed: the
+parity tests pin those six and nothing else.
+
+> **CORRECTION, 2026-11-02.** This section originally said "the desktop tuner
+> and the shipped app apply different quality gates to the same waveform."
+> That is wrong. Rust's `score_waveform` is called from its own tests and
+> nowhere else — it is not exported through `wasm.rs` and nothing in `webapp/`
+> calls it — so the divergence has no runtime consequence today, and the
+> stakes are much lower than I stated. Python's `score_waveform` is live (it
+> is the desktop tuner's gate) and its 4 s cap is a real blind spot; the
+> divergence itself is a parity problem, not an app defect.
+>
+> Both rules are now measured over 10,836 generated trials, and the answer is
+> not "adopt one of them": the helper rule catches 198 freeze trials the cap
+> hides, but falsely rejects 70 clean ones, concentrated at the 100 Hz the app
+> actually samples at, because the plateau rule counts **samples** rather than
+> time. See `docs/reports/2026-11-02-continuity-window-divergence.md`.
 
 ### Two things I tried and threw away
 
@@ -223,10 +234,12 @@ off for. That is exactly what the corpus run covers.
    also confirms the release-detection guard from section 2 against the 15
    Control_6/7/8 lift-and-hold trials, which is the one check for it I could
    not run.
-3. **Unify the two `score_waveform` continuity windows** (section 2). The
-   desktop tuner and the shipped app currently gate the same waveform by
-   different rules. Needs a decision on the 4 s cap before it can be fixed,
-   which is why I left it.
+3. **The plateau rule, then the two `score_waveform` windows** (section 2, as
+   corrected). Measured 2026-11-02: the plateau rule counts samples rather
+   than time, so unifying the windows first would trade a blind spot for
+   false rejections on clean 100 Hz trials. Fix the rule, re-measure, then
+   unify. Lower priority than it looked — the Rust side is test-only, so
+   nothing ships differently today.
 4. **Zone classification is still off** and the thresholds are still
    `0.1709 / 0.3528` from `pt7-2026-08-24`, against a current formula id of
    `pt6rescaled-2026-10-27`. The app reports numbers, not grades. Turning that
