@@ -231,6 +231,13 @@ def main():
         row.update({f"param_{k}": v for k, v in sc.params.to_dict().items() if v != getattr(Params(), k)})
         rows.append(row)
         print(f"  {sc.sid:16s} A0 {row.get('A0_deg')!s:>7}  PT7 {row.get('pt7')!s:>7}  MAS {row['mas']!s:>4}  {row.get('refusal', '')[:28]}")
+    # A scenario the ladder no longer reaches (A-P2 after #79) would otherwise leave its old
+    # setpoint and trace behind, and a session naming it would play the stale command.
+    built = {r["sid"] for r in rows}
+    for sub_dir, ext in (("setpoints", ".csv"), ("traces", ".npz")):
+        for f in os.listdir(os.path.join(OUT, sub_dir)):
+            if f.endswith(ext) and f[: -len(ext)] not in built:
+                os.remove(os.path.join(OUT, sub_dir, f)); print(f"  removed stale {sub_dir}/{f}")
     keys = list(dict.fromkeys(k for r in rows for k in r))
     with open(os.path.join(OUT, "scenario_manifest.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(rows)

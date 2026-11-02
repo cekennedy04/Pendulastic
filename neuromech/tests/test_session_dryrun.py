@@ -88,6 +88,31 @@ def test_every_run_delivers_its_intended_band(report):
     assert sc.delivered_band_ok.all(), sc[["sid", "int_band", "enc_band"]].values.tolist()
 
 
+def test_default_session_misses_exactly_the_two_edge_scenarios(tmp_path):
+    """The default session's 7/9 is a finding, not noise: B-claspknife and M-catch_release_high sit at
+    PT7 0.139, 0.02 above the 0/1 edge, and the rig's tracking lag delivers ~0.116 (band 0). Pinned so
+    that re-tuning them, or a scorer change that moves any other scenario off its band, fails here."""
+    old = SS.SESS
+    try:
+        SS.SESS = str(tmp_path)
+        rep = DR.run(DR.DEFAULT_SIDS, seed=3, keep=False)[0]
+    finally:
+        SS.SESS = old
+    sc = rep[rep.sid != "R-chirp"]
+    assert set(sc[~sc.delivered_band_ok.astype(bool)].sid) == {"B-claspknife", "M-catch_release_high"},         sc[["sid", "int_band", "enc_band"]].values.tolist()
+
+
+def test_plan_refuses_an_unknown_repeat_scenario_before_writing(tmp_path):
+    old = SS.SESS
+    try:
+        SS.SESS = str(tmp_path)
+        with pytest.raises(SystemExit, match="unknown scenario ids"):
+            SS.plan("REPEAT-CHECK", sids=["A-P0"], repeat="A-NOPE:3")
+        assert not os.listdir(tmp_path)
+    finally:
+        SS.SESS = old
+
+
 def test_ilc_converges_through_the_real_tools(session):
     rep, d = session
     rid = rep[rep.sid == "A-P1p"].run_id.iloc[0]
