@@ -1,4 +1,8 @@
 opencv-python>=4.9.0
+# On headless Linux this also needs the system libraries libegl1 and
+# libgles2, which pip cannot install -- see README, "Headless Linux also
+# needs two system libraries". Without them mediapipe.Image() raises
+# OSError on libEGL.so.1 and 12 capture-coverage tests fail.
 mediapipe>=0.10.14
 numpy>=1.26.0
 scipy>=1.13.0

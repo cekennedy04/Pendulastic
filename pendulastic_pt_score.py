@@ -2646,6 +2646,26 @@ _LIFT_HOLD_MIN_S = 0.5     # shortest still window that counts as a hold
 _LIFT_REACH_MAX_S = 2.5    # the lift must reach its hold within this
 _LIFT_HOLD_MAX_S = 8.0     # and the drop must come within this of the hold
 _LIFT_RETURN_MAX_S = 2.0   # and pass back through the starting angle within this
+# A lift has to carry the limb to its TEST START POSITION, so the held level
+# is a large share of the trial's whole excursion -- not merely past the
+# "has it moved" threshold. Expressed as a multiple of that threshold, which
+# _detect_release sets at 0.08 of the signal range, so 3.0 means the hold
+# must sit at least 24 % of the range away from rest.
+#
+# The physical floor is well above that. After release the limb swings from
+# the hold through neutral and overshoots the other way, so the range is
+# about A0 for a heavily damped limb and about 2*A0 for an undamped one: a
+# genuine hold is 50-100 % of the range from rest either way, and the ratio
+# is scale-free, so a partial lift does not drift below it.
+#
+# What 24 % rejects is a sensor dropout of ~3 s or more just after the first
+# threshold crossing. That matches the lift-and-hold pattern exactly -- step
+# away from rest, hold still, swing, return through rest -- and differs only
+# in how FAR the "lift" went: 4.9 deg of a 60 deg range on the 20 Hz
+# synthetic. Read as a lift, it moved the reported release past itself and so
+# hid from the continuity check in imu_calibration_tuner.score_waveform,
+# whose active-swing window starts at that release.
+_LIFT_MIN_HOLD_DEV = 3.0
 
 
 def _lift_hold_end(t: np.ndarray, ang: np.ndarray, i: int,
@@ -2669,7 +2689,7 @@ def _lift_hold_end(t: np.ndarray, ang: np.ndarray, i: int,
         if len(win) < hold_n // 2 or float(np.ptp(win)) >= 0.5 * thresh:
             continue
         level = float(np.median(win))
-        if abs(level - baseline) <= thresh:
+        if abs(level - baseline) <= _LIFT_MIN_HOLD_DEV * thresh:
             continue
         leave_end = int(np.searchsorted(t, t[k] + _LIFT_HOLD_MAX_S))
         for m in range(k + hold_n, min(leave_end, len(t))):

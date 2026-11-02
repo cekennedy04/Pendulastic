@@ -16,7 +16,15 @@
                       flex_g, flex_vth, catch_g, catch_vth, catch_rel,
                       clon_nm, clon_hz, clon_tau, rigid, cog_d, cog_hz, con_k, con_th,
                       guard, gph0, gph1, gph2, gph3, spasm, spasm_t, spasm_w, use_lim
-     OUTPUT         : th_o, w_o, ts_o, tr_o, tf_o, tc_o, srs_on_o, rev_o, clon_t0_o, tau_o
+     INPUT  HESS    : hph, ht0, hwc, hs0, hsp, hlv, hte, hta  -- 8 more shift registers, all 0 at release
+                      (phase 0-4, onset s, onset speed rad/s, onset stretch rad, post-catch start rad,
+                       catch level N.m, stretch-end s, torque at stretch end N.m)
+     INPUT  HESS params: hH, hQ, hD, hL, hA, hMin, hWL, hTp, hKp, hWth, hRel
+                      = hess_H, hess_Q, hess_D_deg, hess_L_deg, hess_alpha_s, hess_min_deg,
+                        hess_wL_dps, hess_tpeak_s, hess_kpost, hess_wth_dps, hess_relax_s (units as Params:
+                        the four angle/speed limits stay in DEGREES; hH = 0 switches the module off)
+     OUTPUT         : th_o, w_o, ts_o, tr_o, tf_o, tc_o, srs_on_o, rev_o, clon_t0_o, tau_o,
+                      hph_o, ht0_o, hwc_o, hs0_o, hsp_o, hlv_o, hte_o, hta_o
    Afterwards (outside the node): push w_o, ts_o and th_o into the three ring buffers (length 52),
    and send rad2deg(th_o) - rest_deg as the position setpoint (Mode B) or tau_o's active part
    as the torque command (Mode C).
@@ -24,13 +32,48 @@
 
 float64 h, q, tt, dth, s_vneg, s_lt, s_gt, drive, d_ts, e_r, d_tr, e_f, d_tf, stretch, inhib, e_c, d_tc;
 float64 grav, damp, fric, wall, clon, rig, con, grd, spm, tau, dw, wdd, sdd, k, e_v, e_l;
-float64 TAU_A, TAU_SRS, DTH_C, DT, TWO_PI;
+float64 TAU_A, TAU_SRS, DTH_C, DT, TWO_PI, R2D;
+float64 hstr, hws, hwbar, hcat, hq, hpost, hss, hpk, hgate;
 DT = 0.001; h = DT / 4.0; TAU_A = 0.010; TAU_SRS = 0.050; DTH_C = 0.0261799387799; TWO_PI = 6.28318530718;
+R2D = 57.29577951308232;   /* 180/pi exactly as a double, so degree tests round as math.degrees does */
 
 /* first-swing bookkeeping, decided once per tick (as the Python twin does) */
 srs_on_o = srs_on; rev_o = rev; clon_t0_o = clon_t0;
 if (srs_on_o == 1 && w > 0 && t > 0.05) srs_on_o = 0;
 if (rev_o == 0 && w > 0 && t > 0.05) { rev_o = 1; if (clon_nm != 0) clon_t0_o = t; }
+
+/* HESS three-phase catch (Park 2012): phase machine, advanced once per tick from the state
+   entering it (model_rt._advance_hess). 0 pre-catch, 1 catch, 2 post-catch, 3 relax, 4 never caught. */
+hph_o = hph; ht0_o = ht0; hwc_o = hwc; hs0_o = hs0; hsp_o = hsp; hlv_o = hlv; hte_o = hte; hta_o = hta;
+if (hH != 0 && hph_o < 3) {
+    hstr = th0 - th;
+    hws = -w;
+    if (hph_o == 0) {
+        if (rev_o == 1) {
+            hph_o = 4;
+        } else {
+            if (t > 0 && hws > 0) {
+                hwbar = hstr * R2D / t;
+                if (hwbar >= hWL) {
+                    hcat = hL - hA * hwbar;
+                    if (hcat < hMin) hcat = hMin;
+                    if (hstr * R2D >= hcat) { hph_o = 1; ht0_o = t; hwc_o = hws; hs0_o = hstr; hlv_o = hH * hws; }
+                }
+            }
+        }
+    } else {
+        hq = hQ * hH * hwc_o;
+        if (hph_o == 1) {
+            if (t - ht0_o < hTp) { hlv_o = hH * hwc_o; } else { hlv_o = hq; }
+            if ((hstr - hs0_o) * R2D >= hD) { hph_o = 2; hsp_o = hstr; hlv_o = hq; }
+        }
+        if (hws * R2D < hWth) {
+            hpost = 0;
+            if (hph_o == 2) { hpost = hstr - hsp_o; if (hpost < 0) hpost = 0; hpost = hKp * hpost; }
+            hta_o = hlv_o + hpost; hte_o = t; hph_o = 3;
+        }
+    }
+}
 
 /* delayed derivatives: backward difference of the buffer (zero for the first 51 ticks) */
 wdd = (wd - wd_prev) / DT;
@@ -95,8 +138,26 @@ for (q = 0; q < 4; q++) {
     /* single spasm pulse */
     spm = 0;
     if (spasm != 0 && tt >= spasm_t && tt <= spasm_t + spasm_w) spm = spasm * sin(3.14159265359 * (tt - spasm_t) / spasm_w);
+    /* HESS catch torque: resists the drop only while the quadriceps lengthen (w < 0) */
+    hss = 0;
+    if (hH != 0 && hph_o >= 1 && hph_o <= 3) {
+        if (hph_o == 1) {
+            hss = hlv_o;
+        } else {
+            if (hph_o == 2) {
+                hpk = (th0 - th_o) - hsp_o;
+                if (hpk < 0) hpk = 0;
+                hss = hlv_o + hKp * hpk;
+            } else {
+                hss = hta_o * exp(-(tt - hte_o) / hRel);
+            }
+        }
+        hgate = tanh(-w_o / 0.05);
+        if (hgate < 0) hgate = 0;
+        hss = hss * hgate;
+    }
     /* sum and step */
-    tau = grav + damp + fric + wall + tone + ts_o + tr_o - tf_o + tc_o + clon + rig + con + grd + spm;
+    tau = grav + damp + fric + wall + tone + ts_o + tr_o - tf_o + tc_o + clon + rig + con + grd + spm + hss;
     dw = tau / J;
     th_o = th_o + h * w_o;
     w_o  = w_o  + h * dw;

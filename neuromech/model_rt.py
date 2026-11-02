@@ -35,6 +35,8 @@ Torque modules (all default off; parameters in Params):
   reflex    delayed force-feedback extensor reflex k_f, k_df        (reference)
   flexor    velocity-threshold hamstring reflex (flexor dominance)  NEW
   catch     clasp-knife: velocity catch with length-dependent release  NEW
+  hess      HESS three-phase catch: velocity-dependent onset angle,
+            peak + residual torque, post-catch stiffness (Park 2012)  NEW
   friction  dry (Coulomb) bearing friction of the RIG itself            NEW
   vel/len   delayed velocity and length drives on the extensor reflex,
             and a saturation ceiling on its summed excitation           NEW
@@ -142,6 +144,32 @@ class Params:
     catch_gain: float = 0.0               # N.m per rad/s of flexion velocity above threshold
     catch_vth: float = 1.5                # rad/s
     catch_release_deg: float = 25.0       # catch shuts off after this much flexion stretch
+    # ── HESS three-phase catch (Park, Kim & Damiano 2012), first drop only ──
+    # Pre-catch is the passive leg already modelled above, so this module adds
+    # only the catch and post-catch torque on top of it. Phases:
+    #   onset   stretch >= max(hess_min_deg, hess_L_deg - hess_alpha_s * wbar),
+    #           wbar = mean stretch speed since release, deg/s; no catch while
+    #           wbar < hess_wL_dps (HESS eq. 2 and 6)
+    #   catch   +H*w_c for hess_tpeak_s, then +Q*H*w_c, w_c = stretch speed at
+    #           onset (eq. 3). Ends after hess_D_deg of stretch past onset:
+    #           eq. 4's T_c = D / wbar_c is exactly that angle
+    #   post    Q*H*w_c + hess_kpost * stretch past the catch's end (eq. 5)
+    #   relax   once stretch speed drops under hess_wth_dps (the clinician
+    #           stopping, in HESS), the torque decays with hess_relax_s. HESS
+    #           has no data past this point; the decay is OUR choice.
+    # Units follow Table III: H in N.m per rad/s, D in deg, k_post in N.m/rad.
+    # The angles are stretch from release, not HESS's absolute elbow angle.
+    hess_H: float = 0.0                   # N.m per rad/s; 0 = module off
+    hess_Q: float = 0.3                   # residual torque / peak increase
+    hess_D_deg: float = 30.0              # deg of stretch the catch lasts
+    hess_L_deg: float = 45.0              # catch stretch at zero speed
+    hess_alpha_s: float = 0.35            # s, catch-angle slope (HESS's alpha)
+    hess_min_deg: float = 10.0            # floor on the catch stretch (HESS's theta_L)
+    hess_wL_dps: float = 60.0             # no catch below this mean stretch speed
+    hess_tpeak_s: float = 0.1             # s the impulsive peak is held
+    hess_kpost: float = 5.8               # N.m/rad, post-catch stiffness
+    hess_wth_dps: float = 20.0            # stretch ends below this speed
+    hess_relax_s: float = 0.3             # s, decay after the stretch ends
     # ── clonus burst ───────────────────────────────────────────────────────
     clonus_deg: float = 0.0               # target beat amplitude, deg (torque derived: A*J*(2*pi*f)^2)
     clonus_hz: float = 6.0
@@ -262,6 +290,45 @@ def _guard_components(seed: int):
     return freqs, phases
 
 
+#: The HESS phase machine's registers, in the order the tick trace and the
+#: Formula Node (hph, ht0, hwc, hs0, hsp, hlv, hte, hta) carry them.
+HESS_REGS = ("hess_phase", "hess_t0", "hess_wc", "hess_s0", "hess_spost", "hess_level", "hess_t_end", "hess_tau_end")
+
+
+def _advance_hess(p: Params, st: "State", t: float, theta0: float) -> None:
+    """Step the HESS phase machine once per tick, from the state at the tick's start.
+
+    Transitions are evaluated between ticks, like srs_active and clonus_t0, so
+    the torque is piecewise constant across an RK4 step except for the
+    post-catch spring, which depends on the angle inside the step.
+    """
+    if st.hess_phase >= 3:
+        return
+    stretch = theta0 - st.theta            # rad of flexion past release
+    w_s = -st.omega                        # stretch speed, rad/s
+    if st.hess_phase == 0:
+        if st.swing_reversed:
+            st.hess_phase = 4              # the drop ended without a catch
+            return
+        if t <= 0.0 or w_s <= 0.0:
+            return
+        wbar = math.degrees(stretch) / t
+        if wbar < p.hess_wL_dps:
+            return
+        if math.degrees(stretch) >= max(p.hess_min_deg, p.hess_L_deg - p.hess_alpha_s * wbar):
+            st.hess_phase, st.hess_t0, st.hess_wc, st.hess_s0 = 1, t, w_s, stretch
+            st.hess_level = p.hess_H * w_s
+        return
+    hq = p.hess_Q * p.hess_H * st.hess_wc
+    if st.hess_phase == 1:
+        st.hess_level = p.hess_H * st.hess_wc if t - st.hess_t0 < p.hess_tpeak_s else hq
+        if math.degrees(stretch - st.hess_s0) >= p.hess_D_deg:
+            st.hess_phase, st.hess_spost, st.hess_level = 2, stretch, hq
+    if math.degrees(w_s) < p.hess_wth_dps:
+        post = p.hess_kpost * max(0.0, stretch - st.hess_spost) if st.hess_phase == 2 else 0.0
+        st.hess_tau_end, st.hess_t_end, st.hess_phase = st.hess_level + post, t, 3
+
+
 @dataclass
 class State:
     theta: float
@@ -273,6 +340,15 @@ class State:
     srs_active: bool = True
     clonus_t0: float = -1.0   # time the clonus burst was triggered (-1 = not yet)
     swing_reversed: bool = False
+    # HESS catch phase machine; advanced once per tick, constant inside it
+    hess_phase: int = 0       # 0 pre-catch, 1 catch, 2 post-catch, 3 relax, 4 never caught
+    hess_t0: float = 0.0      # s, catch onset
+    hess_wc: float = 0.0      # rad/s, stretch speed at onset
+    hess_s0: float = 0.0      # rad, stretch at onset
+    hess_spost: float = 0.0   # rad, stretch where post-catch began
+    hess_level: float = 0.0   # N.m, catch-phase torque this tick
+    hess_t_end: float = 0.0   # s, when the stretch ended
+    hess_tau_end: float = 0.0 # N.m, module torque at that moment
 
 
 def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
@@ -311,7 +387,26 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
 
     out = np.empty(n + 1); out[0] = theta0_deg
     ticks = [] if trace_ticks else None   # per-tick Formula Node inputs/outputs for test vectors
-    tq = {k: np.zeros(n + 1) for k in ("grav", "damp", "fric", "tone", "srs", "reflex", "flexor", "catch", "clonus", "rigid", "contract", "guard", "spasm")} if record_torques else None
+    tq = {k: np.zeros(n + 1) for k in ("grav", "damp", "fric", "tone", "srs", "reflex", "flexor", "catch", "clonus", "rigid", "contract", "guard", "spasm", "hess")} if record_torques else None
+
+    def hess_torque(th, w, t):
+        """HESS module torque for the current phase; zero when the module is off.
+
+        Gated to act only while the quadriceps lengthen (w < 0). HESS measured
+        resistance to a stretch the clinician imposed, so its torque never had
+        to drive the arm; on a pendulum only gravity drives, and an ungated
+        15 N.m MAS-3 catch throws the leg back past full extension. Gated, it
+        can stop a drop but not reverse one. Same tanh band as dry friction.
+        """
+        if not p.hess_H or st.hess_phase in (0, 4):
+            return 0.0
+        if st.hess_phase == 1:
+            tau = st.hess_level
+        elif st.hess_phase == 2:
+            tau = st.hess_level + p.hess_kpost * max(0.0, (theta0 - th) - st.hess_spost)
+        else:
+            tau = st.hess_tau_end * math.exp(-(t - st.hess_t_end) / p.hess_relax_s)
+        return tau * max(0.0, math.tanh(-w / COULOMB_BAND))
 
     def derivs(th, w, ts, tr, tf, tc, t, w_del, w_del_dot, s_del, s_del_dot, th_del, rec=None):
         grav = -mgl * math.cos(th + inc)
@@ -370,10 +465,13 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
         spasm = 0.0
         if p.spasm_nm and p.spasm_t <= t <= p.spasm_t + p.spasm_w:
             spasm = p.spasm_nm * math.sin(math.pi * (t - p.spasm_t) / p.spasm_w)
-        tau = grav + damp + fric + wall + p.tone + ts + tr - tf + tc + clon + rigid + contract + guard + spasm
+        # NEW: HESS three-phase catch (extending torque, opposes the drop)
+        hess = hess_torque(th, w, t)
+        tau = grav + damp + fric + wall + p.tone + ts + tr - tf + tc + clon + rigid + contract + guard + spasm + hess
         if rec is not None:
             for kk, vv in (("grav", grav), ("damp", damp), ("fric", fric), ("tone", p.tone), ("srs", ts), ("reflex", tr), ("flexor", -tf),
-                           ("catch", tc), ("clonus", clon), ("rigid", rigid), ("contract", contract), ("guard", guard), ("spasm", spasm)):
+                           ("catch", tc), ("clonus", clon), ("rigid", rigid), ("contract", contract), ("guard", guard), ("spasm", spasm),
+                           ("hess", hess)):
                 rec[kk] = vv
         return w, tau / J, d_ts, d_tr, d_tf, d_tc
 
@@ -385,6 +483,12 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
             st.swing_reversed = True
             if p.clonus_deg:
                 st.clonus_t0 = t
+        # HESS registers as they ENTER the tick: the Formula Node advances them
+        # itself, and unlike the SRS and reversal flags the advance is not
+        # idempotent, so the vector must carry the pre-advance values
+        h_in = [getattr(st, k) for k in HESS_REGS] if ticks is not None and i < trace_ticks else None
+        if p.hess_H:
+            _advance_hess(p, st, t, theta0)
         # delayed inputs (zero-order hold over the step)
         idx = (head - DELAY_STEPS) % L
         idx_prev = (head - DELAY_STEPS - 1) % L
@@ -393,7 +497,7 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
         s_del_dot = (buf_s[idx] - buf_s[idx_prev]) / DT if i > DELAY_STEPS else 0.0
         y = (st.theta, st.omega, st.t_srs, st.t_r, st.t_flex, st.t_catch)
         if ticks is not None and i < trace_ticks:
-            ticks.append([t, *y, int(st.srs_active), int(st.swing_reversed), st.clonus_t0, w_del, buf_w[idx_prev], s_del, buf_s[idx_prev], th_del])
+            ticks.append([t, *y, int(st.srs_active), int(st.swing_reversed), st.clonus_t0, w_del, buf_w[idx_prev], s_del, buf_s[idx_prev], th_del, *h_in])
         dl = (w_del, w_del_dot, s_del, s_del_dot, th_del)
         if integrator == "euler4":
             new = list(y); h = DT / 4.0
@@ -408,7 +512,7 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
             new = [a + DT / 6.0 * (b1 + 2 * b2 + 2 * b3 + b4) for a, b1, b2, b3, b4 in zip(y, k1, k2, k3, k4)]
         st.theta, st.omega, st.t_srs, st.t_r, st.t_flex, st.t_catch = new
         if ticks is not None and i < trace_ticks:
-            ticks[-1] += list(new)
+            ticks[-1] += list(new) + [getattr(st, k) for k in HESS_REGS]
         head = (head + 1) % L
         buf_w[head] = st.omega; buf_s[head] = st.t_srs; buf_t[head] = st.theta
         out[i + 1] = math.degrees(st.theta)

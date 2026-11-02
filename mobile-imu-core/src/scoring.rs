@@ -288,6 +288,18 @@ const LIFT_HOLD_MIN_S: f64 = 0.5;
 const LIFT_REACH_MAX_S: f64 = 2.5;
 const LIFT_HOLD_MAX_S: f64 = 8.0;
 const LIFT_RETURN_MAX_S: f64 = 2.0;
+/// `pendulastic_pt_score._LIFT_MIN_HOLD_DEV`: how far from rest a still
+/// window has to sit before it counts as a lift's hold, as a multiple of the
+/// "has it moved" threshold (which is 0.08 of the signal range), so 3.0 means
+/// 24 % of the range.
+///
+/// A genuine hold cannot be below that, by geometry: if the hold were the
+/// release point, the swing would span at most about twice its deviation from
+/// rest, so the deviation is 50-100 % of the range. A still window at 24 % or
+/// less is therefore not a release point, and reading it as one moved the
+/// reported release past a sensor dropout and hid the dropout from the
+/// continuity check downstream.
+const LIFT_MIN_HOLD_DEV: f64 = 3.0;
 
 /// `_lift_hold_end`: where a lift-and-hold that starts at crossing `i` is
 /// released, or `None` when the crossing is the release itself.
@@ -325,7 +337,7 @@ fn lift_hold_end(t: &[f64], ang: &[f64], i: usize, baseline: f64, thresh: f64) -
             continue;
         }
         let level = nanmedian(&win);
-        if (level - baseline).abs() <= thresh {
+        if (level - baseline).abs() <= LIFT_MIN_HOLD_DEV * thresh {
             continue;
         }
         let leave_end = t.partition_point(|&x| x < t[k] + LIFT_HOLD_MAX_S);
@@ -425,6 +437,20 @@ fn active_oscillation_window_end(
     let tol = 2.0_f64.max(0.05 * a0);
     t_r[permanent_settle_idx(ang_r, neutral, tol)]
 }
+
+/// `imu_calibration_tuner._PLATEAU_MIN_S`: how long a stretch of "not moving"
+/// counts as a staircase artifact, as a DURATION rather than a sample count.
+const PLATEAU_MIN_S: f64 = 0.30;
+/// `imu_calibration_tuner._PLATEAU_MAX_DEG_S`: and how slowly it has to be
+/// moving to count, in deg/s rather than deg between samples.
+///
+/// Both were rate-dependent as written -- `run >= 6` samples is 0.30 s at
+/// 20 Hz and 0.06 s at 100 Hz, and an absolute 0.05 deg between samples is a
+/// velocity of 0.05/dt, so 1.0 deg/s at 20 Hz and 10 deg/s at 200 Hz. Between
+/// them a clean decaying swing tripped the check at its own turning points,
+/// which flatten as the amplitude falls. This pair reproduces the old rule
+/// exactly at 20 Hz and now means the same thing at every rate.
+const PLATEAU_MAX_DEG_S: f64 = 1.0;
 
 /// `pendulastic_pt_score._TAIL_FRAC` and friends — the settled-tail drift
 /// estimator's constants, ported verbatim.
@@ -974,11 +1000,32 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
     let range_penalty = (80.0 - min_angle).max(0.0) + (min_angle - 178.0).max(0.0);
 
     // ---- C. Continuity, bounded to the active-swing window ---------------
+    // One extremum is not an oscillation, and taking its time as the end of
+    // the active window makes this check vacuous exactly when it is needed:
+    // a dropout long enough to destroy extrema detection leaves a lone
+    // extremum just after release, collapsing the window to a handful of
+    // samples that all sit BEFORE the dropout. So fewer than two extrema
+    // takes the helper's no-oscillation branch, which bounds at the point the
+    // signal permanently reaches its resting value -- robust here, because a
+    // freeze held away from neutral does not count as settled, while a limb
+    // that genuinely locks up makes that locked value the tail median and
+    // settles at once.
+    //
+    // Deliberately NOT done inside `active_oscillation_window_end`: that
+    // helper also bounds extremum counting for compute_pt_params, where a
+    // lone extremum is an accepted bounded error (N = 0.5 on a tail bump) and
+    // changing it would move N, A1, R2n and f on every stored trial.
+    let n_extrema = pt.pk_i.len() + pt.tr_i.len();
+    let (pk_w, tr_w): (&[usize], &[usize]) = if n_extrema >= 2 {
+        (&pt.pk_i, &pt.tr_i)
+    } else {
+        (&[], &[])
+    };
     let window_end_t = active_oscillation_window_end(
         &pt.t_r,
         &pt.ang_r,
-        &pt.pk_i,
-        &pt.tr_i,
+        pk_w,
+        tr_w,
         pt.neutral_deg,
         pt.a0_deg,
     );
@@ -995,6 +1042,9 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
 
     let mut plateau_violations = 0usize;
     let mut run = 0usize;
+    let plateau_dt = median_dt(t);
+    let plateau_min_run = ((PLATEAU_MIN_S / plateau_dt).round() as usize).max(2);
+    let plateau_step_deg = PLATEAU_MAX_DEG_S * plateau_dt;
     for i in 0..t.len() {
         if !(t[i] >= pt.t_r[0] && t[i] <= window_end_t) {
             continue;
@@ -1006,9 +1056,9 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
             run = 0;
             continue;
         }
-        if (angle_deg[i + 1] - angle_deg[i]).abs() < 0.05 {
+        if (angle_deg[i + 1] - angle_deg[i]).abs() < plateau_step_deg {
             run += 1;
-            if run >= 6 {
+            if run >= plateau_min_run {
                 plateau_violations += 1;
             }
         } else {
