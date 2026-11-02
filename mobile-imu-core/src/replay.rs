@@ -12,7 +12,9 @@
 //! real capture (spec §4.2).
 
 use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
-use crate::calibration::{calibrate_accel_bias, calibrate_gyro_bias, ReleaseDetector};
+use crate::calibration::{
+    calibrate_accel_bias, calibrate_gyro_bias, gravity_dir_from_hold, ReleaseDetector,
+};
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
 use crate::resample::{ema_smooth, tick_resample, TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
@@ -91,11 +93,68 @@ fn sub3(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+/// Longest gap still treated as a real gyro sample interval. Beyond this the
+/// gap is a reconnect or a clock jump rather than a sample rate.
+///
+/// Ported from the reference 2026-10-27. This bound was 0.5 s here, which
+/// silently substituted [`NOMINAL_GYRO_DT_S`] for any stream slower than
+/// 2 Hz. Sensor Stream Pro delivers gyro at 1.0 Hz while accel runs at 100 Hz
+/// -- measured on a live trial, 16 gyro samples in 15.9 s, the fallback taken
+/// on all 16 -- so every sample integrated 10 ms of rotation where 1000 ms had
+/// elapsed. That pinned the reported angle at 4.9 deg through a ~90 deg
+/// physical rotation. A real interval is now used as measured, however long.
+pub const MAX_GYRO_DT_S: f64 = 2.0;
+
+/// dt used only when the true interval is unknowable: the first sample after a
+/// connect, or a phone that sends no usable timestamp.
+pub const NOMINAL_GYRO_DT_S: f64 = 0.01;
+
 /// Rotation magnitude from the zero pose, in degrees. Quaternion delta rather
 /// than differenced Euler angles: pitch extraction is unreliable near ±90°,
 /// exactly where a pendulum swing's tibia passes.
-fn swing_deg(q_zero: Quat, q_cur: Quat) -> f64 {
+fn swing_deg(q_zero: Quat, q_cur: Quat, g_zero: Option<Vec3>) -> f64 {
     let d = qmul(qconj(q_zero), q_cur);
+
+    // With a gravity reference, report rotation ACROSS the vertical only and
+    // discard rotation about it. Ported from the reference 2026-10-27.
+    //
+    // Yaw is unobservable in this configuration: the magnetometer correction
+    // is deliberately off and gravity carries no heading, so yaw
+    // free-integrates whatever gyro error remains, without bound. Taking the
+    // total quaternion distance -- which is all this function used to do --
+    // counts that drift as knee flexion. Measured on a live trial, a phone
+    // lying still whose gravity vector moved 0.19 deg reported 86.9 deg of
+    // flexion, decomposing as roll 0.01, pitch 0.11, yaw 22.83.
+    //
+    // It assumes flexion is not about the vertical, which holds for a pendulum
+    // test and is why a captured anatomical axis is preferred when there is
+    // one.
+    if let Some(g) = g_zero {
+        // Canonical hemisphere before decomposing to axis-angle.
+        let q = if d[0] >= 0.0 {
+            d
+        } else {
+            [-d[0], -d[1], -d[2], -d[3]]
+        };
+        let sin_half = (q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if sin_half <= 1e-9 {
+            return 0.0;
+        }
+        let theta = 2.0 * q[0].min(1.0).acos();
+        let u = [q[1] / sin_half, q[2] / sin_half, q[3] / sin_half];
+        let along = u[0] * g[0] + u[1] * g[1] + u[2] * g[2];
+        let across = [
+            u[0] - along * g[0],
+            u[1] - along * g[1],
+            u[2] - along * g[2],
+        ];
+        let mag = (across[0] * across[0] + across[1] * across[1] + across[2] * across[2]).sqrt();
+        return (theta * mag).to_degrees().abs();
+    }
+
+    // No gravity reference: total rotation distance, axis-agnostic. The
+    // reference reaches this for the two-phone case, where common-mode yaw
+    // drift largely cancels in the relative rotation.
     2.0 * d[0].abs().clamp(-1.0, 1.0).acos().to_degrees()
 }
 
@@ -115,7 +174,7 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     let mut last_ts: Option<i64> = None;
     let mut seeded = false;
     let mut calib_was_stable = false;
-    let mut zero: Option<(Quat, usize)> = None;
+        let mut zero: Option<(Quat, usize, Option<Vec3>)> = None;
 
     let mut sample_t: Vec<f64> = Vec::with_capacity(samples.len());
     let mut sample_q: Vec<Quat> = Vec::with_capacity(samples.len());
@@ -137,13 +196,13 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 let dt = match last_ts {
                     Some(prev) if s.ts_ms != 0 => {
                         let d = (s.ts_ms - prev) as f64 / 1000.0;
-                        if d > 0.0 && d < 0.5 {
+                        if d > 0.0 && d <= MAX_GYRO_DT_S {
                             d
                         } else {
-                            0.01
+                            NOMINAL_GYRO_DT_S
                         }
                     }
-                    _ => 0.01,
+                    _ => NOMINAL_GYRO_DT_S,
                 };
                 last_ts = Some(s.ts_ms);
 
@@ -158,7 +217,13 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                     None => fired,
                 };
                 if capture && zero.is_none() {
-                    zero = Some((ahrs.q, i));
+                    // The gravity direction is snapshotted at the SAME instant
+                    // as the zero pose, from the accel hold buffer as it
+                    // stands then -- mirroring the reference's
+                    // `_gravity_snapshot()` inside the capture branch. Taking
+                    // it later would read a buffer the swing has already
+                    // polluted, and gravity would no longer be the mean.
+                    zero = Some((ahrs.q, i, gravity_dir_from_hold(&accel_hold)));
                 }
 
                 if zero.is_none() {
@@ -190,12 +255,12 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         sample_q.push(ahrs.q);
     }
 
-    let (release_quat, release_idx) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
+    let (release_quat, release_idx, g_zero) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
 
     let angle_raw: Vec<f64> = sample_q
         .iter()
         .map(|q| {
-            let sw = swing_deg(release_quat, *q);
+            let sw = swing_deg(release_quat, *q, g_zero);
             match cfg.method {
                 Method::Relative => 180.0 - sw,
                 Method::Ockendon => ockendon_deg(sw, OCKENDON_FT_RATIO),

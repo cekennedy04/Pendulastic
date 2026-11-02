@@ -22,21 +22,20 @@
 <link rel="stylesheet" href="./src/app.css">
 <body>
   <div id="banner">research capture only &mdash; not validated</div>
-  <div id="install-gate" hidden>
-    <h1>Install before recording</h1>
-    <p id="install-why">
-      Safari deletes a website's stored data after 7 days of inactivity.
-      Adding Pendulastic to your Home Screen is what keeps participant records
-      and captured trials from being erased between sessions.
-    </p>
-    <p id="install-how"></p>
-    <p class="install-note">
-      Exported files are the permanent record regardless — installing reduces
-      how often you need them, it is not what makes your data safe.
-    </p>
+  <div id="install-gate" role="status" hidden>
+    <strong>Not installed.</strong> Safari can erase trials stored here after
+    7 days without use &mdash; export after recording, or install the app.
+    <details>
+      <summary>How to install</summary>
+      <p id="install-how"></p>
+      <p class="install-note">
+        Exported files are the permanent record regardless &mdash; installing
+        reduces how often you need them, it is not what makes your data safe.
+      </p>
+    </details>
   </div>
   <main>
-    <section class="view active" id="view-home">
+    <section class="view" id="view-home">
       <header class="brand">
         <svg class="brand-mark" viewBox="0 0 52 52" aria-hidden="true">
           <!-- workbench_style.brand_mark() at identical proportions: pivot dot,
@@ -105,11 +104,22 @@
             <span class="tile-sub">Over time &amp; figures</span>
           </span>
         </button>
+        <!-- Revealed only in research mode (?research=1); hidden otherwise. -->
+        <button class="tile" data-nav="research" id="research-tile" hidden>
+          <svg class="tile-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 12h4l2-6 4 12 2-6h6" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span class="tile-text">
+            <span class="tile-title">Record (raw)</span>
+            <span class="tile-sub">research &mdash; no scoring</span>
+          </span>
+        </button>
       </div>
     </section>
 
-    <section class="view" id="view-capture">
-      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+    <section class="view active" id="view-capture">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&#9776; Menu</button>
         <h2>Record Trial</h2></div>
       <p id="nav-blocked" class="nav-blocked" hidden></p>
       <p id="settle-alert" class="nav-blocked" hidden></p>
@@ -241,6 +251,26 @@
       <div id="metric-list" hidden></div>
         <p id="pt-score-breakdown-label">largest driver first</p>
         <table id="pt-score-breakdown"></table>
+        <details id="param-select">
+          <summary>Which parameters are in this score?</summary>
+          <p id="param-select-intro">
+            All seven Popovi&cacute; parameters are computed. Switch one off to
+            see what it was contributing &mdash; the remaining terms take over
+            its share, so the total is always a mean over what is selected,
+            never a sum with a hole in it.
+          </p>
+          <p id="param-select-notice" hidden></p>
+          <table id="param-select-rows"></table>
+          <p id="param-select-total"></p>
+          <div id="param-select-actions">
+            <button type="button" id="param-select-canonical" class="btn btn--secondary">
+              Scored set
+            </button>
+            <button type="button" id="param-select-all" class="btn btn--secondary">
+              All seven
+            </button>
+          </div>
+        </details>
       </div>
       <div id="export-actions" hidden>
         <button id="export-btn">Export raw log</button>
@@ -384,6 +414,20 @@
         <input id="trend-import" type="file" accept=".json,.csv" multiple>
         <p id="trend-import-status" class="field-status"></p>
       </div>
+    </section>
+
+    <section class="view" id="view-research">
+      <div class="view-head"><button class="btn btn--secondary" data-nav="home">&larr; Back</button>
+        <h2>Raw recording</h2></div>
+      <div id="research-banner">RAW RECORDING &mdash; no scoring, filed under QUICK-TEST</div>
+      <div class="research-plot">
+        <canvas id="research-canvas"></canvas>
+        <p id="research-timer" class="waveform-caption">0.0 s</p>
+      </div>
+      <button id="research-start">Start recording</button>
+      <button id="research-stop" hidden>Stop</button>
+      <div id="research-status" class="field-status"></div>
+      <p id="research-count" class="field-status"></p>
     </section>
 
   </main>

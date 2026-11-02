@@ -29,8 +29,11 @@ export function patientLabel(patient) {
 // Opening on the tiles when no participant is set invites the operator to tap
 // Record Trial first; the Start handler would then refuse, which teaches the
 // gate by failure. Opening on selection teaches it by layout instead.
-export function initialView({ patient } = {}) {
-  return patient ? 'home' : 'session';
+// The app opens on Record, always. A participant, a leg and a session are
+// optional additions reached from the menu -- never a gate in front of
+// recording (user requirement, 2026-10-27).
+export function initialView() {
+  return 'capture';
 }
 
 // The build line shown at the foot of the session view. Pure, so the format is
@@ -83,7 +86,11 @@ export function nextParticipantState(state, action) {
     // stores patient_id on the SESSION, not the trial. Switching now would
     // silently file the next trial under a different person than the ones
     // already recorded, and the export manifest would name only one of them.
-    if (state.trialCount > 0 && state.patient && state.patient.id !== action.patient.id) {
+    // Unassigned (QUICK-TEST) trials are exempt: they belong to no one, so
+    // setting a real participant after recording some must never be blocked --
+    // the unassigned session keeps its trials and the new one starts empty.
+    if (state.trialCount > 0 && state.patient && !isQuickTest(state.patient)
+        && state.patient.id !== action.patient.id) {
       return {
         ...state,
         error: 'This session already has trials. Export and close it before switching participant.',

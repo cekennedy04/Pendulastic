@@ -44,9 +44,12 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import statistics
 import sys
 import warnings
+
+import participant_paths
 
 warnings.filterwarnings("ignore")
 
@@ -84,17 +87,18 @@ CLINICAL_SOURCES = sg.CLINICIAN_ASSESSED_SOURCES
 
 def a0_by_leg_from_optitrack():
     """{(pid, leg): median A0_deg} over each leg's pre-condition trials."""
-    import glob
     per_leg = {}
-    pattern = os.path.join(BASE_DIR, "OptiTrack_Recordings", "Participant_*", "*",
-                           "pre", "**", "trial_*_optitrack.csv")
-    for path in glob.glob(pattern, recursive=True):
+    opti_root = os.path.join(BASE_DIR, "OptiTrack_Recordings")
+    paths = participant_paths.glob_participants(
+        opti_root, "*", "pre", "**", "trial_*_optitrack.csv", recursive=True)
+    for path in paths:
         parts = path.replace("\\", "/").split("/")
         try:
-            pid = [p for p in parts if p.startswith("Participant_")][0]
-            pid = pid.replace("Participant_", "")
-            leg = parts[parts.index("Participant_" + pid) + 1].lower()
-        except (IndexError, ValueError):
+            folder = next(p for p in parts
+                          if participant_paths.is_participant_dir_name(p))
+            pid = participant_paths.pid_from_dir_name(folder)
+            leg = parts[parts.index(folder) + 1].lower()
+        except (StopIteration, IndexError, ValueError):
             continue
         try:
             t, angle, _q = pts.load_optitrack_detailed(path)
@@ -121,15 +125,11 @@ def participant_roster():
     """
     ids = set(common.list_participants().keys())
     rec_root = os.path.join(BASE_DIR, "Recordings")
-    if os.path.isdir(rec_root):
-        for name in os.listdir(rec_root):
-            if not name.startswith("Participant_"):
-                continue
-            pid = name.replace("Participant_", "").strip()
-            if pid.lower() in NON_PARTICIPANT_IDS:
-                continue
-            if os.path.isfile(os.path.join(rec_root, name, "metadata.json")):
-                ids.add(pid)
+    for pid, _name, full in participant_paths.iter_participant_dirs(rec_root):
+        if pid.lower() in NON_PARTICIPANT_IDS:
+            continue
+        if os.path.isfile(os.path.join(full, "metadata.json")):
+            ids.add(pid)
     return sorted(ids, key=lambda x: int(x) if x.isdigit() else 10 ** 6)
 
 
@@ -211,10 +211,27 @@ def imu_leg_params(pid, leg):
     import batch_imu_vs_optitrack_rmse as batch
     import workbench_engine as engine
 
-    pattern = os.path.join(BASE_DIR, "Recordings", f"Participant_{pid}",
-                           leg.capitalize(), "pre", "**", "Trial_*_imu.csv")
+    pattern = os.path.join(
+        participant_paths.participant_dir(
+            os.path.join(BASE_DIR, "Recordings"), pid),
+        leg.capitalize(), "pre", "**", "Trial_*_imu.csv")
+    # excluded_trials.json is documented as THE mechanism that removes a trial,
+    # and its keys name a trial, not a modality. This path used to bypass it
+    # entirely, so a trial the operator had excluded still contributed its IMU
+    # parameters -- P22 left is the live case, excluded 2026-08-31 because the
+    # shank was outside camera coverage for the whole hold.
+    #
+    # Known limitation, named rather than worked around: because the registry
+    # is modality-agnostic, excluding a trial for an OPTICAL fault also drops
+    # its IMU, which may still have been good. Per-modality exclusion does not
+    # exist yet. Predictable beats clever here -- an operator who excludes a
+    # trial should not have to know which code paths honour it.
+    excluded = common.load_excluded_trials()
     records = []
     for imu_path in sorted(glob.glob(pattern, recursive=True)):
+        m = re.search(r"Trial_(\d+)_imu\.csv$", os.path.basename(imu_path))
+        if m and common.trial_key(pid, leg, "pre", int(m.group(1))) in excluded:
+            continue
         try:
             paths = batch.derive_component_paths(imu_path)
             vals = {k: engine.validate_component_csv(v, k)

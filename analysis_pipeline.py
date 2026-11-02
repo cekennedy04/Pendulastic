@@ -53,6 +53,7 @@ import math
 import time
 
 import numpy as np
+import participant_paths
 
 try:
     import cv2
@@ -130,9 +131,9 @@ def _find_optitrack_csv(trial_folder, trial_num, participant_id, position, heigh
                 and position not in (None, "unknown", "NA")
                 and height not in (None, "unknown", "NA")
                 and os.path.isdir(root)):
+            pdir = participant_paths.find_participant_dir(root, participant_id)
             mirror = os.path.join(
-                root,
-                f"Participant_{participant_id}",
+                pdir or os.path.join(root, f"Participant_{participant_id}"),
                 f"Position_{position}",
                 f"Height_{height}",
             )
@@ -209,8 +210,8 @@ def find_trial_pairs(root_dir):
         parts = os.path.normpath(dirpath).split(os.sep)
         participant_id = position = height = None
         for part in parts:
-            if part.startswith("Participant_"):
-                participant_id = part[len("Participant_"):]
+            if participant_paths.is_participant_dir_name(part):
+                participant_id = participant_paths.pid_from_dir_name(part)
             elif part.startswith("Position_"):
                 position = part[len("Position_"):]
             elif part.startswith("Height_"):
@@ -2125,8 +2126,8 @@ def ensure_local_models(verbose=True):
 def _session_path_tokens(folder):
     idv = pos = height = None
     for part in os.path.normpath(folder).split(os.sep):
-        if part.startswith("Participant_"):
-            idv = part[len("Participant_"):]
+        if participant_paths.is_participant_dir_name(part):
+            idv = participant_paths.pid_from_dir_name(part)
         elif part.startswith("Position_"):
             pos = part[len("Position_"):]
         elif part.startswith("Height_"):

@@ -45,6 +45,7 @@ import imu_calibration_tuner as tuner
 import pendulastic_pt_score as pts
 from generate_paper_figures import BLUE, ORANGE, INK, MUTED, GRID, OUT_DIR, _style_axis
 from generate_paper_results_analysis import load_group_and_demo, load_mas_scores
+import participant_paths
 
 PARAMS = pts._PARAM_KEYS
 MODEL_VARIANT = "full"
@@ -95,7 +96,7 @@ def build_rows():
         if pt_imu is None or pt_opti is None or pt_mp is None:
             continue
 
-        pid = imu_t["participant"].replace("Participant_", "")
+        pid = participant_paths.strip_prefix(imu_t["participant"])
         row = {"pid": pid, "group": groups.get(pid, {}).get("group"), "mas": mas.get(pid),
               "imu_pt": pt_imu, "opti_pt": pt_opti, "mp_pt": pt_mp,
               "imu_score": pts.compute_pt_score(pt_imu),

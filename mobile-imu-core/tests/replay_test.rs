@@ -178,3 +178,40 @@ fn an_explicit_override_wins_even_when_auto_detection_fires_earlier() {
          this test isn't actually distinguishing the two capture points"
     );
 }
+
+/// 2.5 s calm hold, an above-guard excursion of `exc_steps` samples at
+/// `exc_mag` rad/s, 0.3 s calm -- shorter than the window needed to re-qualify
+/// -- then a real release burst and a long rest. Mirrors
+/// `_hold_excursion_gap_then_release_samples` in test_imu_calibration_tuner.py.
+fn hold_excursion_gap_then_release_log(exc_mag: f64, exc_steps: usize) -> Vec<RawSample> {
+    let mut segs: Vec<(usize, f64)> = vec![(150, 0.01), (exc_steps, exc_mag), (18, 0.01), (30, 2.0), (300, 0.01)];
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    for (n, w) in segs.drain(..) {
+        for _ in 0..n {
+            let t = i as f64 / 60.0;
+            let ts_ms = (t * 1000.0).round() as i64;
+            out.push(RawSample { t, ts_ms, sensor: Sensor::Accel, v: [0.0, 0.0, 9.81] });
+            out.push(RawSample { t, ts_ms, sensor: Sensor::Gyro, v: [w, 0.0, 0.0] });
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn a_noise_blip_during_the_hold_does_not_revoke_release_detection() {
+    let cfg = ReplayConfig::default();
+    let log = hold_excursion_gap_then_release_log(0.35, 1);
+    assert_ne!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected));
+}
+
+#[test]
+fn a_handling_excursion_still_revokes_release_detection() {
+    let cfg = ReplayConfig::default();
+    // Too large to be noise (0.7 rad/s), and too long (0.3 s at 0.4 rad/s).
+    for (mag, steps) in [(0.7, 1), (0.4, 18)] {
+        let log = hold_excursion_gap_then_release_log(mag, steps);
+        assert_eq!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected), "mag={mag} steps={steps}");
+    }
+}

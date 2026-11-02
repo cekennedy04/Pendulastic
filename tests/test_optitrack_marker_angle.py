@@ -996,7 +996,7 @@ def test_relative_mode_suppresses_only_the_check_that_needs_the_zero(tmp_path):
 # are the evidence the bug is fixed.
 #
 # Participant folders were renamed 2026-09-01 to carry the parent study
-# (Control_/CHAT_/DOSA_/legacy Participant_), and there is also a condition
+# (Control_/CHAT_/MINT_/legacy Participant_), and there is also a condition
 # subdirectory (pre/post) the original brief for this task did not account
 # for. Both are resolved through participant_paths rather than hardcoded, per
 # CLAUDE.md's "never spell a participant folder name out in code" rule --

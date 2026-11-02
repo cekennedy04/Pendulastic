@@ -250,7 +250,8 @@ def _trial_colors(unique_trials: list[str]) -> dict[str, tuple]:
 def _short_label(trial: str) -> str:
     """Abbreviated trial label for the legend."""
     t = trial
-    for rep in [("Participant_", "P"), ("_control", ""), ("_left", "L"),
+    for rep in [("Participant_", "P"), ("Control_", "P"), ("CHAT_", "P"),
+                ("MINT_", "P"), ("DOSA_", "P"), ("_control", ""), ("_left", "L"),
                 ("_right", "R"), ("_solo", "s"), ("_duo", "d"), ("_side", "S")]:
         t = t.replace(*rep)
     return t

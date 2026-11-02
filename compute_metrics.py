@@ -47,6 +47,7 @@ import csv
 import argparse
 
 import numpy as np
+import participant_paths
 
 try:
     from scipy.interpolate import interp1d
@@ -94,8 +95,8 @@ def _optitrack_path_tokens(path):
     """Parse (id, position, height, trial) from an OptiTrack file path."""
     idv = pos = height = None
     for part in os.path.normpath(path).split(os.sep):
-        if part.startswith("Participant_"):
-            idv = part[len("Participant_"):]
+        if participant_paths.is_participant_dir_name(part):
+            idv = participant_paths.pid_from_dir_name(part)
         elif part.startswith("Position_"):
             pos = part[len("Position_"):]
         elif part.startswith("Height_"):

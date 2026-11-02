@@ -3,6 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pytest
 
+import participant_paths
 import batch_imu_vs_optitrack_rmse as batch
 import workbench_engine as engine
 import pt_report_common
@@ -117,14 +118,15 @@ def test_compute_stratified_stats_returns_none_when_no_ok_rows():
 def _real_trial_path(pid, leg, condition, trial):
     """Locate one real IMU trial without hardcoding the directory layout.
 
-    Recordings/ has been reorganized twice (a Participant_13_left_post wrapper
-    appeared, then gave way to the Leg/condition layout). Each time, tests that
-    spelled the path out failed on a missing file rather than on the thing they
-    measure, which is a slow and misleading way to learn the tree moved. Search
-    for the trial under the participant instead, and fail with a message that
-    says what was looked for.
+    Recordings/ has been reorganized three times (a Participant_13_left_post
+    wrapper appeared, then gave way to the Leg/condition layout, then the
+    participant folders took their study prefix -- Control_/CHAT_/MINT_). Each
+    time, tests that spelled the path out failed on a missing file rather than
+    on the thing they measure, which is a slow and misleading way to learn the
+    tree moved. Resolve the participant by id and search beneath them instead,
+    and fail with a message that says what was looked for.
     """
-    root = os.path.join(batch.REC_ROOT, f"Participant_{pid}")
+    root = participant_paths.participant_dir(batch.REC_ROOT, pid)
     wanted = f"Trial_{trial}_imu.csv"
     hits = [os.path.join(d, wanted)
             for d, _sub, files in os.walk(root) if wanted in files]

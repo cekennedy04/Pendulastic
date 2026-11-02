@@ -30,6 +30,8 @@ fn trial(drift_deg_s: f64) -> (Vec<f64>, Vec<f64>) {
 }
 
 #[test]
+// Golden value carried at the reference's full printed width.
+#[allow(clippy::excessive_precision)]
 fn settled_tail_slope_matches_the_python_reference() {
     let (t, ang) = trial(-0.8);
     let got = settled_tail_drift_slope(&t, &ang, 100).expect("a settled tail must yield a slope");

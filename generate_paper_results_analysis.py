@@ -33,6 +33,7 @@ import pandas as pd
 import batch_imu_vs_optitrack_rmse as batch
 import workbench_engine as engine
 import rmse_pipeline_common as rpc
+import participant_paths
 
 PARAMS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "f", "area_ratio", "omega_min_n"]
 MODEL_VARIANT = "full"
@@ -121,14 +122,12 @@ def load_group_and_demo():
 
     out = {}
     base = "Recordings"
-    for name in os.listdir(base):
-        if not name.startswith("Participant_"):
-            continue
+    for pid, name, full in participant_paths.iter_participant_dirs(base):
         # Participant_test is capture scaffolding (participant_id "test",
         # weight 20 kg) and was being classified as an MS participant.
-        if name.replace("Participant_", "").strip().lower() in _NON_PARTICIPANT_IDS:
+        if pid.strip().lower() in _NON_PARTICIPANT_IDS:
             continue
-        meta_path = os.path.join(base, name, "metadata.json")
+        meta_path = os.path.join(full, "metadata.json")
         if not os.path.isfile(meta_path):
             continue
         try:
@@ -136,7 +135,6 @@ def load_group_and_demo():
                 meta = json.load(f)
         except (OSError, ValueError):
             continue
-        pid = name.replace("Participant_", "")
         arm, _source = _pcc.classify_participant(
             pid, _pcc.load_metadata_diagnosis(pid), registry, registry_exists)
         legs = _sg.classify_participant_legs(
@@ -165,11 +163,12 @@ def a0_by_leg_from_optitrack():
     import pendulastic_pt_score as _pts
 
     per_leg = {}
-    pattern = os.path.join("OptiTrack_Recordings", "Participant_*", "*", "pre",
-                           "**", "trial_*_optitrack.csv")
-    for path in glob.glob(pattern, recursive=True):
+    paths = participant_paths.glob_participants(
+        "OptiTrack_Recordings", "*", "pre", "**", "trial_*_optitrack.csv",
+        recursive=True)
+    for path in paths:
         parts = path.replace("\\", "/").split("/")
-        pid = parts[1].replace("Participant_", "")
+        pid = participant_paths.strip_prefix(parts[1])
         leg = parts[2].lower()
         try:
             t, angle, _quality = _pts.load_optitrack_detailed(path)
@@ -235,7 +234,7 @@ def main():
         if result is None:
             continue
         imu_pt, opti_pt = result
-        pid = t["participant"].replace("Participant_", "")
+        pid = participant_paths.strip_prefix(t["participant"])
         row = {"pid": pid, "trial_key": t["trial_key"], "group": groups.get(pid, {}).get("group"),
               "age": groups.get(pid, {}).get("age"), "sex": groups.get(pid, {}).get("sex")}
         for p in PARAMS:

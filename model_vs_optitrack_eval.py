@@ -40,6 +40,7 @@ from scipy.interpolate import interp1d
 
 # ── Re-use core computation and plotting utilities from PT-score module ─────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import participant_paths
 from pendulastic_pt_score import (
     compute_pt_params,
     compute_pt_score,
@@ -110,9 +111,9 @@ def discover_model_csvs() -> list[dict]:
         if not (pid.startswith("2") or pid.startswith("4")):
             continue
 
+        opti_pdir = participant_paths.participant_dir(OPTI_ROOT, pid)
         opti_path = os.path.join(
-            OPTI_ROOT,
-            f"Participant_{pid}",
+            opti_pdir,
             f"Position_{pos}",
             f"Height_{height}",
             f"trial_{trial}_optitrack.csv",
@@ -120,8 +121,7 @@ def discover_model_csvs() -> list[dict]:
         if not os.path.exists(opti_path):
             # Try without height subdirectory (some older layouts)
             opti_path2 = os.path.join(
-                OPTI_ROOT,
-                f"Participant_{pid}",
+                opti_pdir,
                 f"Position_{pos}",
                 f"trial_{trial}_optitrack.csv",
             )

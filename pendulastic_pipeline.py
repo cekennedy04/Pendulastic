@@ -352,8 +352,16 @@ class _KneeTracker:
 # DISCOVERY
 # =============================================================================
 
+import participant_paths
+
 _VID_RE  = re.compile(r"^trial_(\d+)\.(mp4|avi)$", re.I)
-_PID_RE  = re.compile(r"Participant_(\w+)",  re.I)
+# Participant folders carry the parent study since 2026-09-01 (Control_/CHAT_/
+# MINT_/DOSA_/legacy Participant_), so a legacy-only regex here returned None
+# for every renamed folder and `pid` silently stayed None -- the trial was
+# dropped with no error. Resolved through participant_paths per CLAUDE.md;
+# pid_from_dir_name accepts all five prefixes. The old pattern is kept only as
+# a record of what it matched.
+#   _PID_RE = re.compile(r"Participant_(\w+)", re.I)
 _POS_RE  = re.compile(r"Position_(\w+)",    re.I)
 _HGT_RE  = re.compile(r"Height_(.+)",       re.I)
 _OPTI_RE = re.compile(r"trial_(\d+)_optitrack\.csv$", re.I)
@@ -362,7 +370,8 @@ _OPTI_RE = re.compile(r"trial_(\d+)_optitrack\.csv$", re.I)
 def _path_meta(path: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     pid = pos = height = None
     for part in path.replace("\\", "/").split("/"):
-        m = _PID_RE.match(part);  pid    = m.group(1) if m else pid
+        _pid = participant_paths.pid_from_dir_name(part)
+        pid = _pid if _pid else pid
         m = _POS_RE.match(part);  pos    = m.group(1) if m else pos
         m = _HGT_RE.match(part);  height = m.group(1) if m else height
     return pid, pos, height

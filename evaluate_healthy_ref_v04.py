@@ -1,6 +1,12 @@
 """
 evaluate_healthy_ref_v04.py
 ===========================
+SUPERSEDED 2026-10-27 by derive_healthy_ref.py. Kept as the record of how the
+2026-09-09 HEALTHY_REF was produced. Do not re-run it for a new reference: it
+imports the scorer from the retired restyle worktree, drops P9's RIGHT side
+(the real take -- P9 LEFT is the copy, and is now in excluded_trials.json), and
+medians trials the scorer refuses to grade.
+
 Validation task V0.4: recalibrate HEALTHY_REF against the OptiTrack control
 cohort, using the scoring that actually ships.
 

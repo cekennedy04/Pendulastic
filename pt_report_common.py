@@ -35,6 +35,8 @@ if "tkinter" not in sys.modules:
 import matplotlib.pyplot as plt
 import numpy as np
 
+import participant_paths
+
 import pendulastic_pt_score as pt
 import workbench_engine as we
 
@@ -69,11 +71,31 @@ C_IMU = COLORS['blue']
 # _hpe_overlay_series() source_label -> colour, for the Row 1 overlay loop.
 SOURCE_COLORS = {'MediaPipe': C_MEDIAPIPE, 'IMU': C_IMU}
 
-_PARAM_KEYS = pt._PARAM_KEYS  # R2n, N, phi_max_ratio, omega_max_n, omega_min_n, f, area_ratio
-PARAM_DISPLAY = ["R2n", "N", "phi_ratio", "w_max_n", "w_min_n", "f (Hz)", "Area"]
+_PARAM_KEYS = pt._PARAM_KEYS  # R2n, N, phi_max_ratio, omega_max_n, f, area_ratio
 
-# 7-param score zones, using this codebase's own pt_to_mas() bin edges
-# collapsed to 3 bands (Healthy=MAS0, Borderline=MAS1/1+, Impaired=MAS2+).
+# Axis labels, DERIVED from _PARAM_KEYS rather than a parallel literal list.
+# It was a literal list of seven, and when omega_min_n left the scored set on
+# 2026-10-26 the figures raised "FixedLocator locations (6) does not match the
+# number of labels (7)" -- a crash, which was lucky: a list that was still the
+# right LENGTH but in the wrong order would have mislabelled every bar in
+# every report silently. Any key without an entry falls back to its own name,
+# so adding a parameter cannot crash the figures either.
+_PARAM_LABELS = {
+    "R2n": "R2n", "N": "N", "phi_max_ratio": "phi_ratio",
+    "omega_max_n": "w_max_n", "omega_min_n": "w_min_n",
+    "f": "f (Hz)", "area_ratio": "Area",
+}
+PARAM_DISPLAY = [_PARAM_LABELS.get(k, k) for k in _PARAM_KEYS]
+
+# Score zones for the report figures, from pt_to_mas()'s bin edges collapsed
+# to 3 bands (Healthy=MAS0, Borderline=MAS1/1+, Impaired=MAS2+).
+#
+# NOTE, 2026-10-26: these are Popovic's table edges, not pt_zone's data-derived
+# bands (PT_HEALTHY_MAX/PT_BORDERLINE_MAX), so a report figure and the app can
+# already colour the same trial differently -- the disagreement pt_zone was
+# added to end, still present on this one path. They are now also edges for a
+# formula that no longer exists. Both are fixed by the same recalibration:
+# see recalibrate_pt_zones.py and PT_ZONES_CALIBRATED_FOR.
 ZONE_EDGES = [0.0, 0.12, 0.44, 3.0]
 ZONE_COLORS = ['#d4edda', '#fff3cd', '#f8d7da']
 ZONE_LINE_COLORS = ['#28a745', '#ffc107']
@@ -224,9 +246,11 @@ def _hpe_overlay_series(rec):
 # Generic multi-participant discovery
 #
 # Folder conventions seen in this project so far:
-#   Participant_{N}_{leg}_{condition}/Position_1/Height_Joint-Level/trial_*.csv
-#   Participant_{N}_{leg}_{condition}/Session_{condition}/Position_1/.../trial_*.csv
-#   Participant_{N}/{Leg}/{condition}/trial_*.csv           (no Position_N)
+#   {P}_{N}_{leg}_{condition}/Position_1/Height_Joint-Level/trial_*.csv
+#   {P}_{N}_{leg}_{condition}/Session_{condition}/Position_1/.../trial_*.csv
+#   {P}_{N}/{Leg}/{condition}/trial_*.csv                   (no Position_N)
+# where {P} is the study prefix -- Control_/CHAT_/MINT_ -- or the legacy
+# Participant_ (see participant_paths.py).
 # New participants may not match any of these exactly, so parsing is
 # heuristic: pull the participant number and leg out with regex, and treat
 # whatever folder segments are left (with structural names like Position_N /
@@ -237,13 +261,15 @@ def _hpe_overlay_series(rec):
 def _parse_trial_path(csv_path, root):
     rel = os.path.relpath(csv_path, root).replace("\\", "/")
 
-    pids = sorted(set(m.group(1) for m in re.finditer(r"Participant_(\d+)", rel, re.I)))
+    pids = participant_paths.pids_in_path(rel)
     if len(pids) != 1:
         # Zero matches, or more than one distinct participant number in the
         # same path -- the latter happens when archived data has a stray
         # nested folder from a different participant (seen: a whole
         # Participant_0_control/ tree misplaced inside a Participant_5
         # folder). Either way this path can't be attributed unambiguously.
+        # NOTE: the pid is read off the path, never off the folder's study
+        # prefix, so trial keys are stable across the 2026-09-01 rename.
         return None
     pid = pids[0]
 
@@ -257,8 +283,8 @@ def _parse_trial_path(csv_path, root):
     for part in parts:
         cleaned = part
         low = cleaned.lower()
-        if low.startswith("participant_"):
-            cleaned = re.sub(r"^participant_\d+_?", "", cleaned, flags=re.I)
+        if participant_paths.has_pid_prefix(cleaned):
+            cleaned = participant_paths.strip_leading_pid(cleaned)
         elif low.startswith("session_"):
             cleaned = cleaned[len("session_"):]
         elif low.startswith("position_") or low.startswith("height_"):

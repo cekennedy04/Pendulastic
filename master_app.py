@@ -32,6 +32,9 @@ from tkinter import ttk, messagebox
 # Local Motive control (same machine; replaces the old UDP slave listener).
 import motive_sync
 
+# Group-prefixed participant folder naming (Control_/CHAT_/MINT_).
+import participant_paths
+
 # iPhone IMU goniometer (Sensor Stream app -> AHRS fusion). Optional: a missing
 # module must not stop webcam + Motive acquisition, so the import is guarded and
 # every call site checks _IMU_AVAIL.
@@ -564,7 +567,11 @@ class MasterApp:
         # Leg and characterization are kept in separate subtrees so a repeated
         # Trial combination under a different leg/characterization cannot
         # overwrite the other one's data.
-        participant_dir = os.path.join(ROOT_DIR, f"Participant_{pid}")
+        # Folder name carries the study (Control_/CHAT_/MINT_) when the
+        # diagnosis identifies one; an existing folder always wins, so new
+        # trials land beside the participant's earlier data either way.
+        participant_dir = participant_paths.participant_dir(
+            ROOT_DIR, pid, diagnosis=self.var_diag.get())
         trial_dir = os.path.join(participant_dir, leg, characterization)
         # exist_ok=True makes this safe to call repeatedly.
         os.makedirs(trial_dir, exist_ok=True)
@@ -572,7 +579,7 @@ class MasterApp:
         video_path = os.path.join(trial_dir, f"Trial_{trial}.avi")
 
         # Relative path is what the slave machine recreates under its own root.
-        rel_path = os.path.join(f"Participant_{pid}", leg, characterization)
+        rel_path = os.path.join(os.path.basename(participant_dir), leg, characterization)
         return participant_dir, video_path, rel_path
 
     def _write_metadata(self, participant_dir, pid):

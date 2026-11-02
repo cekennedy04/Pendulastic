@@ -1,0 +1,360 @@
+"""The Python zone classifier must stay identical to the Rust one.
+
+`pendulastic_pt_score.pt_zone` was added after the project was found to be
+carrying TWO threshold systems that disagreed on every trial: the phone app
+classified against the data-derived bands in
+`mobile-imu-core/src/pt_score.rs`, while the Python reporting path went
+through `pt_to_mas` and Popovic's historical table. Python now has the same
+classifier, and the only thing keeping the two honest is this test.
+
+It reads the Rust source rather than linking against it, which is how the rest
+of this repository checks the same contract -- the crate is only built for
+wasm32 in CI, so a native link is not available to a Python test.
+"""
+import os
+import re
+
+import pytest
+
+import pendulastic_pt_score as pt
+
+RUST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "mobile-imu-core", "src", "pt_score.rs")
+
+
+def _rust_const(name):
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(rf"pub const {name}: f64 = ([0-9.]+);", src)
+    assert m, f"{name} not found in {RUST}"
+    return float(m.group(1))
+
+
+@pytest.mark.parametrize("name", ["PT_HEALTHY_MAX", "PT_BORDERLINE_MAX"])
+def test_zone_bands_match_the_rust(name):
+    assert getattr(pt, name) == _rust_const(name), (
+        f"{name} differs between Python and the Rust core. The app and the "
+        f"analysis pipeline would classify the same trial differently."
+    )
+
+
+def test_zone_labels_match_the_rust():
+    src = open(RUST, encoding="utf-8").read()
+    labels = set(re.findall(r'PtZone::\w+ => "(\w+)"', src))
+    assert labels == {"healthy", "borderline", "impaired", "unknown"}
+    produced = {pt.pt_zone(v) for v in (0.0, 0.25, 0.9, float("nan"), None)}
+    assert produced <= labels
+
+
+def test_both_bounds_are_strict_like_the_rust():
+    # The Rust is `score < PT_HEALTHY_MAX` and `score > PT_BORDERLINE_MAX`, so
+    # a score exactly on either boundary reads as borderline.
+    assert pt.pt_zone(pt.PT_HEALTHY_MAX) == "borderline"
+    assert pt.pt_zone(pt.PT_BORDERLINE_MAX) == "borderline"
+    assert pt.pt_zone(pt.PT_HEALTHY_MAX - 1e-12) == "healthy"
+    assert pt.pt_zone(pt.PT_BORDERLINE_MAX + 1e-12) == "impaired"
+
+
+def test_non_finite_is_unknown_not_healthy():
+    # A degenerate trial can produce non-finite params; "unknown" must not
+    # collapse to "healthy", which would be the dangerous direction.
+    for bad in (None, float("nan"), float("inf"), float("-inf")):
+        assert pt.pt_zone(bad) == "unknown"
+
+
+def test_the_historical_table_is_not_the_verdict_path():
+    # mas_estimate must carry the zone, and must refuse both verdicts together.
+    out = pt.mas_estimate(None)
+    assert out["zone"] is None and out["mas"] is None
+    assert out["interpretable"] is False
+
+
+# ── The scored set, and the two defects fixed on 2026-10-26 ──────────────────
+
+def _rust_usize(name):
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(rf"pub const {name}: usize = (\d+);", src)
+    assert m, f"{name} not found in {RUST}"
+    return int(m.group(1))
+
+
+def _rust_str(name):
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(rf'pub const {name}: &str = "([^"]+)";', src)
+    assert m, f"{name} not found in {RUST}"
+    return m.group(1)
+
+
+def test_scored_parameter_count_matches_the_rust():
+    assert pt._N_PARAMS == _rust_usize("N_PARAMS"), (
+        "N_PARAMS is the denominator of every penalty term, so a mismatch "
+        "scales every score in one language and not the other."
+    )
+
+
+def test_omega_min_n_is_not_scored():
+    """The collinearity fix, pinned.
+
+    omega_min_n is -omega_max_n for any limb dropped from the extension
+    extreme: omega_max_n is max(|omega|), omega_min_n is min(omega), and the
+    fastest motion is the first fall. Scoring both counted one measurement
+    twice -- 94% of a healthy limb's score came from the pair. If someone adds
+    it back, this fails rather than the score quietly growing a double weight
+    again.
+    """
+    assert "omega_min_n" not in pt._PARAM_KEYS
+    assert "omega_min_n" in pt._DIAGNOSTIC_KEYS
+    assert "omega_min_n" not in pt.compute_pt_score_breakdown(
+        dict.fromkeys(pt._PARAM_KEYS + pt._DIAGNOSTIC_KEYS, 1.0))
+
+
+def test_the_rust_breakdown_has_no_omega_min_n_field():
+    """Python's breakdown dict has six keys and no omega_min_n at all, so a
+    seventh field on the Rust struct would be a parity break."""
+    src = open(RUST, encoding="utf-8").read()
+    body = re.search(r"pub struct PtScoreBreakdown \{(.*?)\n\}", src, re.S)
+    assert body, "PtScoreBreakdown not found"
+    fields = set(re.findall(r"pub (\w+): f64", body.group(1)))
+    assert fields == {"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"}, fields
+
+
+def test_the_rust_total_sums_exactly_the_scored_fields():
+    """A field present on the struct but missing from total() would silently
+    drop a term; one summed twice would silently double it."""
+    src = open(RUST, encoding="utf-8").read()
+    body = re.search(r"pub fn total\(&self\) -> f64 \{(.*?)\n    \}", src, re.S)
+    assert body, "total() not found"
+    summed = re.findall(r"self\.(\w+)", body.group(1))
+    assert sorted(summed) == sorted({"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"})
+    assert len(summed) == len(set(summed)), f"a term is summed twice: {summed}"
+    assert len(summed) == pt._N_PARAMS
+
+
+def test_zone_thresholds_are_not_used_while_they_are_stale():
+    """PT_HEALTHY_MAX/PT_BORDERLINE_MAX are percentiles of cohort SCORES, so
+    they only mean anything under the formula they were computed for.
+
+    While the recorded calibration differs from the current formula they are
+    stale, and the webapp must keep zone classification switched off. Reading
+    bands off a stale threshold errs toward calling borderline limbs healthy,
+    which is the wrong direction to be wrong in, so this is a gate rather than
+    a warning: flipping ZONE_CLASSIFICATION_CALIBRATED without recalibrating
+    fails here.
+    """
+    assert pt.PT_ZONES_CALIBRATED_FOR == _rust_str("PT_ZONES_CALIBRATED_FOR")
+    assert pt.SCORE_FORMULA_ID == _rust_str("SCORE_FORMULA_ID")
+    if pt.PT_ZONES_CALIBRATED_FOR == pt.SCORE_FORMULA_ID:
+        return   # recalibrated: nothing to gate
+    app = os.path.join(os.path.dirname(RUST), "..", "..", "webapp", "src", "app.js")
+    src = open(os.path.abspath(app), encoding="utf-8").read()
+    m = re.search(r"const ZONE_CLASSIFICATION_CALIBRATED = (\w+);", src)
+    assert m, "ZONE_CLASSIFICATION_CALIBRATED not found in webapp/src/app.js"
+    assert m.group(1) == "false", (
+        f"zone classification is ON while the thresholds were calibrated for "
+        f"{pt.PT_ZONES_CALIBRATED_FOR!r} and the scorer is "
+        f"{pt.SCORE_FORMULA_ID!r}. Re-derive both thresholds from the control "
+        f"cohort (recalibrate_pt_zones.py) before switching this on."
+    )
+
+
+# ── The no-oscillation refusal ───────────────────────────────────────────────
+
+def test_a_limb_that_never_swings_is_refused_not_graded():
+    """A limb that falls and arrests returns A1 = 0, which forces R2n, N, f and
+    phi_max_ratio to exactly 0.0. Four of the six scored parameters penalise
+    only below reference, so all four saturate and the trial used to come back
+    graded MAS 4 and marked interpretable, off four zeros that mean "not
+    measured" rather than "measured as nothing"."""
+    arrested = {k: 0.0 for k in pt._PARAM_KEYS + pt._DIAGNOSTIC_KEYS}
+    arrested.update({"A0_deg": 40.0, "A1_deg": 0.0})
+    out = pt.mas_estimate(arrested)
+    assert out["interpretable"] is False
+    assert out["zone"] is None and out["mas"] is None
+    assert "No measurable oscillation" in out["reason"]
+    assert out["pt7"] is not None, "the number is still reported; only the verdict is withheld"
+
+
+def test_a_real_first_swing_is_still_graded():
+    swinging = dict.fromkeys(pt._PARAM_KEYS + pt._DIAGNOSTIC_KEYS, 0.0)
+    swinging.update({k: pt.HEALTHY_REF[k] for k in pt._PARAM_KEYS})
+    swinging.update({"A0_deg": 46.6, "A1_deg": 85.6})
+    out = pt.mas_estimate(swinging)
+    assert out["interpretable"] is True
+    assert out["zone"] == "healthy"
+
+
+def test_oscillation_gate_does_not_consult_a0():
+    """A0 is the excursion gate's business. A limb can have a perfectly good
+    excursion and still never swing, which is exactly the case being caught."""
+    assert pt.oscillation_ok({"A0_deg": 0.0, "A1_deg": 50.0}) is True
+    assert pt.oscillation_ok({"A0_deg": 60.0, "A1_deg": 0.0}) is False
+
+
+def test_an_unmeasurable_first_swing_is_not_interpretable():
+    for bad in (None, float("nan"), float("inf")):
+        assert pt.oscillation_ok({"A0_deg": 46.6, "A1_deg": bad}) is False
+    assert pt.oscillation_ok(None) is False
+
+
+def test_the_rust_oscillation_gate_matches():
+    src = open(RUST, encoding="utf-8").read()
+    body = re.search(r"pub fn oscillation_ok\(params: &PtParams\) -> bool \{(.*?)\n\}", src, re.S)
+    assert body, "oscillation_ok not found in the Rust"
+    assert "a1_deg.is_finite()" in body.group(1)
+    assert "a1_deg > 0.0" in body.group(1)
+    assert "a0_deg" not in body.group(1), "the oscillation gate must not read A0"
+    # and EVERY gate must reach the JSON the phone renders. Asserted by name
+    # against refusal_reason's body rather than as one literal line, because
+    # the literal broke the moment a third gate made the chain wrap -- a
+    # formatting change failing a test about behaviour.
+    chain = re.search(
+        r"pub fn refusal_reason\(params: &PtParams\) -> Option<String> \{(.*?)\n\}",
+        src, re.S)
+    assert chain, "refusal_reason not found in the Rust"
+    for gate in ("excursion_reason", "oscillation_reason"):
+        assert gate in chain.group(1), f"{gate} never reaches refusal_reason"
+
+
+def test_the_f_skip_makes_the_score_non_monotone_in_severity():
+    """A limb that oscillates LESS must not score healthier. It currently does.
+
+    f is bidirectional and is skipped when `f < 0.1 or N < 2.0`, because below
+    two cycles it cannot be estimated. Nothing rescales the divisor, which is
+    always _N_PARAMS, so crossing that boundary deletes a penalty term instead
+    of redistributing it: the score drops although the limb is worse.
+
+    This is NOT the saturation story an earlier commit claimed. An unmeasured f
+    contributes 0.0, not a maximal penalty -- `compute_pt_score_breakdown`
+    skips it and `unmeasured_params` flags it. The bias runs the other way, and
+    it runs on the impaired arm, which is the direction that pulls the MAS>=1
+    median below the MAS-0 75th percentile.
+
+    PARTLY FIXED 2026-10-27: the divisor is now the number of terms actually
+    scored, which was chosen over dropping f so that Popovic's parameter set
+    stays intact. That removed the deleted-term bias and lifted N=1.5 from
+    0.1282 to 0.1538, but the f term's own contribution still vanishes
+    discontinuously at the boundary, so ~18% of the inversion remains
+    (0.1878 -> 0.1538) and it still runs on the impaired arm.
+
+    Still xfail, therefore. Only removing the boundary makes the score
+    monotone, and that means dropping f from the scored set -- a decision
+    already taken the other way. This test holds the residual on the record
+    with live numbers so it cannot quietly become the accepted behaviour, and
+    it flips to a pass if the boundary ever stops losing a term.
+    """
+    base = {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+            "f": 0.8839, "area_ratio": 0.0945, "first_trough_depth": 10.0}
+
+    def total(n, f=0.5):
+        p = dict(base, N=n, f=f)
+        return sum(pt.compute_pt_score_breakdown(p).values())
+
+    just_above = total(2.0)     # f still scored
+    just_below = total(1.5)     # f skipped, divisor unchanged
+    assert just_below < just_above, (
+        "the boundary no longer loses a term -- if this fires, the skip was "
+        "fixed and this test should be inverted into a monotonicity assertion"
+    )
+    pytest.xfail(
+        f"f-skip discontinuity: N=2.0 scores {just_above:.4f} but the WORSE "
+        f"N=1.5 scores {just_below:.4f}, a {100 * (1 - just_below / just_above):.0f}% "
+        f"drop in apparent severity across the f < 0.1 or N < 2.0 boundary"
+    )
+
+
+JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                  "webapp", "src", "param-select.js")
+
+
+def _js_list(name):
+    """The string entries of `export const <name> = [...]` in param-select.js."""
+    src = open(JS, encoding="utf-8").read()
+    m = re.search(r"export const " + name + r"\s*=\s*\[(.*?)\];", src, re.S)
+    assert m, f"{name} not found in {JS}"
+    return re.findall(r"'([a-z0-9_]+)'", m.group(1))
+
+
+def test_all_three_languages_agree_on_the_canonical_scored_set():
+    """The claim param-select.js makes about this test, made true.
+
+    That module said "tests/test_pt_zone_parity.py pins all three to each
+    other" while this file compared only Python and Rust. The canonical set was
+    meanwhile spelled out four times: _PARAM_KEYS, Rust's CANONICAL_PT_KEYS, an
+    inline vec in the canonicity check, and JS's CANONICAL_KEYS. The inline vec
+    is gone; these three are pinned here.
+
+    A JS list that drifts would let the phone call a selection canonical that
+    the scorer does not, which is the one thing the `canonical` flag exists to
+    prevent.
+    """
+    rust = re.search(
+        # The array size is `N_PARAMS`, not a literal, so match either.
+        r"pub const CANONICAL_PT_KEYS: \[&str; [A-Za-z_0-9]+\] = \[(.*?)\];",
+        open(RUST, encoding="utf-8").read(), re.S)
+    assert rust, "CANONICAL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', rust.group(1))
+    py_keys = [k.lower() for k in pt._PARAM_KEYS]
+    assert rust_keys == py_keys, f"Rust {rust_keys} != Python {py_keys}"
+    assert _js_list("CANONICAL_KEYS") == py_keys, (
+        f"JS {_js_list('CANONICAL_KEYS')} != Python {py_keys}")
+
+
+def test_the_selectable_superset_matches_between_languages():
+    """ALL_PT_KEYS is wider than the scored set and must agree in both.
+
+    The app's toggles are driven by this list, so a language that offers a
+    different seven would let the phone score a selection the record cannot
+    reproduce.
+    """
+    src = open(RUST, encoding="utf-8").read()
+    m = re.search(r"pub const ALL_PT_KEYS: \[&str; 7\] = \[(.*?)\];", src, re.S)
+    assert m, "ALL_PT_KEYS not found in the Rust"
+    rust_keys = re.findall(r'"([a-z0-9_]+)"', m.group(1))
+    # The Rust spells keys in snake_case; Python uses its own param names.
+    py_keys = [k.lower() for k in pt.ALL_PT_KEYS]
+    assert rust_keys == py_keys, f"{rust_keys} != {py_keys}"
+    assert _js_list("ALL_PT_KEYS") == py_keys, (
+        f"JS {_js_list('ALL_PT_KEYS')} != Python {py_keys}")
+    # The canonical scored set must be a strict subset of the selectable one.
+    assert set(k.lower() for k in pt._PARAM_KEYS) < set(rust_keys)
+    # omega_min_n is selectable but NOT scored -- that is the whole point.
+    assert "omega_min_n" in rust_keys
+    assert "omega_min_n" not in [k.lower() for k in pt._PARAM_KEYS]
+
+
+def test_selecting_the_canonical_set_reproduces_the_canonical_score():
+    """The toggle path must not be a second scorer.
+
+    If an explicit canonical selection ever differs from the default, the app
+    and the record disagree while both claim to be the scored set.
+    """
+    for params in (
+        {"R2n": 1.0, "N": 6.5, "phi_max_ratio": 0.6667, "omega_max_n": 9.5672,
+         "omega_min_n": -9.4152, "f": 0.8839, "area_ratio": 0.0945},
+        {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+         "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2},
+        # f unscorable
+        {"R2n": 0.42, "N": 1.5, "phi_max_ratio": 0.11, "omega_max_n": 2.5,
+         "omega_min_n": 0.004, "f": 0.0, "area_ratio": 0.94},
+    ):
+        default = pt.compute_pt_score_breakdown(params)
+        explicit = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+        assert default == explicit
+        assert pt.compute_pt_score(params) == pt.compute_pt_score(params, keys=pt._PARAM_KEYS)
+
+
+def test_deselecting_a_term_redistributes_its_share():
+    """The property that makes a toggle honest.
+
+    With a fixed divisor, removing ANY parameter would always lower the score,
+    so every toggle would read as "less impaired" whatever it removed -- the
+    panel would teach the opposite of the truth.
+    """
+    params = {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
+              "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2}
+    six = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+    five = pt.compute_pt_score_breakdown(
+        params, keys=[k for k in pt._PARAM_KEYS if k != "f"])
+    for k, v in five.items():
+        assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
+    alone = pt.compute_pt_score_breakdown(params, keys=["N"])
+    assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)

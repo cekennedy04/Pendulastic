@@ -148,6 +148,12 @@ const RELEASE_BACKOFF_S: f64 = 0.10;
 /// exactly 0.5 at 30 fps, where the reference yields a back-off of 0 and a
 /// naive port would yield 1. Defined for non-negative inputs, which is all
 /// either call site produces.
+// The `frac < 0.5` and `(f as i64) % 2 == 0` arms return the same value, which
+// clippy reads as a copy-paste slip. They are two distinct cases of
+// round-half-to-even -- below the half, and exactly on it with an even floor --
+// and collapsing them would hide the rule this function exists to implement.
+// The doc comment above spells out why Python parity requires all four arms.
+#[allow(clippy::if_same_then_else)]
 fn round_half_even(x: f64) -> f64 {
     let f = x.floor();
     let frac = x - f;
@@ -269,10 +275,81 @@ fn detect_release(t: &[f64], ang: &[f64], baseline_sec: f64) -> usize {
     let back = round_half_even(RELEASE_BACKOFF_S / median_dt(t)) as usize;
     for (offset, &a) in ang[bi..].iter().enumerate() {
         if a.is_finite() && (a - baseline).abs() > thresh {
-            return (bi + offset).saturating_sub(back);
+            let i = bi + offset;
+            let drop = lift_hold_end(t, ang, i, baseline, thresh);
+            return drop.unwrap_or(i).saturating_sub(back);
         }
     }
     bi
+}
+
+/// `_LIFT_HOLD_MIN_S`, `_LIFT_REACH_MAX_S`, `_LIFT_HOLD_MAX_S`.
+const LIFT_HOLD_MIN_S: f64 = 0.5;
+const LIFT_REACH_MAX_S: f64 = 2.5;
+const LIFT_HOLD_MAX_S: f64 = 8.0;
+const LIFT_RETURN_MAX_S: f64 = 2.0;
+/// `pendulastic_pt_score._LIFT_MIN_HOLD_DEV`: how far from rest a still
+/// window has to sit before it counts as a lift's hold, as a multiple of the
+/// "has it moved" threshold (which is 0.08 of the signal range), so 3.0 means
+/// 24 % of the range.
+///
+/// A genuine hold cannot be below that, by geometry: if the hold were the
+/// release point, the swing would span at most about twice its deviation from
+/// rest, so the deviation is 50-100 % of the range. A still window at 24 % or
+/// less is therefore not a release point, and reading it as one moved the
+/// reported release past a sensor dropout and hid the dropout from the
+/// continuity check downstream.
+const LIFT_MIN_HOLD_DEV: f64 = 3.0;
+
+/// `_lift_hold_end`: where a lift-and-hold that starts at crossing `i` is
+/// released, or `None` when the crossing is the release itself.
+///
+/// A trial that opens at rest has a lift before its drop, and the first
+/// threshold crossing is the lift — measured from there, A0 is rest minus
+/// rest and the trial was discarded. A real release reverses within a
+/// fraction of a second, and an arrested limb stays near where it landed, so
+/// "monotonic to a still plateau, then leaves it and swings back through the
+/// starting angle" only matches a lift-and-hold. The return is what separates
+/// the two: an arrested limb with tremor in its resting tail also "leaves".
+fn lift_hold_end(t: &[f64], ang: &[f64], i: usize, baseline: f64, thresh: f64) -> Option<usize> {
+    let n = t.len();
+    let dt = median_dt(t);
+    let hold_n = (round_half_even(LIFT_HOLD_MIN_S / dt) as usize).max(3);
+    let reach_end = t.partition_point(|&x| x < t[i] + LIFT_REACH_MAX_S);
+    let mut peak = 0.0_f64;
+    for k in i..reach_end.min(n.saturating_sub(hold_n)) {
+        let a = ang[k];
+        if !a.is_finite() {
+            continue;
+        }
+        let dev = (a - baseline).abs();
+        if dev < peak - thresh {
+            return None; // reversed before holding: a swing
+        }
+        peak = peak.max(dev);
+        let win: Vec<f64> = ang[k..k + hold_n].iter().copied().filter(|v| v.is_finite()).collect();
+        if win.len() < hold_n / 2 {
+            continue;
+        }
+        let lo = win.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = win.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo >= 0.5 * thresh {
+            continue;
+        }
+        let level = nanmedian(&win);
+        if (level - baseline).abs() <= LIFT_MIN_HOLD_DEV * thresh {
+            continue;
+        }
+        let leave_end = t.partition_point(|&x| x < t[k] + LIFT_HOLD_MAX_S);
+        let m = (k + hold_n..leave_end.min(n))
+            .find(|&m| ang[m].is_finite() && (ang[m] - level).abs() > thresh)?;
+        let back_end = t.partition_point(|&x| x < t[m] + LIFT_RETURN_MAX_S);
+        let returns = ang[m..back_end]
+            .iter()
+            .any(|&a| a.is_finite() && (a - baseline).abs() <= thresh);
+        return if returns { Some(m) } else { None };
+    }
+    None
 }
 
 
@@ -308,6 +385,11 @@ fn permanent_settle_idx(ang_r: &[f64], neutral: f64, tol: f64) -> usize {
 /// records N reading 0.5 with a 3 s tail and 28.5 with a 30 s tail on the
 /// *same* motion, and a single spurious tail trough fabricating an A1 out of
 /// nothing.
+// `!(med > 0.0)` is the NaN path, not a style choice: `med` is a nanmedian and
+// is NaN when every gap is NaN. The guard has to refuse NaN as well as a
+// non-positive median before it is multiplied into a limit; `med <= 0.0` is
+// false for NaN and would let it through.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn active_oscillation_window_end(
     t_r: &[f64],
     ang_r: &[f64],
@@ -523,10 +605,26 @@ pub fn compute_pt_params(
     // trusted. Rust previously had the fallback ALONE, so a detrended trial
     // here would not have matched the desktop even though both said
     // "detrend=true".
+    // Only the still hold is baseline: a trial that opens at rest has a lift
+    // before it (see lift_hold_end), and fitting through that ramp inflated A0
+    // to 134-352 deg on real trials. A trial held from its first frame stays
+    // within the band throughout, so its window is unchanged.
+    let mut baseline_start = baseline_end;
+    if baseline_end > 0 {
+        let band = 0.08 * (nanpercentile(&ang_s_raw, 97.0) - nanpercentile(&ang_s_raw, 3.0));
+        let reference = ang_s_raw[baseline_end - 1];
+        while baseline_start > 0 && (ang_s_raw[baseline_start - 1] - reference).abs() <= band {
+            baseline_start -= 1;
+        }
+    }
     let slope: Option<f64> = if detrend {
         settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i).or_else(|| {
-            if baseline_end >= MIN_BASELINE {
-                polyfit1(&t_c[..baseline_end], &ang_c_raw[..baseline_end]).map(|(s, _)| s)
+            if baseline_end - baseline_start >= MIN_BASELINE {
+                polyfit1(
+                    &t_c[baseline_start..baseline_end],
+                    &ang_c_raw[baseline_start..baseline_end],
+                )
+                .map(|(s, _)| s)
             } else {
                 None
             }
@@ -888,11 +986,32 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
     let range_penalty = (80.0 - min_angle).max(0.0) + (min_angle - 178.0).max(0.0);
 
     // ---- C. Continuity, bounded to the active-swing window ---------------
+    // One extremum is not an oscillation, and taking its time as the end of
+    // the active window makes this check vacuous exactly when it is needed:
+    // a dropout long enough to destroy extrema detection leaves a lone
+    // extremum just after release, collapsing the window to a handful of
+    // samples that all sit BEFORE the dropout. So fewer than two extrema
+    // takes the helper's no-oscillation branch, which bounds at the point the
+    // signal permanently reaches its resting value -- robust here, because a
+    // freeze held away from neutral does not count as settled, while a limb
+    // that genuinely locks up makes that locked value the tail median and
+    // settles at once.
+    //
+    // Deliberately NOT done inside `active_oscillation_window_end`: that
+    // helper also bounds extremum counting for compute_pt_params, where a
+    // lone extremum is an accepted bounded error (N = 0.5 on a tail bump) and
+    // changing it would move N, A1, R2n and f on every stored trial.
+    let n_extrema = pt.pk_i.len() + pt.tr_i.len();
+    let (pk_w, tr_w): (&[usize], &[usize]) = if n_extrema >= 2 {
+        (&pt.pk_i, &pt.tr_i)
+    } else {
+        (&[], &[])
+    };
     let window_end_t = active_oscillation_window_end(
         &pt.t_r,
         &pt.ang_r,
-        &pt.pk_i,
-        &pt.tr_i,
+        pk_w,
+        tr_w,
         pt.neutral_deg,
         pt.a0_deg,
     );

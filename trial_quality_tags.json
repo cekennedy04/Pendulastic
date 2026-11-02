@@ -1,7 +1,7 @@
 {
   "17_left_pre_T1": {
     "category": "other",
-    "details": "No OptiTrack take saved for the 2026-08-18 pre session (empty pre/ folders). Video + phone IMU are on disk and intact.",
+    "details": "No OptiTrack take saved for the 2026-08-18 pre session (empty pre/ folders). Video + phone IMU are on disk and intact. | 2026-10-27: newly scorable since the release-gate fix (#72), but the phone is already moving at t=0 and the score is implausible (f=0, N=0.5). Review before relying on this trial's PT params.",
     "timestamp": "2026-08-28T19:49:14.812328+00:00"
   },
   "17_left_pre_T2": {

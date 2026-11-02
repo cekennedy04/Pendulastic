@@ -43,6 +43,8 @@ import glob
 import os
 from typing import NamedTuple
 
+import participant_paths
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OPTI_ROOT = os.path.join(BASE_DIR, "OptiTrack_Recordings")
 REC_ROOT = os.path.join(BASE_DIR, "Recordings")
@@ -51,7 +53,8 @@ PURPOSE_RESULTS = "results"
 PURPOSE_TRAINING = "training"
 
 # Folder names under Recordings/ that are not real participants. A participant
-# id is a bare number; anything else is scaffolding or a stray import
+# id is the bare number after the study prefix (Control_/CHAT_/MINT_) or the
+# legacy Participant_ one; anything else is scaffolding or a stray import
 # (Participant_test, Participant_P001_msparticipant2). Checked by shape rather
 # than by an ever-growing deny list, with the list kept for numeric oddities.
 NON_PARTICIPANT_IDS = {"test", "0", "demo"}
@@ -86,8 +89,8 @@ class DataPurpose(NamedTuple):
 
 
 def _count(root: str, pid: str, pattern: str) -> int:
-    return len(glob.glob(os.path.join(root, f"Participant_{pid}", "**", pattern),
-                         recursive=True))
+    return len(participant_paths.participant_glob_for(
+        root, pid, "**", pattern, recursive=True))
 
 
 def participant_ids() -> list:
@@ -95,10 +98,7 @@ def participant_ids() -> list:
     for root in (OPTI_ROOT, REC_ROOT):
         if not os.path.isdir(root):
             continue
-        for name in os.listdir(root):
-            if not name.startswith("Participant_"):
-                continue
-            pid = name.replace("Participant_", "").strip()
+        for pid, _name, _full in participant_paths.iter_participant_dirs(root):
             if _is_participant_id(pid):
                 ids.add(pid)
     return sorted(ids, key=lambda x: int(x) if x.isdigit() else 10 ** 6)
@@ -144,7 +144,9 @@ def reexportable_conditions(pid: str) -> dict:
     simply "has takes" would have implied the pre data was recoverable.
     """
     out = {}
-    root = os.path.join(OPTI_ROOT, f"Participant_{pid}")
+    root = participant_paths.find_participant_dir(OPTI_ROOT, pid)
+    if root is None:
+        return out
     for path in glob.glob(os.path.join(root, "**", "*.tak"), recursive=True):
         rel = os.path.relpath(path, root).replace("\\", "/").split("/")
         if len(rel) >= 2:
@@ -154,7 +156,7 @@ def reexportable_conditions(pid: str) -> dict:
 
 
 def unattributed_folders() -> list:
-    """Every Participant_* folder that is NOT recognised as a participant.
+    """Every participant-shaped folder that is NOT recognised as a participant.
 
     Returned so it can be REPORTED rather than silently skipped. Naming
     conventions have drifted across the study -- Participant_P001_msparticipant2
@@ -167,11 +169,7 @@ def unattributed_folders() -> list:
     for root in (OPTI_ROOT, REC_ROOT):
         if not os.path.isdir(root):
             continue
-        for name in sorted(os.listdir(root)):
-            full = os.path.join(root, name)
-            if not os.path.isdir(full) or not name.startswith("Participant_"):
-                continue
-            pid = name.replace("Participant_", "").strip()
+        for pid, name, full in participant_paths.iter_participant_dirs(root):
             if _is_participant_id(pid):
                 continue
             n = sum(len(files) for _d, _s, files in os.walk(full))
@@ -247,7 +245,7 @@ def main():
         for root, name, n_files in stray:
             print(f"   {root}/{name}  ({n_files} file(s))")
     else:
-        print("every Participant_* folder was attributed to a participant.")
+        print("every participant folder was attributed to a participant.")
     print(f"\n-> {write_manifest()}")
 
 

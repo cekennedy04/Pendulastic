@@ -321,6 +321,35 @@ def main():
     a5[60:] = 180.0 - 12.0 * (1.0 - np.exp(-tt5 / 1.1) * np.cos(2 * np.pi * 1.0 * tt5))
     emit_trial("TRIAL_LOW_AMP", t5, a5, "Low-amplitude swing where min_amp's 1.0 deg floor binds")
 
+    # A trial that opens AT REST: the leg is lifted, held, then dropped.
+    # Release detection used to fire on the lift, so A0 read rest-minus-rest
+    # (~0) and the trial was discarded. The drop must be the release.
+    def rest_lift_hold_drop(fs, swing_s, decay):
+        n_rest, n_lift, n_hold = int(1.5 * fs), int(0.7 * fs), int(2.0 * fs)
+        tt = np.arange(int(swing_s * fs)) / fs
+        a = np.concatenate([
+            np.zeros(n_rest),
+            -55.0 * 0.5 * (1 - np.cos(np.pi * np.arange(n_lift) / n_lift)),
+            np.full(n_hold, -55.0),
+            -55.0 * np.exp(-decay * tt) * np.cos(2 * np.pi * 0.9 * tt),
+        ])
+        return np.arange(len(a)) / fs, a
+
+    t6, a6 = rest_lift_hold_drop(100.0, 8.0, 0.45)
+    emit_trial("TRIAL_LIFT_HOLD", t6, a6, "Starts at rest: lift, hold, then drop")
+
+    # Same shape, still ringing when the recording stops, with detrend on:
+    # the settled-tail slope gives up and the baseline fit takes over. That
+    # fit must cover only the hold, not the lift ramp before it.
+    t7, a7 = rest_lift_hold_drop(100.0, 2.5, 0.05)
+    p7 = compute_pt_params(t7, a7, detrend=True)
+    parts.append(f64_slice("TRIAL_LIFT_RING_T", t7, "Lift-hold-drop, still ringing - time base."))
+    parts.append(f64_slice("TRIAL_LIFT_RING_ANG", a7, "Lift-hold-drop, still ringing - angle (deg)."))
+    parts.append(f64_const("TRIAL_LIFT_RING_DETREND_A0_DEG", p7["A0_deg"],
+                           "compute_pt_params(TRIAL_LIFT_RING, detrend=True)['A0_deg']"))
+    parts.append(f64_const("TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG", p7["neutral_deg"],
+                           "compute_pt_params(TRIAL_LIFT_RING, detrend=True)['neutral_deg']"))
+
     # ---- end-to-end: raw sensor log -> fusion -> resample -> scoring ------
     # The plan's final U2 scenario. Every fixture above pins ONE stage against
     # its Python counterpart; this one pins the COMPOSITION -- raw samples in,

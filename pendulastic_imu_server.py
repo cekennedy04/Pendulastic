@@ -169,6 +169,34 @@ ROLE_DISTAL   = "distal"     # thigh (hip) or shank (knee)
 
 # ─── AHRS: Madgwick MARG filter ───────────────────────────────────────────────
 
+# Residual floor for the gradient-descent correction, below which the step
+# scales with the residual instead of being normalised to a full beta.
+#
+# Madgwick's published step is beta * step/|step| -- a constant magnitude
+# whatever the residual -- which does not converge: at the optimum the filter
+# chatters, taking a full beta-sized step every update in a direction set by
+# the residual's last bits. That chatter is chaotic. Measured on the
+# end-to-end fixture, a one-ULP change in the first accelerometer sample grew
+# about 15% per update, from 9.7e-19 to 2.5e-5 in the quaternion over 900
+# updates, which made the settled tail irreproducible between the reference
+# and mobile-imu-core at the 1e-2 deg level. neutral_deg is the median of that
+# tail and A0 is measured against neutral, so it reached every normalised
+# parameter. With this floor the same perturbation changes the output by
+# exactly zero.
+#
+# |J^T f| is about 2|f|, and f is the residual of a NORMALISED accelerometer
+# reading, so this is dimensionless and needs no unit handling. Phone-grade
+# accel noise is of order 1e-3 of g per axis, so a residual under ~2e-3 is
+# within noise and its direction does not justify a full-rate correction --
+# the same argument GYRO_BIAS_MIN_SNR already makes for bias.
+#
+# NOT YET VALIDATED AGAINST THE CORPUS: on the end-to-end fixture this moves
+# the replayed angle by up to 4.6e-2 deg, the same order as the ~4e-2 deg a
+# dropped gyro-bias correction produces. Tiny against a 40-60 deg swing, but
+# it is a change to a shipped filter, and batch_imu_vs_optitrack_rmse.py over
+# the OptiTrack corpus is the gate before trusting it on patients.
+ACCEL_RESIDUAL_FLOOR = 2e-3
+
 class MadgwickAHRS:
     """Quaternion orientation filter with gyroscope prediction and
     accelerometer/magnetometer gradient-descent correction (the two-step
@@ -271,7 +299,15 @@ class MadgwickAHRS:
             step = J.T @ f
             s_norm = float(np.linalg.norm(step))
             if s_norm > 1e-9:
-                qDot -= self.beta * (step / s_norm)
+                # max(s_norm, floor), not s_norm. See ACCEL_RESIDUAL_FLOOR:
+                # normalising by s_norm alone makes this a CONSTANT-magnitude
+                # step whatever the residual, which does not converge -- it
+                # chatters around the optimum, and chatter is chaotic. Measured:
+                # a one-ULP change in the first accel sample grew ~15% per
+                # update and left the settled tail of a replay irreproducible
+                # at the 1e-2 deg level, which reached the score because
+                # neutral_deg is that tail's median.
+                qDot -= self.beta * (step / max(s_norm, ACCEL_RESIDUAL_FLOOR))
 
         self.q = self.q + qDot * dt
         n = float(np.linalg.norm(self.q))

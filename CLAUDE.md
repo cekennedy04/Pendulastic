@@ -28,6 +28,23 @@ that references the report date and the item numbers applied, e.g.:
 The nightly agent itself is read-only outside `docs/reports/**` - if asked to
 run it manually, don't let it touch anything else.
 
+## Participant folder naming
+
+`Recordings/` and `OptiTrack_Recordings/` folders carry the parent study:
+`Control_{pid}` (unaffected control), `CHAT_{pid}` (stroke), `MINT_{pid}` (MS),
+and `Participant_{pid}` for legacy/ungrouped folders. Renamed 2026-09-01 (the MS
+study's folders were `DOSA_{pid}` for part of that day; `DOSA_` still resolves).
+
+**Never spell a participant folder name out in code** - both schemes are live
+(the archive was never renamed). Resolve through `participant_paths.py`:
+`participant_dir(root, pid)`, `iter_participant_dirs(root)`,
+`glob_participants(root, *tail)`, `pid_from_dir_name(name)`,
+`pids_in_path(rel)`. See `docs/reference/participant-folder-naming.md`.
+
+Trial keys in `excluded_trials.json` / `trial_quality_tags.json` are built from
+the participant ID, never the folder name, so a rename cannot invalidate an
+exclusion. Keep it that way.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
