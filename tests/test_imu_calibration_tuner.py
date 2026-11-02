@@ -164,7 +164,9 @@ def test_replay_trial_subtracts_calibrated_gyro_bias():
     params = {"beta": 0.041, "ema_alpha": 1.0,
               "flex_axis_capture": True, "gravity_seed": True}
     clean_samples = _solo_hold_with_bias_then_burst_samples((0.0, 0.0, 0.0))
-    bias = (0.05, -0.08, 0.03)   # rad/s, comparable to a real MEMS offset
+    # rad/s: under GYRO_BIAS_MAX_RAD_S, ~10x the 0.00376 rad/s measured on a
+    # still phone. Uncorrected it would drift ~3 deg over the trial.
+    bias = (0.02, -0.03, 0.015)
     biased_samples = _solo_hold_with_bias_then_burst_samples(bias)
 
     t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
@@ -174,6 +176,29 @@ def test_replay_trial_subtracts_calibrated_gyro_bias():
         f"bias-corrected run ({angle_biased[-1]:.2f} deg) should match the "
         f"zero-bias control ({angle_clean[-1]:.2f} deg) once the injected "
         f"bias is properly measured and subtracted")
+
+
+def test_replay_trial_discards_a_motion_sized_bias_estimate():
+    """Mirrors calibrate_gyro_bias()'s GYRO_BIAS_MAX_RAD_S bound on the replay
+    path: a hold whose gyro mean is far beyond any sensor bias must not be
+    subtracted for the rest of the trial. With the bound the result equals a
+    run that never calibrated at all (bias left at zero)."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    motion = (0.0, 0.12, 0.0)
+    samples = _solo_hold_with_bias_then_burst_samples(motion)
+    t_a, a_capped = tuner.replay_trial(samples, params)
+    orig = tuner.GYRO_BIAS_MAX_RAD_S
+    try:
+        tuner.GYRO_BIAS_MAX_RAD_S = -1.0          # reject every estimate
+        t_b, a_none = tuner.replay_trial(samples, params)
+        tuner.GYRO_BIAS_MAX_RAD_S = float("inf")  # accept every estimate
+        t_c, a_all = tuner.replay_trial(samples, params)
+    finally:
+        tuner.GYRO_BIAS_MAX_RAD_S = orig
+    np.testing.assert_allclose(a_capped, a_none, equal_nan=True)
+    assert not np.allclose(a_capped, a_all, equal_nan=True), (
+        "fixture does not exercise the bound: the estimate was never computed")
 
 
 def _solo_handling_then_hold_then_burst_samples():
@@ -675,6 +700,101 @@ def test_score_waveform_rejects_a_very_long_mid_swing_freeze(freeze_len):
     """
     t, angle = _frozen_mid_swing(freeze_len)
     assert not tuner.score_waveform(t, angle)["passes"]
+
+
+def _analytic_swing(fps, duration_s=12.0, release_t=1.0, neutral_deg=160.0,
+                    decay=0.08, freq=0.6):
+    """The same physical swing, sampled at whatever rate is asked for."""
+    t = np.arange(0.0, duration_s, 1.0 / fps)
+    ang = np.full_like(t, 180.0)
+    post = t >= release_t
+    tau = t[post] - release_t
+    ang[post] = (neutral_deg + (180.0 - neutral_deg)
+                 * np.exp(-decay * tau) * np.cos(2 * np.pi * freq * tau))
+    return t, ang
+
+
+@pytest.mark.parametrize("fps", [20.0, 50.0, 100.0, 200.0])
+def test_a_clean_swing_is_not_a_staircase_at_any_sample_rate(fps):
+    """The continuity check must judge the SIGNAL, not the sample rate.
+
+    Both halves of the plateau rule used to be rate-dependent and in the same
+    direction. The run length was a sample count: `run >= 6` is 0.30 s at
+    20 Hz but 0.06 s at 100 Hz. The step test was an absolute 0.05 deg BETWEEN
+    SAMPLES, i.e. a velocity of 0.05/dt -- 1.0 deg/s at 20 Hz, 10 deg/s at
+    200 Hz -- so the faster the stream, the more of a real swing counted as
+    motionless.
+
+    Together they made a perfectly clean decaying swing trip the check at its
+    own turning points, which flatten in absolute terms as the amplitude
+    falls. Measured at 100 Hz: runs grew from 4 samples at 18.8 deg of
+    amplitude to 8 at 9.6, and every extremum from t = 6.8 s on scored
+    violations -- 11 in all, on an analytic curve with no noise and no
+    artifact. The repo's own TRIAL_LOW_AMP fixture was a committed instance:
+    its median speed is 4.06 deg/s against a threshold of 5.0 deg/s at its
+    100 Hz, so 268 of 499 samples read as "not moving".
+
+    This is the only test that would notice either threshold drifting back to
+    a per-sample quantity.
+    """
+    t, ang = _analytic_swing(fps)
+    result = tuner.score_waveform(t, ang)
+    assert result["passes"], (
+        f"a clean analytic swing sampled at {fps:g} Hz was rejected "
+        f"(penalty {result['penalty']:.1f})"
+    )
+
+
+@pytest.mark.parametrize("fps", [20.0, 50.0, 100.0, 200.0])
+def test_a_half_second_freeze_is_caught_at_any_sample_rate(fps):
+    """The other direction, which is what stops the fix above from being a
+    licence to miss real dropouts: the same 0.5 s freeze must be caught
+    whatever the rate. At 20 Hz that is 10 samples and at 200 Hz it is 100, so
+    a sample-count rule cannot treat them alike."""
+    t, ang = _analytic_swing(fps)
+    i0 = int(2.0 * fps)
+    i1 = i0 + int(0.5 * fps)
+    held = ang[i0]
+    ang[i0:i1] = held
+    ang[i1:] += held - ang[i1]
+    result = tuner.score_waveform(t, ang)
+    assert not result["passes"], (
+        f"a 0.5 s sensor freeze at {fps:g} Hz scored a pass "
+        f"(penalty {result['penalty']:.1f})"
+    )
+
+
+@pytest.mark.parametrize("freeze_s", [0.10, 0.15, 0.20])
+def test_a_sub_threshold_dropout_gets_the_same_verdict_at_every_rate(freeze_s):
+    """The property the duration half of the plateau rule exists for, and the
+    only test that gives it teeth on its own.
+
+    Each of the two halves independently prevents the false violation on a
+    low-amplitude swing, so neither is pinned by that case. What only the
+    duration half delivers is CONSISTENCY: with the run length left as a
+    sample count, a dropout of 0.10-0.20 s -- below the 0.30 s the check is
+    meant to require -- is caught at 100 and 200 Hz and missed at 20 and
+    50 Hz, so the same physical artifact gets a different verdict depending on
+    how fast the phone happened to sample. Measured; with the duration in
+    place all four rates agree.
+
+    This asserts agreement, not a particular verdict, because which way these
+    fall is a threshold choice (_PLATEAU_MIN_S) while agreeing at all is not.
+    """
+    verdicts = {}
+    for fps in (20.0, 50.0, 100.0, 200.0):
+        t, ang = _analytic_swing(fps)
+        i0 = int(2.0 * fps)
+        i1 = i0 + int(freeze_s * fps)
+        held = ang[i0]
+        ang[i0:i1] = held
+        ang[i1:] += held - ang[i1]
+        verdicts[fps] = tuner.score_waveform(t, ang)["passes"]
+    assert len(set(verdicts.values())) == 1, (
+        f"a {freeze_s:.2f} s dropout is judged differently by sample rate: "
+        + ", ".join(f"{k:g} Hz {'pass' if v else 'reject'}"
+                    for k, v in verdicts.items())
+    )
 
 
 def test_score_waveform_long_resting_tail_after_one_drop_still_passes():

@@ -143,3 +143,4 @@ def test_no_trial_usable_under_both_settings_refuses_a_verdict(capsys):
     out = capsys.readouterr().out
     assert "says nothing" in out
     assert "IMPROVES" not in out and "WORSE" not in out
+

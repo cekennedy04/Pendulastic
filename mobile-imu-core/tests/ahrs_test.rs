@@ -222,3 +222,35 @@ fn ahrs_magnetometer_path_is_reachable_but_opt_in() {
         with_mag.q[3]
     );
 }
+
+#[test]
+fn stillness_accel_bound_is_a_fraction_of_gravity_in_either_unit() {
+    // ACCEL_STATIONARY_MAX_G is a fraction of the window's own gravity
+    // magnitude, so a hold with 0.1 g of accel spread is still whether the
+    // phone reports g (iOS) or m/s^2 (the PWA / Android). The old raw-unit
+    // comparison judged an m/s^2 device against a 9.81x tighter bar.
+    let gyro: SampleBuf = (0..60).map(|i| (i as f64 / 50.0, [0.01, 0.0, 0.0])).collect();
+    for g in [1.0, 9.81] {
+        let accel: SampleBuf = (0..60)
+            .map(|i| {
+                let wobble = if i % 2 == 0 { 0.05 } else { -0.05 } * g;
+                (i as f64 / 50.0, [wobble, 0.0, g])
+            })
+            .collect();
+        assert!(is_stationary_window(&gyro, &accel, 59.0 / 50.0), "0.1 g spread at g={g}");
+        let shaky: SampleBuf =
+            accel.iter().map(|&(t, v)| (t, [v[0] * 2.0, v[1], v[2]])).collect();
+        assert!(!is_stationary_window(&gyro, &shaky, 59.0 / 50.0), "0.2 g spread at g={g}");
+    }
+}
+
+#[test]
+fn gyro_bias_rejects_an_estimate_too_large_to_be_bias() {
+    // A window cut from a decaying swing's tail: steady 0.12 rad/s of real
+    // rotation passes the SNR gate trivially but is motion, not bias. None
+    // means "keep the previous bias" (GYRO_BIAS_MAX_RAD_S).
+    let buf: SampleBuf = (0..57).map(|i| (i as f64 / 57.0, [0.0, 0.12, 0.0])).collect();
+    assert!(calibrate_gyro_bias(&buf).is_none());
+    let small: SampleBuf = (0..57).map(|i| (i as f64 / 57.0, [0.0, 0.04, 0.0])).collect();
+    assert!(calibrate_gyro_bias(&small).is_some(), "a plausible bias must still be applied");
+}

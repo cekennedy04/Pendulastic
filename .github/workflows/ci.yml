@@ -51,7 +51,12 @@ jobs:
       # the import path was fixed. scikit-learn is the same story for
       # mas_validation. Each was found by running these exact steps against a
       # venv holding only the previous line's packages, not by reading imports.
-      - run: pip install numpy scipy pytest matplotlib pandas scikit-learn
+      # opencv-python-HEADLESS, not opencv-python: the two capture files gated
+      # below import cv2 but never call a GUI function (checked: no imshow,
+      # namedWindow, waitKey or destroyAllWindows anywhere in camera_utils.py,
+      # capture_quality_guard.py or their tests), and the headless wheel needs
+      # no X11 or GL libraries on the runner.
+      - run: pip install numpy scipy pytest matplotlib pandas scikit-learn opencv-python-headless
       # Guards a SILENT failure: a malformed export replays as an unscorable
       # trial, or worse, as a plausible wrong one.
       #
@@ -96,10 +101,33 @@ jobs:
       # which a participant's two legs share, so the first corpus run paired
       # 56 of 144 trials and nothing here could have said so.
       #
-      # Deliberately a file list and not `pytest tests/`: the GUI suite needs a
-      # display, and three non-GUI files have failures unrelated to scoring
-      # (see the changeset notes). Widening this is a follow-up, not a silent
-      # inclusion.
+      # test_camera_utils.py was one of the "three non-GUI files with failures
+      # unrelated to scoring" this comment used to defer. It had no failure in
+      # the code: it needed cv2, which the headless wheel above supplies, and
+      # it had one genuinely flaky test, fixed 2026-11-02 (it raced its own
+      # new session, and is now deterministic in both directions). It is
+      # gated because it guards a frame from a previous recording session
+      # leaking into a newer one, and it had been gating nothing at all.
+      #
+      # The other two are still NOT gated, and both for the same reason:
+      # mediapipe, a ~100 MB wheel.
+      #   test_capture_quality_guard.py        reaches it through
+      #     live_tracker. An attempt to gate this file on 2026-11-02 with only
+      #     opencv-python-headless failed CI on three guard-panel tests with
+      #     `ModuleNotFoundError: No module named 'mediapipe'` -- the cv2
+      #     import is not the whole dependency, which is what the earlier
+      #     "only ever failed on cv2" note here got wrong.
+      #   test_capture_coverage_hpe_session.py also needs the system libraries
+      #     libegl1 and libgles2, without which mp.Image() raises OSError and
+      #     all 12 of its tests fail at the same assertion -- which is exactly
+      #     what they had been doing for weeks; see the README.
+      # Spending about a minute of every run on mediapipe is a cost worth
+      # deciding on deliberately rather than smuggling in here. The lines it
+      # would take are `mediapipe` in the pip step above and, for the second
+      # file, `sudo apt-get install -y libegl1 libgles2` before it.
+      #
+      # Still a file list and not `pytest tests/`: the GUI suite needs a
+      # display.
       - run: |
           python -m pytest -q \
             tests/test_pt_score.py \
@@ -112,6 +140,7 @@ jobs:
             tests/test_motor_bench.py \
             tests/test_motor_reference.py \
             tests/test_imu_calibration_tuner.py \
+            tests/test_camera_utils.py \
             tests/test_rmse_compare_floor.py \
             neuromech/tests
       # Two files in neuromech/tests carry the model's own contract, and both
