@@ -20,7 +20,10 @@ pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SS.OUT, "scenari
 @pytest.fixture(scope="module")
 def session(tmp_path_factory):
     SS.SESS = str(tmp_path_factory.mktemp("sessions"))
-    return DR.run(["A-P0", "A-P2", "M-catch_release_high"], seed=3, keep=True)
+    # The catch run is K-HM1, not M-catch_release_high: on the scorer with #79's HEALTHY_REF the latter
+    # sits at PT7 0.139, 0.02 above the 0/1 edge, and the rig's tracking lag takes it to 0.117 (band 0).
+    # K-HM1's H was fitted to the middle of its band and holds it through the plant (0.175 -> 0.154).
+    return DR.run(["A-P0", "A-P1p", "K-HM1"], seed=3, keep=True)
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +76,7 @@ def test_identify_on_a_known_plant():
 def test_locate_finds_the_exact_offset():
     """The log's setpoint channel is the command; locate must return the true offset for every scenario
     shape, including short fast ones (the unnormalised cross-correlation got C-f-high wrong by >1 s)."""
-    for sid in ("C-f-high", "A-P2", "M-fall_no_ringdown"):
+    for sid in ("C-f-high", "A-P1p", "M-fall_no_ringdown"):
         t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", f"{sid}.csv"))
         for pre in (0, 1234, 2500):
             log = np.concatenate([np.zeros(pre), sp, np.full(800, sp[-1])])
@@ -87,7 +90,7 @@ def test_every_run_delivers_its_intended_band(report):
 
 def test_ilc_converges_through_the_real_tools(session):
     rep, d = session
-    rid = rep[rep.sid == "A-P2"].run_id.iloc[0]
+    rid = rep[rep.sid == "A-P1p"].run_id.iloc[0]
     r = DR.ilc_demo(d, [rid], iters=3)
     first, last = r.tracking_rmse_deg.iloc[0], r.tracking_rmse_deg.iloc[-1]
     assert last < 0.4 * first and last < 0.2, r.tracking_rmse_deg.tolist()
@@ -134,7 +137,7 @@ def test_logs_are_paired_by_the_name_on_the_run_sheet(session, tmp_path):
 
 def _one_run(session):
     rep, d = session
-    rid = rep[rep.sid == "A-P2"].run_id.iloc[0]
+    rid = rep[rep.sid == "A-P1p"].run_id.iloc[0]
     return d, rid, os.path.join(d, "player", rid + ".csv")
 
 
@@ -157,7 +160,7 @@ def test_check_log_fails_a_log_that_never_saw_the_player(session, tmp_path):
 def test_check_log_fails_the_wrong_file_and_a_short_log(session, tmp_path):
     rep, d = session
     d, rid, player = _one_run(session)
-    other = rep[rep.sid == "M-catch_release_high"].run_id.iloc[0]
+    other = rep[rep.sid == "K-HM1"].run_id.iloc[0]
     r = SS.check_log(os.path.join(d, "synthetic_encoder", other + ".bin"), player, verbose=False)
     assert not r["ok"], r["reason"]
     sp = np.loadtxt(player, delimiter=",")[:, 1]; k = int(0.6 * len(sp))
@@ -178,4 +181,4 @@ def test_ilc_output_is_playable_and_finds_its_scenario_from_a_run_id(session, tm
     nxt = work / "player" / f"{rid}_ilc1.csv"
     x = np.loadtxt(nxt, delimiter=",")
     assert x.shape[1] == 2 and x[0, 1] == 0.0
-    assert ilc.desired_for(cmd, rid).endswith("A-P2.csv")
+    assert ilc.desired_for(cmd, rid).endswith("A-P1p.csv")
