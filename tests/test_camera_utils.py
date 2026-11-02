@@ -308,12 +308,25 @@ def test_stale_frame_from_abandoned_thread_does_not_leak_into_newer_session():
         time.sleep(0.1)
         assert len(new_writer.frames) > 0, \
             "new session should be streaming to the new writer"
-        new_writer_frames_at_close = list(new_writer.frames)
 
         # Close the NEW session too (joins its fast, non-blocking thread
         # promptly) so nothing legitimate is streaming any more -- isolates
         # the check below to only the abandoned OLD thread's behavior.
         sess.close()
+        # Both baselines are taken AFTER close() has joined the new thread,
+        # and that ordering is load-bearing. Snapshotting new_writer.frames
+        # BEFORE close() made this test flaky at about 2 runs in 5: the new
+        # session's thread is still streaming at that moment, _FakeCap.read()
+        # never blocks, so it could append one more of its OWN frames between
+        # the snapshot and the join -- which the assertion below then read as
+        # a leak from the abandoned old thread. Observed as a spurious extra
+        # 'frame-153137', a read count only _FakeCap reaches; _BlockingFakeCap
+        # only ever emits frame-1..3 and then 'frame-blocked'.
+        #
+        # Taken here, the baselines mean what the assertions claim: nothing
+        # arrives from this point on, and the only thread still alive to
+        # deliver anything is the abandoned one.
+        new_writer_frames_at_close = list(new_writer.frames)
         n_frames_before_release = len(frames_received)
 
         # Now let the OLD blocked read() finally return "frame-blocked". Its
