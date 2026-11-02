@@ -122,6 +122,21 @@ the number to read: 1.0 means peak speed scales with the swing, 0 means it does 
 torque slows the whole fall. See `docs/reports/2026-10-27-emulator-fall-speed.md`. The cohort half caches per
 trial, so `--limit` runs it in chunks on a low-memory machine.
 
+**Mismatch check (plan B13), no recordings needed.** `--pin` writes the real side once, as one
+anonymised row per leg, to `neuromech/fall_speed_reference.json`. After that
+
+```bash
+python -m neuromech.fall_speed --emulator-only --check K --anchor A-P0
+```
+
+judges a profile set against it by a rule fixed on 2026-11-02, before any revised axis was measured
+(constants and reasoning at the top of the check in `fall_speed.py`): each profile's change in peak
+fall speed from the anchor, beyond what the real legs' slope predicts for its change in A0, must stay
+inside a 95 % band of where one real leg lands (bootstrapped over people); and where the set's A0
+spans at least x1.2 its slope must sit inside the real slope's 95 % CI. The verdict is MISMATCH or
+NO FLAG: a failure to flag, not a match and not a realism certificate, and the report says how large
+a change the band lets through. The reference is OptiTrack A0; re-pin it on B11's settled geometry.
+
 ## Tests
 
 ```bash

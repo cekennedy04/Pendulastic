@@ -159,15 +159,6 @@ def report(real: list[dict], emu: list[dict]) -> str:
     def ppl(rows):
         return len({r["participant"] for r in rows})
 
-    def per_leg(rows):
-        # Repeated trials of one leg are not independent: summarise each leg by its median
-        # trial and regress across legs, so a leg with eight trials counts once.
-        legs = {}
-        for r in rows:
-            legs.setdefault((r["participant"], r["leg"]), []).append(r)
-        return [dict(participant=k[0], A0=float(np.median([r["A0"] for r in v])),
-                     peak=float(np.median([r["peak"] for r in v]))) for k, v in legs.items()]
-
     line("REAL, all measurable falls", ok, ppl(ok))
     line("REAL, per leg (leg medians)", per_leg(ok), ppl(ok))
     graded = [r for r in ok if r.get("interpretable")]
@@ -214,19 +205,198 @@ def ablation(rung: str = "2") -> str:
     return "\n".join(out)
 
 
+# ── The mismatch check (plan B13), emulator-only against a pinned real reference ────────────
+#
+# Fixed 2026-11-02, BEFORE any revised severity axis (the HESS group K first) was measured
+# against it, and revised the same day on a second-opinion review (Codex), still before: the
+# verdict is NO FLAG rather than PASS, and the per-profile band is a bootstrap prediction band.
+# Changing a constant below after seeing a candidate's result defeats the check;
+# re-pin the reference instead (B11's settled geometry will need that) and say so.
+#
+# The real side is pinned as one row per leg (median trial), with people anonymised to an
+# index: a bootstrap needs the legs, not the recordings. From it:
+#   b       OLS of log peak on log A0 across legs
+#   CI      95 % interval for b, bootstrapping PEOPLE (a person's two legs are not independent)
+#   band    per bootstrap draw (people resampled, line refitted) one leg's residual about the
+#           refitted line plus the refit's slope error times the profile's log A0 step: the
+#           central 95 % of that is where one real leg would land, slope uncertainty, clustering
+#           and a non-normal spread all carried, with no normal multiplier assumed
+# An emulator profile set is judged relative to an anchor scenario (default A-P0, the healthy
+# preset), which removes the emulator's healthy-level offset (281 vs ~346 deg/s, report):
+#   per profile  r = (log peak_p - log peak_anchor) - b * (log A0_p - log A0_anchor);
+#                MISMATCH if r is outside the band: the fall speed moved further than a real
+#                leg's does at that A0. This is what catches a catch that slows the fall at fixed
+#                A0. The band is between-leg spread, not a clinical tolerance, so the report
+#                states the smallest change it would flag; smaller slowing passes unseen.
+#                Several profiles each tested at 95 % flag more often than 5 % by chance; for a
+#                screen that errs toward flagging, that is accepted.
+#   per set      log-log slope over anchor + profiles; MISMATCH if outside CI. Judged only when
+#                the set's A0 spans at least MIN_A0_SPAN (max/min, a log range of 0.18): over a
+#                narrower span a deterministic slope is a ratio of two small differences and
+#                means nothing. Inside the CI is a compatibility screen with ~11 people, not a
+#                match. This catches peak and A0 falling
+#                together (slope ~1), which a single profile's residual can hide.
+# Verdict: MISMATCH if any profile or the set slope is flagged; otherwise NO FLAG, or NO FLAG
+# (slope not judged) when the span gate leaves only the per-profile test, which then cannot
+# speak to speed-excursion coupling at all. NO FLAG is a failure to flag, not equivalence and
+# not a realism certificate (plan section 6 step 5).
+REFERENCE = os.path.join(ROOT, "neuromech", "fall_speed_reference.json")
+BOOT_N, BOOT_SEED = 2000, 0
+BAND = (2.5, 97.5)
+MIN_A0_SPAN = 1.2
+
+
+def per_leg(rows: list[dict]) -> list[dict]:
+    """Repeated trials of one leg are not independent: summarise each leg by its median trial."""
+    legs = {}
+    for r in rows:
+        legs.setdefault((r["participant"], r.get("leg")), []).append(r)
+    return [dict(participant=k[0], leg=k[1], study=v[0].get("study"), mas=v[0].get("mas"), trials=len(v),
+                 A0=float(np.median([r["A0"] for r in v])), peak=float(np.median([r["peak"] for r in v])))
+            for k, v in legs.items()]
+
+
+def pin_reference(real: list[dict], path: str = REFERENCE) -> dict:
+    """Write the real per-leg reference the emulator-only check reads. People become 1..n."""
+    import pendulastic_pt_score as pts
+    legs = sorted(per_leg([r for r in real if _measurable(r)]), key=lambda g: (str(g["participant"]), str(g["leg"])))
+    ids = {p: i + 1 for i, p in enumerate(dict.fromkeys(g["participant"] for g in legs))}
+    ref = dict(
+        what="real per-leg peak fall speed vs A0 (median trial per leg), neuromech.fall_speed",
+        a0_source="OptiTrack (load_optitrack); shrinks angles (plan 5b), re-pin on B11 geometry",
+        score_formula_id=pts.SCORE_FORMULA_ID, scorer_fingerprint=_fingerprint(),
+        legs=[dict(person=ids[g["participant"]], study=g["study"], mas=g["mas"], trials=g["trials"],
+                   A0=round(g["A0"], 3), peak=round(g["peak"], 2)) for g in legs])
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(ref, fh, indent=1)
+        fh.write("\n")
+    return ref
+
+
+def load_reference(path: str = REFERENCE) -> dict:
+    if not os.path.exists(path):
+        raise SystemExit(f"{path} not found -- pin it from the recordings with --pin")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def reference_stats(legs: list[dict]) -> dict:
+    x = np.log([g["A0"] for g in legs]); y = np.log([g["peak"] for g in legs])
+    b, a = np.polyfit(x, y, 1)
+    s = float(np.std(y - (a + b * x), ddof=2))
+    people = sorted({g["person"] for g in legs})
+    rng = np.random.default_rng(BOOT_SEED)
+    boots, draws = [], []
+    for _ in range(BOOT_N):
+        pick = rng.choice(people, size=len(people), replace=True)
+        idx = [i for p in pick for i, g in enumerate(legs) if g["person"] == p]
+        if np.ptp(x[idx]) > 0:
+            bb, aa = np.polyfit(x[idx], y[idx], 1)
+            boots.append(bb)
+            j = idx[rng.integers(len(idx))]
+            draws.append((bb - b, y[j] - (aa + bb * x[j])))   # (slope error, one leg's residual)
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    return dict(b=float(b), s=s, ci=(float(lo), float(hi)), legs=len(legs), people=len(people),
+                draws=np.asarray(draws))
+
+
+def band(stats: dict, dx: float) -> tuple[float, float]:
+    """Central 95 % of where one real leg's anchored residual lands for a log A0 step dx."""
+    d = stats["draws"]
+    lo, hi = np.percentile(d[:, 1] + d[:, 0] * dx, BAND)
+    return float(lo), float(hi)
+
+
+def check(emu: list[dict], sids: list[str], ref: dict, anchor: str = "A-P0") -> dict:
+    """Judge one emulator profile set against the pinned reference by the rule fixed above."""
+    st_ = reference_stats(ref["legs"])
+    by = {r["sid"]: r for r in emu}
+    if anchor not in by:
+        raise SystemExit(f"anchor {anchor} is not in the manifest")
+    missing = [s for s in sids if s not in by]
+    if missing:
+        raise SystemExit(f"not in the manifest (or no measurable fall): {missing}")
+    h = by[anchor]
+    profiles = []
+    for sid in sids:
+        if sid == anchor:
+            continue
+        p = by[sid]
+        dx, dy = np.log(p["A0"] / h["A0"]), np.log(p["peak"] / h["peak"])
+        r = float(dy - st_["b"] * dx)
+        lo, hi = band(st_, dx)
+        profiles.append(dict(sid=sid, A0=p["A0"], peak=p["peak"], resid=r, band=(lo, hi),
+                             mismatch=not (lo <= r <= hi)))
+    pts_ = [h] + [by[p["sid"]] for p in profiles]
+    a0s = [r["A0"] for r in pts_]
+    span = max(a0s) / min(a0s)
+    slope = None
+    if span >= MIN_A0_SPAN and len(pts_) >= 2:
+        slope = float(np.polyfit(np.log(a0s), np.log([r["peak"] for r in pts_]), 1)[0])
+    slope_mismatch = slope is not None and not (st_["ci"][0] <= slope <= st_["ci"][1])
+    if not profiles:
+        raise SystemExit("no profiles to judge besides the anchor")
+    if slope_mismatch or any(p["mismatch"] for p in profiles):
+        verdict = "MISMATCH"
+    else:
+        verdict = "NO FLAG" if slope is not None else "NO FLAG (slope not judged)"
+    return dict(anchor=anchor, ref=st_, profiles=profiles, span=span, slope=slope,
+                slope_mismatch=slope_mismatch, verdict=verdict)
+
+
+def check_report(res: dict, name: str) -> str:
+    st_ = res["ref"]
+    lo0, hi0 = band(st_, 0.0)
+    out = [f"{name}: {res['verdict']}  (anchor {res['anchor']}; reference {st_['legs']} legs / "
+           f"{st_['people']} people, b {st_['b']:+.2f} [95% CI {st_['ci'][0]:+.2f}, {st_['ci'][1]:+.2f}])",
+           f"  at equal A0 it flags only a fall-speed change beyond {np.expm1(lo0):+.0%} / {np.expm1(hi0):+.0%}",
+           f"  {'profile':10s} {'A0':>6s} {'peak':>7s} {'resid':>7s} {'band':>17s}"]
+    for p in res["profiles"]:
+        out.append(f"  {p['sid']:10s} {p['A0']:6.1f} {p['peak']:7.1f} {p['resid']:+7.3f} "
+                   f"[{p['band'][0]:+.3f}, {p['band'][1]:+.3f}]" + ("  MISMATCH" if p["mismatch"] else ""))
+    if res["slope"] is None:
+        out.append(f"  set slope not judged: A0 spans x{res['span']:.2f} < x{MIN_A0_SPAN}")
+    else:
+        out.append(f"  set slope {res['slope']:+.2f} over A0 x{res['span']:.2f}"
+                   + ("  MISMATCH (outside the CI)" if res["slope_mismatch"] else "  (inside the CI)"))
+    return "\n".join(out)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--opti-root", required=True, help="where OptiTrack_Recordings is")
-    ap.add_argument("--rec-root", required=True, help="where Recordings is (participant metadata)")
+    ap.add_argument("--opti-root", help="where OptiTrack_Recordings is")
+    ap.add_argument("--rec-root", help="where Recordings is (participant metadata)")
     ap.add_argument("--mas-csv", help="mas_scores.csv, if not beside this checkout")
     ap.add_argument("--limit", type=int, help="score at most this many uncached trials, then report")
+    ap.add_argument("--pin", action="store_true", help="write the real per-leg reference from the recordings")
+    ap.add_argument("--emulator-only", action="store_true",
+                    help="no recordings: judge the emulator against the pinned reference")
+    ap.add_argument("--check", default="A", help="comma-separated groups or scenario ids to judge (default A)")
+    ap.add_argument("--anchor", default="A-P0", help="healthy scenario the set is judged relative to")
     a = ap.parse_args(argv)
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-    real = score_cohort(a.opti_root, a.rec_root, a.mas_csv, limit=a.limit)
-    print()
-    print(report(real, emulator_rows()))
-    print()
-    print(ablation())
+    emu = emulator_rows()
+    if not a.emulator_only:
+        if not (a.opti_root and a.rec_root):
+            ap.error("--opti-root and --rec-root are needed unless --emulator-only")
+        real = score_cohort(a.opti_root, a.rec_root, a.mas_csv, limit=a.limit)
+        if a.pin:
+            ref = pin_reference(real)
+            print(f"pinned {len(ref['legs'])} legs -> {REFERENCE}")
+        print()
+        print(report(real, emu))
+        print()
+        print(ablation())
+        print()
+    ref = load_reference()
+    import pendulastic_pt_score as pts
+    if ref.get("score_formula_id") != pts.SCORE_FORMULA_ID:
+        print(f"note: reference pinned under {ref.get('score_formula_id')}, scorer is {pts.SCORE_FORMULA_ID}")
+    groups = {r["group"] for r in emu}
+    for item in a.check.split(","):
+        item = item.strip()
+        sids = [r["sid"] for r in emu if r["group"] == item] if item in groups else [item]
+        print(check_report(check(emu, sids, ref, anchor=a.anchor), f"set {item}"))
     return 0
 
 
