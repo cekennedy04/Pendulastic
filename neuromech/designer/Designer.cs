@@ -80,9 +80,19 @@ namespace Pendulastic
             {
                 // the one-knob axis has a cliff: once fewer than ~1.5 swings remain the scorer cannot measure f,
                 // and PT7 jumps from ~0.66 to ~1.35. Above that, search all four knobs for the score directly.
-                var alt = ForParams(new Dictionary<string, double> { { "pt7", target } }, res.Knobs);
-                double ga = alt.Metrics.Pt7.HasValue ? alt.Metrics.Pt7.Value : double.NaN;
-                if (alt.Metrics.Interpretable && Math.Abs(ga - target) < Math.Abs(got - target)) { res = alt; got = ga; }
+                // Start from more than the axis's best point: on the 5-term scorer the MAS 3 band is reached
+                // only near damping 0.35 with no reflex, off the axis, and a search started on it stalls at 0.57.
+                var starts = new List<Knobs> { res.Knobs };
+                foreach (double d in new[] { 0.25, 0.35, 0.45 })
+                {
+                    var s = basis.Clone(); s.Damping = d; s.ReflexGain = 0.0; starts.Add(s);
+                }
+                foreach (var start in starts)
+                {
+                    var alt = ForParams(new Dictionary<string, double> { { "pt7", target } }, start);
+                    double ga = alt.Metrics.Pt7.HasValue ? alt.Metrics.Pt7.Value : double.NaN;
+                    if (alt.Metrics.Interpretable && Math.Abs(ga - target) < Math.Abs(got - target)) { res = alt; got = ga; }
+                }
             }
             res.Note = string.Format(System.Globalization.CultureInfo.InvariantCulture,
                 "Aimed at PT7 {0:F2} (MAS {1} preset); got {2:F3}.", target, grade, got);
