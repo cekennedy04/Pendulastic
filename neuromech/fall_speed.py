@@ -179,15 +179,18 @@ def report(real: list[dict], emu: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def ablation(rung: str = "2") -> str:
+def ablation(rung: str | None = None) -> str:
     """Each component of the published severity axis applied ALONE at one ladder rung.
 
     Says which part of the model changes the fall. Uses the calibrated ladder in
-    neuromech/out/ladder.json, so it describes the library that was built.
+    neuromech/out/ladder.json, so it describes the library that was built. The default is
+    the top rung the ladder reached, which moves with the scorer (rung 2 on 2026-10-27, 1+
+    on 2026-11-02).
     """
     from dataclasses import replace
     from neuromech import build as B, scenarios as S
     lad = json.load(open(os.path.join(OUT, "ladder.json")))
+    rung = rung if rung is not None else max(lad, key=lad.get)
     if rung not in lad:
         return f"(no rung {rung!r} in ladder.json: {sorted(lad)})"
     lam = lad[rung]
