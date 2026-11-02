@@ -66,8 +66,9 @@ import sys
 import numpy as np
 
 import pendulastic_pt_score as P
-from imu_calibration_tuner import score_waveform
-from pendulastic_pt_score import compute_pt_params
+from imu_calibration_tuner import (score_waveform, _PLATEAU_MIN_S,
+                                   _PLATEAU_MAX_DEG_S)
+from pendulastic_pt_score import compute_pt_params, _median_dt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,6 +161,11 @@ def _continuity(t, angle_deg, t_r0, window_end_t):
         if abs(diffs[i]) > 25.0:
             clip += 1
 
+    # Mirrors score_waveform's duration-based threshold rather than hardcoding
+    # a sample count; main()'s self-check is what proves the mirror is exact.
+    _dt = _median_dt(t)
+    plateau_min_run = max(2, int(round(_PLATEAU_MIN_S / _dt)))
+    plateau_step_deg = _PLATEAU_MAX_DEG_S * _dt
     plateau, run = 0, 0
     for i in np.where((t >= t_r0) & (t <= window_end_t))[0]:
         if i + 1 >= len(angle_deg):
@@ -167,9 +173,9 @@ def _continuity(t, angle_deg, t_r0, window_end_t):
         if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
             run = 0
             continue
-        if abs(angle_deg[i + 1] - angle_deg[i]) < 0.05:
+        if abs(angle_deg[i + 1] - angle_deg[i]) < plateau_step_deg:
             run += 1
-            if run >= 6:
+            if run >= plateau_min_run:
                 plateau += 1
         else:
             run = 0
@@ -388,13 +394,16 @@ def clean_sweep():
     print()
     print("  false rejections on clean trials, by sample rate:")
     for fps, (f, n) in by_fps.items():
-        print(f"    {fps:5.0f} Hz : {f:3d} of {n:3d}"
-              f"   (6 samples = {6.0 / fps:.3f} s)")
+        print(f"    {fps:5.0f} Hz : {f:3d} of {n:3d}")
     print()
-    print("  The 20 Hz row is clean and 100 Hz is the worst. The drop back to")
-    print("  1 of 36 at 200 Hz is NOT explained here -- the window must come")
-    print("  out shorter at that rate, but this script does not show why, so")
-    print("  no mechanism is claimed for it.")
+    print("  Every row should read 0. Before the plateau rule was made")
+    print("  rate-independent these were 0 / 3 / 6 / 1 of 36 at")
+    print("  20 / 50 / 100 / 200 Hz: a clean decaying swing tripped the check")
+    print("  at its own turning points, which flatten as the amplitude falls.")
+    print("  Fixing only the run length (samples -> 0.30 s) moved them to")
+    print("  0 / 0 / 1 / 5 -- better at 100 Hz and WORSE at 200 -- because the")
+    print("  0.05 deg between-samples test is itself a velocity of 0.05/dt,")
+    print("  which gets laxer the faster you sample. Both had to go.")
 
 
 if __name__ == "__main__":

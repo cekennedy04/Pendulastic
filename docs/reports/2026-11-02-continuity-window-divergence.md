@@ -44,6 +44,14 @@ calibration tuner's quality gate — and the 4 s cap in it is a real blind spot.
 | `RULE_INLINE` | Python, `imu_calibration_tuner.score_waveform`: two or more extrema → the last extremum, **capped at release + 4.0 s**; otherwise the first point the signal is permanently within tolerance of `neutral`, also capped. |
 | `RULE_HELPER` | Rust, `scoring.rs::score_waveform`: `active_oscillation_window_end` — stop at the first gap larger than `_OSCILLATION_GAP_FACTOR` times the extrema's own median spacing. **No cap at all.** |
 
+A second correction while I am here: I said the parity tests "pin those six
+and nothing else." They pinned **two** — `TRIAL_SWING` and
+`TRIAL_SINGLE_DROP`. The `*_SW_PASSES` / `*_SW_PENALTY` constants for
+`TRIAL_NOISY_TAIL`, `TRIAL_LOW_AMP`, `TRIAL_LIFT_HOLD` and `TRIAL_E2E` were
+generated into `golden.rs` and asserted **nowhere**. That is now fixed (§5),
+and it is the same lesson as the ungated test file: a generated constant with
+no assertion behind it is not coverage.
+
 Measured over 10,836 generated trials (length, damping, frequency, sample
 rate, neutral angle, resting tremor, and sensor freezes at three offsets and
 three lengths):
@@ -71,43 +79,66 @@ the 4 s cap hides and the helper catches. That is the case for dropping the
 cap, and it is the same hole the 2026-10-29 fix could not reach: a freeze at
 t = 6.0 s in a 12 s trial is simply outside the inline window.
 
-But **70 are clean trials with no artifact in them at all.** Those are false
-rejections, and they are not evenly spread:
+But **70 are clean trials with no artifact in them at all** — false
+rejections, and not evenly spread:
 
-| sample rate | false rejections on clean trials | 6 samples = |
+| sample rate | false rejections on clean trials | with the plateau rule fixed (§5) |
 |---|---|---|
-| 20 Hz | **0** of 36 | 0.300 s |
-| 50 Hz | 3 of 36 | 0.120 s |
-| 100 Hz | **6** of 36 | 0.060 s |
-| 200 Hz | 1 of 36 | 0.030 s |
+| 20 Hz | **0** of 36 | 0 |
+| 50 Hz | 3 of 36 | 0 |
+| 100 Hz | **6** of 36 | 0 |
+| 200 Hz | 1 of 36 | 0 |
 
-The mechanism is that **the plateau rule is written in samples, not time**: a
-run of 6 consecutive steps under 0.05 deg. Six samples is 0.3 s at 20 Hz but
-0.06 s at 100 Hz, and a genuine turning point on a decaying swing is flat to
-within 0.05 deg over 0.06 s. On one clean 100 Hz trial, 69 samples inside the
-helper window have a step under 0.05 deg, producing 11 "plateau violations" on
-a perfectly smooth analytic curve.
+### The mechanism, measured rather than asserted
 
-This is the same class of defect as the Savitzky-Golay window that was
-specified in samples rather than seconds: a threshold that silently changes
-meaning with the sample rate. Production captures at **~100 Hz** (see
-`pendulastic_imu_server.py`, and Andersson et al.'s 100 Hz), with EMA
-smoothing at `ema_alpha` as low as 0.1, which makes per-sample steps *smaller*
-— so 100 Hz, the worst row in that table, is the production regime.
+My first explanation of this — "a turning point at 100 Hz is flat over
+0.06 s" — was incomplete, and the correction matters because it changes the
+fix. A turning point at *full* amplitude is flat to within 0.05 deg for only
+about 2 samples. The runs that trip the check are turning points in the
+**decaying tail**, which flatten as the amplitude falls. On one clean 12 s /
+100 Hz / 0.6 Hz swing, every extremum produces a flat run and the runs grow
+monotonically:
 
-I am not claiming a mechanism for the drop back to 1 of 36 at 200 Hz. The
-helper's window must come out shorter at that rate, but the script does not
-show why, so it is left unexplained rather than guessed at.
+| t | amplitude | run length | predicted | violations |
+|---|---|---|---|---|
+| 1.81 s | 18.75 deg | 4 | 3.8 | 0 |
+| 5.97 s | 13.44 deg | 5 | 5.2 | 0 |
+| 6.80 s | 12.58 deg | 6 | 5.6 | 1 |
+| 8.46 s | 11.01 deg | 7 | 6.4 | 2 |
+| 10.12 s | 9.64 deg | 8 | 7.3 | 3 |
 
-**So the window and the plateau rule cannot be decided separately.** Unifying
-on the helper rule alone would trade a blind spot for false rejections on
-good trials at the rate the app actually samples. The order has to be:
+Predicted from `|Δangle| = A·ω·|sin(ωτ)|·dt < 0.05`, matching to within a
+sample throughout, and the 11 violations reconcile exactly with what
+`score_waveform` reports. **The first run long enough to trip the rule appears
+at t = 6.80 s** — past the 4 s cap. So the cap was not only hiding dropouts;
+it was also, accidentally, what kept these false violations out.
 
-1. Make the plateau rule rate-independent — a duration, not a sample count —
-   and re-measure.
-2. Then unify the windows, which is also what removes the port divergence.
+### There are TWO rate dependencies, not one
 
----
+| | as written | what it means at 20 Hz | at 200 Hz |
+|---|---|---|---|
+| run length | `run >= 6` samples | 0.30 s | 0.03 s |
+| step test | `< 0.05` deg between samples | 1.0 deg/s | 10 deg/s |
+
+The second one is the subtler and the worse: an absolute step *between
+samples* is a velocity of `0.05/dt`, so the threshold gets **laxer the faster
+you sample** — more of a real swing counts as motionless exactly where there
+is more data. Fixing only the run length bore this out: the clean-trial
+rejections went 0/3/6/1 → 0/0/1/**5**, better at 100 Hz and worse at 200.
+
+### It already bites in production, on one of this repo's own fixtures
+
+The 70 above are all under the *helper* window. Under the **production**
+window my clean corpus shows none — the cap protects it. But my corpus used
+A0 of 20–40 deg, and the rule bites on **low-amplitude** trials, where the
+whole swing is slow:
+
+`TRIAL_LOW_AMP` — a committed fixture whose generator comment calls it "a
+genuinely low-amplitude swing (A0 ~ 11 deg)" — scored `passes = false`,
+penalty 14.0, entirely from plateau violations. At its 100 Hz the old
+threshold is 5.00 deg/s and the trial's **median** speed is 4.06 deg/s, so
+268 of its 499 samples counted as "not moving". It sat in the fixtures that
+way, and nothing failed, because nothing asserted it.
 
 ## 4. The one measurement I could not make
 
@@ -137,9 +168,47 @@ window of a handful of real replayed trials, against the 0.05 deg threshold.
 
 ---
 
-## 5. Status
+## 5. What was changed, and what was not
 
-Nothing in the scorer was changed for this report. The diagnostic
-(`evaluate_continuity_window.py`) is a one-off research script in the same
-category as `evaluate_peak_detection.py`: not pipeline-wired, and it edits
-nothing in `pendulastic_pt_score.py`.
+**Changed: the plateau rule is now rate-independent**, in both ports —
+`_PLATEAU_MIN_S = 0.30` (a duration, not 6 samples) and
+`_PLATEAU_MAX_DEG_S = 1.0` (a velocity, not 0.05 deg between samples). That
+pair *is* the old rule at 20 Hz, the rate every existing test runs at, so it
+changes nothing there and only makes the higher rates mean the same thing.
+
+Both halves are kept, and each is pinned by a test, because neither is
+redundant on the axis it covers — though it took a measurement to establish
+that. Either half alone removes the false violation on a low-amplitude swing,
+so that case pins neither. What only the duration half delivers is
+consistency: with the run length left as a sample count, a dropout of
+0.10–0.20 s is **caught at 100 and 200 Hz and missed at 20 and 50 Hz** — the
+same physical artifact judged differently by how fast the phone sampled.
+
+Three golden values moved, all of them this fix and none of them noise:
+
+| | before | after |
+|---|---|---|
+| `TRIAL_LOW_AMP_SW_PASSES` | false | **true** |
+| `TRIAL_LOW_AMP_SW_PENALTY` | 14.0 | **0.0** |
+| `TRIAL_NOISY_TAIL_SW_PENALTY` | 192.0 | **39.0** |
+
+(`golden.rs` also carries a `GENERATED_WITH` bump and five last-bit float
+changes from this container's newer numpy/scipy — environment, not behaviour.)
+
+**Changed: the parity test now covers five fixtures instead of two**, and the
+sixth is asserted on its own, because `TRIAL_NOISY_TAIL` is where the two
+windows actually bite: Python scores it 39, Rust 80. Driving the Python
+reference with the helper's window reproduces 80 exactly, so the whole
+41-point gap is the window and nothing else. Both ports still reach the same
+*verdict* on every fixture — but a penalty gap is not cosmetic, because
+`tune()` picks the lowest-penalty passing candidate, so the two can prefer
+different calibrations. That test is written to fail if the windows are ever
+unified, which is the right prompt to update it.
+
+**Not changed: the windows.** That is still your call, and §3 is why it is not
+a one-liner. The order is: plateau rule (done), re-measure (done — the clean
+corpus is now 0 false rejections at every rate), then unify.
+
+The diagnostic (`evaluate_continuity_window.py`) remains a one-off research
+script in the same category as `evaluate_peak_detection.py`: not
+pipeline-wired, and it edits nothing in `pendulastic_pt_score.py`.

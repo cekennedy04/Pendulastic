@@ -438,6 +438,20 @@ fn active_oscillation_window_end(
     t_r[permanent_settle_idx(ang_r, neutral, tol)]
 }
 
+/// `imu_calibration_tuner._PLATEAU_MIN_S`: how long a stretch of "not moving"
+/// counts as a staircase artifact, as a DURATION rather than a sample count.
+const PLATEAU_MIN_S: f64 = 0.30;
+/// `imu_calibration_tuner._PLATEAU_MAX_DEG_S`: and how slowly it has to be
+/// moving to count, in deg/s rather than deg between samples.
+///
+/// Both were rate-dependent as written -- `run >= 6` samples is 0.30 s at
+/// 20 Hz and 0.06 s at 100 Hz, and an absolute 0.05 deg between samples is a
+/// velocity of 0.05/dt, so 1.0 deg/s at 20 Hz and 10 deg/s at 200 Hz. Between
+/// them a clean decaying swing tripped the check at its own turning points,
+/// which flatten as the amplitude falls. This pair reproduces the old rule
+/// exactly at 20 Hz and now means the same thing at every rate.
+const PLATEAU_MAX_DEG_S: f64 = 1.0;
+
 /// `pendulastic_pt_score._TAIL_FRAC` and friends — the settled-tail drift
 /// estimator's constants, ported verbatim.
 const TAIL_FRAC: f64 = 0.25;
@@ -1028,6 +1042,9 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
 
     let mut plateau_violations = 0usize;
     let mut run = 0usize;
+    let plateau_dt = median_dt(t);
+    let plateau_min_run = ((PLATEAU_MIN_S / plateau_dt).round() as usize).max(2);
+    let plateau_step_deg = PLATEAU_MAX_DEG_S * plateau_dt;
     for i in 0..t.len() {
         if !(t[i] >= pt.t_r[0] && t[i] <= window_end_t) {
             continue;
@@ -1039,9 +1056,9 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
             run = 0;
             continue;
         }
-        if (angle_deg[i + 1] - angle_deg[i]).abs() < 0.05 {
+        if (angle_deg[i + 1] - angle_deg[i]).abs() < plateau_step_deg {
             run += 1;
-            if run >= 6 {
+            if run >= plateau_min_run {
                 plateau_violations += 1;
             }
         } else {
