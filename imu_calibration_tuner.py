@@ -24,7 +24,7 @@ from pendulastic_imu_server import (
     GYRO_BIAS_MIN_SNR, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
     _gravity_dir_from_hold,
 )
-from pendulastic_pt_score import compute_pt_params
+from pendulastic_pt_score import compute_pt_params, _median_dt
 from imu_calibration_config import load_config, save_config
 from imu_flex_axis import FlexAxisEstimator
 
@@ -144,6 +144,45 @@ TUNING_GRID = [
     for gs in (True, False)
     for method in ("relative", "ockendon", "ockendon_flipped")
 ]
+
+# How long a stretch of "not moving" counts as a staircase artifact, as a
+# DURATION rather than a sample count.
+#
+# This was `run >= 6` samples, which is not one threshold but a different one
+# per sample rate: 0.30 s at the 20 Hz the tests use and 0.06 s at the ~100 Hz
+# production captures at. 0.06 s is short enough that a genuine turning point
+# trips it, because the plateau test is an absolute 0.05 deg per sample while
+# the limb's speed at its extremes DECAYS through the trial. Measured on a
+# clean 12 s / 100 Hz / 0.6 Hz analytic swing (no noise, no artifact): every
+# turning point is flat to within 0.05 deg, and the run lengthens as the
+# amplitude falls -- 4 samples at 18.8 deg of amplitude, 8 samples at 9.6 --
+# so from t = 6.8 s onward each extremum scored violations. 11 in all, on a
+# perfectly smooth curve.
+#
+# 0.30 s is the value the rule already had at 20 Hz, so this changes nothing
+# at the rate every existing test runs at and only tightens the higher rates
+# back to the same meaning. The margin is wide in both directions: natural
+# turning-point runs reach 0.08 s on that trial, while the shortest dropout
+# the suite requires caught is 0.30 s, and a dropout holds EVERY sample equal
+# rather than merely close.
+#
+# See docs/reports/2026-11-02-continuity-window-divergence.md and
+# evaluate_continuity_window.py (`clean` mode).
+_PLATEAU_MIN_S = 0.30
+
+# ...and how slowly it has to be moving to count as "not moving", in deg/s.
+#
+# The test was an absolute 0.05 deg BETWEEN SAMPLES, which is a velocity of
+# 0.05/dt: 1.0 deg/s at 20 Hz, 5 deg/s at 100 Hz, 10 deg/s at 200 Hz. So the
+# faster the stream, the more of a perfectly good swing counted as motionless
+# -- the threshold got laxer exactly where there was more data. Fixing only
+# the run length left this one in place and made 200 Hz worse, not better
+# (5 false rejections of 36, against 1 before).
+#
+# 1.0 deg/s is 0.05 deg per sample at 20 Hz, so this pair -- 1.0 deg/s held
+# for 0.30 s -- is precisely the rule the code already had at the rate every
+# existing test runs at, now meaning the same thing at every rate.
+_PLATEAU_MAX_DEG_S = 1.0
 
 OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
 
@@ -646,7 +685,25 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
     t_r = pt_params["t_r"]
     pk_i, tr_i = pt_params["pk_i"], pt_params["tr_i"]
     extrema = np.concatenate([np.asarray(pk_i), np.asarray(tr_i)])
-    if len(extrema):
+    # `>= 2`, not `>= 1`: ONE detected extremum is not an oscillation, and
+    # using it as the end of the active-swing window makes this check
+    # vacuous exactly when it is needed most. A dropout long enough to
+    # destroy extrema detection (2.0 s on the 20 Hz synthetic) leaves a
+    # single extremum 0.15 s after release, which collapsed the window to
+    # four samples -- all of them BEFORE the dropout -- and the frozen trial
+    # scored a clean pass with zero penalty. The longer the dropout, the
+    # more certainly it hid itself.
+    #
+    # A lone extremum is the same situation as none at all: the oscillation
+    # detector has not found a swing to bound. So it takes the same
+    # settle-based bound below, which is derived from the trial's OWN
+    # resting value and is therefore robust here -- a freeze held away from
+    # neutral does not count as settled, so the window extends across it,
+    # while a limb that genuinely locks up and stays put makes that locked
+    # value the tail median and settles immediately, keeping its window
+    # short. That is what preserves the severe-spasticity protection this
+    # whole window exists for.
+    if len(extrema) >= 2:
         last_extremum_t = float(t_r[int(extrema.max())])
         window_end_t = t_r[0] + min(4.0, max(0.0, last_extremum_t - t_r[0]))
     else:
@@ -695,6 +752,11 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
             clip_violations += 1
 
     active_idx = np.where((t >= t_r[0]) & (t <= window_end_t))[0]
+    # A duration, not a sample count -- see _PLATEAU_MIN_S. Floored at 2 so a
+    # very slow stream cannot make the check unreachable.
+    _dt = _median_dt(t)
+    plateau_min_run = max(2, int(round(_PLATEAU_MIN_S / _dt)))
+    plateau_step_deg = _PLATEAU_MAX_DEG_S * _dt
     plateau_violations = 0
     run = 0
     for i in active_idx:
@@ -703,9 +765,9 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
             run = 0
             continue
-        if abs(angle_deg[i + 1] - angle_deg[i]) < 0.05:
+        if abs(angle_deg[i + 1] - angle_deg[i]) < plateau_step_deg:
             run += 1
-            if run >= 6:
+            if run >= plateau_min_run:
                 plateau_violations += 1
         else:
             run = 0

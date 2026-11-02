@@ -13,6 +13,10 @@ import { isExcluded, isQuickTest } from '../session-store.js';
 export function trialSummary(trial, index) {
   const bits = [];
   bits.push(trial.side ? String(trial.side) : 'side not set');
+  // A recording the engine could not score is kept and listed, but must say
+  // so: a blank row reads as an ordinary trial. `scorable === false` only --
+  // a trial recorded before the flag existed (undefined) is a scored one.
+  if (trial.scorable === false) bits.push('not scorable');
   const n = trial.params && trial.params.n;
   if (typeof n === 'number') bits.push(`N ${n.toFixed(2)}`);
   const a0 = trial.params && trial.params.a0_deg;

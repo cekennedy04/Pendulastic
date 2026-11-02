@@ -159,6 +159,17 @@ test('a v3 manifest parses', () => {
   assert.equal(parseManifest(v3).schema, 'pendulastic/session-export/v3');
 });
 
+// The app's own current export must import back into the app.
+test('v5 and v6 manifests parse, keeping a null-params trial', () => {
+  for (const v of ['v5', 'v6']) {
+    const base = JSON.parse(manifestV2);
+    const trials = [...(base.trials || []), { params: null, scorable: false, research: v === 'v6' }];
+    const m = parseManifest(JSON.stringify({ ...base, schema: `pendulastic/session-export/${v}`, trials }));
+    assert.equal(m.schema, `pendulastic/session-export/${v}`);
+    assert.equal(m.trials[m.trials.length - 1].params, null, 'null params must survive, never become zeros');
+  }
+});
+
 // Everything captured before the settle rule is protocol 1 BY ABSENCE. A
 // consumer must read a missing field as 1, never as an error, or every older
 // bundle becomes unimportable.
