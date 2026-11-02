@@ -764,6 +764,43 @@ def test_a_half_second_freeze_is_caught_at_any_sample_rate(fps):
     )
 
 
+@pytest.mark.parametrize("fps", [20.0, 50.0, 100.0, 200.0])
+def test_an_unphysical_jump_is_caught_at_any_sample_rate(fps):
+    """The clip half of the continuity check, and the same rate bug running
+    the other way.
+
+    `abs(diff) > 25.0` deg BETWEEN SAMPLES is a velocity of 25/dt, so it gets
+    LOOSER as the stream gets faster: 500 deg/s at 20 Hz, 2500 at 100 Hz,
+    5000 at 200. Measured on single-sample steps injected into a clean swing,
+    the old rule caught a 2000 deg/s glitch at 20 and 50 Hz and missed it at
+    100 and 200 -- and the app samples at about 100, so a discontinuity many
+    times anything a limb can do went straight through.
+
+    800 deg/s is chosen to sit above the threshold (500 deg/s) and far above
+    physiology -- the literature peak for a healthy swing is 221.9 +/- 35.6
+    deg/s -- while being well under the 2500 the old rule needed at 100 Hz.
+    """
+    t, ang = _analytic_swing(fps)
+    ang[int(3.0 * fps):] += 800.0 / fps      # one sample of 800 deg/s
+    result = tuner.score_waveform(t, ang)
+    assert not result["passes"], (
+        f"an 800 deg/s discontinuity at {fps:g} Hz scored a pass "
+        f"(penalty {result['penalty']:.1f})"
+    )
+
+
+@pytest.mark.parametrize("fps", [20.0, 50.0, 100.0, 200.0])
+def test_a_real_swings_fastest_moment_is_not_a_jump(fps):
+    """The other side of it: the clip threshold must stay clear of real
+    motion. A pendulum's fastest instant is ~222 deg/s (Kim 1996), and this
+    fixture peaks well below the 500 deg/s threshold at every rate, so no
+    clean swing may be clipped."""
+    t, ang = _analytic_swing(fps)
+    peak = float(np.max(np.abs(np.diff(ang)))) * fps
+    assert peak < 500.0, f"fixture peaks at {peak:.0f} deg/s, too close to the gate"
+    assert tuner.score_waveform(t, ang)["passes"]
+
+
 @pytest.mark.parametrize("freeze_s", [0.10, 0.15, 0.20])
 def test_a_sub_threshold_dropout_gets_the_same_verdict_at_every_rate(freeze_s):
     """The property the duration half of the plateau rule exists for, and the
