@@ -20,8 +20,9 @@ import batch_imu_vs_optitrack_rmse as rmse
 import pendulastic_imu_server as srv
 
 
-def _row(pid, pos="L", trial="1", rmse_deg=3.0, status="ok"):
+def _row(pid, pos="L", trial="1", rmse_deg=3.0, status="ok", imu_path=None):
     return {"participant": pid, "position": pos, "trial": trial,
+            "imu_path": imu_path or f"{pid}/{pos}/Trial_{trial}_imu.csv",
             "rmse_deg": rmse_deg, "status": status, "n_samples": 100,
             "optitrack_method": "stub", "error": ""}
 
@@ -113,6 +114,26 @@ def test_trials_are_paired_by_identity_not_by_list_position(capsys):
     out = capsys.readouterr().out
     assert "over 1 trial(s)" in out, "the unpaired trial must be dropped"
     assert "before 3.0000" in out, "P1 must be compared against P1"
+
+
+def test_trials_sharing_participant_position_and_number_stay_distinct(capsys):
+    """Current recordings have no Position_ folder, so position parses as
+    "unknown" for every trial, and one participant's left and right legs (and
+    pre and post sessions) share participant + position + trial number. Keyed
+    on those three, each leg overwrote the other and the 2026-11-02 corpus run
+    paired only 56 of its 144 trials. The IMU path is the trial's identity.
+    """
+    left = "CHAT_19/Left/pre/Trial_1_imu.csv"
+    right = "CHAT_19/Right/pre/Trial_1_imu.csv"
+    rmse._report_comparison(
+        [_row("CHAT_19", "unknown", rmse_deg=3.0, imu_path=left),
+         _row("CHAT_19", "unknown", rmse_deg=9.0, imu_path=right)],
+        [_row("CHAT_19", "unknown", rmse_deg=3.0, imu_path=left),
+         _row("CHAT_19", "unknown", rmse_deg=9.0, imu_path=right)])
+    out = capsys.readouterr().out
+    assert "over 2 trial(s)" in out, "both legs must be paired"
+    assert "before 6.0000" in out
+    assert "unchanged on 2" in out, "each leg must be compared against itself"
 
 
 def test_no_trial_usable_under_both_settings_refuses_a_verdict(capsys):
