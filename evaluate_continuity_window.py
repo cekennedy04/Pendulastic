@@ -46,7 +46,17 @@ fails loudly instead of quietly comparing the wrong thing -- so the RULE_HELPER
 column can be trusted to differ only in the window.
 
 Usage:
-    python3 evaluate_continuity_window.py [quick|full]
+    python3 evaluate_continuity_window.py [quick|full|clean]
+
+`clean` runs PART 2: clean trials only -- no freeze, no tremor -- sweeping the
+sample rate. It exists because PART 1's headline is misleading on its own. The
+helper's window is longer on every trial where the two differ, and it catches
+sensor freezes the 4 s cap hides; but it also rejects trials with no artifact
+in them at all, and that false rejection is a function of SAMPLE RATE, because
+the plateau rule is written in SAMPLES (a run of 6 steps under 0.05 deg) rather
+than as a duration. Six samples is 0.3 s at 20 Hz and 0.06 s at 100 Hz, and a
+genuine turning point on a decaying swing is flat to within 0.05 deg over
+0.06 s. So the window and the plateau rule cannot be decided separately.
 """
 from __future__ import annotations
 
@@ -344,5 +354,52 @@ def main(mode="quick"):
         print("no trial in this corpus gets a different pass/fail verdict.")
 
 
+def clean_sweep():
+    """PART 2: on trials with no artifact at all, does the helper rule reject,
+    and does that depend on the sample rate?"""
+    print("CLEAN trials only -- no freeze, no tremor. A disagreement here is a")
+    print("FALSE rejection: there is no artifact in the trial to catch.")
+    print()
+    print("  fps  decay  freq neutral | win_inl win_hlp  plateau  verdict")
+    by_fps = {}
+    for fps in (20.0, 50.0, 100.0, 200.0):
+        by_fps[fps] = [0, 0]
+        for decay in (0.08, 0.18, 0.40, 0.90):
+            for freq in (0.6, 0.9, 1.3):
+                for neutral in (120.0, 140.0, 160.0):
+                    t, ang = make_trial(duration_s=12.0, fps=fps, decay=decay,
+                                       freq=freq, neutral_deg=neutral)
+                    pt = compute_pt_params(t, ang, detrend=False)
+                    if pt is None:
+                        continue
+                    a = replicate(t, ang, pt, window_inline)
+                    b = replicate(t, ang, pt, window_helper)
+                    if a is None or b is None:
+                        continue
+                    by_fps[fps][1] += 1
+                    if a["passes"] != b["passes"]:
+                        by_fps[fps][0] += 1
+                        if neutral == 160.0:
+                            print(f"  {fps:4.0f} {decay:6.2f} {freq:5.1f} "
+                                  f"{neutral:7.0f} | {a['window_s']:7.2f} "
+                                  f"{b['window_s']:7.2f} {b['plateau']:8d}  "
+                                  f"{'PASS' if a['passes'] else 'fail'} -> "
+                                  f"{'PASS' if b['passes'] else 'fail'}")
+    print()
+    print("  false rejections on clean trials, by sample rate:")
+    for fps, (f, n) in by_fps.items():
+        print(f"    {fps:5.0f} Hz : {f:3d} of {n:3d}"
+              f"   (6 samples = {6.0 / fps:.3f} s)")
+    print()
+    print("  The 20 Hz row is clean and 100 Hz is the worst. The drop back to")
+    print("  1 of 36 at 200 Hz is NOT explained here -- the window must come")
+    print("  out shorter at that rate, but this script does not show why, so")
+    print("  no mechanism is claimed for it.")
+
+
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "quick")
+    mode = sys.argv[1] if len(sys.argv) > 1 else "quick"
+    if mode == "clean":
+        clean_sweep()
+    else:
+        main(mode)
