@@ -93,7 +93,7 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
     legs_attempted: set = set()
     for rec in trials:
         cond = str(rec["condition"]).lower()
-        if not (cond.startswith("pre") or rec["condition"] == "default"):
+        if not (cond.startswith("pre") or cond == "default"):
             continue
         key = (str(rec["participant"]), rec["leg"])
         if key not in mas:

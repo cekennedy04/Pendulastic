@@ -7,8 +7,11 @@ import { openDb, put, getAll, getOne, STORES } from './db.js';
 import {
   makeTrialRecord, makeSessionRecord, canCloseSession, markExported, PARAM_FIELDS,
   activeTrials, excludeTrial, includeTrial,
-  makeQuickTestPatient, isQuickTest,
+  makeQuickTestPatient, isQuickTest, QUICK_TEST_PATIENT_ID,
 } from './session-store.js';
+import { isResearchMode } from './research-mode.js';
+import { createResearchView } from './views/research.js';
+import { foldGyroBatch, capSeries } from './research-waveform.js';
 import { buildExportFiles, shareFiles, downloadViaAnchor } from './export.js';
 import { ALGORITHM_VERSION, BUILD_ID } from './build-id.js';
 import { createRouter, VIEWS } from './router.js';
@@ -440,11 +443,11 @@ function formatValue(v) {
 // reach the pure `nextOutcome` above) must not throw under `node --test`,
 // which has no `document`.
 if (typeof document !== 'undefined') {
-  // Blocks recording until the app is opened from the Home Screen icon, not
-  // a browser tab (task-2 dispatch). See install-gate.js's doc comment for
-  // why both `matchMedia` and `navigator.standalone` are checked. This must
-  // run before any control below is wired -- Start is disabled synchronously
-  // rather than left clickable until some later check catches up.
+  // Warns -- never blocks -- when the app runs in a browser tab rather than
+  // from the Home Screen icon, where Safari's 7-day eviction can erase
+  // unexported trials. It used to hide Start until installed; recording is
+  // now never gated (user decision, 2026-10-27). See install-gate.js's doc
+  // comment for why both `matchMedia` and `navigator.standalone` are checked.
   const gateState = installState({
     matchMedia: window.matchMedia.bind(window),
     navigatorStandalone: window.navigator.standalone,
@@ -456,7 +459,6 @@ if (typeof document !== 'undefined') {
       ? 'This browser cannot run Pendulastic offline. Use Safari on iOS or Chrome on Android.'
       : installInstructions(navigator.userAgent);
     el('install-gate').hidden = false;
-    el('start').hidden = true;
   }
 
   // ---- View routing -------------------------------------------------------
@@ -1070,6 +1072,9 @@ if (typeof document !== 'undefined') {
   function renderMetricList(params, ptScore) {
     const host = el('metric-list');
     if (!host) return;
+    // An unscored recording has no metrics to list. Hide the list rather than
+    // letting metricRows read keys off null params.
+    if (!params) { host.hidden = true; return; }
     ensureReference(() => renderMetricList(params, ptScore));
     const rows = metricRows(params, healthyReference, ptScore && ptScore.breakdown,
       ptScore && ptScore.n_scored);
@@ -1138,6 +1143,13 @@ if (typeof document !== 'undefined') {
   }
   function renderResult(params) {
     el('result').hidden = false;
+    // An unscored recording carries null params (an SSR staircase or any
+    // non-swing, kept for its raw log). Say so rather than rendering a table
+    // of "undefined", and never coerce the missing values to zeros.
+    if (!params) {
+      el('result').innerHTML = '<tr><td colspan="2">not scorable — raw recording kept</td></tr>';
+      return;
+    }
     el('result').innerHTML = PARAM_FIELDS
       .map((k) => `<tr><td>${k}</td><td>${formatValue(params[k])}</td></tr>`)
       .join('');
@@ -1333,6 +1345,158 @@ if (typeof document !== 'undefined') {
     },
   });
   router.register('capture', captureView);
+
+  // ---- Research recorder (gated raw recorder) -----------------------------
+  // A plain start/stop recorder for bench/SSR validation: no state machine, no
+  // hold/rest/settle, no auto-stop, no scoring. It reuses the capture engine
+  // for its raw log only, and files each recording under the built-in
+  // QUICK-TEST participant as an unscored `research` trial (Piece 1's storage).
+  // Gated behind ?research=1; when off, the home tile stays hidden, so nothing
+  // here is reachable and the clinical flow is byte-for-byte unchanged.
+  let researchHandle = null;
+  let researchWaveState = { lastTMs: null, angleDeg: 0 };
+  let researchSeries = [];
+  let researchStartMs = 0;
+  let researchSampleCount = 0;
+  const RESEARCH_MAX_POINTS = 900;
+
+  // Two autoscaled bands: integrated gyro-y angle (deg, display-only, drifts)
+  // over the raw gyro-y rate (deg/s). The SAVED raw JSONL is the real data.
+  function drawResearchTrace(series) {
+    const canvas = el('research-canvas');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width) return;                       // in a display:none subtree
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = `${12 * dpr}px system-ui, sans-serif`;
+    const band = (key, color, top, bottom, label) => {
+      ctx.fillStyle = '#8894a0';
+      ctx.fillText(label, 4 * dpr, top + 14 * dpr);
+      if (series.length < 2) return;
+      const vals = series.map((p) => p[key]);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (hi - lo < 1e-6) { lo -= 1; hi += 1; }
+      const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+      const span = hi - lo;
+      ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr; ctx.beginPath();
+      series.forEach((p, i) => {
+        const x = (i / (series.length - 1)) * w;
+        const y = bottom - (bottom - top) * ((p[key] - lo) / span);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.fillText(series[series.length - 1][key].toFixed(1), w - 56 * dpr, top + 14 * dpr);
+    };
+    const mid = h / 2;
+    band('angleDeg', '#0d6a86', 0, mid, 'angle (deg)');
+    band('rateDegS', '#c24a6a', mid, h, 'gyro-y (deg/s)');
+  }
+
+  function resetResearchTrace() {
+    researchWaveState = { lastTMs: null, angleDeg: 0 };
+    researchSeries = [];
+    researchSampleCount = 0;
+  }
+
+  // A session for the built-in QUICK-TEST participant, created on first use --
+  // kept entirely separate from the clinical currentSession/currentPatient so a
+  // research recording never touches the clinical export gate.
+  async function ensureResearchSession() {
+    await ensureSessionReady();
+    let qp = await getOne(db, STORES.patients, QUICK_TEST_PATIENT_ID);
+    if (!qp) { qp = makeQuickTestPatient(); await put(db, STORES.patients, qp); }
+    const sessions = await getAll(db, STORES.sessions, 'by_patient', QUICK_TEST_PATIENT_ID);
+    const s = resumeOrCreateSession(sessions, QUICK_TEST_PATIENT_ID);
+    await put(db, STORES.sessions, s);
+    return s;
+  }
+
+  async function persistResearchRecording(rawJsonl) {
+    const s = await ensureResearchSession();
+    const record = makeTrialRecord({
+      sessionId: s.id, side: currentSide, params: null, trajectory: null,
+      rawJsonl, algorithmVersion: ALGORITHM_VERSION, research: true, quickTest: true,
+    });
+    await put(db, STORES.trials, record);
+    await put(db, STORES.sessions, invalidateExport(s));
+    return record;
+  }
+
+  async function refreshResearchCount() {
+    try {
+      const sessions = await getAll(db, STORES.sessions, 'by_patient', QUICK_TEST_PATIENT_ID);
+      let n = 0;
+      for (const s of sessions) n += (await getAll(db, STORES.trials, 'by_session', s.id)).length;
+      el('research-count').textContent = n
+        ? `${n} recording${n > 1 ? 's' : ''} saved under QUICK-TEST — export from Session`
+        : '';
+    } catch { /* best effort */ }
+  }
+
+  async function researchStart() {
+    resetResearchTrace();
+    researchStartMs = Date.now();
+    el('research-start').hidden = true;
+    el('research-stop').hidden = false;
+    el('research-status').textContent = 'recording…';
+    // No onState/onResult/onError work: this mode does not score or auto-stop.
+    researchHandle = await startCapture({
+      onState: () => {},
+      onResult: () => {},
+      onError: () => {},
+      onSamples: (buf) => {
+        const { state, points } = foldGyroBatch(buf, researchWaveState);
+        researchWaveState = state;
+        researchSampleCount += points.length;
+        researchSeries = capSeries(researchSeries.concat(points), RESEARCH_MAX_POINTS);
+        drawResearchTrace(researchSeries);
+        el('research-timer').textContent = `${((Date.now() - researchStartMs) / 1000).toFixed(1)} s`;
+      },
+    });
+  }
+
+  async function researchStop() {
+    const handle = researchHandle;
+    researchHandle = null;
+    el('research-stop').hidden = true;
+    el('research-start').hidden = false;
+    if (!handle) return;
+    el('research-status').textContent = 'saving…';
+    try {
+      // stop() flushes the final batch and posts finish (its result is ignored);
+      // exportJsonl still works afterward -- the session keeps the raw log.
+      handle.stop();
+      const raw = await handle.exportJsonl();
+      await persistResearchRecording(raw);
+      const durS = ((Date.now() - researchStartMs) / 1000).toFixed(1);
+      el('research-status').textContent = `saved — ${researchSampleCount} samples, ${durS} s`;
+      await refreshResearchCount();
+    } catch (err) {
+      el('research-status').textContent =
+        `NOT saved: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  const researchView = createResearchView({
+    el,
+    isRecording: () => researchHandle != null,
+    redraw: () => drawResearchTrace(researchSeries),
+  });
+  router.register('research', researchView);
+  el('research-start')?.addEventListener('click', researchStart);
+  el('research-stop')?.addEventListener('click', researchStop);
+  if (isResearchMode()) {
+    const tile = el('research-tile');
+    if (tile) tile.hidden = false;
+    refreshResearchCount();
+  }
 
   // ---- Trends (unit B) ----------------------------------------------------
   router.register('trends', createTrendsView({
@@ -1792,7 +1956,7 @@ if (typeof document !== 'undefined') {
   // check does not see the VIEW's visibility, so once capture lived inside a
   // toggled section a resize on any other view redrew a canvas whose
   // getBoundingClientRect() is all zeros -- silently resizing it to 0x0.
-  window.addEventListener('resize', () => captureView.handleResize());
+  window.addEventListener('resize', () => { captureView.handleResize(); researchView.handleResize(); });
 
   // Human-readable zone label. Every label carries "(provisional)" -- this
   // instrument has not passed its validation gate (trajectory RMSE 14.84°
@@ -2048,7 +2212,38 @@ if (typeof document !== 'undefined') {
     const g = el('guide');
     if (action.kind === 'unscorable') {
       g.className = 'unscorable';
-      g.textContent = 'NOT SCORABLE\nno usable swing -- try again';
+      g.textContent = 'NOT SCORABLE\nno usable swing -- kept for review';
+      // Persist the unscored recording rather than dropping it (2026-09-15):
+      // "measure everything, flag out-of-range, never exclude" at the most
+      // basic level -- the raw accel+gyro is exactly what the SSR sensor
+      // validation needs, and an unscorable trial used to vanish the instant
+      // the next Start ran (which nulls exportSession). Only 'unscorable'
+      // persists; a genuine 'fault' (the else branch) still must not.
+      //
+      // Mirrors onResult's chain and its busy-counter discipline EXACTLY (see
+      // that function's doc comment): ONE synchronous sessionBusyCount++ the
+      // instant we commit to persisting, the whole exportJsonl -> persistTrial
+      // chain, and ONE decrement in a single .finally() with refreshExportLock
+      // after. exportJsonl is invoked INSIDE the chain (never called to start
+      // it before .finally() is attached) so a throwing handle cannot leak the
+      // count. params/ptScore are null -- persistTrial and makeTrialRecord
+      // store that as `scorable: false`, params null.
+      const capture = exportSession;
+      if (capture) {
+        sessionBusyCount++;
+        Promise.resolve()
+          .then(() => capture.exportJsonl())
+          .then((rawJsonl) => persistTrial(null, null, rawJsonl, null, null, null, null))
+          .catch((err) => {
+            el('session-status').textContent =
+              `unscorable trial NOT saved: ${err instanceof Error ? err.message : String(err)}`;
+          })
+          .finally(() => {
+            sessionBusyCount--;
+            refreshExportLock();
+          });
+        refreshExportLock();
+      }
     } else {
       g.className = 'fault';
       g.textContent = `ERROR\n${action.reason}`;
@@ -2058,19 +2253,21 @@ if (typeof document !== 'undefined') {
   }
 
   el('start').addEventListener('click', async () => {
-    // Checked before any capture starts rather than at persist time: a trial
-    // recorded with nowhere to file it would be scored, shown, and then
-    // silently dropped by persistTrial.
-    if (!currentPatient || !currentSide) {
-      el('guide').className = 'fault';
-      el('guide').textContent = 'Set a participant and leg\nin Session first';
-      return;
-    }
     // Synchronous, and before every `await` below: iOS only permits an
     // AudioContext to start inside a user gesture, and the first await ends
-    // that window. It sits after the participant gate on purpose -- that path
-    // returns without starting a trial, so there is nothing to cue.
+    // that window.
     cues.unlock();
+    // Recording never waits on a participant or a leg. With no participant
+    // set, the trial is filed as unassigned under the built-in QUICK-TEST
+    // participant -- kept and exported, left out of per-person trends -- so a
+    // trial always has somewhere to be saved. The leg stays optional and is
+    // stored as "not set".
+    if (!currentPatient) {
+      await ensureSessionReady();
+      const patient = (await getOne(db, STORES.patients, QUICK_TEST_PATIENT_ID)) ?? makeQuickTestPatient();
+      await put(db, STORES.patients, patient);
+      await applyParticipantAction({ type: 'select', patient });
+    }
     faulted = false; // fresh trial: the previous trial's latch must not carry over
     el('start').hidden = true;
     el('stop').hidden = false;
