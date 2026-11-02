@@ -164,7 +164,9 @@ def test_replay_trial_subtracts_calibrated_gyro_bias():
     params = {"beta": 0.041, "ema_alpha": 1.0,
               "flex_axis_capture": True, "gravity_seed": True}
     clean_samples = _solo_hold_with_bias_then_burst_samples((0.0, 0.0, 0.0))
-    bias = (0.05, -0.08, 0.03)   # rad/s, comparable to a real MEMS offset
+    # rad/s: under GYRO_BIAS_MAX_RAD_S, ~10x the 0.00376 rad/s measured on a
+    # still phone. Uncorrected it would drift ~3 deg over the trial.
+    bias = (0.02, -0.03, 0.015)
     biased_samples = _solo_hold_with_bias_then_burst_samples(bias)
 
     t_clean, angle_clean = tuner.replay_trial(clean_samples, params)
@@ -174,6 +176,29 @@ def test_replay_trial_subtracts_calibrated_gyro_bias():
         f"bias-corrected run ({angle_biased[-1]:.2f} deg) should match the "
         f"zero-bias control ({angle_clean[-1]:.2f} deg) once the injected "
         f"bias is properly measured and subtracted")
+
+
+def test_replay_trial_discards_a_motion_sized_bias_estimate():
+    """Mirrors calibrate_gyro_bias()'s GYRO_BIAS_MAX_RAD_S bound on the replay
+    path: a hold whose gyro mean is far beyond any sensor bias must not be
+    subtracted for the rest of the trial. With the bound the result equals a
+    run that never calibrated at all (bias left at zero)."""
+    params = {"beta": 0.041, "ema_alpha": 1.0,
+              "flex_axis_capture": True, "gravity_seed": True}
+    motion = (0.0, 0.12, 0.0)
+    samples = _solo_hold_with_bias_then_burst_samples(motion)
+    t_a, a_capped = tuner.replay_trial(samples, params)
+    orig = tuner.GYRO_BIAS_MAX_RAD_S
+    try:
+        tuner.GYRO_BIAS_MAX_RAD_S = -1.0          # reject every estimate
+        t_b, a_none = tuner.replay_trial(samples, params)
+        tuner.GYRO_BIAS_MAX_RAD_S = float("inf")  # accept every estimate
+        t_c, a_all = tuner.replay_trial(samples, params)
+    finally:
+        tuner.GYRO_BIAS_MAX_RAD_S = orig
+    np.testing.assert_allclose(a_capped, a_none, equal_nan=True)
+    assert not np.allclose(a_capped, a_all, equal_nan=True), (
+        "fixture does not exercise the bound: the estimate was never computed")
 
 
 def _solo_handling_then_hold_then_burst_samples():

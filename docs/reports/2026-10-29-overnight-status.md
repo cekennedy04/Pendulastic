@@ -196,21 +196,33 @@ off for. That is exactly what the corpus run covers.
 
 ## 3. Verified state
 
-- **1347** Python tests passing (3.13, the interpreter here that has cv2 and
-  mediapipe), **426** webapp, **16** Rust suites, clippy clean under
-  `-D warnings`.
-- CI green on `main` at `aff4a3c` (run 271), which is everything in this note.
-  All three jobs, including the python job now that it gates the tuner file.
-- **12 pre-existing Python failures**, all in
-  `test_capture_coverage_hpe_session` (a worker consuming 0 frames), confirmed
-  identical to clean `origin/main` by diffing both full-suite failure lists
-  from a worktree: 12 against 13, the one difference being the tuner test the
-  fix above repaired, and nothing new on my side. I introduced none and fixed
-  one.
-- Earlier in the session the same comparison showed **16**, on an interpreter
-  without cv2. The extra three were `test_capture_quality_guard`'s
-  `ModuleNotFoundError: cv2`, which is the environment, not the code, and the
-  fourth was:
+- **1370 Python tests passing and ZERO failing**, **426** webapp, **16** Rust
+  suites, clippy clean under `-D warnings`.
+- CI green on `main` at `aff4a3c` (run 271) for the work in section 2; the
+  later commits have their own runs.
+
+> **UPDATE, 2026-11-02 — the 12 "pre-existing failures" are gone, and they
+> were never a code defect.** This section carried them as 12 unexplained
+> failures in `test_capture_coverage_hpe_session`, described only by their
+> symptom ("a worker consuming 0 frames"). The cause is two **missing system
+> libraries**: MediaPipe needs `libEGL.so.1` and `libGLESv2.so.2` to construct
+> an `mp.Image`, and without them that call raises `OSError` on the first
+> frame handed to the pose detector. `PoseCoverageSession._process` catches it
+> per frame exactly as designed, so the injected detector is never called and
+> every test stops at `_pump`'s "worker stopped consuming after 0 frames".
+> `apt-get install -y libegl1 libgles2` and all 21 pass. The suite is now
+> fully green. Documented in the README's Installation section and beside
+> `mediapipe` in `requirements.txt`, since pip cannot install either one.
+>
+> Worth noting what made this hard to see: the error never mentions MediaPipe,
+> and the code's own error-recording path works — `last_error` does hold the
+> `OSError` — but the tests assert on the detector's call count, which stays
+> at zero, so the diagnosis is one layer below what the failure prints.
+
+- Earlier in the session the comparison showed **16** failures, on an
+  interpreter without cv2. Three of those were `test_capture_quality_guard`'s
+  `ModuleNotFoundError: cv2` — the same class of problem as above, the
+  environment rather than the code — and the fourth was:
   `test_imu_calibration_tuner.py::test_score_waveform_plateau_during_active_swing_fails`.
   **That one is now fixed** — see section 2 — and the file is gated in CI, so
   it cannot go quiet again. It had been failing on main while CI stayed green
@@ -218,9 +230,11 @@ off for. That is exactly what the corpus run covers.
   `pytest tests/` is not what CI runs.
 - One more thing the comparison turned up: `test_camera_utils.py::`
   `test_stale_frame_from_abandoned_thread_does_not_leak_into_newer_session`
-  is **flaky**, failing about 2 runs in 5 on current `main` *and* on a clean
-  worktree of it. Not in CI's list, so it gates nothing, but while it flaps a
-  real regression in camera frame handling is indistinguishable from noise.
+  was **flaky**, failing about 2 runs in 5 on current `main` *and* on a clean
+  worktree of it. **Fixed 2026-11-02** — it raced its own new session, taking
+  its baseline snapshot before `close()` had joined the streaming thread — and
+  it is now deterministic in both directions: 25 of 25 pass, and disabling the
+  production guard it exists for fails it 5 of 5.
 
 ---
 
