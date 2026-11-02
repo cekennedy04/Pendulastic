@@ -545,7 +545,7 @@ def test_compare_floor_pairs_offset_removed_rmse(capsys):
 
     def row(raw, off):
         return {"participant": "P1", "position": "Left", "trial": "t1",
-                "status": "ok", "rmse_deg": raw, "rmse_deg_offset_removed": off,
+                "imu_path": "P1/Left/pre/Trial_1_imu.csv", "status": "ok", "rmse_deg": raw, "rmse_deg_offset_removed": off,
                 "optical_absolute_zero": False}
 
     batch._report_comparison([row(150.33, 10.0)], [row(150.08, 5.0)])

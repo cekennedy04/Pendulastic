@@ -471,12 +471,16 @@ def _compare_floors(matched, floor):
 
 
 def _report_comparison(before, after):
-    """Paired per-trial deltas, and whether the change helps or hurts."""
+    """Paired per-trial deltas, and whether the change helps or hurts.
+
+    Paired on the IMU path, the one identifier unique to a trial: current
+    recordings have no Position_ folder, so participant + position + trial
+    number is shared by a participant's two legs and two sessions."""
     by_key = {}
     for row in before:
-        by_key[(row["participant"], row["position"], row["trial"])] = [row, None]
+        by_key[row["imu_path"]] = [row, None]
     for row in after:
-        k = (row["participant"], row["position"], row["trial"])
+        k = row["imu_path"]
         if k in by_key:
             by_key[k][1] = row
     pairs = [(b, a) for b, a in by_key.values()
