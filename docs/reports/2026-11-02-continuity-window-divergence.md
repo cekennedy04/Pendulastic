@@ -65,6 +65,22 @@ three lengths):
 | **overall pass/fail differs** | **268 (2.5%)** |
 | and the helper rejects what inline accepts | **268 of 268** — never the reverse |
 
+Those are the figures **before** the plateau rule was fixed (§5). Re-measured
+over the same corpus afterwards, the window comparison is unchanged — it is
+the same rule — but the damage is almost gone:
+
+| | before the plateau fix | after |
+|---|---|---|
+| windows differ | 6,523 (60.2%) | 6,523 (60.2%) |
+| continuity verdict differs | 988 (9.1%) | 809 (7.5%) |
+| overall pass/fail differs | 268 (2.5%) | **219 (2.0%)** |
+| …of those, trials with a sensor freeze | 198 | **218** |
+| …of those, **clean** trials | **70** | **1** |
+
+So dropping the cap now costs **one** clean trial in 10,835 instead of 70,
+and buys 218 caught dropouts. That is a much easier decision than it was this
+morning, and it is the main reason the plateau rule had to be fixed first.
+
 The replication is self-checked: every trial computes the inline verdict twice,
 once by calling the real `score_waveform` and once through the script's copy of
 it, asserting both `passes` and `penalty` agree. It matched on all 10,836, so
@@ -88,6 +104,15 @@ rejections, and not evenly spread:
 | 50 Hz | 3 of 36 | 0 |
 | 100 Hz | **6** of 36 | 0 |
 | 200 Hz | 1 of 36 | 0 |
+
+The one clean trial that still disagrees across the whole corpus is worth
+naming, because it is **not** the plateau rule: a 30 s trial at 20 Hz with a
+2 deg resting tremor, where the helper's window runs out to 28.90 s and finds
+4 violations in the tail. That is the limitation
+`_active_oscillation_window_end`'s own docstring already records — a long
+regular tremor can outvote a handful of real swing extrema and set the gap
+limit to its own cadence. Dropping the cap inherits that, and it is bounded to
+long trials with tremor.
 
 ### The mechanism, measured rather than asserted
 
