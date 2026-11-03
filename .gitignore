@@ -129,3 +129,19 @@ neuromech/report/out/
 # neuromech rig sessions: generated per bench day (regenerable from session.json
 # seed), and key.csv is the blinding key -- never publish it in this public repo.
 neuromech/sessions/
+
+# Regenerable run output (sweep logs, analysis stdout, one-off check images)
+sweep_resume_log*.txt
+*_output.txt
+opensim_ik*.txt
+lateral_impact_presentation*.png
+oneoff_lateral_check*.png
+
+# Bench/phone trial data, personal to-do files, generated figures, scratch outputs
+Pendulastic_Mobile_App_Trial/
+to_do/
+bench_figures/
+ab_*.csv
+preamble_out.csv
+x.png
+excluded_trials.json.bak-*
