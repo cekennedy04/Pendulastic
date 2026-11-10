@@ -12,8 +12,17 @@ are waiting on the owner. Many sessions work in this repo at once.
   Do not merge or push directly to `main`. Check `git rev-parse --abbrev-ref @{u}`
   before pushing; a branch tracking `origin/main` pushes to main.
 - Do not start work on a workstream `STATUS.md` marks FROZEN or TO ARCHIVE.
-- Never commit `webapp/src/build-id.js` except in a deploy commit. Any
-  `npm run build:wasm` rewrites it; restore it before committing.
+- `webapp/src/build-id.js` is generated but tracked, and CI checks it.
+  `BUILD_ID` is a hash of the shell files plus the Rust source in
+  `mobile-imu-core/src/`, so a PR that changes either must restamp it
+  (`npm run build:shell` in `webapp/`) or `sw-shell.test.js` fails. A PR that
+  changes neither must not commit a restamp: `npm run build:wasm` rewrites the
+  file as a side effect, so restore it (`git checkout -- webapp/src/build-id.js`).
+  This Windows checkout has CRLF working copies of some hashed files and
+  computes a different `BUILD_ID` than CI; use the value CI's failure message
+  expects, or stamp from an LF checkout.
+- Run `cargo clippy --all-targets -- -D warnings` as well as `cargo test`
+  before pushing Rust changes; CI fails on any clippy warning.
 - `webapp/src/wasm/` is a local build. Run `npm run build:wasm` in `webapp/`
   before webapp tests or `neuromech/phone_trial.py` replays.
 - The PT scorer exists in Python (`pendulastic_pt_score.py`), Rust
