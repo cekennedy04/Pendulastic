@@ -105,9 +105,12 @@ python -m neuromech.dryrun
 
 Plans a session, plays each command as the Player delivers it (a 100 Hz staircase with Windows
 lateness), synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
-jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-10-26:
-every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
-plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
+jitter, reversed mount, real-size bias), and scores it like a real session. Result re-run 2026-11-10
+on main: 7 of 9 runs delivered in their intended band, median tracking 0.73°, phone vs encoder |ΔPT7|
+median 0.000 (max 0.015), phone/encoder band agreement 89%, plant recovered (6.34 Hz, ζ 0.234, R² 0.998).
+The two misses are `B-claspknife` and `M-catch_release_high`: both intend PT7 0.139 and deliver about
+0.115, which falls on the other side of the 0 / 1 band edge. (The 2026-10-26 run recorded every run in
+band; that no longer reproduces.)
 
 ## 7. Check the app itself, without a phone
 
