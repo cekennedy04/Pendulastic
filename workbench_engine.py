@@ -160,6 +160,35 @@ def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
     return float(tc[rel_i])
 
 
+#: Below this, the curve has no release direction to orient by and is left as
+#: it is. Not a refusal: a trace this flat produces a meaningless comparison
+#: whichever way up it is, and the caller can see it in the amplitude.
+_MIN_ORIENT_A0_DEG = 1.0
+
+
+def _orient_release_positive(y):
+    """Return (y, was_inverted) with the release made extension-positive.
+
+    A0 here is the start height above the settled value, and a negative A0
+    means the curve arrived upside down. The tail median (last 25%) is the
+    settled value, matching compute_pt_params' own neutral convention.
+
+    Returns the curve unchanged when there is no release to orient by, so a
+    flat or noise-only trace is never assigned a direction it does not have.
+    """
+    y = np.asarray(y, dtype=float)
+    f = y[np.isfinite(y)]
+    if len(f) < 4:
+        return y, False
+    tail = f[int(len(f) * 0.75):]
+    if not len(tail):
+        return y, False
+    a0 = float(np.median(f[:max(1, len(f) // 20)]) - np.median(tail))
+    if not np.isfinite(a0) or abs(a0) < _MIN_ORIENT_A0_DEG:
+        return y, False
+    return (-y, True) if a0 < 0.0 else (y, False)
+
+
 def compare_pair(ref_t, ref_y, test_t, test_y,
                  lag_override_sec: Optional[float] = None,
                  capture_skew_prior: bool = False) -> dict:
@@ -214,6 +243,28 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
 
     if len(ref_t) < 4 or len(test_t) < 4:
         return {"status": "error", "error": "Need at least 4 finite samples in both signals."}
+
+    # Orient both curves before anything is measured off them.
+    #
+    # Since 87d7645 the optical marker path returns a RELATIVE curve whose
+    # sense comes from a hinge eigenvector, so about half the trials arrive
+    # inverted while the IMU curve does not -- measured on the phone corpus at
+    # 75109c5: the optical curve inverted on 65 of 134 paired trials, the IMU
+    # curve on none. A mirrored curve corrupts BOTH steps that follow:
+    # _detect_release looks for a directional departure, and the
+    # cross-correlation lag search on a curve and its mirror peaks negatively
+    # rather than at the true shift. So the orientation goes in before both.
+    #
+    # Without it the corpus median rmse_deg_offset_removed read 22.0 deg where
+    # the same IMU curves give 14.7 deg once both are oriented. That is a
+    # property of this comparison, not of the IMU pipeline or the scorer.
+    #
+    # Mirroring changes the sign convention of the curve, so `rmse_deg` and
+    # `bias_deg` on an inverted pair are in the mirrored frame. Against a
+    # relative reference those carried no information anyway (see
+    # rmse_deg_offset_removed below); the *_inverted flags say when it happened.
+    ref_y, ref_inverted = _orient_release_positive(ref_y)
+    test_y, test_inverted = _orient_release_positive(test_y)
 
     # Release times must be measured on the finite-filtered signal BEFORE
     # active-window truncation below -- _active_window_end() trims the TAIL
@@ -323,6 +374,12 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
         "status": "ok",
         "rmse_deg": rmse,
         "rmse_deg_offset_removed": rmse_offset_removed,
+        # Whether each curve arrived upside down. Reported rather than hidden:
+        # the optical sense is an eigenvector's and carries no information, but
+        # a flipped TEST curve may be a real defect in the model path, and a
+        # caller cannot tell the two apart without knowing a flip was applied.
+        "ref_inverted": bool(ref_inverted),
+        "test_inverted": bool(test_inverted),
         "mae_deg": mae,
         "bias_deg": bias,
         "loa_lower_deg": loa_lower,
