@@ -25,10 +25,13 @@ starting; update it in the same PR that changes a workstream's state. Dated note
   contains #82, which should be closed).
 - **Not yet on main:** 2 commits on `feat/neuromech-player` made after #71 merged
   (C# port of the #75 excursion gate).
-- **Unresolved numbers:** docs disagree on the dry-run result (7/9 vs 9/9 runs in band)
-  and the scenario count (62 to 69). Re-run and record one value here.
-- **Next actions:** land #86, #87, #90; port the two player commits; reconcile the
-  numbers; quantify `neuromech/session._phone_angle` (raw gyro integration) against the
+- **Current numbers (re-run on main, 2026-11-10):** `python -m neuromech.build` writes
+  67 scenarios. `python -m neuromech.dryrun` delivers 7 of 9 runs in their intended band
+  (median tracking 0.73 deg; phone vs encoder |dPT7| max 0.015). The misses are
+  `B-claspknife` and `M-catch_release_high`: both intend PT7 0.139 and deliver about
+  0.115, across the 0 / 1 band edge. Older docs quoting 9/9 or other counts are stale.
+- **Next actions:** land #86, #87, #90; port the two player commits; decide what to do
+  about the two band-edge misses (move the targets off the edge, or accept); quantify `neuromech/session._phone_angle` (raw gyro integration) against the
   shipped app pipeline using `neuromech/phone_trial.py`; then rig sessions.
 - **Owner decisions pending (O1–O5):** arm range ±65° or 0.75× amplitude render;
   actuator of at least 20 N·m; when to build the vertical rig; two blind clinicians per
