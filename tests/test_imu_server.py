@@ -361,6 +361,26 @@ def test_gravity_seed_result_is_unit_quaternion():
         assert abs(np.linalg.norm(q) - 1.0) < 1e-6, f"not unit for accel={a}: {q}"
 
 
+def test_gravity_seed_is_the_filters_own_resting_point():
+    """A still, TILTED sensor seeded from its accel must stay where the seed put
+    it. The filter predicts gravity from q; a seed that disagrees with that
+    prediction leaves the filter to rotate toward it for tens of seconds (the
+    mirrored seed did: twice the tilt, worked off at ~2.5 deg/s). Flat starts
+    cannot see this, which is how it survived the tests above."""
+    for a in [[0., 1.7, 9.66], [3., 0., 9.3], [-3., 1., 8.], [5., 5., 5.], [0., 9.81, 0.5]]:
+        a = np.array(a, float)
+        q = imu._gravity_seed(a)
+        q1, q2, q3, q4 = q
+        predicted = np.array([2 * (q2 * q4 - q1 * q3), 2 * (q1 * q2 + q3 * q4), 1 - 2 * (q2 * q2 + q3 * q3)])
+        np.testing.assert_allclose(predicted, a / np.linalg.norm(a), atol=1e-9, err_msg=f"accel={a}")
+        ahrs = imu.MadgwickAHRS(beta=0.041)
+        ahrs.q = q.copy()
+        for _ in range(300):                       # 5 s lying still at 60 Hz
+            ahrs.update(np.zeros(3), a, None, 1 / 60)
+        moved = 2 * np.degrees(np.arccos(min(1.0, abs(float(np.dot(ahrs.q, q))))))
+        assert moved < 0.01, f"a still sensor rotated {moved:.2f} deg after seeding, accel={a}"
+
+
 def test_gravity_seed_applied_on_first_accel():
     """on_accel() must seed ahrs.q from gravity on the very first call."""
     dev = imu._IMUDevice("9.9.9.9")

@@ -356,11 +356,21 @@ def _gravity_seed(accel: np.ndarray) -> np.ndarray:
     identity — so without seeding the filter needs tens of seconds to converge.
     Seeding from the first accel packet eliminates that delay completely.
 
-    Derivation: shortest-arc quaternion from [0,0,1] to g_hat.
-        q_unnorm = [1 + g_hat·ẑ,  cross(ẑ, g_hat)]
-                 = [1 + gz, [-gy, gx, 0]]
+    Derivation: the quaternion the filter's own gravity model maps onto g_hat.
+    MadgwickAHRS.update() predicts the accelerometer reading from q as
+        [2(q2q4 - q1q3), 2(q1q2 + q3q4), 1 - 2(q2² + q3²)]
+    and the seed must make that equal g_hat, which is the shortest arc from
+    g_hat to [0,0,1] -- the INVERSE of the arc from [0,0,1] to g_hat:
+        q_unnorm = [1 + gz, [gy, -gx, 0]]
         |q_unnorm| = sqrt(2·(1 + gz))
-    Special case gz≈-1 (anti-aligned): rotate 180° around X instead."""
+    Special case gz≈-1 (anti-aligned): rotate 180° around X instead.
+
+    Until 2026-11-09 this returned the other arc, [1 + gz, [-gy, gx, 0]]. The
+    two agree only for a sensor lying flat, which is all the tests covered. For
+    any other start the filter began with TWICE the sensor's tilt as
+    orientation error and worked it off at beta's ~2.5 deg/s: a still phone
+    tilted 10° read its hold as 166° creeping to 178°. Found by replaying
+    synthetic whole trials through the app (neuromech/phone_trial.py)."""
     a = np.asarray(accel, float)
     n = float(np.linalg.norm(a))
     if n < 1e-9:
@@ -369,7 +379,7 @@ def _gravity_seed(accel: np.ndarray) -> np.ndarray:
     denom = math.sqrt(max(0., 2.0 * (1.0 + gz)))
     if denom < 1e-9:          # gz ≈ -1: 180° — pick X axis
         return np.array([0., 1., 0., 0.])
-    return np.array([(1.0 + gz) / denom, -gy / denom, gx / denom, 0.0])
+    return np.array([(1.0 + gz) / denom, gy / denom, -gx / denom, 0.0])
 
 
 def _qconj(q: np.ndarray) -> np.ndarray:
