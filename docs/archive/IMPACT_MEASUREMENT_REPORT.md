@@ -1,3 +1,5 @@
+> **Historical (August 2026).** Kept for the record; its status claims were never updated and several are wrong. Current status is in `STATUS.md` at the repo root.
+
 # RMSE Impact Measurement Report
 ## IMU Stillness-Gyro-Bias & Accel-Drift Investigation (Tasks 1-10)
 

@@ -2,6 +2,12 @@
 
 A markerless computer vision framework for quantifying lower-limb spasticity in people with Multiple Sclerosis (MS) via automated Wartenberg pendulum test analysis.
 
+> **Current status and priorities live in [`STATUS.md`](STATUS.md).** As of 2026-11-10 the active work is the
+> phone-IMU web app (`webapp/`, Rust core in `mobile-imu-core/`) and the knee-spasticity emulator and motor rig
+> (`neuromech/`, the top priority). The study now covers three cohorts: unaffected controls, stroke (CHAT) and
+> MS (MINT). The markerless-video pipeline described below is the project's origin and is no longer under
+> active development; parts of this README describe it and are out of date.
+
 ---
 
 ## Overview
@@ -44,7 +50,7 @@ Spasticity assessment in MS currently relies on subjective clinical scales (Modi
 
 > Illustrative, not literal — shows the core `src/pendulastic` package layout. The repo root also
 > holds 100+ additional scripts, apps, and status docs (`pendulastic_app.py`, `master_app.py`,
-> `pendulastic_imu_server.py`, `imu_calibration_tuner.py`, `DEPLOYMENT_PLAN.md`, etc.) that change
+> `pendulastic_imu_server.py`, `imu_calibration_tuner.py`, etc.; see `STATUS.md`) that change
 > too often to keep an exhaustive tree in sync here.
 
 ```

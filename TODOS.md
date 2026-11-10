@@ -81,7 +81,7 @@ restated here with enough context to act on without that scratch space.
   - **Why:** The KTD9 release-override recovery only makes sense for `ReleaseNeverDetected` — a too-short log cannot be recovered by scrubbing. The scrub UI cannot be built until the two are distinguishable across the boundary.
   - **Depends on:** Nothing blocking — a discriminated return from `finish()`, then the UI.
 
-- **`cargo clippy` in CI cannot fail.**
+- ~~**`cargo clippy` in CI cannot fail.**~~ **RESOLVED** — `.github/workflows/ci.yml` now runs clippy with `-D warnings` on a pinned toolchain. Original note:
   - **What:** `.github/workflows/ci.yml`'s rust job runs `cargo clippy --all-targets` with no `-D warnings`, so the step is decorative: it currently emits two warnings (`needless_range_loop` on `q_dot` at `src/ahrs.rs:232` and on `omega` at `src/session.rs:105`) and still passes.
   - **Why:** A check that cannot fail is worse than no check, because the pipeline reads as enforcing a lint standard it does not enforce. Either arm it with `-D warnings` and fix those two, or drop the step.
   - **Depends on:** Nothing.
