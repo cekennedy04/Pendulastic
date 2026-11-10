@@ -164,7 +164,8 @@ fn release_detector_treats_a_settled_excursion_as_handling_not_release() {
 #[test]
 fn gravity_seed_is_the_filters_own_resting_point() {
     for a in [[0.0, 1.7, 9.66], [3.0, 0.0, 9.3], [-3.0, 1.0, 8.0], [5.0, 5.0, 5.0], [0.0, 9.81, 0.5]] {
-        let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] as f64).sqrt();
+        let a: [f64; 3] = a;
+        let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
         let q = gravity_seed(a);
         let predicted = [
             2.0 * (q[1] * q[3] - q[0] * q[2]),
