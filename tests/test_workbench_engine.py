@@ -1267,3 +1267,382 @@ def test_replay_samples_uses_the_native_analysis_grid():
     assert len(t) > 50
     assert float(np.median(np.diff(t))) == pytest.approx(
         tuner.ANALYSIS_TICK_S, rel=1e-6)
+
+
+# ── compare_pair: polarity of the pair ───────────────────────────────────────
+#
+# The optical marker path returns a relative curve whose sense is a hinge
+# eigenvector's, so about half the references arrive upside down. 4792020
+# flipped any curve whose first 5% of samples sat below its settled tail; the
+# independent review (docs/reports/2026-11-11-scorer-ports-independent-review.md
+# on origin/docs/scorer-ports-review) showed that rule wrong on occluded holds
+# and on recordings that open at rest, dependent on tail length, and tested on
+# the one curve shape that works. Every shape the review names is here, and
+# where the review says the old rule is wrong the test first PROVES it is
+# wrong on this very curve (_rule_4792020), so the shape cannot quietly stop
+# exercising the failure it was written for.
+
+
+def _rule_4792020(y):
+    """The rejected rule, verbatim from 4792020's _orient_release_positive,
+    reduced to its verdict: True when it would mirror the curve."""
+    y = np.asarray(y, dtype=float)
+    f = y[np.isfinite(y)]
+    if len(f) < 4:
+        return False
+    tail = f[int(len(f) * 0.75):]
+    a0 = float(np.median(f[:max(1, len(f) // 20)]) - np.median(tail))
+    if not np.isfinite(a0) or abs(a0) < 1.0:
+        return False
+    return a0 < 0.0
+
+
+def _pendulum_trial(rest_s=0.0, lift_s=0.0, hold_s=1.5, tail_s=8.0, a0=45.0,
+                    f=0.9, tau=1.6, fs=60.0, drift_deg_s=0.0, level=0.0,
+                    start_after_release_s=None):
+    """rest -> lift -> hold -> release -> decaying swing, release-positive.
+
+    Settles at `level`, held at `level + a0`. drift_deg_s is a slow ramp over
+    the whole record. start_after_release_s crops the record to begin that
+    long after the release, which is what an occluded optical hold looks
+    like: the first finite sample is already in the swing."""
+    n_rest, n_lift, n_hold = (int(round(s * fs)) for s in (rest_s, lift_s, hold_s))
+    n_tail = int(round(tail_s * fs))
+    ramp = 0.5 * (1.0 - np.cos(np.pi * (np.arange(n_lift) + 0.5) / max(n_lift, 1)))
+    tau_t = np.arange(n_tail) / fs
+    y = np.concatenate([
+        np.zeros(n_rest), a0 * ramp, np.full(n_hold, a0),
+        a0 * np.exp(-tau_t / tau) * np.cos(2 * np.pi * f * tau_t)])
+    t = np.arange(len(y)) / fs
+    y = y + level + drift_deg_s * t
+    if start_after_release_s is not None:
+        keep = t >= (n_rest + n_lift + n_hold) / fs + start_after_release_s
+        t, y = t[keep] - t[keep][0], y[keep]
+    return t, y
+
+
+def _mirror(y):
+    return 2.0 * float(np.mean(y)) - y
+
+
+def test_release_side_reads_a_curve_that_starts_on_its_hold():
+    """The existing case, with an actual hold in it."""
+    t, y = _pendulum_trial(hold_s=1.5, level=135.0)
+    assert engine._release_side(t, y)["sign"] == 1
+    assert engine._release_side(t, _mirror(y))["sign"] == -1
+
+
+def test_release_side_reads_rest_lift_hold_release():
+    """Opens at rest, so start is about equal to tail. The review: the mirror
+    of this curve 'is not flagged' by the start-versus-tail rule."""
+    t, y = _pendulum_trial(rest_s=1.5, lift_s=0.8, hold_s=1.5)
+    assert _rule_4792020(_mirror(y)) is False, "old rule should miss this mirror"
+    assert engine._release_side(t, y)["sign"] == 1
+    assert engine._release_side(t, _mirror(y))["sign"] == -1
+
+
+def test_release_side_ignores_slow_drift_on_a_recording_that_opens_at_rest():
+    """The review: with +0.3 deg/s of drift an upright rest-lift-hold-release
+    curve 'is flagged inverted', because drift alone puts the tail above the
+    start."""
+    t, y = _pendulum_trial(rest_s=1.5, lift_s=0.8, hold_s=1.5, tail_s=10.0,
+                           drift_deg_s=0.3)
+    assert _rule_4792020(y) is True, "old rule should flip this upright curve"
+    assert engine._release_side(t, y)["sign"] == 1
+    # ...and its mirror, drift and all, is still read as upside down.
+    assert engine._release_side(t, _mirror(y))["sign"] == -1
+
+
+def test_release_side_abstains_on_a_resting_trace_that_only_drifts():
+    """No lift, no release: start-versus-tail is then nothing but the drift,
+    so the old rule flips whichever of the curve and its mirror drifts up."""
+    t = np.arange(0, 12.0, 1 / 60.0)
+    rng = np.random.default_rng(7)
+    y = 90.0 + 0.3 * t + rng.normal(0.0, 0.05, len(t))
+    assert _rule_4792020(y) is True, "old rule should decide this on drift"
+    for curve in (y, _mirror(y)):
+        side = engine._release_side(t, curve)
+        assert side["sign"] == 0
+        assert side["reason"] == "hold_not_clear_of_rest"
+
+
+@pytest.mark.parametrize("start_after_release_s", [0.0, 0.15, 0.55])
+def test_release_side_abstains_when_the_hold_is_missing(start_after_release_s):
+    """Occluded optical hold: the first finite sample is at or after release
+    (0.55 s is the first trough at 0.9 Hz). The review: 'a synthetic curve
+    starting exactly at release is flagged inverted' on a 12 s trial."""
+    t, y = _pendulum_trial(tail_s=12.0, start_after_release_s=start_after_release_s)
+    if start_after_release_s == 0.0:
+        assert _rule_4792020(y) is True, "old rule should flip this upright curve"
+    for curve in (y, _mirror(y)):
+        side = engine._release_side(t, curve)
+        assert side["sign"] == 0
+        assert side["reason"] == "no_prerelease_plateau"
+
+
+def test_release_side_abstains_when_the_hold_is_mostly_a_gap():
+    """Markers reappear a few samples before the release: a window with a
+    handful of samples in it is not a plateau."""
+    t, y = _pendulum_trial(hold_s=1.5)
+    y = y.copy()
+    y[:int(1.5 * 60) - 6] = np.nan
+    assert engine._release_side(t, y)["reason"] == "no_prerelease_plateau"
+
+
+def test_release_side_does_not_depend_on_how_long_the_tail_was_recorded():
+    """Same swing, same slow drift, 6 s versus 60 s of recorded tail. The old
+    window is 5% of the FILE, so the long recording drags it off the hold."""
+    short_t, short_y = _pendulum_trial(hold_s=0.8, tail_s=6.0, drift_deg_s=0.3)
+    long_t, long_y = _pendulum_trial(hold_s=0.8, tail_s=60.0, drift_deg_s=0.3)
+    assert _rule_4792020(short_y) != _rule_4792020(long_y), (
+        "old rule should change its mind with the tail length")
+    assert engine._release_side(short_t, short_y)["sign"] == 1
+    assert engine._release_side(long_t, long_y)["sign"] == 1
+    assert engine._release_side(short_t, _mirror(short_y))["sign"] == -1
+    assert engine._release_side(long_t, _mirror(long_y))["sign"] == -1
+
+
+def test_release_side_dead_band_in_degrees():
+    """A hold under _ORIENT_MIN_A0_DEG from rest has no release to orient by,
+    however clean the ratio. Pins the constant from both sides."""
+    below = engine._ORIENT_MIN_A0_DEG * 0.9
+    above = engine._ORIENT_MIN_A0_DEG * 1.1
+    t, y = _pendulum_trial(a0=below, tau=0.25, f=0.5)
+    assert engine._release_side(t, y)["reason"] == "hold_not_clear_of_rest"
+    t, y = _pendulum_trial(a0=above, tau=0.25, f=0.5)
+    assert engine._release_side(t, y)["sign"] == 1
+
+
+def _hold_with_big_opposite_swing(hold_frac, fs=60.0):
+    """A plateau about `hold_frac` of the signal range above rest: a 10 deg
+    hold followed by an oscillation large enough to set the range."""
+    hold_dev = 10.0
+    other = hold_dev * (1.0 - hold_frac) / hold_frac
+    tau_t = np.arange(int(10 * fs)) / fs
+    swing = (hold_dev * np.exp(-tau_t / 0.15)
+             - other * np.exp(-tau_t / 4.0) * np.sin(2 * np.pi * 0.9 * tau_t))
+    y = np.concatenate([np.full(int(1.5 * fs), hold_dev), swing])
+    return np.arange(len(y)) / fs, y
+
+
+def test_release_side_margin_relative_to_range():
+    """The hold must clear _ORIENT_MIN_A0_FRAC of the range. Pins it from both
+    sides, on the measured ratio rather than the nominal one."""
+    t, y = _hold_with_big_opposite_swing(0.45)
+    side = engine._release_side(t, y)
+    assert side["a0_deg"] / side["range_deg"] > engine._ORIENT_MIN_A0_FRAC
+    assert side["sign"] == 1
+    t, y = _hold_with_big_opposite_swing(0.20)
+    side = engine._release_side(t, y)
+    assert 0 < side["a0_deg"] / side["range_deg"] < engine._ORIENT_MIN_A0_FRAC
+    assert side["a0_deg"] > engine._ORIENT_MIN_A0_DEG
+    assert side["sign"] == 0 and side["reason"] == "hold_not_clear_of_rest"
+
+
+def test_polarity_from_correlation_margin_boundaries():
+    lo, margin = engine._POLARITY_MIN_CORR, engine._POLARITY_CORR_MARGIN
+    f = engine._polarity_from_correlation
+    assert f(lo, -lo) == 1 and f(-lo, lo) == -1
+    assert f(lo - 1e-6, -0.9) == 0, "below the minimum correlation: no verdict"
+    assert f(0.9, 0.9 - margin - 1e-6) == 1
+    assert f(0.9, 0.9 - margin + 1e-6) == 0, "inside the margin: no verdict"
+    assert f(0.9 - margin + 1e-6, 0.9) == 0
+    assert f(0.9 - margin - 1e-6, 0.9) == -1
+    assert f(None, 0.9) == 0 and f(0.9, None) == 0
+
+
+def test_decide_relative_polarity_table():
+    up = {"sign": 1, "reason": None}
+    down = {"sign": -1, "reason": None}
+    unknown = {"sign": 0, "reason": "no_prerelease_plateau"}
+    d = engine._decide_relative_polarity
+    for pinned in (True, False):
+        assert d(up, down, -0.9, 0.9, pinned) == {
+            "relative": -1, "basis": "shape+correlation", "reason": None}
+        assert d(down, down, 0.2, 0.1, pinned)["basis"] == "shape"
+        assert d(down, down, 0.2, 0.1, pinned)["relative"] == 1
+        conflict = d(up, up, -0.9, 0.9, pinned)
+        assert conflict["relative"] == 0
+        assert conflict["reason"] == "shape_correlation_conflict"
+        neither = d(unknown, up, 0.4, 0.3, pinned)
+        assert neither["relative"] == 0
+        assert neither["reason"].startswith("correlation_inside_margin")
+        assert "ref: no_prerelease_plateau" in neither["reason"]
+    # The correlation decides alone only when the lag is pinned.
+    assert d(unknown, up, -0.9, 0.9, True) == {
+        "relative": -1, "basis": "correlation", "reason": None}
+    free = d(unknown, up, -0.9, 0.9, False)
+    assert free["relative"] == 0 and free["basis"] is None
+    assert free["reason"] == (
+        "correlation_alone_with_unpinned_lag (ref: no_prerelease_plateau)")
+
+
+def test_compare_pair_mirrors_an_upside_down_relative_reference():
+    """The corpus case: the optical curve arrives upside down on its own
+    datum, against an IMU curve that does not."""
+    t, imu = _pendulum_trial(rest_s=1.0, lift_s=0.8, hold_s=1.5, level=135.0)
+    optical = -(imu - 135.0) + 20.0
+    as_given = engine.compare_pair(t, optical, t, imu)
+    assert as_given["orientation"] == "opposite_not_mirrored"
+    assert as_given["ref_mirrored"] is False
+    assert as_given["rmse_deg_offset_removed"] > 10.0
+    r = engine.compare_pair(t, optical, t, imu, ref_polarity_arbitrary=True)
+    assert r["status"] == "ok"
+    assert r["orientation"] == "ref_mirrored" and r["ref_mirrored"] is True
+    assert r["orientation_basis"] == "shape+correlation"
+    assert r["ref_inverted"] is True and r["test_inverted"] is False
+    assert r["rmse_deg_offset_removed"] < 0.5
+    # Mirrored about its own mean, not negated: the arbitrary offset stays
+    # about where it was (the scored window moves with the lag, so not exactly).
+    assert r["bias_deg"] == pytest.approx(as_given["bias_deg"], abs=5.0)
+
+
+def test_compare_pair_leaves_a_pair_of_the_same_sense_alone():
+    t, imu = _pendulum_trial(hold_s=1.5, level=135.0)
+    _t, optical = _pendulum_trial(hold_s=1.5, a0=40.0, f=0.95)
+    plain = engine.compare_pair(t, optical, t, imu)
+    r = engine.compare_pair(t, optical, t, imu, ref_polarity_arbitrary=True)
+    assert r["orientation"] == "as_given" and r["ref_mirrored"] is False
+    assert r["ref_inverted"] is False and r["test_inverted"] is False
+    for key in ("rmse_deg", "rmse_deg_offset_removed", "bias_deg", "lag_sec",
+                "n_samples", "mae_deg", "loa_lower_deg", "loa_upper_deg"):
+        assert r[key] == plain[key]
+    assert r["rmse_deg_offset_removed"] > 0.5, "different curves must still disagree"
+
+
+def test_compare_pair_when_it_is_the_test_curve_that_is_inverted():
+    """The relative polarity is what the RMSE needs; WHICH curve is upside
+    down is reported, and the test curve is never the one that is changed."""
+    t, optical = _pendulum_trial(hold_s=1.5)
+    imu_inverted = 180.0 - optical
+    r = engine.compare_pair(t, optical, t, imu_inverted, ref_polarity_arbitrary=True)
+    assert r["orientation"] == "ref_mirrored"
+    assert r["ref_inverted"] is False and r["test_inverted"] is True
+    assert r["rmse_deg_offset_removed"] < 0.5
+    # A reference with a real zero is not mirrored to hide it: the error stays.
+    kept = engine.compare_pair(t, optical, t, imu_inverted)
+    assert kept["orientation"] == "opposite_not_mirrored"
+    assert kept["test_inverted"] is True and kept["ref_mirrored"] is False
+    assert kept["rmse_deg_offset_removed"] > 10.0
+
+
+@pytest.mark.parametrize("ref_upside_down", [False, True])
+def test_compare_pair_with_an_occluded_reference_hold(ref_upside_down):
+    """The reference starts AT release, so it has no release side of its own.
+    The pair is still decidable from how the two curves move together, and
+    the old rule gets the upright one wrong."""
+    # Capture geometry as on the rig: the take starts 0.7 s into the IMU log
+    # (here, exactly at the release) and outlasts it by the stop skew, so the
+    # duration prior pins the lag and the search cannot reach the next half-cycle.
+    t_imu, imu = _pendulum_trial(hold_s=0.7, tail_s=12.0, level=135.0)
+    t_opt, optical = _pendulum_trial(tail_s=12.0 - engine._STOP_SKEW_SEC,
+                                     start_after_release_s=0.0)
+    assert _rule_4792020(optical) is True, "old rule should flip this upright curve"
+    if ref_upside_down:
+        optical = -optical
+    r = engine.compare_pair(t_opt, optical, t_imu, imu, capture_skew_prior=True,
+                            ref_polarity_arbitrary=True)
+    assert r["ref_inverted"] is None and r["test_inverted"] is False
+    assert r["orientation_basis"] == "correlation"
+    assert r["orientation"] == ("ref_mirrored" if ref_upside_down else "as_given")
+    assert r["rmse_deg_offset_removed"] < 1.0
+
+
+@pytest.mark.parametrize("ref_upside_down", [False, True])
+def test_correlation_alone_does_not_decide_when_the_lag_is_not_pinned(ref_upside_down):
+    """The same pair with no capture prior. The correlation is just as lopsided
+    (0.98 against 0.41), but nothing independent of polarity says the search
+    window holds the true lag, and without that a mirrored swing half a cycle
+    off is all a search may find. Measured on MediaPipe-versus-OptiTrack,
+    which has no prior: such verdicts were wrong-way against the IMU pair's on
+    16 of 50. A manual lag pins it as well as the prior does."""
+    t_imu, imu = _pendulum_trial(hold_s=0.7, tail_s=12.0, level=135.0)
+    t_opt, optical = _pendulum_trial(tail_s=12.0 - engine._STOP_SKEW_SEC,
+                                     start_after_release_s=0.0)
+    if ref_upside_down:
+        optical = -optical
+    plain = engine.compare_pair(t_opt, optical, t_imu, imu)
+    r = engine.compare_pair(t_opt, optical, t_imu, imu, ref_polarity_arbitrary=True)
+    assert abs(r["polarity_corr_as_given"] - r["polarity_corr_mirrored"]) > 0.5
+    assert r["orientation"] == "undetermined" and r["ref_mirrored"] is False
+    assert r["orientation_reason"] == (
+        "correlation_alone_with_unpinned_lag (ref: no_prerelease_plateau)")
+    assert r["rmse_deg_offset_removed"] == plain["rmse_deg_offset_removed"]
+    manual = engine.compare_pair(t_opt, optical, t_imu, imu, lag_override_sec=-0.7,
+                                 ref_polarity_arbitrary=True)
+    assert manual["orientation_basis"] == "correlation"
+    assert manual["orientation"] == ("ref_mirrored" if ref_upside_down else "as_given")
+    assert manual["rmse_deg_offset_removed"] < 1.0
+
+
+@pytest.mark.parametrize("ref_upside_down", [False, True])
+def test_compare_pair_abstains_when_the_mirror_fits_half_a_cycle_away(ref_upside_down):
+    """Same occluded reference, but a lag search wide enough to reach the
+    neighbouring half-cycle, where a lightly damped swing's MIRROR also fits
+    (r 0.98 against 1.00, and 4 deg of RMSE). Taking whichever fits better
+    would be choosing the answer by the metric; the margin refuses."""
+    t_imu, imu = _pendulum_trial(hold_s=1.5, tail_s=12.0, level=135.0)
+    t_opt, optical = _pendulum_trial(tail_s=12.0, start_after_release_s=0.0)
+    t_opt = t_opt + 1.5                       # same clock as the IMU curve
+    if ref_upside_down:
+        optical = -optical
+    plain = engine.compare_pair(t_opt, optical, t_imu, imu)
+    r = engine.compare_pair(t_opt, optical, t_imu, imu, ref_polarity_arbitrary=True)
+    assert min(r["polarity_corr_as_given"], r["polarity_corr_mirrored"]) > 0.9
+    assert r["orientation"] == "undetermined" and r["ref_mirrored"] is False
+    assert r["orientation_reason"] == (
+        "correlation_inside_margin (ref: no_prerelease_plateau)")
+    assert r["rmse_deg_offset_removed"] == plain["rmse_deg_offset_removed"]
+
+
+def test_compare_pair_abstains_on_a_noisy_low_amplitude_reference():
+    """Nothing in this reference says which way up it is. The comparison still
+    runs, on the curves exactly as given, and says it could not tell."""
+    t, imu = _pendulum_trial(hold_s=1.5, level=135.0)
+    rng = np.random.default_rng(11)
+    optical = 2.0 * np.sin(2 * np.pi * 0.31 * t) + rng.normal(0.0, 1.5, len(t))
+    plain = engine.compare_pair(t, optical, t, imu)
+    r = engine.compare_pair(t, optical, t, imu, ref_polarity_arbitrary=True)
+    assert r["status"] == "ok"
+    assert r["orientation"] == "undetermined"
+    assert r["orientation_basis"] is None and r["ref_mirrored"] is False
+    assert r["orientation_reason"].startswith("correlation_inside_margin")
+    assert r["ref_inverted"] is None
+    assert r["rmse_deg_offset_removed"] == plain["rmse_deg_offset_removed"]
+    assert r["lag_sec"] == plain["lag_sec"]
+
+
+def test_compare_pair_abstains_when_shape_and_correlation_contradict():
+    """Both curves are held above rest, yet they swing in opposition. One of
+    the two readings is wrong and nothing here says which."""
+    t, ref = _pendulum_trial(hold_s=0.7, tau=12.0, tail_s=15.0)
+    test = ref.copy()
+    released = t >= 0.7
+    test[released] = -ref[released]
+    r = engine.compare_pair(t, ref, t, test, lag_override_sec=0.0,
+                            ref_polarity_arbitrary=True)
+    assert r["ref_inverted"] is False and r["test_inverted"] is False
+    assert r["polarity_corr_mirrored"] > 0.5 > r["polarity_corr_as_given"]
+    assert r["orientation"] == "undetermined"
+    assert r["orientation_reason"] == "shape_correlation_conflict"
+    assert r["ref_mirrored"] is False
+
+
+def test_compare_pair_never_mirrors_unless_the_reference_is_declared_arbitrary():
+    """Default behaviour is main's, number for number: a rigid-body reference
+    or a model trace has a real zero and a real sign."""
+    t, y = _pendulum_trial(hold_s=1.5)
+    r = engine.compare_pair(t, -y, t, y)
+    assert r["ref_mirrored"] is False
+    assert r["orientation"] == "opposite_not_mirrored"
+    assert r["rmse_deg"] > 10.0 and r["rmse_deg_offset_removed"] > 10.0
+
+
+def test_compare_pair_polarity_survives_nan_gaps_in_the_reference():
+    t, imu = _pendulum_trial(hold_s=1.5, level=135.0)
+    optical = -(imu - 135.0)
+    optical[200:230] = np.nan              # half a second lost mid-swing
+    r = engine.compare_pair(t, optical, t, imu, ref_polarity_arbitrary=True)
+    assert r["orientation"] == "ref_mirrored"
+    assert r["ref_inverted"] is True
+    assert r["rmse_deg_offset_removed"] < 3.0   # the gap is interpolated across
