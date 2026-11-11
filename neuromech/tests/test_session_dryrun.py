@@ -521,6 +521,102 @@ def test_the_ambiguity_checks_pass_a_clean_delivery_with_room_to_spare(plant):
         assert rel["rival_ratio"] > 1.2 * SS.RELEASE_UNIQUE_MIN_RATIO, (sid, rel)
 
 
+# ── tracking error is gated (review 2026-11-11, required change 4) ─────────────────────────────────────
+SLOW_SIDS = ["A-P0", "B-claspknife", "M-tone_L2", "R-friction", "B-flexor", "D-short", "M-tone_L4", "A-P1p"]    # the review's eight
+
+
+def _slow_start(gain0=0.3, over_ms=600):
+    """The review's slow start: the arm delivers gain0 of its motion at the release, recovering linearly over
+    over_ms. Tracking error 1.6 to 6.8 deg, and e2257cc reported 8 of 8 in band with no flag."""
+    def f(y, k, s):
+        n = int(over_ms); g = np.ones(len(y) - k); g[:n] = gain0 + (1 - gain0) * (np.arange(n) / n)
+        y[k:] = y[k - 5] + (y[k:] - y[k - 5]) * g; return y
+    return f
+
+
+def _write_arm_log(path, sp, phase, vel, seed, fault=None, pre_s=1.5, post_s=1.0, fs=1000.0):
+    """dryrun.write_encoder_bin with a fault added to the arm's motion: Player staircase -> identified plant
+    (-> fault) -> 0.02 deg encoder noise."""
+    rng = np.random.default_rng(seed); pad0, pad1 = int(pre_s * fs), int(post_s * fs)
+    held = DR.player_hold(sp, rng, fs); spp = np.concatenate([np.zeros(pad0), held, np.full(pad1, held[-1])])
+    y = DR.plant_response(spp, fs); k = int(np.argmax(phase == 2))
+    if fault is not None: y = fault(y.copy(), pad0 + k, float(np.sign(sp[k + 300] - sp[k])))
+    pos = y + rng.normal(0, 0.02, len(y))
+    ch = np.vstack([pos, np.gradient(pos, 1 / fs), spp, np.zeros_like(spp), np.concatenate([-np.ones(pad0), phase, -np.ones(pad1)]),
+                    np.zeros_like(spp), np.concatenate([np.zeros(pad0), vel, np.zeros(pad1)])])
+    ch.T.astype(">f8").tofile(path)
+
+
+@pytest.fixture(scope="module")
+def slow(tmp_path_factory):
+    """The review's eight scenarios through the identified plant, scored three ways: every arm healthy, every
+    arm starting slowly, and one arm (B-claspknife) starting slowly among seven healthy ones.
+    -> ({"good" | "all" | "one": report indexed by sid}, sessions root, the "all" encoder folder)."""
+    root = tmp_path_factory.mktemp("slow"); sess = str(root / "sessions")
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        d = SS.plan("SLOW", sids=SLOW_SIDS, seed=1)
+        key = [l.strip().split(",") for l in open(os.path.join(d, "key.csv"))][1:]
+        reps = {}
+        for which in ("good", "all", "one"):
+            enc = root / which; enc.mkdir()
+            for j, (rid, sid, _dur) in enumerate(key):
+                a = np.genfromtxt(os.path.join(d, "commands", rid + ".csv"), delimiter=",", names=True)
+                faulty = which == "all" or (which == "one" and sid == "B-claspknife")
+                _write_arm_log(str(enc / f"{rid}.bin"), a["setpoint_deg"], a["phase"], a["vel_dps"], 11 + j, _slow_start() if faulty else None)
+            reps[which] = SS.score("SLOW", str(enc)).set_index("sid")
+    finally:
+        SS.SESS = old
+    return reps, sess, str(root / "all")
+
+
+def test_tracking_error_is_in_the_report_and_a_good_run_is_well_inside_the_limit(slow):
+    good = slow[0]["good"]
+    assert (good.status == "scored").all(), good.status.tolist()
+    assert (good.tracking_limit_ms == SS.TRACKING_TIME_ERR_MAX_MS).all()
+    assert np.isfinite(good.tracking_rmse_deg).all() and np.isfinite(good.tracking_aligned_rmse_deg).all()
+    # measured on these eight in memory: 13.9 to 14.3 ms; slow start 32.4 to 38.5 (all 67, three seeds: at most 19.2)
+    assert (good.tracking_time_err_ms > 9).all() and (good.tracking_time_err_ms < 0.8 * SS.TRACKING_TIME_ERR_MAX_MS).all(), good.tracking_time_err_ms.tolist()
+
+
+def test_a_slow_start_is_flagged_for_tracking_and_is_not_a_delivery(slow):
+    """The review's case, all eight. e2257cc: 8 of 8 scored and in band. The release is fine (one clean
+    minimum, lag consistent across the session at about 49 ms, inside the plausible range), and the scorer
+    does not see the fault, so this is the only gate that can."""
+    bad = slow[0]["all"]
+    assert bad.status.str.startswith("tracking flagged: tracking error ").all(), bad.status.tolist()
+    assert (bad.tracking_time_err_ms > SS.TRACKING_TIME_ERR_MAX_MS).all(), bad.tracking_time_err_ms.tolist()
+    assert not bad.delivered_band_ok.astype(bool).any()
+    assert bad.enc_band.notna().all() and np.isfinite(bad.enc_pt7).all()          # what the arm did is still scored and kept
+    assert (bad.enc_band == bad.int_band).sum() >= 6                              # ... and it IS in band: the reason this gate exists
+    assert len(SS.tracking_flags(bad.reset_index())) == len(bad) and not SS.release_flags(bad.reset_index())
+    assert (bad.tracking_rmse_deg > 1.5).all() and (slow[0]["good"].tracking_rmse_deg.max() > bad.tracking_rmse_deg.min())   # degrees alone do not separate them
+
+
+def test_one_slow_start_in_a_good_session_is_caught(slow):
+    """Alone among good runs it is caught twice over; the session's lag check sees it first (49 ms at 27)."""
+    one = slow[0]["one"]
+    assert (one.drop("B-claspknife").status == "scored").all(), one.status.tolist()
+    assert one.loc["B-claspknife"].status.startswith("release flagged: lag ") and "from the session median" in one.loc["B-claspknife"].status
+    assert not one.loc["B-claspknife"].delivered_band_ok
+
+
+def test_score_exits_with_status_1_on_a_tracking_flag_and_takes_another_limit(slow, capsys):
+    _reps, sess, enc_all = slow
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        with pytest.raises(SystemExit) as ex:
+            SS.main(["score", "--name", "SLOW", "--encoder-dir", enc_all])
+        out = capsys.readouterr().out
+        rep = SS.score("SLOW", enc_all, tracking_limit_ms=80.0)
+    finally:
+        SS.SESS = old
+    assert ex.value.code == 1 and "TRACKING FLAGGED on 8 run(s)" in out
+    assert (rep.status == "scored").all() and (rep.tracking_limit_ms == 80.0).all()      # the limit used is in the report
+
+
 def test_plan_refuses_an_unknown_repeat_scenario_before_writing(tmp_path):
     old = SS.SESS
     try:

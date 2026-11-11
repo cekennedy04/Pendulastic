@@ -419,6 +419,29 @@ def _lag_verdict(lag_s, S):
     return ""
 
 
+# Tracking. Nothing above looks at whether the arm followed the command once it had left the hold, and the
+# scorer is insensitive to some ways of not following it: a start at 30 % gain recovering over 0.6 s scores
+# in band on 8 of 8 scenarios (review 2026-11-11). The release is not the place to catch that.
+# The gated quantity is not the rms error in degrees: on the identified plant that runs from 0.18 to 2.79 deg
+# across the 67 scenarios with nothing wrong (it scales with how fast the scenario moves), and a rig with
+# 40 ms of latency shows up to 11 deg on runs that score correctly, because the lag is scored out. So the
+# recording is first shifted by the measured release lag, and the remaining rms error is divided by the
+# command's rms speed over the swing: the DELAY that would produce the same error on this command, in ms.
+TRACKING_TIME_ERR_MAX_MS = 25.0            # PROVISIONAL until real rig data exists. Simulated, identified plant, 67
+#                                            scenarios x 3 seeds: median 14.1, 95 % 15.2, maximum 19.2 (B-clonus; D-wobble
+#                                            21.5, which is release-flagged anyway). The review's slow start: 28.3 to 65.4
+#                                            on all 67. With bandwidth -30 % two good runs exceed it (R-reflex-sat 27.5,
+#                                            S-lam3 25.6): a slower rig than the model will need this limit re-set.
+
+
+def _tracking(t, sp, swing, t_rec, x, lag_s):
+    """Tracking error over the swing with the release lag taken out. -> (rms error in deg, the same as the
+    delay in ms that would produce it on this command: rms error / the command's rms speed)."""
+    tt = t[swing]; err = np.interp(tt + lag_s, t_rec, x) - sp[swing]
+    rms = float(np.sqrt(np.mean(err ** 2))); speed = float(np.sqrt(np.mean(np.gradient(sp[swing], tt) ** 2)))
+    return rms, (rms / speed * 1e3 if speed > 0 else np.nan)
+
+
 def _score_trace(t, rig_deg, rest_model_deg, t_release, lead_s, tail_s=None):
     """Rig angle (0 = passive rest) -> Pendulastic angle, scored from lead_s before t_release.
 
@@ -443,7 +466,8 @@ def _summ(prm, est):
     return out
 
 
-def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False, accept_session_lag_ms=None):
+def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False, accept_session_lag_ms=None,
+          tracking_limit_ms=None):
     d = os.path.join(SESS, name)
     planned = json.load(open(os.path.join(d, "session.json"), encoding="utf-8")).get("provenance")
     prov = provenance()
@@ -497,16 +521,17 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
         row.update(cmd_release_s=t_rel, enc_release_s=rel["release_s"], enc_release_lag_ms=rel["lag_s"] * 1e3,
                    enc_release_resid_deg=rel["resid_deg"], enc_hold_rms_deg=rel["hold_rms_deg"], enc_rival_ratio=rel["rival_ratio"])
         rows.append(row)
-        work.append(dict(i=i, row=row, rel=rel, e=e, k0=k0, t=t, sp=sp, t_all=t_all, pos_all=pos_all, t_rel=t_rel,
+        work.append(dict(i=i, row=row, rel=rel, e=e, k0=k0, t=t, sp=sp, sw=sw, t_all=t_all, pos_all=pos_all, t_rel=t_rel,
                          lead=lead, tail=tail, rest=rest))
     # The session's lag: over every run whose fit is usable. A fit flagged for its hold, its uniqueness or its
     # residual has no lag to contribute; one flagged only for its lag is exactly what is being judged here.
     S = _session_lag([w["rel"]["lag_s"] for w in work if w["rel"]["kind"] in ("", "lag")],
                      None if accept_session_lag_ms is None else accept_session_lag_ms / 1e3)
+    track_max = TRACKING_TIME_ERR_MAX_MS if tracking_limit_ms is None else float(tracking_limit_ms)
     # Pass 2: score.
     for w in work:
-        i, row, rel, e, k0, t, sp, t_all, pos_all, t_rel, lead, tail, rest = (w[k] for k in (
-            "i", "row", "rel", "e", "k0", "t", "sp", "t_all", "pos_all", "t_rel", "lead", "tail", "rest"))
+        i, row, rel, e, k0, t, sp, sw, t_all, pos_all, t_rel, lead, tail, rest = (w[k] for k in (
+            "i", "row", "rel", "e", "k0", "t", "sp", "sw", "t_all", "pos_all", "t_rel", "lead", "tail", "rest"))
         flag = _lag_verdict(rel["lag_s"], S) if rel["kind"] in ("", "lag") else rel["flag"]
         if flag:                                         # no fallback: an unscored run, said out loud
             row.update(status=f"release flagged: {flag}", delivered_band_ok=False)
@@ -515,6 +540,14 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
         dlv = _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], lead, tail))
         row.update({f"enc_{k}": v for k, v in dlv.items()})
         row["delivered_band_ok"] = row["enc_band"] == row["int_band"]
+        row["tracking_aligned_rmse_deg"], row["tracking_time_err_ms"] = _tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
+        status = "scored"
+        if not row["tracking_time_err_ms"] <= track_max:
+            # The score above is kept: it is an honest score of what the arm did. What the arm did was not the
+            # command, so the run does not count as a delivery of its scenario, whatever band it landed in.
+            status = (f"tracking flagged: tracking error {row['tracking_time_err_ms']:.1f} ms (rms {row['tracking_aligned_rmse_deg']:.2f} deg "
+                      f"with the release lag removed) is over the limit of {track_max:g} ms: the arm did not follow this command")
+            row["delivered_band_ok"] = False
         if phones:
             tp, _ap, wp = _phone_angle(phones[i]); te = np.arange(len(e["position"])) / FS
             try:
@@ -535,7 +568,7 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
                     row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
             except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
                 row["phone_status"] = f"sync refused: {str(ex)[:90]}"
-        row["status"] = "scored"
+        row["status"] = status
     rep = pd.DataFrame(rows)
     rep["provenance_mismatch"] = ",".join(stale)
     # the session's lag, what was concluded from it, and the override if one was used to score: on every row,
@@ -544,6 +577,7 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
     rep["session_lag_runs"] = S["n"]
     rep["session_lag_finding"] = S["finding"]
     rep["session_lag_override_ms"] = S["override_s"] * 1e3
+    rep["tracking_limit_ms"] = track_max                 # the limit this report was scored under (provisional)
     rep.to_csv(os.path.join(d, "report.csv"), index=False)
     _print(rep); return rep
 
@@ -605,6 +639,15 @@ def release_flags(rep):
     return out
 
 
+def tracking_flags(rep):
+    """[(run_id, reason)] for every run whose tracking error was over the limit: scored, but not a delivery."""
+    out = []
+    for _, r in rep.iterrows():
+        v = r.get("status")
+        if isinstance(v, str) and v.startswith("tracking flagged: "): out.append((r.run_id, v[len("tracking flagged: "):]))
+    return out
+
+
 def _print(rep):
     sc = rep[rep.get("status", "") == "scored"] if "status" in rep else rep
     print(f"\n{'run':5s} {'scenario':24s} {'track':>6s}  {'PT7 int':>7s} {'enc':>6s} {'phone':>6s}   band int/enc/phone")
@@ -634,6 +677,11 @@ def _print(rep):
     if flagged:
         print(f"\nRELEASE FLAGGED on {len(flagged)} trace(s); these were NOT scored and are not in the figures above:")
         for rid, trace, why in flagged: print(f"  {rid} {trace}: {why}")
+    tracked = tracking_flags(rep)
+    if tracked:
+        print(f"\nTRACKING FLAGGED on {len(tracked)} run(s); the arm did not follow the command, so these are NOT deliveries of "
+              f"their scenarios and are not in the figures above (their scores are in report.csv):")
+        for rid, why in tracked: print(f"  {rid}: {why}")
     idn = rep[rep.get("status", "") == "identified"] if "status" in rep else rep.iloc[0:0]
     for _, r in idn.iterrows():
         print(f"plant identified from {r.run_id}: wn {r.plant_wn_hz:.2f} Hz, zeta {r.plant_zeta:.3f}, delay {r.plant_delay_ms:.1f} ms (fit R2 {r.plant_r2:.3f})")
@@ -650,6 +698,9 @@ def main(argv=None):
     b.add_argument("--accept-session-lag-ms", type=float, default=None, metavar="MS",
                    help="score a session whose median release lag is outside the plausible range, when that median is within "
                         f"{SESSION_LAG_TOL_S * 1e3:.0f} ms of MS (the value the session lag finding printed). Recorded in report.csv.")
+    b.add_argument("--tracking-limit-ms", type=float, default=None, metavar="MS",
+                   help=f"flag a run whose tracking error is over MS (default {TRACKING_TIME_ERR_MAX_MS:g}, provisional). "
+                        "The limit used is written to report.csv.")
     c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
     x = ap.parse_args(argv)
     if x.cmd == "check-log":
@@ -658,8 +709,9 @@ def main(argv=None):
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
     else:
-        if release_flags(score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch,
-                               accept_session_lag_ms=x.accept_session_lag_ms)):
+        rep = score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch,
+                    accept_session_lag_ms=x.accept_session_lag_ms, tracking_limit_ms=x.tracking_limit_ms)
+        if release_flags(rep) or tracking_flags(rep):
             sys.exit(1)
 
 
