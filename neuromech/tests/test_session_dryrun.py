@@ -355,13 +355,48 @@ def test_a_delivery_that_is_not_the_command_is_flagged():
     assert SS._delivered_release(t, sp, t, sp, t_rel)["flag"] == ""
 
 
-def test_a_phone_that_disagrees_with_the_encoder_is_flagged():
-    """Both sensed one arm. A phone release more than PHONE_SYNC_TOL_S from the encoder's means the sync is
-    off, and the phone trace is not scored on it."""
-    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", "A-P0.csv"))
-    t_rel = float(t[np.argmax(ph == 2)]); late = np.interp(t - 0.045, t, sp)
-    assert "sync is off" in SS._delivered_release(t, sp, t, late, t_rel, enc_lag_s=0.045 - SS.PHONE_SYNC_TOL_S - 0.003)["flag"]
-    assert SS._delivered_release(t, sp, t, late, t_rel, enc_lag_s=0.045 - SS.PHONE_SYNC_TOL_S + 0.003)["flag"] == ""
+# ── the phone's gate (review 2026-11-11, required change 3) ────────────────────────────────────────────
+def _phone_view(rate_hz, early_ms, sid="A-P0", seed=4, jitter_s=0.0015):
+    """A-P0's command as a phone would hand it over: sampled at rate_hz with jitter, and early_ms EARLY (what
+    the pulse alignment leaves on a coarse grid). -> the arguments of _delivered_release, bar enc_lag_s."""
+    rng = np.random.default_rng(seed)
+    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", f"{sid}.csv"))
+    tq = np.cumsum(1.0 / rate_hz + rng.normal(0, jitter_s, int(t[-1] * rate_hz) - 2)) + rng.uniform(0, 1.0 / rate_hz)
+    return t, sp, tq, np.interp(tq + early_ms / 1e3, t, sp), float(t[np.argmax(ph == 2)])
+
+
+def test_a_phone_trace_is_not_flagged_for_reading_early_when_the_arm_tracks_well():
+    """After ILC the arm is level with the scenario (encoder lag about 0) and a 59 Hz phone then reads 8 to
+    20 ms EARLY: e2257cc flagged it at the absolute -10 ms limit, so the better the rig tracked, the fewer
+    phone traces were scored. The phone is held to the encoder, about where a 59 Hz phone is expected."""
+    for early in (8.0, 12.0, 16.0, 20.0):
+        rel = SS._delivered_release(*_phone_view(59.0, early), enc_lag_s=0.001)
+        assert abs(rel["lag_s"] * 1e3 + early) < LAG_TOL_PHONE_RATE_MS and rel["flag"] == "", (early, rel)
+
+
+@pytest.mark.parametrize("rate_hz", [30.0, 59.0, 100.0, 200.0])
+def test_the_phone_gate_is_centred_on_the_sample_period_offset_and_scales_with_it(rate_hz):
+    """Not a wider gate: one that moves with the sample period. The expected offset is PHONE_EARLY_SAMPLES
+    periods early; PHONE_SYNC_TOL_SAMPLES periods either side of THAT pass and anything beyond is a sync fault.
+    So 20 ms early is expected of a 30 Hz phone and is a fault on a 200 Hz one."""
+    dt = 1e3 / rate_hz; centre = SS.PHONE_EARLY_SAMPLES * dt; tol = SS.PHONE_SYNC_TOL_SAMPLES * dt
+    enc = 0.020
+    def flag(early):          # phone reads `early` ms before the encoder's release
+        r = SS._delivered_release(*_phone_view(rate_hz, early - enc * 1e3), enc_lag_s=enc)
+        assert abs(r["expected_offset_s"] * 1e3 + centre) < 0.1 * dt, r
+        return r["flag"]
+    margin = LAG_TOL_PHONE_RATE_MS + 0.1 * dt        # the lag itself is only known this well at this rate
+    assert flag(centre) == "" and flag(centre - tol + margin) == "" and flag(centre + tol - margin) == ""
+    assert "the sync is off" in flag(centre + tol + margin) and "the sync is off" in flag(centre - tol - margin)
+    assert (flag(20.0) == "") == (abs(20.0 - centre) < tol), (rate_hz, flag(20.0))
+    if rate_hz == 30.0: assert flag(20.0) == ""
+    if rate_hz == 200.0: assert "the sync is off" in flag(20.0)
+
+
+def test_an_encoder_trace_is_still_held_to_the_plausible_range():
+    """Only the phone lost the absolute limit. With no encoder lag to compare with, -30 ms is still flagged."""
+    t, sp, tq, x, t_rel = _phone_view(59.0, 30.0)
+    assert SS._delivered_release(t, sp, tq, x, t_rel)["kind"] == "lag"
 
 
 def test_the_release_is_recorded_for_every_scored_trace(report):
@@ -373,7 +408,9 @@ def test_the_release_is_recorded_for_every_scored_trace(report):
     assert np.allclose(sc.enc_release_s - sc.cmd_release_s, sc.enc_release_lag_ms / 1e3, atol=1e-9)
     assert np.allclose(sc.ph_release_s - sc.cmd_release_s, sc.ph_release_lag_ms / 1e3, atol=1e-9)
     assert np.allclose(sc.ph_minus_enc_lag_ms, sc.ph_release_lag_ms - sc.enc_release_lag_ms, atol=1e-6)
-    assert (sc.ph_minus_enc_lag_ms.abs() <= 1e3 * SS.PHONE_SYNC_TOL_S).all(), sc.ph_minus_enc_lag_ms.tolist()
+    dt_ms = 1e3 / 59.0                                                       # the dry run's phone
+    assert np.allclose(sc.ph_expected_offset_ms, -SS.PHONE_EARLY_SAMPLES * dt_ms, atol=0.5), sc.ph_expected_offset_ms.tolist()
+    assert ((sc.ph_minus_enc_lag_ms - sc.ph_expected_offset_ms).abs() <= SS.PHONE_SYNC_TOL_SAMPLES * dt_ms).all(), sc.ph_minus_enc_lag_ms.tolist()
     assert not SS.release_flags(report)
 
 

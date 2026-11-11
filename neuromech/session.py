@@ -240,7 +240,18 @@ RELEASE_UNIQUE_APART_S = 0.010             # a rival release is any shift at lea
 RELEASE_UNIQUE_MIN_RATIO = 1.5             # ... and the best rival must fit at least this many times worse (rms ratio).
 #                                            Simulated: 2.7 or more on the identified plant, 1.87 or more at +-30 %;
 #                                            D-wobble, kick-back and slack are at 1.0 to 1.3.
-PHONE_SYNC_TOL_S = 0.035                   # phone lag - encoder lag: both sensed one arm (two phone samples)
+# The phone against the encoder: both sensed one arm, so their releases must agree -- once the phone's known
+# offset is allowed for. _align_phone puts the phone on the encoder clock from the three sync-pulse edges,
+# and mb.find_pulse_edges takes an edge at the FIRST SAMPLE past its threshold: on the encoder's 1 ms grid
+# that is the crossing, on a phone grid of period dt it is anywhere from 0 to dt after it. So the alignment
+# moves the phone trace early by about half a sample, and integrating and interpolating the release corner on
+# that grid adds a little more. Measured on the simulated phone (67 scenarios per rate): median -0.39 dt at
+# 200 and 100 Hz, -0.54 to -0.58 dt at 59 Hz with jitter (-0.82 dt at exactly 59 Hz with none, where all three
+# pulses land on one sampling phase), -0.64 dt at 30 and 25 Hz; of which the clock is -0.39 to -0.50 dt.
+# The gate is therefore centred on -PHONE_EARLY_SAMPLES sample periods, and its width is in sample periods
+# too, taken from the recording's own median period. PROVISIONAL: a real phone's timing has not been measured.
+PHONE_EARLY_SAMPLES = 0.6                  # expected (phone lag - encoder lag), in phone sample periods, early
+PHONE_SYNC_TOL_SAMPLES = 1.5               # allowed either side of that; simulated spread is within 0.64 at 59-200 Hz
 SCORE_LEAD_S = 0.05                        # hold scored before the hold's own start (as before this change)
 
 
@@ -271,9 +282,13 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     -> dict(release_s, lag_s, resid_deg, hold_rms_deg, rival_ratio, flag, kind). flag is "" when the release
     is usable, otherwise the reason it is not; a flagged release must not be scored from. kind names the
     check that failed ("lag" for the plausible-range check, which session.score judges across the session).
-    enc_lag_s: for a phone trace, the encoder's lag for the same run; the two must agree within
-    PHONE_SYNC_TOL_S."""
-    out = dict(release_s=np.nan, lag_s=np.nan, resid_deg=np.nan, hold_rms_deg=np.nan, rival_ratio=np.nan, flag="", kind="")
+    enc_lag_s: given for a PHONE trace, the encoder's lag for the same run. A phone trace is not held to the
+    plausible lag range at all (the encoder is, across the session, and a phone reads early by an amount that
+    depends on its sample period, so an absolute limit flags it exactly when the arm tracks well). It is held
+    to the encoder: phone lag - encoder lag must be within PHONE_SYNC_TOL_SAMPLES sample periods of the
+    expected -PHONE_EARLY_SAMPLES sample periods; the expected value is returned as expected_offset_s."""
+    out = dict(release_s=np.nan, lag_s=np.nan, resid_deg=np.nan, hold_rms_deg=np.nan, rival_ratio=np.nan,
+               expected_offset_s=np.nan, flag="", kind="")
 
     def flagged(kind, why):
         out.update(flag=why, kind=kind); return out
@@ -311,11 +326,17 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     if out["rival_ratio"] < RELEASE_UNIQUE_MIN_RATIO:
         return flagged("ambiguous", f"release uncertain: a release {RELEASE_UNIQUE_APART_S * 1e3:.0f} ms or more away fits "
                                     f"only {out['rival_ratio']:.1f} times worse (limit {RELEASE_UNIQUE_MIN_RATIO:g})")
-    if not p0 <= lag <= p1:
-        return flagged("lag", f"lag {lag * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms")
-    if enc_lag_s is not None and abs(lag - enc_lag_s) > PHONE_SYNC_TOL_S:
-        return flagged("phone", f"phone lag {lag * 1e3:+.1f} ms and encoder lag {enc_lag_s * 1e3:+.1f} ms differ by more than "
-                                f"{PHONE_SYNC_TOL_S * 1e3:.0f} ms: the sync is off")
+    if enc_lag_s is None:
+        if not p0 <= lag <= p1:
+            return flagged("lag", f"lag {lag * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms")
+        return out
+    dt = float(np.median(np.diff(t)))
+    out["expected_offset_s"] = -PHONE_EARLY_SAMPLES * dt
+    off = lag - enc_lag_s - out["expected_offset_s"]
+    if abs(off) > PHONE_SYNC_TOL_SAMPLES * dt:
+        return flagged("phone", f"phone lag {lag * 1e3:+.1f} ms and encoder lag {enc_lag_s * 1e3:+.1f} ms differ by {(lag - enc_lag_s) * 1e3:+.1f} ms; "
+                                f"at this phone's {dt * 1e3:.1f} ms sample period {out['expected_offset_s'] * 1e3:+.1f} ms is expected, within "
+                                f"{PHONE_SYNC_TOL_SAMPLES * dt * 1e3:.0f} ms: the sync is off")
     return out
 
 
@@ -504,7 +525,8 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
                 # phone's; measured here, the offset moves the release with the trace and is reported.
                 prl = _delivered_release(t, sp, tq, ang, t_rel, enc_lag_s=rel["lag_s"])
                 row.update(ph_release_s=prl["release_s"], ph_release_lag_ms=prl["lag_s"] * 1e3,
-                           ph_release_resid_deg=prl["resid_deg"], ph_minus_enc_lag_ms=(prl["lag_s"] - rel["lag_s"]) * 1e3)
+                           ph_release_resid_deg=prl["resid_deg"], ph_hold_rms_deg=prl["hold_rms_deg"], ph_rival_ratio=prl["rival_ratio"],
+                           ph_minus_enc_lag_ms=(prl["lag_s"] - rel["lag_s"]) * 1e3, ph_expected_offset_ms=prl["expected_offset_s"] * 1e3)
                 if prl["flag"]:
                     row["phone_status"] = f"release flagged: {prl['flag']}"
                 else:
