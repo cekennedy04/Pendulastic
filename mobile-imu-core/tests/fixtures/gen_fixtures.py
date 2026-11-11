@@ -350,6 +350,191 @@ def main():
     parts.append(f64_const("TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG", p7["neutral_deg"],
                            "compute_pt_params(TRIAL_LIFT_RING, detrend=True)['neutral_deg']"))
 
+    # ---- the bounded baseline fallback (3ca6bf4) --------------------------
+    # TRIAL_LIFT_RING above reaches the fallback with a flat hold, so its
+    # slope is ~0 and it passes every guard trivially: it cannot tell a
+    # guarded fallback from an unguarded one. These four can. Each is a hold
+    # that creeps at a known rate and then a swing still ringing when the
+    # recording stops (so the settled tail refuses and the fallback is
+    # reached for real, not by patching the tail estimator out), built so that
+    # exactly ONE verdict applies:
+    #   OK          1.5 s hold, 1 deg/s          -> fitted and applied
+    #   SHORT_HOLD  0.8 s hold, 2 deg/s          -> window under 1.0 s
+    #   SLOPE_CAP   1.5 s hold, 5 deg/s          -> slope over 4 deg/s
+    #   OVER_BOUND  1.5 s hold, 3 deg/s, 9.5 s   -> correction over 25% of range
+    # The asserts below check that isolation against the guards' own
+    # arithmetic, so a later change to a constant fails HERE, loudly, rather
+    # than leaving a fixture that quietly tests a different guard.
+    import pendulastic_pt_score as _pts
+
+    def creeping_hold_then_ringing_swing(hold_s, creep_deg_s, swing_s,
+                                         fs=100.0, a0=50.0, decay=0.05):
+        n_hold = int(hold_s * fs)
+        th = np.arange(n_hold) / fs
+        hold = 180.0 + creep_deg_s * (th - th[-1])
+        ts = np.arange(int(swing_s * fs)) / fs
+        swing = 180.0 - a0 + a0 * np.exp(-decay * ts) * np.cos(2 * np.pi * 0.9 * ts)
+        ang_ = np.concatenate([hold, swing])
+        return np.arange(len(ang_)) / fs, ang_
+
+    def traced_detrend(t_sig, ang_sig, legacy=False, unchecked=False):
+        """compute_pt_params(detrend=True) plus what each estimator said.
+
+        `legacy` swaps in the fallback as it stood before 3ca6bf4 (a bare
+        polyfit behind the 10-sample minimum, no credibility bound), to record
+        what the guards changed. `unchecked` disables the A0 invariant so the
+        A0 it would have refused can be recorded.
+        """
+        rec = {}
+        saved = (_pts._settled_tail_drift_slope, _pts._baseline_drift_slope,
+                 _pts._credible_drift_slope, _pts._assert_amplitude_within_curve)
+
+        def tail(*a, **k):
+            rec["tail"] = saved[0](*a, **k)
+            return rec["tail"]
+
+        def base(tt, aa, end, start=0):
+            rec["start"], rec["end"] = int(start), int(end)
+            rec["unguarded"] = (float(np.polyfit(tt[start:end], aa[start:end], 1)[0])
+                                if end - start >= _pts._MIN_BASELINE else None)
+            rec["baseline"] = saved[1](tt, aa, end, start)
+            return rec["unguarded"] if legacy else rec["baseline"]
+
+        def cred(s, tt, aa):
+            rec["credible"] = saved[2](s, tt, aa)
+            rec["duration"] = float(tt[-1] - tt[0])
+            rec["range"] = float(np.max(aa) - np.min(aa))
+            return s if legacy else rec["credible"]
+
+        _pts._settled_tail_drift_slope = tail
+        _pts._baseline_drift_slope = base
+        _pts._credible_drift_slope = cred
+        if unchecked:
+            _pts._assert_amplitude_within_curve = lambda *a, **k: None
+        try:
+            p = compute_pt_params(t_sig, ang_sig, detrend=True)
+        finally:
+            (_pts._settled_tail_drift_slope, _pts._baseline_drift_slope,
+             _pts._credible_drift_slope, _pts._assert_amplitude_within_curve) = saved
+        return rec, p
+
+    def usize_const(name, v, doc=""):
+        d = f"/// {doc}\n" if doc else ""
+        return f"{d}pub const {name}: usize = {int(v)};\n\n"
+
+    def bool_const(name, v, doc=""):
+        d = f"/// {doc}\n" if doc else ""
+        return f"{d}pub const {name}: bool = {str(bool(v)).lower()};\n\n"
+
+    def emit_fallback(tag, t_sig, ang_sig, doc, verdict):
+        rec, p = traced_detrend(t_sig, ang_sig)
+        _, p_legacy = traced_detrend(t_sig, ang_sig, legacy=True)
+        plain = compute_pt_params(t_sig, ang_sig, detrend=False)
+        assert p is not None and plain is not None and p_legacy is not None, tag
+        assert rec["tail"] is None, f"{tag}: the settled tail answered, fallback not reached"
+        start, end = rec["start"], rec["end"]
+        n_fit = end - start
+        span_s = float(t_sig[end - 1] - t_sig[start])
+        raw = rec["unguarded"]
+        assert n_fit >= _pts._MIN_BASELINE and raw is not None, tag
+        window_ok = span_s >= _pts._BASELINE_MIN_SECONDS
+        cap_ok = abs(raw) <= _pts._MAX_DRIFT_DEG_S
+        bound_ok = (abs(raw) * rec.get("duration", float(t_sig[-1] - t_sig[0]))
+                    <= _pts._MAX_TOTAL_CORRECTION_FRAC
+                    * float(np.max(ang_sig) - np.min(ang_sig)))
+        want = {"accepted": (True, True, True), "short_window": (False, True, True),
+                "slope_cap": (True, False, True), "total_correction": (True, True, False)}[verdict]
+        assert (window_ok, cap_ok, bound_ok) == want, (
+            f"{tag}: guards read window={window_ok} cap={cap_ok} bound={bound_ok}, "
+            f"fixture was built for {verdict}")
+        applied = rec["baseline"] is not None and rec.get("credible") is not None
+        assert applied == (verdict == "accepted"), tag
+        if applied:
+            assert abs(p["A0_deg"] - plain["A0_deg"]) > 1.0, f"{tag}: correction too small to pin"
+        else:
+            # A refused fallback means NO correction: the detrended result is
+            # the undetrended one, to the bit.
+            assert p["A0_deg"] == plain["A0_deg"] and p["neutral_deg"] == plain["neutral_deg"], tag
+            assert abs(p_legacy["A0_deg"] - p["A0_deg"]) > 1.0, (
+                f"{tag}: the unguarded fallback gives the same A0, fixture pins nothing")
+
+        parts.append(f64_slice(f"{tag}_T", t_sig, f"{doc} - time base."))
+        parts.append(f64_slice(f"{tag}_ANG", ang_sig, f"{doc} - angle (deg)."))
+        parts.append(usize_const(f"{tag}_BASELINE_START", start,
+                                 "First sample of the hold window compute_pt_params fitted."))
+        parts.append(usize_const(f"{tag}_BASELINE_END", end,
+                                 "One past its last sample."))
+        parts.append(f64_const(f"{tag}_UNGUARDED_SLOPE", raw,
+                               "np.polyfit over that window with no guard at all (deg/s)."))
+        parts.append(bool_const(f"{tag}_BASELINE_SLOPE_IS_NONE", rec["baseline"] is None,
+                                "_baseline_drift_slope refused the window."))
+        if rec["baseline"] is not None:
+            parts.append(f64_const(f"{tag}_BASELINE_SLOPE", rec["baseline"],
+                                   "_baseline_drift_slope over that window (deg/s)."))
+        parts.append(bool_const(f"{tag}_APPLIED", applied,
+                                "Whether the fallback slope survived _credible_drift_slope and was applied."))
+        parts.append(f64_const(f"{tag}_DETREND_A0_DEG", p["A0_deg"],
+                               f"compute_pt_params({tag}, detrend=True)['A0_deg']"))
+        parts.append(f64_const(f"{tag}_DETREND_NEUTRAL_DEG", p["neutral_deg"],
+                               f"compute_pt_params({tag}, detrend=True)['neutral_deg']"))
+        parts.append(f64_const(f"{tag}_PLAIN_A0_DEG", plain["A0_deg"],
+                               f"compute_pt_params({tag}, detrend=False)['A0_deg']"))
+        parts.append(f64_const(f"{tag}_PLAIN_NEUTRAL_DEG", plain["neutral_deg"],
+                               f"compute_pt_params({tag}, detrend=False)['neutral_deg']"))
+        parts.append(f64_const(f"{tag}_UNGUARDED_A0_DEG", p_legacy["A0_deg"],
+                               "A0 with the fallback as it stood before 3ca6bf4 - what the guard prevents."))
+
+    parts.append("// ---- bounded baseline fallback (see gen_fixtures.py) ----\n\n")
+    emit_fallback("TRIAL_FALLBACK_OK", *creeping_hold_then_ringing_swing(1.5, 1.0, 3.0),
+                  "Creeping hold, accepted fallback", "accepted")
+    emit_fallback("TRIAL_FALLBACK_SHORT_HOLD", *creeping_hold_then_ringing_swing(0.8, 2.0, 3.0),
+                  "Creeping hold under 1.0 s", "short_window")
+    emit_fallback("TRIAL_FALLBACK_SLOPE_CAP", *creeping_hold_then_ringing_swing(1.5, 5.0, 3.0),
+                  "Creeping hold over the 4 deg/s cap", "slope_cap")
+    emit_fallback("TRIAL_FALLBACK_OVER_BOUND", *creeping_hold_then_ringing_swing(1.5, 3.0, 8.0),
+                  "Creeping hold whose correction exceeds 25% of the range", "total_correction")
+
+    # ---- the A0 invariant --------------------------------------------------
+    # The reference RAISES AmplitudeExceedsCurveError when A0 exceeds the raw
+    # span plus the permitted correction; the Rust core returns None instead
+    # (a panic in wasm would take the trial down). The bounded fallback can no
+    # longer get there, but the settled-tail estimator is deliberately not
+    # bounded by the 25% rule, and this is a curve where it does: a slow sag
+    # (tau 4 s) largely cancelled by +2.5 deg/s of drift, so the raw curve spans
+    # only ~32 deg while the corrected one has its full amplitude back.
+    n_hold9, fs9 = int(2.0 * 50.0), 50.0
+    t9 = np.arange(n_hold9 + int(12 * fs9)) / fs9
+    a9 = np.full(len(t9), 180.0)
+    x9 = t9[n_hold9:] - t9[n_hold9]
+    a9[n_hold9:] = 180.0 - 60.0 * (1.0 - np.exp(-x9 / 4.0))
+    a9 = a9 + 2.5 * t9
+    try:
+        compute_pt_params(t9, a9, detrend=True)
+        raise SystemExit("TRIAL_A0_OVER_CURVE no longer raises - fixture is stale")
+    except _pts.AmplitudeExceedsCurveError:
+        pass
+    rec9, p9 = traced_detrend(t9, a9, unchecked=True)
+    plain9 = compute_pt_params(t9, a9, detrend=False)
+    span9 = float(np.max(a9) - np.min(a9))
+    limit9 = span9 * (1.0 + _pts._MAX_TOTAL_CORRECTION_FRAC + _pts._AMPLITUDE_SLACK_FRAC)
+    assert rec9["tail"] is not None, "A0_OVER_CURVE: expected the settled tail to answer"
+    assert p9["A0_deg"] > 1.05 * limit9, "A0_OVER_CURVE: too close to the limit to pin across languages"
+    assert plain9 is not None
+    parts.append("// ---- A0 invariant (see gen_fixtures.py) ----\n\n")
+    parts.append(f64_slice("TRIAL_A0_OVER_CURVE_T", t9, "Slow sag masked by drift - time base."))
+    parts.append(f64_slice("TRIAL_A0_OVER_CURVE_ANG", a9, "Slow sag masked by drift - angle (deg)."))
+    parts.append(bool_const("TRIAL_A0_OVER_CURVE_DETREND_RAISES", True,
+                            "compute_pt_params(TRIAL_A0_OVER_CURVE, detrend=True) raises AmplitudeExceedsCurveError."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_TAIL_SLOPE", rec9["tail"],
+                           "_settled_tail_drift_slope on it (deg/s) - the correction that was applied."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_SPAN_DEG", span9, "max - min of the raw curve."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_LIMIT_DEG", limit9,
+                           "span * (1 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC)."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_UNCHECKED_A0_DEG", p9["A0_deg"],
+                           "The A0 the invariant refuses (computed with the check disabled)."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG", plain9["A0_deg"],
+                           "compute_pt_params(TRIAL_A0_OVER_CURVE, detrend=False)['A0_deg'] - inside the curve, scores."))
+
     # ---- end-to-end: raw sensor log -> fusion -> resample -> scoring ------
     # The plan's final U2 scenario. Every fixture above pins ONE stage against
     # its Python counterpart; this one pins the COMPOSITION -- raw samples in,

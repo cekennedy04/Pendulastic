@@ -512,9 +512,175 @@ fn lift_ramp_stays_out_of_the_baseline_drift_fit() {
 
 // ---- the bounded baseline fallback (port of 3ca6bf4) ------------------------
 //
-// The guards themselves, on closed-form windows. The fixtures that pin them
-// inside compute_pt_params against the Python reference follow in the next
-// commit, with the regenerated golden file.
+// TRIAL_LIFT_RING above reaches the fallback with a FLAT hold: its slope is ~0
+// and it passes every guard trivially, so it reads the same with the guards or
+// without them. The four fixtures below are a creeping hold followed by a swing
+// still ringing when the recording stops, built by gen_fixtures.py so that
+// exactly one verdict applies to each. The three refusals fail against the
+// unguarded fallback this replaced.
+
+/// One fallback fixture, in the shape the checks below need.
+struct Fallback {
+    t: &'static [f64],
+    ang: &'static [f64],
+    start: usize,
+    end: usize,
+    unguarded_slope: f64,
+    detrend_a0: f64,
+    detrend_neutral: f64,
+    plain_a0: f64,
+    plain_neutral: f64,
+    unguarded_a0: f64,
+}
+
+// The crate has no ident-pasting dependency, so the constant names are spelled
+// out at each call site, in this order.
+macro_rules! fallback {
+    ($t:ident, $ang:ident, $start:ident, $end:ident, $slope:ident, $da0:ident, $dn:ident,
+     $pa0:ident, $pn:ident, $ua0:ident $(,)?) => {
+        Fallback {
+            t: golden::$t,
+            ang: golden::$ang,
+            start: golden::$start,
+            end: golden::$end,
+            unguarded_slope: golden::$slope,
+            detrend_a0: golden::$da0,
+            detrend_neutral: golden::$dn,
+            plain_a0: golden::$pa0,
+            plain_neutral: golden::$pn,
+            unguarded_a0: golden::$ua0,
+        }
+    };
+}
+
+/// A refused fallback means NO correction, so the detrended result is the
+/// undetrended one to the bit -- and is not what the unguarded fallback gave.
+fn assert_refused_fallback_leaves_the_curve_alone(f: &Fallback, what: &str) {
+    let p = compute_pt_params(f.t, f.ang, None, true).expect("scorable (detrend)");
+    let plain = compute_pt_params(f.t, f.ang, None, false).expect("scorable (plain)");
+    close(p.a0_deg, f.detrend_a0, 1e-6, &format!("{what}: A0 (detrend)"));
+    close(p.neutral_deg, f.detrend_neutral, 1e-6, &format!("{what}: neutral (detrend)"));
+    close(plain.a0_deg, f.plain_a0, 1e-6, &format!("{what}: A0 (plain)"));
+    close(plain.neutral_deg, f.plain_neutral, 1e-6, &format!("{what}: neutral (plain)"));
+    assert_eq!(p.a0_deg, plain.a0_deg, "{what}: a refused fallback still moved A0");
+    assert_eq!(p.neutral_deg, plain.neutral_deg, "{what}: a refused fallback still moved neutral");
+    assert!(
+        (p.a0_deg - f.unguarded_a0).abs() > 1.0,
+        "{what}: A0 {} is what the unguarded fallback gave ({}) -- the guard did nothing",
+        p.a0_deg,
+        f.unguarded_a0
+    );
+}
+
+#[test]
+fn a_credible_hold_slope_is_still_fitted_and_applied() {
+    // 1.45 s of hold creeping at 1 deg/s: a real window, under the cap, and
+    // 4.6% of the curve's range over the trial. The guards must not turn the
+    // fallback into a blanket refusal.
+    let f = fallback!(
+        TRIAL_FALLBACK_OK_T, TRIAL_FALLBACK_OK_ANG, TRIAL_FALLBACK_OK_BASELINE_START,
+        TRIAL_FALLBACK_OK_BASELINE_END, TRIAL_FALLBACK_OK_UNGUARDED_SLOPE,
+        TRIAL_FALLBACK_OK_DETREND_A0_DEG, TRIAL_FALLBACK_OK_DETREND_NEUTRAL_DEG,
+        TRIAL_FALLBACK_OK_PLAIN_A0_DEG, TRIAL_FALLBACK_OK_PLAIN_NEUTRAL_DEG,
+        TRIAL_FALLBACK_OK_UNGUARDED_A0_DEG,
+    );
+    let fitted = baseline_drift_slope(f.t, f.ang, f.end, f.start);
+    assert_eq!(fitted.is_none(), golden::TRIAL_FALLBACK_OK_BASELINE_SLOPE_IS_NONE);
+    assert_eq!(credible_drift_slope(fitted, f.t, f.ang).is_some(), golden::TRIAL_FALLBACK_OK_APPLIED);
+    let slope = baseline_drift_slope(f.t, f.ang, f.end, f.start).expect("a 1.45 s hold is fitted");
+    close(slope, golden::TRIAL_FALLBACK_OK_BASELINE_SLOPE, 1e-9, "baseline slope");
+    close(slope, f.unguarded_slope, 1e-9, "an accepted slope is the plain fit");
+    assert_eq!(credible_drift_slope(Some(slope), f.t, f.ang), Some(slope));
+
+    let p = compute_pt_params(f.t, f.ang, None, true).expect("scorable (detrend)");
+    let plain = compute_pt_params(f.t, f.ang, None, false).expect("scorable (plain)");
+    close(p.a0_deg, f.detrend_a0, 1e-6, "A0 (detrend)");
+    close(p.neutral_deg, f.detrend_neutral, 1e-6, "neutral (detrend)");
+    close(plain.a0_deg, f.plain_a0, 1e-6, "A0 (plain)");
+    close(plain.neutral_deg, f.plain_neutral, 1e-6, "neutral (plain)");
+    // Accepted means the guards changed nothing here: guarded == unguarded.
+    close(p.a0_deg, f.unguarded_a0, 1e-6, "A0 against the unguarded fallback");
+    assert!(
+        (p.a0_deg - plain.a0_deg).abs() > 1.0,
+        "the credible slope was not applied: A0 {} detrended, {} plain",
+        p.a0_deg,
+        plain.a0_deg
+    );
+}
+
+#[test]
+fn a_hold_window_under_one_second_is_refused() {
+    // 0.75 s of hold at 2 deg/s. 76 samples, a slope under the cap and a total
+    // correction of 7.7% of the range: only the window length refuses it.
+    let f = fallback!(
+        TRIAL_FALLBACK_SHORT_HOLD_T, TRIAL_FALLBACK_SHORT_HOLD_ANG,
+        TRIAL_FALLBACK_SHORT_HOLD_BASELINE_START, TRIAL_FALLBACK_SHORT_HOLD_BASELINE_END,
+        TRIAL_FALLBACK_SHORT_HOLD_UNGUARDED_SLOPE, TRIAL_FALLBACK_SHORT_HOLD_DETREND_A0_DEG,
+        TRIAL_FALLBACK_SHORT_HOLD_DETREND_NEUTRAL_DEG, TRIAL_FALLBACK_SHORT_HOLD_PLAIN_A0_DEG,
+        TRIAL_FALLBACK_SHORT_HOLD_PLAIN_NEUTRAL_DEG, TRIAL_FALLBACK_SHORT_HOLD_UNGUARDED_A0_DEG,
+    );
+    let fitted = baseline_drift_slope(f.t, f.ang, f.end, f.start);
+    assert_eq!(fitted.is_none(), golden::TRIAL_FALLBACK_SHORT_HOLD_BASELINE_SLOPE_IS_NONE);
+    assert_eq!(credible_drift_slope(fitted, f.t, f.ang).is_some(), golden::TRIAL_FALLBACK_SHORT_HOLD_APPLIED);
+    assert!(f.end - f.start >= 10, "enough samples: the window is short in TIME");
+    assert!(f.t[f.end - 1] - f.t[f.start] < 1.0);
+    assert!(f.unguarded_slope.abs() < 4.0, "under the slope cap");
+    assert_eq!(baseline_drift_slope(f.t, f.ang, f.end, f.start), None);
+    // The other two guards would have let this slope through.
+    assert_eq!(
+        credible_drift_slope(Some(f.unguarded_slope), f.t, f.ang),
+        Some(f.unguarded_slope)
+    );
+    assert_refused_fallback_leaves_the_curve_alone(&f, "short hold");
+}
+
+#[test]
+fn a_hold_slope_over_the_drift_cap_is_refused() {
+    // 1.48 s of hold at 5 deg/s: long enough, and 22.8% of the range over the
+    // trial, so only MAX_DRIFT_DEG_S (4 deg/s) refuses it.
+    let f = fallback!(
+        TRIAL_FALLBACK_SLOPE_CAP_T, TRIAL_FALLBACK_SLOPE_CAP_ANG,
+        TRIAL_FALLBACK_SLOPE_CAP_BASELINE_START, TRIAL_FALLBACK_SLOPE_CAP_BASELINE_END,
+        TRIAL_FALLBACK_SLOPE_CAP_UNGUARDED_SLOPE, TRIAL_FALLBACK_SLOPE_CAP_DETREND_A0_DEG,
+        TRIAL_FALLBACK_SLOPE_CAP_DETREND_NEUTRAL_DEG, TRIAL_FALLBACK_SLOPE_CAP_PLAIN_A0_DEG,
+        TRIAL_FALLBACK_SLOPE_CAP_PLAIN_NEUTRAL_DEG, TRIAL_FALLBACK_SLOPE_CAP_UNGUARDED_A0_DEG,
+    );
+    let fitted = baseline_drift_slope(f.t, f.ang, f.end, f.start);
+    assert_eq!(fitted.is_none(), golden::TRIAL_FALLBACK_SLOPE_CAP_BASELINE_SLOPE_IS_NONE);
+    assert_eq!(credible_drift_slope(fitted, f.t, f.ang).is_some(), golden::TRIAL_FALLBACK_SLOPE_CAP_APPLIED);
+    assert!(f.t[f.end - 1] - f.t[f.start] >= 1.0, "the window is long enough");
+    assert!(f.unguarded_slope.abs() > 4.0);
+    assert_eq!(baseline_drift_slope(f.t, f.ang, f.end, f.start), None);
+    assert_eq!(
+        credible_drift_slope(Some(f.unguarded_slope), f.t, f.ang),
+        Some(f.unguarded_slope),
+        "the total-correction bound alone would have passed it"
+    );
+    assert_refused_fallback_leaves_the_curve_alone(&f, "slope cap");
+}
+
+#[test]
+fn a_hold_slope_whose_correction_would_rewrite_the_curve_is_refused() {
+    // 1.46 s of hold at 3 deg/s passes the window and the cap, but over the
+    // 9.49 s trial it displaces 28.5 deg of a 98.6 deg curve: past the 25%
+    // bound, which is the only guard that sees the whole recording.
+    let f = fallback!(
+        TRIAL_FALLBACK_OVER_BOUND_T, TRIAL_FALLBACK_OVER_BOUND_ANG,
+        TRIAL_FALLBACK_OVER_BOUND_BASELINE_START, TRIAL_FALLBACK_OVER_BOUND_BASELINE_END,
+        TRIAL_FALLBACK_OVER_BOUND_UNGUARDED_SLOPE, TRIAL_FALLBACK_OVER_BOUND_DETREND_A0_DEG,
+        TRIAL_FALLBACK_OVER_BOUND_DETREND_NEUTRAL_DEG, TRIAL_FALLBACK_OVER_BOUND_PLAIN_A0_DEG,
+        TRIAL_FALLBACK_OVER_BOUND_PLAIN_NEUTRAL_DEG, TRIAL_FALLBACK_OVER_BOUND_UNGUARDED_A0_DEG,
+    );
+    let fitted = baseline_drift_slope(f.t, f.ang, f.end, f.start);
+    assert_eq!(fitted.is_none(), golden::TRIAL_FALLBACK_OVER_BOUND_BASELINE_SLOPE_IS_NONE);
+    assert_eq!(credible_drift_slope(fitted, f.t, f.ang).is_some(), golden::TRIAL_FALLBACK_OVER_BOUND_APPLIED);
+    let slope = baseline_drift_slope(f.t, f.ang, f.end, f.start)
+        .expect("the hold itself is a credible window with a credible slope");
+    close(slope, golden::TRIAL_FALLBACK_OVER_BOUND_BASELINE_SLOPE, 1e-9, "baseline slope");
+    close(slope, f.unguarded_slope, 1e-9, "the hold fit is the plain fit");
+    assert_eq!(credible_drift_slope(Some(slope), f.t, f.ang), None);
+    assert_refused_fallback_leaves_the_curve_alone(&f, "total correction");
+}
 
 #[test]
 fn baseline_drift_slope_guards_match_the_reference_at_their_edges() {
@@ -605,6 +771,65 @@ fn credible_drift_slope_guards_match_the_reference_at_their_edges() {
     assert_eq!(credible_drift_slope(Some(0.1), &[1.0, 1.0, 1.0], &[0.0, 5.0, 9.0]), None);
     assert_eq!(credible_drift_slope(Some(0.1), &[0.0, 1.0, 2.0], &[7.0, 7.0, 7.0]), None);
     assert_eq!(credible_drift_slope(Some(0.1), &[0.0, 1.0, 2.0], &[7.0, f64::NAN, f64::NAN]), None);
+}
+
+#[test]
+fn detrend_false_is_untouched_by_the_fallback_guards() {
+    // The live convention never reaches either estimator, so every fallback
+    // fixture's undetrended A0 is the reference's undetrended A0 -- including
+    // the ones whose detrended fallback is refused.
+    let cases: [(&[f64], &[f64], f64); 4] = [
+        (
+            golden::TRIAL_FALLBACK_OK_T,
+            golden::TRIAL_FALLBACK_OK_ANG,
+            golden::TRIAL_FALLBACK_OK_PLAIN_A0_DEG,
+        ),
+        (
+            golden::TRIAL_FALLBACK_SHORT_HOLD_T,
+            golden::TRIAL_FALLBACK_SHORT_HOLD_ANG,
+            golden::TRIAL_FALLBACK_SHORT_HOLD_PLAIN_A0_DEG,
+        ),
+        (
+            golden::TRIAL_FALLBACK_SLOPE_CAP_T,
+            golden::TRIAL_FALLBACK_SLOPE_CAP_ANG,
+            golden::TRIAL_FALLBACK_SLOPE_CAP_PLAIN_A0_DEG,
+        ),
+        (
+            golden::TRIAL_FALLBACK_OVER_BOUND_T,
+            golden::TRIAL_FALLBACK_OVER_BOUND_ANG,
+            golden::TRIAL_FALLBACK_OVER_BOUND_PLAIN_A0_DEG,
+        ),
+    ];
+    for (t, ang, a0) in cases {
+        let p = compute_pt_params(t, ang, None, false).expect("scorable");
+        close(p.a0_deg, a0, 1e-6, "A0 (plain)");
+    }
+}
+
+// ---- the A0 invariant ------------------------------------------------------
+
+#[test]
+fn an_amplitude_larger_than_its_curve_is_refused_not_reported() {
+    // The reference raises AmplitudeExceedsCurveError on this curve with
+    // detrend on: a slow sag largely cancelled by drift, so the raw curve
+    // spans 32 deg while the tail-corrected one reads A0 = 43.6, past the
+    // 40.7 deg the raw span plus a sanctioned correction allows. Rust refuses
+    // the trial -- no panic, and no number.
+    let (t, ang) = (golden::TRIAL_A0_OVER_CURVE_T, golden::TRIAL_A0_OVER_CURVE_ANG);
+    let span = ang.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - ang.iter().copied().fold(f64::INFINITY, f64::min);
+    close(span, golden::TRIAL_A0_OVER_CURVE_SPAN_DEG, 1e-9, "span");
+    assert!(!amplitude_within_curve(golden::TRIAL_A0_OVER_CURVE_UNCHECKED_A0_DEG, ang));
+    assert!(amplitude_within_curve(golden::TRIAL_A0_OVER_CURVE_LIMIT_DEG - 1e-9, ang));
+    assert_eq!(
+        compute_pt_params(t, ang, None, true).is_none(),
+        golden::TRIAL_A0_OVER_CURVE_DETREND_RAISES,
+        "where the reference raises, Rust must refuse the trial"
+    );
+    // Undetrended, the same curve has an A0 inside its range and scores.
+    let plain = compute_pt_params(t, ang, None, false).expect("scorable undetrended");
+    close(plain.a0_deg, golden::TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG, 1e-6, "A0 (plain)");
+    assert!(amplitude_within_curve(plain.a0_deg, ang));
 }
 
 #[test]
