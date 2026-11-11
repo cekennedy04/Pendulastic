@@ -42,6 +42,7 @@ class PTScoreBridge:
 
     def compute(self, csv_path: str, trial_meta: dict) -> dict[str, Any]:
         from pendulastic_pt_score import (
+            AmplitudeExceedsCurveError,
             compute_pt_params,
             compute_pt_score_simple,
             pt_to_mas,
@@ -49,7 +50,12 @@ class PTScoreBridge:
         )
 
         t, angle = _load_hpe_csv(csv_path)
-        params   = compute_pt_params(t, angle)
+        try:
+            params = compute_pt_params(t, angle)
+        except AmplitudeExceedsCurveError as exc:
+            # Same outcome as a trial the scorer returns None for: no score,
+            # reported as a ValueError with the reason, never a number.
+            raise ValueError(f"Trial cannot be scored: {exc}") from exc
 
         if params is None:
             raise ValueError("Insufficient oscillation data — trial cannot be scored.")
