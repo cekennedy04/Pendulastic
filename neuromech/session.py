@@ -319,6 +319,85 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     return out
 
 
+# The lag is a property of the rig, so it is judged across the session: the plausible range applies to the
+# session's MEDIAN lag, and a run is judged against that median. PROVISIONAL, like the range itself.
+SESSION_LAG_TOL_S = 0.012                  # a run this far from the session median is the suspect one. Simulated good
+#                                            runs sit within -8.3 to +4.2 ms of their session median at +-30 % bandwidth
+#                                            and damping (-4.8 to +3.0 on the identified plant); a slow start is +21,
+#                                            40 ms of stiction +26, a forward lurch -22.
+SESSION_LAG_MIN_RUNS = 3                   # fewer usable runs than this is not a session to take a median of
+SESSION_LAG_CONSISTENT = 2.0 / 3.0         # share of runs within the tolerance for the lag to count as one rig lag
+
+
+def _session_lag(lags_s, accept_s=None):
+    """Judge the release lags of one session's usable fits. -> dict:
+      n, median_s    how many lags, and their median
+      reference_s    what each run is compared with (within SESSION_LAG_TOL_S), or None: each run is then held
+                     to RELEASE_LAG_PLAUSIBLE_S on its own, as before there was a session check
+      scorable       False when the session as a whole is outside the plausible range and not accepted
+      finding        the session-level message, "" if there is nothing to say
+      override_s     the accepted lag when --accept-session-lag-ms was USED to score, else NaN
+
+    A median outside the plausible range with the runs agreeing is one finding about the rig, not one fault
+    per run. accept_s is the operator saying "this rig's lag is about this, score it": it is honoured only
+    when the session's median is within the tolerance of it, and it is recorded."""
+    lags = np.asarray([v for v in lags_s if np.isfinite(v)], float)
+    S = dict(n=len(lags), median_s=np.nan, reference_s=None, scorable=True, finding="", override_s=np.nan)
+    if not len(lags): return S
+    med = float(np.median(lags)); S["median_s"] = med
+    p0, p1 = RELEASE_LAG_PLAUSIBLE_S; tol = SESSION_LAG_TOL_S
+    near = int(np.sum(np.abs(lags - med) <= tol))
+    spread = f"{len(lags)} runs, {lags.min() * 1e3:+.1f} to {lags.max() * 1e3:+.1f} ms, {near} within {tol * 1e3:.0f} ms of the median"
+    rng = f"{p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms"
+    if p0 <= med <= p1:
+        if len(lags) >= SESSION_LAG_MIN_RUNS: S["reference_s"] = med
+        if accept_s is not None:
+            S["finding"] = (f"--accept-session-lag-ms {accept_s * 1e3:g} was given and not needed: the session's median lag "
+                            f"{med * 1e3:+.1f} ms is inside the plausible {rng}. It was ignored.")
+        return S
+    accepted = accept_s is not None and abs(med - accept_s) <= tol
+    if accepted:
+        S.update(reference_s=med, override_s=float(accept_s),
+                 finding=(f"SESSION LAG OVERRIDE USED: the session's median release lag is {med * 1e3:+.1f} ms ({spread}), outside the "
+                          f"plausible {rng}. It was scored because --accept-session-lag-ms {accept_s * 1e3:g} accepts it; each run "
+                          f"is held to within {tol * 1e3:.0f} ms of the session median."))
+        return S
+    if len(lags) < SESSION_LAG_MIN_RUNS or near < SESSION_LAG_CONSISTENT * len(lags):
+        S["finding"] = (f"the session's release lags are outside the plausible {rng} without agreeing with each other "
+                        f"(median {med * 1e3:+.1f} ms; {spread}): there is no session lag to accept, and each run is judged on its own."
+                        if len(lags) >= SESSION_LAG_MIN_RUNS else "")
+        return S
+    S["scorable"] = False
+    S["finding"] = (
+        f"SESSION LAG FINDING: on this session the delivered release is {med * 1e3:+.1f} ms from the commanded one "
+        f"({spread}), outside the plausible {rng}. The lag is consistent across the session, so it points at the RIG "
+        f"(latency or bandwidth the model does not have), not at one run. No run with this lag is scored. "
+        f"What to do: (1) run check-log on one run and see that the setpoint changes every ~10 ms; (2) identify the plant "
+        f"from the chirp run (R000) and compare it with the model's 6.35 Hz, zeta 0.23, no delay; (3) look for latency "
+        f"added between the Player and the drive. If the lag is understood and is this rig's, score again with "
+        f"--accept-session-lag-ms {med * 1e3:.0f}: the override and its value are written into report.csv. "
+        f"The plausible range comes from a simulated plant and is provisional."
+        + (f" (--accept-session-lag-ms {accept_s * 1e3:g} was given, but it is more than {tol * 1e3:.0f} ms from this "
+           f"session's median, so it was not used.)" if accept_s is not None else ""))
+    return S
+
+
+def _lag_verdict(lag_s, S):
+    """"" if this run's lag is acceptable in its session S (_session_lag), else the reason it is flagged."""
+    p0, p1 = RELEASE_LAG_PLAUSIBLE_S
+    if S["reference_s"] is None:
+        if S["scorable"] and p0 <= lag_s <= p1: return ""
+        if not S["scorable"]:
+            return (f"session lag finding: lag {lag_s * 1e3:+.1f} ms, with the session's median at {S['median_s'] * 1e3:+.1f} ms, is "
+                    f"outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms; see session_lag_finding")
+        return f"lag {lag_s * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms"
+    d = lag_s - S["reference_s"]
+    if abs(d) > SESSION_LAG_TOL_S:
+        return (f"lag {lag_s * 1e3:+.1f} ms is {d * 1e3:+.1f} ms from the session median {S['reference_s'] * 1e3:+.1f} ms "
+                f"(limit {SESSION_LAG_TOL_S * 1e3:.0f} ms): this run, not the rig")
+    return ""
+
+
 def _score_trace(t, rig_deg, rest_model_deg, t_release, lead_s, tail_s=None):
     """Rig angle (0 = passive rest) -> Pendulastic angle, scored from lead_s before t_release.
 
@@ -343,7 +422,7 @@ def _summ(prm, est):
     return out
 
 
-def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False):
+def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False, accept_session_lag_ms=None):
     d = os.path.join(SESS, name)
     planned = json.load(open(os.path.join(d, "session.json"), encoding="utf-8")).get("provenance")
     prov = provenance()
@@ -365,7 +444,9 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
             print(f"WARNING: {len(phones)} phone recordings for {len(key)} runs -- pairing by order is unsafe; phone columns skipped")
             phones = []
     sheet = pd.read_csv(os.path.join(d, "runsheet.csv"), dtype=str).set_index("run_id")
-    rows = []
+    # Pass 1: find every run and measure its release. Nothing is scored yet, because whether a lag is
+    # acceptable is a question about the session (_session_lag), not about one run.
+    rows, work = [], []
     for i, r in key.iterrows():
         rid, sid = r.run_id, r.sid
         row = dict(run_id=rid, sid=sid)
@@ -393,11 +474,23 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
         row["int_band"] = man.loc[sid, "mas"] if isinstance(man.loc[sid, "mas"], str) else "refused"
         rel = _delivered_release(t, sp, t_all, pos_all, t_rel)
         row.update(cmd_release_s=t_rel, enc_release_s=rel["release_s"], enc_release_lag_ms=rel["lag_s"] * 1e3,
-                   enc_release_resid_deg=rel["resid_deg"])
-        if rel["flag"]:                                  # no fallback: an unscored run, said out loud
-            row.update(status=f"release flagged: {rel['flag']}", delivered_band_ok=False)
+                   enc_release_resid_deg=rel["resid_deg"], enc_hold_rms_deg=rel["hold_rms_deg"], enc_rival_ratio=rel["rival_ratio"])
+        rows.append(row)
+        work.append(dict(i=i, row=row, rel=rel, e=e, k0=k0, t=t, sp=sp, t_all=t_all, pos_all=pos_all, t_rel=t_rel,
+                         lead=lead, tail=tail, rest=rest))
+    # The session's lag: over every run whose fit is usable. A fit flagged for its hold, its uniqueness or its
+    # residual has no lag to contribute; one flagged only for its lag is exactly what is being judged here.
+    S = _session_lag([w["rel"]["lag_s"] for w in work if w["rel"]["kind"] in ("", "lag")],
+                     None if accept_session_lag_ms is None else accept_session_lag_ms / 1e3)
+    # Pass 2: score.
+    for w in work:
+        i, row, rel, e, k0, t, sp, t_all, pos_all, t_rel, lead, tail, rest = (w[k] for k in (
+            "i", "row", "rel", "e", "k0", "t", "sp", "t_all", "pos_all", "t_rel", "lead", "tail", "rest"))
+        flag = _lag_verdict(rel["lag_s"], S) if rel["kind"] in ("", "lag") else rel["flag"]
+        if flag:                                         # no fallback: an unscored run, said out loud
+            row.update(status=f"release flagged: {flag}", delivered_band_ok=False)
             if phones: row["phone_status"] = "not scored: the encoder release is flagged"
-            rows.append(row); continue
+            continue
         dlv = _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], lead, tail))
         row.update({f"enc_{k}": v for k, v in dlv.items()})
         row["delivered_band_ok"] = row["enc_band"] == row["int_band"]
@@ -420,9 +513,15 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
                     row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
             except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
                 row["phone_status"] = f"sync refused: {str(ex)[:90]}"
-        row["status"] = "scored"; rows.append(row)
+        row["status"] = "scored"
     rep = pd.DataFrame(rows)
     rep["provenance_mismatch"] = ",".join(stale)
+    # the session's lag, what was concluded from it, and the override if one was used to score: on every row,
+    # so that no copy of the report can lose them
+    rep["session_lag_median_ms"] = S["median_s"] * 1e3
+    rep["session_lag_runs"] = S["n"]
+    rep["session_lag_finding"] = S["finding"]
+    rep["session_lag_override_ms"] = S["override_s"] * 1e3
     rep.to_csv(os.path.join(d, "report.csv"), index=False)
     _print(rep); return rep
 
@@ -503,6 +602,13 @@ def _print(rep):
             msg += f"; phone - encoder median {pd_.median():+.1f} ms ({pd_.min():+.1f} to {pd_.max():+.1f})"
         print(msg)
     flagged = release_flags(rep)
+    finding = rep.session_lag_finding.iloc[0] if "session_lag_finding" in rep and len(rep) else ""
+    if isinstance(finding, str) and finding:             # said ONCE: it is about the session, not about a run
+        print("\n" + finding)
+    session_wide = [f for f in flagged if f[2].startswith("session lag finding")]
+    if session_wide:
+        print(f"  not scored for this reason: {len(session_wide)} run(s) ({', '.join(f[0] for f in session_wide)})")
+    flagged = [f for f in flagged if f not in session_wide]
     if flagged:
         print(f"\nRELEASE FLAGGED on {len(flagged)} trace(s); these were NOT scored and are not in the figures above:")
         for rid, trace, why in flagged: print(f"  {rid} {trace}: {why}")
@@ -519,6 +625,9 @@ def main(argv=None):
     a.add_argument("--chirp", action="store_true"); a.add_argument("--no-blind", action="store_true")
     b = sub.add_parser("score"); b.add_argument("--name", required=True); b.add_argument("--encoder-dir", required=True); b.add_argument("--phone-manifest")
     b.add_argument("--allow-provenance-mismatch", action="store_true")
+    b.add_argument("--accept-session-lag-ms", type=float, default=None, metavar="MS",
+                   help="score a session whose median release lag is outside the plausible range, when that median is within "
+                        f"{SESSION_LAG_TOL_S * 1e3:.0f} ms of MS (the value the session lag finding printed). Recorded in report.csv.")
     c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
     x = ap.parse_args(argv)
     if x.cmd == "check-log":
@@ -527,7 +636,8 @@ def main(argv=None):
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
     else:
-        if release_flags(score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch)):
+        if release_flags(score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch,
+                               accept_session_lag_ms=x.accept_session_lag_ms)):
             sys.exit(1)
 
 

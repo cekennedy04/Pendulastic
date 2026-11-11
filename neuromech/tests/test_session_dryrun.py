@@ -140,25 +140,28 @@ def _write_log(path, sp, phase, vel, delay_s, pre_s=1.5, post_s=1.0, fs=1000.0):
 @pytest.fixture(scope="module")
 def delayed(tmp_path_factory):
     """One planned session, scored once per delay with every run delivered as its own command, late by that
-    much. -> ({delay_ms: report indexed by sid}, sessions root, the 150 ms encoder folder)."""
+    much. -> ({delay_ms: report indexed by sid}, sessions root, {150 | 87 | "mixed": encoder folder kept for
+    the tests that score it again}). "mixed" is three runs 20 ms late and one (B-claspknife) 55 ms late."""
     import shutil
     root = tmp_path_factory.mktemp("delay"); sess = str(root / "sessions")
     old = SS.SESS
     try:
         SS.SESS = sess
         d = SS.plan("DELAY", sids=DELAY_SIDS, seed=1)
-        rids = [l.split(",")[0] for l in open(os.path.join(d, "key.csv"))][1:]
-        reps = {}
-        for ms in (0, 15, 20, 30, -30, 150):
+        key = [l.strip().split(",") for l in open(os.path.join(d, "key.csv"))][1:]
+        reps, kept = {}, {}
+        for ms in (0, 15, 20, 30, -30, 87, 150, "mixed"):
             enc = root / f"enc{ms}"; enc.mkdir()
-            for rid in rids:
+            for rid, sid, _dur in key:
                 a = np.genfromtxt(os.path.join(d, "commands", rid + ".csv"), delimiter=",", names=True)
-                _write_log(str(enc / f"{rid}.bin"), a["setpoint_deg"], a["phase"], a["vel_dps"], ms / 1000.0)
+                late = (55 if sid == "B-claspknife" else 20) if ms == "mixed" else ms
+                _write_log(str(enc / f"{rid}.bin"), a["setpoint_deg"], a["phase"], a["vel_dps"], late / 1000.0)
             reps[ms] = SS.score("DELAY", str(enc)).set_index("sid")
-            if ms != 150: shutil.rmtree(enc)
+            if ms in (87, 150, "mixed"): kept[ms] = str(enc)
+            else: shutil.rmtree(enc)
     finally:
         SS.SESS = old
-    return reps, sess, str(root / "enc150")
+    return reps, sess, kept
 
 
 def test_an_undelayed_command_scores_as_the_scenario(delayed):
@@ -216,9 +219,12 @@ def test_the_lag_is_recovered_at_the_phones_sample_rate():
 @pytest.mark.parametrize("ms", [-30, 150])
 def test_an_implausible_lag_flags_the_run_and_does_not_score_it(delayed, ms):
     """An arm that moves before its command, or 150 ms after it, is not a delivery of that command. The run
-    is flagged with the reason and carries NO delivered score: there is no fallback to the commanded release."""
+    is flagged with the reason and carries NO delivered score: there is no fallback to the commanded release.
+    150 ms is beyond the search, so each run says the search stopped at its edge; -30 ms on every run is a
+    session-level finding (the tests below)."""
     got = delayed[0][ms]
-    assert got.status.str.startswith("release flagged: lag ").all(), got.status.tolist()
+    why = "release flagged: lag +130 ms is the edge of the search" if ms == 150 else "release flagged: session lag finding: lag -30.0 ms"
+    assert got.status.str.startswith(why).all(), got.status.tolist()
     assert "enc_pt7" not in got.columns or got.enc_pt7.isna().all()
     assert "enc_band" not in got.columns or got.enc_band.isna().all()
     assert not got.delivered_band_ok.astype(bool).any()
@@ -226,16 +232,115 @@ def test_an_implausible_lag_flags_the_run_and_does_not_score_it(delayed, ms):
     assert len(SS.release_flags(got.reset_index())) == len(got)
 
 
+def _score_delay(delayed, which, *args, **kw):
+    _reps, sess, kept = delayed
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        return SS.score("DELAY", kept[which], *args, **kw).set_index("sid")
+    finally:
+        SS.SESS = old
+
+
 def test_score_exits_with_status_1_when_a_release_is_flagged(delayed):
-    _reps, sess, enc150 = delayed
+    _reps, sess, kept = delayed
     old = SS.SESS
     try:
         SS.SESS = sess
         with pytest.raises(SystemExit) as ex:
-            SS.main(["score", "--name", "DELAY", "--encoder-dir", enc150])
+            SS.main(["score", "--name", "DELAY", "--encoder-dir", kept[150]])
     finally:
         SS.SESS = old
     assert ex.value.code == 1
+
+
+# ── the lag is judged across the session (review 2026-11-11, required change 2) ────────────────────────
+def test_a_consistent_out_of_range_session_is_one_rig_finding_not_a_fault_per_run(delayed, capsys):
+    """Every run 87 ms late (the review got this from +60 ms of transport delay: 67 of 67 flagged, each with a
+    per-run message, nothing to say it was the rig). Still not scored, but said once, as what it is."""
+    capsys.readouterr()
+    got = _score_delay(delayed, 87); out = capsys.readouterr().out
+    assert (np.abs(got.enc_release_lag_ms - 87) < LAG_TOL_ENCODER_MS).all()
+    assert got.status.str.startswith("release flagged: session lag finding").all(), got.status.tolist()
+    assert "enc_pt7" not in got.columns or got.enc_pt7.isna().all()
+    msg = got.session_lag_finding.iloc[0]
+    assert (got.session_lag_finding == msg).all() and abs(got.session_lag_median_ms.iloc[0] - 87) < LAG_TOL_ENCODER_MS
+    for said in ("consistent across the session", "RIG", "not at one run", "check-log", "chirp", "--accept-session-lag-ms 87", "provisional"):
+        assert said in msg, (said, msg)
+    assert got.session_lag_override_ms.isna().all()
+    assert out.count("SESSION LAG FINDING") == 1 and "RELEASE FLAGGED" not in out, out      # once, and no list of 4 "faults"
+    assert "not scored for this reason: 4 run(s)" in out
+
+
+def test_the_override_scores_such_a_session_and_is_written_into_the_report(delayed):
+    import pandas as pd
+    ref = delayed[0][0]
+    got = _score_delay(delayed, 87, accept_session_lag_ms=87.0)
+    assert (got.status == "scored").all(), got.status.tolist()
+    assert got.enc_N.tolist() == ref.enc_N.tolist() and got.enc_band.tolist() == ref.enc_band.tolist()     # and scored right
+    assert (got.session_lag_override_ms == 87.0).all()
+    assert got.session_lag_finding.str.startswith("SESSION LAG OVERRIDE USED").all()
+    assert "--accept-session-lag-ms 87" in got.session_lag_finding.iloc[0]
+    back = pd.read_csv(os.path.join(delayed[1], "DELAY", "report.csv"))                                    # it is in the file
+    assert (back.session_lag_override_ms == 87.0).all() and back.session_lag_finding.str.contains("OVERRIDE USED").all()
+
+
+def test_the_override_must_name_the_lag_this_session_has(delayed):
+    """Accepting 40 ms does not accept 87: the override is a statement about a measured value, not a switch."""
+    got = _score_delay(delayed, 87, accept_session_lag_ms=40.0)
+    assert got.status.str.startswith("release flagged: session lag finding").all(), got.status.tolist()
+    assert got.session_lag_override_ms.isna().all() and "was not used" in got.session_lag_finding.iloc[0]
+
+
+def test_an_override_that_is_not_needed_changes_nothing(delayed):
+    got = _score_delay(delayed, "mixed", accept_session_lag_ms=87.0)
+    assert got.session_lag_override_ms.isna().all() and "not needed" in got.session_lag_finding.iloc[0]
+    assert got.status.tolist() == delayed[0]["mixed"].status.tolist()
+
+
+def test_the_cli_takes_the_override(delayed):
+    _reps, sess, kept = delayed
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        SS.main(["score", "--name", "DELAY", "--encoder-dir", kept[87], "--accept-session-lag-ms", "87"])   # exit status 0
+        with pytest.raises(SystemExit) as ex:
+            SS.main(["score", "--name", "DELAY", "--encoder-dir", kept[87]])
+    finally:
+        SS.SESS = old
+    assert ex.value.code == 1
+
+
+def test_one_run_far_from_the_session_median_is_the_run_that_is_flagged(delayed):
+    """Three runs 20 ms late and one 55 ms late. 55 ms is inside the plausible range, so e2257cc scored it; a
+    slow start looks like this (49 ms in a session at 27). The run is flagged, the session is not."""
+    got = delayed[0]["mixed"]
+    odd = got.loc["B-claspknife"]; rest = got.drop("B-claspknife")
+    assert (rest.status == "scored").all(), rest.status.tolist()
+    assert odd.status.startswith("release flagged: lag +55.0 ms is +35.0 ms from the session median +20.0 ms"), odd.status
+    assert "this run, not the rig" in odd.status and not odd.delivered_band_ok
+    assert abs(got.session_lag_median_ms.iloc[0] - 20) < LAG_TOL_ENCODER_MS and got.session_lag_runs.iloc[0] == 4
+    assert (got.session_lag_finding.fillna("") == "").all()
+
+
+def test_session_lag_rules():
+    """_session_lag on its own: what counts as a session, as consistent, and as accepted."""
+    tol = SS.SESSION_LAG_TOL_S
+    S = SS._session_lag([0.027, 0.028, 0.026, 0.049])
+    assert S["scorable"] and abs(S["reference_s"] - 0.0275) < 1e-9 and S["finding"] == ""
+    assert SS._lag_verdict(0.049, S) != "" and SS._lag_verdict(0.027 + tol - 1e-4, S) == "" and SS._lag_verdict(0.027, S) == ""
+    S = SS._session_lag([0.027, 0.150])                                  # two runs are not a session: each on its own
+    assert S["reference_s"] is None and S["scorable"]
+    assert SS._lag_verdict(0.027, S) == "" and "outside the plausible" in SS._lag_verdict(0.150, S)
+    S = SS._session_lag([0.087, 0.088, 0.086, 0.087, 0.027])             # consistent enough: 4 of 5
+    assert not S["scorable"] and "consistent across the session" in S["finding"]
+    assert SS._lag_verdict(0.087, S).startswith("session lag finding") and SS._lag_verdict(0.027, S) != ""
+    S = SS._session_lag([0.090, 0.120, 0.150, -0.030, 0.105])            # out of range and all over the place: nothing to accept
+    assert S["scorable"] and S["reference_s"] is None and "without agreeing" in S["finding"]
+    assert "outside the plausible" in SS._lag_verdict(0.120, S) and SS._lag_verdict(0.070, S) == ""
+    S = SS._session_lag([0.087, 0.088, 0.086], accept_s=0.090)
+    assert S["scorable"] and S["override_s"] == 0.090 and SS._lag_verdict(0.087, S) == "" and SS._lag_verdict(0.060, S) != ""
+    assert not np.isfinite(SS._session_lag([])["median_s"])
 
 
 def test_a_delivery_that_is_not_the_command_is_flagged():
