@@ -312,6 +312,14 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         "optitrack_method": None,
         "optical_absolute_zero": None,
         "rmse_deg_offset_removed": None,
+        "orientation": None,
+        "orientation_basis": None,
+        "orientation_reason": None,
+        "ref_mirrored": None,
+        "ref_inverted": None,
+        "test_inverted": None,
+        "polarity_corr_as_given": None,
+        "polarity_corr_mirrored": None,
         "error": None,
     }
 
@@ -340,11 +348,23 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         return row
     row["optitrack_method"] = method
 
+    # The marker path's sign is a hinge eigenvector's and carries no
+    # information, so about half those references arrive upside down against
+    # their IMU curve; compare_pair may mirror such a reference once the pair's
+    # polarity is determined. A rigid-body reference is bone-grounded: its sign
+    # is real and it is never mirrored.
     result = engine.compare_pair(ref_t, ref_angle, t, angle,
-                                 capture_skew_prior=True)
+                                 capture_skew_prior=True,
+                                 ref_polarity_arbitrary=(method != "rigid_body"))
     if result["status"] != "ok":
         row["error"] = result.get("error")
         return row
+    # What was concluded about the pair's polarity and whether the reference
+    # was mirrored for it. orientation == "undetermined" means the numbers
+    # below are for the curves exactly as given and the pair should be
+    # excluded or flagged, not read as either polarity's error.
+    for key in _ORIENTATION_FIELDS:
+        row[key] = result.get(key)
 
     row["status"] = "ok"
     row["rmse_deg"] = result["rmse_deg"]
@@ -361,10 +381,14 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
     return row
 
 
+_ORIENTATION_FIELDS = ["orientation", "orientation_basis", "orientation_reason",
+                       "ref_mirrored", "ref_inverted", "test_inverted",
+                       "polarity_corr_as_given", "polarity_corr_mirrored"]
+
 _FIELDNAMES = ["participant", "trial_key", "position", "trial", "imu_path", "optitrack_path",
               "status", "rmse_deg", "rmse_deg_offset_removed", "mae_deg",
               "bias_deg", "lag_sec", "n_samples", "optitrack_method",
-              "optical_absolute_zero", "error"]
+              "optical_absolute_zero", *_ORIENTATION_FIELDS, "error"]
 
 
 def comparable_rmse(row: dict) -> float:
@@ -404,6 +428,12 @@ def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) ->
         }
 
     result = {"all": _stats(ok_rows)}
+    # Pairs whose polarity could not be determined were scored as given, so
+    # for a relative reference their RMSE may be a mirror image's. Present
+    # only when there are such pairs, like the tag categories below.
+    if any(r.get("orientation") == "undetermined" for r in ok_rows):
+        result["excluding_orientation_undetermined"] = _stats(
+            [r for r in ok_rows if r.get("orientation") != "undetermined"])
     categories_present = {
         quality_tags[r["trial_key"]]["category"]
         for r in ok_rows
@@ -610,7 +640,17 @@ def main():
     else:
         print("No successful trials to summarize.")
 
-    quality_tags = pt_report_common.load_quality_tags()
+    # How each pair's polarity was settled. "undetermined" pairs were scored
+    # as given; they are in the figures above and broken out below.
+    counts = {}
+    for r in rows:
+        if r["status"] == "ok":
+            counts[r.get("orientation")] = counts.get(r.get("orientation"), 0) + 1
+    if counts:
+        print("Pair polarity: " + ", ".join(
+            f"{k}={v}" for k, v in sorted(counts.items(), key=lambda kv: str(kv[0]))))
+
+    quality_tags =pt_report_common.load_quality_tags()
     strat = compute_stratified_stats(rows, quality_tags, RMSE_GOAL_DEG)
     if strat["all"] is not None:
         print(f"\nStratified (RMSE < {RMSE_GOAL_DEG} deg goal):")

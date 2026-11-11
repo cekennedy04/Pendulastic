@@ -538,6 +538,100 @@ def test_summary_reads_offset_removed_rmse_only_where_the_reference_has_no_zero(
     assert s["median"] == 9.0 and s["n_under_goal"] == 1
 
 
+# ── Pair polarity reaches the row, and so the CSV ───────────────────────────
+#
+# The review of 4792020: "No caller reads [ref_inverted / test_inverted]
+# today, so 'reported rather than hidden' does not hold at the CSV level."
+
+
+def _stub_engine_for_evaluate_trial(monkeypatch, method, result):
+    """evaluate_trial with every loader stubbed; returns the kwargs
+    compare_pair was called with."""
+    seen = {}
+    monkeypatch.setattr(engine, "validate_component_csv",
+                        lambda path, kind: {"ok": True, "error": None})
+    monkeypatch.setattr(engine, "load_imu_trial_from_components",
+                        lambda validations: ([0.0, 1.0], [1.0, 2.0], None))
+    monkeypatch.setattr(engine, "load_optitrack_trial",
+                        lambda path: ([0.0, 1.0], [1.0, 2.0], method))
+
+    def fake_compare(ref_t, ref_y, t, y, **kwargs):
+        seen.update(kwargs)
+        return dict(result)
+    monkeypatch.setattr(engine, "compare_pair", fake_compare)
+    return seen
+
+
+_OK_RESULT = {
+    "status": "ok", "rmse_deg": 143.9, "rmse_deg_offset_removed": 7.2,
+    "mae_deg": 1.0, "bias_deg": 143.0, "lag_sec": -0.7, "n_samples": 400,
+    "orientation": "ref_mirrored", "orientation_basis": "shape+correlation",
+    "orientation_reason": None, "ref_mirrored": True, "ref_inverted": True,
+    "test_inverted": False, "polarity_corr_as_given": -0.86,
+    "polarity_corr_mirrored": 0.99,
+}
+_IDS = {"participant": "P", "position": "Left", "trial": "Trial_1", "trial_key": "k"}
+
+
+def test_evaluate_trial_row_carries_the_pair_polarity(monkeypatch, tmp_path):
+    seen = _stub_engine_for_evaluate_trial(monkeypatch, "marker_pca", _OK_RESULT)
+    row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    assert row["status"] == "ok"
+    for key in batch._ORIENTATION_FIELDS:
+        assert key in batch._FIELDNAMES
+        assert row[key] == _OK_RESULT[key]
+    # ...and the CSV writer accepts the row as it stands.
+    import csv
+    out = tmp_path / "rows.csv"
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=batch._FIELDNAMES)
+        w.writeheader()
+        w.writerow(row)
+    with open(out, newline="", encoding="utf-8") as f:
+        back = next(csv.DictReader(f))
+    assert back["orientation"] == "ref_mirrored"
+    assert back["ref_mirrored"] == "True" and back["test_inverted"] == "False"
+
+
+def test_evaluate_trial_only_lets_a_marker_reference_be_mirrored(monkeypatch):
+    """A marker-path reference has an arbitrary sign. A rigid-body one is
+    bone-grounded and must never be mirrored, silently or otherwise."""
+    seen = _stub_engine_for_evaluate_trial(monkeypatch, "marker_pca", _OK_RESULT)
+    batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    assert seen["ref_polarity_arbitrary"] is True
+    seen = _stub_engine_for_evaluate_trial(monkeypatch, "rigid_body", _OK_RESULT)
+    row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    assert seen["ref_polarity_arbitrary"] is False
+    assert row["optical_absolute_zero"] is True
+
+
+def test_error_rows_have_the_polarity_columns_empty(monkeypatch):
+    _stub_engine_for_evaluate_trial(
+        monkeypatch, "marker_pca", {"status": "error", "error": "no overlap"})
+    row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    assert row["status"] == "error" and row["error"] == "no overlap"
+    assert all(row[key] is None for key in batch._ORIENTATION_FIELDS)
+
+
+def test_stratified_stats_break_out_pairs_whose_polarity_is_undetermined():
+    """An undetermined pair was scored as given, which for a relative
+    reference may be its mirror image. It stays in "all" and is also
+    reported excluded, so neither figure hides the other."""
+    rows = [
+        {"status": "ok", "trial_key": "a", "rmse_deg": 5.0, "orientation": "as_given"},
+        {"status": "ok", "trial_key": "b", "rmse_deg": 7.0, "orientation": "ref_mirrored"},
+        {"status": "ok", "trial_key": "c", "rmse_deg": 40.0, "orientation": "undetermined"},
+    ]
+    stats = batch.compute_stratified_stats(rows, {}, 10.0)
+    assert stats["all"]["n"] == 3 and stats["all"]["median"] == 7.0
+    assert stats["excluding_orientation_undetermined"] == {
+        "n": 2, "mean": 6.0, "median": 6.0, "n_under_goal": 2}
+    # No undetermined pair, no extra key: rows from before this field existed
+    # summarise exactly as they did.
+    assert "excluding_orientation_undetermined" not in batch.compute_stratified_stats(
+        rows[:2], {}, 10.0)
+
+
 def test_compare_floor_pairs_offset_removed_rmse(capsys):
     # A marker-path reference's raw rmse_deg is mostly its missing zero; a
     # tracking change of 10 -> 5 deg moves it by under 0.2 deg. The paired
