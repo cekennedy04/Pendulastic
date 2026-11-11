@@ -11,7 +11,10 @@
 #[path = "fixtures/golden.rs"]
 mod golden;
 
-use mobile_imu_core::scoring::{compute_pt_params, score_waveform, SpasticityType};
+use mobile_imu_core::scoring::{
+    amplitude_within_curve, baseline_drift_slope, compute_pt_params, credible_drift_slope,
+    score_waveform, SpasticityType,
+};
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
     assert!(
@@ -505,4 +508,121 @@ fn lift_ramp_stays_out_of_the_baseline_drift_fit() {
         .expect("scorable");
     close(p.a0_deg, golden::TRIAL_LIFT_RING_DETREND_A0_DEG, 1e-6, "A0 (detrend)");
     close(p.neutral_deg, golden::TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG, 1e-6, "neutral (detrend)");
+}
+
+// ---- the bounded baseline fallback (port of 3ca6bf4) ------------------------
+//
+// The guards themselves, on closed-form windows. The fixtures that pin them
+// inside compute_pt_params against the Python reference follow in the next
+// commit, with the regenerated golden file.
+
+#[test]
+fn baseline_drift_slope_guards_match_the_reference_at_their_edges() {
+    // Closed-form windows, the same ones tests/test_drift_correction_bounds.py
+    // gives pendulastic_pt_score._baseline_drift_slope.
+    let line = |n: usize, t_end: f64, rate: f64| -> (Vec<f64>, Vec<f64>) {
+        let t: Vec<f64> = (0..n).map(|i| t_end * i as f64 / (n - 1) as f64).collect();
+        let a = t.iter().map(|x| rate * x).collect();
+        (t, a)
+    };
+    // An immaculate 2 deg/s line over 0.4 s is still a 0.4 s window.
+    let (t, a) = line(50, 0.4, 2.0);
+    assert_eq!(baseline_drift_slope(&t, &a, t.len(), 0), None);
+    // A long clean hold is believed.
+    let (t, a) = line(240, 2.0, 0.8);
+    close(baseline_drift_slope(&t, &a, t.len(), 0).expect("fitted"), 0.8, 1e-9, "0.8 deg/s");
+    // Beyond the cap is refused, in either direction; at 3.9 it is not.
+    let (t, a) = line(240, 2.0, 6.0);
+    assert_eq!(baseline_drift_slope(&t, &a, t.len(), 0), None);
+    let (t, a) = line(240, 2.0, -6.0);
+    assert_eq!(baseline_drift_slope(&t, &a, t.len(), 0), None);
+    let (t, a) = line(240, 2.0, -3.9);
+    close(baseline_drift_slope(&t, &a, t.len(), 0).expect("fitted"), -3.9, 1e-9, "-3.9 deg/s");
+    // The window bound is `< 1.0 s refuses`: exactly 1.0 s is accepted.
+    let t: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
+    let a: Vec<f64> = t.iter().map(|x| 1.5 * x).collect();
+    assert_eq!(t[100] - t[0], 1.0);
+    close(baseline_drift_slope(&t, &a, 101, 0).expect("1.0 s is enough"), 1.5, 1e-9, "1.0 s");
+    assert_eq!(baseline_drift_slope(&t, &a, 100, 0), None, "0.99 s is not");
+    // Fewer than 10 samples, however long they span.
+    let (t, a) = line(9, 3.0, 0.5);
+    assert_eq!(baseline_drift_slope(&t, &a, t.len(), 0), None);
+    // An empty or inverted window, and an end past the array (Python slicing
+    // clamps it; this must not index out of bounds).
+    let (t, a) = line(240, 2.0, 0.8);
+    assert_eq!(baseline_drift_slope(&t, &a, 0, 0), None);
+    assert_eq!(baseline_drift_slope(&t, &a, 50, 120), None);
+    close(baseline_drift_slope(&t, &a, 10_000, 0).expect("clamped"), 0.8, 1e-9, "clamped end");
+    // NaN samples do not reach the fit, and do not count towards the minimum.
+    let mut a_nan = a.clone();
+    for v in a_nan.iter_mut().step_by(3) {
+        *v = f64::NAN;
+    }
+    close(baseline_drift_slope(&t, &a_nan, t.len(), 0).expect("fitted"), 0.8, 1e-9, "with NaNs");
+    let (t, mut a) = line(12, 3.0, 0.5);
+    a[1] = f64::NAN;
+    a[4] = f64::NAN;
+    a[7] = f64::NAN;
+    assert_eq!(baseline_drift_slope(&t, &a, t.len(), 0), None, "9 finite samples of 12");
+    // The window is [baseline_start, baseline_end): a 1.5 s ramp then a 0.5 s
+    // hold is 2 s of pre-release signal but half a second of STILL hold.
+    let fps = 100.0;
+    let ramp: Vec<f64> = (0..150).map(|i| -55.0 * i as f64 / 149.0).collect();
+    let mut ang = ramp.clone();
+    ang.extend((0..50).map(|i| -55.0 + 0.02 * i as f64));
+    let t: Vec<f64> = (0..ang.len()).map(|i| i as f64 / fps).collect();
+    assert_eq!(baseline_drift_slope(&t, &ang, t.len(), ramp.len()), None);
+    let mut ang2 = ramp.clone();
+    ang2.extend((0..150).map(|i| -55.0 + 0.01 * i as f64));
+    let t2: Vec<f64> = (0..ang2.len()).map(|i| i as f64 / fps).collect();
+    let s = baseline_drift_slope(&t2, &ang2, t2.len(), ramp.len()).expect("a 1.49 s hold");
+    close(s, 1.0, 1e-6, "the ramp's -36.7 deg/s stays out of the fit");
+}
+
+#[test]
+fn credible_drift_slope_guards_match_the_reference_at_their_edges() {
+    let t: Vec<f64> = (0..=1000).map(|i| i as f64 / 100.0).collect(); // 10 s
+    let ang: Vec<f64> = t.iter().map(|x| 40.0 * (x * 5.0).sin()).collect(); // range ~80
+    let range = ang.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - ang.iter().copied().fold(f64::INFINITY, f64::min);
+    // None stays None; a non-finite slope is None.
+    assert_eq!(credible_drift_slope(None, &t, &ang), None);
+    assert_eq!(credible_drift_slope(Some(f64::NAN), &t, &ang), None);
+    assert_eq!(credible_drift_slope(Some(f64::INFINITY), &t, &ang), None);
+    // The bound is `> 25% refuses`, on |slope| * duration against the range.
+    let edge = 0.25 * range / 10.0;
+    assert_eq!(credible_drift_slope(Some(0.9 * edge), &t, &ang), Some(0.9 * edge));
+    assert_eq!(credible_drift_slope(Some(-0.9 * edge), &t, &ang), Some(-0.9 * edge));
+    assert_eq!(credible_drift_slope(Some(1.1 * edge), &t, &ang), None);
+    assert_eq!(credible_drift_slope(Some(-1.1 * edge), &t, &ang), None);
+    // NaN samples are left out of the range rather than poisoning it.
+    let mut ang_nan = ang.clone();
+    ang_nan[3] = f64::NAN;
+    assert_eq!(credible_drift_slope(Some(0.9 * edge), &t, &ang_nan), Some(0.9 * edge));
+    // Degenerate inputs are refused, not judged: one sample, no duration, no
+    // range, fewer than two finite samples.
+    assert_eq!(credible_drift_slope(Some(0.1), &t[..1], &ang[..1]), None);
+    assert_eq!(credible_drift_slope(Some(0.1), &[1.0, 1.0, 1.0], &[0.0, 5.0, 9.0]), None);
+    assert_eq!(credible_drift_slope(Some(0.1), &[0.0, 1.0, 2.0], &[7.0, 7.0, 7.0]), None);
+    assert_eq!(credible_drift_slope(Some(0.1), &[0.0, 1.0, 2.0], &[7.0, f64::NAN, f64::NAN]), None);
+}
+
+#[test]
+fn amplitude_within_curve_matches_the_reference_at_its_edges() {
+    // The limit is span * (1 + 0.25 + 0.02), inclusive.
+    let ang = [100.0, 120.0, 150.0, 110.0]; // span 50 -> limit 63.5
+    assert!(amplitude_within_curve(50.0, &ang));
+    assert!(amplitude_within_curve(63.0, &ang), "smoothing overshoot and a sanctioned correction");
+    assert!(amplitude_within_curve(63.5, &ang));
+    assert!(!amplitude_within_curve(63.6, &ang));
+    assert!(!amplitude_within_curve(500.0, &ang));
+    // NaN samples are not part of the span.
+    assert!(!amplitude_within_curve(63.6, &[100.0, f64::NAN, 150.0, f64::NAN]));
+    // A degenerate curve is not judged: the reference returns without raising.
+    assert!(amplitude_within_curve(500.0, &[]));
+    assert!(amplitude_within_curve(500.0, &[10.0]));
+    assert!(amplitude_within_curve(500.0, &[10.0, f64::NAN]));
+    assert!(amplitude_within_curve(500.0, &[7.0, 7.0, 7.0]));
+    assert!(amplitude_within_curve(f64::NAN, &ang));
+    assert!(amplitude_within_curve(f64::INFINITY, &ang));
 }
