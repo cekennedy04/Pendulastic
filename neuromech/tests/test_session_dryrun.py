@@ -112,8 +112,19 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
     assert sc.delivered_band_ok.astype(bool).all(), sc[["sid", "int_band", "enc_band"]].values.tolist()
     edge = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
     assert len(edge) == 2 and (edge.enc_N == edge.int_N).all(), edge[["sid", "int_N", "enc_N"]].values.tolist()
-    assert ((edge.enc_pt7 > 0.12) & (edge.enc_pt7 < 0.132)).all(), edge[["sid", "int_pt7", "enc_pt7"]].values.tolist()
-    assert (edge.int_pt7 - edge.enc_pt7 > 0.005).all()                 # the plant's own undershoot is still there
+    # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share
+    # (its resonance raises peak velocity), measured at 0.010 to 0.012 at seeds 1, 3, 7, 11 and 42 after the
+    # delivered release took the session's share (0.013) out. 0.008 to 0.014 is that measurement +-0.003. It
+    # pins "still an edge run": below 0.008 something is flattering the delivery, above 0.014 the session is
+    # adding undershoot of its own again. (Being in band, asserted above, is the 0.12 edge; the old
+    # `< 0.132` was the same pin written as an absolute number.) Re-baseline it if the scorer or plant changes.
+    under = edge.int_pt7 - edge.enc_pt7
+    assert ((under > 0.008) & (under < 0.014)).all(), edge[["sid", "int_pt7", "enc_pt7"]].values.tolist()
+    # The METHOD, pinned on this plant: the onset-matched release is 27.4 ms after the commanded one here
+    # (22.6 to 28.5 by scenario). An onset of 10 deg instead of 2 gives 19.7 ms and passed every test in this
+    # file before this assertion existed; a whole-drop cross-correlation gives 14.5 to 19.
+    assert 26.4 < sc.enc_release_lag_ms.median() < 28.4, sc.enc_release_lag_ms.tolist()
+    assert ((sc.enc_release_lag_ms > 21.5) & (sc.enc_release_lag_ms < 29.5)).all(), sc.enc_release_lag_ms.tolist()
 
 
 # ── the delivered release (session._delivered_release) ───────────────────────────────────────────────
@@ -412,6 +423,35 @@ def test_the_release_is_recorded_for_every_scored_trace(report):
     assert np.allclose(sc.ph_expected_offset_ms, -SS.PHONE_EARLY_SAMPLES * dt_ms, atol=0.5), sc.ph_expected_offset_ms.tolist()
     assert ((sc.ph_minus_enc_lag_ms - sc.ph_expected_offset_ms).abs() <= SS.PHONE_SYNC_TOL_SAMPLES * dt_ms).all(), sc.ph_minus_enc_lag_ms.tolist()
     assert not SS.release_flags(report)
+
+
+# ── the method is pinned (review 2026-11-11, required change 5) ────────────────────────────────────────
+def test_the_onset_method_is_pinned_across_the_whole_library():
+    """All 67 scenarios through the dry run's delivery (in memory, seed 11), scored from the delivered release.
+
+    This is what tells the 2 deg onset from a drifted method. The nine default runs and the pure-delay cases
+    do not: with RELEASE_ONSET_DEG = 10 they all still pass, while here the median lag falls from 27.4 to
+    19.7 ms, 11 scenarios are flagged and 15 of the other 56 get a wrong N. (N alone does not tell 2 deg from
+    a CONSTANT +30 to +50 ms on this plant; the lag assertions do, and the plant sweep in the report does.)
+    The counts are regression pins measured on this library: re-baseline them when the scorer, the scenario
+    library or dryrun.PLANT changes, not otherwise."""
+    import pandas as pd
+    man = pd.read_csv(os.path.join(SS.OUT, "scenario_manifest.csv"))
+    lags, flagged, wrong_N, wrong_band = {}, {}, [], []
+    for sid in man.sid:
+        d = _deliver(sid, seed=11); rel = _release(d)
+        if rel["flag"]: flagged[sid] = rel["kind"]; continue
+        lags[sid] = rel["lag_s"] * 1e3
+        got = SS._summ(*SS._score_trace(d["t_all"], d["pos_all"], d["rest"], rel["release_s"], d["lead"], d["tail"]))
+        if got["N"] != d["int_N"]: wrong_N.append(sid)
+        if got["band"] != d["int_band"]: wrong_band.append(sid)
+    assert flagged == {"D-wobble": "hold"}, flagged                       # the one scenario whose hold moves; nothing else
+    v = np.array(list(lags.values())); med = float(np.median(v))
+    assert 26.9 < med < 27.9, med                                         # measured 27.4
+    assert v.min() > 21.5 and v.max() < 29.5, (v.min(), v.max())          # measured 22.6 to 28.4
+    assert np.abs(v - med).max() < SS.SESSION_LAG_TOL_S * 1e3             # so no good run is far from its session
+    assert wrong_band == [], wrong_band                                   # measured 0 of 66
+    assert len(wrong_N) <= 10, wrong_N                                    # measured 10 of 66 (44 from the commanded release)
 
 
 # ── an ambiguous onset must fail (review 2026-11-11, required change 1) ───────────────────────────────
