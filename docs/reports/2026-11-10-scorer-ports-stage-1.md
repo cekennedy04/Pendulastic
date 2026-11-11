@@ -41,7 +41,13 @@ exclusions from the main checkout, folders resolved through
 after the first port, after both. The "before" run reproduced the lineage
 comparison's `main` results file byte for byte.
 
-### `detrend=False` (the app and rig convention): unchanged
+### `detrend=False` (the app and rig convention): results unchanged on the corpus
+
+The code path is not untouched. The two drift estimators are never consulted
+with `detrend=False`, but `_assert_amplitude_within_curve` runs after A0 under
+both conventions, so `compute_pt_params(detrend=False)` can now raise
+`AmplitudeExceedsCurveError` where it used to return. It did not on any corpus
+trial. (Corrected 2026-11-11; this heading used to read "unchanged".)
 
 Measured, not inferred:
 
@@ -218,3 +224,181 @@ Read from source; neither was run or changed.
 - The C# scorer: not run.
 - The motor bench.
 - No look at the nine trials whose RMSE rose, beyond the numbers above.
+
+## Rust parity
+
+**2026-11-11.** The Rust change the section above lists as needed, on the same
+branch, after merging `origin/main` (PRs #87, #86, #91; no conflicts). The
+"Not run" list above describes stage 1 as it stood; Rust, the web app and the
+C# scorer were run for this section.
+
+### What changed
+
+`mobile-imu-core/src/scoring.rs` (commit `c11f3c0`), each a line-for-line
+counterpart of the Python:
+
+| Rust | Python | behaviour |
+|---|---|---|
+| `baseline_drift_slope(t, ang, baseline_end, baseline_start)` | `_baseline_drift_slope` | finite samples of `[baseline_start, baseline_end)`; `None` under 10 of them, under 1.0 s of span, or with a slope over 4 deg/s |
+| `credible_drift_slope(slope, t, ang)` | `_credible_drift_slope` | `None` when `abs(slope) * duration` exceeds 25% of the finite curve's range |
+| `amplitude_within_curve(a0, angle_raw)` | `_assert_amplitude_within_curve` | `false` when A0 exceeds `span * (1 + 0.25 + 0.02)` |
+
+Constants: `BASELINE_MIN_SECONDS = TAIL_MIN_SECONDS` (1.0),
+`MAX_TOTAL_CORRECTION_FRAC = 0.25`, `MIN_BASELINE = 10` (was a local),
+`AMPLITUDE_SLACK_FRAC = 0.02`; `MAX_DRIFT_DEG_S = 4.0` already existed. The
+fallback branch calls the first two; the settled-tail estimator is still not
+bounded by the 25% rule.
+
+**The A0 invariant.** Python raises `AmplitudeExceedsCurveError`. Rust does not
+panic: `compute_pt_params` returns `None`, the refusal it already uses, which
+`TrialSession::finish_with` turns into `Err` and `wasm.rs` into `undefined`.
+Three consequences worth knowing:
+
+- The refusal carries no reason of its own. It surfaces as
+  `TrialError::InsufficientSamples`, the same as every other `None`.
+- `persistTrial` falls back to the live-convention params when the detrended
+  call returns nothing, and labels the record `driftCorrection: 'live'`. So a
+  trial refused only under `detrend=true` is stored with its undetrended
+  numbers, honestly labelled, where Python offline has no number at all.
+- As in Python, the check runs under both conventions, so `score_waveform`
+  (which scores with `detrend=false`) rejects where the Python `score_waveform`
+  would raise.
+
+The invariant is reachable without a defect. The settled-tail estimator is
+deliberately unbounded, and on a slow sag largely cancelled by drift (tau 4 s,
++2.5 deg/s, 14 s) it applies 1.37 deg/s and A0 reads 43.6 deg against a raw
+span of 32.1 deg and a limit of 40.7. That curve is now the golden fixture
+`TRIAL_A0_OVER_CURVE`. It is synthetic; no corpus trial does this.
+
+### Agreement, measured
+
+800 synthetic curves (creeping holds, lift-hold-drops and drift-masked sags at
+20, 50 and 100 Hz, some with noise and NaN samples; seed fixed), scored by the
+Python reference and by the Rust core, both conventions. Among them the tail
+answered on 195, the fallback was applied on 168 and refused on 437, and 3
+raised.
+
+| | Rust before (`8d9bd5e`) | Rust after |
+|---|---|---|
+| `detrend=true`: scored-or-not disagrees with Python | 28 of 800 | 0 |
+| `detrend=true`: A0 differs by more than 1e-6 deg, of those scored by both | 329 of 739 (worst 244 deg) | 0 of 752 (worst 7.7e-13) |
+| `detrend=false`: scored-or-not disagrees | 0 | 0 |
+| `detrend=false`: A0 differs by more than 1e-6 deg | 0 of 763 | 0 of 763 |
+
+Where Python raised (3 curves), Rust returned `None`. Neutral, N, R2n and f
+agree to 1.5e-12 or better after the change.
+
+**One discrepancy that is not from this change:** `area_ratio` differs between
+Rust and Python by up to 1.2e-3 on 34 of the 763 `detrend=false` curves, before
+and after alike, with every other compared field agreeing. Not investigated.
+
+### Fixtures
+
+`gen_fixtures.py` gains five cases and `scoring_test.rs` nine tests (commit
+`55fbe73`). Each fallback case is a creeping hold and a swing still ringing at
+the end, so the tail refuses on its own; the generator asserts that exactly one
+guard decides each.
+
+| fixture | hold fitted | slope | correction / range | verdict | A0 detrended | A0 undetrended | A0 with the old fallback |
+|---|---|---|---|---|---|---|---|
+| `TRIAL_FALLBACK_OK` | 1.45 s | 1.0 deg/s | 0.046 | applied | 73.85 | 71.27 | 73.85 |
+| `TRIAL_FALLBACK_SHORT_HOLD` | 0.75 s | 2.0 deg/s | 0.077 | window under 1.0 s | 71.27 | 71.27 | 76.43 |
+| `TRIAL_FALLBACK_SLOPE_CAP` | 1.48 s | 5.0 deg/s | 0.228 | slope over 4 deg/s | 70.44 | 70.44 | 84.16 |
+| `TRIAL_FALLBACK_OVER_BOUND` | 1.46 s | 3.0 deg/s | 0.289 | correction over 25% | 46.24 | 46.24 | 66.97 |
+
+With the old fallback branch put back, the three refusal tests fail and the
+rest pass. `TRIAL_LIFT_RING_DETREND_*` is still reproduced (its hold is flat,
+so it reads the same with or without the guards).
+
+`golden.rs` was regenerated with the project venv (numpy 2.4.6, scipy 1.17.1);
+the committed file had been written with numpy 2.5.3, scipy 1.18.1. 115
+existing numeric constants move, none by more than 7.3e-12
+(`GRADIENT_NONUNIFORM`); every `TRIAL_*` scalar moves by under 1e-12, and
+`TRIAL_LIFT_RING_DETREND_A0_DEG` by 2.8e-14. Regenerating before and after the
+generator edit gives identical values for every existing constant.
+
+### Python callers of `compute_pt_params`
+
+Every call site outside the tests was checked for an enclosing handler (64
+sites in 33 files, lexically; second-level callers of the main ones were
+checked the same way). Handled in commit `67bb1fe`, as an unscorable trial with
+the reason kept: `pt_report_common.trial_candidates` (status `unscoreable`,
+reason on the row), `collect_participant` and `_row5_source_pt7` (left out,
+named on stderr), and `web/api/services/pt_score_bridge.py` (`ValueError` with
+the reason, as for a `None`). `score_trial` itself still raises.
+
+Still unhandled, and left so on purpose or for the owner to decide:
+
+- **Fail closed today, and dropping a trial there is a decision, not a fix:**
+  `derive_healthy_ref.control_trials` and `recalibrate_pt_zones.leg_scores`
+  derive `HEALTHY_REF` and the zone thresholds. Both already stop on a trial
+  they cannot load. They would stop on this too, with a traceback that does not
+  name the trial; wrapping the call to add the trial key is all that is
+  clearly right.
+- **Interactive:** `pendulastic_viewer` (`_compute_and_show_pt`, `_analyse`),
+  `pendulastic_workbench.get_metrics_snapshot`, `pendulastic_app` (the
+  `detrend=False` live view). `workbench_engine.compute_optitrack_quality_signals`
+  is unhandled itself but its one caller catches `Exception`.
+- **Inside a broad `except Exception`, so it does not propagate (what each
+  handler then does with the trial was not read):**
+  `generate_figures_by_spasticity.a0_by_leg_from_optitrack` and
+  `imu_leg_params`, `generate_paper_results_analysis.a0_by_leg_from_optitrack`
+  (these three feed A0-based leg grouping), `evaluate_healthy_ref_v04`,
+  `evaluate_pt7_discrimination`, `evaluate_flex_axis_methods`,
+  `evaluate_peak_detection`, `evaluate_settled_tail_gyro_bias.referee`,
+  `hpe_mas_evaluation.hpe_pt_score`, `model_vs_optitrack_eval` (OptiTrack
+  side), `pendulastic_app._table_worker`, `pendulastic_viewer._release_time`.
+  `neuromech/corpus_rest.py` and the C# parity runner also catch it but record
+  the error text.
+- **`detrend=False` callers** (`imu_calibration_tuner.score_waveform` and what
+  calls it, `neuromech/build.py` `score` and `score_angle`,
+  `evaluate_capture_bias`, `evaluate_continuity_window`): no drift
+  correction runs, so only smoothing overshoot could trip the check. None did
+  on 763 synthetic curves or on the corpus; not proven impossible.
+- **One-off scripts with `detrend=True` and no handler:**
+  `generate_pt_score_critique`, `healthy_ref_frequency_audit`,
+  `model_vs_optitrack_eval` (model side), `motor_bench` (`_a0_of`,
+  `_a0_of_detrended`), `p13_leg_session_comparison`,
+  `plot_comprehensive_parameter_matrix`,
+  `plot_multisource_trials`, `run_p5_post_again`, `severity_grading_test`,
+  `sweep_mediapipe_config`, `validate_controls`, and `pendulastic_pt_score`'s
+  own `main` and `load_hpe_model_data`.
+
+### C#
+
+`neuromech/designer/PtScore.cs` was not changed and has no drift correction.
+It also has no A0 check, which Python now runs under `detrend=False` as well;
+the parity run compares errors exactly and found none on its 355 cases.
+
+### Gates
+
+Run on this Windows checkout, rustc 1.98.0 (CI pins 1.99.0), Node 24.16.0.
+
+| gate | result |
+|---|---|
+| `cargo test` | 195 passed, 0 failed (`scoring_test` 24, of which 9 new) |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo build --release --target wasm32-unknown-unknown` | built |
+| `npm run build:wasm`, `npm test` | 426 of 426 passed |
+| `tests/test_web_export_contract.py` | 5 passed |
+| CI python list + `test_drift_correction_bounds.py` + `test_workbench_engine.py` | 740 passed, 32 skipped, 3 xfailed (run before `67bb1fe`) |
+| `tests/test_amplitude_refusal_callers.py` + `tests/test_pt_report_common.py`, at `67bb1fe` | 87 passed (7 new) |
+| `tests/test_pt_zone_parity.py` | 20 passed, 1 xfailed |
+| `neuromech/designer/parity/run_parity.py` | PARITY OK, 355 cases, every field |
+
+`BUILD_ID` is restamped to `0b80def4a471`. Computed from the committed blobs
+alone it comes out the same, and the same method reproduces `origin/main`'s
+`f2b92312b3b9`; this worktree has no CRLF copies of the hashed files. CI has
+not run on it. If `sw-shell.test.js` disagrees, replace `BUILD_ID` with the
+value its failure message expects.
+
+### Not verified
+
+- CI itself, including clippy under the pinned 1.99.0 toolchain.
+- The corpus through the Rust core: the agreement table is synthetic curves.
+  The four phone trials in the table above were not replayed through Rust.
+- The web app in a browser, and a stored record from a real capture.
+- The full CI python list after `67bb1fe`; only the two files that commit
+  touches were rerun.
+- The `area_ratio` difference between Rust and Python noted above.
+- Whether any real trial can trip the A0 check through the tail estimator.
