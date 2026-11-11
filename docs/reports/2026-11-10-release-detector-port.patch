@@ -1,0 +1,294 @@
+# RECORD ONLY, DO NOT APPLY: the rejected faithful port of the September onset release detector (d2e2cee, 35d3192, 05b5a4e) to pendulastic_pt_score.py at origin/main 75109c5. It fails the f1584ae lift-and-hold tests; see 2026-11-10-release-detector-port.md.
+diff --git a/pendulastic_pt_score.py b/pendulastic_pt_score.py
+index f53395d..13642b0 100644
+--- a/pendulastic_pt_score.py
++++ b/pendulastic_pt_score.py
+@@ -2556,152 +2556,152 @@ def _settled_tail_drift_slope(t: np.ndarray, ang: np.ndarray,
+     return slope
+ 
+ 
+-# How far back from the threshold crossing the reported release is placed.
++# Release detection.
+ #
+-# This was a fixed 2 SAMPLES until 2026-09-01 -- the same defect as the
+-# smoothing window had, one layer down. Two samples is 0.040 s at 50 Hz but
+-# 0.005 s at 400 Hz, so the faster the capture, the less it stepped back and
+-# the later the release it reported: 2.0400 s at 50 Hz against 2.0725 s at
+-# 400 Hz for a synthetic released at exactly 2.0 s. A0_deg is read just after
+-# the release, so it fell 47.75 -> 44.23 deg across that range on identical
+-# motion, and omega_max_n and phi_max_ratio inherited it because both
+-# normalise by A0.
++# Until 2026-09-14 this was a DISPLACEMENT detector: baseline = median of the
++# first 0.6 s, threshold = 8% of the signal's range, fire on the first
++# crossing, step back 2/120 s. Measured on a 15-trial motor bench replayed
++# through the production pipeline it fired 0.3-0.5 s early on 2 s holds and
++# 4-11 s early on 5-12 s holds, every time -- the operator's lift into the
++# hold, the AHRS settling, hand tremor and gyro drift all cross 8% of range
++# long before the leg is let go, so "release" landed in the hold and the
++# oscillation fell outside the analysis window (f = 0, N = 0 on real swings).
++# On the participant corpus it fired inside the examiner's lift on ~10 of 147
++# trials, and 70-120 ms into the drop on the rest.
+ #
+-# This was 2.0/120 -- "what the old two-sample constant meant at 120 Hz" --
+-# and that pinning was wrong, because the quantity it converts is a physical
+-# lag, not a sample count. The duration still quantises to whole samples, so
+-# 2/120 rounds to ZERO at every rate at or below 40 Hz. The 20 Hz phone
+-# stream therefore got no back-off at all, and A0 is read at the release
+-# sample (A0_raw = phi[0]), so it was sampled after the leg had already
+-# fallen. On the E2E replay fixture, whose forward-simulated swing has a
+-# known 45 deg amplitude, A0 came out at 35.3 deg -- a 9.7 deg under-read,
+-# against 1.3 deg before the rate-independence work.
++# What replaces it is a MOTION detector with three rules, each answering one
++# thing the bench and the corpus showed the displacement rule getting wrong:
+ #
+-# The previous note here rejected re-tuning this value, on the grounds that
+-# the lag scales with release speed so a constant fitted to one signal would
+-# be wrong for others, and that too large a back-off lands inside the
+-# pre-release hold where A0 reads the plateau instead of the swing. Both are
+-# testable, and both were tested: 243 synthetics spanning capture rate
+-# (20/60/120 Hz), amplitude (20/45/70 deg), frequency (0.5/1.0/1.5 Hz),
+-# damping (0.5/0.9/1.5) and release ramp (instant, 0.10 s, 0.25 s), scored
+-# against their own known A0.
++#   1. Rate over a 100 ms window, and that rate must hold for a further
++#      100 ms (`_RELEASE_SUSTAIN_S`). A one-sample spike, a sync pulse or a
++#      knock never forms a sustained run and cannot anchor; tremor is
++#      oscillatory and nets to nothing over the window; drift is far too slow.
++#   2. The release is the FIRST sustained run that reaches a quarter of the
++#      trial's fastest sustained motion (`_RELEASE_EVENT_FRAC`). Relative, not
++#      absolute, so it stays unit-agnostic; "first" so a handling burst at the
++#      end of a recording cannot steal the release from the swing.
++#   3. A release departs from the EXTENSION EXTREME: the hold the leg is let
++#      go from is the highest angle in the trial (180 = straight in every
++#      series this scores), and nothing after it -- the swing's return peaks,
++#      the settled tail -- gets back there (`_RELEASE_TOP_TOL_FRAC`). The
++#      examiner's lift into the hold starts at rest, a handling burst after
++#      the swing starts near neutral, the return out of the first trough
++#      starts at the minimum: none of them departs from the top. Only a run
++#      that departs from a still stretch is judged at all (net displacement
++#      over `_RELEASE_QUIET_S` before the onset under `_RELEASE_QUIET_FRAC`
++#      of the run's own).
+ #
+-#   back-off   mean|err|   max|err|   signed bias   trials worse than 2 deg
+-#    0.0167      4.92        20.46       -4.92               194 / 243
+-#    0.0800      0.41         2.43       -0.00                 4
+-#    0.1000      0.36         2.43       +0.11                 3
+-#    0.1500      0.35         3.50       +0.34                10
++# Rule 2's threshold is relative to the FASTEST run, and a brisk lift or a
++# late handling burst can be 4x faster than a rigid leg's drop, so the drop
++# never forms a run at all. Hence the loop: every run the rules reject is
++# struck from the trial, the threshold is re-derived from what is left, and
++# the scan repeats until a run passes or nothing is left. If nothing ever
++# passes, the first run seen stands.
+ #
+-# The first objection does not survive: 0.10 s is best across the whole grid,
+-# slow releases included, not merely on one signal. The second one does, and
+-# is what bounds the value from above -- at 0.15 s the bias turns positive
+-# and the failures triple, which is the back-off reaching into the plateau.
+-# 0.10 s sits at the minimum with a bias of +0.11 deg.
+-#
+-# It is also not a free parameter. Smoothing is a 0.10 s window (_SG_WINDOW_S),
+-# so the release edge is smeared by about half of it and the 8%-of-range
+-# threshold then fires late by the same order. Back-off and smoothing are the
+-# same physical duration because they are the same physical effect, which is
+-# why the residual error goes flat across rates instead of trading one rate
+-# off against another.
+-#
+-# What this replaces was a systematic -4.92 deg bias: A0 under-read on nearly
+-# every synthetic, in the same direction. A0 is the spasticity grouping
+-# variable wherever a clinical MAS grade is absent, and a one-directional
+-# error is the worst shape for comparing a participant against themselves
+-# over time.
+-_RELEASE_BACKOFF_S = 0.10
++# The reported index is the ONSET of the accepted run: walk back from where the
++# sustained rate qualified to the last sample whose 100 ms rate was quiet --
++# under a fifth of the run's peak (`_RELEASE_ONSET_FRAC`), or under three
++# times the hold's own median rate over the preceding second
++# (`_RELEASE_HOLD_REF_S`, `_RELEASE_HOLD_NOISE_MULT`), whichever is larger, so
++# a tremulous hold stops the walk at its first quiet sample instead of
++# carrying it back through the tremor. Against a known bench release (raw
++# gyro onset) this lands within -22..+5 ms on all 15 trials, so there is no
++# separate back-off any more. Everything is in seconds, so the answer does not
++# move with the sample rate, and every step is a plain comparison on the same
++# values in the same order as the Rust port (mobile-imu-core/src/scoring.rs
++# detect_release) -- keep them identical.
++_RELEASE_SUSTAIN_S = 0.10
++_RELEASE_EVENT_FRAC = 0.25
++_RELEASE_ONSET_FRAC = 0.20
++_RELEASE_HOLD_REF_S = 1.0
++_RELEASE_HOLD_NOISE_MULT = 3.0
++_RELEASE_QUIET_S = 0.30
++_RELEASE_QUIET_FRAC = 0.25
++_RELEASE_TOP_TOL_FRAC = 0.05
+ 
+ 
+ def _detect_release(t: np.ndarray, ang: np.ndarray,
+-                    baseline_sec: float = 0.6,
+-                    thresh_deg:   float = 5.0) -> int:
++                    baseline_sec: float = 0.6) -> int:
++    """Index of the release: the onset of the first sustained, large motion
++    that the signal never returns from. Falls back to the end of the
++    baseline window (`baseline_sec`, inside which nothing is trusted: the
++    AHRS is still converging there) when the signal never moves."""
++    n = len(t)
+     bi = max(3, int(np.searchsorted(t, t[0] + baseline_sec)))
+-    bi = min(bi, len(t) - 1)
+-    baseline = float(np.nanmedian(ang[:bi]))
+-    # Adaptive threshold: pure 8% of signal range, no hardcoded absolute floor,
+-    # so detection stays unit-agnostic across sensor formats (degrees, radians,
+-    # normalized tilt magnitude, ...) rather than assuming a degree-scale signal.
+-    signal_range = float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
+-    thresh_deg = 0.08 * signal_range
+-    back = max(0, int(round(_RELEASE_BACKOFF_S / _median_dt(t))))
+-    for i in range(bi, len(t)):
+-        if np.isfinite(ang[i]) and abs(float(ang[i]) - baseline) > thresh_deg:
+-            drop = _lift_hold_end(t, ang, i, baseline, thresh_deg)
+-            return max(0, (i if drop is None else drop) - back)
+-    return bi
+-
+-
+-# A trial that opens at rest has a LIFT before its drop: the leg rises
+-# monotonically from rest, sits still in extension, and only then is
+-# released. The first threshold crossing is the lift, and measuring phi[0]
+-# from there gives rest-minus-rest ~ 0 deg, so compute_pt_params discarded
+-# the trial (15 Control_6/7/8 baseline trials, 2026-10-27). A real release
+-# reverses within a fraction of a second -- a pendulum overshoots -- and an
+-# arrested limb drops once and stays near where it landed, so "monotonic to
+-# a still plateau, then leaves it and swings back through the starting
+-# angle" only matches a lift-and-hold. The return is what separates the two:
+-# an arrested limb with tremor in its resting tail also "leaves" its plateau.
+-_LIFT_HOLD_MIN_S = 0.5     # shortest still window that counts as a hold
+-_LIFT_REACH_MAX_S = 2.5    # the lift must reach its hold within this
+-_LIFT_HOLD_MAX_S = 8.0     # and the drop must come within this of the hold
+-_LIFT_RETURN_MAX_S = 2.0   # and pass back through the starting angle within this
+-# A lift has to carry the limb to its TEST START POSITION, so the held level
+-# is a large share of the trial's whole excursion -- not merely past the
+-# "has it moved" threshold. Expressed as a multiple of that threshold, which
+-# _detect_release sets at 0.08 of the signal range, so 3.0 means the hold
+-# must sit at least 24 % of the range away from rest.
+-#
+-# The physical floor is well above that. After release the limb swings from
+-# the hold through neutral and overshoots the other way, so the range is
+-# about A0 for a heavily damped limb and about 2*A0 for an undamped one: a
+-# genuine hold is 50-100 % of the range from rest either way, and the ratio
+-# is scale-free, so a partial lift does not drift below it.
+-#
+-# What 24 % rejects is a sensor dropout of ~3 s or more just after the first
+-# threshold crossing. That matches the lift-and-hold pattern exactly -- step
+-# away from rest, hold still, swing, return through rest -- and differs only
+-# in how FAR the "lift" went: 4.9 deg of a 60 deg range on the 20 Hz
+-# synthetic. Read as a lift, it moved the reported release past itself and so
+-# hid from the continuity check in imu_calibration_tuner.score_waveform,
+-# whose active-swing window starts at that release.
+-_LIFT_MIN_HOLD_DEV = 3.0
+-
+-
+-def _lift_hold_end(t: np.ndarray, ang: np.ndarray, i: int,
+-                   baseline: float, thresh: float) -> Optional[int]:
+-    """Index where a lift-and-hold starting at crossing `i` is released, or
+-    None when the crossing at `i` is not a lift (it is the release itself)."""
++    bi = min(bi, n - 1)
+     dt = _median_dt(t)
+-    hold_n = max(3, int(round(_LIFT_HOLD_MIN_S / dt)))
+-    reach_end = int(np.searchsorted(t, t[i] + _LIFT_REACH_MAX_S))
+-    peak = 0.0
+-    for k in range(i, min(reach_end, len(t) - hold_n)):
+-        a = ang[k]
+-        if not np.isfinite(a):
+-            continue
+-        dev = abs(float(a) - baseline)
+-        if dev < peak - thresh:
+-            return None                     # reversed before holding: a swing
+-        peak = max(peak, dev)
+-        win = ang[k:k + hold_n]
+-        win = win[np.isfinite(win)]
+-        if len(win) < hold_n // 2 or float(np.ptp(win)) >= 0.5 * thresh:
+-            continue
+-        level = float(np.median(win))
+-        if abs(level - baseline) <= _LIFT_MIN_HOLD_DEV * thresh:
+-            continue
+-        leave_end = int(np.searchsorted(t, t[k] + _LIFT_HOLD_MAX_S))
+-        for m in range(k + hold_n, min(leave_end, len(t))):
+-            if np.isfinite(ang[m]) and abs(float(ang[m]) - level) > thresh:
+-                back_end = int(np.searchsorted(t, t[m] + _LIFT_RETURN_MAX_S))
+-                seg = ang[m:back_end]
+-                seg = seg[np.isfinite(seg)]
+-                if len(seg) and float(np.min(np.abs(seg - baseline))) <= thresh:
+-                    return m
+-                return None                 # left, but never came back
+-        return None                         # never left: an arrested limb
+-    return None
++    # floor(x + 0.5), not round(): Python rounds halves to even and Rust away
++    # from zero, and the two ports must agree on the window at every rate.
++    k = max(1, int(_RELEASE_SUSTAIN_S / dt + 0.5))
++    k_ref = max(1, int(_RELEASE_HOLD_REF_S / dt + 0.5))
++    k_quiet = max(1, int(_RELEASE_QUIET_S / dt + 0.5))
++    if n <= 2 * k + 1:
++        return bi
++    # v[i]: displacement rate over the 100 ms starting at sample i.
++    v = np.abs(ang[k:] - ang[:-k]) / (t[k:] - t[:-k])
++    v = np.where(np.isfinite(v), v, 0.0)
++    # vs[i]: that rate sustained -- its minimum over the next 100 ms.
++    m = len(v) - k + 1
++    if bi >= m:
++        return bi
++    vs = np.array([v[i:i + k].min() for i in range(m)])
++    # The extension extreme, past the AHRS's settling time.
++    top = float(np.nanmax(ang[bi:]))
++    tol = _RELEASE_TOP_TOL_FRAC * float(np.nanpercentile(ang, 97) - np.nanpercentile(ang, 3))
++    struck = np.zeros(m, dtype=bool)   # samples of runs the rules rejected
++    first = None
++    while True:
++        live = vs[bi:][~struck[bi:]]
++        if len(live) == 0:
++            break
++        vmax = float(live.max())
++        if vmax <= 0.0:
++            break
++        thr_event = _RELEASE_EVENT_FRAC * vmax
++        seen = False
++        i = bi
++        while i < m:
++            if struck[i] or vs[i] < thr_event:
++                i += 1
++                continue
++            i0 = i
++            while i + 1 < m and not struck[i + 1] and vs[i + 1] >= thr_event:
++                i += 1
++            i1 = i
++            i = i1 + 1
++            seen = True
++            struck[i0:i1 + 1] = True
++            thr_onset = _RELEASE_ONSET_FRAC * float(vs[i0:i1 + 1].max())
++            pre = v[max(bi, i0 - k_ref):i0]
++            if len(pre):
++                thr_onset = max(thr_onset, _RELEASE_HOLD_NOISE_MULT * float(np.median(pre)))
++            j = i0
++            while j > bi and v[j - 1] > thr_onset:
++                j -= 1
++            # v looks 100 ms ahead, so j sits a few STILL samples before the leg
++            # moves. Deliberately left there: they are the hold, so A0 reads the
++            # held angle, and the SG derivative's edge fit then starts on a flat
++            # stretch instead of on the steepest part of the drop -- snapping j
++            # forward to the first moving sample was tried and cost omega_max_n
++            # its corpus test-retest (ICC 0.158 -> 0.115). The price is that on
++            # ~1 in 150 corpus trials the hold's own noise forms a "peak" that N
++            # counts once.
++            if first is None:
++                first = j
++            # Rule 0: a release departs from a HOLD. A run that follows straight
++            # on from motion (the return swing out of the first trough) is
++            # part of the swing, not its start. Net displacement over the window
++            # before the onset, against the run's own: noise nets to nothing over
++            # 0.3 s where a rate would not, and a hold is still by definition.
++            run_disp = abs(ang[min(i1 + k, n - 1)] - ang[j])
++            if j - k_quiet >= bi and abs(ang[j] - ang[j - k_quiet]) > _RELEASE_QUIET_FRAC * run_disp:
++                continue
++            # Rule 3: it departs from the extension extreme.
++            if abs(ang[j] - top) <= tol:
++                return j
++        if not seen:
++            break
++    return first if first is not None else bi
+ 
+ 
+ def detect_release_t0(t: np.ndarray, signal: np.ndarray,
