@@ -123,7 +123,9 @@ torque slows the whole fall. See `docs/reports/2026-10-27-emulator-fall-speed.md
 trial, so `--limit` runs it in chunks on a low-memory machine.
 
 **Mismatch check (plan B13), no recordings needed.** `--pin` writes the real side once, as one
-anonymised row per leg, to `neuromech/fall_speed_reference.json`. After that
+row per leg, to `neuromech/fall_speed_reference.json`: an index grouping a person's legs, A0 and
+peak, and nothing else. The file is public, so it carries no study group, clinical grade or anything
+ordered by participant ID (`REFERENCE_ROW_FIELDS` in `fall_speed.py`). After that
 
 ```bash
 python -m neuromech.fall_speed --emulator-only --check K --anchor A-P0

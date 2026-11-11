@@ -47,7 +47,7 @@ Each component of the published severity axis was applied alone at the MAS-2 run
 - The emulator's severity axis builds in a coupling between peak speed and A0 that the real legs don't show. That's why `omega_max_n` behaved like a severity measure on the emulator and not on real legs.
 
 **Not established:**
-- **How spasticity changes the fall.** The two people with clinical MAS ≥ 1 go opposite ways. P13 falls fast with a short swing (about 330°/s at A0 ≈ 20°, both legs). P14's right leg falls slowly with a long swing (174°/s at 57°). Two people can't say whether real spasticity removes speed, excursion or both. Low A0 isn't specific to impairment either: Control 2's legs also sit near 21°, which is consistent with that participant's known rig defects.
+- **How spasticity changes the fall.** Very few people in this cohort have clinical MAS ≥ 1, and they do not agree with each other on whether speed or excursion is lost. That is too few to say whether real spasticity removes speed, excursion or both. Low A0 isn't specific to impairment either: short swings also occur among the controls. (Per-participant figures are deliberately not given here: this repository is public, and a participant's or leg's numbers are not published beside a clinical grade or study group.)
 - **Whether real spasticity is tonic.** A resting tonic torque is ruled out only as the *dominant* determinant of fall speed across this cohort.
 
 **The healthy level:** the emulator's healthy peak (281°/s at A0 55°) sits below the real controls' median (346°/s at A0 51°), a factor of about 1.23. Whether the gap is extraction (the smoothing window sets peak velocity; see 62ff25b) or limb inertia is open.

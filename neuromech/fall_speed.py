@@ -216,8 +216,9 @@ def ablation(rung: str | None = None) -> str:
 # Changing a constant below after seeing a candidate's result defeats the check;
 # re-pin the reference instead (B11's settled geometry will need that) and say so.
 #
-# The real side is pinned as one row per leg (median trial), with people anonymised to an
-# index: a bootstrap needs the legs, not the recordings. From it:
+# The real side is pinned as one row per leg (median trial): an index saying which legs share
+# a person, A0 and peak, and no study group or clinical grade (REFERENCE_ROW_FIELDS, below).
+# A bootstrap needs the legs, not the recordings and not the clinic. From it:
 #   b       OLS of log peak on log A0 across legs
 #   CI      95 % interval for b, bootstrapping PEOPLE (a person's two legs are not independent)
 #   band    per bootstrap draw (people resampled, line refitted) one leg's residual about the
@@ -259,17 +260,54 @@ def per_leg(rows: list[dict]) -> list[dict]:
             for k, v in legs.items()]
 
 
+# What a pinned row may hold. The reference is committed to a public repository, and
+# mas_scores.csv and participant_groups.json are deliberately never committed (.gitignore),
+# so a row must not carry their contents in by another door. reference_stats, band and check
+# read exactly these three fields and nothing else:
+#   person  which legs belong to one body (the bootstrap resamples people), and nothing more
+#   A0      the leg's median first excursion, deg
+#   peak    the leg's median peak fall speed, deg/s
+# Deliberately ABSENT, and to stay absent: the study group and the clinical MAS (the check
+# never reads them, and beside A0 they make a per-leg clinical record); the leg side; the
+# per-leg trial count (unused, and it helps match a row to a session log); and any summary
+# by cohort or grade, because a subgroup of a few people is attributable to its legs.
+# `person` is not a participant ID and must not be derivable from one. Rows are written in
+# order of the measurement itself (A0, then peak) and people are numbered by first appearance
+# in that order. Numbering in participant-ID order, as this did until 2026-11-11, hands the
+# mapping to anyone holding the ID list. Ordering by the data rather than by a random shuffle
+# needs no secret seed, says nothing the rows do not already say, and makes the file -- and
+# so the seeded bootstrap's thresholds -- a function of the data alone, with no order left
+# for whoever pins it to choose.
+REFERENCE_ROW_FIELDS = ("person", "A0", "peak")
+
+
+def blind_rows(legs: list[tuple]) -> list[dict]:
+    """(grouping key, A0, peak) per leg -> rows holding REFERENCE_ROW_FIELDS and nothing else.
+
+    The key only says which legs share a person; it is discarded. Idempotent: fed its own
+    output, with `person` as the key, it returns the same rows.
+    """
+    rows = sorted(((round(float(a0), 3), round(float(pk), 2), key) for key, a0, pk in legs),
+                  key=lambda r: r[:2])
+    ids: dict = {}
+    return [dict(person=ids.setdefault(key, len(ids) + 1), A0=a0, peak=pk) for a0, pk, key in rows]
+
+
 def pin_reference(real: list[dict], path: str = REFERENCE) -> dict:
-    """Write the real per-leg reference the emulator-only check reads. People become 1..n."""
+    """Write the real per-leg reference the emulator-only check reads: person, A0, peak.
+
+    No study group, clinical grade, leg side or trial count: see REFERENCE_ROW_FIELDS.
+    """
     import pendulastic_pt_score as pts
-    legs = sorted(per_leg([r for r in real if _measurable(r)]), key=lambda g: (str(g["participant"]), str(g["leg"])))
-    ids = {p: i + 1 for i, p in enumerate(dict.fromkeys(g["participant"] for g in legs))}
+    legs = per_leg([r for r in real if _measurable(r)])
     ref = dict(
         what="real per-leg peak fall speed vs A0 (median trial per leg), neuromech.fall_speed",
         a0_source="OptiTrack (load_optitrack); shrinks angles (plan 5b), re-pin on B11 geometry",
         score_formula_id=pts.SCORE_FORMULA_ID, scorer_fingerprint=_fingerprint(),
-        legs=[dict(person=ids[g["participant"]], study=g["study"], mas=g["mas"], trials=g["trials"],
-                   A0=round(g["A0"], 3), peak=round(g["peak"], 2)) for g in legs])
+        row_fields="person groups a person's legs and is numbered by first appearance in A0 order; "
+                   "it is not a participant ID. No study group or clinical grade is pinned "
+                   "(neuromech/fall_speed.py, REFERENCE_ROW_FIELDS)",
+        legs=blind_rows([(g["participant"], g["A0"], g["peak"]) for g in legs]))
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(ref, fh, indent=1)
         fh.write("\n")
@@ -280,7 +318,12 @@ def load_reference(path: str = REFERENCE) -> dict:
     if not os.path.exists(path):
         raise SystemExit(f"{path} not found -- pin it from the recordings with --pin")
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        ref = json.load(fh)
+    extra = sorted({k for g in ref["legs"] for k in g} - set(REFERENCE_ROW_FIELDS))
+    if extra:                       # a hand-edited or old-format file: do not let it be committed
+        raise SystemExit(f"{path} carries row fields the check does not need: {extra} -- "
+                         f"pin only {list(REFERENCE_ROW_FIELDS)} (see REFERENCE_ROW_FIELDS)")
+    return ref
 
 
 def reference_stats(legs: list[dict]) -> dict:

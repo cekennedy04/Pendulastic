@@ -25,11 +25,11 @@ def test_a_peak_set_by_the_release_reads_slope_zero():
 
 
 def test_the_report_names_both_sides_and_refuses_tiny_groups():
-    real = [dict(participant=str(i % 4), leg="left", study="Control", mas="0", interpretable=True,
+    real = [dict(participant=f"synthetic-{i % 4}", leg="left", study="GroupY", mas="0", interpretable=True,
                  A0=30.0 + i, peak=350.0) for i in range(12)]
-    real.append(dict(participant="9", leg="left", study="MINT", mas="1", interpretable=True, A0=33.0, peak=356.0))
-    real.append(dict(participant="9", study="MINT", mas="1", interpretable=False))   # no fall measured: excluded
-    real.append(dict(participant="8", leg="left", study="MINT", mas="1", interpretable=False, A0=2.0, peak=9.0))  # below 5 deg
+    real.append(dict(participant="synthetic-9", leg="left", study="GroupX", mas="1", interpretable=True, A0=33.0, peak=356.0))
+    real.append(dict(participant="synthetic-9", study="GroupX", mas="1", interpretable=False))   # no fall measured: excluded
+    real.append(dict(participant="synthetic-8", leg="left", study="GroupX", mas="1", interpretable=False, A0=2.0, peak=9.0))  # below 5 deg
     emu = [dict(sid=f"S{i}", group="A", A0=40.0 + i, peak=4.0 * (40.0 + i)) for i in range(5)]
     txt = FS.report(real, emu)
     assert "REAL, per leg (leg medians)" in txt and "REAL, all measurable falls" in txt and "REAL, graded by the scorer only" in txt and "EMULATOR, group A" in txt
@@ -96,10 +96,36 @@ def test_peak_and_a0_falling_together_is_caught_by_the_set_slope():
     assert res["slope_mismatch"] and res["verdict"] == "MISMATCH"
 
 
-def test_pinned_reference_anonymises_people(tmp_path):
-    real = [dict(participant="13", leg=leg, study="MINT", mas="1", interpretable=True, A0=a0, peak=330.0)
-            for leg, a0 in (("left", 20.0), ("right", 21.0))]
-    real += [dict(participant="5", leg="left", study="Control", mas="0", interpretable=True, A0=50.0, peak=350.0)]
+def test_pinned_reference_holds_only_what_the_check_reads(tmp_path):
+    # synthetic people: the IDs, groups and grades below belong to nobody
+    real = [dict(participant="synthetic-b", leg=leg, study="GroupX", mas="1", interpretable=True, A0=a0, peak=330.0)
+            for leg, a0 in (("left", 20.0), ("right", 61.0))]
+    real += [dict(participant="synthetic-a", leg="left", study="GroupY", mas="0", interpretable=True, A0=50.0, peak=350.0)]
     ref = FS.pin_reference(real, str(tmp_path / "ref.json"))
-    assert sorted(g["person"] for g in ref["legs"]) == [1, 1, 2]
-    assert "participant" not in (tmp_path / "ref.json").read_text()
+    assert all(tuple(g) == FS.REFERENCE_ROW_FIELDS for g in ref["legs"])
+    # rows in A0 order, people numbered by first appearance in it: not in participant-ID order
+    assert [(g["person"], g["A0"]) for g in ref["legs"]] == [(1, 20.0), (2, 50.0), (1, 61.0)]
+    on_disk = FS.load_reference(str(tmp_path / "ref.json"))
+    assert on_disk == ref
+    txt = (tmp_path / "ref.json").read_text()
+    for leak in ("synthetic", "GroupX", "GroupY", "left", "right", "trials"):     # nowhere in the file
+        assert leak not in txt, leak
+    for leak in ("participant", "study", "mas", "leg"):                           # nowhere in the rows
+        assert leak not in str(on_disk["legs"]), leak
+    # the same legs handed over in another order pin the same file: no order is left to choose
+    assert FS.pin_reference(real[::-1], str(tmp_path / "ref2.json"))["legs"] == ref["legs"]
+
+
+def test_the_committed_reference_carries_no_clinical_field():
+    ref = FS.load_reference()
+    assert all(tuple(g) == FS.REFERENCE_ROW_FIELDS for g in ref["legs"])
+    assert FS.blind_rows([(g["person"], g["A0"], g["peak"]) for g in ref["legs"]]) == ref["legs"]
+    assert set(ref) == {"what", "a0_source", "score_formula_id", "scorer_fingerprint", "row_fields", "legs"}
+
+
+def test_a_reference_with_extra_row_fields_is_refused(tmp_path):
+    import json
+    path = tmp_path / "ref.json"
+    path.write_text(json.dumps(dict(legs=[dict(person=1, A0=40.0, peak=350.0, mas="0")])))
+    with pytest.raises(SystemExit, match="mas"):
+        FS.load_reference(str(path))
