@@ -184,6 +184,26 @@ _PLATEAU_MIN_S = 0.30
 # existing test runs at, now meaning the same thing at every rate.
 _PLATEAU_MAX_DEG_S = 1.0
 
+# The clip check's companion, and the same bug in the other direction: how big
+# a one-sample discontinuity counts as a sensor glitch, in deg/s rather than
+# deg between samples.
+#
+# This was an absolute 25 deg BETWEEN SAMPLES, which is 25/dt: 500 deg/s at
+# 20 Hz but 2500 at 100 Hz and 5000 at 200 Hz. Unlike the plateau rule this
+# one gets LOOSER with rate, so the faster the stream the bigger a glitch can
+# hide. Measured by injecting single-sample steps into a clean swing: one is
+# caught from ~500 deg/s at 20 Hz, but needs ~2000 deg/s at 100 Hz and
+# ~6000 at 200 Hz. Production samples at ~100 Hz, so a 1000 deg/s
+# discontinuity -- several times anything a limb can do -- passed silently.
+#
+# 500 deg/s is what the rule already meant at 20 Hz, and it is independently
+# well clear of physiology: the literature peak for a healthy pendulum swing
+# is 221.9 +/- 35.6 deg/s (Kim 1996, n=50 supine, cited in
+# recalibrate_pt_zones._LIT_PEAK_DEG_S), so 500 sits about eight standard
+# deviations above the mean peak while still catching a quarter of what
+# 100 Hz used to let through.
+_CLIP_MAX_DEG_S = 500.0
+
 OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
 
 
@@ -747,18 +767,22 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         # exactly what would re-introduce false plateau violations.
         window_end_t = min(t_r[0] + 4.0, settle_t)
 
+    # One dt for both continuity thresholds: each is a rate, not a per-sample
+    # quantity (see _CLIP_MAX_DEG_S and _PLATEAU_MIN_S).
+    _dt = _median_dt(t)
+    clip_step_deg = _CLIP_MAX_DEG_S * _dt
+
     clip_violations = 0
     diffs = np.diff(angle_deg)
     for i in range(len(diffs)):
         if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
             continue
-        if abs(diffs[i]) > 25.0:
+        if abs(diffs[i]) > clip_step_deg:
             clip_violations += 1
 
     active_idx = np.where((t >= t_r[0]) & (t <= window_end_t))[0]
     # A duration, not a sample count -- see _PLATEAU_MIN_S. Floored at 2 so a
     # very slow stream cannot make the check unreachable.
-    _dt = _median_dt(t)
     plateau_min_run = max(2, int(round(_PLATEAU_MIN_S / _dt)))
     plateau_step_deg = _PLATEAU_MAX_DEG_S * _dt
     plateau_violations = 0

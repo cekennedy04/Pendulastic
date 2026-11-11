@@ -95,6 +95,12 @@ jobs:
       # file and `pytest tests/` is not what runs. An ungated test is worth
       # less than no test: it reads as coverage while asserting nothing.
       #
+      # test_rmse_compare_floor.py is gated because it is the only check on
+      # the --compare-floor report, which runs only where the recordings are.
+      # Its pairing keyed trials on participant + position + trial number,
+      # which a participant's two legs share, so the first corpus run paired
+      # 56 of 144 trials and nothing here could have said so.
+      #
       # test_camera_utils.py was one of the "three non-GUI files with failures
       # unrelated to scoring" this comment used to defer. It had no failure in
       # the code: it needed cv2, which the headless wheel above supplies, and
@@ -135,6 +141,7 @@ jobs:
             tests/test_motor_reference.py \
             tests/test_imu_calibration_tuner.py \
             tests/test_camera_utils.py \
+            tests/test_rmse_compare_floor.py \
             neuromech/tests
       # Two files in neuromech/tests carry the model's own contract, and both
       # are load-bearing:

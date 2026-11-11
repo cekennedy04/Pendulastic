@@ -32,7 +32,7 @@ the rig range and speed it needs, and the peak active muscle torque (for Mode C)
 ## 2. Plan a session
 
 ```bash
-python -m neuromech.session plan --name S2026-10-28 --groups A,M --reps 3 --repeat A-P2:10 --chirp
+python -m neuromech.session plan --name S2026-10-28 --groups A,M --reps 3 --repeat A-P1p:10 --chirp
 ```
 
 Writes `neuromech/sessions/<name>/`: `runsheet.csv` (what the operator sees: run ids only, R3 blind,
