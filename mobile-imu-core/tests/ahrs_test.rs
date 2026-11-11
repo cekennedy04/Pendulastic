@@ -156,6 +156,36 @@ fn release_detector_treats_a_settled_excursion_as_handling_not_release() {
 
 // ---- MadgwickAhrs -------------------------------------------------------
 
+/// A still, TILTED sensor seeded from its accel must stay where the seed put
+/// it. The filter predicts gravity from `q`; a seed that disagrees with that
+/// prediction leaves the filter rotating toward it for tens of seconds (the
+/// mirrored seed did: twice the tilt, worked off at ~2.5 deg/s). A flat start
+/// cannot see this, which is how it survived every earlier test.
+#[test]
+fn gravity_seed_is_the_filters_own_resting_point() {
+    for a in [[0.0, 1.7, 9.66], [3.0, 0.0, 9.3], [-3.0, 1.0, 8.0], [5.0, 5.0, 5.0], [0.0, 9.81, 0.5]] {
+        let a: [f64; 3] = a;
+        let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+        let q = gravity_seed(a);
+        let predicted = [
+            2.0 * (q[1] * q[3] - q[0] * q[2]),
+            2.0 * (q[0] * q[1] + q[2] * q[3]),
+            1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2]),
+        ];
+        for k in 0..3 {
+            assert!((predicted[k] - a[k] / n).abs() < 1e-9, "accel={a:?}: predicted {predicted:?}");
+        }
+        let mut ahrs = MadgwickAhrs::new(BETA);
+        ahrs.q = q;
+        for _ in 0..300 {
+            ahrs.update([0.0; 3], a, None, 1.0 / 60.0); // 5 s lying still at 60 Hz
+        }
+        let dot: f64 = (0..4).map(|k| ahrs.q[k] * q[k]).sum();
+        let moved = 2.0 * dot.abs().min(1.0).acos().to_degrees();
+        assert!(moved < 0.01, "a still sensor rotated {moved:.2} deg after seeding, accel={a:?}");
+    }
+}
+
 #[test]
 fn ahrs_produces_continuous_trajectory_with_no_nan_or_discontinuity() {
     let mut ahrs = MadgwickAhrs::new(BETA);

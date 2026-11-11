@@ -105,9 +105,37 @@ python -m neuromech.dryrun
 
 Plans a session, plays each command as the Player delivers it (a 100 Hz staircase with Windows
 lateness), synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
-jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-10-26:
-every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
-plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
+jitter, reversed mount, real-size bias), and scores it like a real session. Result re-run 2026-11-10
+on main: 7 of 9 runs delivered in their intended band, median tracking 0.73°, phone vs encoder |ΔPT7|
+median 0.000 (max 0.015), phone/encoder band agreement 89%, plant recovered (6.34 Hz, ζ 0.234, R² 0.998).
+The two misses are `B-claspknife` and `M-catch_release_high`: both intend PT7 0.139 and deliver about
+0.115, which falls on the other side of the 0 / 1 band edge. (The 2026-10-26 run recorded every run in
+band; that no longer reproduces.)
+
+## 7. Check the app itself, without a phone
+
+```bash
+(cd webapp && npm run build:wasm)                                   # the app core is a local build: make it current
+python -m neuromech.phone_trial --sids A-P0,M-tone_L2 --defects all # or --sids pendulum (built in, no build needed)
+```
+
+`phone_trial` wraps any scenario's swing in the rest of a real trial (rest, lift, still hold, release,
+swing, quiet tail), turns it into what a phone strapped to the shank would record, and writes it in the
+app's raw export format with a `.truth.json` beside it: where the release was planted, what the scorer
+says about the true motion, and what the app should report. `webapp/scripts/replay-trial.mjs` then replays
+the recording through the app's worker and wasm core exactly as the capture screen does, including the
+five-second auto-stop, and every check is printed as got / want.
+
+Without `--defects` these are good trials: is the hold accepted, is the release found where it was planted,
+does the trial end itself, are the parameters right. Each defect (`fast_lift`, `early_release`,
+`moved_in_hold`, `hold_drift`, `lateral_shake`, `short_tail`, `no_tail`) is a good trial with one thing
+wrong, and asks whether the app says so. `--ideal` uses a perfect sensor, which separates the app's own
+arithmetic from sensor error; `--wasm FILE` replays through another build of the core, to try a fix
+before it ships. Output goes to `neuromech/out/phone_trials/`.
+
+The parameters are judged against the true angle ticked and smoothed as the app does it (50 ms hold, EMA
+0.3). The scenario manifest's numbers are on a different footing (100 Hz, unsmoothed), and the app's PT
+score sits about 0.05 above them on the same motion; that gap is printed, not judged.
 
 ## Tests
 
