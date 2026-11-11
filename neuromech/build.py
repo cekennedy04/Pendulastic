@@ -9,6 +9,10 @@ Outputs (neuromech/out/):
                              the simulated swing (t_s, setpoint_deg, vel_dps, acc_dps2, phase)
   traces/<sid>.npz           the model trace (+ torque components) for figures
   ladder.json                calibrated MAS severities
+  provenance.json            what the outputs were built under: the scorer's SCORE_FORMULA_ID and a hash
+                             of the model, scenario and rig-geometry source (plan D2/B14). A build whose
+                             cached provenance differs from the code recalibrates instead of reusing
+                             ladder.json, and a rig session refuses to mix the two.
 
 Rig angle convention: 0 = where a PASSIVE leg of this geometry hangs; + = toward extension.
 So a leg released from full extension starts at +(rest depth) and a toned leg settles at a
@@ -17,6 +21,7 @@ non-zero rig angle -- the clinically meaningful non-vertical rest is kept, not r
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -189,12 +194,44 @@ def calibrate_ladder(strict: bool = False):
     return out
 
 
+# The source that decides what a scenario's expected values are, besides the scorer: the model and its
+# default limb, the scenario definitions and MAS targets, and this file's rendering and rig geometry.
+PROVENANCE_SOURCES = ("neuromech/model_rt.py", "neuromech/scenarios.py", "neuromech/build.py")
+PROVENANCE_KEYS = ("score_formula_id", "model_hash")
+
+
+def provenance():
+    """What expected values built now would be built under. Line endings are normalised so a Windows and
+    a Linux checkout of the same commit agree; any other edit to the sources changes the hash, on purpose."""
+    h = hashlib.sha256()
+    for rel in PROVENANCE_SOURCES:
+        with open(os.path.join(ROOT, rel), "rb") as fh:
+            h.update(rel.encode() + b"\0" + fh.read().replace(b"\r\n", b"\n") + b"\0")
+    return {"score_formula_id": P.SCORE_FORMULA_ID, "model_hash": h.hexdigest()[:12]}
+
+
+def provenance_mismatch(recorded, current):
+    """The provenance keys on which two records differ (a missing key counts as different)."""
+    return [k for k in PROVENANCE_KEYS if (recorded or {}).get(k) != current.get(k)]
+
+
+def library_provenance():
+    """The provenance the built library under OUT records, or None if it records none."""
+    p = os.path.join(OUT, "provenance.json")
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+
+
 def main():
     os.makedirs(os.path.join(OUT, "setpoints"), exist_ok=True); os.makedirs(os.path.join(OUT, "traces"), exist_ok=True)
     lad_path = os.path.join(OUT, "ladder.json")
-    if os.path.exists(lad_path) and "--recalibrate" not in sys.argv:
+    prov = provenance()
+    stale = provenance_mismatch(library_provenance(), prov)
+    if os.path.exists(lad_path) and "--recalibrate" not in sys.argv and not stale:
         ladder = json.load(open(lad_path))
     else:
+        if os.path.exists(lad_path) and "--recalibrate" not in sys.argv:
+            print(f"ladder.json was built under different {', '.join(stale)} "
+                  f"(now {', '.join(f'{k}={prov[k]}' for k in stale)}); recalibrating")
         print("calibrating MAS ladder on the rising branch of the severity axis...")
         ladder = calibrate_ladder(strict="--strict" in sys.argv)
         json.dump(ladder, open(lad_path, "w"), indent=1)
@@ -229,6 +266,7 @@ def main():
         else:
             row.update(mas=None, interpretable=False, refusal="unscorable (compute_pt_params returned None)")
         row.update({f"param_{k}": v for k, v in sc.params.to_dict().items() if v != getattr(Params(), k)})
+        row.update(prov)
         rows.append(row)
         print(f"  {sc.sid:16s} A0 {row.get('A0_deg')!s:>7}  PT7 {row.get('pt7')!s:>7}  MAS {row['mas']!s:>4}  {row.get('refusal', '')[:28]}")
     # A scenario the ladder no longer reaches (A-P2 after #79) would otherwise leave its old
@@ -241,7 +279,9 @@ def main():
     keys = list(dict.fromkeys(k for r in rows for k in r))
     with open(os.path.join(OUT, "scenario_manifest.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(rows)
-    print(f"wrote {len(rows)} scenarios -> {OUT}")
+    # written last, so a build that dies part-way leaves the old provenance and the next build starts over
+    json.dump(prov, open(os.path.join(OUT, "provenance.json"), "w", encoding="utf-8"), indent=1)
+    print(f"wrote {len(rows)} scenarios -> {OUT}  ({prov['score_formula_id']}, model {prov['model_hash']})")
 
 
 if __name__ == "__main__":
