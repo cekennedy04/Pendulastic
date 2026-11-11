@@ -84,6 +84,17 @@ Per run: encoder-delivered vs intended parameters and band, tracking RMSE, and t
 release — what the app itself can see). `R000` reports the identified plant.
 Output: `sessions/<name>/report.csv` and a printed summary.
 
+Each trace is scored from the release of the **delivered** motion, not the command's. The arm leaves the
+hold later than the command (Player hold + plant), and the scorer counts a hold left inside the record as
+half an oscillation. The delivered release is measured per run, separately on the encoder and on the
+phone, by matching the first 2° of the command's fall to the recording, and is written to `report.csv`:
+`cmd_release_s`, `enc_release_s`, `enc_release_lag_ms`, `enc_release_resid_deg`, the same four for the
+phone, and `ph_minus_enc_lag_ms` (the phone clock's offset at the release). A lag outside −10…+80 ms, an
+onset that does not resemble the command's, or a phone more than 35 ms from the encoder is **flagged**:
+that trace gets no score (there is no fallback to the commanded release), the reason is in `status` /
+`phone_status`, and `score` exits with status 1. Design and evidence:
+`docs/reports/2026-11-11-neuromech-release-alignment.md`.
+
 ## 5. Correct the commands (ILC)
 
 ```bash
@@ -105,14 +116,20 @@ python -m neuromech.dryrun
 
 Plans a session, plays each command as the Player delivers it (a 100 Hz staircase with Windows
 lateness), synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
-jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-10-26:
-every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
-plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
+jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-11-11
+(seed 11; the same 9 of 9 at seeds 1, 3, 7 and 42): every run in its intended band on the encoder and on
+the phone, median tracking 0.73°, phone |ΔPT7| median 0.001 (max 0.005), delivered release 27.4 ms after
+the commanded one (22.7 to 28.4), phone release 8.3 ms before the encoder's (7.1 to 14.6), plant recovered
+(6.34 Hz, ζ 0.234, R² 0.998). Before the delivered release was used this run gave 7 of 9: `B-claspknife`
+and `M-catch_release_high` (one scenario, intended PT7 0.139) scored 0.116, band 0; they now score 0.128,
+band 1, and remain 0.008 from the 0/1 edge. Across all 67 scenarios through the same delivery, 67 are in
+band on the encoder (62 before). The 2026-10-26 figures that stood here (median tracking 0.64°, phone
+|ΔPT7| max 0.17, ILC converging on every scenario) were not re-measured for this note.
 
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 90 tests
+python -m pytest neuromech/tests                                    # 133 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

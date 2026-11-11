@@ -29,6 +29,15 @@ phone session manifest (one phone recording per run, in run order). For every ru
   intended    the same from the scenario manifest
   phone       the same from the phone gyro, aligned on the three sync pulses
   tracking    encoder vs command RMSE over the swing
+  release     where each trace is scored from. The scorer is handed the release of the DELIVERED motion, not
+              the command's: the arm leaves the hold later than the command does (Player hold + plant), and
+              a release that is early by ~15 ms makes the scorer count the start of the record as an extra
+              half-oscillation. The delivered release is measured per run and per trace (_delivered_release)
+              and written out: cmd_release_s, enc_release_s, enc_release_lag_ms, enc_release_resid_deg, and
+              the same for the phone plus ph_minus_enc_lag_ms. A lag outside RELEASE_LAG_PLAUSIBLE_S, an
+              onset that does not look like the command's, or a phone that disagrees with the encoder by more
+              than PHONE_SYNC_TOL_S is FLAGGED: that trace is not scored (there is no fallback to the
+              commanded release), the reason is in the report, and `score` exits with status 1.
 Output: sessions/<name>/report.csv and a printed summary.
 SCORE refuses when the session's provenance differs from the current code or library: the intended values
 would come from a different scorer or model than the session was planned against (plan D2/B14).
@@ -58,7 +67,7 @@ import motor_reference as mr  # noqa: E402
 import pendulastic_pt_score as P  # noqa: E402
 from labview_bin_reader import read_labview_bin  # noqa: E402
 from neuromech import ilc  # noqa: E402
-from neuromech.build import OUT, score_angle, PARAMS7, provenance, provenance_mismatch, library_provenance  # noqa: E402
+from neuromech.build import OUT, score_angle, PARAMS7, FS_SCORE, provenance, provenance_mismatch, library_provenance  # noqa: E402
 
 SESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
 FS = 1000.0
@@ -210,10 +219,81 @@ def _align_phone(te, pos, t_cmd0, tp, wp):
     return tq, ang, sg, float(lag - np.median(off)), list(map(float, e_edges)), bias
 
 
-def _score_trace(t, rig_deg, rest_model_deg, t_release, t_hold):
-    """Rig angle (0 = passive rest) -> Pendulastic angle, scored from the start of the hold."""
-    k = t >= t_hold - 0.05
-    return score_angle(t[k], 180.0 + rest_model_deg + rig_deg[k], t_release)
+# The delivered release. All of these are gates or window sizes, none is the lag itself: the lag is measured
+# from each recording.
+RELEASE_ONSET_DEG = 2.0                    # the onset is the command's first 2 deg of motion after its release
+RELEASE_ONSET_PRE_S = 0.05                 # ... plus this much of the hold before it, which anchors the corner
+RELEASE_ONSET_MAX_S = 1.0                  # a command that has not moved 2 deg by then has no release to find
+RELEASE_LAG_SEARCH_S = (-0.060, 0.130)     # searched; wider than plausible so an edge optimum is recognisable
+RELEASE_LAG_PLAUSIBLE_S = (-0.010, 0.080)  # delivered release - commanded release; outside it the run is flagged
+RELEASE_RESID_MAX_DEG = 0.3                # rms mismatch of the matched onsets (15% of the onset itself)
+PHONE_SYNC_TOL_S = 0.035                   # phone lag - encoder lag: both sensed one arm (two phone samples)
+SCORE_LEAD_S = 0.05                        # hold scored before the hold's own start (as before this change)
+
+
+def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
+    """Where the DELIVERED motion x(t) is released, given the command sp(t_cmd) released at t_rel (one clock).
+
+    Onset matching: take the command from RELEASE_ONSET_PRE_S before its release until it has moved
+    RELEASE_ONSET_DEG, and find the time shift at which the delivered trace lies on it (minimum rms
+    difference after removing the mean difference, so an angle offset between the two costs nothing).
+    delivered release = commanded release + that shift.
+
+    It is the ONSET that is matched, not the whole first drop, because the two give different answers and
+    the scorer is sensitive to the first: a closed loop rounds the corner at the release, so the arm trails
+    the command by more while it leaves the hold than it does over the drop as a whole (the
+    cross-correlation lag). Scored from the cross-correlation point the rounded corner is still inside
+    the record (docs/reports/2026-11-11-neuromech-release-alignment.md).
+
+    -> dict(release_s, lag_s, resid_deg, flag). flag is "" when the release is usable, otherwise the reason
+    it is not; a flagged release must not be scored from. enc_lag_s: for a phone trace, the encoder's lag
+    for the same run; the two must agree within PHONE_SYNC_TOL_S."""
+    out = dict(release_s=np.nan, lag_s=np.nan, resid_deg=np.nan, flag="")
+    k = int(np.searchsorted(t_cmd, t_rel))
+    moved = np.flatnonzero(np.abs(sp[k:] - sp[k]) >= RELEASE_ONSET_DEG)
+    if not len(moved) or t_cmd[k + moved[0]] - t_rel > RELEASE_ONSET_MAX_S:
+        out["flag"] = f"the command does not move {RELEASE_ONSET_DEG:g} deg within {RELEASE_ONSET_MAX_S:g} s of its release"
+        return out
+    tw = np.arange(t_rel - RELEASE_ONSET_PRE_S, t_cmd[k + moved[0]] + 1e-9, 1.0 / FS)
+    lo, hi = RELEASE_LAG_SEARCH_S
+    if t[0] > tw[0] + lo or t[-1] < tw[-1] + hi:
+        out["flag"] = "the recording does not cover the release"
+        return out
+    ref = np.interp(tw, t_cmd, sp)
+    lags = np.arange(lo, hi + 1e-9, 0.0005)
+    err = np.std(np.interp(tw[None, :] + lags[:, None], t, x) - ref[None, :], axis=1)
+    i = int(np.argmin(err)); lag = float(lags[i])
+    if 0 < i < len(lags) - 1:                      # parabola through the three points about the minimum
+        den = err[i - 1] - 2 * err[i] + err[i + 1]
+        if den > 0: lag += 0.5 * (err[i - 1] - err[i + 1]) / den * (lags[1] - lags[0])
+    out.update(release_s=t_rel + lag, lag_s=lag, resid_deg=float(err[i]))
+    p0, p1 = RELEASE_LAG_PLAUSIBLE_S
+    if not p0 <= lag <= p1:
+        out["flag"] = f"lag {lag * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms"
+    elif err[i] > RELEASE_RESID_MAX_DEG:
+        out["flag"] = (f"the onset does not match the command's (rms {err[i]:.2f} deg over its first "
+                       f"{RELEASE_ONSET_DEG:g} deg; limit {RELEASE_RESID_MAX_DEG:g})")
+    elif enc_lag_s is not None and abs(lag - enc_lag_s) > PHONE_SYNC_TOL_S:
+        out["flag"] = (f"phone lag {lag * 1e3:+.1f} ms and encoder lag {enc_lag_s * 1e3:+.1f} ms differ by more than "
+                       f"{PHONE_SYNC_TOL_S * 1e3:.0f} ms: the sync is off")
+    return out
+
+
+def _score_trace(t, rig_deg, rest_model_deg, t_release, lead_s, tail_s=None):
+    """Rig angle (0 = passive rest) -> Pendulastic angle, scored from lead_s before t_release.
+
+    The scorer's 100 Hz grid is laid out FROM the release, so the release is a grid sample whatever its
+    sub-sample value, and a trace that is merely late is scored on the same samples as one that is not.
+    (score_angle rounds a release between samples up to the next one; with the grid started at the hold,
+    a 1 ms change of release could move it by 10.) tail_s: how much of the trace after the release to
+    score; None = all of it."""
+    dt = 1.0 / FS_SCORE
+    n0 = int(round(lead_s / dt))
+    end = t[-1] if tail_s is None else min(t[-1], t_release + tail_s)
+    n1 = int(np.floor((end - t_release) / dt + 1e-6))
+    tg = t_release + np.arange(-n0, n1 + 1) * dt
+    if tg[0] < t[0] - 1e-9: raise ValueError("the trace starts after the scored hold")
+    return score_angle(tg, 180.0 + rest_model_deg + np.interp(tg, t, rig_deg), t_release - 0.1 * dt)
 
 
 def _summ(prm, est):
@@ -259,24 +339,45 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
         k0 = ilc.locate(a["setpoint_deg"], e["position_setpoint"], FS)
         n = min(len(a["t_s"]), len(e["position"]) - k0)
         pos = e["position"][k0:k0 + n]; t = a["t_s"][:n]; ph = a["phase"][:n].astype(int); sp = a["setpoint_deg"][:n]
+        # the log from the command's start to its own end, on the command's time base: a late arm is still
+        # moving after the command has finished, and that tail belongs to the delivered motion
+        pos_all = e["position"][k0:]; t_all = t[0] + np.arange(len(pos_all)) / FS
         if sid == "R-chirp":
             fit = ilc.identify(sp, pos, FS); row.update(status="identified", **{f"plant_{k}": v for k, v in fit.items()}); rows.append(row); continue
         sw = ph == 2
         row["tracking_rmse_deg"] = float(np.sqrt(np.mean((pos[sw] - sp[sw]) ** 2)))
         t_rel = float(t[np.argmax(sw)]); t_hold = float(t[np.argmax(ph == 1)])
+        lead = t_rel - t_hold + SCORE_LEAD_S; tail = float(t[-1]) - t_rel
         rest = float(man.loc[sid, "rest_model_deg"])
-        dlv = _summ(*_score_trace(t, pos, rest, t_rel, t_hold))
-        row.update({f"enc_{k}": v for k, v in dlv.items()})
         row.update({f"int_{k}": man.loc[sid, k] if k in man.columns else np.nan for k in PARAMS7 + ["A0_deg", "pt7"]})
         row["int_band"] = man.loc[sid, "mas"] if isinstance(man.loc[sid, "mas"], str) else "refused"
+        rel = _delivered_release(t, sp, t_all, pos_all, t_rel)
+        row.update(cmd_release_s=t_rel, enc_release_s=rel["release_s"], enc_release_lag_ms=rel["lag_s"] * 1e3,
+                   enc_release_resid_deg=rel["resid_deg"])
+        if rel["flag"]:                                  # no fallback: an unscored run, said out loud
+            row.update(status=f"release flagged: {rel['flag']}", delivered_band_ok=False)
+            if phones: row["phone_status"] = "not scored: the encoder release is flagged"
+            rows.append(row); continue
+        dlv = _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], lead, tail))
+        row.update({f"enc_{k}": v for k, v in dlv.items()})
         row["delivered_band_ok"] = row["enc_band"] == row["int_band"]
         if phones:
             tp, _ap, wp = _phone_angle(phones[i]); te = np.arange(len(e["position"])) / FS
             try:
                 tq, ang, sg, lag, e_edges, bias = _align_phone(te, e["position"], k0 / FS, tp, wp)
-                ph_s = _summ(*_score_trace(tq - k0 / FS, ang, rest, t_rel, t_hold))   # onto the command's time base
-                row.update({f"ph_{k}": v for k, v in ph_s.items()})
-                row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
+                tq = tq - k0 / FS                        # onto the command's time base
+                # The phone's release is measured on the phone's own trace. Its clock sits a fraction of a
+                # sample off the encoder's after the pulse alignment, so the encoder's release is not the
+                # phone's; measured here, the offset moves the release with the trace and is reported.
+                prl = _delivered_release(t, sp, tq, ang, t_rel, enc_lag_s=rel["lag_s"])
+                row.update(ph_release_s=prl["release_s"], ph_release_lag_ms=prl["lag_s"] * 1e3,
+                           ph_release_resid_deg=prl["resid_deg"], ph_minus_enc_lag_ms=(prl["lag_s"] - rel["lag_s"]) * 1e3)
+                if prl["flag"]:
+                    row["phone_status"] = f"release flagged: {prl['flag']}"
+                else:
+                    ph_s = _summ(*_score_trace(tq, ang, rest, prl["release_s"], lead))
+                    row.update({f"ph_{k}": v for k, v in ph_s.items()})
+                    row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
             except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
                 row["phone_status"] = f"sync refused: {str(ex)[:90]}"
         row["status"] = "scored"; rows.append(row)
@@ -332,6 +433,17 @@ def check_log(bin_path, player_csv, verbose=True):
     return out
 
 
+def release_flags(rep):
+    """[(run_id, trace, reason)] for every trace whose delivered release was flagged and so was not scored."""
+    out = []
+    for _, r in rep.iterrows():
+        for trace, col in (("encoder", "status"), ("phone", "phone_status")):
+            v = r.get(col)
+            if isinstance(v, str) and v.startswith("release flagged: "):
+                out.append((r.run_id, trace, v[len("release flagged: "):]))
+    return out
+
+
 def _print(rep):
     sc = rep[rep.get("status", "") == "scored"] if "status" in rep else rep
     print(f"\n{'run':5s} {'scenario':24s} {'track':>6s}  {'PT7 int':>7s} {'enc':>6s} {'phone':>6s}   band int/enc/phone")
@@ -344,6 +456,16 @@ def _print(rep):
         if "ph_pt7" in sc:
             dd = (sc.ph_pt7 - sc.enc_pt7).abs(); print(f"phone vs encoder |dPT7| median {dd.median():.3f}, max {dd.max():.3f}; "
                                                        f"band agreement {(sc.ph_band == sc.enc_band).mean() * 100:.0f}%")
+        lg = sc.enc_release_lag_ms
+        msg = f"delivered release - commanded release: encoder median {lg.median():.1f} ms ({lg.min():.1f} to {lg.max():.1f})"
+        if "ph_minus_enc_lag_ms" in sc and sc.ph_minus_enc_lag_ms.notna().any():
+            pd_ = sc.ph_minus_enc_lag_ms.dropna()
+            msg += f"; phone - encoder median {pd_.median():+.1f} ms ({pd_.min():+.1f} to {pd_.max():+.1f})"
+        print(msg)
+    flagged = release_flags(rep)
+    if flagged:
+        print(f"\nRELEASE FLAGGED on {len(flagged)} trace(s); these were NOT scored and are not in the figures above:")
+        for rid, trace, why in flagged: print(f"  {rid} {trace}: {why}")
     idn = rep[rep.get("status", "") == "identified"] if "status" in rep else rep.iloc[0:0]
     for _, r in idn.iterrows():
         print(f"plant identified from {r.run_id}: wn {r.plant_wn_hz:.2f} Hz, zeta {r.plant_zeta:.3f}, delay {r.plant_delay_ms:.1f} ms (fit R2 {r.plant_r2:.3f})")
@@ -365,7 +487,8 @@ def main(argv=None):
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
     else:
-        score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch)
+        if release_flags(score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch)):
+            sys.exit(1)
 
 
 if __name__ == "__main__":
