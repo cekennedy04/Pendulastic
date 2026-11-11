@@ -272,6 +272,113 @@ def test_the_release_is_recorded_for_every_scored_trace(report):
     assert not SS.release_flags(report)
 
 
+# ── an ambiguous onset must fail (review 2026-11-11, required change 1) ───────────────────────────────
+# Every delivery below was given a release, inside the plausible range and under the residual limit, by
+# e2257cc. The faults are the review's (hold sag, hold ringing at the plant's resonance, D-wobble on a plant
+# other than the identified one) plus a stall after the first degree, which is the two-minima case with a
+# hold that IS still.
+def _deliver(sid, seed=11, plant=None, fault=None, noise=0.02):
+    """The encoder branch of session.score, in memory: command -> Player staircase -> plant (-> a fault added
+    to the arm's true motion) -> encoder noise -> ilc.locate. fault(y, k, s) gets the log-length motion, the
+    index of the commanded release in it and the direction of the fall."""
+    import pandas as pd
+    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", f"{sid}.csv"))
+    rng = np.random.default_rng(seed); pad0, pad1 = 1500, 1000
+    held = DR.player_hold(sp, rng)
+    spp = np.concatenate([np.zeros(pad0), held, np.full(pad1, held[-1])])
+    y = DR.plant_response(spp, 1000.0, plant or DR.PLANT)
+    k = int(np.argmax(ph == 2))
+    if fault is not None: y = fault(y.copy(), pad0 + k, float(np.sign(sp[k + 300] - sp[k])))
+    pos = y + rng.normal(0, noise, len(y))
+    k0 = ilc.locate(sp, spp, 1000.0)
+    pos_all = pos[k0:]; t_all = t[0] + np.arange(len(pos_all)) / 1000.0
+    t_rel = float(t[k]); t_hold = float(t[np.argmax(ph == 1)])
+    man = pd.read_csv(os.path.join(SS.OUT, "scenario_manifest.csv")).set_index("sid").loc[sid]
+    return dict(t=t, sp=sp, ph=ph, t_all=t_all, pos_all=pos_all, pos=pos[k0:k0 + len(t)], t_rel=t_rel, lead=t_rel - t_hold + SS.SCORE_LEAD_S,
+                tail=float(t[-1]) - t_rel, rest=float(man["rest_model_deg"]), int_N=float(man["N"]),
+                int_band=man["mas"] if isinstance(man["mas"], str) else "refused")
+
+
+def _release(d):
+    return SS._delivered_release(d["t"], d["sp"], d["t_all"], d["pos_all"], d["t_rel"])
+
+
+def _sag(deg, over_ms=300):
+    """The hold creeps deg towards the fall over its last over_ms (the review's fault)."""
+    def f(y, k, s):
+        n = int(over_ms); y[k - n:k] += s * deg * (np.arange(n) / n) ** 2
+        y[k:] += s * deg * np.exp(-np.arange(len(y) - k) / 150.0); return y
+    return f
+
+
+def _ringing(amp, f_hz, phase):
+    """A decaying oscillation the command did not ask for, present through the hold (the review's fault)."""
+    def f(y, k, s):
+        n = np.arange(len(y)) - k
+        env = np.where(n < 0, np.clip((n + 2000) / 500.0, 0, 1), np.exp(-np.clip(n, 0, None) / 250.0))
+        return y + amp * env * np.sin(2 * np.pi * f_hz * n / 1000.0 + phase)
+    return f
+
+
+def _stall(at_deg, for_ms):
+    """The arm leaves a still hold, stops for for_ms once it has moved at_deg, and carries on that much late."""
+    def f(y, k, s):
+        j = k + int(np.argmax(np.abs(y[k:] - y[k - 5]) >= at_deg)); n = int(for_ms)
+        rest = y[j:].copy(); y[j:j + n] = y[j]; y[j + n:] = rest[:len(y) - j - n]; return y
+    return f
+
+
+@pytest.mark.parametrize("sid", ["A-P0", "B-claspknife", "R-friction"])
+@pytest.mark.parametrize("deg", [1.0, 2.0])
+def test_a_hold_that_sags_before_the_release_is_flagged(sid, deg):
+    """e2257cc took the release 0.9 to 1.7 deg into the sag (residual 0.06 to 0.12 deg) and scored it in band."""
+    rel = _release(_deliver(sid, fault=_sag(deg)))
+    assert rel["kind"] == "hold" and "the hold is not still" in rel["flag"], rel
+    assert rel["hold_rms_deg"] > SS.RELEASE_HOLD_STILL_MAX_DEG
+
+
+@pytest.mark.parametrize("sid", ["A-P0", "B-claspknife", "M-tone_L2", "R-friction", "D-short"])
+def test_a_hold_that_rings_is_flagged_at_every_phase(sid):
+    """Half a degree at the plant's own 6.35 Hz moved e2257cc's release by up to 21 ms and changed the band in
+    4 of 40 runs with nothing flagged. All 40 are flagged now, whatever the phase at the release."""
+    for phase in np.arange(8) * np.pi / 4:
+        rel = _release(_deliver(sid, fault=_ringing(0.5, DR.PLANT["wn_hz"], phase)))
+        assert rel["kind"] == "hold", (sid, phase, rel)
+
+
+@pytest.mark.parametrize("plant", [None, dict(wn_hz=6.35 * 0.85, zeta=0.23, delay_ms=20.0), dict(wn_hz=6.35 * 0.8, zeta=0.23, delay_ms=30.0)])
+def test_d_wobble_is_reported_as_release_uncertain_on_any_plant(plant):
+    """D-wobble commands a hold that moves 3 deg at 2.5 Hz. e2257cc scored it 6 to 10 ms late on the identified
+    plant and 60 ms EARLY (lag -9.7 to +0.6 ms, inside the plausible range) on a slower plant with 20 to 30 ms
+    of delay. Its release is not knowable from the onset; it says so instead."""
+    for seed in (11, 3, 42):
+        rel = _release(_deliver("D-wobble", seed=seed, plant=plant))
+        assert rel["flag"].startswith("release uncertain"), (seed, rel)
+
+
+def test_an_onset_with_two_candidate_releases_is_flagged():
+    """A still hold, a lag inside the plausible range and a residual under the limit, and still not a release:
+    the arm stalls for 30 ms after its first degree, so a release 10 ms or more away fits nearly as well."""
+    for sid in ("A-P0", "M-tone_L2"):
+        rel = _release(_deliver(sid, fault=_stall(1.0, 30)))
+        lo, hi = SS.RELEASE_LAG_PLAUSIBLE_S
+        assert lo <= rel["lag_s"] <= hi and rel["resid_deg"] < SS.RELEASE_RESID_MAX_DEG, rel
+        assert rel["hold_rms_deg"] < SS.RELEASE_HOLD_STILL_MAX_DEG, rel
+        assert rel["kind"] == "ambiguous" and rel["rival_ratio"] < SS.RELEASE_UNIQUE_MIN_RATIO, rel
+
+
+@pytest.mark.parametrize("plant", [None, dict(wn_hz=6.35 * 0.7, zeta=0.23, delay_ms=0.0), dict(wn_hz=6.35 * 1.3, zeta=0.23 * 0.7, delay_ms=0.0)])
+def test_the_ambiguity_checks_pass_a_clean_delivery_with_room_to_spare(plant):
+    """The other half: the checks must not flag a good run. These are the scenarios nearest each limit (D-push
+    and C-f-high have the largest hold rms, S-lam2 and D-push the weakest minimum), on the identified plant
+    and at both ends of +-30 % bandwidth."""
+    for sid in ("A-P0", "D-push", "S-lam2", "C-f-high", "C-wmax-high", "M-catch_release_high"):
+        rel = _release(_deliver(sid, plant=plant))
+        assert rel["flag"] == "", (sid, rel)
+        assert rel["hold_rms_deg"] < 0.5 * SS.RELEASE_HOLD_STILL_MAX_DEG, (sid, rel)
+        assert rel["rival_ratio"] > 1.2 * SS.RELEASE_UNIQUE_MIN_RATIO, (sid, rel)
+
+
 def test_plan_refuses_an_unknown_repeat_scenario_before_writing(tmp_path):
     old = SS.SESS
     try:

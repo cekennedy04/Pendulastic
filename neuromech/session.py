@@ -227,6 +227,19 @@ RELEASE_ONSET_MAX_S = 1.0                  # a command that has not moved 2 deg 
 RELEASE_LAG_SEARCH_S = (-0.060, 0.130)     # searched; wider than plausible so an edge optimum is recognisable
 RELEASE_LAG_PLAUSIBLE_S = (-0.010, 0.080)  # delivered release - commanded release; outside it the run is flagged
 RELEASE_RESID_MAX_DEG = 0.3                # rms mismatch of the matched onsets (15% of the onset itself)
+# An ambiguous onset. The residual cannot tell a right release from a wrong one when the hold moves (review
+# 2026-11-11: wrong ones at 0.07-0.29 deg, right ones up to 0.24), so two things are checked beside it.
+# PROVISIONAL, both: the limits sit between what the simulated plant delivers and the constructed faults; no
+# rig log has been through them (docs/reports/2026-11-11-neuromech-release-alignment.md, "After review").
+RELEASE_HOLD_STILL_S = 0.30                # the hold is judged over this long before the delivered release ...
+RELEASE_HOLD_STILL_MAX_DEG = 0.20          # ... where the recording's rms about its own mean must stay below this.
+#                                            Simulated: 0.02-0.05 on the identified plant (67 scenarios x 3 seeds, D-wobble
+#                                            aside), at most 0.06 with bandwidth or damping +-30 %; every constructed hold
+#                                            fault that moved a release by more than 10 ms is at 0.36 or above.
+RELEASE_UNIQUE_APART_S = 0.010             # a rival release is any shift at least this far from the best one ...
+RELEASE_UNIQUE_MIN_RATIO = 1.5             # ... and the best rival must fit at least this many times worse (rms ratio).
+#                                            Simulated: 2.7 or more on the identified plant, 1.87 or more at +-30 %;
+#                                            D-wobble, kick-back and slack are at 1.0 to 1.3.
 PHONE_SYNC_TOL_S = 0.035                   # phone lag - encoder lag: both sensed one arm (two phone samples)
 SCORE_LEAD_S = 0.05                        # hold scored before the hold's own start (as before this change)
 
@@ -245,20 +258,34 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     cross-correlation lag). Scored from the cross-correlation point the rounded corner is still inside
     the record (docs/reports/2026-11-11-neuromech-release-alignment.md).
 
-    -> dict(release_s, lag_s, resid_deg, flag). flag is "" when the release is usable, otherwise the reason
-    it is not; a flagged release must not be scored from. enc_lag_s: for a phone trace, the encoder's lag
-    for the same run; the two must agree within PHONE_SYNC_TOL_S."""
-    out = dict(release_s=np.nan, lag_s=np.nan, resid_deg=np.nan, flag="")
+    The fit alone can be confidently wrong, so two properties of it are checked and returned:
+      hold_rms_deg   rms of the recording about its own mean over the RELEASE_HOLD_STILL_S before the
+                     delivered release. The release is "the last instant the arm is still"; if the arm is
+                     not still before it (sag, ringing, a commanded wobble) the fit has motion to lock onto
+                     that is not the release, and A0 is read off a moving hold.
+      rival_ratio    rms mismatch of the best shift at least RELEASE_UNIQUE_APART_S away from the chosen one,
+                     over the mismatch of the chosen one. A clean onset has one sharp minimum and the ratio
+                     is large; a second minimum, or a shallow one, brings it towards 1: some other release
+                     fits nearly as well, and nothing in the data says which is right.
+
+    -> dict(release_s, lag_s, resid_deg, hold_rms_deg, rival_ratio, flag, kind). flag is "" when the release
+    is usable, otherwise the reason it is not; a flagged release must not be scored from. kind names the
+    check that failed ("lag" for the plausible-range check, which session.score judges across the session).
+    enc_lag_s: for a phone trace, the encoder's lag for the same run; the two must agree within
+    PHONE_SYNC_TOL_S."""
+    out = dict(release_s=np.nan, lag_s=np.nan, resid_deg=np.nan, hold_rms_deg=np.nan, rival_ratio=np.nan, flag="", kind="")
+
+    def flagged(kind, why):
+        out.update(flag=why, kind=kind); return out
+
     k = int(np.searchsorted(t_cmd, t_rel))
     moved = np.flatnonzero(np.abs(sp[k:] - sp[k]) >= RELEASE_ONSET_DEG)
     if not len(moved) or t_cmd[k + moved[0]] - t_rel > RELEASE_ONSET_MAX_S:
-        out["flag"] = f"the command does not move {RELEASE_ONSET_DEG:g} deg within {RELEASE_ONSET_MAX_S:g} s of its release"
-        return out
+        return flagged("command", f"the command does not move {RELEASE_ONSET_DEG:g} deg within {RELEASE_ONSET_MAX_S:g} s of its release")
     tw = np.arange(t_rel - RELEASE_ONSET_PRE_S, t_cmd[k + moved[0]] + 1e-9, 1.0 / FS)
     lo, hi = RELEASE_LAG_SEARCH_S
     if t[0] > tw[0] + lo or t[-1] < tw[-1] + hi:
-        out["flag"] = "the recording does not cover the release"
-        return out
+        return flagged("coverage", "the recording does not cover the release")
     ref = np.interp(tw, t_cmd, sp)
     lags = np.arange(lo, hi + 1e-9, 0.0005)
     err = np.std(np.interp(tw[None, :] + lags[:, None], t, x) - ref[None, :], axis=1)
@@ -266,16 +293,29 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     if 0 < i < len(lags) - 1:                      # parabola through the three points about the minimum
         den = err[i - 1] - 2 * err[i] + err[i + 1]
         if den > 0: lag += 0.5 * (err[i - 1] - err[i + 1]) / den * (lags[1] - lags[0])
-    out.update(release_s=t_rel + lag, lag_s=lag, resid_deg=float(err[i]))
+    rival = np.abs(lags - lags[i]) >= RELEASE_UNIQUE_APART_S - 1e-9
+    held = (t >= t_rel + lag - RELEASE_HOLD_STILL_S) & (t <= t_rel + lag)
+    out.update(release_s=t_rel + lag, lag_s=lag, resid_deg=float(err[i]),
+               hold_rms_deg=float(np.std(x[held])) if held.sum() >= 3 else np.nan,
+               rival_ratio=float(err[rival].min() / max(err[i], 1e-9)))
     p0, p1 = RELEASE_LAG_PLAUSIBLE_S
+    if i in (0, len(lags) - 1):
+        return flagged("edge", f"lag {lag * 1e3:+.0f} ms is the edge of the search ({lo * 1e3:+.0f} to {hi * 1e3:+.0f} ms): "
+                               "no release was found, only where the search stopped")
+    if err[i] > RELEASE_RESID_MAX_DEG:
+        return flagged("resid", f"the onset does not match the command's (rms {err[i]:.2f} deg over its first "
+                                f"{RELEASE_ONSET_DEG:g} deg; limit {RELEASE_RESID_MAX_DEG:g})")
+    if not out["hold_rms_deg"] <= RELEASE_HOLD_STILL_MAX_DEG:
+        return flagged("hold", f"release uncertain: the hold is not still (rms {out['hold_rms_deg']:.2f} deg over the "
+                               f"{RELEASE_HOLD_STILL_S:g} s before the release; limit {RELEASE_HOLD_STILL_MAX_DEG:g})")
+    if out["rival_ratio"] < RELEASE_UNIQUE_MIN_RATIO:
+        return flagged("ambiguous", f"release uncertain: a release {RELEASE_UNIQUE_APART_S * 1e3:.0f} ms or more away fits "
+                                    f"only {out['rival_ratio']:.1f} times worse (limit {RELEASE_UNIQUE_MIN_RATIO:g})")
     if not p0 <= lag <= p1:
-        out["flag"] = f"lag {lag * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms"
-    elif err[i] > RELEASE_RESID_MAX_DEG:
-        out["flag"] = (f"the onset does not match the command's (rms {err[i]:.2f} deg over its first "
-                       f"{RELEASE_ONSET_DEG:g} deg; limit {RELEASE_RESID_MAX_DEG:g})")
-    elif enc_lag_s is not None and abs(lag - enc_lag_s) > PHONE_SYNC_TOL_S:
-        out["flag"] = (f"phone lag {lag * 1e3:+.1f} ms and encoder lag {enc_lag_s * 1e3:+.1f} ms differ by more than "
-                       f"{PHONE_SYNC_TOL_S * 1e3:.0f} ms: the sync is off")
+        return flagged("lag", f"lag {lag * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms")
+    if enc_lag_s is not None and abs(lag - enc_lag_s) > PHONE_SYNC_TOL_S:
+        return flagged("phone", f"phone lag {lag * 1e3:+.1f} ms and encoder lag {enc_lag_s * 1e3:+.1f} ms differ by more than "
+                                f"{PHONE_SYNC_TOL_S * 1e3:.0f} ms: the sync is off")
     return out
 
 
