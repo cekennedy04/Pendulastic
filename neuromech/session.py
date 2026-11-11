@@ -537,7 +537,12 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
             row.update(status=f"release flagged: {flag}", delivered_band_ok=False)
             if phones: row["phone_status"] = "not scored: the encoder release is flagged"
             continue
-        dlv = _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], lead, tail))
+        try:
+            dlv = _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], lead, tail))
+        except Exception as ex:                          # noqa: BLE001 -- one run's scoring error must not stop the session
+            row.update(status=f"scoring error: {str(ex)[:90]}", delivered_band_ok=False)
+            if phones: row["phone_status"] = "not scored: the encoder trace could not be scored"
+            continue
         row.update({f"enc_{k}": v for k, v in dlv.items()})
         row["delivered_band_ok"] = row["enc_band"] == row["int_band"]
         row["tracking_aligned_rmse_deg"], row["tracking_time_err_ms"] = _tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
@@ -550,24 +555,35 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
             row["delivered_band_ok"] = False
         if phones:
             tp, _ap, wp = _phone_angle(phones[i]); te = np.arange(len(e["position"])) / FS
+            # Three things can go wrong here and each is called what it is: the sync (pulse alignment), the
+            # release (flagged, or it could not be computed), and the scoring.
             try:
                 tq, ang, sg, lag, e_edges, bias = _align_phone(te, e["position"], k0 / FS, tp, wp)
                 tq = tq - k0 / FS                        # onto the command's time base
+            except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
+                row["phone_status"] = f"sync refused: {str(ex)[:90]}"; row["status"] = status; continue
+            try:
                 # The phone's release is measured on the phone's own trace. Its clock sits a fraction of a
                 # sample off the encoder's after the pulse alignment, so the encoder's release is not the
                 # phone's; measured here, the offset moves the release with the trace and is reported.
                 prl = _delivered_release(t, sp, tq, ang, t_rel, enc_lag_s=rel["lag_s"])
-                row.update(ph_release_s=prl["release_s"], ph_release_lag_ms=prl["lag_s"] * 1e3,
-                           ph_release_resid_deg=prl["resid_deg"], ph_hold_rms_deg=prl["hold_rms_deg"], ph_rival_ratio=prl["rival_ratio"],
-                           ph_minus_enc_lag_ms=(prl["lag_s"] - rel["lag_s"]) * 1e3, ph_expected_offset_ms=prl["expected_offset_s"] * 1e3)
-                if prl["flag"]:
-                    row["phone_status"] = f"release flagged: {prl['flag']}"
+            except Exception as ex:                      # noqa: BLE001
+                row["phone_status"] = f"release error: {str(ex)[:90]}"; row["status"] = status; continue
+            row.update(ph_release_s=prl["release_s"], ph_release_lag_ms=prl["lag_s"] * 1e3,
+                       ph_release_resid_deg=prl["resid_deg"], ph_hold_rms_deg=prl["hold_rms_deg"], ph_rival_ratio=prl["rival_ratio"],
+                       ph_minus_enc_lag_ms=(prl["lag_s"] - rel["lag_s"]) * 1e3, ph_expected_offset_ms=prl["expected_offset_s"] * 1e3)
+            if prl["flag"]:
+                row["phone_status"] = f"release flagged: {prl['flag']}"
+            else:
+                try:
+                    # over the command's span, as the encoder is: scored to the end of its own recording the
+                    # phone saw 0.9 s more of D-short than the encoder did and gave 0.142 against 0.446
+                    ph_s = _summ(*_score_trace(tq, ang, rest, prl["release_s"], lead, tail))
+                except Exception as ex:                  # noqa: BLE001
+                    row["phone_status"] = f"scoring error: {str(ex)[:90]}"
                 else:
-                    ph_s = _summ(*_score_trace(tq, ang, rest, prl["release_s"], lead))
                     row.update({f"ph_{k}": v for k, v in ph_s.items()})
                     row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
-            except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
-                row["phone_status"] = f"sync refused: {str(ex)[:90]}"
         row["status"] = status
     rep = pd.DataFrame(rows)
     rep["provenance_mismatch"] = ",".join(stale)
@@ -649,17 +665,30 @@ def tracking_flags(rep):
 
 
 def _print(rep):
-    sc = rep[rep.get("status", "") == "scored"] if "status" in rep else rep
+    st = rep.status.fillna("") if "status" in rep else pd.Series("", index=rep.index)
+    sc = rep[st == "scored"]
+    runs = rep[st.str.startswith(("scored", "release flagged", "tracking flagged", "scoring error"))]     # every run with a log
     print(f"\n{'run':5s} {'scenario':24s} {'track':>6s}  {'PT7 int':>7s} {'enc':>6s} {'phone':>6s}   band int/enc/phone")
     for _, r in sc.iterrows():
         print(f"{r.run_id:5s} {r.sid[:24]:24s} {r.get('tracking_rmse_deg', np.nan):6.2f}  {r.get('int_pt7', np.nan):7.3f} {r.get('enc_pt7', np.nan):6.3f} "
               f"{r.get('ph_pt7', np.nan):6.3f}   {r.get('int_band', '')}/{r.get('enc_band', '')}/{r.get('ph_band', '-')}")
+    if len(runs):
+        # Of ALL the runs, flagged ones included: "100 % of 1 run" above a list of eight flags is not a result.
+        n = len(runs); ok = int(sc.delivered_band_ok.astype(bool).sum()) if len(sc) else 0
+        n_rel = int(st.str.startswith("release flagged").sum()); n_trk = int(st.str.startswith("tracking flagged").sum())
+        n_err = int(st.str.startswith("scoring error").sum())
+        print(f"\ndelivered band == intended band: {ok} of {n} runs ({100.0 * ok / n:.0f}%); scored {len(sc)}, "
+              f"release flagged {n_rel}, tracking flagged {n_trk}" + (f", scoring error {n_err}" if n_err else "")
+              + (f";  median tracking RMSE {sc.tracking_rmse_deg.median():.2f} deg" if len(sc) else ""))
     if len(sc):
-        ok = sc.delivered_band_ok.mean() * 100
-        print(f"\ndelivered band == intended band: {ok:.0f}% of {len(sc)} runs;  median tracking RMSE {sc.tracking_rmse_deg.median():.2f} deg")
         if "ph_pt7" in sc:
-            dd = (sc.ph_pt7 - sc.enc_pt7).abs(); print(f"phone vs encoder |dPT7| median {dd.median():.3f}, max {dd.max():.3f}; "
-                                                       f"band agreement {(sc.ph_band == sc.enc_band).mean() * 100:.0f}%")
+            had = sc[sc.phone_status.notna()] if "phone_status" in sc else sc
+            got = had[had.ph_pt7.notna()]; dd = (got.ph_pt7 - got.enc_pt7).abs()
+            print(f"phone vs encoder |dPT7| median {dd.median():.3f}, max {dd.max():.3f}; band agreement "
+                  f"{int((got.ph_band == got.enc_band).sum())} of {len(had)} phone traces ({100.0 * (got.ph_band == got.enc_band).sum() / max(len(had), 1):.0f}%), "
+                  f"{len(had) - len(got)} of them not scored")
+        elif "phone_status" in sc and sc.phone_status.notna().any():
+            print(f"phone: none of {int(sc.phone_status.notna().sum())} traces scored")
         lg = sc.enc_release_lag_ms
         msg = f"delivered release - commanded release: encoder median {lg.median():.1f} ms ({lg.min():.1f} to {lg.max():.1f})"
         if "ph_minus_enc_lag_ms" in sc and sc.ph_minus_enc_lag_ms.notna().any():
@@ -675,12 +704,12 @@ def _print(rep):
         print(f"  not scored for this reason: {len(session_wide)} run(s) ({', '.join(f[0] for f in session_wide)})")
     flagged = [f for f in flagged if f not in session_wide]
     if flagged:
-        print(f"\nRELEASE FLAGGED on {len(flagged)} trace(s); these were NOT scored and are not in the figures above:")
+        print(f"\nRELEASE FLAGGED on {len(flagged)} trace(s); these were NOT scored (flagged runs are counted in the totals above):")
         for rid, trace, why in flagged: print(f"  {rid} {trace}: {why}")
     tracked = tracking_flags(rep)
     if tracked:
         print(f"\nTRACKING FLAGGED on {len(tracked)} run(s); the arm did not follow the command, so these are NOT deliveries of "
-              f"their scenarios and are not in the figures above (their scores are in report.csv):")
+              f"their scenarios (counted in the totals above; their scores are in report.csv):")
         for rid, why in tracked: print(f"  {rid}: {why}")
     idn = rep[rep.get("status", "") == "identified"] if "status" in rep else rep.iloc[0:0]
     for _, r in idn.iterrows():

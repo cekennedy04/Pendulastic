@@ -657,6 +657,77 @@ def test_score_exits_with_status_1_on_a_tracking_flag_and_takes_another_limit(sl
     assert (rep.status == "scored").all() and (rep.tracking_limit_ms == 80.0).all()      # the limit used is in the report
 
 
+# ── small fixes in the rewritten code (review 2026-11-11, change 6) ────────────────────────────────────
+def test_the_phone_is_scored_over_the_commands_span_like_the_encoder(tmp_path):
+    """D-short is a short record. The phone was scored to the end of its own recording, 0.9 s past the
+    command's end, and read PT7 0.142 (band 1) where the encoder, scored over the command's span, read 0.446
+    (band 2, the intended one). Same span, same answer."""
+    old = SS.SESS
+    try:
+        SS.SESS = str(tmp_path)
+        rep = DR.run(["D-short", "A-P0", "K-HM1"], seed=11, keep=False)[0].set_index("sid")
+    finally:
+        SS.SESS = old
+    r = rep.loc["D-short"]
+    assert r.status == "scored" and r.phone_status.startswith("ok"), (r.status, r.phone_status)
+    assert r.enc_band == r.int_band == r.ph_band, (r.int_band, r.enc_band, r.ph_band)
+    assert abs(r.ph_pt7 - r.enc_pt7) < 0.02 and r.ph_N == r.enc_N, (r.ph_pt7, r.enc_pt7, r.ph_N, r.enc_N)
+
+
+def test_the_printed_percentage_counts_the_flagged_runs(delayed, capsys):
+    """Three scored and one flagged printed "100% of 3 runs"; four flagged printed no percentage at all."""
+    capsys.readouterr(); _score_delay(delayed, "mixed"); out = capsys.readouterr().out
+    assert "delivered band == intended band: 3 of 4 runs (75%); scored 3, release flagged 1, tracking flagged 0" in out, out
+    _score_delay(delayed, 150); out = capsys.readouterr().out
+    assert "delivered band == intended band: 0 of 4 runs (0%); scored 0, release flagged 4, tracking flagged 0" in out, out
+
+
+def _rescore(session, monkeypatch, **patched):
+    rep0, d = session
+    for k, v in patched.items(): monkeypatch.setattr(SS, k, v)
+    return SS.score(os.path.basename(d), os.path.join(d, "synthetic_encoder"), os.path.join(d, "synthetic_phone", "dryrun-manifest.json"))
+
+
+def test_a_phone_scoring_error_is_called_a_scoring_error(session, monkeypatch):
+    """It was reported as "sync refused", which sends the reader to the sync pulses."""
+    real = SS._score_trace
+    def boom(t, *a, **k):
+        if len(t) < 5000: raise ValueError("boom in scoring")           # the phone trace (~59 Hz); the encoder's is 1 kHz
+        return real(t, *a, **k)
+    rep = _rescore(session, monkeypatch, _score_trace=boom)
+    sc = rep[rep.sid != "R-chirp"]
+    assert (sc.status == "scored").all() and sc.phone_status.str.startswith("scoring error: boom in scoring").all(), sc.phone_status.tolist()
+    assert np.isfinite(sc.ph_release_lag_ms).all()                       # the release it did measure is still reported
+
+
+def test_a_phone_release_error_is_called_a_release_error(session, monkeypatch):
+    real = SS._delivered_release
+    def boom(*a, enc_lag_s=None, **k):
+        if enc_lag_s is not None: raise RuntimeError("boom in release")
+        return real(*a, **k)
+    sc = _rescore(session, monkeypatch, _delivered_release=boom)
+    sc = sc[sc.sid != "R-chirp"]
+    assert (sc.status == "scored").all() and sc.phone_status.str.startswith("release error: boom in release").all(), sc.phone_status.tolist()
+
+
+def test_a_real_sync_failure_is_still_a_sync_refusal(session, monkeypatch):
+    def boom(*a, **k): raise SS.mb.SyncError("pulse offsets disagree by 0.300 s")
+    sc = _rescore(session, monkeypatch, _align_phone=boom)
+    sc = sc[sc.sid != "R-chirp"]
+    assert (sc.status == "scored").all() and sc.phone_status.str.startswith("sync refused: pulse offsets disagree").all(), sc.phone_status.tolist()
+
+
+def test_an_encoder_scoring_error_is_reported_and_does_not_stop_the_session(session, monkeypatch, capsys):
+    real = SS._score_trace; seen = []
+    def boom(t, *a, **k):
+        if len(t) >= 5000 and not seen: seen.append(1); raise ValueError("the trace starts after the scored hold")
+        return real(t, *a, **k)
+    capsys.readouterr(); rep = _rescore(session, monkeypatch, _score_trace=boom); out = capsys.readouterr().out
+    sc = rep[rep.sid != "R-chirp"]
+    assert sc.status.tolist()[0].startswith("scoring error: the trace starts after") and (sc.status.iloc[1:] == "scored").all(), sc.status.tolist()
+    assert "delivered band == intended band: 2 of 3 runs (67%); scored 2, release flagged 0, tracking flagged 0, scoring error 1" in out, out
+
+
 def test_plan_refuses_an_unknown_repeat_scenario_before_writing(tmp_path):
     old = SS.SESS
     try:
