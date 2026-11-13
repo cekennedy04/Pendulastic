@@ -483,8 +483,8 @@ All measured on the simulated plant. All provisional.
 | limit | value | what it sits between |
 |---|---|---|
 | hold stillness | 0.20 deg rms over 0.30 s | Good runs: 0.02 to 0.05 on the identified plant (67 scenarios, 3 seeds, `D-wobble` aside; the largest is `D-push` at 0.051), at most 0.06 with bandwidth or damping at +-30 %. Faults: every constructed hold fault that moved a release by more than 10 ms is at 0.36 or above; a 1 deg sag is 0.32, 2 deg 0.64, `D-wobble` 2.1 to 3.2. Ringing of 0.2 deg (0.11 to 0.15) is not flagged, and moves no release by more than 5.0 ms. |
-| uniqueness | ratio 1.5, rivals 10 ms away or more | Good runs: 2.70 or more on the identified plant, 1.87 or more at +-30 %. `D-wobble`, kick-back and slack: 1.0 to 1.3. |
-| session tolerance | 12 ms from the session median | Good runs deviate by -4.8 to +3.0 ms on the identified plant and -8.3 to +4.2 ms on the +-30 % and delay rows. Faults: slow start +21 to +24, 40 ms of stiction +26, a 3 deg lurch -22 to -27. |
+| uniqueness | ratio 1.5, rivals 10 ms away or more | Good runs: 2.70 or more on the identified plant at seeds 3, 11 and 42 (not a bound: the re-reviewer measured 2.59 at seed 5), 1.87 or more at +-30 % (seed 11). `D-wobble`, kick-back and slack: 1.0 to 1.3. |
+| session tolerance | 12 ms from the session median | Good runs deviate by -4.8 to +3.0 ms on the identified plant at seeds 3, 11 and 42 (not a bound: -5.8 to +1.9 at the re-reviewer's seed 23) and -8.3 to +4.2 ms on the +-30 % and delay rows (seed 11). Faults: slow start +21 to +24, 40 ms of stiction +26, a 3 deg lurch -22 to -27. |
 | plausible session lag | -10 to +80 ms | Unchanged from the reviewed report: a judgement, about three times the simulated lag. It now decides whether a session needs looking at, not whether a run is scored. |
 | phone offset | expected 0.6 sample periods early, +-1.5 | A.4. |
 | tracking | 25 ms time-equivalent error | 67 scenarios, 3 seeds, identified plant: median 14.1, 95th percentile 15.2, largest good run 19.2 (`B-clonus`). The reviewer's slow start (30 % gain recovering over 0.6 s): 28.3 to 65.4 on the 67 scenarios, 67 of 67 over the limit. The raw RMSE in degrees could not be gated: good runs span 0.18 to 2.79 deg and the slow start 0.43 to 7.85. |
@@ -595,7 +595,14 @@ What this shows, and what it does not:
   runs at bandwidth -30 % (27.5 and 25.6 ms against 25), 1 at damping -30 %, and **49 of 67 at bandwidth
   -30 % with damping -30 %**. On that plant the arm really does track worse (the old code had 2 wrong
   bands there and the 17 that are still scored have none), but 49 flags means the 25 ms limit is a limit
-  for *this* plant: on a rig that is 30 % slower and 30 % less damped it would stop most of a session. On
+  for *this* plant: on a rig that is 30 % slower and 30 % less damped it would stop most of a session.
+  **It is also wrong in the other direction, and that direction is silent** (re-review 2026-11-12,
+  section 3d, the re-reviewer's measurement, not repeated here): on a plant that tracks better than the
+  model, which is what ILC is for, good runs sit far below 25 ms and the same faults pass. At bandwidth
+  +30 % good runs are at 6.1 to 12.2 ms and the 30 % start over 0.3 s is flagged 0 of 8 (6 of 8 on the
+  identified plant); on a 12 Hz, zeta 0.7 plant good runs are at 0.3 to 2.6 ms and both sluggish starts
+  pass 0 of 8 at 9 to 16 ms, a tracking error tens of times the plant's own. A slow rig gets loud false
+  flags; a fast or well-corrected rig gets missed faults and no message. On
   zeta 1.0 and on 3 Hz the uniqueness and session-median checks flag 2 and 11 good runs (and tracking 1
   more at 3 Hz). The band misses
   on those plants (2 and 4) are not caught by any flag: they are the plant's, as the reviewer found.
@@ -625,21 +632,45 @@ of the eight. Lag in ms.
 | stiction 100 ms | flagged 8 (lag 90.3) | one session lag finding (median 90.3) | flagged 8 (session median) | **flagged**, but see below |
 | kick-back 1.5 deg; 3 deg; 3 deg at 40 ms | flagged 8 | flagged 8 (residual; edge of search for 2) | the same | **flagged** (as before) |
 | slack drop 2 deg; 4 deg | flagged 8 | flagged 8 (residual) | the same | **flagged** (as before) |
-| forward lurch 3 deg | flagged 8 (lag -25.6) | one session lag finding (median -25.6) | flagged 8 (session median) | **flagged**, but see below |
-| **forward lurch 6 deg over 150 ms, from +30 ms** | scored 8, in band 7, lag 4.4 | **scored 8, in band 7, lag 4.4, no flag** | flagged 8 (session median) | **still reported as scored when every run does it** |
+| forward lurch 3 deg (sin-squared pulse, 80 ms wide, from the release) | flagged 8 (lag -25.6) | one session lag finding (median -25.6) | flagged 8 (session median) | **flagged**, but see below |
+| **forward lurch 6 deg over 150 ms, from +30 ms** (sin-squared pulse, no tail) | scored 8, in band 7, lag 4.4 | **scored 8, in band 7, lag 4.4, no flag** | flagged 8 (session median) for this shape; 2 of 8 for the re-reviewer's (note 1) | **still reported as scored when every run does it** |
 
 Three things in this table are not what was asked for, and are stated plainly:
 
 1. **A forward lurch in every run of a session is not caught.** It has a single, sharp minimum (residual
    0.17 to 0.21 deg, uniqueness ratio 1.75 to 2.20, which overlaps good runs on off-nominal plants at
    1.87) and a still hold. Per run it is indistinguishable, by these checks, from an arm that is early.
-   The session check catches it only when the other runs are good. Seven of eight such runs are in band;
-   the lag is wrong by about 25 ms. No threshold on the present quantities separates it without flagging
-   good runs, so none was set.
+   The session check catches it only when the other runs are good, and then only for a sharp enough
+   lurch (below). Seven of eight such runs are in band. No threshold on the present quantities separates
+   it without flagging good runs, so none was set.
+
+   *Tightened after the re-review (2026-11-12).* **The construction.** The lurch in this table is the
+   first review's `bump`, not committed: a sin-squared pulse added to the delivered trace in the fall
+   direction, `amp * sin(pi * n / width)^2` for `n` in 0 to `width` ms, starting `at` ms after the
+   commanded release, returning to zero with no tail. The row above is amp 6 deg, width 150 ms, at +30 ms;
+   the "3 deg" row is amp 3 deg, width 80 ms, at 0 ms. **The size.** What was measured for the 6 deg row
+   is the fitted lag, 4.4 ms against 27.5 ms on the same runs without the fault: the fit is 23 ms below
+   the clean lag. That is not a release error against an independent marker, and "wrong by about 25 ms"
+   (the first review's wording, repeated here) overstated what was measured. The re-reviewer built a
+   different lurch (a half-cosine rise then a 200 ms decay), measured the release against a marker that
+   knows nothing of the fit, and found 6 deg over 150 ms from +30 ms **9 ms early**, with 18 to 22 ms
+   needing a sharper lurch (8 deg over 100 ms, 6 deg over 60 ms). The cost in that measurement is 0 to 2
+   band changes in about 60 runs and no distinguishable effect on N. **One faulty run in a good session.**
+   "Flagged 8 of 8 (session median)" is true of the pulse above, whose fitted lag is 23 ms from the
+   median. With the re-reviewer's shape it is 2 of 8 for 6 deg over 150 ms, 0 of 8 for 3 deg over 150 ms
+   and 8 of 8 only for 6 deg over 60 ms. So a single gentle lurch among good runs is **not** reliably
+   caught either. Both sets of figures are constructions; neither is a rig lurch.
 2. **A session finding can be accepted for the wrong reason.** Stiction of 100 ms in every run, or a 3 deg
    lurch in every run, is consistent across the session, so it is reported as a rig finding and the
    message offers `--accept-session-lag-ms`. An operator who accepts it without doing the three checks in
    the message would score a faulty session. The override is recorded on every row for that reason.
+   *Tightened after the re-review:* that is more pessimistic than what the re-reviewer measured. In ten
+   fault variants accepted with the override (stiction 70 and 100 ms, lurches from before the release),
+   every run was then `tracking flagged` (or flagged on the edge of the search) and none counted as a
+   delivery; only an arm that is simply late with nothing else wrong was scored, which is the case the
+   override is for. That is ten variants, not a proof that no fault passes both. The finding message and
+   the README now say that an accepted session is still held to the tracking gate and that the override
+   is for a lag the chirp identification explains.
 3. **A mild sluggish start is scored and not flagged.** At 50 % gain over 0.3 s the tracking error is
    19.4 to 22.6 ms, under the limit. The score is honest in the sense that it reports what the arm did
    (3 of 8 out of band, PT7 lower by up to 0.026), but nothing tells the operator why.
@@ -654,8 +685,23 @@ Three things in this table are not what was asked for, and are stated plainly:
   The first rig session should be read as a test of these, and a real hold's rms in particular (encoder
   quantisation, drive hunting, a hand on the rig) has not been seen.
 - The tracking limit off the identified plant: 49 of 67 good runs flagged at bandwidth -30 % with
-  damping -30 % (A.5). If the rig is there, the limit must be re-derived from that rig's runs.
-- A forward lurch in every run (A.6, 1), and the two override cases (A.6, 2).
+  damping -30 % (A.5). If the rig is there, the limit must be re-derived from that rig's runs. **The
+  limit fails on a faster plant too, and silently:** at bandwidth +30 %, at 12 Hz or after ILC, good runs
+  are far below 25 ms and sluggish starts pass unflagged (A.5). The fixed limit is not the limit a real
+  session should be judged by on either side of the identified plant.
+- **Stated follow-up, not implemented here:** derive the tracking limit, and the expected release lag,
+  from the plant identified from the session's own chirp run (R000) in place of fixed numbers. The
+  re-reviewer measured its feasibility (their sections 3d and 3e): against its own plant's prediction a
+  good run is within 6 % on second-order plants from 3 to 8.3 Hz and the faults are 16 % to several
+  hundred per cent over; clean sessions sit about 3 ms from the predicted lag and every admitted fault
+  (lurch in every run, sluggish start, stiction accepted by override) at least 8 ms from it. Open: the
+  margin, an absolute floor for a rig that tracks almost perfectly, a session planned without `--chirp`,
+  and whether a chirp identifies the plant correctly on a rig that has the release fault. It should be
+  done before rig data is interpreted.
+- A forward lurch in every run, and a gentle one among good runs (A.6, 1); the override cases (A.6, 2).
+- When half or more of a session's runs share a fault the median belongs to the fault, and the good runs
+  are the ones flagged "this run, not the rig" (re-reviewer's measurement: 4 of 8 with 40 ms stiction,
+  5 of 8 with either fault). Every faulty run is still flagged and `score` still exits 1.
 - The uniqueness check on phones slower than 59 Hz (A.4: 9 false flags in 720 at 25 and 30 Hz).
 - A real phone's sample timing. The 0.6 sample-period offset is the simulated phone's and follows from
   how `find_pulse_edges` picks an edge; a phone whose timestamps are batched or late would move it.
@@ -686,3 +732,28 @@ took about eight minutes on this run, with the disk nearly full; it took about t
 
 The sweep, fault and before/after harnesses load `e2257cc`'s `neuromech/session.py` beside the fixed one
 and are not committed.
+
+### A.9 After the re-review (2026-11-13)
+
+The re-review (`origin/docs/release-alignment-rereview`,
+`docs/reports/2026-11-12-neuromech-release-alignment-rereview.md`, verdict "ready for a draft PR") asked for
+five small items before the PR leaves draft. None changes a measured number.
+
+| # | item | what was done | pinned by |
+|---|---|---|---|
+| 1 | `score` exited 0 with a run that ended in `scoring error` | `error_flags(rep)` lists an encoder `scoring error` and a phone `scoring error` or `release error`; `score` exits 1 on any of them and prints them under "NOT SCORED BECAUSE OF AN ERROR". They still do not stop the session. | `test_score_exits_with_status_1_when_a_trace_ends_in_an_error` (clean session 0; each of the three errors 1), and one assertion added to `test_an_encoder_scoring_error_is_reported_and_does_not_stop_the_session` |
+| 2 | a +27 ms run in an 87 ms session was told its lag "is outside the plausible -10 to +80 ms" | The per-run status now says it is the session's median that is outside the range, and separately whether this run is with the session or is the odd run in it. | assertions on the literal sentences in `test_session_lag_rules`; `test_an_implausible_lag_flags_the_run_and_does_not_score_it` updated to the new wording |
+| 3 | the phone gate's centre was pinned only against its own constant | `test_the_phone_gate_centre_is_pinned_in_milliseconds`: at 59 Hz a phone 30 ms early of the encoder passes and one 20 ms late is a sync fault, in literal numbers, and the two constants are asserted to be 0.6 and 1.5. With `PHONE_EARLY_SAMPLES = 0` the two outcomes swap (checked by running both). | the test named |
+| 4 | four statements in this report | Tightened in place: the lurch's construction, what "about 25 ms" was and was not, and the one-faulty-run claim (A.6 note 1 and the two table rows); the override note (A.6 note 2); the seed-specific figures in A.2; the tracking limit failing silently on a faster plant (A.5, A.7). | text |
+| 5 | the session finding and the override | The finding, the override notice, the module docstring and the README say that the override is for a lag the chirp identification explains and that an accepted session is still held to the tracking gate. The README adds that when half or more of a session is faulty the good runs are the ones flagged. | assertions on the finding's text in `test_session_lag_rules` |
+
+**Not done, by instruction:** the chirp-derived tracking limit and predicted lag. It is recorded in A.7 as
+the stated follow-up, to be done before rig data is interpreted.
+
+Gates on the final tree: `python -m pytest neuromech/tests -q` **176 passed**, 0 failed, 0 skipped (174
+before; 2 tests added); `test_session_dryrun.py` alone 77 passed; `run_parity.py` **PARITY OK**, 355 cases,
+run after pytest had finished; `python -m neuromech.dryrun --seed 11 --discard` 9 of 9 in band on encoder
+and phone, scored 9, release flagged 0, tracking flagged 0, exit status 0, lag 27.4 ms (22.7 to 28.4). One
+earlier full run failed and is not hidden: `test_an_implausible_lag_flags_the_run_and_does_not_score_it[-30]`
+asserted the old wording of the sentence item 2 corrects; the assertion was updated. The Formula Node check
+and the CI python list outside `neuromech/tests` were not re-run: no file they read has changed since A.8.

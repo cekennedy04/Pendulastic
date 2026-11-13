@@ -107,6 +107,14 @@ flagged runs in its denominator ("7 of 9 runs (78%); scored 7, release flagged 1
 | `tracking flagged` | the arm followed the command too loosely over the swing: lag-aligned RMSE ÷ the command's rms speed (`tracking_time_err_ms`) is over 25 ms. The scores stay in the report but the run is not a delivery of its scenario | run ILC on it (section 5) or rerun; `--tracking-limit-ms` changes the limit |
 | `scoring error` | the scorer raised on the trace | read the message |
 
+`score` also exits with status 1 when any trace ends in an error and so has no score: an encoder
+`scoring error`, or a phone `scoring error` or `release error`. They are listed under "NOT SCORED BECAUSE OF
+AN ERROR".
+
+The 25 ms tracking limit belongs to the simulated plant. On a slower rig it flags good runs; on a faster
+or ILC-corrected rig it misses sluggish starts and says nothing. Deriving it from the session's own chirp
+run is the stated follow-up (report, A.7) and should be done before rig data is interpreted.
+
 Phone traces: `sync refused` (the three pulses do not line up), `release error`, `release flagged`
 (including "the sync is off": the phone's release is not within 1.5 sample periods of the 0.6 sample
 periods early that the pulse alignment leaves), `scoring error`.
@@ -122,11 +130,20 @@ scores nothing. It means the rig, not any one run, is somewhere the method was n
    session's. A lag that grew by d ms with the same bandwidth is d ms of latency somewhere (Player timing,
    a filter, a changed loop rate); a lower bandwidth is the gains or the load.
 3. If the cause is found and fixed, rerun the session.
-4. If the lag is understood and is simply what this rig does, score with it accepted:
+4. The override is for a lag that the chirp identification **explains**: the identified delay and
+   bandwidth account for it. Stiction or a lurch in every run is also consistent across a session and is
+   not a reason to accept. If the lag is explained and is simply what this rig does, score with it accepted:
    `python -m neuromech.session score ... --accept-session-lag-ms 87` (the session's median, to within
    12 ms). Runs are then held to within 12 ms of the session median, and the accepted value is written to
    `session_lag_override_ms` on every row of `report.csv` and printed. An override that does not match the
-   session, or is not needed, is refused or ignored and said so.
+   session, or is not needed, is refused or ignored and said so. **An accepted session is still held to
+   the tracking gate** and to every other release check: accepting the lag does not make a run a delivery.
+
+The session median is only as good as the majority. **When half or more of a session's runs share a fault
+(stiction, a slow start), the median belongs to the fault and the good runs are the ones flagged "this
+run, not the rig".** If most runs are flagged this way, suspect the unflagged ones. The same goes for a
+fault in every run: comparing runs with each other cannot see it (a gentle forward lurch in every run is
+scored without a flag).
 
 All of these limits (0.20° hold, ratio 1.5, 12 ms, −10…+80 ms, the phone's 0.6 ± 1.5 sample periods,
 25 ms tracking) are **provisional**: they were set on the simulated plant and on constructed faults. No rig
@@ -169,7 +186,7 @@ is flagged at every seed ("the hold is not still"), which is what that scenario 
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 174 tests
+python -m pytest neuromech/tests                                    # 176 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
