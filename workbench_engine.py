@@ -504,7 +504,8 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
 
     Pass the reference's FULL time base, with NaN angles where the markers were
     not seen, not a pre-filtered curve: the end-gap check cannot see a gap that
-    was cut off before the call.
+    was cut off before the call. NaN time stamps on the unseen samples hide the
+    gap in the same way; the time base must be finite throughout.
 
     A mirrored reference is mirrored about the mean of its own active window,
     not negated, so the offset between the curves is not turned into a sign.

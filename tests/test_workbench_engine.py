@@ -1662,6 +1662,31 @@ def test_end_gap_tolerance_is_the_refine_margin():
     assert engine._end_gap_sec(np.array([np.nan, 1.0, 2.0, 3.0]), np.array([2.0, 3.0])) == 1.0
 
 
+def test_end_gaps_of_the_two_curves_add(monkeypatch):
+    """0.09 s missing from the end of each curve is 0.18 s of unexplained
+    skew, over the 0.15 s tolerance, though neither gap is on its own. The
+    re-review's surviving mutation took the larger of the two instead."""
+    seen = []
+    real = engine._correlation_alone_block
+
+    def spy(capture_prior, end_gap_sec, *rest):
+        seen.append(end_gap_sec)
+        return real(capture_prior, end_gap_sec, *rest)
+
+    monkeypatch.setattr(engine, "_correlation_alone_block", spy)
+    t_opt, optical, t_imu, imu = _rig_take(1.2, 0.0)
+    optical[t_opt > t_opt[-1] - 0.09] = np.nan
+    imu = imu.copy()
+    imu[t_imu > t_imu[-1] - 0.09] = np.nan
+    r = engine.compare_pair(t_opt, optical, t_imu, imu, capture_skew_prior=True,
+                            ref_polarity_arbitrary=True)
+    assert len(seen) == 1
+    lead = 1.2 - 0.7        # the occluded start of the take, reference only
+    assert seen[0] == pytest.approx(lead + 0.09 + 0.09, abs=0.03)
+    assert seen[0] > max(lead + 0.09, 0.09) + 0.05, "a sum, not the larger gap"
+    assert r["orientation"] == "undetermined"
+
+
 @pytest.mark.parametrize("which", ["reference", "test"])
 def test_a_gap_at_the_end_of_either_take_unverifies_the_pin(which):
     """The prior is the difference of two durations, so a gap at the end of
