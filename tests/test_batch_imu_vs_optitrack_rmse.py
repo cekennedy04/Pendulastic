@@ -544,16 +544,20 @@ def test_summary_reads_offset_removed_rmse_only_where_the_reference_has_no_zero(
 # today, so 'reported rather than hidden' does not hold at the CSV level."
 
 
-def _stub_engine_for_evaluate_trial(monkeypatch, method, result):
+def _stub_engine_for_evaluate_trial(monkeypatch, method, result, relative=None):
     """evaluate_trial with every loader stubbed; returns the kwargs
-    compare_pair was called with."""
+    compare_pair was called with. `relative` is what the optical loader says
+    about its own curve (default: the knee-axis marker path says relative,
+    everything else does not)."""
     seen = {}
+    if relative is None:
+        relative = method == "marker_pca"
     monkeypatch.setattr(engine, "validate_component_csv",
                         lambda path, kind: {"ok": True, "error": None})
     monkeypatch.setattr(engine, "load_imu_trial_from_components",
                         lambda validations: ([0.0, 1.0], [1.0, 2.0], None))
-    monkeypatch.setattr(engine, "load_optitrack_trial",
-                        lambda path: ([0.0, 1.0], [1.0, 2.0], method))
+    monkeypatch.setattr(engine, "load_optitrack_reference",
+                        lambda path: ([0.0, 1.0], [1.0, 2.0], method, relative))
 
     def fake_compare(ref_t, ref_y, t, y, **kwargs):
         seen.update(kwargs)
@@ -569,6 +573,7 @@ _OK_RESULT = {
     "orientation_reason": None, "ref_mirrored": True, "ref_inverted": True,
     "test_inverted": False, "polarity_corr_as_given": -0.86,
     "polarity_corr_mirrored": 0.99,
+    "rmse_deg_offset_removed_other_polarity": 31.5,
 }
 _IDS = {"participant": "P", "position": "Left", "trial": "Trial_1", "trial_key": "k"}
 
@@ -593,16 +598,27 @@ def test_evaluate_trial_row_carries_the_pair_polarity(monkeypatch, tmp_path):
     assert back["ref_mirrored"] == "True" and back["test_inverted"] == "False"
 
 
-def test_evaluate_trial_only_lets_a_marker_reference_be_mirrored(monkeypatch):
-    """A marker-path reference has an arbitrary sign. A rigid-body one is
-    bone-grounded and must never be mirrored, silently or otherwise."""
+def test_evaluate_trial_only_lets_a_relative_reference_be_mirrored(monkeypatch):
+    """Only a curve the loader itself declared relative has an arbitrary sign.
+    A rigid-body one is bone-grounded and must never be mirrored, silently or
+    otherwise -- and neither must a precomputed-angle file or the quaternion
+    fallback, which carry the same "marker_pca" tag but a real sign."""
     seen = _stub_engine_for_evaluate_trial(monkeypatch, "marker_pca", _OK_RESULT)
-    batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
     assert seen["ref_polarity_arbitrary"] is True
+    assert row["optical_relative"] is True
     seen = _stub_engine_for_evaluate_trial(monkeypatch, "rigid_body", _OK_RESULT)
     row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
     assert seen["ref_polarity_arbitrary"] is False
     assert row["optical_absolute_zero"] is True
+    assert row["optical_relative"] is False
+    seen = _stub_engine_for_evaluate_trial(monkeypatch, "marker_pca", _OK_RESULT,
+                                           relative=False)
+    row = batch.evaluate_trial("i", "a", "g", "m", "o", dict(_IDS))
+    assert seen["ref_polarity_arbitrary"] is False
+    assert row["optitrack_method"] == "marker_pca"
+    assert row["optical_relative"] is False
+    assert "optical_relative" in batch._FIELDNAMES
 
 
 def test_error_rows_have_the_polarity_columns_empty(monkeypatch):
@@ -630,6 +646,168 @@ def test_stratified_stats_break_out_pairs_whose_polarity_is_undetermined():
     # summarise exactly as they did.
     assert "excluding_orientation_undetermined" not in batch.compute_stratified_stats(
         rows[:2], {}, 10.0)
+
+
+def _polarity_rows():
+    """Nine pairs over three participants. Participant 15 has three of its
+    four undetermined; 13 has one of three; 4 has none."""
+    def row(key, rmse, orientation, basis=None, reason=None, other=None,
+            test_inverted=False):
+        return {"status": "ok", "trial_key": key, "participant": "x",
+                "rmse_deg": 150.0, "rmse_deg_offset_removed": rmse,
+                "optical_absolute_zero": False, "orientation": orientation,
+                "orientation_basis": basis, "orientation_reason": reason,
+                "rmse_deg_offset_removed_other_polarity": other,
+                "test_inverted": test_inverted}
+    inside = "correlation_inside_margin (ref: no_prerelease_plateau)"
+    return [
+        row("4_left_pre_T1", 4.0, "as_given", "shape+correlation", other=30.0,
+            test_inverted=None),
+        row("4_left_pre_T2", 6.0, "ref_mirrored", "shape+correlation", other=40.0),
+        row("13_left_post_T1", 8.0, "ref_mirrored", "shape+correlation", other=35.0),
+        row("13_left_post_T2", 20.0, "as_given", "correlation", other=45.0,
+            test_inverted=True),
+        row("13_left_post_T3", 12.0, "undetermined", reason=inside, other=3.0),
+        row("15_right_post_T1", 10.0, "as_given", "shape", other=50.0),
+        row("15_right_post_T2", 30.0, "undetermined", reason=inside, other=9.0),
+        row("15_right_post_T3", 2.0, "undetermined", other=44.0,
+            reason="correlation_alone_never_mirrors (ref: no_prerelease_plateau)",
+            test_inverted=True),
+        row("15_right_post_T4", 26.0, "undetermined", other=None,
+            reason="correlation_undefined (ref: no_prerelease_plateau)"),
+        {"status": "error", "trial_key": "15_right_post_T5", "orientation": None},
+    ]
+
+
+def test_orientation_summary_counts_and_medians():
+    s = batch.compute_orientation_summary(_polarity_rows(), 5.0)
+    assert (s["decided"], s["undetermined"], s["total"]) == (5, 4, 9)
+    assert s["by_orientation"] == {"as_given": 3, "ref_mirrored": 2, "undetermined": 4}
+    # The headline is every ok pair, undetermined ones included as scored.
+    assert s["all"] == {"n": 9, "median": 10.0, "n_under_goal": 2,
+                        "mean": pytest.approx(118.0 / 9)}
+    assert s["decided_only"]["n"] == 5 and s["decided_only"]["median"] == 8.0
+    assert s["undetermined_only"]["n"] == 4 and s["undetermined_only"]["median"] == 19.0
+    assert s["undetermined_only"]["n_under_goal"] == 1
+
+
+def test_orientation_summary_bounds_move_only_the_undetermined_pairs():
+    """Best fit: each undetermined pair at the lower of its two polarities.
+    Worst fit: at the higher. Decided pairs stay where they were decided even
+    though the other polarity is on the row, and a pair with no other-polarity
+    score stays as given in both."""
+    s = batch.compute_orientation_summary(_polarity_rows(), 5.0)
+    # decided: 4, 6, 8, 20, 10; undetermined best: 3, 9, 2, 26; worst: 12, 30, 44, 26
+    assert s["median_best_fit"] == 8.0
+    assert s["median_worst_fit"] == 12.0
+    assert s["n_unbounded"] == 1
+    assert s["median_best_fit"] <= s["all"]["median"] <= s["median_worst_fit"]
+
+
+def test_orientation_summary_names_whose_pairs_are_undetermined():
+    s = batch.compute_orientation_summary(_polarity_rows(), 5.0)
+    assert s["undetermined_by_participant"] == {"13": (1, 3), "15": (3, 4)}
+    assert s["majority_undetermined"] == ["15"]
+    assert s["undetermined_by_reason"] == {
+        "correlation_inside_margin": 2, "correlation_alone_never_mirrors": 1,
+        "correlation_undefined": 1}
+    assert s["by_basis"]["shape+correlation"]["n"] == 3
+    assert s["by_basis"]["shape+correlation"]["median"] == 6.0
+    assert s["by_basis"]["correlation"] == {
+        "n": 1, "mean": 20.0, "median": 20.0, "n_under_goal": 0}
+    assert s["by_basis"]["shape"]["n"] == 1
+    assert s["test_inverted"] == ["13_left_post_T2", "15_right_post_T3"]
+
+
+def test_orientation_summary_half_is_not_a_majority_and_old_rows_give_none():
+    rows = _polarity_rows()[:2] + [
+        {**_polarity_rows()[4], "trial_key": "20_right_pre_T1"},
+        {**_polarity_rows()[0], "trial_key": "20_right_pre_T2"}]
+    s = batch.compute_orientation_summary(rows, 5.0)
+    assert s["undetermined_by_participant"] == {"20": (1, 2)}
+    assert s["majority_undetermined"] == []
+    # Rows from before the polarity field existed: nothing to summarise.
+    old = [{"status": "ok", "trial_key": "a", "rmse_deg": 5.0}]
+    assert batch.compute_orientation_summary(old, 5.0) is None
+    assert batch.format_orientation_summary(None, 5.0) == []
+    # A row with no trial key falls back to the participant folder's ID.
+    keyless = {**_polarity_rows()[4], "trial_key": None,
+               "participant": None}
+    for folder in participant_paths.dir_name_candidates("22"):
+        keyless["participant"] = folder
+        s = batch.compute_orientation_summary([keyless], 5.0)
+        assert list(s["undetermined_by_participant"]) == ["22"]
+
+
+def test_orientation_summary_text_never_gives_the_subset_median_alone():
+    """What main() prints. The decided-pairs figure sits between the
+    all-pairs headline with its bound and the undetermined pairs' own median;
+    counts, per-participant losses, basis and inverted test curves are all
+    there."""
+    lines = batch.format_orientation_summary(
+        batch.compute_orientation_summary(_polarity_rows(), 5.0), 5.0)
+    text = "\n".join(lines)
+    assert "decided 5 / undetermined 4 / total 9" in text
+    assert "as_given=3, ref_mirrored=2, undetermined=4" in text
+    i_all = next(i for i, l in enumerate(lines) if "ALL PAIRS (headline)" in l)
+    i_bound = next(i for i, l in enumerate(lines) if "better / worse fit" in l)
+    i_dec = next(i for i, l in enumerate(lines) if "decided pairs (a SUBSET)" in l)
+    i_und = next(i for i, l in enumerate(lines) if l.strip().startswith("undetermined pairs"))
+    assert i_all < i_bound < i_dec and i_und == i_dec + 1
+    assert "n=  9  median= 10.00" in lines[i_all] and "2/9 under 5 deg" in lines[i_all]
+    assert "8.00 .. 12.00" in lines[i_bound]
+    assert "1 with no other-polarity score" in lines[i_bound]
+    assert "n=  5  median=  8.00" in lines[i_dec]
+    assert "n=  4  median= 19.00" in lines[i_und]
+    assert "undetermined by participant (of that participant's pairs): 13: 1/3, 15: 3/4*" in text
+    assert "over half of this participant's pairs are undetermined: 15" in text
+    assert "decided on correlation" in text and "decided on shape+correlation" in text
+    assert "correlation_inside_margin=2" in text
+    assert "test_inverted=True on 2 pair(s): 13_left_post_T2, 15_right_post_T3" in text
+
+
+def test_orientation_summary_text_with_nothing_undetermined():
+    rows = _polarity_rows()[:3]
+    lines = batch.format_orientation_summary(
+        batch.compute_orientation_summary(rows, 5.0), 5.0)
+    text = "\n".join(lines)
+    assert "decided 3 / undetermined 0 / total 3" in text
+    assert "SUBSET" not in text and "better / worse fit" not in text
+    assert "test_inverted=True on 0 pair(s)" in text
+
+
+def test_main_prints_the_polarity_summary_and_no_bare_excluding_line(
+        monkeypatch, tmp_path, capsys):
+    """End of main(): the polarity block is printed, and the stratified table
+    no longer carries an 'excluding_orientation_undetermined' line that could
+    be lifted out as the result."""
+    rows = _polarity_rows()
+    for r in rows:
+        r.update(position="Left", trial="Trial_1", n_samples=100,
+                 optitrack_method="marker_pca", error=None)
+    monkeypatch.setattr(batch, "REC_ROOT", str(tmp_path))
+    monkeypatch.setattr(batch, "OUT_CSV", str(tmp_path / "out" / "rmse.csv"))
+    monkeypatch.setattr(batch, "discover_trials",
+                        lambda: [{"optitrack_path": "o", "participant": "x",
+                                  "position": "Left", "trial": "Trial_1"}] * len(rows))
+    monkeypatch.setattr(batch, "_evaluate_all", lambda matched: rows)
+    monkeypatch.setattr(pt_report_common, "load_quality_tags", lambda: {})
+    monkeypatch.setattr(sys, "argv", ["batch_imu_vs_optitrack_rmse.py"])
+    batch.main()
+    out = capsys.readouterr().out
+    assert "decided 5 / undetermined 4 / total 9" in out
+    assert "ALL PAIRS (headline)" in out
+    assert "better / worse fit: 8.00 .. 12.00" in out
+    assert "undetermined by participant" in out and "15: 3/4*" in out
+    assert "test_inverted=True on 2 pair(s)" in out
+    assert "excluding_orientation_undetermined" not in out
+    assert out.index("ALL PAIRS (headline)") < out.index("decided pairs (a SUBSET)")
+    # ...and the per-trial CSV carries the columns the summary was built from.
+    import csv
+    with open(tmp_path / "out" / "rmse.csv", newline="", encoding="utf-8") as f:
+        back = list(csv.DictReader(f))
+    assert back[4]["orientation"] == "undetermined"
+    assert back[4]["rmse_deg_offset_removed_other_polarity"] == "3.0"
 
 
 def test_compare_floor_pairs_offset_removed_rmse(capsys):
