@@ -140,7 +140,7 @@ oneoff_lateral_check*.png
 # Bench/phone trial data, personal to-do files, generated figures, scratch outputs
 Pendulastic_Mobile_App_Trial/
 to_do/
-bench_figures/
+bench_figures/*.png
 ab_*.csv
 preamble_out.csv
 x.png
