@@ -445,3 +445,244 @@ python -m pytest neuromech/tests/test_session_dryrun.py -q
 The all-67 before/after harness loads `origin/main`'s `neuromech/session.py` under the name
 `neuromech.session`, runs `dryrun.run` on the manifest's scenarios eight at a time, and compares the two
 `report.csv` sets. It is not committed.
+
+## After review (2026-11-12)
+
+The independent review (`origin/docs/release-alignment-review`,
+`docs/reports/2026-11-11-neuromech-release-alignment-review.md`, verdict "approve with required changes")
+asked for seven changes and kept the onset-matching method. This section records what was done for each,
+the test that pins it, and what was re-measured. Sections 1 to 7 above are the report as reviewed, except
+for the three passages marked "Corrected after review".
+
+Everything here is simulation. **Rig hardware is not available**, and every limit introduced below is
+provisional until a real rig log has been through it. "Measured" below means measured on `dryrun`'s plant
+(second order, 6.35 Hz, zeta 0.23), Player and phone models; "inferred" is said where it applies.
+
+### A.1 The seven changes
+
+| # | required change | what was done | pinned by (`neuromech/tests/test_session_dryrun.py`) |
+|---|---|---|---|
+| 1 | an ambiguous onset must fail | Two checks beside the residual, both returned and written to `report.csv`. **Hold stillness** (`enc_hold_rms_deg`): rms of the recording about its own mean over the 0.30 s before the delivered release; flagged above 0.20 deg. It measures whether the arm was still before the instant called "the release". **Uniqueness** (`enc_rival_ratio`): rms mismatch of the best shift at least 10 ms from the chosen one, over the mismatch of the chosen one; flagged below 1.5. It measures whether another release fits nearly as well. An optimum on the edge of the search is also flagged. The residual limit was not tightened. | `test_a_hold_that_sags_before_the_release_is_flagged` (1 and 2 deg, 3 scenarios), `test_a_hold_that_rings_is_flagged_at_every_phase` (0.5 deg at 6.35 Hz, 5 scenarios), `test_d_wobble_is_reported_as_release_uncertain_on_any_plant` (identified and two shifted plants), `test_an_onset_with_two_candidate_releases_is_flagged`, `test_the_ambiguity_checks_pass_a_clean_delivery_with_room_to_spare` |
+| 2 | session-level lag check | The lag is judged across the session (`_session_lag`, `_lag_verdict`). A run more than 12 ms from the session median is flagged as that run. A session whose runs agree (two thirds within 12 ms of the median, at least 3 runs) but whose median is outside -10 to +80 ms is **one** `SESSION LAG FINDING`, printed once, saying it is consistent across the session, points at the rig and not at one run, and what to do; nothing is scored. `--accept-session-lag-ms MS` scores it when MS is within 12 ms of the session median, and the value is written to `session_lag_override_ms` on every row and printed. | `test_a_consistent_out_of_range_session_is_one_rig_finding_not_a_fault_per_run`, `test_the_override_scores_such_a_session_and_is_written_into_the_report`, `test_the_override_must_name_the_lag_this_session_has`, `test_an_override_that_is_not_needed_changes_nothing`, `test_the_cli_takes_the_override`, `test_one_run_far_from_the_session_median_is_the_run_that_is_flagged`, `test_session_lag_rules` |
+| 3 | the phone's lower gate | The phone is no longer held to the absolute -10 to +80 ms at all. It is held to the encoder of the same run, with the gate **centred on the expected offset** of 0.6 phone sample periods early and 1.5 sample periods wide either side, both taken from the recording's own median sample period (`ph_expected_offset_ms`). Mechanism in A.4. | `test_a_phone_trace_is_not_flagged_for_reading_early_when_the_arm_tracks_well`, `test_the_phone_gate_is_centred_on_the_sample_period_offset_and_scales_with_it` (30, 59, 100, 200 Hz), `test_an_encoder_trace_is_still_held_to_the_plausible_range` |
+| 4 | gate tracking error | `tracking_aligned_rmse_deg` (RMSE over the swing after removing the measured lag) and `tracking_time_err_ms` (that RMSE divided by the command's rms speed over the swing: how far off in time the arm is, on average) are in `report.csv`. Over 25 ms (`TRACKING_TIME_ERR_MAX_MS`, `--tracking-limit-ms`) the run is `tracking flagged`: its scores stay in the report, it does not count as a delivery, `score` exits 1. Not done through the release. The limit is stated as provisional in the code and here. | `test_tracking_error_is_in_the_report_and_a_good_run_is_well_inside_the_limit`, `test_a_slow_start_is_flagged_for_tracking_and_is_not_a_delivery` (30 % gain recovering over 0.6 s), `test_one_slow_start_in_a_good_session_is_caught`, `test_score_exits_with_status_1_on_a_tracking_flag_and_takes_another_limit` |
+| 5 | pin the method | `test_the_onset_method_is_pinned_across_the_whole_library`: all 67 scenarios through the delivery; asserts the lag median and range, which scenario is flagged, and the N and band counts. With `RELEASE_ONSET_DEG = 10` it fails, as do 18 other tests (19 failed, 50 passed at that commit). The old `< 0.132` in the default-session test is replaced by stated regression pins (lag median 26.4 to 28.4 ms, every lag 21.5 to 29.5 ms, the two edge runs 0.008 to 0.014 below intended), with a docstring saying they are pins of the simulated plant and when to re-baseline. | the test named, and `test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_their_edge` |
+| 6 | small fixes | The phone is scored over the command's span like the encoder (`D-short`). The printed headline counts flagged runs in its denominator and lists them by kind. Phone failures are named for what they are: `sync refused`, `release error`, `release flagged`, `scoring error`; an encoder scoring error no longer stops the session. | `test_the_phone_is_scored_over_the_commands_span_like_the_encoder`, `test_the_printed_percentage_counts_the_flagged_runs`, `test_a_phone_scoring_error_is_called_a_scoring_error`, `test_a_phone_release_error_is_called_a_release_error`, `test_a_real_sync_failure_is_still_a_sync_refusal`, `test_an_encoder_scoring_error_is_reported_and_does_not_stop_the_session` |
+| 7 | two statements | Corrected in place above (summary, section 1, the "Failing loudly" table) and in `session.py` (the `RELEASE_RESID_MAX_DEG` comment and the `_delivered_release` docstring): the residual limit is 54 % of the window's 0.56 deg signal; the N counts do not tell the 2 deg onset from a constant +30 to +50 ms, the plant sweep does. | text only |
+
+**The tests fail before and pass after.** With `e2257cc`'s `neuromech/session.py` put in place of the
+fixed one and the test file otherwise as committed: **44 failed, 31 passed** of 75. On the fixed tree:
+75 passed. The 44 include every test named in rows 1 to 6 except
+`test_a_real_sync_failure_is_still_a_sync_refusal`, which is a behaviour that was already right and is
+pinned so that renaming the other errors cannot change it.
+
+### A.2 How each limit was chosen
+
+All measured on the simulated plant. All provisional.
+
+| limit | value | what it sits between |
+|---|---|---|
+| hold stillness | 0.20 deg rms over 0.30 s | Good runs: 0.02 to 0.05 on the identified plant (67 scenarios, 3 seeds, `D-wobble` aside; the largest is `D-push` at 0.051), at most 0.06 with bandwidth or damping at +-30 %. Faults: every constructed hold fault that moved a release by more than 10 ms is at 0.36 or above; a 1 deg sag is 0.32, 2 deg 0.64, `D-wobble` 2.1 to 3.2. Ringing of 0.2 deg (0.11 to 0.15) is not flagged, and moves no release by more than 5.0 ms. |
+| uniqueness | ratio 1.5, rivals 10 ms away or more | Good runs: 2.70 or more on the identified plant, 1.87 or more at +-30 %. `D-wobble`, kick-back and slack: 1.0 to 1.3. |
+| session tolerance | 12 ms from the session median | Good runs deviate by -4.8 to +3.0 ms on the identified plant and -8.3 to +4.2 ms on the +-30 % and delay rows. Faults: slow start +21 to +24, 40 ms of stiction +26, a 3 deg lurch -22 to -27. |
+| plausible session lag | -10 to +80 ms | Unchanged from the reviewed report: a judgement, about three times the simulated lag. It now decides whether a session needs looking at, not whether a run is scored. |
+| phone offset | expected 0.6 sample periods early, +-1.5 | A.4. |
+| tracking | 25 ms time-equivalent error | 67 scenarios, 3 seeds, identified plant: median 14.1, 95th percentile 15.2, largest good run 19.2 (`B-clonus`). The reviewer's slow start (30 % gain recovering over 0.6 s): 28.3 to 65.4 on the 67 scenarios, 67 of 67 over the limit. The raw RMSE in degrees could not be gated: good runs span 0.18 to 2.79 deg and the slow start 0.43 to 7.85. |
+
+### A.3 Before and after: the dry run through real files
+
+`dryrun.run` writes the logs; the same logs' report is taken with `e2257cc`'s `session.py` and with the
+fixed one. 67 scenarios in sessions of eight.
+
+| seed | | scored | encoder in band | encoder N differs | phone scored | phone in band | phone N differs | lag, ms: median (min to max) | not scored |
+|---|---|---|---|---|---|---|---|---|---|
+| 11 | e2257cc | 67 | 67 | 8 | 67 | 66 (`D-short`) | 13 | 27.3 (22.6 to 34.3) | |
+| 11 | fixed | 66 | 66 | 8 | 66 | 66 | 10 | 27.3 (22.6 to 28.6) | `D-wobble` |
+| 3 | e2257cc | 67 | 67 | 10 | 67 | 65 (`C-R2n-high`, `D-short`) | 15 | 27.4 (22.6 to 32.6) | |
+| 3 | fixed | 66 | 66 | 10 | 66 | 66 | 12 | 27.4 (22.6 to 29.4) | `D-wobble` |
+| 42 | e2257cc | 67 | 67 | 11 | 67 | 66 (`D-short`) | 13 | 27.4 (22.5 to 33.4) | |
+| 42 | fixed | 66 | 66 | 11 | 66 | 66 | 10 | 27.4 (22.5 to 28.5) | `D-wobble` |
+
+`D-wobble` is flagged at every seed with "release uncertain: the hold is not still". It is a scenario
+whose hold wobbles by design, it was the one outlying lag before (32.6 to 34.3 ms), and on a shifted plant
+its release was confidently wrong (A.5). Its phone trace is "not scored: the encoder release is flagged".
+The phone's `D-short` miss is gone because the phone is scored over the command's span (change 6).
+Tracking time error on the scored runs: median 14.1 to 14.2 ms, largest 19.1 to 19.2 ms.
+
+Default dry run (9 runs), seeds 1, 3, 7, 11, 42: **9 of 9 scored and in band on the encoder and on the
+phone at every seed, before and after**; no release flag, no tracking flag; encoder N differs in 1, 1, 1,
+1, 2 runs and phone N in 2 at every seed, identically before and after; lag median 27.3 to 27.4 ms;
+tracking time error at most 18.8 to 19.2 ms.
+
+**False flags on good runs, 67 scenarios at seeds 3, 11 and 42 (201 runs, of which 198 are not
+`D-wobble`): encoder release 0, tracking 0, phone 0.** The same count through the in-memory delivery that
+the pin test uses: 0 at each of the three seeds.
+
+Off the identified plant there are false flags, and they are listed in A.5.
+
+### A.4 The phone's offset, and the gate
+
+`_align_phone` puts the phone on the encoder clock from the three sync-pulse edges, and
+`mb.find_pulse_edges` takes an edge at the first sample past its threshold. On the encoder's 1 ms grid
+that is the crossing. On a phone grid of period dt it is anywhere from 0 to dt after it. The alignment
+therefore moves the phone trace early by about half a sample period, and integrating the gyro and
+interpolating the release corner on that grid adds a little more. Measured, 67 scenarios per rate,
+(phone lag - encoder lag) in sample periods, median: -0.65 at 25 Hz, -0.64 at 30 Hz, -0.54 to -0.58 at
+59 Hz with jitter (-0.82 at exactly 59 Hz with none, where all three pulses land on one sampling phase),
+-0.39 at 100 Hz, -0.43 at 200 Hz. Of that, the clock offset itself is -0.39 to -0.50 dt. Deviations from
+-0.6 dt stay within +-0.64 dt at 59 to 200 Hz and reach -1.6 dt at 25 to 30 Hz.
+
+So the gate is centred on -0.6 dt and is +-1.5 dt wide: at 59 Hz, -35.6 to +15.3 ms about the encoder.
+It was not simply widened: 20 ms early passes at 30 Hz and is a sync fault at 200 Hz (pinned).
+
+Flags on a phone trace of a clean delivery, 9 default scenarios x 20 seeds per cell, the phone reading the
+delivered motion 0.1 to 1.1 sample periods early:
+
+| phone rate | arm level with the scenario (encoder lag 0, as after ILC): e2257cc / fixed | dry-run arm (encoder lag 27 ms): e2257cc / fixed |
+|---|---|---|
+| 25 Hz | 180 / 0 of 180 | 65 / 1 |
+| 30 Hz | 166 / 5 | 14 / 3 |
+| 59 Hz | 122 / 0 | 0 / 0 |
+| 100 Hz | 46 / 0 | 0 / 0 |
+| 200 Hz | 0 / 0 | 0 / 0 |
+
+The 9 remaining flags at 25 and 30 Hz are all "ambiguous" (the uniqueness check on three or four samples
+of onset). They are false flags. The app's phone is 59 Hz or faster; below that the check is not usable
+as it stands.
+
+The offset is still absorbed and reported, not removed in `_align_phone`: removing it would change the
+phone's time base for every consumer of that function, which is outside this change.
+
+### A.5 The reviewer's plant sweep
+
+67 scenarios per plant, seed 11, in-memory delivery (no `.bin` round trip, no phone). "N wrong" and "band
+wrong" count scored runs against the intended values. The +30 / +40 ms column is the reviewer's.
+
+| plant | e2257cc: flagged, lag median (min to max) | e2257cc: N wrong / band wrong | fixed: lag of scored runs | fixed: scored | fixed: N wrong / band wrong | fixed: flagged | reviewer: N wrong at constant +30 / +40 ms |
+|---|---|---|---|---|---|---|---|
+| identified (6.35 Hz, 0.23) | 0, 27.4 (22.6 to 33.9) | 10 / 0 | 27.4 (22.6 to 28.4) | 66 | 10 / 0 | `D-wobble` (hold) | 10 / 10 |
+| bandwidth -30 % | 1, 38.6 (-29.6 to 42.6) | 14 / 3 | 38.6 (30.4 to 39.6) | 64 | 14 / 3 | `D-wobble` (residual); tracking: `S-lam3`, `R-reflex-sat` | 25 / 13 |
+| bandwidth +30 % | 0, 20.3 (15.6 to 27.5) | 8 / 0 | 20.3 (15.6 to 22.1) | 66 | 8 / 0 | `D-wobble` | 8 / 9 |
+| damping -30 % | 0, 26.3 (20.4 to 35.6) | 11 / 0 | 26.3 (20.4 to 26.9) | 65 | 10 / 0 | `D-wobble`; tracking: `B-clonus` | 11 / 11 |
+| damping +30 % | 0, 28.6 (23.7 to 32.4) | 10 / 0 | 28.6 (23.7 to 29.6) | 66 | 10 / 0 | `D-wobble` | 7 / 8 |
+| + 20 ms delay | 0, 47.5 (43.3 to 54.4) | 10 / 0 | 47.5 (43.3 to 48.4) | 66 | 10 / 0 | `D-wobble` | 40 / 23 |
+| + 40 ms delay | 0, 67.4 (62.6 to 74.5) | 9 / 0 | 67.4 (62.6 to 68.4) | 66 | 9 / 0 | `D-wobble` | 50 / 44 |
+| + 60 ms delay | **67**, 87.5 (83.3 to 94.5) | none scored | median 87.5 | 0 | none scored | **one session lag finding** (66 runs) + `D-wobble` (hold) | 47 / 48 |
+| + 60 ms delay, `--accept-session-lag-ms 87` | | | 87.5 (83.3 to 88.4) | 66 | 9 / 0 | `D-wobble`; override recorded | |
+| bandwidth -20 % | 1, 34.4 (-29.6 to 36.7) | 12 / 0 | 34.4 (27.5 to 36.7) | 66 | 12 / 0 | `D-wobble` | 14 / 10 |
+| bandwidth +20 % | 0, 22.3 (17.5 to 29.6) | 7 / 0 | 22.3 (17.5 to 23.6) | 66 | 7 / 0 | `D-wobble` | 8 / 9 |
+| bandwidth -30 %, damping -30 % | 1, 37.5 (-37.6 to 41.7) | 13 / 2 | 37.5 (33.6 to 37.4) | **17** | 2 / 0 | `D-wobble` (residual); **tracking: 49** | 26 / 13 |
+| bandwidth +30 %, damping -30 % | 0, 18.8 (13.5 to 28.5) | 7 / 0 | 18.8 (13.5 to 21.5) | 66 | 7 / 0 | `D-wobble` | 7 / 8 |
+| bandwidth -30 % + 20 ms | 1, 58.6 (-9.8 to 62.5) | 14 / 3 | 58.6 (50.3 to 59.5) | 64 | 14 / 3 | `D-wobble` (residual); tracking: `S-lam3`, `R-reflex-sat` | 44 / 42 |
+| zeta 0.5 | 0, 32.3 (24.6 to 33.5) | 10 / 1 | 32.3 (24.7 to 33.5) | 66 | 10 / 1 | `D-wobble` | 8 / 8 |
+| zeta 1.0 | 0, 39.5 (27.5 to 45.5) | 14 / 2 | 39.5 (29.5 to 45.4) | 64 | 13 / 2 | `D-wobble`; ambiguous: 1; session median: 1 (`S-lam2`, `C-f-high`) | 20 / 16 |
+| 3 Hz, zeta 0.7 | 0, 61.6 (41.3 to 74.5) | 17 / 4 | 61.6 (58.3 to 72.5) | 54 | 13 / 4 | `D-wobble`; ambiguous: 9; session median: 2; tracking: 1 | 39 / 34 |
+
+What this shows, and what it does not:
+
+- **Measured.** The lag moves with the plant and the N and band counts of scored runs are not made
+  worse by the new checks on any row (they fall where a flagged run was one of the wrong ones). A constant offset does not
+  survive a changed plant (last column); the measured lag does. This is the evidence for measuring the
+  lag, in place of the N-count argument withdrawn in section 1.
+- **Measured.** With 60 ms of delay `e2257cc` reported 67 separate faults. It is now one finding, and with
+  the override 66 runs are scored with 9 wrong N and 0 wrong bands, the same as the other delay rows.
+- **Measured.** `D-wobble` on 14 plants (bandwidth x0.7 to x1.0, 0 to 30 ms of delay, 3 seeds each):
+  `e2257cc` left it unflagged on 11 of the 14, and on 8 of those (bandwidth x0.8 to x0.9 with 20 to 30 ms
+  of delay) its release was 58 to 63 ms from that of the sibling scenario with the same fall (the
+  reviewer's case). It is now flagged on all 14 (hold on 13, residual on 1), and the sibling is flagged
+  on none.
+- **Good runs wrongly flagged off the identified plant (false flags, measured):** tracking flags 2 good
+  runs at bandwidth -30 % (27.5 and 25.6 ms against 25), 1 at damping -30 %, and **49 of 67 at bandwidth
+  -30 % with damping -30 %**. On that plant the arm really does track worse (the old code had 2 wrong
+  bands there and the 17 that are still scored have none), but 49 flags means the 25 ms limit is a limit
+  for *this* plant: on a rig that is 30 % slower and 30 % less damped it would stop most of a session. On
+  zeta 1.0 and on 3 Hz the uniqueness and session-median checks flag 2 and 11 good runs (and tracking 1
+  more at 3 Hz). The band misses
+  on those plants (2 and 4) are not caught by any flag: they are the plant's, as the reviewer found.
+- **Inferred, not measured.** That the real rig sits near the identified row. It was identified from a
+  rig chirp, but no run of this code has seen a rig log.
+
+### A.6 The constructed faults
+
+Eight scenarios per case (the reviewer's set), seed 11, in-memory delivery. "Every run" is a session in
+which all eight runs have the fault; "one run" is one faulty run among seven good ones, repeated for each
+of the eight. Lag in ms.
+
+| fault | e2257cc | fixed, every run faulty | fixed, one faulty run in a good session | what the report now says |
+|---|---|---|---|---|
+| none | scored 8, in band 8 | scored 8, in band 8 | | scored |
+| hold sag 1 deg | **scored 8, in band 8**, lag 31.6 | flagged 8 (hold, 0.32 deg) | flagged 8 (hold) | **flagged** |
+| hold sag 2 deg | **scored 8, in band 8**, lag 35.5 | flagged 8 (hold, 0.64 deg) | flagged 8 (hold) | **flagged** |
+| hold ringing 0.5 deg at 6.35 Hz, 5 phases x 8 | 10 of 40 unflagged with the release off by more than 10 ms, 4 band changes | flagged 40 of 40 (hold) | | **flagged** |
+| hold ringing 1.0 and 1.5 deg at 2.5 and 6.35 Hz | 0 to 39 of 40 flagged; up to 23 of 40 unflagged and wrong by more than 10 ms | flagged 40 of 40 in each of the 4 cells | | **flagged** |
+| hold ringing 0.2 deg | not flagged; release off by at most 5.0 ms, no N or band change | not flagged (hold rms 0.11 to 0.15); the same | | **scored; honest** (the release is within 5 ms) |
+| slow start, 30 % gain recovering over 0.6 s | **scored 8, in band 8**, lag 49.0 | flagged 8 (tracking, 32.4 to 38.5 ms) | flagged 8 (session median) | **flagged** |
+| sluggish start, 30 % over 0.3 s | scored 8, in band 4 | tracking flags 6; **2 scored, both in band** | flagged 8 (session median) | flagged in 6 of 8; the 2 that pass are in band |
+| sluggish start, 50 % over 0.3 s | scored 8, in band 5 | **scored 8, in band 5** (tracking 19.4 to 22.6 ms; lag 37.5) | **scored 8, in band 5** (10 ms from the median) | **scored honestly as out of band in 3 of 8; not flagged** |
+| `D-wobble` on a shifted plant | unflagged on 11 of 14 plants; release 58 to 63 ms off on 8 of them | flagged on 14 of 14 plants | | **flagged** |
+| stiction 40 ms | scored 8, in band 7, lag 53.6 | flagged 8 (tracking, 38.4 to 40.5 ms) | flagged 8 (session median) | **flagged** |
+| stiction 60 ms | scored 8, in band 5, lag 64.3 | flagged 8 (tracking, 47.7 to 50.4 ms) | flagged 8 (session median) | **flagged** |
+| stiction 100 ms | flagged 8 (lag 90.3) | one session lag finding (median 90.3) | flagged 8 (session median) | **flagged**, but see below |
+| kick-back 1.5 deg; 3 deg; 3 deg at 40 ms | flagged 8 | flagged 8 (residual; edge of search for 2) | the same | **flagged** (as before) |
+| slack drop 2 deg; 4 deg | flagged 8 | flagged 8 (residual) | the same | **flagged** (as before) |
+| forward lurch 3 deg | flagged 8 (lag -25.6) | one session lag finding (median -25.6) | flagged 8 (session median) | **flagged**, but see below |
+| **forward lurch 6 deg over 150 ms, from +30 ms** | scored 8, in band 7, lag 4.4 | **scored 8, in band 7, lag 4.4, no flag** | flagged 8 (session median) | **still reported as scored when every run does it** |
+
+Three things in this table are not what was asked for, and are stated plainly:
+
+1. **A forward lurch in every run of a session is not caught.** It has a single, sharp minimum (residual
+   0.17 to 0.21 deg, uniqueness ratio 1.75 to 2.20, which overlaps good runs on off-nominal plants at
+   1.87) and a still hold. Per run it is indistinguishable, by these checks, from an arm that is early.
+   The session check catches it only when the other runs are good. Seven of eight such runs are in band;
+   the lag is wrong by about 25 ms. No threshold on the present quantities separates it without flagging
+   good runs, so none was set.
+2. **A session finding can be accepted for the wrong reason.** Stiction of 100 ms in every run, or a 3 deg
+   lurch in every run, is consistent across the session, so it is reported as a rig finding and the
+   message offers `--accept-session-lag-ms`. An operator who accepts it without doing the three checks in
+   the message would score a faulty session. The override is recorded on every row for that reason.
+3. **A mild sluggish start is scored and not flagged.** At 50 % gain over 0.3 s the tracking error is
+   19.4 to 22.6 ms, under the limit. The score is honest in the sense that it reports what the arm did
+   (3 of 8 out of band, PT7 lower by up to 0.026), but nothing tells the operator why.
+
+### A.7 Not verified (replaces the gate lines of section 7; the rest of section 7 stands)
+
+- **Rig hardware is not available.** Nothing in this section was run on the rig, on a real LabVIEW log or
+  on a real phone recording.
+- **Provisional limits**, all set on the simulated plant and on constructed faults: hold stillness
+  0.20 deg over 0.30 s; uniqueness ratio 1.5 at 10 ms; session tolerance 12 ms, minimum 3 runs, two-thirds
+  agreement; plausible session lag -10 to +80 ms; phone offset 0.6 +- 1.5 sample periods; tracking 25 ms.
+  The first rig session should be read as a test of these, and a real hold's rms in particular (encoder
+  quantisation, drive hunting, a hand on the rig) has not been seen.
+- The tracking limit off the identified plant: 49 of 67 good runs flagged at bandwidth -30 % with
+  damping -30 % (A.5). If the rig is there, the limit must be re-derived from that rig's runs.
+- A forward lurch in every run (A.6, 1), and the two override cases (A.6, 2).
+- The uniqueness check on phones slower than 59 Hz (A.4: 9 false flags in 720 at 25 and 30 Hz).
+- A real phone's sample timing. The 0.6 sample-period offset is the simulated phone's and follows from
+  how `find_pulse_edges` picks an edge; a phone whose timestamps are batched or late would move it.
+- Sessions shorter than 3 runs have no session reference; each run is then held to -10 to +80 ms alone.
+- `ilc_demo` beyond `test_ilc_converges_through_the_real_tools`; `nm_figs.fig_dryrun` was not regenerated.
+- The fault and sweep tables use the in-memory delivery (no `.bin` round trip, no `ilc.locate`, no phone);
+  A.3 and the tests named for changes 2, 4 and 6 use the real file path.
+- The Rust core, the C# designer, the PT scorer, the scenario definitions and the band thresholds are
+  unchanged and were not re-examined.
+
+### A.8 Gates, on the final tree
+
+Windows, project `.venv`, this worktree. Code as committed; only this report and the README changed after
+the runs.
+
+| gate | result |
+|---|---|
+| `python -m pytest neuromech/tests -q` | **174 passed**, 0 failed, 0 skipped, in 473 s (133 before the review changes; 41 added) |
+| `neuromech/tests/test_session_dryrun.py` alone | 75 passed (34 at `e2257cc`); with `e2257cc`'s `session.py`: 44 failed, 31 passed |
+| `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases, every field within tolerance; `--regen` was not needed; run after pytest had finished |
+| `node neuromech/labview/verify_formula_node.js` | **PASS** on the three vectors (max difference 1.66e-11) |
+| CI python list: `tests/test_web_export_contract.py` + the twelve `tests/` files of `.github/workflows/ci.yml` | **536 passed, 5 skipped, 3 xfailed** in 171 s |
+| CI python list: `neuromech/tests` | the first row |
+| default dry run, seeds 1, 3, 7, 11, 42 | 9 of 9 in band on encoder and phone at every seed, no flags |
+
+The Rust and webapp CI jobs were not run: no file they build or test is changed. The full neuromech suite
+took about eight minutes on this run, with the disk nearly full; it took about three before.
+
+The sweep, fault and before/after harnesses load `e2257cc`'s `neuromech/session.py` beside the fixed one
+and are not committed.
