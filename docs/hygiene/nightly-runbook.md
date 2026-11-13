@@ -16,8 +16,8 @@ Run this against the Pendulastic repo at `C:\Users\cladi\Pendulastic`.
    `.venv/Scripts/python.exe run_hygiene_audit.py`
    This prints a markdown checklist plus a line `=== NEXT_ITEM_NUMBER: N ===`.
 3. Phase 3 (spec-to-code drift, done by you, not the script): read
-   `README.md`, `DEPLOYMENT_PLAN.md`, `GOAL_ACHIEVEMENT_ASSESSMENT.md`,
-   `ALGORITHM_LAUNCH_CONFIRMATION.md`, `IMPACT_MEASUREMENT_REPORT.md`.
+   `README.md`, `STATUS.md`. (`DEPLOYMENT_PLAN.md`, `GOAL_ACHIEVEMENT_ASSESSMENT.md`,
+   `ALGORITHM_LAUNCH_CONFIRMATION.md` and `IMPACT_MEASUREMENT_REPORT.md` moved to `docs/archive/` on 2026-11-10 and are no longer audited.)
    Compare each concrete claim (entry points, module names, described
    capabilities) against what's actually on disk. For every mismatch, write
    one more numbered item continuing from N, tagged `` `[Doc Drift Fix]` ``,
