@@ -40,11 +40,16 @@ PLANT = dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0)
 # omits the rung, so naming it here would fail the plan. M-tone_L4 is the
 # most severe rung that exists, and sits at the peak. A-P2 went the same way
 # when #79 re-derived HEALTHY_REF: the ladder now stops at 1+, so A-P1p is the
-# most severe band preset left. B-claspknife and M-catch_release_high stay
-# in the default session although both now miss: each sits at PT7 0.139,
-# 0.02 above the 0/1 edge, and the rig's tracking lag delivers ~0.116
-# (band 0). That is a finding about those two scenarios, not about the
-# session program, and the default run should keep showing it.
+# most severe band preset left. B-claspknife and M-catch_release_high (one
+# scenario built twice) stay in the default session because they are its edge
+# case: each intends PT7 0.139, 0.02 above the 0/1 edge. Until 2026-11-11 both
+# missed (~0.116, band 0), and more than half of that was the session program:
+# it scored the delivered trace from the COMMANDED release, and the hold left
+# inside the record counted as a half-oscillation. Scored from the delivered
+# release (session._delivered_release) both are in band at ~0.128, at seeds
+# 1, 3, 7, 11 and 42. The remaining -0.011 is the plant's own (its resonance
+# raises peak velocity), it leaves them 0.008 above the edge, and the default
+# run should keep showing that.
 DEFAULT_SIDS = ["A-P0", "A-P1p", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
 
 
@@ -132,7 +137,7 @@ def ilc_demo(session_dir, run_ids, iters=3, seed=5):
     """Close the correction loop on synthetic hardware, through the real tool code: command -> synthetic
     encoder .bin -> ilc.update (locate + plant-inversion step) -> next command -> ... and score each pass."""
     from neuromech.build import OUT
-    from neuromech.session import _score_trace, _summ
+    from neuromech.session import _delivered_release, _score_trace, _summ, SCORE_LEAD_S
     from labview_bin_reader import read_labview_bin
     import pandas as pd
     from neuromech import ilc
@@ -151,8 +156,14 @@ def ilc_demo(session_dir, run_ids, iters=3, seed=5):
             e = read_labview_bin(binf); k0 = ilc.locate(cmd, e["position_setpoint"], 1000.0)
             meas = e["position"][k0:k0 + len(cmd)]
             rms = float(np.sqrt(np.mean((meas[sw] - des[sw]) ** 2)))
-            dl = _summ(*_score_trace(t, meas, rest, t_rel, t_hold))
+            # scored as session.score scores a run: from the delivered release. The lag is measured against the
+            # SCENARIO, not this iteration's command, which ILC has deliberately moved off it.
+            pos_all = e["position"][k0:]; t_all = t[0] + np.arange(len(pos_all)) / 1000.0
+            rel = _delivered_release(t, des, t_all, pos_all, t_rel)
+            dl = (dict(pt7=np.nan, band=f"release flagged: {rel['flag']}") if rel["flag"] else
+                  _summ(*_score_trace(t_all, pos_all, rest, rel["release_s"], t_rel - t_hold + SCORE_LEAD_S, float(t[-1]) - t_rel)))
             out.append(dict(run_id=rid, sid=sid, iteration=k, tracking_rmse_deg=rms, enc_pt7=dl["pt7"], enc_band=dl["band"],
+                            enc_release_lag_ms=rel["lag_s"] * 1e3,
                             int_pt7=float(man.loc[sid, "pt7"]), int_band=man.loc[sid, "mas"]))
             cmd, _ = ilc.update(t, cmd, ph, des, meas)
     df = pd.DataFrame(out)

@@ -84,6 +84,71 @@ Per run: encoder-delivered vs intended parameters and band, tracking RMSE, and t
 release — what the app itself can see). `R000` reports the identified plant.
 Output: `sessions/<name>/report.csv` and a printed summary.
 
+Each trace is scored from the release of the **delivered** motion, not the command's. The arm leaves the
+hold later than the command (Player hold + plant), and the scorer counts a hold left inside the record as
+half an oscillation. The delivered release is measured per run, separately on the encoder and on the
+phone, by matching the first 2° of the command's fall to the recording, and is written to `report.csv`:
+`cmd_release_s`, `enc_release_s`, `enc_release_lag_ms`, `enc_release_resid_deg`, `enc_hold_rms_deg`,
+`enc_rival_ratio`, the same for the phone, `ph_minus_enc_lag_ms` (the phone clock's offset at the release)
+and `ph_expected_offset_ms`. Design and evidence: `docs/reports/2026-11-11-neuromech-release-alignment.md`
+(the section "After review" describes everything below).
+
+**What gets flagged.** A flagged trace gets no score (there is no fallback to the commanded release), the
+reason is in `status` / `phone_status`, and `score` exits with status 1. The printed headline counts
+flagged runs in its denominator ("7 of 9 runs (78%); scored 7, release flagged 1, tracking flagged 1").
+
+| `status` | what it means | at the bench |
+|---|---|---|
+| `release flagged: the onset does not match the command's` | the delivery is not the command (kick-back, slack, wrong file) | look at the log around the release; rerun |
+| `release flagged: release uncertain: the hold is not still` | the arm moved more than 0.20° rms in the 0.3 s before the release (sag, ringing, a wobbling hold) | let the arm settle, check the hold gains, rerun |
+| `release flagged: release uncertain: a release 10 ms or more away fits ...` | two candidate releases; nothing in the data says which | rerun |
+| `release flagged: lag ... from the session median ...: this run, not the rig` | this run's lag is more than 12 ms from the other runs' | this run is the odd one (stiction, a lurch, a late start): rerun it |
+| `release flagged: session lag finding` | see below | see below |
+| `tracking flagged` | the arm followed the command too loosely over the swing: lag-aligned RMSE ÷ the command's rms speed (`tracking_time_err_ms`) is over 25 ms. The scores stay in the report but the run is not a delivery of its scenario | run ILC on it (section 5) or rerun; `--tracking-limit-ms` changes the limit |
+| `scoring error` | the scorer raised on the trace | read the message |
+
+`score` also exits with status 1 when any trace ends in an error and so has no score: an encoder
+`scoring error`, or a phone `scoring error` or `release error`. They are listed under "NOT SCORED BECAUSE OF
+AN ERROR".
+
+The 25 ms tracking limit belongs to the simulated plant. On a slower rig it flags good runs; on a faster
+or ILC-corrected rig it misses sluggish starts and says nothing. Deriving it from the session's own chirp
+run is the stated follow-up (report, A.7) and should be done before rig data is interpreted.
+
+Phone traces: `sync refused` (the three pulses do not line up), `release error`, `release flagged`
+(including "the sync is off": the phone's release is not within 1.5 sample periods of the 0.6 sample
+periods early that the pulse alignment leaves), `scoring error`.
+
+**A session lag finding.** The release lag is a property of the rig, so it is judged across the session.
+If the runs agree with each other (two thirds within 12 ms of the median, at least 3 runs) but the median
+is outside −10…+80 ms, `score` prints **one** `SESSION LAG FINDING` instead of flagging every run, and
+scores nothing. It means the rig, not any one run, is somewhere the method was not tested. Do this:
+
+1. `python -m neuromech.session check-log --bin <a log> --player <its player file>`: is the log recording
+   the Player's setpoint at all, and at the Player's rate?
+2. `python -m neuromech.ilc --identify <R000.bin>`: compare bandwidth, damping and delay with the last
+   session's. A lag that grew by d ms with the same bandwidth is d ms of latency somewhere (Player timing,
+   a filter, a changed loop rate); a lower bandwidth is the gains or the load.
+3. If the cause is found and fixed, rerun the session.
+4. The override is for a lag that the chirp identification **explains**: the identified delay and
+   bandwidth account for it. Stiction or a lurch in every run is also consistent across a session and is
+   not a reason to accept. If the lag is explained and is simply what this rig does, score with it accepted:
+   `python -m neuromech.session score ... --accept-session-lag-ms 87` (the session's median, to within
+   12 ms). Runs are then held to within 12 ms of the session median, and the accepted value is written to
+   `session_lag_override_ms` on every row of `report.csv` and printed. An override that does not match the
+   session, or is not needed, is refused or ignored and said so. **An accepted session is still held to
+   the tracking gate** and to every other release check: accepting the lag does not make a run a delivery.
+
+The session median is only as good as the majority. **When half or more of a session's runs share a fault
+(stiction, a slow start), the median belongs to the fault and the good runs are the ones flagged "this
+run, not the rig".** If most runs are flagged this way, suspect the unflagged ones. The same goes for a
+fault in every run: comparing runs with each other cannot see it (a gentle forward lurch in every run is
+scored without a flag).
+
+All of these limits (0.20° hold, ratio 1.5, 12 ms, −10…+80 ms, the phone's 0.6 ± 1.5 sample periods,
+25 ms tracking) are **provisional**: they were set on the simulated plant and on constructed faults. No rig
+log has been through them, and the first rig session should be read as a test of the limits.
+
 ## 5. Correct the commands (ILC)
 
 ```bash
@@ -105,14 +170,23 @@ python -m neuromech.dryrun
 
 Plans a session, plays each command as the Player delivers it (a 100 Hz staircase with Windows
 lateness), synthesises LabVIEW `.bin` logs through the identified plant and a phone gyro (59 Hz,
-jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-10-26:
-every run in its intended band, median tracking 0.64°, phone |ΔPT7| median 0.011 (max 0.17, bias-limited),
-plant recovered (6.34 Hz, ζ 0.234, R² 0.998), ILC converging on every scenario including the 2.3 Hz case.
+jitter, reversed mount, real-size bias), and scores it like a real session. Result 2026-11-11
+(seed 11; the same 9 of 9 at seeds 1, 3, 7 and 42): every run in its intended band on the encoder and on
+the phone, median tracking 0.73°, phone |ΔPT7| median 0.001 (max 0.005), delivered release 27.4 ms after
+the commanded one (22.7 to 28.4), phone release 8.3 ms before the encoder's (7.1 to 14.6), plant recovered
+(6.34 Hz, ζ 0.234, R² 0.998). Before the delivered release was used this run gave 7 of 9: `B-claspknife`
+and `M-catch_release_high` (one scenario, intended PT7 0.139) scored 0.116, band 0; they now score 0.128,
+band 1, and remain 0.008 from the 0/1 edge. Across all 67 scenarios through the same delivery, 67 are in
+band on the encoder (62 before). After the 2026-11-11 review changes the default run is unchanged (9 of 9
+at the five seeds, tracking time error 14 ms median, 19 ms at most against the 25 ms limit); of the 67
+scenarios 66 are scored and in band on the encoder and the phone at seeds 3, 11 and 42, and `D-wobble`
+is flagged at every seed ("the hold is not still"), which is what that scenario is. The 2026-10-26 figures that stood here (median tracking 0.64°, phone
+|ΔPT7| max 0.17, ILC converging on every scenario) were not re-measured for this note.
 
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 90 tests
+python -m pytest neuromech/tests                                    # 176 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
