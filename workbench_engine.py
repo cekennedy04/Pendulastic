@@ -160,10 +160,361 @@ def _release_time(t: np.ndarray, angle: np.ndarray) -> Optional[float]:
     return float(tc[rel_i])
 
 
+# ── Polarity of a compared pair ──────────────────────────────────────────────
+#
+# Since 87d7645 the optical marker path returns a RELATIVE curve whose sense
+# comes from a hinge eigenvector, so roughly half the corpus references arrive
+# upside down against their IMU curve. Compared as given, such a pair scores
+# its own mirror image as error.
+#
+# A first fix (4792020, a port of fb46178) flipped any curve whose first 5% of
+# samples sat below its settled tail. Independent review rejected it
+# (docs/reports/2026-11-11-scorer-ports-independent-review.md on
+# origin/docs/scorer-ports-review): the first 5% is not the hold when the
+# optical hold is occluded or the recording opens at rest, and the window is a
+# fraction of the recording length. What replaces it is in
+# docs/reports/2026-11-11-compare-pair-orientation.md; in short:
+#
+#   1. Each curve is asked, on its own, which side of rest it was RELEASED
+#      from -- read off the plateau immediately before the release that
+#      pendulastic_pt_score._detect_release already finds (lift-and-hold
+#      included), never off the start of the file. No plateau, or a plateau
+#      that is not clear of rest, and the curve has no verdict.
+#   2. The pair is asked whether the two curves move together or in
+#      opposition: the Pearson correlation after lag alignment, taken once
+#      with the reference as given and once with it mirrored. It only counts
+#      when one sense is both strong and clearly ahead of the other.
+#   3. The two are combined. Agreement decides the pair's relative polarity;
+#      so do the release sides alone. The correlation alone can only CONFIRM a
+#      pair as given, never mirror one, and only when the capture prior pinned
+#      the lag, neither take has a gap at its ends (the prior is read off
+#      durations, so an occluded hold moves the pin by the occluded time) and
+#      the reference actually moved over the scored overlap.
+#      Contradiction, or nothing that may decide, is "undetermined": the
+#      comparison then runs on the curves exactly as given and says so.
+#
+# Nothing is mirrored unless the caller declares the reference's polarity
+# arbitrary (ref_polarity_arbitrary=True). Only the reference is ever
+# mirrored, never the test curve, and it is mirrored about its own mean so the
+# (equally arbitrary) offset between the curves stays where it was.
+
+#: Length of the window, ending at the detected release, that must be a
+#: plateau for a curve to have a release side at all.
+_ORIENT_HOLD_WINDOW_S = 0.5
+
+#: The finite samples in that window must span at least this long, and fill at
+#: least _ORIENT_HOLD_MIN_FILL of its sample slots. An optical curve whose
+#: markers reappear just before the release has a "window" of a few samples,
+#: which is not a hold; one thinned evenly by dropouts (the corpus has holds
+#: with 33-35 of 60 samples present across the full half-second) still is.
+_ORIENT_HOLD_MIN_COVER_S = 0.3
+_ORIENT_HOLD_MIN_FILL = 0.5
+
+#: The window is a plateau when its peak-to-peak stays inside the release
+#: detector's own "has it moved" band, +/-8% of the signal range either side
+#: of the level (_detect_release's adaptive threshold), i.e. 16% of range in
+#: total. Derived from that threshold, not fitted: a window that moves more
+#: than this is one the detector itself would call motion.
+_ORIENT_PLATEAU_MAX_FRAC = 0.16
+
+#: The plateau must sit at least this share of the signal range away from the
+#: settled level. Physically a hold is 50-100% of the range from rest (range
+#: is about A0 for a heavily damped limb and about 2*A0 for an undamped one;
+#: see pendulastic_pt_score._LIFT_MIN_HOLD_DEV). Half the physical floor: wide
+#: enough that slow drift across a resting recording never clears it.
+_ORIENT_MIN_A0_FRAC = 0.25
+
+#: ...and at least this many degrees. A trace that never moved further than
+#: this has no release to orient by, whatever its ratio says (the ratio of a
+#: noise-only trace is noise over noise). compare_pair is already degree-scaled
+#: (_active_window_end's 2 deg prominence floor); this is the same order.
+_ORIENT_MIN_A0_DEG = 5.0
+
+#: Half-width of the window, centred on the end of active oscillation, whose
+#: median is the settled level. Tied to where the swing ENDS rather than to
+#: where the file ends, so recording a longer tail cannot move it.
+_ORIENT_REST_HALF_WINDOW_S = 1.0
+
+#: Correlation evidence counts only when the winning sense reaches this...
+_POLARITY_MIN_CORR = 0.5
+#: ...and beats the other sense by this. Under a tight lag window the two are
+#: near negatives of each other and the first number is the operative one; when
+#: the search can reach the neighbouring half-cycle a mirrored curve also
+#: correlates positively there, and the margin is what refuses that case.
+_POLARITY_CORR_MARGIN = 0.3
+
+#: The correlation may settle a pair on its own only when the reference moved
+#: at least this far over the scored overlap. Pearson's r has no scale: a
+#: reference that barely moved (the corpus has hold-only overlaps with a range
+#: of 1 and 6 degrees) correlates as well as a real swing. Twice
+#: _ORIENT_MIN_A0_DEG: the swing a just-admissible release would produce.
+_POLARITY_MIN_REF_RANGE_DEG = 10.0
+
+#: ...and over at least this much scored overlap: two cycles of a limb that
+#: swings at about 1 Hz. Six samples of overlap is not a comparison.
+_POLARITY_MIN_OVERLAP_S = 2.0
+
+
+def _release_side(t, y) -> dict:
+    """Which side of its settled level one curve was released from.
+
+    Returns {"sign", "reason", "a0_deg", "range_deg"}: sign is +1 when the
+    pre-release plateau sits above the settled level (release-positive, the
+    codebase's convention), -1 when it sits below (the curve is upside down by
+    that convention), and 0 when this curve cannot say -- with `reason` one of
+    "too_few_samples", "no_prerelease_plateau" (the half-second before the
+    detected release is missing, gappy or already moving: an occluded hold) or
+    "hold_not_clear_of_rest" (a plateau, but within the margin of the settled
+    level: a recording that opens at rest, or a trace that never swung).
+
+    Uses the release pendulastic_pt_score._detect_release finds, unchanged,
+    lift-and-hold included. That detector works on |deviation| throughout, so
+    the release it reports does not depend on which way up the curve is.
+    """
+    out = {"sign": 0, "reason": "too_few_samples", "a0_deg": None, "range_deg": None}
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(t) & np.isfinite(y)
+    t, y = t[mask], y[mask]
+    if len(t) < 40:
+        return out
+    dt = pendulastic_pt_score._median_dt(t)
+    ys = pendulastic_pt_score._sg(y, dt=dt, p=3)
+    rel_i = int(pendulastic_pt_score._detect_release(t, ys))
+    t_rel = float(t[rel_i])
+    signal_range = float(np.percentile(ys, 97) - np.percentile(ys, 3))
+    out["range_deg"] = signal_range
+
+    in_window = (t >= t_rel - _ORIENT_HOLD_WINDOW_S) & (t <= t_rel)
+    hold, hold_t = ys[in_window], t[in_window]
+    covered = (len(hold) >= 3
+               and float(hold_t[-1] - hold_t[0]) >= _ORIENT_HOLD_MIN_COVER_S
+               and len(hold) * dt >= _ORIENT_HOLD_MIN_FILL * _ORIENT_HOLD_WINDOW_S)
+    if (not covered or signal_range <= 0.0
+            or float(np.ptp(hold)) > _ORIENT_PLATEAU_MAX_FRAC * signal_range):
+        out["reason"] = "no_prerelease_plateau"
+        return out
+
+    # Settled level: around the end of active oscillation, or around the end
+    # of the record when no swing extremum follows the release (an arrested
+    # limb -- _active_window_end would otherwise anchor on the hold itself).
+    t_end = float(t[_active_window_end(t, y)])
+    if t_end <= t_rel + _ORIENT_REST_HALF_WINDOW_S:
+        t_end = float(t[-1])
+    rest = ys[(t > t_rel) & (t >= t_end - _ORIENT_REST_HALF_WINDOW_S)
+              & (t <= t_end + _ORIENT_REST_HALF_WINDOW_S)]
+    if len(rest) < 3:
+        out["reason"] = "hold_not_clear_of_rest"
+        return out
+    a0 = float(np.median(hold) - np.median(rest))
+    out["a0_deg"] = a0
+    if abs(a0) < _ORIENT_MIN_A0_DEG or abs(a0) < _ORIENT_MIN_A0_FRAC * signal_range:
+        out["reason"] = "hold_not_clear_of_rest"
+        return out
+    out["sign"] = 1 if a0 > 0.0 else -1
+    out["reason"] = None
+    return out
+
+
+def _inverted_flag(side: dict) -> Optional[bool]:
+    """A curve's own verdict as compare_pair reports it: True when it is
+    upside down by the release-positive convention, False when it is not,
+    None when the curve cannot say."""
+    return None if side["sign"] == 0 else side["sign"] < 0
+
+
+def _pearson_r(a, b) -> Optional[float]:
+    """Pearson correlation of two aligned series, or None when it is not
+    defined (too few finite samples, or either series constant)."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    finite = np.isfinite(a) & np.isfinite(b)
+    a, b = a[finite], b[finite]
+    if len(a) < 4:
+        return None
+    sa, sb = float(np.std(a)), float(np.std(b))
+    if not (sa > 1e-9 and sb > 1e-9):
+        return None
+    return float(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb))
+
+
+def _polarity_from_correlation(r_as_given: Optional[float],
+                               r_mirrored: Optional[float]) -> int:
+    """+1 when the pair moves together, -1 when in opposition, 0 when the
+    correlation cannot say. `r_mirrored` is the correlation with the reference
+    mirrored, after its own lag alignment, so it is positive when the pair is
+    in opposition."""
+    if r_as_given is None or r_mirrored is None:
+        return 0
+    if (r_as_given >= _POLARITY_MIN_CORR
+            and r_as_given - r_mirrored >= _POLARITY_CORR_MARGIN):
+        return 1
+    if (r_mirrored >= _POLARITY_MIN_CORR
+            and r_mirrored - r_as_given >= _POLARITY_CORR_MARGIN):
+        return -1
+    return 0
+
+
+def _decide_relative_polarity(ref_side: dict, test_side: dict,
+                              r_as_given: Optional[float],
+                              r_mirrored: Optional[float],
+                              corr_alone_blocked: Optional[str]) -> dict:
+    """Combine the per-curve release sides and the pair's correlation into one
+    verdict: {"relative": +1 | -1 | 0, "basis", "reason"}.
+
+    relative is +1 (same sense), -1 (opposite) or 0 (undetermined). basis says
+    what decided it: "shape+correlation", "shape" or "correlation". reason is
+    set only when undetermined.
+
+    The correlation on its own is the fit: at a fixed lag its sign IS the
+    lower offset-removed RMSE. So alone it may only confirm a pair as given,
+    which moves no number, and never mirror one. Even that needs the caller to
+    pass corr_alone_blocked=None, i.e. the lag was pinned by something that
+    cannot see polarity and the reference moved (see _correlation_alone_block);
+    otherwise corr_alone_blocked is the reason it may not.
+
+    Why so narrow. With a free lag search a mirrored swing fits half a cycle
+    away: on 146 MediaPipe-versus-OptiTrack pairs, which have no prior,
+    correlation-only verdicts disagreed with the IMU pair's verdict on the SAME
+    optical file on 16 of 50, while every verdict backed by both release sides
+    agreed (13 of 13). And the capture prior is read off the finite span, so an
+    occluded optical hold moves the "pin" by the occluded time: independent
+    review mirrored a same-sense synthetic pair that way, and one real pair in
+    12 with the hold removed
+    (docs/reports/2026-11-11-compare-pair-orientation-review.md on
+    origin/docs/compare-pair-orientation-review, section 4)."""
+    by_shape = ref_side["sign"] * test_side["sign"]
+    by_corr = _polarity_from_correlation(r_as_given, r_mirrored)
+    sides = "; ".join(f"{name}: {side['reason']}"
+                      for name, side in (("ref", ref_side), ("test", test_side))
+                      if side["reason"])
+    if by_shape and by_corr:
+        if by_shape == by_corr:
+            return {"relative": by_shape, "basis": "shape+correlation", "reason": None}
+        return {"relative": 0, "basis": None, "reason": "shape_correlation_conflict"}
+    if by_shape:
+        return {"relative": by_shape, "basis": "shape", "reason": None}
+    if r_as_given is None or r_mirrored is None:
+        why = "correlation_undefined"
+    elif by_corr == 0:
+        why = "correlation_inside_margin"
+    elif by_corr < 0:
+        why = "correlation_alone_never_mirrors"
+    elif corr_alone_blocked:
+        why = f"correlation_alone_{corr_alone_blocked}"
+    else:
+        return {"relative": 1, "basis": "correlation", "reason": None}
+    return {"relative": 0, "basis": None, "reason": f"{why} ({sides})"}
+
+
+def _correlation_alone_block(capture_prior: Optional[float], end_gap_sec: float,
+                             ref_scored, resample_hz: float) -> Optional[str]:
+    """Why the correlation may NOT confirm this pair on its own, or None when
+    it may. In the order checked:
+
+      "with_unpinned_lag"            no capture prior applied.
+      "with_unverified_pin"          the prior applied, but the two curves have
+                                     more than the refine margin of missing
+                                     samples at the ends of their takes. The
+                                     prior reads the finite span, so it is off
+                                     by that much and the search is pinned to
+                                     the wrong place.
+      "on_too_short_an_overlap"      under _POLARITY_MIN_OVERLAP_S scored.
+      "on_a_reference_that_barely_moved"
+                                     reference range over the scored overlap
+                                     under _POLARITY_MIN_REF_RANGE_DEG.
+    """
+    if capture_prior is None:
+        return "with_unpinned_lag"
+    if end_gap_sec > _CAPTURE_SKEW_REFINE_MARGIN_SEC:
+        return "with_unverified_pin"
+    ref_scored = np.asarray(ref_scored, dtype=float)
+    ref_scored = ref_scored[np.isfinite(ref_scored)]
+    if len(ref_scored) / resample_hz < _POLARITY_MIN_OVERLAP_S:
+        return "on_too_short_an_overlap"
+    if (float(np.percentile(ref_scored, 97) - np.percentile(ref_scored, 3))
+            < _POLARITY_MIN_REF_RANGE_DEG):
+        return "on_a_reference_that_barely_moved"
+    return None
+
+
+def _end_gap_sec(t_all, t_kept) -> float:
+    """Seconds of a curve's own time base missing before its first and after
+    its last finite sample."""
+    t_all = np.asarray(t_all, dtype=float)
+    t_all = t_all[np.isfinite(t_all)]
+    if len(t_all) == 0 or len(t_kept) == 0:
+        return 0.0
+    return float((t_kept[0] - t_all.min()) + (t_all.max() - t_kept[-1]))
+
+
+def _offset_removed_rmse(sync: Optional[dict]) -> Optional[float]:
+    """rmse_deg_offset_removed of one alignment, or None when the alignment
+    failed or has too few finite samples."""
+    if sync is None:
+        return None
+    finite = np.isfinite(sync["ref"]) & np.isfinite(sync["test"])
+    if finite.sum() < 2:
+        return None
+    diff = sync["test"][finite] - sync["ref"][finite]
+    return float(np.sqrt(np.mean((diff - np.mean(diff)) ** 2)))
+
+
 def compare_pair(ref_t, ref_y, test_t, test_y,
                  lag_override_sec: Optional[float] = None,
-                 capture_skew_prior: bool = False) -> dict:
+                 capture_skew_prior: bool = False,
+                 ref_polarity_arbitrary: bool = False) -> dict:
     """Align test to ref and score RMSE/MAE/bias/LoA (design spec Section 4).
+
+    ref_polarity_arbitrary declares that the reference's SIGN carries no
+    information -- the marker-path optical curve, whose sense is a hinge
+    eigenvector's. Only then may the reference be mirrored to match the test
+    curve, and only when the pair's relative polarity is determined (see the
+    block above _release_side). It is OFF by default: a rigid-body reference,
+    a model trace or anything else with a real zero is never mirrored, whatever
+    the evidence says. The polarity verdict is REPORTED either way:
+
+      orientation            "as_given" (same sense, nothing done),
+                             "ref_mirrored" (opposite sense, reference mirrored
+                             before scoring), "opposite_not_mirrored" (opposite
+                             sense, but the reference's polarity was not
+                             declared arbitrary, so the numbers are for the
+                             curves as given) or "undetermined" (the evidence
+                             is missing or contradictory; curves scored as
+                             given -- flag the pair, and never quote a figure
+                             that leaves such pairs out without their count).
+      orientation_basis      "shape+correlation", "shape", "correlation" or None.
+                             "correlation" alone only ever confirms "as_given",
+                             and only under a capture prior, on takes with no
+                             end gap, with a reference that moved (see
+                             _correlation_alone_block).
+      orientation_reason     why it is undetermined, else None
+      ref_mirrored           whether the reference was mirrored
+      ref_inverted /         each curve's own verdict by the release-positive
+      test_inverted          convention: True, False, or None when that curve
+                             cannot say. test_inverted=True is never acted on;
+                             it may be a real defect in the model path.
+      polarity_corr_as_given / polarity_corr_mirrored
+                             the two correlations the verdict used
+      rmse_deg_offset_removed_other_polarity
+                             rmse_deg_offset_removed had the reference been
+                             scored the other way up (None when that alignment
+                             failed). For bounding a summary over undetermined
+                             pairs; it is NOT used to decide anything.
+
+    Pass the reference's FULL time base, with NaN angles where the markers were
+    not seen, not a pre-filtered curve: the end-gap check cannot see a gap that
+    was cut off before the call. NaN time stamps on the unseen samples hide the
+    gap in the same way; the time base must be finite throughout.
+
+    A mirrored reference is mirrored about the mean of its own active window,
+    not negated, so the offset between the curves is not turned into a sign.
+    The offset still moves: on the 55 mirrored corpus pairs bias_deg changed by
+    a median 1.7 deg and by up to 44.8, raw rmse_deg fell by a median 5.9, and
+    the limits of agreement narrowed. None of rmse_deg, mae_deg, bias_deg or
+    the limits means anything against a relative reference before or after
+    (see rmse_deg_offset_removed below); ref_mirrored=True is the only label a
+    row carries for the change, so do not diff those columns across it.
 
     capture_skew_prior opts this comparison into the duration-derived
     capture-skew prior (see capture_lag_prior). It is OFF by default and
@@ -209,11 +560,17 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
 
     ref_finite = np.isfinite(ref_t) & np.isfinite(ref_y)
     test_finite = np.isfinite(test_t) & np.isfinite(test_y)
+    ref_t_all, test_t_all = ref_t, test_t
     ref_t, ref_y = ref_t[ref_finite], ref_y[ref_finite]
     test_t, test_y = test_t[test_finite], test_y[test_finite]
 
     if len(ref_t) < 4 or len(test_t) < 4:
         return {"status": "error", "error": "Need at least 4 finite samples in both signals."}
+
+    # Each curve's own release side, read off the full finite-filtered trace
+    # for the same reason the release times below are.
+    ref_side = _release_side(ref_t, ref_y)
+    test_side = _release_side(test_t, test_y)
 
     # Release times must be measured on the finite-filtered signal BEFORE
     # active-window truncation below -- _active_window_end() trims the TAIL
@@ -233,6 +590,11 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     # 3.5 deg of mean RMSE across the corpus. Measure it here, on the full
     # finite-filtered traces, before either end gets cut off.
     capture_prior = capture_lag_prior(ref_t, test_t) if capture_skew_prior else None
+    # ...and that prior is only as good as the two finite spans are the two
+    # takes. Samples missing at either end of a take (an occluded optical hold)
+    # shorten its span and move the prior by as much. The alignment keeps
+    # main's behaviour; the polarity verdict below refuses to lean on it.
+    end_gap_sec = _end_gap_sec(ref_t_all, ref_t) + _end_gap_sec(test_t_all, test_t)
 
     ref_end = _active_window_end(ref_t, ref_y)
     test_end = _active_window_end(test_t, test_y)
@@ -240,24 +602,28 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     test_t, test_y = test_t[:test_end + 1], test_y[:test_end + 1]
 
     resample_hz = 60.0
-    if lag_override_sec is not None:
-        shifted_test_t = test_t + lag_override_sec
-        start = max(ref_t.min(), shifted_test_t.min())
-        end = min(ref_t.max(), shifted_test_t.max())
-        if end <= start:
-            return {"status": "error",
-                   "error": "Reference and test do not overlap at this manual lag."}
-        grid = np.arange(start, end, 1.0 / resample_hz)
-        if len(grid) < 4:
-            return {"status": "error",
-                   "error": "Overlapping window too short to score at this manual lag."}
-        sync = {
-            "time": grid,
-            "ref": np.interp(grid, ref_t, ref_y),
-            "test": np.interp(grid, shifted_test_t, test_y),
-            "lag_sec": float(lag_override_sec),
-        }
-    else:
+
+    def _align(ref_curve):
+        """(sync, None) for this reference curve against the test curve, or
+        (None, error). Everything that bounds the alignment -- the release
+        times, the capture prior, the active windows -- was measured above and
+        does not depend on which way up the reference is; only the correlation
+        peak inside that bound does."""
+        if lag_override_sec is not None:
+            shifted_test_t = test_t + lag_override_sec
+            start = max(ref_t.min(), shifted_test_t.min())
+            end = min(ref_t.max(), shifted_test_t.max())
+            if end <= start:
+                return None, "Reference and test do not overlap at this manual lag."
+            grid = np.arange(start, end, 1.0 / resample_hz)
+            if len(grid) < 4:
+                return None, "Overlapping window too short to score at this manual lag."
+            return {
+                "time": grid,
+                "ref": np.interp(grid, ref_t, ref_curve),
+                "test": np.interp(grid, shifted_test_t, test_y),
+                "lag_sec": float(lag_override_sec),
+            }, None
         # synchronize_signals' bound is symmetric about ZERO, so it can only
         # ever narrow the search around "no shift" -- it cannot centre it on
         # a shift we already know is there. When the durations pin the
@@ -286,14 +652,60 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
                     abs(ref_release - test_release) + _RELEASE_ANCHOR_MARGIN_SEC,
                     analysis_pipeline.MAX_LAG_SEC)
         try:
-            sync = analysis_pipeline.synchronize_signals(
-                ref_t, ref_y, search_t, test_y, resample_hz=resample_hz,
+            aligned = analysis_pipeline.synchronize_signals(
+                ref_t, ref_curve, search_t, test_y, resample_hz=resample_hz,
                 max_lag_sec=max_lag_sec)
         except ValueError as e:
-            return {"status": "error", "error": str(e)}
+            return None, str(e)
         # Report the lag against the caller's own test_t, not the pre-shifted
         # copy, so lag_sec stays directly usable as a lag_override_sec.
-        sync["lag_sec"] = prior + sync["lag_sec"]
+        aligned["lag_sec"] = prior + aligned["lag_sec"]
+        return aligned, None
+
+    sync, error = _align(ref_y)
+    if sync is None:
+        return {"status": "error", "error": error}
+
+    # The pair's polarity. The reference is aligned a second time mirrored,
+    # with its own lag search, because a mirrored curve does not peak at the
+    # true shift: reading the sign off one alignment would compare a fitted
+    # lag against an unfitted one. Mirrored about its own mean, which the lag
+    # search cannot see (it removes the mean) and which leaves the offset
+    # between the two curves where it was.
+    ref_y_mirrored = 2.0 * float(np.mean(ref_y)) - ref_y
+    sync_mirrored, _ = _align(ref_y_mirrored)
+    r_as_given = _pearson_r(sync["ref"], sync["test"])
+    r_mirrored = (None if sync_mirrored is None
+                  else _pearson_r(sync_mirrored["ref"], sync_mirrored["test"]))
+    # A manual lag is not a pin either: an operator sets one by matching the
+    # curves, which is the fit, and at a fixed lag the two correlations are
+    # exact negatives of each other.
+    corr_alone_blocked = (
+        "with_a_manual_lag" if lag_override_sec is not None
+        else _correlation_alone_block(capture_prior, end_gap_sec, sync["ref"],
+                                      resample_hz))
+    verdict = _decide_relative_polarity(ref_side, test_side, r_as_given, r_mirrored,
+                                        corr_alone_blocked)
+
+    ref_mirrored = False
+    sync_other = sync_mirrored
+    if verdict["relative"] == 0:
+        orientation = "undetermined"
+    elif verdict["relative"] > 0:
+        orientation = "as_given"
+    elif not ref_polarity_arbitrary:
+        orientation = "opposite_not_mirrored"
+    elif sync_mirrored is not None:
+        orientation = "ref_mirrored"
+        ref_mirrored = True
+        sync, sync_other = sync_mirrored, sync
+    else:
+        # Opposite, declared arbitrary, and the mirrored curve would not
+        # align: there is nothing to score it with, and the as-given numbers
+        # are not this pair's error either.
+        orientation = "undetermined"
+        verdict = {"relative": 0, "basis": None,
+                   "reason": "mirrored_alignment_failed"}
 
     finite = np.isfinite(sync["ref"]) & np.isfinite(sync["test"])
     if finite.sum() < 2:
@@ -329,6 +741,17 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
         "loa_upper_deg": loa_upper,
         "lag_sec": float(sync["lag_sec"]),
         "n_samples": int(finite.sum()),
+        # The pair's polarity: what was concluded, on what evidence, and
+        # whether anything was done about it. See the docstring.
+        "orientation": orientation,
+        "orientation_basis": verdict["basis"],
+        "orientation_reason": verdict["reason"],
+        "ref_mirrored": ref_mirrored,
+        "ref_inverted": _inverted_flag(ref_side),
+        "test_inverted": _inverted_flag(test_side),
+        "polarity_corr_as_given": r_as_given,
+        "polarity_corr_mirrored": r_mirrored,
+        "rmse_deg_offset_removed_other_polarity": _offset_removed_rmse(sync_other),
     }
 
 
@@ -978,6 +1401,27 @@ def load_optitrack_trial(csv_path: str):
     except ValueError:
         t, angle = pendulastic_pt_score.load_optitrack(csv_path)
         return t, angle, "marker_pca"
+
+
+def load_optitrack_reference(csv_path: str):
+    """load_optitrack_trial plus whether the curve is RELATIVE: (t, angle,
+    method, relative).
+
+    relative=True means the loader itself declared the curve to have no
+    observable zero and an arbitrary sense -- the labelled-marker knee-axis
+    reconstruction, which says so in its quality warnings. That, and not the
+    method tag, is what entitles a caller to pass
+    compare_pair(ref_polarity_arbitrary=True): "marker_pca" is also the tag for
+    everything else the strict rigid-body path rejects, including a
+    precomputed-angle file (180 - flexion: a real sign and a real zero) and the
+    legacy quaternion fallback, and those must never be mirrored."""
+    try:
+        t, angle = analysis_pipeline._optitrack_knee_angle_series(csv_path)
+        return t, angle, "rigid_body", False
+    except ValueError:
+        t, angle, quality = pendulastic_pt_score.load_optitrack_detailed(csv_path)
+        declared = pendulastic_pt_score._KNEE_AXIS_WARNINGS["uncalibrated_offset"]
+        return t, angle, "marker_pca", declared in quality.warnings
 
 
 def load_video_trial(video_path: str, models: list,
