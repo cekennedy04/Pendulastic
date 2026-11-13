@@ -40,6 +40,9 @@ scores move. "Not verified" is stated, never implied.
    20 N·m; when to build the vertical rig; two blind clinicians per profile; clasp-knife
    adaptation handling.
 9. Nightly hygiene agent: retire it or re-register it.
+10. Merge #95 (orientation) and #96 (release alignment)? Both independently reviewed
+    and re-reviewed; #96 is simulation only. Merge #66, then close the daily-report
+    drafts it replaces?
 
 ## Workstreams
 
@@ -65,8 +68,16 @@ scores move. "Not verified" is stated, never implied.
   `neuromech/band-edge-misses`): `session.score` gives the scorer the commanded release
   while the delivered motion starts about 18 ms later; the scorer then counts a
   start-of-swing shoulder as half an oscillation. 40 of 67 scenarios are affected.
-- **In progress:** `neuromech/session-release-alignment` makes rig sessions score from
-  the delivered release. Not reviewed, not merged.
+- **Release alignment (PR #96, ready for review):** `neuromech/session-release-alignment` scores rig
+  sessions from the delivered release and flags runs where it cannot be found. Reviewed
+  twice (`docs/release-alignment-review`, `docs/release-alignment-rereview`); simulated
+  dry run 9 of 9 in band. Simulation only, and not yet fit to judge a real rig session:
+  the fixed 25 ms tracking limit suits only the simulated plant and must be derived from
+  each session's chirp first (measured to work in the re-review, not implemented). A
+  forward lurch in every run and a 50 % sluggish start are not flagged. The
+  chirp-derived limit is in progress on `neuromech/chirp-derived-tracking-limit`.
+- **Another session's work, not part of this plan:** `docs/neuromech-elbow-plan`
+  (worktree `Pendulastic-wt-elbow`).
 - **Rig path versus app path** (simulation only;
   `docs/reports/2026-11-10-rig-phone-angle-vs-app.md` on `eval/rig-phone-angle-vs-app`):
   `session.py`'s gyro integration tracks truth within about 1 degree when the swing is
@@ -74,7 +85,8 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** review and land the release alignment; land #90; then rig sessions.
+- **Next actions:** review the chirp-derived tracking limit; land #96 and #90; then rig
+  sessions.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
@@ -103,16 +115,23 @@ scores move. "Not verified" is stated, never implied.
 - **Lineage comparison** (`docs/scorer-lineage-comparison`): test-retest under
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
-- **Drift-correction bound (`4bd13a2`):** ported to Python on
-  `fix/port-drift-bound-and-compare-orientation`; `detrend=False` output is bit-identical
-  on the corpus. Independent review: code correct. Open items: the matching Rust change
-  (in progress on the same branch), handling of the new `AmplitudeExceedsCurveError` in
-  callers, and decision 3. Not merged.
-- **`compare_pair` orientation (`fb46178`):** ported on the same branch; independent
-  review found the rule wrong when the optical hold is occluded or the recording opens
-  at rest (up to 17 of 145 decisions). Must be reworked and split into its own PR.
-  Until then main's reported IMU-versus-OptiTrack RMSE is inflated (about 22 degrees
-  median where correctly oriented curves give about 15).
+- **Drift-correction bound (PR #94, draft):** ported to Python and Rust with caller
+  handling of the new `AmplitudeExceedsCurveError`; `detrend=False` output is
+  bit-identical on the corpus. Independent review: code correct. Waits on decision 3.
+- **`compare_pair` orientation (PR #95, ready for review):** reworked in its own PR after the first
+  port was found wrong. Marker-path references are mirrored only on release-side
+  evidence; correlation alone can only confirm "as given" under a verified lag;
+  anything else is reported undetermined and scored as given. Corpus: 66 as given, 55
+  mirrored, 24 undetermined; median 14.67 degrees (range 13.86 to 15.30) against 21.80
+  on main. Independent review (`docs/compare-pair-orientation-review`): rule right on
+  every pair it could check against the markers (114 of 114); required fixes applied
+  and confirmed in a re-review. Until it merges, main's IMU-versus-OptiTrack RMSE is
+  inflated.
+- **Found by that review, open:** four corpus trials where the optical and the phone
+  curve are both inverted (their agreement is not meaningful; phone side to look at);
+  the IMU sweeps score raw RMSE against a relative reference (median 143 degrees);
+  `pt_report_common._lag_align_candidate` and `generate_paper_figures` align mirrored
+  pairs at a different lag than the oriented comparison.
 - **Onset release detector (`d2e2cee`, `35d3192`, `05b5a4e`):** REJECTED as a port
   (`docs/release-detector-port-findings`). It fixes 12 corpus trials and breaks 2, fails
   main's lift-and-hold tests, and cannot handle curves whose hold is the minimum, which
@@ -177,8 +196,8 @@ scores move. "Not verified" is stated, never implied.
 ### 8. Video / pose estimation, desktop apps, `web/`, `mobile/` — TO ARCHIVE
 - Idle since August. Owner decision: archive.
 - **First pass:** move `web/`, `mobile/`, `Evaluate Models Py/` and root scripts with no
-  importers and no CI test into `archive/`. Note #66 currently deletes
-  `Evaluate Models Py/` instead; reconcile before either lands.
+  importers and no CI test into `archive/`. #66 no longer deletes
+  `Evaluate Models Py/`.
 - **Frozen in place for now** (still imported by tests or other code):
   `workbench_engine.py`, `pendulastic_app.py`, `analysis_pipeline.py`,
   `batch_mediapipe.py`, `pendulastic_viewer.py`. Do not develop them, except
@@ -186,7 +205,8 @@ scores move. "Not verified" is stated, never implied.
 
 ### 9. Hygiene and reporting — STALLED
 - **Open PRs:** #66 (repo cleanup; archives the daily and Monday reports). Its
-  `.gitignore` would ignore the `bench_figures/` sources #92 tracks; fix before merge.
+  `.gitignore` now ignores only rendered bench figures, and `Evaluate Models Py/` is kept
+  for the archive pass; mergeable, CI green.
   43 draft `claude/daily-report-*` PRs are open and should be closed once #66 lands.
 - The nightly hygiene agent last ran 2026-09-23 and failed; no scheduled task exists.
 - Run `git worktree list` for the current worktrees rather than trusting a list here.
