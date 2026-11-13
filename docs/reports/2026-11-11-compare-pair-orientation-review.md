@@ -10,6 +10,10 @@ Trial keys are `<pid>_<leg>_<condition>_T<n>`. Numbers are per trial or counts o
 RMSE is `rmse_deg_offset_removed` in degrees unless it says otherwise.
 "Measured" is a number this review produced by running code. "By eye" and "by reading" are marked.
 
+**Update, 2026-11-13.** The six required changes were applied at `5ec06a7` and re-checked by reproduction.
+The verdict below is the one given at `a5a5cf4`; the current one is in "Re-review at `5ec06a7`" at the end of
+this file: ready for the owner to consider merging.
+
 ## Verdict: approve with required changes
 
 The rule's decisions on this corpus are right, and they are not a product of threshold tuning.
@@ -576,3 +580,239 @@ Local, Windows, project `.venv`, at `a5a5cf4`.
 
 Reviewer's drivers, per-trial rows and plots are in the scratch folder `review_orient`, beside the author's
 `orient_rework`. Nothing was pushed to the branch under review.
+
+---
+
+## Re-review at `5ec06a7`
+
+**2026-11-13.** The author reports all six required changes applied in three commits on top of `a5a5cf4`:
+`0c4ae85` (engine), `47bc131` (batch), `5ec06a7` (report). Everything below was re-run by this reviewer in a
+detached worktree at `5ec06a7`, from raw files, with the drivers of the first review plus new ones.
+The same conventions apply: trial keys, per-trial numbers and counts only; RMSE is `rmse_deg_offset_removed`.
+
+### Verdict: ready for the owner to consider merging
+
+All six required changes are confirmed by reproduction. Every figure the author gives for the revision was
+reproduced exactly. Three things remain open; none of them blocks, and each is listed with its evidence under
+"Still open".
+
+| # | Required change | Status | How confirmed |
+|---|---|---|---|
+| 1 | Correlation alone must not mirror, and must not decide unless the pin holds | **Confirmed**, with two documented limits | Occlusion experiments re-run; guard boundaries probed; mutations |
+| 2 | Never print the excluding-undetermined median alone | **Confirmed** | Real batch run end to end; mutations |
+| 3 | Correct the reading of the four both-inverted trials | **Confirmed** | Read against this review's section 2 |
+| 4 | Kill the 21 surviving mutations | **Confirmed** (21 of 21) | Re-run: 53 of 53 killed |
+| 5 | Use the loader's relative flag, not the method tag | **Confirmed** | Corpus load; reading the loader; mutations |
+| 6 | Minor items | **Confirmed**, all four | Reading; synthetic cases; mutations |
+
+### Corpus (measured, 145 scored pairs of 159 matched)
+
+| | Author | This re-review |
+|---|---|---|
+| As given / mirrored / undetermined | 66 / 55 / 24 | 66 / 55 / 24 |
+| Median, all pairs | 14.67 | 14.67 |
+| Median, decided (121) | 14.04 | 14.04 |
+| Median, undetermined (24) | 16.66 | 16.66 |
+| Bound on the all-pairs median | 13.86 to 15.30 | 13.86 to 15.30 |
+| Median on main | 21.80 | 21.80 |
+
+- **One decision changed from `a5a5cf4`:** `4_right_pre_T4` goes from "as given (correlation)" to undetermined,
+  reason `correlation_alone_with_unverified_pin`. That is the pair the first review found pinned 1.13 s off.
+  Its RMSE (2.6) is unchanged.
+- **No per-trial RMSE changed** on any of the 145 pairs (largest difference 0.0), opted in or default.
+- Basis: 106 on release sides and correlation (median 12.69), 3 on release sides alone (27.33), 12 on correlation
+  alone (21.44). All 55 mirrorings rest on both release sides. No decided pair goes against the better fit.
+- All 12 correlation-only pairs have under 0.03 s missing at the ends of the reference.
+- The new field `rmse_deg_offset_removed_other_polarity` equals this review's own negated-reference run on all
+  145 pairs (largest difference 0.000), and is never empty on the corpus.
+- The loader declares all 145 scored references relative; none is a precomputed-angle or quaternion curve, so
+  item 5 changes no corpus number.
+- Undetermined pairs by participant: 15 has 14 of 24; 20 has 2 of 3; 14 has 2 of 8; 17 has 2 of 24;
+  4, 13, 21 and 22 have one each.
+
+**Default path against main (measured):** identical on 155 of 155 loadable pairs, on each of the three
+alignment branches (capture prior, free search, manual lag). `origin/main` is still `e9a3a01`.
+
+**Marker judge against the new decisions (measured):** of 121 decided pairs the judge speaks on 114, and the
+pair's relative polarity is right on 114 of 114 (55 of 55 mirrored, 59 of 59 as given). Seven decided pairs are
+beyond the judge; all seven are "as given". Nothing the judge could check has changed.
+
+### Item 1: the correlation-alone path
+
+**The author's three figures, reproduced (measured):**
+
+| Experiment | Author | This re-review |
+|---|---|---|
+| Synthetic, hold occluded, both senses (240 cases) | 0 decided | 0 decided: 98 inside the margin, 71 "never mirrors", 44 "unverified pin", 27 no prior |
+| 104 corpus pairs, reference hold blanked to release + 0 to 0.5 s (520 cases) | 48 right, 0 wrong, 472 undetermined | 48 right, 0 wrong, 472 undetermined |
+| Same 520, gap cut off before the call | 55 right, 0 wrong, 465 undetermined | 55 right (7 by correlation), 0 wrong, 465 undetermined |
+
+The two failures the first review found are gone. `23_left_pre_T2` with its hold blanked is now undetermined;
+the synthetic same-sense pair is no longer mirrored at any of the 240 settings.
+
+**The guards, probed one at a time (measured, synthetic take that starts at the release so only the correlation
+can speak):**
+
+| Guard | Confirms | Refuses |
+|---|---|---|
+| End gap, reference leading | 0.00, 0.10, 0.14 s | 0.16, 0.20, 0.30 s |
+| End gap, reference trailing | 0.10, 0.14 s | 0.16, 0.30 s |
+| End gap, test curve leading | 0.10 s | 0.16 s |
+| End gap, 0.09 s on each curve (sum 0.18) | | refused |
+| Reference range (release amplitude) | 8 deg and up | 6 deg and under |
+| Scored overlap | 2.5 s of swing and up | 2.0 s |
+| No capture prior | | refused |
+| Manual lag, with or without the prior | | refused |
+| Opposite-sense pair on a clean pin | | refused ("never mirrors") |
+
+An interior gap in the reference (0.3 to 1.5 s after release) does not block, which is right: it does not
+move the prior.
+
+**On the corpus the range and overlap floors are inert (measured).** Setting either to zero changes no
+decision. Raising the range floor to 12.5 drops one pair (`21_left_pre_T1`); to 30, three. Raising the overlap
+floor to 5 s drops two. Removing the end-gap check brings back only `4_right_pre_T4`. No setting produced a
+decision against the judge.
+
+**What can still go wrong, and how far it goes.** A correlation-only verdict can now only be "as given", so it
+can never move a number: the RMSE reported is the one main reports. What it can still do is label an
+opposite-sense pair "as given", which puts a wrong-way score into the decided subset. Two ways to get there
+were found:
+
+1. **The admitted hole (measured).** If the caller removes the NaN samples before the call, the end gap is
+   invisible. On the synthetic grid that gives 18 wrong labels in 240 (all opposite-sense pairs called "as
+   given", RMSE 2.8 to 6.1), where the supported call gives none. On the 520 blanked-hold corpus cases with the
+   reference also negated, it gives 1 wrong in 520 (`23_left_pre_T2`, 8.1 as labelled, 21.6 the other way up).
+   **The same hole opens if the occluded samples carry NaN time stamps** as well as NaN angles (18 of 240
+   again): `_end_gap_sec` discards non-finite times before measuring. The docstring names the first form and
+   not the second. The batch passes the loader's full time base, so neither form is reachable from the batch.
+2. **A stop skew the prior does not expect (measured, synthetic).** The prior is read off the two durations
+   and assumes a fixed stop skew. With no gap anywhere, an IMU log stopped about 0.4 s earlier or 0.55 s later
+   than assumed puts the pin half a cycle off, and an opposite-sense pair whose reference has no hold is
+   labelled "as given" at all four swing frequencies tried. No guard can see this. The engine's own comment
+   puts the prior's residual on this rig at 0.043 s, so it would take an operator or firmware change to get
+   there. It is a property of the prior, not of this change.
+
+Neither produces a wrong mirror. Both are bounded by the fact that the summary prints the correlation-only
+pairs as their own line.
+
+### Item 2: the summary
+
+**Confirmed on the real batch, end to end (measured).** The batch's own `main()` was run on all 159 matched trials
+(145 scored, 14 errors), with the three file loaders served from this review's cache of their output at the
+same commit, because a full reload was taking over an hour on the review machine. Row building, the CSV and
+every printed line are the batch's own. It prints:
+
+```
+Pair polarity (RMSE in deg, offset removed where the reference has no zero):
+  decided 121 / undetermined 24 / total 145   (as_given=66, ref_mirrored=55, undetermined=24)
+  ALL PAIRS (headline)      n=145  median= 14.67  mean= 14.31  18/145 under 5 deg
+  bound on the all-pairs median, undetermined pairs at their better / worse fit: 13.86 .. 15.30
+  decided pairs (a SUBSET)  n=121  median= 14.04  mean= 13.79  14/121 under 5 deg
+  undetermined pairs        n= 24  median= 16.66  mean= 16.95  4/24 under 5 deg   <- scored as given; quote the subset only with this line
+  decided on correlation       n= 12  median= 21.44  mean= 19.71  0/12 under 5 deg
+  decided on shape             n=  3  median= 27.33  mean= 19.17  1/3 under 5 deg
+  decided on shape+correlation n=106  median= 12.69  mean= 12.97  13/106 under 5 deg
+```
+
+followed by the per-participant counts (two participants flagged as majority undetermined), the reasons, and
+the two `test_inverted` keys. The word "excluding" appears nowhere in the output. The stratified table prints
+its "all trials" line only. The decided-subset median appears once, between the headline with its bound and
+the undetermined pairs' own median. Everything the first review asked for is there: counts, per-participant
+losses, the undetermined pairs' own median, the bound, the breakdown by basis, the `test_inverted` count.
+The CSV has the two new columns (`optical_relative`, `rmse_deg_offset_removed_other_polarity`); the latter is
+filled on all 145 scored rows.
+
+Mutations that put the bare line back, compute the headline on the decided subset, drop the bound line or drop
+the undetermined-pairs line are all killed.
+
+By reading: `compute_stratified_stats` still returns `excluding_orientation_undetermined` in its dict, and
+`main()` skips it when printing. Nothing else in the repository reads that key. The by-basis lines are subset
+medians on their own lines, but they sit under the headline and each carries its `n`.
+
+### Item 3: the four both-inverted trials
+
+**Confirmed (by reading against this review's section 2).** The author's report now says that
+`4_right_june_post_T1`, `14_left_pre_T2`, `23_left_pre_T1` and `15_right_post_1week_T3` are ordinary trials
+that open at rest, that both the optical and the IMU curve show the raised hold below rest, that the three
+decided ones are right as a pair, and that their RMSE (14.0, 5.3, 17.5) is agreement between two inverted
+curves. It withdraws the earlier reading in so many words and raises the IMU inversion as an open issue
+without touching the IMU pipeline. `test_inverted=True` is reported on two of the four, as the report says
+(measured: `4_right_june_post_T1`, `15_right_post_1week_T3`).
+
+### Item 4: mutations (measured)
+
+The first review's 53 mutations were re-run against the revised tests. Ten had to be re-expressed because
+the lines they touched were rewritten; each still makes the same change in behaviour. 48 new ones were added on
+the code this revision introduced. These are this reviewer's own list, written without sight of the author's 32.
+
+| | Mutations | Killed | Survive |
+|---|---|---|---|
+| The first review's list | 53 | 53 | 0 |
+| of which survived at `a5a5cf4` | 21 | 21 | 0 |
+| New: correlation-alone guards, end gap, floors, labels, other-polarity score, loader flag, batch summary | 48 | 47 | 1 |
+
+The author's 85 of 85 is not contradicted: the 53 agree, and the one survivor here is not in the author's list.
+
+**The survivor:** the end gap taken as the larger of the two curves' gaps instead of their sum. All 191 tests
+pass under it. The engine does refuse 0.09 s on each curve (probed above), so the code is right and the
+behaviour is unpinned. One test with a gap under the margin on each curve and over it in sum closes it.
+
+Kills worth naming, because they are the ones the first review asked for: correlation alone mirroring; a
+blocked correlation confirming anyway; each guard removed; each floor moved 15 to 20 percent either way; the
+method tag deciding again; the bare "excluding" line printed again; the headline computed on the decided
+subset.
+
+### Item 5: the relative flag
+
+**Confirmed.** `engine.load_optitrack_reference` returns `relative=True` only when the loader's quality
+warnings carry its own "these angles are relative" declaration. By reading `load_optitrack_detailed`, that
+declaration is attached in exactly one place, the labelled-marker knee-axis path, and unconditionally there.
+The precomputed-angle path and the quaternion fallback never attach it. The batch passes
+`ref_polarity_arbitrary=bool(relative)` and records `optical_relative` in the row and CSV. Mutations that make
+every `marker_pca` curve relative, none relative, a rigid body relative, or put the method tag back are all
+killed. Not exercised on real data: the corpus has no precomputed-angle, quaternion or rigid-body reference.
+
+### Item 6: minor items
+
+- **Whitespace:** both lines fixed; `git diff --check a5a5cf4 5ec06a7` is clean.
+- **Undefined correlation:** now reported as `correlation_undefined` (one corpus pair, `20_right_pre_T1`).
+  Mutation killed.
+- **"Bias stays close":** the docstring now gives the measured change (median 1.7, up to 44.8) and says not to
+  compare those columns across a mirror.
+- **`opposite_not_mirrored`:** a declared-arbitrary reference whose mirrored alignment fails is now
+  undetermined with reason `mirrored_alignment_failed`. The label is kept for the default path, where it is
+  accurate. Mutation killed.
+
+### Gates (measured at `5ec06a7`)
+
+| File | Author | This re-review |
+|---|---|---|
+| `tests/test_workbench_engine.py` | 160 passed | 160 passed |
+| `tests/test_batch_imu_vs_optitrack_rmse.py` | 31 passed | 31 passed |
+| `tests/test_rmse_pipeline_common.py` | 95 passed | 95 passed |
+
+### Still open (none blocks)
+
+1. **One unpinned behaviour:** end gap as a sum, not a maximum (item 4). A one-test follow-up.
+2. **The end-gap check trusts the time base.** Dropped samples and NaN time stamps both hide the gap, and the
+   docstring names only the first. The result is a wrong "as given" label on an opposite-sense pair, never a
+   wrong mirror and never a changed number. Not reachable from the batch. Worth one sentence in the docstring;
+   a stronger fix would be to take the take's duration from the file rather than from the samples.
+3. **The prior's fixed stop skew** (item 1, second point). Out of scope here; belongs with the capture prior.
+4. **Carried over from the first review, unchanged and still owed:** the IMU inversion on recordings that open
+   at rest; the sweeps and report generators that score raw RMSE or a free-search lag against a relative
+   reference; the loader failures on three clean-marker trials of participant 15.
+
+### Verified by running, by reading, not at all
+
+- **By running:** the three test files; all 145 pairs from raw files (decisions, medians, bounds, identity to
+  main on three alignment branches, the other-polarity field); the marker judge against the new decisions; 240
+  synthetic occlusion cases in four forms; 520 blanked-hold cases in four forms; guard boundaries; the two new
+  floors and the end-gap tolerance moved on the corpus; 101 mutations; the batch's `main()` on every matched trial, with cached loader output.
+- **By reading:** the full diff `a5a5cf4..5ec06a7` of the engine and the batch; the loader paths that set the
+  relative declaration; the two tests that pin the summary text; the revised sections of the author's report.
+- **Not at all:** GitHub CI and the wider Python test list; the first review's joint random threshold search
+  and leave-one-participant-out, which were not repeated because the nine constants they vary and all 121
+  decisions they judged are unchanged; the MediaPipe figures; the sweeps, workbench UI and report generators;
+  any reference that is not a marker-path curve; the author's 32 new mutations as such; the batch with its
+  loaders reading the files in the same process (started, stopped after 25 minutes at a quarter done).
