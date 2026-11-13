@@ -29,6 +29,10 @@ models. No rig and no phone were involved. "Inferred" is labelled.
   therefore taken from the **onset**: the shift at which the delivered trace lies on the command's first
   2 degrees of fall, which is 30.4 ms after the true command (27.3 ms in the session's own time base).
   This is a design decision with a measured basis; section 1 gives it and section 5 gives what it leaves.
+  *Corrected after review:* the N counts show that the release must be later than 19 ms. They do not show
+  that the 2 deg onset is the right amount: a constant +30 to +50 ms gives the same counts on this plant.
+  The basis for the onset is the hold-departure measurement in section 1, and what separates a measured
+  lag from a constant is the plant sweep ("After review").
 - **Three scenarios get a wrong N that was right before** (`C-N-high`, `C-wmin-high`, `C-area-high`), none
   moves PT7 by more than 0.002 or changes band. Five keep a wrong N that no release removes. Section 4.
 - Not verified on hardware. The plausibility gates are judgements set on a simulated plant. Section 7.
@@ -53,6 +57,14 @@ the manifest N in 67 of 67):
 | commanded release (before) | 0 | 44 | 5 |
 | + cross-correlation lag over the first drop | 19.2 ms (16.5 to 35.5) | 25 | 3 |
 | + onset lag, first 2 deg (chosen) | 30.4 ms (25.5 to 31.3; D-wobble 36.4) | 10 | 0 |
+
+*Corrected after review.* This table does not distinguish the 2 deg onset from a constant offset. The
+reviewer scored the same 67 scenarios from constant releases: +20 ms gives 24 wrong N and 2 wrong bands,
++30 ms 10 and 0, +40 ms 10 and 0, +50 ms 10 and 1. So the counts say "later than 19 ms" and nothing finer.
+The argument for the onset is the hold-departure measurement in the next paragraph (the arm is about 30 ms
+behind while it leaves the hold and about 20 ms behind over the drop). What tells a measured lag from a
+constant is a plant that is not the identified one: with 20 ms of transport delay a constant +30 ms leaves
+40 of 67 N wrong and the measured lag leaves 10 (reviewer's sweep, reproduced in "After review").
 
 Three independent estimates of the whole-drop lag agree (correlation of angle 19.2 ms, of velocity
 19.5 ms, equal-displacement at 10-50 % of the drop 19.5 ms), and it is what the models predict
@@ -124,7 +136,7 @@ release.
 | condition | gate | reason for the value |
 |---|---|---|
 | lag outside the plausible range | -10 to +80 ms (`RELEASE_LAG_PLAUSIBLE_S`) | The dry run gives 22.5 to 34.3 ms. Below zero is acausal, with 10 ms allowed because ILC measures against the scenario and can bring the arm level with it. 80 ms is about three times the simulated value. A judgement, not a measurement of the rig. |
-| onset does not match the command's | rms over the window above 0.3 deg (`RELEASE_RESID_MAX_DEG`) | 15 % of the 2 deg onset. Dry run, three seeds: median 0.03, D-wobble 0.20 (encoder) and 0.23 (phone), everything else at most 0.12 (encoder) and 0.14 (phone). |
+| onset does not match the command's | rms over the window above 0.3 deg (`RELEASE_RESID_MAX_DEG`) | *Corrected after review:* this said "15 % of the 2 deg onset", which is wrong. The fit removes the mean, and the window (50 ms of hold plus the first 2 deg) has a standard deviation of 0.56 deg (median of 67 commands, 0.49 to 1.11; reviewer's measurement), which is what an arm that never leaves the hold scores. The limit is 54 % of the window's signal. Dry run, three seeds: median 0.03, D-wobble 0.20 (encoder) and 0.23 (phone), everything else at most 0.12 (encoder) and 0.14 (phone). |
 | the command never moves 2 deg within 1 s of release | | no release to find |
 | the recording does not cover the search window | | |
 | phone more than 35 ms from the encoder | `PHONE_SYNC_TOL_S` | above |

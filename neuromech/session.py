@@ -3,6 +3,7 @@
     python -m neuromech.session plan  --name S1 [--sids A-P0,A-P1p | --groups A,M] [--reps 3]
                                       [--repeat A-P1p:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
+                                      [--accept-session-lag-ms MS] [--tracking-limit-ms MS]
     python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
 
 CHECK-LOG answers the one bench question the program cannot answer itself: does StretchExperiment's log
@@ -34,10 +35,25 @@ phone session manifest (one phone recording per run, in run order). For every ru
               a release that is early by ~15 ms makes the scorer count the start of the record as an extra
               half-oscillation. The delivered release is measured per run and per trace (_delivered_release)
               and written out: cmd_release_s, enc_release_s, enc_release_lag_ms, enc_release_resid_deg, and
-              the same for the phone plus ph_minus_enc_lag_ms. A lag outside RELEASE_LAG_PLAUSIBLE_S, an
-              onset that does not look like the command's, or a phone that disagrees with the encoder by more
-              than PHONE_SYNC_TOL_S is FLAGGED: that trace is not scored (there is no fallback to the
-              commanded release), the reason is in the report, and `score` exits with status 1.
+              the same for the phone plus ph_minus_enc_lag_ms. A trace is FLAGGED and not scored (there is
+              no fallback to the commanded release; the reason is in the report; `score` exits 1) when
+                - the onset does not look like the command's (enc_release_resid_deg), or
+                - the release is uncertain: the hold is not still before it (enc_hold_rms_deg), or another
+                  release 10 ms or more away fits nearly as well (enc_rival_ratio), or
+                - a phone trace is not where a phone of its sample period is expected against the encoder
+                  (ph_minus_enc_lag_ms against ph_expected_offset_ms; the gate is in sample periods).
+              The lag itself is judged ACROSS THE SESSION, because it is a property of the rig: a run more
+              than SESSION_LAG_TOL_S from the session's median is flagged as that run's fault; a session
+              whose runs agree with each other but sit outside RELEASE_LAG_PLAUSIBLE_S is ONE rig finding,
+              printed once, and nothing is scored until the rig is looked at or the finding is accepted
+              with --accept-session-lag-ms MS (MS must be the session's median to within the tolerance;
+              it is written to session_lag_override_ms on every row).
+  tracking    also as a time: the lag-aligned RMSE over the swing divided by the command's rms speed
+              (tracking_time_err_ms). Over TRACKING_TIME_ERR_MAX_MS (--tracking-limit-ms) the run is
+              "tracking flagged": its scores stay in the report but it does not count as a delivery of
+              its scenario, and `score` exits 1. PROVISIONAL limit, from the simulated plant.
+The hold, uniqueness, session and tracking limits are all provisional: set on dryrun's plant and on
+constructed faults, with no rig log behind them.
 Output: sessions/<name>/report.csv and a printed summary.
 SCORE refuses when the session's provenance differs from the current code or library: the intended values
 would come from a different scorer or model than the session was planned against (plan D2/B14).
@@ -226,7 +242,12 @@ RELEASE_ONSET_PRE_S = 0.05                 # ... plus this much of the hold befo
 RELEASE_ONSET_MAX_S = 1.0                  # a command that has not moved 2 deg by then has no release to find
 RELEASE_LAG_SEARCH_S = (-0.060, 0.130)     # searched; wider than plausible so an edge optimum is recognisable
 RELEASE_LAG_PLAUSIBLE_S = (-0.010, 0.080)  # delivered release - commanded release; outside it the run is flagged
-RELEASE_RESID_MAX_DEG = 0.3                # rms mismatch of the matched onsets (15% of the onset itself)
+RELEASE_RESID_MAX_DEG = 0.3                # rms mismatch of the matched onsets. The fit removes the mean, and the
+#                                            window (50 ms of hold + the first 2 deg) has a standard deviation of 0.56 deg
+#                                            (median of the 67 commands; 0.49 to 1.11), which is what an arm that never
+#                                            leaves the hold scores: the limit is 54 % of the window's signal, NOT "15 % of
+#                                            the onset". A clean fit is at 0.03. It catches a delivery that is not the
+#                                            command (kick-back, slack); it does not tell a right release from a wrong one.
 # An ambiguous onset. The residual cannot tell a right release from a wrong one when the hold moves (review
 # 2026-11-11: wrong ones at 0.07-0.29 deg, right ones up to 0.24), so two things are checked beside it.
 # PROVISIONAL, both: the limits sit between what the simulated plant delivers and the constructed faults; no
@@ -268,6 +289,12 @@ def _delivered_release(t_cmd, sp, t, x, t_rel, enc_lag_s=None):
     the command by more while it leaves the hold than it does over the drop as a whole (the
     cross-correlation lag). Scored from the cross-correlation point the rounded corner is still inside
     the record (docs/reports/2026-11-11-neuromech-release-alignment.md).
+    The evidence for that is the trace, not the score: measured as the time the delivered trace takes to
+    leave the hold by x deg, less the same for the command, the arm is 30.5 ms behind at 1 deg, 29.7 at 2,
+    25.1 at 5 and 20.6 at 10 (simulated plant). The N and band counts do NOT single out the 2 deg onset: on
+    the identified plant a constant +30 to +50 ms gives the same counts. What separates a measured lag from
+    a constant is a different plant (20 ms of delay leaves a constant +30 ms wrong in 40 of 67 scenarios and
+    the measured lag in 10; review 2026-11-11).
 
     The fit alone can be confidently wrong, so two properties of it are checked and returned:
       hold_rms_deg   rms of the recording about its own mean over the RELEASE_HOLD_STILL_S before the
