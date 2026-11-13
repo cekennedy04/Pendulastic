@@ -234,7 +234,7 @@ def test_an_implausible_lag_flags_the_run_and_does_not_score_it(delayed, ms):
     150 ms is beyond the search, so each run says the search stopped at its edge; -30 ms on every run is a
     session-level finding (the tests below)."""
     got = delayed[0][ms]
-    why = "release flagged: lag +130 ms is the edge of the search" if ms == 150 else "release flagged: session lag finding: lag -30.0 ms"
+    why = "release flagged: lag +130 ms is the edge of the search" if ms == 150 else "release flagged: session lag finding: the session's median lag -30.0 ms is outside the plausible -10 to +80 ms; this run's lag -30.0 ms is with the session"
     assert got.status.str.startswith(why).all(), got.status.tolist()
     assert "enc_pt7" not in got.columns or got.enc_pt7.isna().all()
     assert "enc_band" not in got.columns or got.enc_band.isna().all()
@@ -346,11 +346,20 @@ def test_session_lag_rules():
     S = SS._session_lag([0.087, 0.088, 0.086, 0.087, 0.027])             # consistent enough: 4 of 5
     assert not S["scorable"] and "consistent across the session" in S["finding"]
     assert SS._lag_verdict(0.087, S).startswith("session lag finding") and SS._lag_verdict(0.027, S) != ""
+    # Re-review 2026-11-12, 4.2: it is the session's median that is outside the range. A +27 ms run in that
+    # session was told that its own lag "is outside the plausible -10 to +80 ms", which is false.
+    odd, with_it = SS._lag_verdict(0.027, S), SS._lag_verdict(0.088, S)
+    assert "the session's median lag +87.0 ms is outside the plausible -10 to +80 ms" in odd and "median lag +87.0 ms is outside" in with_it
+    assert "this run's lag +27.0 ms is -60.0 ms from the session's median" in odd and "odd run" in odd, odd
+    assert "this run's lag +88.0 ms is with the session" in with_it, with_it
+    assert "lag +27.0 ms is outside" not in odd and "+27.0 ms, with" not in odd, odd
+    assert "chirp identification EXPLAINS" in S["finding"] and "still held to the tracking gate" in S["finding"], S["finding"]
     S = SS._session_lag([0.090, 0.120, 0.150, -0.030, 0.105])            # out of range and all over the place: nothing to accept
     assert S["scorable"] and S["reference_s"] is None and "without agreeing" in S["finding"]
     assert "outside the plausible" in SS._lag_verdict(0.120, S) and SS._lag_verdict(0.070, S) == ""
     S = SS._session_lag([0.087, 0.088, 0.086], accept_s=0.090)
     assert S["scorable"] and S["override_s"] == 0.090 and SS._lag_verdict(0.087, S) == "" and SS._lag_verdict(0.060, S) != ""
+    assert "still held to the tracking gate" in S["finding"], S["finding"]
     assert not np.isfinite(SS._session_lag([])["median_s"])
 
 
@@ -402,6 +411,22 @@ def test_the_phone_gate_is_centred_on_the_sample_period_offset_and_scales_with_i
     assert (flag(20.0) == "") == (abs(20.0 - centre) < tol), (rate_hz, flag(20.0))
     if rate_hz == 30.0: assert flag(20.0) == ""
     if rate_hz == 200.0: assert "the sync is off" in flag(20.0)
+
+
+def test_the_phone_gate_centre_is_pinned_in_milliseconds():
+    """Literal numbers, not SS.PHONE_EARLY_SAMPLES (re-review 2026-11-12, 2.3: with the constant set to 0 every
+    other phone test still passed, because each computes its expectation from the constant). At 59 Hz the gate
+    is 10.2 ms early of the encoder, 25.4 ms either side: -35.6 to +15.3 ms. So a phone 30 ms EARLY of the
+    encoder passes and one 20 ms LATE is a sync fault. Centred on 0 (-25.4 to +25.4) it is the other way round."""
+    enc = 0.020
+    def rel(phone_minus_enc_ms):
+        return SS._delivered_release(*_phone_view(59.0, -(enc * 1e3 + phone_minus_enc_ms)), enc_lag_s=enc)
+    early, late, on_centre = rel(-30.0), rel(+20.0), rel(-10.0)
+    assert abs((early["lag_s"] - enc) * 1e3 + 30.0) < LAG_TOL_PHONE_RATE_MS and abs((late["lag_s"] - enc) * 1e3 - 20.0) < LAG_TOL_PHONE_RATE_MS
+    assert early["flag"] == "", early
+    assert late["kind"] == "phone" and "the sync is off" in late["flag"], late
+    assert on_centre["flag"] == "" and abs(on_centre["expected_offset_s"] * 1e3 + 10.2) < 0.4, on_centre
+    assert SS.PHONE_EARLY_SAMPLES == 0.6 and SS.PHONE_SYNC_TOL_SAMPLES == 1.5
 
 
 def test_an_encoder_trace_is_still_held_to_the_plausible_range():
@@ -726,6 +751,43 @@ def test_an_encoder_scoring_error_is_reported_and_does_not_stop_the_session(sess
     sc = rep[rep.sid != "R-chirp"]
     assert sc.status.tolist()[0].startswith("scoring error: the trace starts after") and (sc.status.iloc[1:] == "scored").all(), sc.status.tolist()
     assert "delivered band == intended band: 2 of 3 runs (67%); scored 2, release flagged 0, tracking flagged 0, scoring error 1" in out, out
+    assert [(f[1], f[2][:14]) for f in SS.error_flags(rep)] == [("encoder", "scoring error:")] and "NOT SCORED BECAUSE OF AN ERROR on 1 trace" in out
+
+
+def _score_cli_status(session, monkeypatch, **patched):
+    """Exit status of `python -m neuromech.session score` on the dry-run session with something patched."""
+    _rep0, d = session
+    for k, v in patched.items(): monkeypatch.setattr(SS, k, v)
+    monkeypatch.setattr(SS, "SESS", os.path.dirname(d))
+    try:
+        SS.main(["score", "--name", os.path.basename(d), "--encoder-dir", os.path.join(d, "synthetic_encoder"),
+                 "--phone-manifest", os.path.join(d, "synthetic_phone", "dryrun-manifest.json")])
+    except SystemExit as ex:
+        return ex.code
+    return 0
+
+
+def test_score_exits_with_status_1_when_a_trace_ends_in_an_error(session, monkeypatch):
+    """Re-review 2026-11-12, 4.1. A scoring error does not stop the session (change 6), and it was then in
+    neither release_flags nor tracking_flags: `score` exited 0 with a run that had no score. An encoder
+    scoring error, a phone scoring error and a phone release error each fail the exit status; a clean
+    session still exits 0."""
+    assert _score_cli_status(session, monkeypatch) == 0
+    real_score, real_rel = SS._score_trace, SS._delivered_release
+    seen = []
+    def enc_boom(t, *a, **k):
+        if len(t) >= 5000 and not seen: seen.append(1); raise ValueError("boom in the encoder's scoring")
+        return real_score(t, *a, **k)
+    def phone_boom(t, *a, **k):
+        if len(t) < 5000: raise ValueError("boom in the phone's scoring")
+        return real_score(t, *a, **k)
+    def rel_boom(*a, enc_lag_s=None, **k):
+        if enc_lag_s is not None: raise RuntimeError("boom in the phone's release")
+        return real_rel(*a, **k)
+    assert _score_cli_status(session, monkeypatch, _score_trace=enc_boom) == 1
+    assert _score_cli_status(session, monkeypatch, _score_trace=phone_boom) == 1
+    monkeypatch.setattr(SS, "_score_trace", real_score)
+    assert _score_cli_status(session, monkeypatch, _delivered_release=rel_boom) == 1
 
 
 def test_plan_refuses_an_unknown_repeat_scenario_before_writing(tmp_path):

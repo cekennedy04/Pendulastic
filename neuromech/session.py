@@ -36,7 +36,8 @@ phone session manifest (one phone recording per run, in run order). For every ru
               half-oscillation. The delivered release is measured per run and per trace (_delivered_release)
               and written out: cmd_release_s, enc_release_s, enc_release_lag_ms, enc_release_resid_deg, and
               the same for the phone plus ph_minus_enc_lag_ms. A trace is FLAGGED and not scored (there is
-              no fallback to the commanded release; the reason is in the report; `score` exits 1) when
+              no fallback to the commanded release; the reason is in the report; `score` exits 1, as it
+              also does when a trace ends in a "scoring error" or a phone "release error") when
                 - the onset does not look like the command's (enc_release_resid_deg), or
                 - the release is uncertain: the hold is not still before it (enc_hold_rms_deg), or another
                   release 10 ms or more away fits nearly as well (enc_rival_ratio), or
@@ -47,7 +48,8 @@ phone session manifest (one phone recording per run, in run order). For every ru
               whose runs agree with each other but sit outside RELEASE_LAG_PLAUSIBLE_S is ONE rig finding,
               printed once, and nothing is scored until the rig is looked at or the finding is accepted
               with --accept-session-lag-ms MS (MS must be the session's median to within the tolerance;
-              it is written to session_lag_override_ms on every row).
+              it is written to session_lag_override_ms on every row). The override is for a lag the chirp
+              identification explains; an accepted session is still held to the tracking gate.
   tracking    also as a time: the lag-aligned RMSE over the swing divided by the command's rms speed
               (tracking_time_err_ms). Over TRACKING_TIME_ERR_MAX_MS (--tracking-limit-ms) the run is
               "tracking flagged": its scores stay in the report but it does not count as a delivery of
@@ -408,7 +410,7 @@ def _session_lag(lags_s, accept_s=None):
         S.update(reference_s=med, override_s=float(accept_s),
                  finding=(f"SESSION LAG OVERRIDE USED: the session's median release lag is {med * 1e3:+.1f} ms ({spread}), outside the "
                           f"plausible {rng}. It was scored because --accept-session-lag-ms {accept_s * 1e3:g} accepts it; each run "
-                          f"is held to within {tol * 1e3:.0f} ms of the session median."))
+                          f"is held to within {tol * 1e3:.0f} ms of the session median, and is still held to the tracking gate."))
         return S
     if len(lags) < SESSION_LAG_MIN_RUNS or near < SESSION_LAG_CONSISTENT * len(lags):
         S["finding"] = (f"the session's release lags are outside the plausible {rng} without agreeing with each other "
@@ -422,8 +424,11 @@ def _session_lag(lags_s, accept_s=None):
         f"(latency or bandwidth the model does not have), not at one run. No run with this lag is scored. "
         f"What to do: (1) run check-log on one run and see that the setpoint changes every ~10 ms; (2) identify the plant "
         f"from the chirp run (R000) and compare it with the model's 6.35 Hz, zeta 0.23, no delay; (3) look for latency "
-        f"added between the Player and the drive. If the lag is understood and is this rig's, score again with "
-        f"--accept-session-lag-ms {med * 1e3:.0f}: the override and its value are written into report.csv. "
+        f"added between the Player and the drive. The override is for a lag that the chirp identification EXPLAINS "
+        f"(the identified delay and bandwidth account for it); stiction or a lurch in every run is also consistent and "
+        f"is not a reason to accept. If the lag is explained and is this rig's, score again with "
+        f"--accept-session-lag-ms {med * 1e3:.0f}: the override and its value are written into report.csv. An accepted "
+        f"session is still held to the tracking gate and to every other release check. "
         f"The plausible range comes from a simulated plant and is provisional."
         + (f" (--accept-session-lag-ms {accept_s * 1e3:g} was given, but it is more than {tol * 1e3:.0f} ms from this "
            f"session's median, so it was not used.)" if accept_s is not None else ""))
@@ -436,8 +441,15 @@ def _lag_verdict(lag_s, S):
     if S["reference_s"] is None:
         if S["scorable"] and p0 <= lag_s <= p1: return ""
         if not S["scorable"]:
-            return (f"session lag finding: lag {lag_s * 1e3:+.1f} ms, with the session's median at {S['median_s'] * 1e3:+.1f} ms, is "
-                    f"outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms; see session_lag_finding")
+            # It is the SESSION's median that is outside the range. This run's own lag may well be inside it
+            # (+27 ms in an 87 ms session): it is then not scored because it is far from its session, and the
+            # sentence must not say that its lag is implausible.
+            d = lag_s - S["median_s"]
+            own = (f"this run's lag {lag_s * 1e3:+.1f} ms is with the session" if abs(d) <= SESSION_LAG_TOL_S else
+                   f"this run's lag {lag_s * 1e3:+.1f} ms is {d * 1e3:+.1f} ms from the session's median, so it is the odd run in "
+                   f"a session that is itself not scored")
+            return (f"session lag finding: the session's median lag {S['median_s'] * 1e3:+.1f} ms is outside the plausible "
+                    f"{p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms; {own}; see session_lag_finding")
         return f"lag {lag_s * 1e3:+.1f} ms is outside the plausible {p0 * 1e3:+.0f} to {p1 * 1e3:+.0f} ms"
     d = lag_s - S["reference_s"]
     if abs(d) > SESSION_LAG_TOL_S:
@@ -682,6 +694,19 @@ def release_flags(rep):
     return out
 
 
+def error_flags(rep):
+    """[(run_id, trace, reason)] for every trace that ended in an error and has no score: an encoder
+    "scoring error", a phone "scoring error" or "release error". They do not stop the session, and they must
+    not leave it looking clean: `score` exits 1 on any of them, as it does on a flag."""
+    out = []
+    for _, r in rep.iterrows():
+        for trace, col, kinds in (("encoder", "status", ("scoring error: ",)),
+                                  ("phone", "phone_status", ("scoring error: ", "release error: "))):
+            v = r.get(col)
+            if isinstance(v, str) and v.startswith(kinds): out.append((r.run_id, trace, v))
+    return out
+
+
 def tracking_flags(rep):
     """[(run_id, reason)] for every run whose tracking error was over the limit: scored, but not a delivery."""
     out = []
@@ -738,6 +763,10 @@ def _print(rep):
         print(f"\nTRACKING FLAGGED on {len(tracked)} run(s); the arm did not follow the command, so these are NOT deliveries of "
               f"their scenarios (counted in the totals above; their scores are in report.csv):")
         for rid, why in tracked: print(f"  {rid}: {why}")
+    errors = error_flags(rep)
+    if errors:
+        print(f"\nNOT SCORED BECAUSE OF AN ERROR on {len(errors)} trace(s) (`score` exits with status 1):")
+        for rid, trace, why in errors: print(f"  {rid} {trace}: {why}")
     idn = rep[rep.get("status", "") == "identified"] if "status" in rep else rep.iloc[0:0]
     for _, r in idn.iterrows():
         print(f"plant identified from {r.run_id}: wn {r.plant_wn_hz:.2f} Hz, zeta {r.plant_zeta:.3f}, delay {r.plant_delay_ms:.1f} ms (fit R2 {r.plant_r2:.3f})")
@@ -767,7 +796,7 @@ def main(argv=None):
     else:
         rep = score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch,
                     accept_session_lag_ms=x.accept_session_lag_ms, tracking_limit_ms=x.tracking_limit_ms)
-        if release_flags(rep) or tracking_flags(rep):
+        if release_flags(rep) or tracking_flags(rep) or error_flags(rep):
             sys.exit(1)
 
 
