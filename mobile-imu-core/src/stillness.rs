@@ -19,7 +19,12 @@ pub const GYRO_BIAS_MIN_SAMPLES: usize = 5;
 /// the primary/more reliable signal — it separates the "genuinely still" and
 /// "likely handling" clusters cleanly; accel is a corroborating check only.
 pub const GYRO_STATIONARY_MAX_RAD_S: f64 = 0.9;
-pub const ACCEL_STATIONARY_MAX_MPS2: f64 = 0.18;
+/// A FRACTION OF GRAVITY, not m/s² (it was named `ACCEL_STATIONARY_MAX_MPS2`
+/// until the Python reference corrected it, 2026-08-25): 0.18 was derived from
+/// g-unit recordings. The accel spread is divided by the window's own gravity
+/// magnitude, so a phone reporting m/s² (the PWA, Android) is judged against
+/// the same bar as one reporting g instead of one 9.81x tighter.
+pub const ACCEL_STATIONARY_MAX_G: f64 = 0.18;
 
 /// A trailing sample buffer: `(timestamp_seconds, raw_vector)` pairs, oldest
 /// first. Callers are responsible for pruning entries older than the window
@@ -41,7 +46,8 @@ fn max_axis_peak_to_peak(buf: &SampleBuf) -> f64 {
 }
 
 /// True iff both buffers span the full `GYRO_BIAS_WINDOW_S` and stay within
-/// `GYRO_STATIONARY_MAX_RAD_S` / `ACCEL_STATIONARY_MAX_MPS2` peak-to-peak
+/// `GYRO_STATIONARY_MAX_RAD_S` (rad/s) / `ACCEL_STATIONARY_MAX_G` (a fraction
+/// of measured gravity) peak-to-peak
 /// range — checked per-axis (max over x/y/z of that axis's own peak-to-peak),
 /// not on the combined vector magnitude. Magnitude alone would miss a signal
 /// that oscillates DIRECTION at roughly constant magnitude (e.g. alternating
@@ -59,8 +65,19 @@ pub fn is_stationary_window(gyro_buf: &SampleBuf, accel_buf: &SampleBuf, now: f6
             _ => {}
         }
     }
+    let n = accel_buf.len() as f64;
+    let mut m = [0.0; 3];
+    for (_, v) in accel_buf {
+        for (mi, vi) in m.iter_mut().zip(v) {
+            *mi += vi / n;
+        }
+    }
+    let g_mag = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+    if g_mag < 1e-9 {
+        return false; // no usable gravity reference: not a still hold
+    }
     max_axis_peak_to_peak(gyro_buf) < GYRO_STATIONARY_MAX_RAD_S
-        && max_axis_peak_to_peak(accel_buf) < ACCEL_STATIONARY_MAX_MPS2
+        && max_axis_peak_to_peak(accel_buf) / g_mag < ACCEL_STATIONARY_MAX_G
 }
 
 /// Zero-orientation capture guard: the raw gyro magnitude for the qualifying

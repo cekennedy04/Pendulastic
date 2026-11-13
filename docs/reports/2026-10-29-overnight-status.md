@@ -155,12 +155,23 @@ own docstring says it was modelled on `score_waveform`'s inline logic; the
 helper then evolved, Rust adopted the helper, and Python's `score_waveform`
 kept the original.
 
-So the desktop tuner and the shipped app apply different quality gates to the
-same waveform. They agree on the six golden trials, which is exactly why
-nothing noticed: the parity tests pin those six and nothing else. Unifying
-them means deciding which rule is right — the 4 s cap is the live question,
-since a 12 s trial with real motion at 5 s is outside the Python window
-entirely — and that is a decision I did not want to make for you overnight.
+They agree on the six golden trials, which is exactly why nothing noticed: the
+parity tests pin those six and nothing else.
+
+> **CORRECTION, 2026-11-02.** This section originally said "the desktop tuner
+> and the shipped app apply different quality gates to the same waveform."
+> That is wrong. Rust's `score_waveform` is called from its own tests and
+> nowhere else — it is not exported through `wasm.rs` and nothing in `webapp/`
+> calls it — so the divergence has no runtime consequence today, and the
+> stakes are much lower than I stated. Python's `score_waveform` is live (it
+> is the desktop tuner's gate) and its 4 s cap is a real blind spot; the
+> divergence itself is a parity problem, not an app defect.
+>
+> Both rules are now measured over 10,836 generated trials, and the answer is
+> not "adopt one of them": the helper rule catches 198 freeze trials the cap
+> hides, but falsely rejects 70 clean ones, concentrated at the 100 Hz the app
+> actually samples at, because the plateau rule counts **samples** rather than
+> time. See `docs/reports/2026-11-02-continuity-window-divergence.md`.
 
 ### Two things I tried and threw away
 
@@ -185,21 +196,33 @@ off for. That is exactly what the corpus run covers.
 
 ## 3. Verified state
 
-- **1347** Python tests passing (3.13, the interpreter here that has cv2 and
-  mediapipe), **426** webapp, **16** Rust suites, clippy clean under
-  `-D warnings`.
-- CI green on `main` at `aff4a3c` (run 271), which is everything in this note.
-  All three jobs, including the python job now that it gates the tuner file.
-- **12 pre-existing Python failures**, all in
-  `test_capture_coverage_hpe_session` (a worker consuming 0 frames), confirmed
-  identical to clean `origin/main` by diffing both full-suite failure lists
-  from a worktree: 12 against 13, the one difference being the tuner test the
-  fix above repaired, and nothing new on my side. I introduced none and fixed
-  one.
-- Earlier in the session the same comparison showed **16**, on an interpreter
-  without cv2. The extra three were `test_capture_quality_guard`'s
-  `ModuleNotFoundError: cv2`, which is the environment, not the code, and the
-  fourth was:
+- **1370 Python tests passing and ZERO failing**, **426** webapp, **16** Rust
+  suites, clippy clean under `-D warnings`.
+- CI green on `main` at `aff4a3c` (run 271) for the work in section 2; the
+  later commits have their own runs.
+
+> **UPDATE, 2026-11-02 — the 12 "pre-existing failures" are gone, and they
+> were never a code defect.** This section carried them as 12 unexplained
+> failures in `test_capture_coverage_hpe_session`, described only by their
+> symptom ("a worker consuming 0 frames"). The cause is two **missing system
+> libraries**: MediaPipe needs `libEGL.so.1` and `libGLESv2.so.2` to construct
+> an `mp.Image`, and without them that call raises `OSError` on the first
+> frame handed to the pose detector. `PoseCoverageSession._process` catches it
+> per frame exactly as designed, so the injected detector is never called and
+> every test stops at `_pump`'s "worker stopped consuming after 0 frames".
+> `apt-get install -y libegl1 libgles2` and all 21 pass. The suite is now
+> fully green. Documented in the README's Installation section and beside
+> `mediapipe` in `requirements.txt`, since pip cannot install either one.
+>
+> Worth noting what made this hard to see: the error never mentions MediaPipe,
+> and the code's own error-recording path works — `last_error` does hold the
+> `OSError` — but the tests assert on the detector's call count, which stays
+> at zero, so the diagnosis is one layer below what the failure prints.
+
+- Earlier in the session the comparison showed **16** failures, on an
+  interpreter without cv2. Three of those were `test_capture_quality_guard`'s
+  `ModuleNotFoundError: cv2` — the same class of problem as above, the
+  environment rather than the code — and the fourth was:
   `test_imu_calibration_tuner.py::test_score_waveform_plateau_during_active_swing_fails`.
   **That one is now fixed** — see section 2 — and the file is gated in CI, so
   it cannot go quiet again. It had been failing on main while CI stayed green
@@ -207,9 +230,11 @@ off for. That is exactly what the corpus run covers.
   `pytest tests/` is not what CI runs.
 - One more thing the comparison turned up: `test_camera_utils.py::`
   `test_stale_frame_from_abandoned_thread_does_not_leak_into_newer_session`
-  is **flaky**, failing about 2 runs in 5 on current `main` *and* on a clean
-  worktree of it. Not in CI's list, so it gates nothing, but while it flaps a
-  real regression in camera frame handling is indistinguishable from noise.
+  was **flaky**, failing about 2 runs in 5 on current `main` *and* on a clean
+  worktree of it. **Fixed 2026-11-02** — it raced its own new session, taking
+  its baseline snapshot before `close()` had joined the streaming thread — and
+  it is now deterministic in both directions: 25 of 25 pass, and disabling the
+  production guard it exists for fails it 5 of 5.
 
 ---
 
@@ -223,10 +248,12 @@ off for. That is exactly what the corpus run covers.
    also confirms the release-detection guard from section 2 against the 15
    Control_6/7/8 lift-and-hold trials, which is the one check for it I could
    not run.
-3. **Unify the two `score_waveform` continuity windows** (section 2). The
-   desktop tuner and the shipped app currently gate the same waveform by
-   different rules. Needs a decision on the 4 s cap before it can be fixed,
-   which is why I left it.
+3. **The plateau rule, then the two `score_waveform` windows** (section 2, as
+   corrected). Measured 2026-11-02: the plateau rule counts samples rather
+   than time, so unifying the windows first would trade a blind spot for
+   false rejections on clean 100 Hz trials. Fix the rule, re-measure, then
+   unify. Lower priority than it looked — the Rust side is test-only, so
+   nothing ships differently today.
 4. **Zone classification is still off** and the thresholds are still
    `0.1709 / 0.3528` from `pt7-2026-08-24`, against a current formula id of
    `pt6rescaled-2026-10-27`. The app reports numbers, not grades. Turning that

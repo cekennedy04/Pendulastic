@@ -1,6 +1,6 @@
 """End-to-end dry run of a rig session, no hardware.
 
-    python -m neuromech.dryrun [--sids A-P0,A-P2,...] [--keep]
+    python -m neuromech.dryrun [--sids A-P0,A-P1p,...] [--keep]
 
 Plans a real session (neuromech.session.plan), then stands in for the bench:
   player   each command as the Pendulum Player VI delivers it: a Windows loop that reads the clock every
@@ -38,8 +38,14 @@ PLANT = dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0)
 # setting on the severity axis reaches it. calibrate_ladder used to return
 # the top of its own bracket and call it P3; it now says UNREACHABLE and
 # omits the rung, so naming it here would fail the plan. M-tone_L4 is the
-# most severe rung that exists, and sits at the peak.
-DEFAULT_SIDS = ["A-P0", "A-P2", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
+# most severe rung that exists, and sits at the peak. A-P2 went the same way
+# when #79 re-derived HEALTHY_REF: the ladder now stops at 1+, so A-P1p is the
+# most severe band preset left. B-claspknife and M-catch_release_high stay
+# in the default session although both now miss: each sits at PT7 0.139,
+# 0.02 above the 0/1 edge, and the rig's tracking lag delivers ~0.116
+# (band 0). That is a finding about those two scenarios, not about the
+# session program, and the default run should keep showing it.
+DEFAULT_SIDS = ["A-P0", "A-P1p", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
 
 
 def plant_response(sp, fs=1000.0, plant=PLANT):

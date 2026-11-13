@@ -1,7 +1,7 @@
 """Rig sessions: plan one before the bench, score it after.
 
-    python -m neuromech.session plan  --name S1 [--sids A-P0,A-P2 | --groups A,M] [--reps 3]
-                                      [--repeat A-P2:10] [--seed 7] [--chirp] [--no-blind]
+    python -m neuromech.session plan  --name S1 [--sids A-P0,A-P1p | --groups A,M] [--reps 3]
+                                      [--repeat A-P1p:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
     python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
 
@@ -19,7 +19,8 @@ PLAN writes neuromech/sessions/<name>/:
                         (a header row reads as zeros, makes dt = 0 and ends playback at once)
   commands/<run>.dbl    the same five columns, big-endian float64, interleaved, no header --
                         LabVIEW "Read from Binary File" (DBL, big-endian is its default), reshape to N x 5.
-  session.json          seed, scorer constants, manifest snapshot path
+  session.json          seed, scorer constants, and the library's provenance (formula ID + model hash)
+                        PLAN refuses a library whose provenance differs from the code (rebuild it first).
 
 SCORE reads each run's LabVIEW log from <encoder-dir>, by the name written in the run sheet's
 encoder_file column (StretchExperiment names its own logs; <run>.bin if left blank), and, optionally, the
@@ -29,6 +30,9 @@ phone session manifest (one phone recording per run, in run order). For every ru
   phone       the same from the phone gyro, aligned on the three sync pulses
   tracking    encoder vs command RMSE over the swing
 Output: sessions/<name>/report.csv and a printed summary.
+SCORE refuses when the session's provenance differs from the current code or library: the intended values
+would come from a different scorer or model than the session was planned against (plan D2/B14).
+--allow-provenance-mismatch scores anyway and records the mismatch in report.csv.
 """
 from __future__ import annotations
 
@@ -54,7 +58,7 @@ import motor_reference as mr  # noqa: E402
 import pendulastic_pt_score as P  # noqa: E402
 from labview_bin_reader import read_labview_bin  # noqa: E402
 from neuromech import ilc  # noqa: E402
-from neuromech.build import OUT, score_angle, PARAMS7  # noqa: E402
+from neuromech.build import OUT, score_angle, PARAMS7, provenance, provenance_mismatch, library_provenance  # noqa: E402
 
 SESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
 FS = 1000.0
@@ -86,11 +90,19 @@ def _write_command(dst_base, t, sp, vel, acc, phase):
 
 
 def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False, blind=True):
+    prov = provenance()
+    stale = provenance_mismatch(library_provenance(), prov)
+    if stale:
+        raise SystemExit(f"the scenario library was built under different {', '.join(stale)} than this code "
+                         f"({prov['score_formula_id']}, model {prov['model_hash']}); "
+                         f"run python -m neuromech.build --recalibrate first")
     man = pd.read_csv(os.path.join(OUT, "scenario_manifest.csv"))
     pick = man
     if sids: pick = man[man.sid.isin(sids)]
     elif groups: pick = man[man.group.isin(groups)]
     missing = set(sids or []) - set(pick.sid)
+    if repeat and repeat.split(":")[0] not in set(man.sid):   # before anything is written
+        missing.add(repeat.split(":")[0])
     if missing: raise SystemExit(f"unknown scenario ids: {sorted(missing)}")
     order = [sid for sid in pick.sid for _ in range(reps)]
     if repeat:
@@ -126,7 +138,7 @@ def plan(name, sids=None, groups=None, reps=1, repeat=None, seed=7, chirp=False,
             w.writerow([k, r["run_id"], r["duration_s"], r["peak_deg"], f"{r['run_id']}.bin", "", "", ""] + ([] if blind else [r["sid"]]))
     pd.DataFrame(runs)[["run_id", "sid", "duration_s"]].to_csv(os.path.join(d, "key.csv"), index=False)
     json.dump(dict(name=name, created=datetime.now().isoformat(timespec="seconds"), seed=seed, reps=reps, repeat=repeat,
-                   chirp=chirp, blind=blind, n_runs=len(runs), scorer=dict(HEALTHY_REF=P.HEALTHY_REF, F_PLAUSIBLE_MAX_HZ=getattr(P, "F_PLAUSIBLE_MAX_HZ", None))),
+                   chirp=chirp, blind=blind, n_runs=len(runs), provenance=prov, scorer=dict(HEALTHY_REF=P.HEALTHY_REF, F_PLAUSIBLE_MAX_HZ=getattr(P, "F_PLAUSIBLE_MAX_HZ", None))),
               open(os.path.join(d, "session.json"), "w"), indent=1, default=float)
     print(f"planned {len(runs)} runs -> {d}  (runsheet.csv for the bench, key.csv kept separately)")
     return d
@@ -211,8 +223,18 @@ def _summ(prm, est):
     return out
 
 
-def score(name, encoder_dir, phone_manifest=None):
+def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False):
     d = os.path.join(SESS, name)
+    planned = json.load(open(os.path.join(d, "session.json"), encoding="utf-8")).get("provenance")
+    prov = provenance()
+    stale = sorted(set(provenance_mismatch(planned, prov)) | set(provenance_mismatch(library_provenance(), prov)))
+    if stale:
+        why = (f"session {name} was planned under {planned or 'no recorded provenance'}, the library is "
+               f"{library_provenance() or 'unrecorded'}, and the code is {prov}")
+        if not allow_provenance_mismatch:
+            raise SystemExit(f"refusing to score: {why}. Score it from the commit it was planned on, or pass "
+                             f"--allow-provenance-mismatch to score anyway with the mismatch recorded.")
+        print(f"WARNING: provenance mismatch ({', '.join(stale)}): {why}")
     key = pd.read_csv(os.path.join(d, "key.csv"))
     man = pd.read_csv(os.path.join(OUT, "scenario_manifest.csv")).set_index("sid")
     phones = []
@@ -258,7 +280,9 @@ def score(name, encoder_dir, phone_manifest=None):
             except Exception as ex:                      # noqa: BLE001 -- a refused sync is reported, not fatal
                 row["phone_status"] = f"sync refused: {str(ex)[:90]}"
         row["status"] = "scored"; rows.append(row)
-    rep = pd.DataFrame(rows); rep.to_csv(os.path.join(d, "report.csv"), index=False)
+    rep = pd.DataFrame(rows)
+    rep["provenance_mismatch"] = ",".join(stale)
+    rep.to_csv(os.path.join(d, "report.csv"), index=False)
     _print(rep); return rep
 
 
@@ -332,6 +356,7 @@ def main(argv=None):
     a.add_argument("--reps", type=int, default=1); a.add_argument("--repeat"); a.add_argument("--seed", type=int, default=7)
     a.add_argument("--chirp", action="store_true"); a.add_argument("--no-blind", action="store_true")
     b = sub.add_parser("score"); b.add_argument("--name", required=True); b.add_argument("--encoder-dir", required=True); b.add_argument("--phone-manifest")
+    b.add_argument("--allow-provenance-mismatch", action="store_true")
     c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
     x = ap.parse_args(argv)
     if x.cmd == "check-log":
@@ -340,7 +365,7 @@ def main(argv=None):
         plan(x.name, sids=x.sids.split(",") if x.sids else None, groups=x.groups.split(",") if x.groups else None,
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
     else:
-        score(x.name, x.encoder_dir, x.phone_manifest)
+        score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch)
 
 
 if __name__ == "__main__":

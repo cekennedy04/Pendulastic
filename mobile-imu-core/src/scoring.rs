@@ -438,6 +438,33 @@ fn active_oscillation_window_end(
     t_r[permanent_settle_idx(ang_r, neutral, tol)]
 }
 
+/// `imu_calibration_tuner._PLATEAU_MIN_S`: how long a stretch of "not moving"
+/// counts as a staircase artifact, as a DURATION rather than a sample count.
+const PLATEAU_MIN_S: f64 = 0.30;
+/// `imu_calibration_tuner._PLATEAU_MAX_DEG_S`: and how slowly it has to be
+/// moving to count, in deg/s rather than deg between samples.
+///
+/// Both were rate-dependent as written -- `run >= 6` samples is 0.30 s at
+/// 20 Hz and 0.06 s at 100 Hz, and an absolute 0.05 deg between samples is a
+/// velocity of 0.05/dt, so 1.0 deg/s at 20 Hz and 10 deg/s at 200 Hz. Between
+/// them a clean decaying swing tripped the check at its own turning points,
+/// which flatten as the amplitude falls. This pair reproduces the old rule
+/// exactly at 20 Hz and now means the same thing at every rate.
+const PLATEAU_MAX_DEG_S: f64 = 1.0;
+/// `imu_calibration_tuner._CLIP_MAX_DEG_S`: how big a one-sample
+/// discontinuity counts as a sensor glitch, in deg/s rather than deg between
+/// samples.
+///
+/// The same bug as the plateau pair but in the opposite direction: an absolute
+/// 25 deg between samples is 25/dt, so 500 deg/s at 20 Hz and 5000 at 200 Hz,
+/// which gets LOOSER the faster the stream. Measured on single-sample steps
+/// injected into a clean swing, the old rule caught a 2000 deg/s glitch at 20
+/// and 50 Hz and missed it entirely at 100 and 200 -- and production samples
+/// at about 100. 500 deg/s is what it already meant at 20 Hz, and sits far
+/// above the literature peak for a healthy swing (221.9 +/- 35.6 deg/s,
+/// Kim 1996, n=50).
+const CLIP_MAX_DEG_S: f64 = 500.0;
+
 /// `pendulastic_pt_score._TAIL_FRAC` and friends — the settled-tail drift
 /// estimator's constants, ported verbatim.
 const TAIL_FRAC: f64 = 0.25;
@@ -1016,18 +1043,25 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
         pt.a0_deg,
     );
 
+    // One dt for both continuity thresholds: each is a rate, not a per-sample
+    // quantity (see CLIP_MAX_DEG_S and PLATEAU_MIN_S).
+    let cont_dt = median_dt(t);
+    let clip_step_deg = CLIP_MAX_DEG_S * cont_dt;
+
     let mut clip_violations = 0usize;
     for i in 0..angle_deg.len() - 1 {
         if !(angle_deg[i].is_finite() && angle_deg[i + 1].is_finite()) {
             continue;
         }
-        if (angle_deg[i + 1] - angle_deg[i]).abs() > 25.0 {
+        if (angle_deg[i + 1] - angle_deg[i]).abs() > clip_step_deg {
             clip_violations += 1;
         }
     }
 
     let mut plateau_violations = 0usize;
     let mut run = 0usize;
+    let plateau_min_run = ((PLATEAU_MIN_S / cont_dt).round() as usize).max(2);
+    let plateau_step_deg = PLATEAU_MAX_DEG_S * cont_dt;
     for i in 0..t.len() {
         if !(t[i] >= pt.t_r[0] && t[i] <= window_end_t) {
             continue;
@@ -1039,9 +1073,9 @@ pub fn score_waveform(t: &[f64], angle_deg: &[f64]) -> WaveformScore {
             run = 0;
             continue;
         }
-        if (angle_deg[i + 1] - angle_deg[i]).abs() < 0.05 {
+        if (angle_deg[i + 1] - angle_deg[i]).abs() < plateau_step_deg {
             run += 1;
-            if run >= 6 {
+            if run >= plateau_min_run {
                 plateau_violations += 1;
             }
         } else {

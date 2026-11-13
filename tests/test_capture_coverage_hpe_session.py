@@ -92,18 +92,48 @@ def _wait_for(predicate, timeout=5.0):
     return False
 
 
-def _pump(mailbox, detector, n, timeout=5.0):
-    """Publish n frames, waiting for each to actually be consumed.
+def _pump(session, mailbox, detector, n, timeout=5.0):
+    """Publish n frames, waiting for each to be fully RECORDED.
 
     The mailbox holds ONE frame by design, so publishing in a tight loop drops
-    most of them and leaves any count assertion racy. Waiting on the detector's
-    call count makes these tests deterministic without weakening what they
-    check -- a real camera publishes far slower than the worker samples.
+    most of them and leaves any count assertion racy. Waiting makes these tests
+    deterministic without weakening what they check -- a real camera publishes
+    far slower than the worker samples.
+
+    WHAT to wait on is the subtle part, and `detector.calls` was the wrong
+    signal. The worker calls the detector in the MIDDLE of _process and calls
+    feed_flags -- which is what moves session.live's counters -- as its last
+    statement. So the detector's count runs ahead of the numbers these tests
+    assert on, and a thread preempted between the two leaves a frame counted by
+    the detector and not yet by the session.
+
+    Not theoretical: test_published_frames_are_measured failed in two
+    full-suite runs on 2026-11-02 and 2026-11-03 while passing 8 of 8 in
+    isolation, and delaying ONLY feed_flags reproduces it on demand --
+    detector.calls 10, stats.n_frames 9. feed_flags runs on both the success
+    and the exception path, so the session's own count is the later signal in
+    every case and a strict superset of "the detector was asked".
     """
     for _ in range(n):
-        before = detector.calls
+        before = _recorded(session)
         mailbox.publish(_frame())
-        assert _wait_for(lambda: detector.calls > before, timeout),             f"worker stopped consuming after {detector.calls} frames"
+        assert _wait_for(lambda: _recorded(session) > before, timeout), (
+            f"worker stopped recording after {_recorded(session)} "
+            f"frames (detector saw {detector.calls})")
+
+
+def _recorded(session):
+    """Frames the SESSION has fully recorded.
+
+    `frames_seen` rather than `live.stats().n_frames`, because stats() returns
+    None until it holds two samples and so cannot be watched for the first
+    frame; and read under the session's own lock, because feed_flags increments
+    this counter and calls live.feed() in the SAME critical section. Holding
+    the lock is therefore what makes "frames_seen == k" mean "k frames are in
+    live", with no feed_flags half-applied.
+    """
+    with session._lock:
+        return session.frames_seen
 
 
 # -- lifecycle ---------------------------------------------------------------
@@ -143,7 +173,7 @@ def test_published_frames_are_measured():
     session = _session(det, mb)
     session.start()
     try:
-        _pump(mb, det, 10)
+        _pump(session, mb, det, 10)
         stats = session.live.stats()
         assert stats.n_frames == 10, stats
         assert stats.coverage == 1.0
@@ -157,7 +187,7 @@ def test_an_occluded_ankle_shows_up_as_lost_shank():
     session = _session(det, mb)
     session.start()
     try:
-        _pump(mb, det, 10)
+        _pump(session, mb, det, 10)
         stats = session.live.stats()
         assert stats.thigh_coverage == 1.0
         assert stats.shank_coverage == 0.0
@@ -199,7 +229,7 @@ def test_a_detector_that_throws_counts_as_not_seeing_the_leg():
     session = _session(det, mb)
     session.start()
     try:
-        _pump(mb, det, 10)
+        _pump(session, mb, det, 10)
         assert session.live.stats().coverage == 0.0
     finally:
         session.stop()
@@ -222,7 +252,7 @@ def test_a_frame_source_that_throws_does_not_kill_the_worker():
     try:
         time.sleep(0.1)
         state["fail"] = False
-        _pump(mb, det, 3)
+        _pump(session, mb, det, 3)
     finally:
         session.stop()
 
@@ -258,7 +288,7 @@ def test_the_preflight_watch_is_inherited_whole():
         session.begin_preflight(duration_s=watch_s)
         assert session.preflight_done() is False
         while not session.preflight_done():
-            _pump(mb, det, 1)
+            _pump(session, mb, det, 1)
             time.sleep(0.01)
         v = session.finish_preflight()
         assert v.status == cc.PASS
@@ -275,7 +305,7 @@ def test_a_bad_preflight_names_the_shank_without_naming_markers():
     try:
         session.begin_preflight(duration_s=cc.PREFLIGHT_MIN_CONTINUOUS_S + 0.3)
         while not session.preflight_done():
-            _pump(mb, det, 1)
+            _pump(session, mb, det, 1)
             time.sleep(0.01)
         v = session.finish_preflight()
         assert v.status == cc.FAIL
@@ -357,7 +387,7 @@ def _no_pose_detector():
 def _run_preflight(session, mailbox, detector, watch_s=0.3):
     session.begin_preflight(duration_s=watch_s)
     while not session.preflight_done():
-        _pump(mailbox, detector, 1)
+        _pump(session, mailbox, detector, 1)
         time.sleep(0.01)
     return session.finish_preflight()
 
@@ -414,7 +444,7 @@ def test_the_no_detection_share_is_measured_not_guessed():
     try:
         session.begin_preflight(duration_s=0.3)
         while not session.preflight_done():
-            _pump(mb, det, 1)
+            _pump(session, mb, det, 1)
             time.sleep(0.01)
         session.finish_preflight()
         assert 0.4 <= session.no_detection_fraction() <= 0.6

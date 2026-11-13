@@ -239,6 +239,36 @@ fn score_waveform_matches_the_reference_verdict_and_penalty() {
             golden::TRIAL_SINGLE_DROP_SW_PASSES,
             golden::TRIAL_SINGLE_DROP_SW_PENALTY,
         ),
+        // The four below were generated into golden.rs and asserted NOWHERE
+        // until 2026-11-02. That is how TRIAL_LOW_AMP came to sit in the
+        // fixtures scoring passes=false for a reason that turned out to be a
+        // defect -- the plateau check's 0.05 deg between-samples threshold is
+        // 5 deg/s at this fixture's 100 Hz, above the trial's own MEDIAN speed
+        // of 4.06 deg/s, so 268 of its 499 samples counted as "not moving" on
+        // a swing the generator's own comment calls genuine. Nothing failed,
+        // because nothing looked. A generated constant with no assertion
+        // behind it is not coverage.
+        (
+            "low amplitude",
+            golden::TRIAL_LOW_AMP_T,
+            golden::TRIAL_LOW_AMP_ANG,
+            golden::TRIAL_LOW_AMP_SW_PASSES,
+            golden::TRIAL_LOW_AMP_SW_PENALTY,
+        ),
+        (
+            "lift and hold",
+            golden::TRIAL_LIFT_HOLD_T,
+            golden::TRIAL_LIFT_HOLD_ANG,
+            golden::TRIAL_LIFT_HOLD_SW_PASSES,
+            golden::TRIAL_LIFT_HOLD_SW_PENALTY,
+        ),
+        (
+            "end to end",
+            golden::TRIAL_E2E_T,
+            golden::TRIAL_E2E_ANG,
+            golden::TRIAL_E2E_SW_PASSES,
+            golden::TRIAL_E2E_SW_PENALTY,
+        ),
     ] {
         let sw = score_waveform(t, ang);
         assert_eq!(sw.passes, want_pass, "{tag}: pass/fail verdict");
@@ -248,6 +278,43 @@ fn score_waveform_matches_the_reference_verdict_and_penalty() {
             "{tag}: params should accompany a scored trial"
         );
     }
+}
+
+/// TRIAL_NOISY_TAIL is left OUT of the loop above because it is the one
+/// fixture where the two ports' continuity windows actually bite, and that is
+/// worth asserting explicitly rather than hiding behind a regenerated
+/// constant.
+///
+/// Both ports reach the same VERDICT on it -- rejected -- and differ only in
+/// how much penalty they assign: 39 from Python's `score_waveform`, which caps
+/// its active-swing window at release + 4.0 s, against 80 here, because
+/// `active_oscillation_window_end` has no cap and runs the window out to
+/// 13.18 s on this trial's noisy tail. Confirmed to be the window and nothing
+/// else: driving the Python reference with the helper's window reproduces 80
+/// exactly.
+///
+/// A penalty gap is not cosmetic even when the verdict agrees, because
+/// `imu_calibration_tuner.tune()` picks the LOWEST-penalty candidate among
+/// those that pass, so the two ports can prefer different calibrations.
+///
+/// This test will fail if the windows are ever unified -- which is the point.
+/// Update it then, do not loosen it. See
+/// docs/reports/2026-11-02-continuity-window-divergence.md.
+#[test]
+fn noisy_tail_is_where_the_two_continuity_windows_diverge() {
+    let sw = score_waveform(golden::TRIAL_NOISY_TAIL_T, golden::TRIAL_NOISY_TAIL_ANG);
+    assert_eq!(
+        sw.passes,
+        golden::TRIAL_NOISY_TAIL_SW_PASSES,
+        "the ports still agree on the verdict"
+    );
+    close(sw.penalty, 80.0, 1e-6, "this port's penalty (uncapped window)");
+    close(
+        golden::TRIAL_NOISY_TAIL_SW_PENALTY,
+        39.0,
+        1e-6,
+        "the Python reference's penalty (4 s cap)",
+    );
 }
 
 #[test]

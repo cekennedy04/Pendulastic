@@ -21,10 +21,10 @@ from pendulastic_imu_server import (
     MadgwickAHRS, _gravity_seed, _qconj, _qmul, _quat_to_euler_deg, wrap180,
     _FLEX_CAPTURE_THRESHOLD, ROLE_PROXIMAL, ROLE_DISTAL,
     GYRO_BIAS_WINDOW_S, GYRO_BIAS_MIN_SAMPLES, _is_stationary_window,
-    GYRO_BIAS_MIN_SNR, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
+    GYRO_BIAS_MIN_SNR, GYRO_BIAS_MAX_RAD_S, _MAX_GYRO_DT_S, _NOMINAL_GYRO_DT_S,
     _gravity_dir_from_hold,
 )
-from pendulastic_pt_score import compute_pt_params
+from pendulastic_pt_score import compute_pt_params, _median_dt
 from imu_calibration_config import load_config, save_config
 from imu_flex_axis import FlexAxisEstimator
 
@@ -144,6 +144,65 @@ TUNING_GRID = [
     for gs in (True, False)
     for method in ("relative", "ockendon", "ockendon_flipped")
 ]
+
+# How long a stretch of "not moving" counts as a staircase artifact, as a
+# DURATION rather than a sample count.
+#
+# This was `run >= 6` samples, which is not one threshold but a different one
+# per sample rate: 0.30 s at the 20 Hz the tests use and 0.06 s at the ~100 Hz
+# production captures at. 0.06 s is short enough that a genuine turning point
+# trips it, because the plateau test is an absolute 0.05 deg per sample while
+# the limb's speed at its extremes DECAYS through the trial. Measured on a
+# clean 12 s / 100 Hz / 0.6 Hz analytic swing (no noise, no artifact): every
+# turning point is flat to within 0.05 deg, and the run lengthens as the
+# amplitude falls -- 4 samples at 18.8 deg of amplitude, 8 samples at 9.6 --
+# so from t = 6.8 s onward each extremum scored violations. 11 in all, on a
+# perfectly smooth curve.
+#
+# 0.30 s is the value the rule already had at 20 Hz, so this changes nothing
+# at the rate every existing test runs at and only tightens the higher rates
+# back to the same meaning. The margin is wide in both directions: natural
+# turning-point runs reach 0.08 s on that trial, while the shortest dropout
+# the suite requires caught is 0.30 s, and a dropout holds EVERY sample equal
+# rather than merely close.
+#
+# See docs/reports/2026-11-02-continuity-window-divergence.md and
+# evaluate_continuity_window.py (`clean` mode).
+_PLATEAU_MIN_S = 0.30
+
+# ...and how slowly it has to be moving to count as "not moving", in deg/s.
+#
+# The test was an absolute 0.05 deg BETWEEN SAMPLES, which is a velocity of
+# 0.05/dt: 1.0 deg/s at 20 Hz, 5 deg/s at 100 Hz, 10 deg/s at 200 Hz. So the
+# faster the stream, the more of a perfectly good swing counted as motionless
+# -- the threshold got laxer exactly where there was more data. Fixing only
+# the run length left this one in place and made 200 Hz worse, not better
+# (5 false rejections of 36, against 1 before).
+#
+# 1.0 deg/s is 0.05 deg per sample at 20 Hz, so this pair -- 1.0 deg/s held
+# for 0.30 s -- is precisely the rule the code already had at the rate every
+# existing test runs at, now meaning the same thing at every rate.
+_PLATEAU_MAX_DEG_S = 1.0
+
+# The clip check's companion, and the same bug in the other direction: how big
+# a one-sample discontinuity counts as a sensor glitch, in deg/s rather than
+# deg between samples.
+#
+# This was an absolute 25 deg BETWEEN SAMPLES, which is 25/dt: 500 deg/s at
+# 20 Hz but 2500 at 100 Hz and 5000 at 200 Hz. Unlike the plateau rule this
+# one gets LOOSER with rate, so the faster the stream the bigger a glitch can
+# hide. Measured by injecting single-sample steps into a clean swing: one is
+# caught from ~500 deg/s at 20 Hz, but needs ~2000 deg/s at 100 Hz and
+# ~6000 at 200 Hz. Production samples at ~100 Hz, so a 1000 deg/s
+# discontinuity -- several times anything a limb can do -- passed silently.
+#
+# 500 deg/s is what the rule already meant at 20 Hz, and it is independently
+# well clear of physiology: the literature peak for a healthy pendulum swing
+# is 221.9 +/- 35.6 deg/s (Kim 1996, n=50 supine, cited in
+# recalibrate_pt_zones._LIT_PEAK_DEG_S), so 500 sits about eight standard
+# deviations above the mean peak while still catching a quarter of what
+# 100 Hz used to let through.
+_CLIP_MAX_DEG_S = 500.0
 
 OCKENDON_FT_RATIO = 1.2   # adult femur:tibia length ratio (Ockendon & Gilbert)
 
@@ -479,8 +538,12 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                         _vals = np.array([vv for _, vv in st.gyro_hold_buf])
                         _mean = _vals.mean(axis=0)
                         _sem = _vals.std(axis=0, ddof=1) / math.sqrt(len(_vals))
-                        st.gyro_bias = np.where(
+                        _est = np.where(
                             np.abs(_mean) >= GYRO_BIAS_MIN_SNR * _sem, _mean, 0.0)
+                        # Mirrors calibrate_gyro_bias()'s motion bound: an
+                        # estimate this large is a swing's tail, not bias.
+                        if np.linalg.norm(_est) <= GYRO_BIAS_MAX_RAD_S:
+                            st.gyro_bias = _est
                         if _os.environ.get("IMU_DEBUG_BIAS"):
                             print(f"[DEBUG]   -> gyro_bias={st.gyro_bias}")
                     st.calibrate_accel_bias()
@@ -704,15 +767,24 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         # exactly what would re-introduce false plateau violations.
         window_end_t = min(t_r[0] + 4.0, settle_t)
 
+    # One dt for both continuity thresholds: each is a rate, not a per-sample
+    # quantity (see _CLIP_MAX_DEG_S and _PLATEAU_MIN_S).
+    _dt = _median_dt(t)
+    clip_step_deg = _CLIP_MAX_DEG_S * _dt
+
     clip_violations = 0
     diffs = np.diff(angle_deg)
     for i in range(len(diffs)):
         if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
             continue
-        if abs(diffs[i]) > 25.0:
+        if abs(diffs[i]) > clip_step_deg:
             clip_violations += 1
 
     active_idx = np.where((t >= t_r[0]) & (t <= window_end_t))[0]
+    # A duration, not a sample count -- see _PLATEAU_MIN_S. Floored at 2 so a
+    # very slow stream cannot make the check unreachable.
+    plateau_min_run = max(2, int(round(_PLATEAU_MIN_S / _dt)))
+    plateau_step_deg = _PLATEAU_MAX_DEG_S * _dt
     plateau_violations = 0
     run = 0
     for i in active_idx:
@@ -721,9 +793,9 @@ def score_waveform(t: np.ndarray, angle_deg: np.ndarray) -> dict:
         if not (np.isfinite(angle_deg[i]) and np.isfinite(angle_deg[i + 1])):
             run = 0
             continue
-        if abs(angle_deg[i + 1] - angle_deg[i]) < 0.05:
+        if abs(angle_deg[i + 1] - angle_deg[i]) < plateau_step_deg:
             run += 1
-            if run >= 6:
+            if run >= plateau_min_run:
                 plateau_violations += 1
         else:
             run = 0

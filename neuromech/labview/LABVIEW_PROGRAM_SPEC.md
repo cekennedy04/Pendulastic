@@ -137,7 +137,7 @@ It therefore needs RT access the current arrangement does not give (§1).
 1. Power, zero (power OFF → hand to centre → ZeroAngle → Set Zero T&V → power ON → SET), limits.
 2. **Chirp identification run** (`player/R000.csv`, 0.2 → 10 Hz, ±8°, 20 s): fit the 2nd-order plant
    (`python -m neuromech.ilc --identify`); refuse to continue if the resonance moved > 10 % from the last session.
-3. **Plan it:** `python -m neuromech.session plan --name <S> --groups A,M --reps 3 --repeat A-P2:10 --chirp`
+3. **Plan it:** `python -m neuromech.session plan --name <S> --groups A,M --reps 3 --repeat A-P1p:10 --chirp`
    writes a blind run sheet and one `player/<run>.csv` per run (R000 = chirp, then the P2 × 10 repeatability block, then the rest randomised).
 4. **Per run:** check `peak_deg` → Player `CSV Path` = `player/<run>.csv` → start phone → start the
    log → run the Player → let the app auto-stop (≥ 6 s still) → stop phone → stop log → **write the
