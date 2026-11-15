@@ -682,6 +682,437 @@ def test_score_exits_with_status_1_on_a_tracking_flag_and_takes_another_limit(sl
     assert (rep.status == "scored").all() and (rep.tracking_limit_ms == 80.0).all()      # the limit used is in the report
 
 
+# ── the session's own plant as the yardstick (re-review 2026-11-12, sections 3d and 3e) ───────────────
+# With a chirp run in the session, a run is held to what the plant identified from that chirp does with the
+# run's own command (tracking) and with the setpoint its log recorded (release). Everything here is the
+# simulated plant, Player and encoder; no rig log has been through it.
+PLANTS = {
+    "3 Hz, zeta 0.7": dict(wn_hz=3.0, zeta=0.7, delay_ms=0.0),
+    "identified": dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0),
+    "8 Hz": dict(wn_hz=8.0, zeta=0.23, delay_ms=0.0),
+    "30 % slower and 30 % less damped": dict(wn_hz=6.35 * 0.7, zeta=0.23 * 0.7, delay_ms=0.0),
+    "identified + 40 ms": dict(wn_hz=6.35, zeta=0.23, delay_ms=40.0),
+    "12 Hz, zeta 0.7": dict(wn_hz=12.0, zeta=0.7, delay_ms=0.0),
+}
+# the review's eight, plus the six nearest a limit on some plant: the three with the largest tracking error
+# (B-clonus, S-lam3, R-reflex-sat), the fastest and the slowest command (C-f-high, C-f-low) and C-N-high
+PLANT_SIDS = SLOW_SIDS + ["B-clonus", "S-lam3", "R-reflex-sat", "C-f-high", "C-f-low", "C-N-high"]
+_fits = {}
+
+
+def _logged(sp, seed, respond, fault=None, k_fault=None, noise=0.02, pad0=1500, pad1=1000, phase_ms=0.0):
+    """One log, in memory, as dryrun.write_encoder_bin makes it: the Player's staircase (with idle time either
+    side) -> respond() -> (a fault on the arm's motion) -> encoder noise. -> (logged setpoint, position)."""
+    rng = np.random.default_rng(seed)
+    held = DR.player_hold(sp, rng, phase_ms=phase_ms); spp = np.concatenate([np.zeros(pad0), held, np.full(pad1, held[-1])])
+    y = respond(spp)
+    if fault is not None: y = fault(y.copy(), pad0 + k_fault, float(np.sign(sp[k_fault + 300] - sp[k_fault])))
+    return spp, y + rng.normal(0, noise, len(y))
+
+
+def _rig(u, plant):
+    """A linear rig, written out here so that the logs the real-file tests score do not come from the code
+    under test: wn^2 / (s^2 + 2 zeta wn s + wn^2) held first-order between samples, then the delay."""
+    from scipy.signal import cont2discrete, lfilter
+    wn = 2 * np.pi * plant["wn_hz"]; u = np.asarray(u, float)
+    bd, ad, _ = cont2discrete(([wn * wn], [1.0, 2 * plant["zeta"] * wn, wn * wn]), 1e-3, method="foh")
+    y = lfilter(bd.ravel(), ad, u - u[0]) + u[0]; n = np.arange(len(u))
+    return np.interp(n - plant.get("delay_ms", 0.0), n, y)
+
+
+def _chirp_fit(plant=None, respond=None, seed=7):
+    """The session's R000 in memory, found in its log and identified as session.score does it.
+    -> (fit, why it is not trusted or "", misfit)."""
+    t, sp, *_ = SS.chirp_command()
+    spp, pos = _logged(sp, seed, respond or (lambda u: SS._model_response(u, plant)))
+    k0 = ilc.locate(sp, spp, 1000.0); pos = pos[k0:k0 + len(sp)]
+    fit = ilc.identify(sp, pos, 1000.0)
+    return (fit,) + SS._chirp_trust(fit, sp, pos)
+
+
+def _fit_of(name):
+    if name not in _fits: _fits[name] = _chirp_fit(PLANTS[name])[0]
+    return _fits[name]
+
+
+def _judge(sid, fit, plant=None, respond=None, fault=None, seed=11, phase_ms=0.0):
+    """One run through the encoder branch of session.score, in memory, judged against `fit`.
+    -> dict(kind, time_err_ms, pred_ms, ratio, dlag_ms, why); kind is the release flag ("" = usable)."""
+    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", f"{sid}.csv"))
+    k = int(np.argmax(ph == 2)); sw = ph == 2; t_rel = float(t[k])
+    spp, pos = _logged(sp, seed, respond or (lambda u: SS._model_response(u, plant)), fault, k, phase_ms=phase_ms)
+    k0 = ilc.locate(sp, spp, 1000.0); pos_all = pos[k0:]; t_all = t[0] + np.arange(len(pos_all)) / 1000.0
+    rel = SS._delivered_release(t, sp, t_all, pos_all, t_rel)
+    out = dict(kind=rel["kind"], time_err_ms=np.nan, pred_ms=np.nan, ratio=np.nan, dlag_ms=np.nan, why=None)
+    if rel["kind"] not in ("", "lag"): return out
+    rms, terr = SS._tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
+    pred = SS._plant_prediction(t, sp, sw, t_rel, fit, t_all, spp[k0:])
+    out.update(time_err_ms=terr, pred_ms=pred["time_err_ms"], ratio=terr / pred["time_err_ms"],
+               dlag_ms=(rel["lag_s"] - pred["lag_s"]) * 1e3, why=SS._plant_verdict(terr, rms, rel["lag_s"], pred))
+    return out
+
+
+def _lurch(deg, over_ms=150, from_ms=30, decay_ms=200):
+    """The re-reviewer's forward lurch: extra motion in the fall direction, a half-cosine rise of deg over
+    over_ms starting from_ms after the commanded release, then decaying with time constant decay_ms."""
+    def f(y, k, s):
+        n = np.arange(len(y)) - (k + int(from_ms))
+        b = np.where(n < 0, 0.0, np.where(n < over_ms, 0.5 * (1 - np.cos(np.pi * np.clip(n, 0, over_ms) / over_ms)), 1.0))
+        return y + s * deg * b * np.where(n > over_ms, np.exp(-(n - over_ms) / decay_ms), 1.0)
+    return f
+
+
+def _bump(amp, width_ms, at_ms=0):
+    """The first review's forward lurch: a sin-squared pulse in the fall direction, no tail."""
+    def f(y, k, s):
+        n = np.arange(len(y)) - (k + int(at_ms)); m = (n >= 0) & (n < width_ms)
+        y[m] += s * amp * np.sin(np.pi * n[m] / width_ms) ** 2; return y
+    return f
+
+
+def _stiction(ms, catch_ms=200):
+    """The re-reviewer's stiction: the arm's motion from the commanded release on is ms late, the delay
+    closing linearly over catch_ms once it has moved."""
+    def f(y, k, s):
+        n = np.arange(len(y) - k).astype(float); dly = ms * np.clip(1 - (n - ms) / catch_ms, 0, 1)
+        y[k:] = np.interp(k + n - dly, np.arange(len(y)), y); return y
+    return f
+
+
+def test_the_model_is_the_dry_runs_plant():
+    """The yardstick has to be the plant the dry run delivers through, or a clean run would not sit on its own
+    prediction. _model_response is a difference equation (lsim takes seconds per record); same numbers."""
+    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", "A-P0.csv"))
+    held = DR.player_hold(sp, np.random.default_rng(1))
+    for plant in (DR.PLANT, dict(wn_hz=4.445, zeta=0.161, delay_ms=20.0)):
+        assert np.max(np.abs(SS._model_response(held, plant) - DR.plant_response(held, 1000.0, plant))) < 1e-6
+        assert np.max(np.abs(_rig(held, plant) - DR.plant_response(held, 1000.0, plant))) < 1e-6      # the tests' own rig
+    # a fractional delay moves the response by that much: half a millisecond on a 100 deg/s ramp is 0.05 deg
+    ramp = np.concatenate([np.zeros(500), 0.1 * np.arange(3000.0)])
+    d = SS._model_response(ramp, dict(wn_hz=6.35, zeta=0.23, delay_ms=0.5)) - SS._model_response(ramp, dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0))
+    assert abs(d[2500] + 0.05) < 0.002, d[2500]
+
+
+def test_the_plant_derived_limit_in_numbers():
+    """The limits as literal numbers. A test that takes them from the module follows them wherever they go."""
+    assert (SS.TRACKING_PRED_MARGIN, SS.TRACKING_PRED_FLOOR_MS, SS.RELEASE_PRED_TOL_S) == (1.15, 4.0, 0.004)
+    assert SS._tracking_limit(14.0) == pytest.approx(16.1) and SS._tracking_limit(20.0) == pytest.approx(23.0)
+    assert SS._tracking_limit(3.4) == 4.0 and SS._tracking_limit(0.1) == 4.0 and SS._tracking_limit(3.6) == pytest.approx(4.14)
+    pred = dict(time_err_ms=14.0, lag_s=0.030)
+    assert SS._plant_verdict(16.0, 1.5, 0.030, pred) == ""
+    why = SS._plant_verdict(16.2, 1.5, 0.030, pred)
+    assert why.startswith("tracking error 16.2 ms") and "1.16 times the 14.0 ms" in why and "limit 16.1 ms" in why, why
+    assert SS._plant_verdict(14.0, 1.5, 0.0339, pred) == "" and SS._plant_verdict(14.0, 1.5, 0.0261, pred) == ""
+    late, early = SS._plant_verdict(14.0, 1.5, 0.0341, pred), SS._plant_verdict(14.0, 1.5, 0.0259, pred)
+    assert late.startswith("the release is +4.1 ms from where the plant") and "late: stiction or a slow start" in late, late
+    assert early.startswith("the release is -4.1 ms from where the plant") and "early: a lurch" in early, early
+    both = SS._plant_verdict(30.0, 3.0, 0.050, pred)
+    assert "; and the release is +20.0 ms" in both and both.startswith("tracking error 30.0 ms"), both
+    # the floor: a rig that tracks almost perfectly is predicted under 1 ms, and is not flagged at 3.9
+    assert SS._plant_verdict(3.9, 0.3, 0.030, dict(time_err_ms=0.2, lag_s=0.030)) == ""
+    assert "limit 4.0 ms" in SS._plant_verdict(4.1, 0.3, 0.030, dict(time_err_ms=0.2, lag_s=0.030))
+    # no logged setpoint to predict the release from: the tracking half still judges
+    assert SS._plant_verdict(14.0, 1.5, 0.090, dict(time_err_ms=14.0, lag_s=np.nan)) == ""
+
+
+@pytest.mark.parametrize("name", list(PLANTS))
+def test_a_good_run_is_not_flagged_against_its_own_plant(name):
+    """14 scenarios x 2 seeds per plant, each plant identified from its own chirp. No flag on any of them, with
+    room: measured tracking is 0.90 to 1.12 of predicted (limit 1.15) and the release within 1.2 ms of
+    predicted (limit 4). Measured on these runs: ratio 0.92 to 1.11, release -0.7 to +0.8 ms."""
+    fit = _fit_of(name); plant = PLANTS[name]
+    assert abs(fit["wn_hz"] / plant["wn_hz"] - 1) < 0.04 and abs(fit["zeta"] - plant["zeta"]) < 0.03, fit
+    res = [_judge(sid, fit, plant, seed=seed) for sid in PLANT_SIDS for seed in (11, 5)]
+    ok = [r for r in res if r["kind"] in ("", "lag")]
+    # on the 3 Hz plant the release itself is uncertain for some scenarios (A.5: "ambiguous"); those runs are
+    # release flagged and never reach this check
+    assert len(ok) >= (18 if name == "3 Hz, zeta 0.7" else 28), [r["kind"] for r in res]
+    assert all(r["why"] == "" for r in ok), [r["why"] for r in ok if r["why"]]
+    assert all(abs(r["dlag_ms"]) < 1.2 for r in ok), sorted(round(r["dlag_ms"], 2) for r in ok)
+    if name == "12 Hz, zeta 0.7":
+        # predicted 0.03 to 2.8 ms; what is measured is the Player's staircase and the encoder's noise, which
+        # the model does not contain. Without the floor 26 of these 28 good runs would be flagged.
+        assert all(r["time_err_ms"] < 3.5 for r in ok), sorted(round(r["time_err_ms"], 2) for r in ok)
+        assert sum(r["ratio"] > 1.15 for r in ok) >= 15, sorted(round(r["ratio"], 2) for r in ok)
+    else:
+        assert all(0.90 < r["ratio"] < 1.12 for r in ok), sorted(round(r["ratio"], 3) for r in ok)
+    if name == "30 % slower and 30 % less damped":
+        # the plant on which the fixed 25 ms flagged 49 of 66 good runs: 19 of these 28 are over 25 ms
+        assert sum(r["time_err_ms"] > 25.0 for r in ok) >= 10, sorted(round(r["time_err_ms"], 1) for r in ok)
+
+
+def test_where_the_players_tick_falls_does_not_move_the_release_check():
+    """The Player's 10 ms tick falls anywhere against the command, and ilc.locate then finds the command 3 to 8
+    samples into the log depending on where. A release predicted from the COMMAND carries that offset (clean
+    runs -4.5 to +4.8 ms from predicted over the library: no limit under 5 ms holds). Predicted from the setpoint
+    the log recorded it does not: the same eight runs at ten tick phases stay within 1 ms, and unflagged."""
+    fit = _fit_of("identified"); rng = np.random.default_rng(3)
+    res = [_judge(sid, fit, PLANTS["identified"], seed=100 + i, phase_ms=float(ph))
+           for sid in SLOW_SIDS for i, ph in enumerate(list(np.arange(0.0, 10.0, 2.0)) + list(rng.uniform(0, 10, 5)))]
+    assert len(res) == 80 and all(r["kind"] in ("", "lag") for r in res)
+    assert all(r["why"] == "" for r in res), [r["why"] for r in res if r["why"]]
+    assert all(abs(r["dlag_ms"]) < 1.0 for r in res), sorted(round(r["dlag_ms"], 2) for r in res)
+    assert all(0.93 < r["ratio"] < 1.08 for r in res), sorted(round(r["ratio"], 3) for r in res)
+    # and the command-driven prediction on the same logs does move with the tick: more than 3 ms of spread
+    t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", "A-P0.csv")); k = int(np.argmax(ph == 2)); d = []
+    for phase in (0.0, 2.0, 4.0, 6.0, 8.0):
+        spp, pos = _logged(sp, 7, lambda u: SS._model_response(u, DR.PLANT), phase_ms=phase); k0 = ilc.locate(sp, spp, 1000.0)
+        rel = SS._delivered_release(t, sp, t[0] + np.arange(len(pos) - k0) / 1000.0, pos[k0:], float(t[k]))
+        d.append((rel["lag_s"] - SS._delivered_release(t, sp, t, SS._model_response(sp, fit), float(t[k]))["lag_s"]) * 1e3)
+    assert max(d) - min(d) > 3.0, d
+
+
+# fault -> (constructor, what must appear in the reason on every run, the smallest |release - predicted| in ms)
+FAULTS = {
+    "sluggish start, 50 % over 0.3 s": (lambda: _slow_start(0.5, 300), "late: stiction or a slow start", 7.0),
+    "slow start, 30 % over 0.6 s": (lambda: _slow_start(0.3, 600), "late: stiction or a slow start", 15.0),
+    "forward lurch, 6 deg over 150 ms from +30 ms": (lambda: _lurch(6), "early: a lurch", 7.0),
+    "forward lurch, sin-squared 6 deg, 150 ms wide, from +30 ms": (lambda: _bump(6, 150, 30), "early: a lurch", 15.0),
+    "stiction 20 ms": (lambda: _stiction(20), "late: stiction or a slow start", 9.0),
+    "stiction 60 ms": (lambda: _stiction(60), "late: stiction or a slow start", 30.0),
+}
+
+
+@pytest.mark.parametrize("name", ["identified", "8 Hz", "30 % slower and 30 % less damped", "identified + 40 ms", "12 Hz, zeta 0.7"])
+@pytest.mark.parametrize("fault", list(FAULTS))
+def test_a_fault_in_every_run_is_flagged_against_the_plant(fault, name):
+    """The review's eight scenarios, every run with the fault, the chirp from the same (healthy) plant. Every
+    run whose release is usable is flagged, and the release check names the direction. These are the faults
+    comparing runs with each other cannot see; the first and third are the re-review's admitted limits (b)
+    and (a), scored without a flag on 1505fb8."""
+    make, says, far = FAULTS[fault]
+    res = [_judge(sid, _fit_of(name), PLANTS[name], fault=make()) for sid in SLOW_SIDS]
+    ok = [r for r in res if r["kind"] in ("", "lag")]
+    assert len(ok) >= 6, [r["kind"] for r in res]                 # the rest are release flagged, which is also a flag
+    assert all(r["why"] and says in r["why"] for r in ok), [(round(r["dlag_ms"], 1), r["why"][:60]) for r in ok]
+    assert all(abs(r["dlag_ms"]) > far for r in ok), sorted(round(r["dlag_ms"], 1) for r in ok)
+
+
+def test_what_the_fixed_limit_and_the_tracking_ratio_alone_would_have_missed():
+    """Why there are two checks. On the identified plant the 50 % sluggish start is under the old fixed 25 ms
+    on all eight runs (19.4 to 22.6 ms) and 1.39 to 1.60 times its prediction: the ratio sees it. The forward
+    lurch does not make tracking worse at all on half the runs (0.89 to 2.35 of predicted): only the release
+    against the plant's sees it."""
+    fit = _fit_of("identified")
+    slug = [_judge(sid, fit, PLANTS["identified"], fault=_slow_start(0.5, 300)) for sid in SLOW_SIDS]
+    assert all(r["time_err_ms"] < 25.0 for r in slug) and all(r["ratio"] > 1.3 for r in slug), [(round(r["time_err_ms"], 1), round(r["ratio"], 2)) for r in slug]
+    assert all("tracking error" in r["why"] and "; and the release is +" in r["why"] for r in slug)
+    lurch = [_judge(sid, fit, PLANTS["identified"], fault=_lurch(6)) for sid in SLOW_SIDS]
+    assert sum(r["ratio"] <= 1.15 for r in lurch) >= 3 and sum(r["time_err_ms"] < 25.0 for r in lurch) >= 6, [(round(r["time_err_ms"], 1), round(r["ratio"], 2)) for r in lurch]
+    assert all(r["why"] for r in lurch) and all(r["dlag_ms"] < -7.0 for r in lurch)
+
+
+@pytest.mark.parametrize("fault, make, lo, hi", [
+    ("start at 90 % over 0.3 s", lambda: _slow_start(0.9, 300), 0.5, 3.0),
+    ("forward lurch of 1 deg", lambda: _lurch(1), -3.5, -0.5),
+    ("stiction of 2 ms", lambda: _stiction(2), 0.5, 2.5),
+])
+def test_faults_below_the_limits_are_not_caught_and_that_is_stated(fault, make, lo, hi):
+    """DOCUMENTED AS NOT CAUGHT. The checks have a resolution: these three move the release by less than 4 ms
+    and tracking by less than 15 %, on all eight runs, and pass. The release offset is real and has the
+    fault's sign; it is in report.csv (enc_lag_minus_pred_ms) for whoever looks."""
+    res = [_judge(sid, _fit_of("identified"), PLANTS["identified"], fault=make()) for sid in SLOW_SIDS]
+    assert all(r["why"] == "" for r in res), [(round(r["dlag_ms"], 1), round(r["ratio"], 2), r["why"]) for r in res]
+    assert all(lo < r["dlag_ms"] < hi for r in res), sorted(round(r["dlag_ms"], 2) for r in res)
+
+
+# A rig whose fault is a property of the RIG, so that it acts on the chirp as it acts on every run.
+def _stick_slip(u, breakaway_deg, plant=None, sub=4):
+    """The identified loop with stiction: the arm at rest does not move until the setpoint is breakaway_deg
+    from it, and sticks again whenever its velocity crosses zero inside that band."""
+    plant = plant or DR.PLANT; wn = 2 * np.pi * plant["wn_hz"]; z = plant["zeta"]; dt = 1e-3 / sub
+    y = float(u[0]); v = 0.0; stuck = True; out = np.empty(len(u))
+    for i, ui in enumerate(np.asarray(u, float).tolist()):
+        for _ in range(sub):
+            e = ui - y
+            if stuck:
+                if abs(e) <= breakaway_deg: continue
+                stuck = False
+            v_new = v + (wn * wn * e - 2 * z * wn * v) * dt
+            if v != 0.0 and v_new * v < 0 and abs(e) < breakaway_deg:
+                stuck = True; v = 0.0; continue
+            v = v_new; y += v * dt
+        out[i] = y
+    return out
+
+
+def _slew_limited(u, rate_dps, plant=None):
+    """The identified loop behind a drive that cannot move the setpoint faster than rate_dps."""
+    step = rate_dps / 1000.0; ue = np.empty(len(u)); x = float(u[0])
+    for i, ui in enumerate(np.asarray(u, float).tolist()):
+        x += min(max(ui - x, -step), step); ue[i] = x
+    return _rig(ue, plant or DR.PLANT)
+
+
+def test_the_chirp_still_identifies_the_plant_on_a_rig_with_stiction():
+    """A.7's open question, in simulation. Stick-slip with a 1 deg breakaway is in the chirp as it is in every
+    run: the arm sticks at each of the chirp's turning points. The identification does not absorb it (6.35 Hz,
+    zeta 0.234, against a healthy 6.34, 0.234), the fit is still trusted (misfit 7 %, limit 10), and the
+    rig's runs are flagged against it: tracking 1.35 to 1.47 times predicted, release 4.4 to 4.8 ms late."""
+    rig = lambda u: _stick_slip(u, 1.0)                                                            # noqa: E731
+    fit, why, misfit = _chirp_fit(respond=rig)
+    assert abs(fit["wn_hz"] - 6.35) < 0.10 and abs(fit["zeta"] - 0.23) < 0.015 and abs(fit["delay_ms"]) < 2.0, fit
+    assert why == "" and 0.05 < misfit < 0.10, (why, misfit)
+    res = [_judge(sid, fit, respond=rig) for sid in ("A-P0", "B-claspknife", "M-tone_L2", "D-short")]
+    assert all(r["why"] and "tracking error" in r["why"] for r in res), [r["why"] for r in res]
+    assert all(r["ratio"] > 1.25 and r["dlag_ms"] > 3.5 for r in res), [(round(r["ratio"], 2), round(r["dlag_ms"], 1)) for r in res]
+
+
+def test_a_chirp_the_plant_cannot_follow_is_not_trusted():
+    """The other answer to the same question. A drive that saturates at 150 deg/s is slower than the chirp
+    asks for above 3 Hz (8 deg at 10 Hz is 500 deg/s) and not slower than a fall's onset. The chirp then
+    identifies a plant the rig is not (5.7 Hz, zeta 0.32, 9 ms of delay; R2 0.91), every release would be
+    10 ms "early" against it, and a good arm would be flagged in every run. It is refused instead, and so is
+    stick-slip coarse enough to stop the model reproducing the chirp."""
+    fit, why, misfit = _chirp_fit(respond=lambda u: _slew_limited(u, 150.0))
+    assert fit["wn_hz"] < 6.0 and fit["delay_ms"] > 5.0 and fit["r2"] < 0.95, fit
+    assert why.startswith("the chirp fit is poor (R2 0.9"), why
+    fit, why, misfit = _chirp_fit(respond=lambda u: _stick_slip(u, 2.0))
+    assert fit["r2"] > 0.99 and 0.12 < misfit < 0.22 and "of the chirp's own motion unexplained (limit 10 %)" in why, (fit, why, misfit)
+    # the gate in numbers: a healthy plant's chirp is at R2 0.995 or more and a misfit of 1 to 6 %
+    assert (SS.CHIRP_MIN_R2, SS.CHIRP_MAX_MISFIT) == (0.95, 0.10)
+    fit, why, misfit = _chirp_fit(PLANTS["identified"])
+    assert why == "" and fit["r2"] > 0.995 and misfit < 0.03, (fit, why, misfit)
+
+
+# The same through real files: plan --chirp, .bin logs, session.score.
+CHIRP_SIDS = ["A-P0", "B-claspknife", "M-tone_L2", "S-lam3"]
+
+
+def _write_rig_log(path, sp, phase, vel, seed, respond, fault=None, pre_s=1.5, post_s=1.0, fs=1000.0):
+    """A LabVIEW log of one command on a rig given by respond() (+ a fault at the release), as _write_arm_log."""
+    k = int(np.argmax(phase == 2)) if (phase == 2).any() else None
+    spp, pos = _logged(sp, seed, respond, fault if k is not None else None, k, pad0=int(pre_s * fs), pad1=int(post_s * fs))
+    pad0, pad1 = int(pre_s * fs), int(post_s * fs)
+    ch = np.vstack([pos, np.gradient(pos, 1 / fs), spp, np.zeros_like(spp), np.concatenate([-np.ones(pad0), phase, -np.ones(pad1)]),
+                    np.zeros_like(spp), np.concatenate([np.zeros(pad0), vel, np.zeros(pad1)])])
+    ch.T.astype(">f8").tofile(path)
+
+
+@pytest.fixture(scope="module")
+def chirped(tmp_path_factory):
+    """One planned session with a chirp run (R000 + four scenarios) and one folder of logs per rig:
+      good       the identified plant
+      sluggish   the same, every run starting at 50 % over 0.3 s (the chirp is healthy: the fault is at the release)
+      lurch      the same, every run lurching forward 6 deg over 150 ms from +30 ms
+      slower     a plant 30 % slower and 30 % less damped, nothing wrong with it
+      saturated  the identified plant behind a drive limited to 150 deg/s (good runs, a chirp it cannot follow)
+      nochirp    the good logs without R000.bin
+    -> (sessions root, {rig: encoder folder})."""
+    root = tmp_path_factory.mktemp("chirped"); sess = str(root / "sessions")
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        d = SS.plan("CH", sids=CHIRP_SIDS, seed=1, chirp=True)
+    finally:
+        SS.SESS = old
+    key = [l.strip().split(",") for l in open(os.path.join(d, "key.csv"))][1:]
+    lin = lambda plant: (lambda u: _rig(u, plant))                                                  # noqa: E731
+    rigs = dict(good=(lin(DR.PLANT), None), sluggish=(lin(DR.PLANT), _slow_start(0.5, 300)), lurch=(lin(DR.PLANT), _lurch(6)),
+                slower=(lin(PLANTS["30 % slower and 30 % less damped"]), None), saturated=(lambda u: _slew_limited(u, 150.0), None),
+                nochirp=(lin(DR.PLANT), None))
+    dirs = {}
+    for which, (respond, fault) in rigs.items():
+        enc = root / which; enc.mkdir(); dirs[which] = str(enc)
+        for j, (rid, sid, _dur) in enumerate(key):
+            if which == "nochirp" and sid == "R-chirp": continue
+            a = np.genfromtxt(os.path.join(d, "commands", rid + ".csv"), delimiter=",", names=True)
+            _write_rig_log(str(enc / f"{rid}.bin"), a["setpoint_deg"], a["phase"].astype(int), a["vel_dps"], 11 + j, respond, fault)
+    return sess, dirs
+
+
+def _score_chirped(chirped, which, *args, **kw):
+    sess, dirs = chirped
+    old = SS.SESS
+    try:
+        SS.SESS = sess
+        if args and args[0] == "cli":
+            try:
+                SS.main(["score", "--name", "CH", "--encoder-dir", dirs[which]] + list(args[1:]))
+            except SystemExit as ex:
+                return ex.code
+            return 0
+        rep = SS.score("CH", dirs[which], **kw)
+    finally:
+        SS.SESS = old
+    return rep[rep.sid != "R-chirp"].set_index("sid")
+
+
+def test_with_a_chirp_each_run_is_held_to_its_own_plants_prediction(chirped, capsys):
+    capsys.readouterr(); good = _score_chirped(chirped, "good"); out = capsys.readouterr().out
+    assert (good.status == "scored").all(), good.status.tolist()
+    assert (good.tracking_limit_source == "plant").all()
+    assert "tracking is judged against the plant identified from R000 (6.3" in out and "NOT PLANT-DERIVED" not in out, out
+    assert "max(1.15 x predicted, 4 ms) or its release is more than 4 ms from predicted" in out
+    # the limit is each run's own: 1.15 x what the identified plant predicts for that command, in the report
+    assert np.allclose(good.tracking_limit_ms, 1.15 * good.tracking_pred_ms) and good.tracking_limit_ms.nunique() == 4
+    assert ((good.tracking_limit_ms > 15.5) & (good.tracking_limit_ms < 22.5)).all(), good.tracking_limit_ms.tolist()    # was 25 for all
+    q = good.tracking_time_err_ms / good.tracking_pred_ms
+    assert ((q > 0.95) & (q < 1.06)).all(), q.tolist()
+    assert (good.enc_lag_minus_pred_ms.abs() < 1.0).all(), good.enc_lag_minus_pred_ms.tolist()
+    assert np.allclose(good.enc_lag_minus_pred_ms, good.enc_release_lag_ms - good.enc_release_lag_pred_ms)
+    assert _score_chirped(chirped, "good", "cli") == 0
+
+
+@pytest.mark.parametrize("which, says", [("sluggish", "late: stiction or a slow start"), ("lurch", "early: a lurch")])
+def test_a_fault_in_every_run_of_a_chirped_session_is_flagged(chirped, which, says):
+    """The re-review's admitted limits (b) and (a): on 1505fb8 the runs flagged here for tracking are "scored".
+    The lurch on S-lam3 (a slow scenario) is caught by the release gate instead ("release uncertain"), as it
+    was before; every other run is flagged against the plant, and no run of either session is left "scored"."""
+    bad = _score_chirped(chirped, which)
+    trk = bad[bad.status.str.startswith("tracking flagged: ")]
+    assert len(trk) == (4 if which == "sluggish" else 3) and trk.status.str.contains(says, regex=False).all(), bad.status.tolist()
+    assert bad.status.str.contains(" flagged: ", regex=False).all() and not (bad.status == "scored").any(), bad.status.tolist()
+    assert not bad.delivered_band_ok.astype(bool).any() and np.isfinite(trk.enc_pt7).all()       # scored, kept, not deliveries
+    assert (trk.enc_lag_minus_pred_ms.abs() > 4.0).all() and (trk.enc_lag_minus_pred_ms.abs() > 9.0).sum() >= 3, trk.enc_lag_minus_pred_ms.tolist()
+    assert len(SS.tracking_flags(bad.reset_index())) == len(trk) and _score_chirped(chirped, which, "cli") == 1
+    if which == "sluggish":                                    # under the old fixed limit, every one of them
+        assert (bad.tracking_time_err_ms < 25.0).all(), bad.tracking_time_err_ms.tolist()
+
+
+def test_a_slower_rig_is_judged_as_the_rig_it_is(chirped):
+    """30 % slower and 30 % less damped. Under the fixed 25 ms three of these four good runs are flagged
+    (25.2, 25.3 and 30.7 ms; 1505fb8). Against their own plant's prediction none is."""
+    rep = _score_chirped(chirped, "slower")
+    assert (rep.status == "scored").all(), rep.status.tolist()
+    assert (rep.tracking_time_err_ms > 25.0).sum() == 3 and rep.tracking_time_err_ms.max() > 30.0, rep.tracking_time_err_ms.tolist()
+    assert (rep.tracking_time_err_ms < rep.tracking_limit_ms).all() and rep.tracking_limit_ms.max() > 34.0, rep.tracking_limit_ms.tolist()
+
+
+def test_without_a_chirp_the_limit_is_the_fixed_one_and_says_so(chirped, slow, capsys):
+    """No R000 in the plan (the SLOW session), or R000 planned and its log missing: the fixed 25 ms, loudly."""
+    good = slow[0]["good"]
+    assert (good.tracking_limit_source == "fixed").all() and (good.tracking_limit_ms == 25.0).all()
+    assert good.tracking_limit_note.iloc[0].startswith("TRACKING LIMIT IS NOT PLANT-DERIVED: there is no chirp run in this session"), good.tracking_limit_note.iloc[0]
+    assert "tracking_pred_ms" not in good
+    capsys.readouterr(); rep = _score_chirped(chirped, "nochirp"); out = capsys.readouterr().out
+    assert (rep.status == "scored").all() and (rep.tracking_limit_source == "fixed").all() and (rep.tracking_limit_ms == 25.0).all()
+    assert "TRACKING LIMIT IS NOT PLANT-DERIVED: the chirp run R000 has no encoder log, so every run is held to the fixed 25 ms" in out, out
+    assert rep.tracking_limit_note.str.contains("cannot see a fault that is in every run").all()
+
+
+def test_the_tracking_limit_override_still_works_with_a_chirp_and_is_recorded(chirped, capsys):
+    """--tracking-limit-ms judges every run by that number alone; the plant's prediction stays in the report."""
+    capsys.readouterr(); rep = _score_chirped(chirped, "sluggish", tracking_limit_ms=80.0); out = capsys.readouterr().out
+    assert (rep.status == "scored").all(), rep.status.tolist()
+    assert (rep.tracking_limit_ms == 80.0).all() and (rep.tracking_limit_source == "override").all()
+    assert "TRACKING LIMIT OVERRIDE USED: every run is held to --tracking-limit-ms 80" in out
+    assert np.isfinite(rep.tracking_pred_ms).all() and (rep.enc_lag_minus_pred_ms > 4.0).all()   # still reported
+    tight = _score_chirped(chirped, "good", tracking_limit_ms=10.0)
+    assert tight.status.str.contains("is over the limit of 10 ms", regex=False).all(), tight.status.tolist()
+    assert _score_chirped(chirped, "sluggish", "cli", "--tracking-limit-ms", "80") == 0
+
+
+def test_an_untrusted_chirp_falls_back_and_fails_the_exit_status(chirped, capsys):
+    """A chirp the drive cannot follow identifies a plant the rig is not. It is not used: the runs are held to
+    the fixed limit, the report says why, and `score` exits 1 because a chirp that does not fit is a finding."""
+    capsys.readouterr(); rep = _score_chirped(chirped, "saturated"); out = capsys.readouterr().out
+    assert (rep.tracking_limit_source == "fixed").all() and (rep.tracking_limit_ms == 25.0).all()
+    assert "TRACKING LIMIT IS NOT PLANT-DERIVED: the plant identified from R000 is not trusted: the chirp fit is poor (R2 0.9" in out, out
+    assert "CHIRP FINDING" in out
+    assert _score_chirped(chirped, "saturated", "cli") == 1
+
+
 # ── small fixes in the rewritten code (review 2026-11-11, change 6) ────────────────────────────────────
 def test_the_phone_is_scored_over_the_commands_span_like_the_encoder(tmp_path):
     """D-short is a short record. The phone was scored to the end of its own recording, 0.9 s past the

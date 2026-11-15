@@ -697,7 +697,7 @@ Three things in this table are not what was asked for, and are stated plainly:
   (lurch in every run, sluggish start, stiction accepted by override) at least 8 ms from it. Open: the
   margin, an absolute floor for a rig that tracks almost perfectly, a session planned without `--chirp`,
   and whether a chirp identifies the plant correctly on a rig that has the release fault. It should be
-  done before rig data is interpreted.
+  done before rig data is interpreted. **Done 2026-11-14: section B.**
 - A forward lurch in every run, and a gentle one among good runs (A.6, 1); the override cases (A.6, 2).
 - When half or more of a session's runs share a fault the median belongs to the fault, and the good runs
   are the ones flagged "this run, not the rig" (re-reviewer's measurement: 4 of 8 with 40 ms stiction,
@@ -757,3 +757,405 @@ and phone, scored 9, release flagged 0, tracking flagged 0, exit status 0, lag 2
 earlier full run failed and is not hidden: `test_an_implausible_lag_flags_the_run_and_does_not_score_it[-30]`
 asserted the old wording of the sentence item 2 corrects; the assertion was updated. The Formula Node check
 and the CI python list outside `neuromech/tests` were not re-run: no file they read has changed since A.8.
+
+## B. The tracking limit from the session's own chirp (2026-11-14)
+
+Branch `neuromech/chirp-derived-tracking-limit`, stacked on `neuromech/session-release-alignment` (`1505fb8`).
+This is the follow-up A.7 and A.9 recorded as not done. **Everything in this section is simulation**: the
+simulated Player, plant and encoder of `neuromech/dryrun.py`, and faults constructed in the tests. No rig, no
+real LabVIEW log and no real phone recording has been through any of it. B.9 lists what is not verified.
+
+### B.1 What the limit is now
+
+With a chirp run in the session (`plan --chirp`, run `R000`), `score` identifies the plant from it
+(`ilc.identify`, unchanged) and judges every run against what that plant does with that run:
+
+1. **Tracking.** The run's command is passed through the identified plant (`session._model_response`), and the
+   result is measured exactly as a recording is (`_delivered_release`, then `_tracking`). That is
+   `tracking_pred_ms`: the tracking time error this rig's plant produces on this command when nothing is wrong.
+   The run is flagged when its measured `tracking_time_err_ms` is over
+   `tracking_limit_ms = max(1.15 x tracking_pred_ms, 4 ms)`.
+2. **Release.** The identified plant is driven by the setpoint **the log recorded** (the Player's staircase, from
+   the sample where `ilc.locate` found the command), and its release is measured the same way:
+   `enc_release_lag_pred_ms`. The run is flagged when the arm's release is more than 4 ms from it
+   (`enc_lag_minus_pred_ms`), and the reason says which way: late (stiction or a slow start) or early (a lurch,
+   or something pushing the arm).
+
+Both end in `tracking flagged`: the scores stay in the report, the run is not counted as a delivery, `score`
+exits 1. Runs already release flagged are not judged (they have no release to judge from).
+
+Fallbacks, each stated in the printed summary and on every row of `report.csv` (`tracking_limit_source`,
+`tracking_limit_note`):
+
+| situation | `tracking_limit_source` | what is used | what is said |
+|---|---|---|---|
+| chirp identified and trusted | `plant` | the two checks above, per run | "tracking is judged against the plant identified from R000 (...)" and a line with the session's measured / predicted and release-minus-predicted ranges |
+| no chirp in the plan, or `R000` has no log | `fixed` | 25 ms for every run, no release check | "TRACKING LIMIT IS NOT PLANT-DERIVED: ..., so every run is held to the fixed 25 ms" |
+| chirp recorded but not identified, or not trusted (B.6) | `fixed` | 25 ms for every run | the same, with the reason, plus "CHIRP FINDING"; `score` exits 1 |
+| `--tracking-limit-ms N` | `override` | N for every run, nothing else | "TRACKING LIMIT OVERRIDE USED"; the plant's predictions stay in the report |
+
+New columns: per run `tracking_pred_ms`, `tracking_limit_ms` (now per run), `enc_release_lag_pred_ms`,
+`enc_lag_minus_pred_ms`, `tracking_limit_source`, `tracking_limit_note`; on the chirp row `plant_misfit`,
+`plant_trusted`, `plant_untrusted_why`. Constants in `session.py`: `TRACKING_PRED_MARGIN = 1.15`,
+`TRACKING_PRED_FLOOR_MS = 4.0`, `RELEASE_PRED_TOL_S = 0.004`, `CHIRP_MIN_R2 = 0.95`, `CHIRP_MAX_MISFIT = 0.10`.
+
+`_model_response` is a difference equation (the continuous second-order plant held first-order between samples,
+then a fractional delay), not `scipy.signal.lsim`: `lsim` took about 1.7 s per record on this machine and a
+session would have spent minutes in it. `test_the_model_is_the_dry_runs_plant` holds it to `dryrun.plant_response`
+within 1e-6 deg.
+
+### B.2 How every figure below was made
+
+- **A delivery**: the scenario's command -> `dryrun.player_hold` (100 Hz staircase, up to 3 ms lateness per
+  write) with 1.5 s of idle log before and 1.0 s after -> a plant -> (a fault added to the arm's motion) ->
+  encoder noise of 0.02 deg rms -> `ilc.locate` to find the command in the logged setpoint -> the encoder branch
+  of `session.score` (`_delivered_release`, `_tracking`, `_plant_prediction`, `_plant_verdict`). In memory: no
+  `.bin` round trip and no phone. The helpers are `_logged`, `_chirp_fit` and `_judge` in
+  `neuromech/tests/test_session_dryrun.py`; the tables come from a harness that calls them and is not committed.
+- **A plant's chirp**: `session.chirp_command()` (0.2 to 10 Hz, 8 deg, 20 s) delivered the same way through the
+  same plant, located and identified as `score` does it. Each plant is judged against the fit from its own chirp,
+  never against the true parameters.
+- **Player tick phase**: `dryrun.player_hold` gained `phase_ms` (default 0, so the dry run is unchanged): where
+  the Player's 10 ms tick falls against the command's first sample. "Random phase" draws it uniformly from 0 to
+  10 ms per delivery.
+- **Clean table (B.3)**: the 66 library scenarios other than `D-wobble`, seeds 11 and 5, each once at phase 0 and
+  once at a random phase: 264 deliveries per plant. "Usable" excludes runs the release gate flags first.
+- **Fault tables (B.4)**: the review's eight scenarios (`A-P0`, `B-claspknife`, `M-tone_L2`, `R-friction`,
+  `B-flexor`, `D-short`, `M-tone_L4`, `A-P1p`), each delivered three times (once at phase 0, twice at a random
+  phase, different noise seeds): 24 deliveries per fault per plant, the fault in every one, the chirp healthy.
+- **Faults**: `_slow_start(g, n)` the arm delivers the fraction g of its motion at the release, recovering
+  linearly over n ms; `_lurch(deg, over, from)` the re-review's forward lurch, a half-cosine rise of `deg` over
+  `over` ms starting `from` ms after the commanded release, decaying with a 200 ms time constant;
+  `_bump(amp, width, at)` the first review's sin-squared pulse; `_stiction(ms)` the arm's motion from the release
+  on is `ms` late, the delay closing linearly over 200 ms.
+- **Measured / predicted** is `tracking_time_err_ms / tracking_pred_ms`; **release minus predicted** is
+  `enc_lag_minus_pred_ms`. Ranges are minimum to maximum over the usable runs.
+
+### B.3 Good runs: no false flag on any plant
+
+| plant | identified from its own chirp (Hz, zeta, delay ms) | usable runs | tracking time error, ms | of them over the old 25 ms | measured / predicted | flagged on tracking | release minus predicted, ms | flagged on release | flagged |
+|---|---|---|---|---|---|---|---|---|---|
+| identified (6.35 Hz, 0.23) | 6.34, 0.234, -0.2; R2 0.998, misfit 1.3 % | 264 | 9.0 to 19.2 | 0 | 0.96 to 1.06 | 0 | -0.3 to 0.5 | 0 | 0 |
+| bandwidth -30 % | 4.46, 0.236, 0.1; R2 0.997, misfit 1.5 % | 264 | 18.1 to 27.5 | 8 | 0.99 to 1.05 | 0 | -0.6 to 0.4 | 0 | 0 |
+| bandwidth +30 % (8.3 Hz) | 8.27, 0.232, -0.0; R2 0.998, misfit 1.3 % | 264 | 4.7 to 12.2 | 0 | 0.93 to 1.13 | 0 | -0.4 to 0.4 | 0 | 0 |
+| damping -30 % | 6.34, 0.166, -0.4; R2 0.998, misfit 2.1 % | 264 | 9.6 to 26.8 | 4 | 0.93 to 1.04 | 0 | -0.4 to 0.6 | 0 | 0 |
+| bandwidth -30 %, damping -30 % | 4.46, 0.170, 0.2; R2 0.996, misfit 3.3 % | 264 | 20.2 to 36.3 | 179 | 0.99 to 1.06 | 0 | -0.8 to 0.3 | 0 | 0 |
+| bandwidth -15 %, damping -15 % | 5.40, 0.196, 0.0; R2 0.998, misfit 1.2 % | 264 | 13.2 to 25.2 | 4 | 0.95 to 1.03 | 0 | -0.5 to 0.5 | 0 | 0 |
+| bandwidth -40 % | 3.81, 0.232, -0.3; R2 0.997, misfit 1.1 % | 264 | 20.8 to 33.4 | 101 | 0.98 to 1.03 | 0 | -0.2 to 0.9 | 0 | 0 |
+| + 40 ms delay | 6.34, 0.235, 39.7; R2 0.998, misfit 1.4 % | 264 | 9.0 to 19.2 | 0 | 0.94 to 1.04 | 0 | -0.4 to 0.5 | 0 | 0 |
+| 8 Hz, zeta 0.23 | 8.02, 0.232, 0.1; R2 0.998, misfit 1.3 % | 264 | 5.3 to 12.7 | 0 | 0.94 to 1.05 | 0 | -0.5 to 0.3 | 0 | 0 |
+| zeta 0.10 | 6.33, 0.109, -0.8; R2 0.996, misfit 5.0 % | 264 | 10.6 to 39.7 | 4 | 0.95 to 1.05 | 0 | 0.2 to 1.0 | 0 | 0 |
+| zeta 0.5 | 6.34, 0.502, -0.1; R2 0.999, misfit 0.9 % | 264 | 2.8 to 6.3 | 0 | 0.89 to 1.14 | 0 | -0.4 to 0.5 | 0 | 0 |
+| zeta 1.0 | 6.26, 0.991, -0.3; R2 0.999, misfit 0.8 % | 259 | 6.9 to 21.6 | 0 | 0.96 to 1.10 | 0 | -0.6 to 0.6 | 0 | 0 |
+| 3 Hz, zeta 0.7 | 3.00, 0.699, -0.2; R2 0.999, misfit 0.7 % | 226 | 4.5 to 39.0 | 12 | 0.92 to 1.12 | 0 | -0.5 to 1.0 | 0 | 0 |
+| 12 Hz, zeta 0.7 | 11.67, 0.700, -0.5; R2 0.994, misfit 1.1 % | 264 | 0.2 to 3.2 | 0 | 0.48 to 10.81 | 0 | -0.4 to 0.6 | 0 | 0 |
+| 20 Hz, zeta 0.7 | 16.90, 0.695, -2.1; R2 0.978, misfit 1.4 % | 264 | 0.3 to 1.4 | 0 | 0.65 to 10.94 | 0 | -0.3 to 0.7 | 0 | 0 |
+
+No good run is flagged on any of the fifteen plants (3,917 usable deliveries). Under the fixed 25 ms the same
+runs gave 179 of 264 flags on the plant 30 % slower and 30 % less damped, 101 at bandwidth -40 %, and 12, 8, 4,
+4 and 4 on five others ("of them over the old 25 ms").
+
+**Where 1.15 comes from.** On plants from 3 to 8.3 Hz with zeta 0.10 to 1.0, a good run's measured tracking
+is 0.89 to 1.14 of predicted. The spread is the Player's staircase and lateness, the encoder noise and the
+identification error, none of which the prediction contains. The smallest admitted fault, the re-review's
+half-speed start, is 1.35 to 1.60 on the identified plant and 1.21 to 1.37 on the slow one (B.4). 1.15 is the
+smallest round figure above every good run measured, and it is **close on both sides**: 0.01 above the worst good
+run here (zeta 0.5 and bandwidth +30 %, both at 1.13 to 1.14), 0.06 below the mildest admitted fault on the
+slow plant. It is a number for this simulation. A real rig is not exactly a second-order plant with a delay,
+and anything the model leaves out lands in this ratio (B.6: a 0.1 deg deadband alone puts good runs at 1.17 to
+1.20).
+
+**Where the 4 ms floor comes from.** On the 12 Hz and 20 Hz plants the prediction is 0.03 to 2.8 ms and what is
+measured (0.2 to 3.2 ms) is the staircase and the noise, so the ratio runs to 10.9 and means nothing. 26 of
+the 28 good runs in `test_a_good_run_is_not_flagged_against_its_own_plant[12 Hz, zeta 0.7]` are over 1.15 and
+would be flagged without a floor. The largest good-run tracking error on those two plants is 3.2 ms, and an
+earlier sweep with a third seed (396 deliveries per plant, the same deliveries through an uncommitted harness)
+had one run at 3.3 ms, which a 3 ms floor would have flagged. 4 ms clears both. The cost is stated in B.5: on
+a rig that fast, the tracking half is blind below 4 ms and the release half does the work.
+
+**Release.** A good run's release is within 1.0 ms of predicted on every plant (-0.8 to +1.0 over the table).
+The limit is 4 ms: far enough from 1.0 to leave room for identification bias, and under the 5 to 6 ms that a
+start at 70 % speed and a 2 to 3 deg lurch produce.
+
+### B.4 Faults in every run
+
+On the identified plant, 24 deliveries per fault:
+
+| fault in every run | release flagged first | usable | over the old 25 ms | measured / predicted | flagged on tracking | release minus predicted, ms | flagged on release | flagged |
+|---|---|---|---|---|---|---|---|---|
+| sluggish start, 50 % over 0.3 s (re-review limit b) | 0 | 24 | 0 | 1.35 to 1.60 | 24 | 9.8 to 11.0 | 24 | 24 of 24 |
+| sluggish start, 30 % over 0.3 s | 0 | 24 | 18 | 1.70 to 1.99 | 24 | 15.1 to 17.3 | 24 | 24 of 24 |
+| slow start, 30 % over 0.6 s | 0 | 24 | 24 | 2.29 to 2.78 | 24 | 20.9 to 23.9 | 24 | 24 of 24 |
+| start at 70 % over 0.3 s | 0 | 24 | 0 | 1.12 to 1.30 | 22 | 5.0 to 6.1 | 24 | 24 of 24 |
+| start at 80 % over 0.3 s | 0 | 24 | 0 | 1.05 to 1.22 | 13 | 3.1 to 4.0 | 1 | 14 of 24 |
+| start at 90 % over 0.3 s | 0 | 24 | 0 | 1.00 to 1.11 | 0 | 1.4 to 2.1 | 0 | 0 of 24 |
+| lurch 6 deg over 150 ms from +30 ms (limit a) | 0 | 24 | 6 | 0.88 to 2.35 | 12 | -13.8 to -9.8 | 24 | 24 of 24 |
+| lurch 6 deg over 150 ms from +0 ms | 0 | 24 | 0 | 0.71 to 1.32 | 3 | -32.0 to -26.7 | 24 | 24 of 24 |
+| lurch 6 deg over 60 ms from +30 ms | 0 | 24 | 0 | 0.69 to 1.13 | 0 | -31.7 to -25.1 | 24 | 24 of 24 |
+| lurch 8 deg over 100 ms from +30 ms | 0 | 24 | 6 | 0.75 to 2.25 | 9 | -24.7 to -18.9 | 24 | 24 of 24 |
+| lurch 3 deg over 150 ms from +30 ms | 0 | 24 | 0 | 0.82 to 1.55 | 6 | -8.6 to -5.7 | 24 | 24 of 24 |
+| lurch 2 deg over 150 ms from +30 ms | 0 | 24 | 0 | 0.82 to 1.32 | 6 | -6.0 to -3.8 | 22 | 22 of 24 |
+| lurch 1 deg over 150 ms from +30 ms | 0 | 24 | 0 | 0.92 to 1.15 | 0 | -3.6 to -1.8 | 0 | 0 of 24 |
+| sin-squared lurch 6 deg, 150 ms, from +30 ms (first review) | 0 | 24 | 0 | 0.62 to 1.19 | 3 | -27.3 to -21.5 | 24 | 24 of 24 |
+| sin-squared lurch 3 deg, 80 ms, from 0 | 0 | 24 | 24 | 2.71 to 3.16 | 24 | -57.9 to -51.5 | 24 | 24 of 24 |
+| stiction 2 ms | 0 | 24 | 0 | 1.07 to 1.13 | 0 | 1.1 to 1.7 | 0 | 0 of 24 |
+| stiction 5 ms | 0 | 24 | 0 | 1.20 to 1.25 | 24 | 3.1 to 3.6 | 0 | 24 of 24 |
+| stiction 10 ms | 0 | 24 | 0 | 1.40 to 1.48 | 24 | 6.2 to 6.9 | 24 | 24 of 24 |
+| stiction 20 ms | 0 | 24 | 24 | 1.80 to 1.96 | 24 | 12.7 to 13.8 | 24 | 24 of 24 |
+| stiction 40 ms | 0 | 24 | 24 | 2.70 to 2.93 | 24 | 27.0 to 28.2 | 24 | 24 of 24 |
+| stiction 60 ms | 0 | 24 | 24 | 3.58 to 3.94 | 24 | 42.0 to 43.4 | 24 | 24 of 24 |
+| stiction 100 ms | 0 | 24 | 24 | 5.28 to 6.07 | 24 | 73.3 to 75.7 | 24 | 24 of 24 |
+
+Flagged of usable, per plant (the columns are the plants of B.3; "+n release flagged" are runs the release gate
+flagged before this check, which is also a flag):
+
+| fault in every run | identified (6.35 Hz, 0.23) | bandwidth -30 %, damping -30 % | bandwidth +30 % (8.3 Hz) | 8 Hz, zeta 0.23 | + 40 ms delay | 3 Hz, zeta 0.7 | 12 Hz, zeta 0.7 |
+|---|---|---|---|---|---|---|---|
+| sluggish start, 50 % over 0.3 s (re-review limit b) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 1 of 1 (+23 release flagged) | 24 of 24 |
+| sluggish start, 30 % over 0.3 s | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 0 of 0 (+24 release flagged) | 24 of 24 |
+| slow start, 30 % over 0.6 s | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 0 of 0 (+24 release flagged) | 17 of 17 (+7 release flagged) |
+| start at 70 % over 0.3 s | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 12 of 12 (+12 release flagged) | 24 of 24 |
+| start at 80 % over 0.3 s | 14 of 24 | 1 of 24 | 20 of 24 | 18 of 24 | 16 of 24 | 17 of 18 (+6 release flagged) | 2 of 24 |
+| start at 90 % over 0.3 s | 0 of 24 | 0 of 24 | 0 of 24 | 0 of 24 | 0 of 24 | 0 of 19 (+5 release flagged) | 0 of 24 |
+| lurch 6 deg over 150 ms from +30 ms (limit a) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| lurch 6 deg over 150 ms from +0 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| lurch 6 deg over 60 ms from +30 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| lurch 8 deg over 100 ms from +30 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| lurch 3 deg over 150 ms from +30 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| lurch 2 deg over 150 ms from +30 ms | 22 of 24 | 24 of 24 | 6 of 24 | 6 of 24 | 24 of 24 | 24 of 24 | 9 of 24 |
+| lurch 1 deg over 150 ms from +30 ms | 0 of 24 | 22 of 24 | 6 of 24 | 6 of 24 | 24 of 24 | 24 of 24 | 0 of 24 |
+| sin-squared lurch 6 deg, 150 ms, from +30 ms (first review) | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| sin-squared lurch 3 deg, 80 ms, from 0 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| stiction 2 ms | 0 of 24 | 0 of 24 | 8 of 24 | 7 of 24 | 0 of 24 | 0 of 23 (+1 release flagged) | 0 of 24 |
+| stiction 5 ms | 24 of 24 | 0 of 24 | 24 of 24 | 24 of 24 | 17 of 24 | 0 of 24 | 0 of 24 |
+| stiction 10 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| stiction 20 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| stiction 40 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| stiction 60 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+| stiction 100 ms | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 | 24 of 24 |
+
+- **The re-review's admitted limits are both caught.** (b), the half-speed start: 24 of 24 on every plant
+  where the release is usable, by both checks; under 25 ms on the identified plant in all 24, so the old limit
+  scored every one. (a), the 6 deg forward lurch in every run: 24 of 24 on every plant, by the release check; the
+  tracking ratio alone would have caught 12 of 24 on the identified plant and 6 of 24 on the slow one.
+- **On the 3 Hz plant** the slow starts are flagged by the release gate before this check sees them ("release
+  uncertain", as in A.5): 23 or 24 of 24 release flagged. No run is scored as clean.
+- Measured / predicted falls **below** 1 for some faults (a lurch that happens to cancel part of the plant's
+  own lag; stiction on the 3 Hz plant at 0.23 to 0.46). The tracking check is one-sided and does not flag those.
+  The release check does.
+
+### B.5 Not caught (documented, and pinned)
+
+`test_faults_below_the_limits_are_not_caught_and_that_is_stated` asserts these pass, so that a change which
+starts catching them, or stops, is seen:
+
+| fault in every run | identified plant | other plants |
+|---|---|---|
+| start at 90 % speed over 0.3 s | 0 of 24 (ratio 1.00 to 1.11, release +1.4 to +2.1 ms) | 0 on every plant |
+| start at 80 % speed over 0.3 s | 14 of 24 | 1 of 24 on the slow plant, 18 and 20 of 24 at 8 and 8.3 Hz, 16 of 24 with 40 ms of delay, 17 of 18 at 3 Hz, 2 of 24 at 12 Hz |
+| lurch of 1 deg | 0 of 24 (release -3.6 to -1.8 ms) | 6 of 24 at 8 and 8.3 Hz, 22 to 24 of 24 on the slow, the delayed and the 3 Hz plant, 0 at 12 Hz |
+| lurch of 2 deg | 22 of 24 | 6 of 24 at 8 and 8.3 Hz, 9 of 24 at 12 Hz, 24 of 24 on the slow, the delayed and the 3 Hz plant |
+| stiction of 2 ms | 0 of 24 | 7 or 8 of 24 at 8 and 8.3 Hz, 0 elsewhere |
+| stiction of 5 ms | 24 of 24 (tracking only; release +3.1 to +3.6) | 0 of 24 on the slow plant, at 3 Hz and at 12 Hz; 17 of 24 with 40 ms of delay |
+
+The offset is in `report.csv` (`enc_lag_minus_pred_ms`) with the fault's sign even when no flag is raised, and the
+summary prints the session's range. Also not caught, by construction: anything on a session with no usable
+chirp beyond what the fixed 25 ms and the release gate already caught; a fault below 4 ms of tracking error on a
+rig fast enough to sit under the floor unless it moves the release by 4 ms (at 12 Hz: the 80 % start, 2 of 24).
+
+### B.6 Does the chirp still identify the plant on a rig that has a fault?
+
+A.7's open question. Two different things were tried.
+
+**The release fault pasted onto the chirp** (the fault function applied at the moment the chirp leaves rest, the
+runs carrying the same fault):
+
+| fault at the chirp's start and in every run | identified (Hz, zeta, delay ms) | R2 | misfit | trusted | measured / predicted | release minus predicted, ms | flagged |
+|---|---|---|---|---|---|---|---|
+| sluggish 50 % over 0.3 s | 6.34, 0.234, -0.2 | 0.998 | 2.4 % | yes | 1.39 to 1.60 | 9.8 to 10.9 | 8 of 8 |
+| slow start 30 % over 0.6 s | 6.34, 0.234, -0.2 | 0.998 | 3.9 % | yes | 2.30 to 2.75 | 21.0 to 23.9 | 8 of 8 |
+| lurch 6 deg / 150 ms / +30 | 6.34, 0.234, -0.2 | 0.998 | 7.6 % | yes | 0.89 to 2.35 | -13.8 to -10.2 | 8 of 8 |
+| stiction 60 ms | 6.34, 0.234, -0.2 | 0.998 | 5.8 % | yes | 3.58 to 3.94 | 41.9 to 43.1 | 8 of 8 |
+| stiction 100 ms | 6.34, 0.234, -0.2 | 0.998 | 8.5 % | yes | 5.28 to 6.06 | 73.4 to 75.8 | 8 of 8 |
+
+The fit does not move (the healthy chirp gives 6.34 Hz, zeta 0.234, delay -0.2 ms), and every run is flagged as
+with a healthy chirp. A one-off event at the start of a 20 s chirp carries no weight in the identification.
+
+**A fault that is a property of the rig**, so that it acts all through the chirp as it acts on every run.
+Identified plant of 6.35 Hz and zeta 0.23 underneath; eight clean commands (the review's eight, phase 0) per
+rig. Stick-slip: the arm at rest does not move until the setpoint is the breakaway distance away, and sticks
+again when its velocity crosses zero inside that band. Deadband: the loop does not see an error smaller than
+the band. Drive limits: the setpoint the loop receives cannot change faster than the rate, or the arm cannot
+accelerate harder than the limit.
+
+| rig | identified (Hz, zeta, delay ms) | R2 | misfit | trusted | runs against its own chirp: measured / predicted | release minus predicted, ms | flagged | the same runs against a healthy chirp: measured / predicted | release minus predicted, ms | flagged | tracking time error, ms | over 25 ms |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| healthy | 6.34, 0.234, -0.2 | 0.998 | 1.3 % | yes | 1.01 to 1.02 | -0.0 to 0.1 | 0 of 8 | 1.01 to 1.02 | -0.0 to 0.1 | 0 of 8 | 14.2 to 14.3 | 0 |
+| stick-slip, breakaway 0.25 deg | 6.35, 0.234, -0.8 | 0.998 | 2.0 % | yes | 1.04 to 1.08 | -0.0 to 0.5 | 0 of 8 | 1.04 to 1.08 | -0.7 to -0.1 | 0 of 8 | 14.7 to 15.1 | 0 |
+| stick-slip, breakaway 0.5 deg | 6.35, 0.234, -0.8 | 0.998 | 3.5 % | yes | 1.13 to 1.24 | 1.2 to 1.6 | 4 of 8 | 1.12 to 1.24 | 0.5 to 1.0 | 4 of 8 | 15.8 to 17.4 | 0 |
+| stick-slip, breakaway 1.0 deg | 6.35, 0.234, -0.9 | 0.998 | 7.2 % | yes | 1.35 to 1.76 | 3.9 to 4.8 | 8 of 8 | 1.34 to 1.76 | 3.2 to 4.1 | 8 of 8 | 18.9 to 24.6 | 0 |
+| stick-slip, breakaway 2.0 deg | 6.34, 0.234, -0.9 | 0.998 | 14.5 % | no (misfit) | 1.62 to 2.96 | 8.0 to 13.5 | 8 of 8 | 1.61 to 2.96 | 7.3 to 12.8 | 8 of 8 | 22.8 to 41.4 | 6 |
+| stick-slip, breakaway 4.0 deg | 6.35, 0.235, -0.7 | 0.992 | 25.0 % | no (misfit) | 3.11 to 9.05 | 28.5 to 34.7 | 8 of 8 | 3.09 to 9.01 | 28.0 to 34.2 | 8 of 8 | 43.6 to 126.2 | 8 |
+| deadband 0.1 deg | 6.31, 0.235, -1.0 | 0.998 | 1.8 % | yes | 1.17 to 1.20 | 3.3 to 3.8 | 8 of 8 | 1.17 to 1.21 | 2.7 to 3.2 | 8 of 8 | 16.6 to 17.0 | 0 |
+| deadband 0.25 deg | 6.27, 0.237, -1.0 | 0.997 | 3.7 % | yes | 1.37 to 1.46 | 7.3 to 8.7 | 8 of 8 | 1.38 to 1.47 | 6.9 to 8.3 | 8 of 8 | 19.5 to 20.5 | 0 |
+| deadband 0.5 deg | 6.20, 0.241, -1.0 | 0.994 | 7.0 % | yes | 1.64 to 1.91 | 12.9 to 16.0 | 8 of 8 | 1.66 to 1.93 | 12.9 to 16.0 | 8 of 8 | 23.5 to 27.0 | 4 |
+| deadband 1.0 deg | 6.11, 0.248, -0.2 | 0.984 | 13.7 % | no (misfit) | 2.12 to 2.61 | 21.7 to 27.5 | 8 of 8 | 2.13 to 2.64 | 23.0 to 28.9 | 8 of 8 | 30.1 to 36.9 | 8 |
+| deadband 2.0 deg | 5.93, 0.268, 1.8 | 0.954 | 25.2 % | no (misfit) | 2.86 to 4.02 | 34.7 to 46.9 | 8 of 8 | 2.82 to 4.03 | 39.1 to 51.5 | 8 of 8 | 39.9 to 56.4 | 8 |
+| drive limited to 600 deg/s | 6.32, 0.232, 1.2 | 0.998 | 1.5 % | yes | 0.92 to 0.98 | -1.4 to -1.3 | 0 of 8 | 0.93 to 0.99 | 0.0 to 0.1 | 0 of 8 | 13.2 to 13.8 | 0 |
+| drive limited to 400 deg/s | 6.31, 0.231, 2.1 | 0.996 | 2.1 % | yes | 0.88 to 0.95 | -2.3 to -1.7 | 0 of 8 | 0.89 to 0.96 | 0.1 to 0.7 | 0 of 8 | 12.5 to 13.6 | 0 |
+| drive limited to 300 deg/s | 6.24, 0.230, 3.0 | 0.990 | 4.5 % | yes | 0.85 to 0.91 | -3.4 to -2.7 | 0 of 8 | 0.87 to 0.94 | 0.2 to 0.8 | 0 of 8 | 12.3 to 13.3 | 0 |
+| drive limited to 250 deg/s | 6.12, 0.234, 3.6 | 0.977 | 7.6 % | yes | 0.74 to 0.91 | -4.5 to -3.9 | 2 of 8 | 0.77 to 0.95 | 0.3 to 0.9 | 0 of 8 | 10.9 to 13.3 | 0 |
+| drive limited to 225 deg/s | 6.02, 0.240, 4.1 | 0.963 | 9.9 % | yes | 0.64 to 0.96 | -5.1 to -4.9 | 8 of 8 | 0.67 to 1.00 | 0.9 to 1.0 | 0 of 8 | 9.5 to 14.2 | 0 |
+| drive limited to 200 deg/s | 5.92, 0.254, 5.2 | 0.945 | 12.6 % | no (R2) | 0.84 to 1.67 | -6.8 to -6.5 | 8 of 8 | 0.87 to 1.72 | 1.0 to 1.1 | 4 of 8 | 12.3 to 24.2 | 0 |
+| drive limited to 150 deg/s | 5.71, 0.317, 9.1 | 0.911 | 18.2 % | no (R2) | 0.94 to 5.25 | -12.9 to -11.8 | 8 of 8 | 0.86 to 4.62 | 1.2 to 1.8 | 6 of 8 | 12.0 to 65.2 | 5 |
+| drive limited to 100 deg/s | 5.43, 0.477, 14.4 | 0.887 | 24.1 % | no (R2) | 3.18 to 22.70 | -21.9 to -20.0 | 8 of 8 | 1.54 to 9.98 | 2.1 to 2.8 | 8 of 8 | 21.6 to 140.9 | 7 |
+| drive limited to 40000 deg/s^2 | 6.35, 0.234, -0.8 | 0.998 | 1.3 % | yes | 1.00 to 1.03 | -0.2 to 0.4 | 0 of 8 | 0.99 to 1.03 | -0.8 to -0.3 | 0 of 8 | 14.0 to 14.5 | 0 |
+| drive limited to 20000 deg/s^2 | 5.90, 0.225, -1.7 | 0.952 | 13.3 % | no (misfit) | 0.89 to 0.93 | -1.3 to -0.7 | 0 of 8 | 0.99 to 1.03 | -0.8 to -0.3 | 0 of 8 | 14.0 to 14.5 | 0 |
+| drive limited to 10000 deg/s^2 | 4.89, 0.289, 0.5 | 0.770 | 39.0 % | no (R2) | 0.85 to 0.92 | -10.9 to -9.6 | 8 of 8 | 0.99 to 1.03 | -0.8 to -0.3 | 0 of 8 | 14.0 to 14.5 | 0 |
+| drive limited to 4000 deg/s^2 | 3.34, 0.420, 6.9 | 0.669 | 63.2 % | no (R2) | 1.05 to 1.29 | -34.6 to -31.7 | 8 of 8 | 0.99 to 1.03 | -0.8 to -0.3 | 0 of 8 | 14.0 to 14.5 | 0 |
+| drive limited to 1500 deg/s^2 | 2.00, 0.075, -0.8 | 0.958 | 137.0 % | no (misfit) | 0.15 to 0.22 | -46.3 to -40.5 | 8 of 8 | 1.06 to 1.19 | 0.1 to 1.7 | 1 of 8 | 14.8 to 16.7 | 0 |
+
+What that says:
+
+1. **Stick-slip and deadband are not absorbed by the fit.** Bandwidth and damping stay at the healthy values
+   (stick-slip 6.34 to 6.35 Hz; deadband 6.31 Hz falling to 5.93 as it coarsens) because the identification is dominated by the chirp's large motion, and the rig's own
+   runs are then flagged against it: stick-slip from a 1 deg breakaway (8 of 8; 4 of 8 at 0.5 deg; none at 0.25 deg),
+   deadband from 0.1 deg (8 of 8). The answer for these is yes: the chirp identifies the plant, and the fault is
+   seen in the runs. A coarser one (2 deg breakaway, 1 deg deadband) leaves 14 % or more of the chirp unexplained,
+   the chirp is refused, and `score` exits 1 on the chirp itself.
+2. **A drive that saturates on the chirp is the case where the answer is no.** The chirp asks for up to 500 deg/s
+   (8 deg at 10 Hz); a fall's onset asks for far less. A rig limited to 150 deg/s delivers the runs well and
+   the chirp badly, the fit comes out as a slower plant with 9 ms of delay it does not have, and every good run
+   would be "12 ms early". **What the tool does: it refuses the chirp** (R2 under 0.95, or misfit over 10 %),
+   falls back to the fixed limit, says so, prints a CHIRP FINDING and exits 1. Refused in this table: every rate
+   limit of 200 deg/s and below, every acceleration limit of 20,000 deg/s^2 and below.
+3. **There is a window where a wrong chirp is still trusted.** At 225 and 250 deg/s the fit passes the gate
+   (R2 0.963 and 0.977, misfit 9.9 % and 7.6 %) with a delay of about 4 ms that is not there, and 8 of 8 and
+   2 of 8 good runs are flagged "early" by 4 to 5 ms. At 300 deg/s and above nothing is flagged. This fails
+   loudly, not silently, but it blames the runs for the chirp's fault. The README says how to recognise it
+   (every run "early" by about the same amount, `plant_misfit` over 5 %). Tightening the misfit limit to 7 % would
+   close most of the window and would also refuse the 1 deg stick-slip chirp (7.2 %), whose runs are correctly
+   flagged today; that trade was not made without rig data.
+4. **Healthy chirps are not refused.** On the fifteen plants of B.3 the fit has R2 0.978 to 0.999 and misfit
+   0.7 to 5.0 %. With encoder noise raised to 0.1 and 0.2 deg rms (three seeds each, uncommitted probe) plants
+   from 2 to 8.3 Hz stayed at R2 0.995 or more and misfit under 6 %; a 20 Hz plant, which is beyond the chirp's
+   10 Hz, was refused in 1 of 9 (R2 0.909). A rig faster than the chirp's band should be given a wider chirp.
+
+### B.7 The release-against-predicted check: adopted, in one form only
+
+The brief asked for measured-minus-predicted lag to be evaluated and adopted only if it separates faults from
+good runs without false flags. **Adopted**, in the form of B.1 item 2. The obvious form was measured and
+rejected:
+
+- **Predicted from the command (rejected).** `ilc.locate` finds the command 3 to 8 samples into the log
+  depending on where the Player's tick falls, and the chirp is found at its own offset, so the identified
+  "delay" (-0.2 ms on the dry run's plant) and each run's lag both carry an offset that has nothing to do with the
+  arm. Good runs came out -4.5 to +4.8 ms from predicted across the library (earlier 396-run sweep). A 2 deg
+  lurch is -6 to -4 ms. No limit separates them. The re-review's "about 3 ms" figure was measured without
+  `ilc.locate` in the path.
+- **Predicted from the logged setpoint (adopted).** The model is driven by the staircase the log recorded, from
+  the same sample, so the offset and the tick phase are in both and cancel: good runs -0.8 to +1.0 ms on every
+  plant (B.3), the admitted faults 7 ms or more away on every plant (B.4).
+  `test_where_the_players_tick_falls_does_not_move_the_release_check` holds 80 deliveries at ten tick phases
+  within 1 ms and shows the command-driven form moving by more than 3 ms on the same logs.
+
+It is the check that sees the forward lurch at all, and the only one that works under the floor. It needs the
+log to contain the setpoint channel the Player wrote, which `check-log` already verifies.
+
+### B.8 Tests
+
+52 tests added to `neuromech/tests/test_session_dryrun.py`, under "the session's own plant as the yardstick".
+Thresholds are literal numbers; `test_the_plant_derived_limit_in_numbers` asserts the five constants and the
+verdict's behaviour either side of each.
+
+| requirement | test |
+|---|---|
+| good runs unflagged, per plant: 3 Hz, identified, 8 Hz, 30 % slower and less damped, +40 ms, 12 Hz | `test_a_good_run_is_not_flagged_against_its_own_plant[...]` (14 scenarios x 2 seeds each) |
+| tick phase | `test_where_the_players_tick_falls_does_not_move_the_release_check` |
+| each fault flagged, per plant | `test_a_fault_in_every_run_is_flagged_against_the_plant[6 faults x 5 plants]`, `test_what_the_fixed_limit_and_the_tracking_ratio_alone_would_have_missed` |
+| faults not caught | `test_faults_below_the_limits_are_not_caught_and_that_is_stated[3]` |
+| the faulty-rig chirp | `test_the_chirp_still_identifies_the_plant_on_a_rig_with_stiction`, `test_a_chirp_the_plant_cannot_follow_is_not_trusted` |
+| through real files (`plan --chirp`, `.bin` logs, `score`, exit status) | `test_with_a_chirp_each_run_is_held_to_its_own_plants_prediction`, `test_a_fault_in_every_run_of_a_chirped_session_is_flagged[sluggish, lurch]`, `test_a_slower_rig_is_judged_as_the_rig_it_is` |
+| no chirp | `test_without_a_chirp_the_limit_is_the_fixed_one_and_says_so` (not planned; planned and the log missing) |
+| override | `test_the_tracking_limit_override_still_works_with_a_chirp_and_is_recorded` |
+| untrusted chirp | `test_an_untrusted_chirp_falls_back_and_fails_the_exit_status` |
+| near-perfect rig | the 12 Hz case of the first row, and the floor lines of `test_the_plant_derived_limit_in_numbers` |
+
+The logs the real-file tests score come from a plant written out in the test module (`_rig`), not from
+`session._model_response`.
+
+**Before and after.** The 52 new tests with `1505fb8`'s `session.py` in place of this one, in a scratch copy of the
+package: 52 failed. 49 of those fail on a function or column that did not exist, which shows only that the
+feature is new. So each constant was also changed alone in the new `session.py` and the same tests run (without
+`test_the_plant_derived_limit_in_numbers`, which pins the literals and fails trivially):
+
+| change | new tests that fail |
+|---|---|
+| margin 1.15 -> 100 (tracking check off) | 3 |
+| margin 1.15 -> 1.05 | 6 (good runs flagged; the not-caught faults caught) |
+| floor 4 ms -> 0 | 2 (the 12 Hz good runs; the real-file limit assertion) |
+| floor 4 ms -> 30 | 3 |
+| release tolerance 4 ms -> 1 s (release check off) | 34 |
+| release tolerance 4 ms -> 0.5 ms | 7 |
+| chirp R2 0.95 -> 0 | 2 |
+| chirp misfit 10 % -> 1000 % | 1 |
+| chirp misfit 10 % -> 5 % | 2 |
+
+No constant can be zeroed or opened with the suite still passing. With the tracking check off only 3 tests fail
+because the release check flags the same constructed faults; the three that fail are the ones that assert on
+the tracking reason itself.
+
+### B.9 Not verified
+
+- **No rig, no real log, no real phone.** Every plant here is the second-order-plus-delay model, the same family
+  `ilc.identify` fits. On it the identification is nearly exact and the prediction is good to a few per cent. A
+  real rig has friction, backlash, a current limit and a load that changes with angle; how far its good runs sit
+  from the prediction is unknown, and B.6 shows a 0.1 deg deadband alone takes them past the margin. **The first
+  rig session should be read as a measurement of measured / predicted and of release minus predicted on runs
+  believed good, and the margin and tolerance set from that.** All five constants are provisional.
+- The margin has 0.01 of room above the worst good run in simulation (B.3).
+- The window in B.6 item 3 (a mildly saturated chirp, trusted, good runs flagged "early").
+- One faulty run among good ones, and half a session faulty: not re-measured here. The session-median rules
+  of A.6 are unchanged; the new checks are per run against the plant and do not depend on the other runs.
+- ILC-corrected commands: the prediction is of the corrected command through the plant, which is what should be
+  compared, but no ILC output was scored through this path.
+- A chirp recorded at one gain setting and runs at another. The tool cannot see this; re-identify after any
+  gain change (README, section 5).
+- The phone is not judged against the plant. Phone checks are unchanged.
+- A Player fault (dropped writes, a stalled Player) was not constructed. The tracking prediction is driven by
+  the command, so such a fault should show as tracking error; the release prediction is driven by the logged
+  setpoint and by design does not see it.
+- Plants faster than the chirp's 10 Hz band are identified poorly (20 Hz came out as 16.9 Hz); the floor carries
+  them here.
+- `nm_figs` figures were not regenerated. The Rust core, the C# designer, the PT scorer, the scenario
+  definitions and the band thresholds are unchanged and were not re-examined.
+
+### B.10 Chosen not to do
+
+- **Not** driving the tracking prediction from the logged setpoint as well. It would remove the staircase from
+  the ratio and allow a tighter margin, and it would also hide a Player that delivered the wrong setpoint, which
+  is what the tracking gate is for.
+- **Not** using the chirp to accept a session lag automatically (`--accept-session-lag-ms` stays a human
+  decision), and not changing the session-lag rules.
+- **Not** tightening the chirp misfit limit to close the B.6 window, and not adding a gentler chirp.
+- **Not** removing the fixed 25 ms: it is the fallback, and it is labelled as not plant-derived wherever it is used.
+
+### B.11 Gates, on the final tree
+
+Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM_THREADS=1`.
+
+| gate | result |
+|---|---|
+| `python -m pytest neuromech/tests -q` | **228 passed**, 0 failed, 0 skipped, in 269 s (176 before; 52 added) |
+| `neuromech/tests/test_session_dryrun.py` alone | 129 passed (77 before) |
+| `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases, every field within tolerance; run after pytest had finished |
+| `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band on encoder and phone, scored 9, release flagged 0, tracking flagged 0, exit status 0; lag 27.4 ms (22.7 to 28.4); plant 6.34 Hz, zeta 0.234, delay -0.2 ms, R2 0.998, misfit 1.2 %; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted (-0.0 to +0.3), limits 15.9 to 21.8 ms |
+| line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |
+
+One earlier full run is not hidden: 227 passed and `test_model_rt_ports.py::test_importing_profiles_does_not_build_them`
+failed (an import-time limit of 3.0 s, measured 4.32 s while the mutation runs of B.8 were still using the
+machine). That file passed alone (32 passed) and the full suite was then run again for the first row. The test
+and the code it covers are untouched by this branch. The Formula Node check and the CI python list outside
+`neuromech/tests` were not re-run: no file they read has changed.
+
+The table harness, the mutation runner and the scratch copy of the package they ran in are not committed.
