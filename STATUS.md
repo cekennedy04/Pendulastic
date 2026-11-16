@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges recorded 2026-11-16.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -21,27 +21,30 @@ scores move. "Not verified" is stated, never implied.
 
 ## Decisions waiting on the owner
 
-1. **Merge the AHRS seed fix (#98, split from #92)?** It is physically correct and confirmed in Rust,
-   and it changes every scored phone trial (workstream 4).
-2. **App versus reference scoring footing.** The app (20 Hz ticks, EMA 0.3, no flex
-   projection) and the Python reference (100 Hz, EMA 0.5, flex projection) disagree on
-   56 of 179 on-screen verdicts. Either the app moves to the reference footing or the
-   thresholds are re-derived for the app's (workstream 7).
-3. **Re-derive `HEALTHY_REF` with the drift bound?** The bound is correct but moves four
-   reference parameters by 2 to 5 percent (workstream 3).
-4. **Count oscillations from the first trough?** Recommended remedy for the scorer's
-   release-timing sensitivity; needs a score-formula version bump (workstream 3).
-5. **Release detector design.** September's detector was rejected as a port; four
-   design options are on file (workstream 3).
-6. **Rewrite or delete the public branches that still carry clinical fields?** #90 was
-   squash-merged, so those commits are not in `main`'s history, but they remain on
-   `neuromech/fall-speed-b13`, `neuromech/fall-speed-check` and GitHub's `refs/pull/90`
-   (workstream 1).
-7. `omega_max_n`: drop it (#83, which contains #76) or keep it.
-8. Rig decisions O1–O5: arm range ±65° or 0.75× amplitude render; actuator of at least
-   20 N·m; when to build the vertical rig; two blind clinicians per profile; clasp-knife
-   adaptation handling.
-9. Nightly hygiene agent: retire it or re-register it.
+1. **Rig decisions O1–O5:** arm range ±65° or 0.75× amplitude render; actuator of at
+   least 20 N·m; when to build the vertical rig; two blind clinicians per profile;
+   clasp-knife adaptation handling. A literature review and an independent second opinion
+   are being prepared (2026-11-16).
+2. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
+   fields. The owner will decide later; both branches that carried them are deleted.
+
+## Decisions taken (owner, 2026-11-16)
+
+- **AHRS seed fix (#98):** merged with a merge commit (algorithm version 0.2.0). Every
+  phone-IMU number measured before it is stale. The live app must be redeployed from main.
+- **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
+  as one versioned change (in progress).
+- **Scoring footing:** move the app to the Python reference footing, together with
+  counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
+  one score-formula version bump (plan in progress on `feat/app-reference-footing`).
+- **Release detector:** deferred; no problems seen in use. Revisit only if a problem
+  turns up that is too big to ignore.
+- **Clinical-field branches:** `neuromech/fall-speed-b13` and `neuromech/fall-speed-check`
+  deleted.
+- **Cleanup:** the 43 daily-report branches deleted; archive pass, September doc rescue and
+  `archive/<branch>` tags approved (in progress); branch and worktree deletions are shown to
+  the owner before they happen.
+- **Nightly hygiene agent:** retired.
 
 ## Workstreams
 
@@ -84,9 +87,9 @@ scores move. "Not verified" is stated, never implied.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
-- **Canonical branch:** `feat/synthetic-phone-trials`, PR #99 (draft; everything from
-  #92 except the AHRS seed fix, which is #98). Independent of #98: the one test that
-  needs the fixed seed is strict-xfail while the core still has the mirrored one.
+- **Canonical branch:** `main` (#99 merged 2026-11-16: everything from #92 except the
+  AHRS seed fix, which is #98; #92 closed). Replay tests need a local wasm build and do not
+  run in CI.
 - **Entry points:** `neuromech/phone_trial.py`, `webapp/scripts/replay-trial.mjs`,
   `neuromech/README.md` §8.
 - **Known app defects it exposes** (strict-xfail tests in
@@ -112,7 +115,8 @@ scores move. "Not verified" is stated, never implied.
   already on main. `61d5723` (signed swing angle) must stay out.
 - **Drift-correction bound (PR #94, draft):** ported to Python and Rust with caller
   handling of the new `AmplitudeExceedsCurveError`; `detrend=False` output is
-  bit-identical on the corpus. Independent review: code correct. Waits on decision 3.
+  bit-identical on the corpus. Independent review: code correct. Owner decided to finish it
+  and re-derive `HEALTHY_REF` with the bound (in progress on `fix/drift-bound-healthy-ref`).
 - **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;
@@ -130,21 +134,22 @@ scores move. "Not verified" is stated, never implied.
 - **Onset release detector (`d2e2cee`, `35d3192`, `05b5a4e`):** REJECTED as a port
   (`docs/release-detector-port-findings`). It fixes 12 corpus trials and breaks 2, fails
   main's lift-and-hold tests, and cannot handle curves whose hold is the minimum, which
-  includes most optical control curves. See decision 5.
+  includes most optical control curves. Release detector redesign deferred by the owner.
 - **Release-timing sensitivity** (`docs/oscillation-count-sensitivity`): 40 of 162
   scorable corpus trials count a start-of-swing shoulder as half an oscillation; a 10 ms
   release shift changes N on 34 trials. Not what limits test-retest reliability.
-  `area_ratio` has a separate, larger release sensitivity. See decision 4.
+  `area_ratio` has a separate, larger release sensitivity. The owner chose to count from
+  the first trough, bundled with the app footing change.
 - **Held until a bench session can back them:** frequency cap and `f_out_of_range`
   (`c2dfe67`), Rust flex-projection tier (`f429356`).
 - **Open PRs:** #76 (drop `omega_max_n`) and #83 (desktop live view; contains #76).
-  Both conflict with `main`.
+  Both conflict with `main`. The owner chose to drop `omega_max_n`; it is being carried
+  into the app footing change, after which these two are superseded.
 - **Do not:** remove `abs()` from clinical swing-angle extraction.
 
-### 4. Rust AHRS / phone replay — CHANGE PENDING OWNER DECISION
+### 4. Rust AHRS / phone replay — SEED FIX MERGED
 - **Canonical branch:** `main` (#78 merged; #91, a negative result, merged 2026-11-11).
-- **Gravity-seed fix (PR #98, draft; branch `fix/ahrs-gravity-seed`, the seed fix alone,
-  split from #92 with the cache keys and a 0.2.0 core version bump):** the seed quaternion had the tilt sign mirrored in
+- **Gravity-seed fix (#98, merged 2026-11-16 with a merge commit; core 0.2.0):** the seed quaternion had the tilt sign mirrored in
   Python and Rust. On real trials the phone starts about 100 degrees from flat, so the
   old filter started about 145 degrees wrong about gravity and did not converge within a
   trial. The fix changes every scored trial (A0 by a median 4.4 degrees; 24 verdicts at
@@ -153,9 +158,9 @@ scores move. "Not verified" is stated, never implied.
   `docs/seed-fix-corpus-check`, `docs/seed-fix-rust-confirmation`.
 - **Rust port fidelity:** against Python at the app's settings on the same stream,
   traces are identical and verdicts agree on 179 of 179.
-- **Consequence:** every phone-IMU number measured before #98 merges used the mirrored
-  seed. The live web app has the bug until #98 merges and the app is redeployed.
-  #98 bumps the core to 0.2.0, so `ALGORITHM_VERSION` reads `0.2.0+...` once it lands.
+- **Consequence:** every phone-IMU number measured before #98 used the mirrored seed and
+  is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
+  `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
 ### 5. OptiTrack / RMSE validation — STABLE
 - **Canonical branch:** `main` (#81, #88 merged).
@@ -201,9 +206,9 @@ scores move. "Not verified" is stated, never implied.
 
 ### 9. Hygiene and reporting — STALLED
 - **Merged 2026-11-16:** #66 (repo cleanup; daily and Monday reports archived under
-  `docs/`). The 43 draft `claude/daily-report-*` PRs are closed; each report is on main.
-  Their remote branches still exist (deleting them needs the owner's say).
-- The nightly hygiene agent last ran 2026-09-23 and failed; no scheduled task exists.
+  `docs/`). The 43 draft `claude/daily-report-*` PRs are closed and their branches deleted;
+  each report is on main. Nine older daily-report branches remain.
+- The nightly hygiene agent is retired (owner, 2026-11-16).
 - Run `git worktree list` for the current worktrees rather than trusting a list here.
 - Disk: drive C: was full on 2026-11-11 and is at about 4 GB free after removing
   finished worktrees and regenerable build output. Builds and tests fail with "No space
