@@ -5,7 +5,8 @@ Supersedes: none. Owner decisions taken 2026-11-16: STATUS decision 2 (move the 
 reference footing), decision 4 (count oscillations from the first trough) and decision 7 (drop
 `omega_max_n`). The three land together under one score-formula version bump.
 
-Status of this document: plan only. Nothing below is implemented. The numbers in section 2 come
+Status of this document: plan only, revised after an independent review (2026-11-16). Nothing
+below is implemented. The numbers in section 2 come
 from a Python-only feasibility spike (section 2.1); the Rust core has not been run on any of it.
 
 ## 1. What changes, in one paragraph
@@ -127,11 +128,25 @@ Rust:
   with the sample that captures the zero pose, raw gyro, bias-corrected accel as gravity, only
   while not yet committed (the estimator already ignores sub-threshold samples). Every sample is
   projected onto the final axis, as Python projects every tick.
+- Flex-feed start under a release override. Rust has `ReplayConfig::release_override` (the
+  clinician's scrub; `replay.rs`, the `capture` match in the gyro branch); Python's
+  `replay_trial` has no override. Rule chosen: the estimator is fed from the sample that captures
+  the zero pose, whichever path captured it (auto-detected or overridden), so an override moves
+  the feed start with the zero pose. Without an override this is exactly Python's rule. With one
+  there is no Python reference; a Rust test pins the behaviour (override later than the auto
+  release: the axis is learnt from the override onward).
 - `wasm.rs`: `WasmSession::new(beta, ema_alpha)` keeps its signature (a cached old JS must still
   load a new wasm and the other way round) but builds from `ReplayConfig::reference()`. The
-  footing is then fixed inside the wasm, so `ALGORITHM_VERSION`, which hashes the wasm only,
-  identifies everything that produced a score. Today `emaAlpha` lives in `capture.js`, so a JS
-  change could alter scores without changing `ALGORITHM_VERSION`.
+  footing is then fixed inside the wasm. `ALGORITHM_VERSION` is crate version, git revision and
+  wasm hash (`webapp/scripts/build-wasm.mjs`, the `algorithmVersion` line); none of the three
+  sees a value passed in from `capture.js`, which is where `emaAlpha` lives today, so a JS change
+  could alter scores without changing `ALGORITHM_VERSION`. Moving the footing into the core
+  closes that.
+- `wasm.rs` exports: today only `healthy_reference`, `pt_score_from_params` and
+  `pt_score_from_params_selected` are exported free functions. Add `score_formula_id()` and
+  `scoring_footing()` so the webapp reads both from the wasm that scored the trial, not from a
+  JS copy. `pt_score_from_params` and `_selected` keep their `omega_max_n` argument (wire
+  compatibility, and the panel can still select it); the canonical score just stops reading it.
 - `session.rs`: no scoring change; `finish_with` calls `replay` as now.
 - `Cargo.toml`: crate version 0.2.0 to **0.3.0**.
 
@@ -158,9 +173,24 @@ magnitude. **`abs()` stays in every tier; the signed variant (`61d5723`) stays o
 Webapp:
 
 - `capture.js`: pass `emaAlpha: 0.5` (documentation only once the core ignores it).
-- `webapp/scripts/replay-trial.mjs` and `neuromech/phone_trial.py`: same.
+- `webapp/scripts/replay-trial.mjs`: same; it drives the shipped wasm, so nothing else changes.
 - `session-store.js`: new records carry `score_formula_id` and `scoring_footing`
   (`"ref-100hz-ema0.5-flex"`), both read from the wasm. Absent means a record from before 0.3.0.
+
+neuromech (`neuromech/phone_trial.py`): it passes no `emaAlpha` to anything; its expected app
+trace is a Python copy of the app footing, `app_ticks(t_s, angle, tick_s=0.05, alpha=0.3)` (50 ms
+hold, EMA 0.3, no rescale, no flex projection), called where the trial is built, with a
+`len(tick_t) > 41` gate before scoring. That copy moves to the reference footing: 10 ms ticks,
+the rescaled alpha (`_rescale_ema_alpha(0.5, 0.01)`, imported, not copied) and the flex
+projection. The simplest faithful form is to build the expected trace by running
+`imu_calibration_tuner.replay_trial` at the reference footing on the generated samples instead
+of a hand copy; decided in the step that does it, with the hand copy kept only if the replay is
+too slow for the test suite. The gate becomes a duration (about 2.05 s, which is what 41 ticks at
+50 ms meant) rather than a tick count. Then the strict-xfail defect tests in
+`neuromech/tests/test_phone_trial.py` (a brisk lift fires the release detector; a steady 9 degree
+sag through the hold is never caught) are re-run: each must still xfail for its stated reason,
+or, if the footing move changes the outcome, the xfail is removed with the reason in the
+commit.
 - Trends and trials views: see section 4.
 - `webapp/src/build-id.js`: restamped from an LF checkout (CLAUDE.md).
 
@@ -183,10 +213,17 @@ that clears the count gate (`phi - phi_centre < -min_amp`). If no trough clears 
 nothing. Trough detection, the centred frame, `A0` and the symmetry integral stay exactly as
 `b44dc7d` left them.
 
-- Python `pendulastic_pt_score.compute_pt_params`: about 5 lines after line 3147.
-- Rust `scoring.rs::compute_pt_params`: about 6 lines after line 766 (before
-  `active_oscillation_window_end`).
-- C# `PtScore.cs`: about 8 lines after line 244.
+Insertion points, by code (line numbers will move with #94):
+
+- Python `pendulastic_pt_score.compute_pt_params`: about 5 lines after the second-pass block
+  (`if len(_ext0) >= 3 and _dt_c > 0:` ... the two `find_peaks` calls on `_phi_sc`) and before
+  `window_end_t = _active_oscillation_window_end(...)`.
+- Rust `scoring.rs::compute_pt_params`: about 6 lines after the second pass (the `find_peaks`
+  calls on `phi_sc` / `neg_sc` inside the `swing_centre` branch) and before
+  `let window_end_t = active_oscillation_window_end(...)`.
+- C# `PtScore.cs`: about 8 lines after the second pass (`FindPeaks(sc, ...)` /
+  `FindPeaks(Negate(sc), ...)` inside the `SwingCentre` branch) and before
+  `double window_end_t = ActiveOscillationWindowEnd(...)`.
 
 Consequences that follow from the rule, not separate changes: `f` changes where the dropped peak
 changed the extremum spacing (the report: 42 trials); `_active_oscillation_window_end` sees one
@@ -210,6 +247,9 @@ branch conflicts and main has since re-derived `HEALTHY_REF` (#79) and renamed t
 - `955334a`: the designer's four-knob fallback that reaches the MAS 3 preset on the five-term
   scorer (`Designer.cs`).
 
+When this PR merges, #76 and #83 are closed as superseded (#83 contains #76; its desktop
+live-view part is not carried forward).
+
 Not taken: #83's desktop live-view change (`pendulastic_app.py` is to be archived, and the app
 under change here is the webapp), the `docs/reports/2026-10-27-where-this-stands.md` rewrite
 (reports are history), and the merge and `BUILD_ID` commits. `_SIMPLE_KEYS` keeps
@@ -230,6 +270,19 @@ scale"); the canonical set will have five terms. It should read the divisor from
 - Crate 0.2.0 to 0.3.0, so `ALGORITHM_VERSION` reads `0.3.0+...`.
 - neuromech `provenance.json` changes with the formula id; `python -m neuromech.build` rebuilds
   the 67 scenarios and the provenance check flags old libraries.
+- `neuromech/fall_speed_reference.json` is pinned to `pt6rescaled-ref-2026-10-27` and a scorer
+  fingerprint (`fall_speed.py`, `_fingerprint` and the `score_formula_id` comparison in the
+  check). It is re-pinned in the step that bumps the id (section 7, step 6), with the reason.
+
+### 3.5 Minimum-length gate (40 samples)
+
+`compute_pt_params` refuses fewer than 40 finite samples (Python `mask.sum() < 40`; Rust
+`finite_indices.len() < 40` in `compute_pt_params` and `t.len() < 40` in `score_waveform`). At
+20 Hz that is 2 s of signal; at 100 Hz it is 0.4 s, about five times looser, so a short recording
+the app refuses today would be scored after the move. Proposed (pending, Q7): convert the gate to
+seconds (2.0 s) in all three languages so the move does not silently widen what is scorable.
+This changes the reference's own behaviour for short 100 Hz curves; section 7, step 5 counts
+the corpus trials and the 120 Hz optical curves affected (not yet counted).
 
 ## 4. Stored records
 
@@ -298,18 +351,48 @@ still better, unify on it in its own change together with re-deriving `phi_max_r
 
 ## 7. Implementation order and test strategy
 
-Each step is a commit; parity is checked at every step, not only at the end.
+Each step is one commit and each commit is green on its own: Python tests, `cargo test`,
+`cargo clippy --all-targets -- -D warnings`, the webapp suite (including `sw-shell.test.js`) and
+the neuromech tests. Two rules make that hold:
 
-1. **(11)** in Python, Rust, C#, webapp panel; golden fixtures regenerated
-   (`mobile-imu-core/tests/fixtures/gen_fixtures.py`), `cargo test`, `cargo clippy --all-targets
-   -- -D warnings`, `tests/test_pt_zone_parity.py`, `neuromech/designer/parity/run_parity.py`.
-2. **(9)** in all three. New tests: a synthetic swing scored at release shifts of -30 to +30 ms in
-   10 ms steps must give one N (Python, Rust, C#); the `b44dc7d` guard
-   (`test_a_limb_that_sags_after_the_swing_still_scores_as_it_swung`) must still pass; the two
-   window-anchor side effects from the report are looked at trace by trace.
-3. **(8)** in Rust: `rescale_ema_alpha` and the flex tier. Golden fixtures for `replay` at the
-   reference footing generated by running `replay_trial` on synthetic raw logs (in-plane swing,
-   swing with a yaw component, a log where the axis never commits), compared at 1e-9.
+- **`SCORE_FORMULA_ID` is bumped in step 1**, to the final id `pt5trough-ref-2026-11-16`, in
+  Python, Rust and C# together. The id names the end state; the intermediate commits are not
+  shipped. Everything pinned to the old id moves in that same commit: neuromech's
+  `provenance.json` (rebuilt; `neuromech/tests/test_provenance.py` asserts the built id equals
+  `P.SCORE_FORMULA_ID`), `neuromech/fall_speed_reference.json` (id and scorer fingerprint), and
+  any neuromech expected value step 1 moves. Steps 2 and 3 re-pin what they move again.
+- **`BUILD_ID` is restamped in every commit that touches `mobile-imu-core/src/`** (it hashes the
+  Rust source; `webapp/tests/sw-shell.test.js` fails otherwise), from an LF checkout or with the
+  value CI's failure message expects (CLAUDE.md). A commit that touches neither Rust nor the shell
+  restores `build-id.js` after `npm run build:wasm`.
+
+The three parity checks (`tests/test_pt_zone_parity.py`, `neuromech/designer/parity/run_parity.py`,
+`mobile-imu-core/tests/fixtures/gen_fixtures.py` then `cargo test`) run on every step that touches
+the scorer (1, 2) and again at the end.
+
+1. **(11) and the id bump** in Python, Rust, C#, the webapp panel and `unmeasuredNotice`; golden
+   fixtures regenerated; neuromech library rebuilt and its pins (provenance, fall-speed
+   reference, dry-run expectations, designer presets with `955334a`) re-pinned, each moved value
+   with its cause in the commit; `BUILD_ID` restamped.
+2. **(9)** in all three, inserted where section 3.2 names. New tests: a synthetic swing scored at
+   release shifts of -30 to +30 ms in 10 ms steps must give one N (Python, Rust, C#); the
+   `b44dc7d` guard (`test_a_limb_that_sags_after_the_swing_still_scores_as_it_swung`) must still
+   pass; the two window-anchor side effects from the report are looked at trace by trace; the
+   59-against-43 discrepancy (section 2.2) is explained. neuromech re-pinned; `BUILD_ID`
+   restamped.
+3. **(8)** in Rust: `ANALYSIS_TICK_S`, `rescale_ema_alpha`, `ReplayConfig::reference()`, the flex
+   tier and its feed rule (including the release-override rule in 3.1), the wasm exports, crate
+   0.3.0; webapp records and the trends break (Q2); `neuromech/phone_trial.py`'s expected trace
+   moved to the reference footing and its strict-xfail tests re-checked (section 3.1). New golden
+   fixtures for `replay` at the reference footing, generated by running `replay_trial` on
+   synthetic raw logs (in-plane swing, swing with a yaw component, a log where the axis never
+   commits), compared at 1e-9. **The existing replay fixtures stay on the old footing
+   deliberately**, by passing an explicit old-footing config, because they pin the AHRS, the hold
+   and the tick stage, which this change does not alter: `tests/replay_test.rs` (the tests that
+   use `ReplayConfig::default()`), `gen_fixtures.py`'s replay block, and `pipeline_test.rs` and
+   `params_json_test.rs`, which build `ReplayConfig` field by field (they gain the two new fields
+   set to the old values). The `Default` change is covered by the new fixtures, not by moving the
+   old ones. `BUILD_ID` restamped.
 4. **Rust core run on real trials.** A native example (as in the seed-fix Rust confirmation,
    kept out of the repo) feeds each of the 179 corpus streams through `TrialSession` with the
    reference footing; Python `replay_trial` at the reference footing on the same streams.
@@ -322,21 +405,31 @@ Each step is a commit; parity is checked at every step, not only at the end.
      screen) and every refused or unscored transition, by trace;
    - reference before against after: every changed verdict (about 17) and every N change (about
      59), by trace;
+   - the 40-sample minimum (section 3.5): how many corpus trials and optical curves it admits or
+     refuses at 100 Hz under the sample count and under the 2.0 s rule, and the decision (Q7);
    - the oscillation-count report's release-shift sweep re-run on the new scorer, for N and for
      `area_ratio`'s share of the PT movement;
    - test-retest ICC(1,1) of PT and N before and after, both conventions.
    The report is written without per-participant grades or groups.
-6. **neuromech**: rebuild the 67 scenarios, re-run the dry run, re-pin
-   `test_default_session_misses_exactly_the_two_edge_scenarios` and every expected value that moves,
-   each with its cause. Check the A-P2 and A-P3 presets (already unreachable) and the MAS 3 preset
-   with `955334a`.
-7. **Webapp**: `npm run build:wasm`, the full webapp test suite, the trends break (Q2) with a test,
-   `BUILD_ID` from an LF checkout. Time `finish()` for a 60 s trial under node at both footings
-   (each result calls replay five times: `finish`, trajectory, score, detrended params and
-   detrended score).
+6. **neuromech, end state**: rebuild the 67 scenarios and re-run the dry run on the final scorer.
+   The dry-run test is now
+   `test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_their_edge`
+   (`neuromech/tests/test_session_dryrun.py`); its edge-scenario pins move under (9) and (11) and
+   are re-pinned with the cause of each. Check the A-P2 and A-P3 presets (already unreachable)
+   and the MAS 3 preset with `955334a`. Re-pin `neuromech/fall_speed_reference.json` (formula id
+   and scorer fingerprint) if any step after 1 changed the fingerprint.
+7. **Webapp**: `npm run build:wasm`, the full webapp test suite, `BUILD_ID` check. Time `finish()`
+   for a 60 s trial under node at both footings (each result calls replay five times: `finish`,
+   trajectory, score, detrended params and detrended score).
 8. **Independent review** by someone who did not write it, then STATUS.md updated (workstreams
-   3 and 7, decisions 2, 4 and 7 closed) in the same PR.
-9. Rebase onto #94 when it merges; re-run steps 4 and 5 on the rebased branch.
+   3 and 7, decisions 2, 4 and 7 closed) in the same PR. #100 also edits STATUS.md; whichever
+   lands second merges by hand. #76 and #83 are closed as superseded.
+9. **Rebase onto #94** (branch `fix/port-drift-bound-and-compare-orientation`) when it merges.
+   #94 touches `pendulastic_pt_score.py`, `scoring.rs`, `golden.rs`, `gen_fixtures.py`,
+   `webapp/src/build-id.js`, `pt_report_common.py` (which feeds the fall-speed fingerprint) and
+   `web/api/services/pt_score_bridge.py`; it does not touch `PtScore.cs`. After the rebase:
+   regenerate fixtures, restamp `BUILD_ID`, re-run all three parity checks, step 4, step 5 and
+   step 6 (the fall-speed fingerprint will have moved).
 
 ## 8. Risks
 
@@ -351,8 +444,9 @@ Each step is a commit; parity is checked at every step, not only at the end.
   the designer's presets are on the scorer; workstream 1 is the top priority, so its re-pinning is
   part of this PR, not a follow-up.
 - **Mixed footings in trends** until Q2 is decided.
-- **Conflicts with #94** in `pendulastic_pt_score.py`, `scoring.rs`, `golden.rs`,
-  `gen_fixtures.py`. Kept separable: (9) and (11) touch the count and the key lists, #94 the drift
+- **Conflicts with #94** (`fix/port-drift-bound-and-compare-orientation`) in
+  `pendulastic_pt_score.py`, `scoring.rs`, `golden.rs`, `gen_fixtures.py` and `build-id.js`; it
+  also moves the fall-speed fingerprint through `pt_report_common.py`. Kept separable: (9) and (11) touch the count and the key lists, #94 the drift
   correction; neither changes the other's lines. Whichever lands second regenerates the fixtures.
 - **`lateral_motion` uses a different axis from the angle.** It runs its own estimator over the
   whole log from the first sample; after this change the angle uses the estimator fed from the
@@ -375,6 +469,11 @@ Each step is a commit; parity is checked at every step, not only at the end.
 - **Q5.** `detrend`: agree to defer unification until after #94 (section 5)?
 - **Q6.** If #94 merges first, may this PR update `HEALTHY_REF["f"]` by 0.001 after re-running
   `derive_healthy_ref.py` on the combined scorer, or should that go back to #94's owner?
+- **Q7.** Convert the 40-sample minimum to 2.0 s in all three languages (proposed), or keep the
+  sample count and accept that the app scores shorter recordings at 100 Hz?
+
+None of Q1 to Q7 has been answered. Every "proposed" choice in this plan is a default pending
+the owner's answer; no step that depends on a question is implemented until it is answered.
 
 ## Not verified
 
