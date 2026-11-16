@@ -10,6 +10,8 @@ product_contract_source: ce-brainstorm
 execution: code
 ---
 
+> **Partly superseded.** `docs/superpowers/specs/2026-08-24-web-app-design.md` replaced decisions KTD2, KTD5 and KTD8 (native shells and UniFFI) with a WASM web app, and CI now exists. Current status is in `STATUS.md`.
+
 # Phone IMU Pendulum App - Plan
 
 ## Goal Capsule

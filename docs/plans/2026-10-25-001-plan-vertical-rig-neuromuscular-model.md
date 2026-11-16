@@ -1,5 +1,7 @@
 # Plan: the vertical rig's neuromuscular model and how to validate it
 
+> **Superseded as the build plan** by `2026-10-26-001-plan-neuromech-emulator-unified.md`. `rig_neuromuscular_model.py` no longer exists; the model lives in `neuromech/`. Findings here still stand. Current status is in `STATUS.md`.
+
 **Date:** 2026-10-25
 **Status:** model implemented and self-checked; rig build decisions open
 **Code:** `rig_neuromuscular_model.py`, `severity_grading_test.py`

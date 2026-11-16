@@ -311,7 +311,17 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         "n_samples": None,
         "optitrack_method": None,
         "optical_absolute_zero": None,
+        "optical_relative": None,
         "rmse_deg_offset_removed": None,
+        "orientation": None,
+        "orientation_basis": None,
+        "orientation_reason": None,
+        "ref_mirrored": None,
+        "ref_inverted": None,
+        "test_inverted": None,
+        "polarity_corr_as_given": None,
+        "polarity_corr_mirrored": None,
+        "rmse_deg_offset_removed_other_polarity": None,
         "error": None,
     }
 
@@ -334,17 +344,33 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
         return row
 
     try:
-        ref_t, ref_angle, method = engine.load_optitrack_trial(opti_path)
+        ref_t, ref_angle, method, relative = engine.load_optitrack_reference(opti_path)
     except Exception as e:
         row["error"] = f"load_optitrack_trial failed: {type(e).__name__}: {e}"
         return row
     row["optitrack_method"] = method
+    row["optical_relative"] = bool(relative)
 
+    # The knee-axis marker reconstruction returns a RELATIVE curve: its sign is
+    # a hinge eigenvector's and carries no information, so about half those
+    # references arrive upside down against their IMU curve, and compare_pair
+    # may mirror one once the pair's polarity is determined. Only a curve the
+    # loader itself declared relative qualifies. The method tag does not say:
+    # "marker_pca" also covers a precomputed-angle file and the quaternion
+    # fallback, which have a real sign, like a rigid-body reference, and are
+    # never mirrored.
     result = engine.compare_pair(ref_t, ref_angle, t, angle,
-                                 capture_skew_prior=True)
+                                 capture_skew_prior=True,
+                                 ref_polarity_arbitrary=bool(relative))
     if result["status"] != "ok":
         row["error"] = result.get("error")
         return row
+    # What was concluded about the pair's polarity and whether the reference
+    # was mirrored for it. orientation == "undetermined" means the numbers
+    # below are for the curves exactly as given: flag the pair, and do not read
+    # its RMSE as either polarity's error (see compute_orientation_summary).
+    for key in _ORIENTATION_FIELDS:
+        row[key] = result.get(key)
 
     row["status"] = "ok"
     row["rmse_deg"] = result["rmse_deg"]
@@ -361,10 +387,16 @@ def evaluate_trial(imu_path: str, accel_path: str, gyro_path: str,
     return row
 
 
+_ORIENTATION_FIELDS = ["orientation", "orientation_basis", "orientation_reason",
+                       "ref_mirrored", "ref_inverted", "test_inverted",
+                       "polarity_corr_as_given", "polarity_corr_mirrored",
+                       "rmse_deg_offset_removed_other_polarity"]
+
 _FIELDNAMES = ["participant", "trial_key", "position", "trial", "imu_path", "optitrack_path",
               "status", "rmse_deg", "rmse_deg_offset_removed", "mae_deg",
               "bias_deg", "lag_sec", "n_samples", "optitrack_method",
-              "optical_absolute_zero", "error"]
+              "optical_absolute_zero", "optical_relative", *_ORIENTATION_FIELDS,
+              "error"]
 
 
 def comparable_rmse(row: dict) -> float:
@@ -404,6 +436,12 @@ def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) ->
         }
 
     result = {"all": _stats(ok_rows)}
+    # Pairs whose polarity could not be determined were scored as given, so
+    # for a relative reference their RMSE may be a mirror image's. Present
+    # only when there are such pairs, like the tag categories below.
+    if any(r.get("orientation") == "undetermined" for r in ok_rows):
+        result["excluding_orientation_undetermined"] = _stats(
+            [r for r in ok_rows if r.get("orientation") != "undetermined"])
     categories_present = {
         quality_tags[r["trial_key"]]["category"]
         for r in ok_rows
@@ -417,6 +455,172 @@ def compute_stratified_stats(rows: list, quality_tags: dict, goal_deg: float) ->
         ]
         result[f"excluding_{category}"] = _stats(subset)
     return result
+
+
+def _row_pid(row: dict) -> str:
+    """The participant ID a row belongs to: the trial key's own prefix (keys
+    are built from the ID, never the folder name), else the folder's ID."""
+    key = row.get("trial_key")
+    if key:
+        return str(key).split("_")[0]
+    name = row.get("participant")
+    return participant_paths.pid_from_dir_name(name) or str(name)
+
+
+def compute_orientation_summary(rows: list, goal_deg: float) -> Optional[dict]:
+    """Everything a reader needs to keep "polarity undetermined" from being
+    read as "agrees": how many pairs were decided, which were not and whose
+    they are, what the undetermined pairs score on their own, and how far the
+    headline could move if every one of them were the other way up.
+
+    Returns None when no ok row carries a polarity verdict (rows from before
+    the field existed). Otherwise:
+
+      total / decided / undetermined    pair counts
+      by_orientation                    {orientation: count}
+      all / decided_only / undetermined_only
+                                        {"n","mean","median","n_under_goal"} or
+                                        None when empty. "all" is the headline;
+                                        "decided_only" is a SUBSET and must
+                                        never be quoted without the other two.
+      median_best_fit / median_worst_fit
+                                        the all-pairs median with every
+                                        undetermined pair at the better / worse
+                                        of its two polarities (decided pairs
+                                        stay as decided). A bound, not a result.
+      n_unbounded                       undetermined pairs with no
+                                        other-polarity score, left as given in
+                                        both bounds
+      by_basis                          {basis: stats} over decided pairs
+      undetermined_by_reason            {reason without its detail: count}
+      undetermined_by_participant       {pid: (undetermined, that pid's pairs)}
+      majority_undetermined             pids with over half their pairs
+                                        undetermined
+      test_inverted                     trial keys whose TEST curve reads
+                                        upside down on its own release side.
+                                        Never acted on, and the RMSE cannot see
+                                        it against a relative reference.
+    Pure function, no I/O."""
+    ok = [r for r in rows if r["status"] == "ok" and r.get("orientation") is not None]
+    if not ok:
+        return None
+
+    def _stats(vals):
+        vals = list(vals)
+        if not vals:
+            return None
+        return {"n": len(vals), "mean": statistics.mean(vals),
+                "median": statistics.median(vals),
+                "n_under_goal": sum(1 for v in vals if v < goal_deg)}
+
+    def _is_und(r):
+        return r["orientation"] == "undetermined"
+
+    und = [r for r in ok if _is_und(r)]
+    dec = [r for r in ok if not _is_und(r)]
+    best, worst, n_unbounded = [], [], 0
+    for r in ok:
+        v = comparable_rmse(r)
+        other = r.get("rmse_deg_offset_removed_other_polarity")
+        if _is_und(r) and other is None:
+            n_unbounded += 1
+        if _is_und(r) and other is not None:
+            best.append(min(v, other))
+            worst.append(max(v, other))
+        else:
+            best.append(v)
+            worst.append(v)
+
+    by_orientation, by_reason, per_pid, totals = {}, {}, {}, {}
+    for r in ok:
+        by_orientation[r["orientation"]] = by_orientation.get(r["orientation"], 0) + 1
+        pid = _row_pid(r)
+        totals[pid] = totals.get(pid, 0) + 1
+        if _is_und(r):
+            per_pid[pid] = per_pid.get(pid, 0) + 1
+            reason = str(r.get("orientation_reason") or "unknown").split(" (")[0]
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+    bases = sorted({str(r.get("orientation_basis")) for r in dec})
+    return {
+        "total": len(ok), "decided": len(dec), "undetermined": len(und),
+        "by_orientation": by_orientation,
+        "all": _stats(comparable_rmse(r) for r in ok),
+        "decided_only": _stats(comparable_rmse(r) for r in dec),
+        "undetermined_only": _stats(comparable_rmse(r) for r in und),
+        "median_best_fit": statistics.median(best),
+        "median_worst_fit": statistics.median(worst),
+        "n_unbounded": n_unbounded,
+        "by_basis": {b: _stats(comparable_rmse(r) for r in dec
+                               if str(r.get("orientation_basis")) == b)
+                     for b in bases},
+        "undetermined_by_reason": by_reason,
+        "undetermined_by_participant": {pid: (n, totals[pid])
+                                        for pid, n in per_pid.items()},
+        "majority_undetermined": sorted(pid for pid, n in per_pid.items()
+                                        if 2 * n > totals[pid]),
+        "test_inverted": sorted(str(r.get("trial_key") or r.get("imu_path"))
+                                for r in ok if r.get("test_inverted") is True),
+    }
+
+
+def format_orientation_summary(summary: Optional[dict], goal_deg: float) -> list:
+    """The lines main() prints for compute_orientation_summary's result. The
+    decided-pairs median is only ever printed on the same line as the
+    undetermined pairs' own, under the all-pairs headline and its bound."""
+    if summary is None:
+        return []
+
+    def _s(stats):
+        if stats is None:
+            return "n=  0"
+        return (f"n={stats['n']:3d}  median={stats['median']:6.2f}  "
+                f"mean={stats['mean']:6.2f}  "
+                f"{stats['n_under_goal']}/{stats['n']} under {goal_deg:g} deg")
+
+    def _num(pid):
+        return (0, int(pid)) if str(pid).isdigit() else (1, str(pid))
+
+    s = summary
+    counts = ", ".join(f"{k}={v}" for k, v in sorted(s["by_orientation"].items()))
+    lines = [
+        "",
+        "Pair polarity (RMSE in deg, offset removed where the reference has no zero):",
+        f"  decided {s['decided']} / undetermined {s['undetermined']} / "
+        f"total {s['total']}   ({counts})",
+        f"  ALL PAIRS (headline)      {_s(s['all'])}",
+    ]
+    if s["undetermined"]:
+        bound = (f"  bound on the all-pairs median, undetermined pairs at their "
+                 f"better / worse fit: {s['median_best_fit']:.2f} .. "
+                 f"{s['median_worst_fit']:.2f}")
+        if s["n_unbounded"]:
+            bound += f"  ({s['n_unbounded']} with no other-polarity score, left as given)"
+        lines += [
+            bound,
+            f"  decided pairs (a SUBSET)  {_s(s['decided_only'])}",
+            f"  undetermined pairs        {_s(s['undetermined_only'])}"
+            "   <- scored as given; quote the subset only with this line",
+        ]
+    for basis, stats in sorted(s["by_basis"].items()):
+        lines.append(f"  decided on {basis:<17s} {_s(stats)}")
+    if s["undetermined"]:
+        per = ", ".join(
+            f"{pid}: {n}/{tot}" + ("*" if pid in s["majority_undetermined"] else "")
+            for pid, (n, tot) in sorted(s["undetermined_by_participant"].items(),
+                                        key=lambda kv: _num(kv[0])))
+        lines.append(f"  undetermined by participant (of that participant's pairs): {per}")
+        if s["majority_undetermined"]:
+            lines.append("    * over half of this participant's pairs are undetermined: "
+                         + ", ".join(sorted(s["majority_undetermined"], key=_num)))
+        lines.append("  undetermined by reason: " + ", ".join(
+            f"{k}={v}" for k, v in sorted(s["undetermined_by_reason"].items())))
+    n_inv = len(s["test_inverted"])
+    lines.append(f"  test_inverted=True on {n_inv} pair(s)"
+                 + (": " + ", ".join(s["test_inverted"]) if n_inv else "")
+                 + ("   <- the IMU curve reads upside down on its own release "
+                    "side: check it against the markers. Not corrected, and "
+                    "invisible to the RMSE" if n_inv else ""))
+    return lines
 
 
 def _evaluate_all(matched, verbose=True):
@@ -610,6 +814,13 @@ def main():
     else:
         print("No successful trials to summarize.")
 
+    # How each pair's polarity was settled. "undetermined" pairs were scored
+    # as given and are IN the headline above; this block is the only place the
+    # decided-only figure is printed, always beside what it leaves out.
+    for line in format_orientation_summary(
+            compute_orientation_summary(rows, RMSE_GOAL_DEG), RMSE_GOAL_DEG):
+        print(line)
+
     quality_tags = pt_report_common.load_quality_tags()
     strat = compute_stratified_stats(rows, quality_tags, RMSE_GOAL_DEG)
     if strat["all"] is not None:
@@ -617,7 +828,10 @@ def main():
         s = strat["all"]
         print(f"  all trials           n={s['n']:3d}  mean={s['mean']:6.2f}  "
               f"median={s['median']:6.2f}  {s['n_under_goal']}/{s['n']} under goal")
-        for key in sorted(k for k in strat if k != "all"):
+        # excluding_orientation_undetermined stays in the dict for callers,
+        # but is not printed here: on its own line it reads as the result.
+        for key in sorted(k for k in strat
+                          if k not in ("all", "excluding_orientation_undetermined")):
             s = strat[key]
             if s is None:
                 continue

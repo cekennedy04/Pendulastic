@@ -326,12 +326,29 @@ def _summarize_candidate(rmses, n_trials):
     }
 
 
-def main():
+def main(participant=None):
+    """Sweep every candidate over all trials, or over one participant's trials.
+
+    participant: e.g. "16" or "P16". When given, only that participant's trials
+    are swept and a per-trial CSV plus a per-leg summary are produced (this
+    replaces the former sweep_p16_preprocessing.py, which was a scoped copy).
+    """
     os.makedirs(OUT_DIR, exist_ok=True)
     trials = rpc.discover_video_trials()
-    print(f"{len(trials)} trial(s) with video + OptiTrack ground truth found.")
+    results_csv = RESULTS_CSV
+    if participant is not None:
+        pid = str(participant).lstrip("Pp")
+        all_trials = trials
+        trials = [t for t in all_trials if t["participant"] == pid]
+        results_csv = os.path.join(OUT_DIR, f"p{pid}_preprocessing_sweep_results.csv")
+        print(f"{len(trials)}/{len(all_trials)} trial(s) belong to Participant {pid}.")
+        for t in trials:
+            print(f"  {t['trial_key']}  leg={t['leg']}  video={t['video_path']}")
+    else:
+        print(f"{len(trials)} trial(s) with video + OptiTrack ground truth found.")
     if not trials:
         return
+    per_trial_rows = []
 
     model_path = os.path.join(BASE_DIR, "models", "mediapipe",
                               f"pose_landmarker_{MODEL_VARIANT}.task")
@@ -346,6 +363,7 @@ def main():
 
     for candidate in CANDIDATES:
         rmses = []
+        cand_trials = []
         # One landmarker per CANDIDATE (not per trial): MediaPipe's Tasks
         # Python API has real-world reports of not fully releasing native
         # memory across many PoseLandmarker create/destroy cycles within one
@@ -395,6 +413,9 @@ def main():
 
                 if rmse is not None:
                     rmses.append(rmse)
+                cand_trials.append({"candidate": candidate["key"],
+                                    "trial_key": trial["trial_key"],
+                                    "leg": trial["leg"], "rmse_deg": rmse})
 
                 # Checkpoint after every trial, not just after the whole
                 # candidate: a json.dump of this small dict + os.replace
@@ -406,6 +427,17 @@ def main():
                 # loses more than one trial's worth of work.
                 _save_cache(cache)
         summary = _summarize_candidate(rmses, len(trials))
+        per_trial_rows.extend(cand_trials)
+        if participant is not None:
+            for leg in ("left", "right"):
+                leg_rmses = [r["rmse_deg"] for r in cand_trials
+                             if r["leg"] == leg and r["rmse_deg"] is not None]
+                n_leg = sum(1 for r in cand_trials if r["leg"] == leg)
+                if leg_rmses:
+                    print(f"  -> {candidate['key']:16s} leg={leg:5s} n={len(leg_rmses)}/{n_leg}  "
+                          f"median={np.median(leg_rmses):.2f} deg  mean={np.mean(leg_rmses):.2f} deg")
+                else:
+                    print(f"  -> {candidate['key']:16s} leg={leg:5s} n=0 (no scoreable trials)")
 
         rows.append({
             "candidate": candidate["key"], "n_trials": len(trials),
@@ -425,12 +457,16 @@ def main():
              f"({pct_under_goal:.1f}% of trials < {RMSE_GOAL_DEG:.0f} deg, "
              f"target {GOAL_FRACTION*100:.0f}%)")
 
-    with open(RESULTS_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+    out_rows = per_trial_rows if participant is not None else rows
+    with open(results_csv, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()))
         w.writeheader()
-        w.writerows(rows)
-    print(f"-> {RESULTS_CSV}")
+        w.writerows(out_rows)
+    print(f"-> {results_csv}")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="MediaPipe preprocessing sweep")
+    ap.add_argument("--participant", help="restrict the sweep to one participant, e.g. 16 or P16")
+    main(participant=ap.parse_args().participant)
