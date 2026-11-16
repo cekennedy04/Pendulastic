@@ -19,10 +19,10 @@ bench_figures/
 Run everything from the repo root with the project venv:
 
 ```bash
-cd C:/Users/cladi/Pendulastic
+cd "$(git rev-parse --show-toplevel)"   # the repo root
 export PYTHONIOENCODING=utf-8            # the tracker has ° and Δ in its headers
-.venv/Scripts/python.exe bench_figures/make_ssr_tables.py
-.venv/Scripts/python.exe bench_figures/bench_figs.py
+.venv/Scripts/python.exe bench_figures/make_ssr_tables.py --tracker PATH/TO/Bench_SSR_Static_FILLED_DYNAMIC.xlsx
+.venv/Scripts/python.exe bench_figures/bench_figs.py      # mk_wave: --wave-trials PID:LEG:CONDITION:TRIAL[,...] (see --help)
 .venv/Scripts/python.exe bench_figures/deck_figs.py
 ```
 
@@ -39,7 +39,7 @@ prefixes) to regenerate just some figures.
 | **Encoder (truth)** | `Pendulastic_Mobile_App_Trial/ck_9_14_pt/*.bin` | LabVIEW binary, 1 kHz, 7 interleaved float64 channels: `time, position (deg), velocity (deg/s), position_setpoint, torque, emg_fds, emg_edc` |
 | **Phone (under test)** | `Pendulastic_Mobile_App_Trial/*.jsonl` (SSR session, "QUICK-TEST") and `Session_3/`, `Session_4/` | one JSON per sample: `{"t":…, "sensor":"gyro"|"accel"|"mag", "v":[x,y,z]}`; `v[1]` = gyro about the swing axis (rad/s) |
 | **Session manifest** | `*-manifest.json` next to the JSONLs | lists trials with `file` + `timestamp` — **sort by timestamp to get true capture order; the phone's trial numbers are scrambled** |
-| **Tracker** | `Downloads/Bench_SSR_Static_FILLED_DYNAMIC.xlsx` (or the CK Final tracker — same tab) | sheet `SSR Step-Response`: one row per settled step with encoder Δ, IMU Δ, drift, PID config |
+| **Tracker** | `Bench_SSR_Static_FILLED_DYNAMIC.xlsx`, local, passed as `--tracker` (or the CK Final tracker — same tab) | sheet `SSR Step-Response`: one row per settled step with encoder Δ, IMU Δ, drift, PID config |
 
 Two encoder families in `ck_9_14_pt/`:
 - `ck_ssr_pt_testStretchTrialNNFast.bin` (trials 21–115) — the **SSR staircase** `0 → +37.5 → −37.5 → +37.5 → 0`, 3 s holds. Static + step-dynamics data.

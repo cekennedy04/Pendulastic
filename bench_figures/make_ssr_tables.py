@@ -1,11 +1,12 @@
 """Step 1 of the bench analysis: turn the tracker's per-step SSR tab into ssr_steps.csv,
 and join the encoder-QA overshoot table to each recording's PID config -> ssr_qa_joined.csv.
 
-    python bench_figures/make_ssr_tables.py [--tracker PATH] [--qa PATH]
+    python bench_figures/make_ssr_tables.py --tracker PATH [--qa PATH]
 
-Inputs (defaults):
-  tracker : C:/Users/cladi/Downloads/Bench_SSR_Static_FILLED_DYNAMIC.xlsx (or the CK Final tracker — same tab)  (sheet "SSR Step-Response")
-  qa      : C:/Users/cladi/Downloads/ssr_encoder_qa.csv                       (overshoot/ring per encoder trial)
+Inputs:
+  tracker : the bench tracker workbook, Bench_SSR_Static_FILLED_DYNAMIC.xlsx (or the CK Final tracker — same tab),
+            sheet "SSR Step-Response". Required: it is local study material and is not in the repo.
+  qa      : overshoot/ring per encoder trial; defaults to the tracked copy, bench_figures/inputs/ssr_encoder_qa.csv
 Outputs: bench_figures/ssr_steps.csv, bench_figures/ssr_qa_joined.csv
 """
 import argparse, os
@@ -13,8 +14,9 @@ import pandas as pd, openpyxl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
-ap.add_argument("--tracker", default=r"C:\Users\cladi\Downloads\Bench_SSR_Static_FILLED_DYNAMIC.xlsx")
-ap.add_argument("--qa", default=r"C:\Users\cladi\Downloads\ssr_encoder_qa.csv")
+ap.add_argument("--tracker", required=True, help="the bench tracker .xlsx (sheet 'SSR Step-Response')")
+ap.add_argument("--qa", default=os.path.join(HERE, "inputs", "ssr_encoder_qa.csv"),
+                help="encoder-QA overshoot table (default: the tracked bench_figures/inputs/ssr_encoder_qa.csv)")
 a = ap.parse_args()
 
 ws = openpyxl.load_workbook(a.tracker, data_only=True)["SSR Step-Response"]

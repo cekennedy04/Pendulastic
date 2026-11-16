@@ -1,7 +1,7 @@
 """Figures for the extended Pendulastic progress deck (static / dynamic / PID / cohort / markerless).
 Every figure is regenerated from data on disk; provenance is printed per figure.
 """
-import sys, os, json, glob, traceback
+import sys, os, json, glob, traceback, argparse
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import numpy as np, pandas as pd
@@ -16,6 +16,12 @@ ENC = os.path.join(MAT, "ck_9_14_pt")
 sys.path.insert(0, OUT)
 from pubstyle import setup, style, note, save as _save, TEAL, SEA, NAVY, CORAL, GREY, INK, PANEL, GOLD, PUB
 setup()
+_ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+_ap.add_argument("--wave-trials", default=os.environ.get("WAVE_TRIALS", ""),
+                 help="trials for mk_wave as PID:LEG:CONDITION:TRIAL[,...] (or env WAVE_TRIALS). "
+                      "Default: the first participant/leg/condition, in sorted order, with two or more trials "
+                      "that have both an IMU and a MediaPipe RMSE, and its first two trials.")
+ARGS, _ = _ap.parse_known_args()
 def save(fig, name): _save(fig, name, OUT)
 def safe(name, fn):
     print("==", name)
@@ -433,11 +439,33 @@ def mk_hpe():
     for i, (v, n) in enumerate(zip(h["adj_MAS_agree_%"], h.n_trials)): ax.text(v + 1, i, f"{v:.0f}%  (n={n})", va="center", fontsize=9.5)
     ax.set_xlim(0, 112); ax.set_xlabel("adjacent-MAS agreement with the clinician (%)"); ax.set_title("Pose-estimation families vs the clinician's MAS"); style(ax, y=False)
     ax.set_yticks(range(len(h))); ax.set_yticklabels([m.replace("_", " ") for m in h.model_family]); save(fig, "mk_hpe.png")
+def _wave_trials(rows):
+    """Which trials mk_wave draws, as (participant, leg, condition, trial) keys. Taken from --wave-trials when
+    given; otherwise chosen by a fixed rule, so the default is reproducible without naming anyone in code.
+    Participant IDs only, never a study folder name (CLAUDE.md: resolve folders through participant_paths)."""
+    if ARGS.wave_trials:
+        want = [tuple(k.strip().split(":")) for k in ARGS.wave_trials.split(",") if k.strip()]
+        bad = [k for k in want if len(k) != 4]
+        if bad: raise ValueError(f"--wave-trials wants PID:LEG:CONDITION:TRIAL, got {bad}")
+        return want
+    def ok(r):
+        try: return np.isfinite(float(r["rmse_imu"])) and np.isfinite(float(r["rmse_2d"]))
+        except (KeyError, TypeError, ValueError): return False
+    groups = {}
+    for r in rows:
+        if ok(r): groups.setdefault((r["participant"], r["leg"], r["condition"]), []).append(r["trial"])
+    def num(x):
+        try: return (0, int(x), "")
+        except ValueError: return (1, 0, str(x))
+    for g in sorted(groups, key=lambda g: tuple(num(x) for x in g)):
+        trials = sorted(set(groups[g]), key=num)
+        if len(trials) >= 2: return [(*g, t) for t in trials[:2]]
+    raise RuntimeError("no participant/leg/condition has two trials with both an IMU and a MediaPipe RMSE")
 def mk_wave():
     """Three channels on one trial, on the alignment the RMSE used (reuses the methodology script's loaders)."""
     saved = dict(plt.rcParams); import generate_methodology_comparison_figures as G; plt.rcParams.update({k: saved[k] for k in ("font.family", "font.size", "axes.titleweight", "axes.titlecolor", "axes.titlesize", "axes.edgecolor")})
-    rows = G.load_rows(); want = [("13", "left", "month_post", "1"), ("13", "left", "month_post", "2")]
-    fig, axs = plt.subplots(1, 2, figsize=(13, 4.6))
+    rows = G.load_rows(); want = _wave_trials(rows)
+    fig, axs = plt.subplots(1, len(want), figsize=(6.5 * len(want), 4.6), squeeze=False); axs = axs[0]
     for ax, key in zip(axs, want):
         row = next(r for r in rows if (r["participant"], r["leg"], r["condition"], r["trial"]) == key)
         opti, imu, mpc = G._curves_for(row); ot, oa, flip = G._tail_zero_orient(*opti); t0 = ot[0]
@@ -446,7 +474,7 @@ def mk_wave():
             if data is None: continue
             res = G.cmr.align_against_optitrack(opti[0], opti[1], data[0], data[1], ch); mt, my, _ = G._tail_zero_orient(data[0], data[1])   # each channel oriented on its own
             lag = float(res["lag_sec"]) if res else 0.0; ax.plot(mt + lag - t0, my, color=col, lw=1.5, label=f"{lab}  (RMSE {float(row[rk]):.1f}°)")
-        ax.set_xlim(0, 10); ax.set_xlabel("time (s)"); ax.set_ylabel("knee angle, tail-zeroed (deg)"); ax.set_title(f"MINT_{key[0]} {key[1]} {key[2].replace('_', ' ')} · trial {key[3]}", fontsize=12); style(ax)
+        ax.set_xlim(0, 10); ax.set_xlabel("time (s)"); ax.set_ylabel("knee angle, tail-zeroed (deg)"); ax.set_title(f"{key[1]} {key[2].replace('_', ' ')} · trial {key[3]}", fontsize=12); style(ax)
     axs[0].legend(frameon=False, fontsize=10, loc="lower right")
     fig.suptitle("Same swing, three instruments — OptiTrack vs phone IMU vs MediaPipe", fontweight="bold", color=NAVY, fontsize=14)
     save(fig, "mk_wave.png")
