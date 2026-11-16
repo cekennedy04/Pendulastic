@@ -92,7 +92,8 @@ phone, by matching the first 2° of the command's fall to the recording, and is 
 `cmd_release_s`, `enc_release_s`, `enc_release_lag_ms`, `enc_release_resid_deg`, `enc_hold_rms_deg`,
 `enc_rival_ratio`, the same for the phone, `ph_minus_enc_lag_ms` (the phone clock's offset at the release)
 and `ph_expected_offset_ms`. Design and evidence: `docs/reports/2026-11-11-neuromech-release-alignment.md`
-(the section "After review" describes everything below; section B the chirp-derived tracking limit).
+(the section "After review" describes everything below; section B the chirp-derived tracking limit, and
+section C what its review changed).
 
 **What gets flagged.** A flagged trace gets no score (there is no fallback to the commanded release), the
 reason is in `status` / `phone_status`, and `score` exits with status 1. The printed headline counts
@@ -105,9 +106,9 @@ flagged runs in its denominator ("7 of 9 runs (78%); scored 7, release flagged 1
 | `release flagged: release uncertain: a release 10 ms or more away fits ...` | two candidate releases; nothing in the data says which | rerun |
 | `release flagged: lag ... from the session median ...: this run, not the rig` | this run's lag is more than 12 ms from the other runs' | this run is the odd one (stiction, a lurch, a late start): rerun it |
 | `release flagged: session lag finding` | see below | see below |
-| `tracking flagged: tracking error ... times the ... the plant identified from the chirp predicts` | the arm followed the command more loosely than this rig's own plant does: lag-aligned RMSE ÷ the command's rms speed (`tracking_time_err_ms`) is over max(1.15 × `tracking_pred_ms`, 4 ms). The scores stay in the report but the run is not a delivery of its scenario | look at the run; run ILC on it (section 5) or rerun |
+| `tracking flagged: tracking error ... times the ... the plant identified from the chirp predicts` | more error than the fitted model predicts for this command: lag-aligned RMSE ÷ the command's rms speed (`tracking_time_err_ms`) is over √((1.15 × `tracking_pred_ms`)² + 4²) ms. That is a statement about the run against the model, not yet evidence about the arm (see the mismatch table below). The scores stay in the report but the run is not a delivery of its scenario. If the sentence says "the margin being the session's median ratio", the session has a MODEL MISMATCH FINDING and this run stands out from it | look at the run; run ILC on it (section 5) or rerun |
 | `tracking flagged: the release is ... ms from where the plant identified from the chirp puts it` | the arm left the hold more than 4 ms earlier or later than this rig's plant does with the setpoint the log recorded (`enc_lag_minus_pred_ms`). Late: stiction or a slow start. Early: a lurch, or something pushing the arm. This check sees a fault that is in every run | find the cause at the rig; a rerun will not change it if every run has it |
-| `tracking flagged: tracking error ... is over the limit of 25 ms` | the session has no usable chirp (or `--tracking-limit-ms` was given), so the run was held to one fixed number | plan with `--chirp`; see below |
+| `tracking flagged: tracking error ... is over the limit of 25 ms` | the session has no usable chirp (or `--tracking-limit-ms` was given), so the run's tracking error was held to one fixed number | plan with `--chirp`; see below |
 | `scoring error` | the scorer raised on the trace | read the message |
 
 `score` also exits with status 1 when any trace ends in an error and so has no score: an encoder
@@ -117,28 +118,100 @@ AN ERROR".
 **The tracking limit comes from the session's own chirp.** With `R000` in the session (`plan --chirp`),
 `score` identifies the plant from it and, for every run, passes that run's command through the identified
 plant: `tracking_pred_ms` is the tracking error the plant itself produces on that command, and the run's
-limit (`tracking_limit_ms`) is max(1.15 × predicted, 4 ms). The 4 ms floor is for a rig that tracks almost
-perfectly, where what is left is the Player's 100 Hz staircase and encoder noise, which the model does not
-contain. The second check is on the release: the identified plant is driven by the setpoint the log
-recorded and its release is compared with the arm's (`enc_release_lag_pred_ms`, `enc_lag_minus_pred_ms`,
-limit 4 ms). `report.csv` carries `tracking_limit_source` (`plant`, `fixed` or `override`) and
-`tracking_limit_note` on every row, and the summary prints which it was.
+limit (`tracking_limit_ms`) is √((1.15 × predicted)² + 4²) ms. The 4 ms is error the prediction does not
+contain (the Player's 100 Hz staircase, encoder noise); it is added in quadrature because it does not go away
+when the prediction is large. The model has no gain term, so the prediction is scaled by what the arm held
+before the release over what it was told to hold (`enc_hold_gain`), as long as that is within 5 % of 1. The
+second check is on the release: the identified plant is driven by the setpoint the log recorded and its
+release is compared with the arm's (`enc_release_lag_pred_ms`, `enc_lag_minus_pred_ms`, limit 4 ms).
 
-- **No chirp** (not planned, or `R000` has no log): every run is held to the fixed 25 ms and the output
-  says `TRACKING LIMIT IS NOT PLANT-DERIVED`. That number belongs to the simulated plant: on a slower rig
-  it flags good runs, on a faster or ILC-corrected rig it misses sluggish starts, and it cannot see a fault
-  that is in every run. Plan real sessions with `--chirp`.
-- **A chirp the model cannot reproduce** (fit R² under 0.95, or the identified model leaves more than 10 %
-  of the chirp's motion unexplained: `plant_misfit`): the plant is not used, the runs fall back to the fixed
-  25 ms, `score` prints a `CHIRP FINDING` and exits 1. It means coarse stiction or a deadband, or a drive
+`report.csv` says what a session was judged by, on every row: `tracking_limit_source` (`plant`, `fixed` or
+`override`), `tracking_limit_note`, `tracking_margin` and `tracking_margin_source` (`default` or `operator`),
+`release_check` (`plant` or `none`), `tracking_session_ratio` and `tracking_session_ratio_runs`,
+`model_mismatch_finding`, `chirp_suspect`. `R000`'s row carries the identified plant (`plant_wn_hz`,
+`plant_zeta`, `plant_delay_ms`, `plant_r2`), `plant_misfit` (the share of the chirp's own motion the model does
+not reproduce), `plant_trusted` (True when the plant is used) and `plant_untrusted_why` (the reason when it is
+not).
+
+- **No chirp** (not planned, or `R000` has no log): every run is held to the fixed 25 ms, there is no release
+  check against a plant, and the output says `TRACKING LIMIT IS NOT PLANT-DERIVED`. That number belongs to the
+  simulated plant: on a slower rig it flags good runs, on a faster or ILC-corrected rig it misses sluggish
+  starts, and it cannot see a fault that is in every run. Plan real sessions with `--chirp`.
+- **A chirp the model cannot reproduce** (fit R² under 0.95, or `plant_misfit` over 10 %), or one that cannot
+  be identified at all: the plant is not used, the runs fall back to the fixed 25 ms, `score` prints a
+  `CHIRP FINDING` and exits 1 even if every run is clean. It means coarse stiction or a deadband, or a drive
   that saturates on the chirp (8° at 10 Hz is 500°/s). Look at `R000` first.
-- **`--tracking-limit-ms N`** still judges every run by N alone, prints `TRACKING LIMIT OVERRIDE USED` and
-  is recorded as `override`; the plant's predictions stay in the report.
+- **Two knobs, and neither turns the release check off.** `--tracking-margin M` replaces the 1.15.
+  `--tracking-limit-ms N` replaces the plant-derived tracking limit with N for every run (`TRACKING LIMIT
+  OVERRIDE USED`). With a trusted chirp the release is checked against the plant either way, so a half-speed
+  start or a forward lurch in every run is still flagged. Both are printed and recorded.
 
-What this does not catch, measured in simulation (report, section B): a start at 90 % speed, a 1° lurch
-and 2 ms of stiction pass. A drive that saturates only slightly on the chirp (limited to 225 to 250°/s in
-the simulation) is still trusted and makes good runs look 4 to 5 ms "early": if every run is flagged
-"early" by about the same amount and `plant_misfit` is over 5 %, suspect the chirp before the runs.
+**A model mismatch finding.** measured ÷ predicted is 1.0 when the identified plant describes the runs. If the
+session's runs agree with each other on a ratio that is not 1 (at least 3 scored runs predicted at 7 ms or
+more whose release passed the check, two thirds of them within 15 % of their median, and that median outside
+0.92 to 1.08), that is a statement about the model, or about something every run shares, and not about any
+one run. `score` prints **one** `MODEL MISMATCH FINDING` in place of a tracking flag per run, holds each run to
+the session's ratio (1.15 × the median) so that a run which stands out from the session is still the one
+flagged, and exits 1. A ratio that is consistently **low** raises the same finding and tightens each run's
+limit: against a prediction that is too large, small faults pass. Do this:
+
+1. Play `R000` again and re-score. A chirp taken at other gains, or before the rig warmed up, is the cheapest
+   explanation.
+2. Compare `enc_hold_gain` with 1 and the gains with the last session's. Remember that a small fault in every
+   run looks the same from here: 5 ms of stiction or a start at 80 % speed in every run gives this finding
+   (session ratio about 1.2), not a flag per run.
+3. If it is simply what the rig does, accept it with the margin the finding printed:
+   `python -m neuromech.session score ... --tracking-margin 1.32`. It is recorded, and a later session that
+   moves away from the accepted ratio in either direction gets the finding again.
+
+**What a tracking flag against the plant is worth, so far.** In simulation only, on rigs the fitted model does
+not describe. The table is from the independent review of 2026-11-14
+(`docs/reports/2026-11-14-neuromech-chirp-tracking-limit-review.md`, branch `docs/chirp-tracking-limit-review`),
+re-measured here on the reviewer's rig models; **the magnitudes are the reviewer's guesses about a rig nobody
+has measured**. Good runs only, 132 per row, the chirp through the same rig unless stated. "Before" is the
+share of good runs flagged when each run was held to max(1.15 × predicted, 4 ms) on its own; "now" is the
+share still flagged individually (tracking + release check) in sessions of 20 runs, and how many of those
+sessions carry the one finding.
+
+| rig | good runs flagged before | flagged now | sessions with the finding (median ratio) |
+|---|---|---|---|
+| arm settles at 0.995 / 0.99 / 0.98 / 0.97 of the setpoint | 10 / 22 / 38 / 61 % | 0 | none (absorbed by `enc_hold_gain`) |
+| slow dipole at 0.3 Hz, mid-band gain +1 / +2 / +3 % | 6 / 65 / 96 % | 0.2 / 5 / 9 % | 70 / 100 / 100 % (1.09 / 1.17 / 1.26) |
+| slow dipole at 0.1 Hz, +2 % ; −5 % | 69 % ; 84 % | 15 % ; **53 %** | 99 % ; 41 % (the runs do not agree: not covered) |
+| loop 10 / 20 % softer at the 55° hold than at the chirp's 0° | 5 / 88 % | 0.1 % / **42 %** (release check) | 95 / 100 % (1.10 / 1.20) |
+| Coulomb friction worth 0.1 / 0.2° of loop error | 4 / 43 % | 3 % / **22 %** (release check) | 10 / 100 % |
+| loop deadband 0.05 / 0.1° | 6 / 71 % | 0 / **23 %** (release check) | 63 / 100 % (1.09 / 1.16) |
+| encoder noise 0.1° rms: 6.35 Hz ; 8.3 Hz ; 12 Hz ζ 0.7 ; 6.35 Hz ζ 0.5 | 0 ; 10 ; 11 ; 43 % | 0 ; 2 ; **11** ; 8 % | 0 ; 3 ; 0 ; 0 % |
+| encoder quantised to 0.36°: 6.35 Hz ; 8.3 Hz ; 12 Hz ζ 0.7 | 1 ; 9 ; 28 % | 2 ; 6 ; **25 %** | 2 ; 27 ; 0 % |
+| chirp recorded with bandwidth ×1.10 ; damping ×1.2 | 43 % ; 8 % | 0 ; 0 | 100 % (1.14 ; 1.13) |
+| chirp recorded with bandwidth ×0.90 (quiet direction) | 0 | 0 | 100 % (0.88) |
+| extra pole at 10 Hz ; 0.2 × mode at 25 Hz (quiet direction) | 0 | 0 | 100 % (0.83 ; 0.78) |
+| several mild departures at once (the review's "moderate" composite) | 95 % | 1 % + **11 %** (release check) | 100 % (1.27) |
+
+Not covered, in bold above: nonlinearity strong enough to move the release itself (the release check then
+blames good runs: 20 % softening, 0.2° of friction, a 0.1° deadband, a loop gain that rises 20 % with error:
+95 %), a rig where the prediction is under 7 ms and noise or quantisation is what is measured, and a mismatch
+on which the runs do not agree with each other.
+
+What this does not catch, measured in simulation (report, sections B and C): a start at 90 % speed, a 1°
+lurch and 2 ms of stiction pass. A small fault in every run that the release check cannot see (5 ms of
+stiction, a start at 80 %) is no longer a flag per run but the one model mismatch finding. On a fast,
+well-damped rig (11 to 12 Hz) 5 ms of stiction in every run passes entirely in about a quarter of 20-run
+sessions, and on a rig with fast dynamics the model lacks (an extra pole at 10 Hz) it cancels the low ratio and
+passes in all of them. Faults that are in the **setpoint** are invisible to the release check by construction (the model is
+driven by the logged setpoint), so only the tracking ratio sees them: a Player that writes nothing for 20 ms at
+the release passes (40 ms does not), a Player clock running 1 % slow lowers the tracking error on most runs
+(16 % of runs flagged, the low finding in half of sessions), and a 3° setpoint lurch is flagged on about 60 %
+of runs. Relaxing the margin relaxes these.
+
+**If the chirp is the suspect.** A drive that only just fails to follow the chirp is still trusted and
+identifies a delay the rig does not have; good runs then read 3 to 5 ms "early" and are flagged as lurches.
+In the simulation that window opens at a 275°/s rate limit on the identified plant (8 of 132 good runs
+blamed; 58 of 132 at 250°/s; 124 of 132 at 225°/s; refused from 210°/s down), sits at 300°/s on an 8.3 Hz plant and
+at 225 to 250°/s on a slower one, where the chirp's misfit is only 5.6 to 7.0 %, so a tighter misfit limit
+would not close it. When the session's releases are 3 ms or more early in the median, two thirds of them
+within 2.5 ms of that, and `plant_misfit` is over 5 %, `score` prints one `SUSPECT THE CHIRP, NOT THE RUNS`
+sentence (`chirp_suspect`). The flags stand and the exit status is 1; the sentence says where to look first.
 
 Phone traces: `sync refused` (the three pulses do not line up), `release error`, `release flagged`
 (including "the sync is off": the phone's release is not within 1.5 sample periods of the 0.6 sample
@@ -168,12 +241,14 @@ The session median is only as good as the majority. **When half or more of a ses
 (stiction, a slow start), the median belongs to the fault and the good runs are the ones flagged "this
 run, not the rig".** If most runs are flagged this way, suspect the unflagged ones. The same goes for a
 fault in every run: comparing runs with each other cannot see it. With a chirp in the session the release
-check against the identified plant does (a 6° forward lurch or a half-speed start in every run is flagged);
+check against the identified plant does (a 6° forward lurch or a half-speed start in every run is flagged,
+whatever `--tracking-margin` or `--tracking-limit-ms` says);
 without one, a gentle forward lurch in every run is scored without a flag.
 
 All of these limits (0.20° hold, ratio 1.5, 12 ms, −10…+80 ms, the phone's 0.6 ± 1.5 sample periods,
-tracking at 1.15 × predicted with a 4 ms floor, release within 4 ms of predicted, chirp R² 0.95 and misfit
-10 %, the 25 ms fallback) are **provisional**: they were set on the simulated plant and on constructed faults. No rig
+tracking at 1.15 × predicted with a 4 ms floor in quadrature, the hold gain within 5 %, the session ratio's
+0.92 to 1.08 / 15 % / two thirds / 7 ms, release within 4 ms of predicted, chirp R² 0.95 and misfit 10 %, the
+chirp-suspect 3 ms / 2.5 ms / 5 %, the 25 ms fallback) are **provisional**: they were set on the simulated plant and on constructed faults. No rig
 log has been through them, and the first rig session should be read as a test of the limits.
 
 **Do not report scores from a real rig session yet.** The fixed 25 ms tracking limit is known to be
@@ -216,8 +291,9 @@ is flagged at every seed ("the hold is not still"), which is what that scenario 
 |ΔPT7| max 0.17, ILC converging on every scenario) were not re-measured for this note.
 
 Since 2026-11-14 the dry run's tracking is judged against the plant identified from its own `R000` (section 4):
-seed 11 gives tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted, per-run limits 15.9 to
-21.8 ms in place of 25, and the same 9 of 9 with no flag.
+seed 11 gives tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted, per-run limits 16.3 to
+22.1 ms in place of 25 (15.9 to 21.8 before the floor went into quadrature, 2026-11-16), and the same 9 of 9 with
+no flag and no session finding.
 
 ## 7. Does the emulator fall like a real leg?
 
@@ -252,7 +328,7 @@ a change the band lets through. The reference is OptiTrack A0; re-pin it on B11'
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # TESTCOUNT tests
+python -m pytest neuromech/tests                                    # 264 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

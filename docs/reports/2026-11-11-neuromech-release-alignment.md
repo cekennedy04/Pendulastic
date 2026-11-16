@@ -764,6 +764,9 @@ Branch `neuromech/chirp-derived-tracking-limit`, stacked on `neuromech/session-r
 This is the follow-up A.7 and A.9 recorded as not done. **Everything in this section is simulation**: the
 simulated Player, plant and encoder of `neuromech/dryrun.py`, and faults constructed in the tests. No rig, no
 real LabVIEW log and no real phone recording has been through any of it. B.9 lists what is not verified.
+**Section C (2026-11-16) changes this after an independent review**: the floor is now added in quadrature, the
+release check stays on under both operator knobs, and a session whose runs agree on a ratio the model does not
+predict is one finding. Where B and C disagree, C is the current behaviour.
 
 ### B.1 What the limit is now
 
@@ -831,7 +834,7 @@ within 1e-6 deg.
 - **Measured / predicted** is `tracking_time_err_ms / tracking_pred_ms`; **release minus predicted** is
   `enc_lag_minus_pred_ms`. Ranges are minimum to maximum over the usable runs.
 
-### B.3 Good runs: no false flag on any plant
+### B.3 Good runs: no false flag on the fifteen plants sampled (corrected in C.2)
 
 | plant | identified from its own chirp (Hz, zeta, delay ms) | usable runs | tracking time error, ms | of them over the old 25 ms | measured / predicted | flagged on tracking | release minus predicted, ms | flagged on release | flagged |
 |---|---|---|---|---|---|---|---|---|---|
@@ -851,7 +854,9 @@ within 1e-6 deg.
 | 12 Hz, zeta 0.7 | 11.67, 0.700, -0.5; R2 0.994, misfit 1.1 % | 264 | 0.2 to 3.2 | 0 | 0.48 to 10.81 | 0 | -0.4 to 0.6 | 0 | 0 |
 | 20 Hz, zeta 0.7 | 16.90, 0.695, -2.1; R2 0.978, misfit 1.4 % | 264 | 0.3 to 1.4 | 0 | 0.65 to 10.94 | 0 | -0.3 to 0.7 | 0 | 0 |
 
-No good run is flagged on any of the fifteen plants (3,917 usable deliveries). Under the fixed 25 ms the same
+No good run is flagged on any of the fifteen plants (3,917 usable deliveries). **Correction (C.2): that is true of
+the fifteen plants sampled and was not true of the method.** Between them (11 and 12 Hz at zeta 1.0, predictions
+of 3.5 to 6 ms) `max(1.15 x predicted, 4)` flagged good runs; the floor is now added in quadrature. Under the fixed 25 ms the same
 runs gave 179 of 264 flags on the plant 30 % slower and 30 % less damped, 101 at bandwidth -40 %, and 12, 8, 4,
 4 and 4 on five others ("of them over the old 25 ms").
 
@@ -1032,7 +1037,10 @@ What that says:
 3. **There is a window where a wrong chirp is still trusted.** At 225 and 250 deg/s the fit passes the gate
    (R2 0.963 and 0.977, misfit 9.9 % and 7.6 %) with a delay of about 4 ms that is not there, and 8 of 8 and
    2 of 8 good runs are flagged "early" by 4 to 5 ms. At 300 deg/s and above nothing is flagged. This fails
-   loudly, not silently, but it blames the runs for the chirp's fault. The README says how to recognise it
+   loudly, not silently, but it blames the runs for the chirp's fault. **Corrected in C.5:** the window is not
+   225 to 250 deg/s and "2 of 8" is the least affected eight scenarios; over 132 good runs it opens at 275 deg/s
+   on the identified plant (58 of 132 blamed at 250), and on the slow plant the chirp is trusted at 5.6 and 7.0 %
+   misfit, so a 7 % misfit limit would not close it. The README says how to recognise it
    (every run "early" by about the same amount, `plant_misfit` over 5 %). Tightening the misfit limit to 7 % would
    close most of the window and would also refuse the 1 deg stick-slip chirp (7.2 %), whose runs are correctly
    flagged today; that trade was not made without rig data.
@@ -1110,11 +1118,14 @@ the tracking reason itself.
 - **No rig, no real log, no real phone.** Every plant here is the second-order-plus-delay model, the same family
   `ilc.identify` fits. On it the identification is nearly exact and the prediction is good to a few per cent. A
   real rig has friction, backlash, a current limit and a load that changes with angle; how far its good runs sit
-  from the prediction is unknown, and B.6 shows a 0.1 deg deadband alone takes them past the margin. **The first
+  from the prediction is unknown, and B.6 shows a 0.1 deg deadband alone takes them past the margin (C.4 has
+  the review's fuller table: static gain, slow dynamics, softening at the hold angle, friction, noise and a chirp
+  at other gains each move the ratio by more than 0.15). **The first
   rig session should be read as a measurement of measured / predicted and of release minus predicted on runs
   believed good, and the margin and tolerance set from that.** All five constants are provisional.
 - The margin has 0.01 of room above the worst good run in simulation (B.3).
-- The window in B.6 item 3 (a mildly saturated chirp, trusted, good runs flagged "early").
+- The window in B.6 item 3 (a mildly saturated chirp, trusted, good runs flagged "early"; C.5 adds one sentence
+  that names the chirp as the suspect, and corrects the window).
 - One faulty run among good ones, and half a session faulty: not re-measured here. The session-median rules
   of A.6 are unchanged; the new checks are per run against the plant and do not depend on the other runs.
 - ILC-corrected commands: the prediction is of the corrected command through the plant, which is what should be
@@ -1159,3 +1170,362 @@ and the code it covers are untouched by this branch. The Formula Node check and 
 `neuromech/tests` were not re-run: no file they read has changed.
 
 The table harness, the mutation runner and the scratch copy of the package they ran in are not committed.
+
+## C. After the review of the chirp-derived limit (2026-11-16)
+
+The independent review of section B (`docs/reports/2026-11-14-neuromech-chirp-tracking-limit-review.md`, branch
+`docs/chirp-tracking-limit-review`, reviewing `b0d18c9`) said "fixes required, then ready for a draft PR". This
+section is what was changed for it. **Everything here is simulation**, as in section B: the simulated Player,
+plant and encoder, and rigs and faults constructed in code. The mismatched rigs of C.4 are the reviewer's models
+of what a rig might do, **at magnitudes the reviewer chose; none is a measurement of this rig**. Where B and C
+disagree, C is the current behaviour.
+
+### C.1 What changed
+
+| review item | change | where |
+|---|---|---|
+| 1. the floor | `tracking_limit_ms = sqrt((margin x predicted)^2 + 4^2)` in place of `max(margin x predicted, 4)` | C.2 |
+| 2. the knobs | `--tracking-margin M` relaxes the ratio; `--tracking-limit-ms N` replaces the tracking limit only; with a trusted chirp the release check stays on under both; both recorded in `report.csv` | C.3 |
+| 3. the session against the model | one `MODEL MISMATCH FINDING` when the runs agree on a ratio well off 1, in both directions, and `score` exits 1 on it; each run is then held to the session's ratio. And the prediction scaled by the measured hold gain | C.4 |
+| 4. the chirp | one `SUSPECT THE CHIRP, NOT THE RUNS` sentence; B.6 item 3's window and counts corrected | C.5 |
+| 5. tests | every surviving mutant of the review's section 5.2 now has a test that kills it | C.6 |
+| 6. documents | the review's mismatch table, the setpoint-side misses, `plant_trusted` / `plant_untrusted_why` and every new column in the README (section 4) and the `session.py` docstring; B.3, B.6 and B.9 carry corrections | C.7 |
+
+A tracking flag's sentence now ends "more error than the fitted model predicts for this command" where it said
+"the arm did not follow this command": the review's point that the ratio is fitted to the simulator and a flag
+is not yet evidence about the arm. A run the plant has no prediction for (the model's own release not found;
+no input is known to reach this) is held to the fixed 25 ms, its row says `fixed` in `tracking_limit_source`
+where `b0d18c9` said `plant`, and its release is still checked against the plant.
+
+### C.2 The floor (item 1)
+
+B.3 sampled plants whose predictions are 14 ms and up, or 3 ms and down. Between them (7 to 12 Hz at zeta 0.7
+to 1.0, predictions of 3.5 to 6 ms) `max(1.15 x predicted, 4)` allows 0.5 to 0.9 ms for a staircase and noise
+that add about 3 ms in quadrature at any prediction, and good runs exceed it.
+
+Figures, construction: the reviewer's probe harness (own linear plants, own Player staircase with up to 3 ms of
+lateness, encoder noise 0.02 deg rms, own fault functions), each rig identified from its own chirp through the
+same rig, Player tick phase uniform over 0 to 10 ms, 66 scenarios x seeds 11 and 5 = 132 deliveries per row;
+the verdict is `session._delivered_release`, `_tracking`, `_hold_gain`, `_plant_prediction` and the limit,
+exactly as `score` calls them.
+
+| plant (good runs) | usable | flagged by `max(1.15 x predicted, 4)` | flagged by the quadrature floor |
+|---|---|---|---|
+| 10 Hz, zeta 1.0 | 132 | 1 | 0 |
+| 11 Hz, zeta 1.0 | 132 | 2 | 0 |
+| 12 Hz, zeta 1.0 | 132 | 6 | 0 |
+| the other eleven clean plants of C.4 | 1,435 | 0 | 0 |
+
+(The review has 7 and 10 of 264 at 11 and 12 Hz.) Committed tests: in memory, five scenarios on the 11 Hz,
+zeta 1.0 plant with the tick 2.5 and 7.5 ms into the command (predicted 3.8 to 4.3 ms, measured 4.5 to 4.9: all
+ten over `max`, none flagged now); through `plan --chirp`, `.bin` files and `score` on the 12 Hz, zeta 1.0
+plant, where `S-lam1` measures 4.2 ms against a prediction of 3.5, over `max(4.03, 4)`: the session now scores
+5 of 5 and exits 0.
+
+What the quadrature floor costs on faults in every run, identified plant, same 132 deliveries, each run on its
+own (tracking or release check, no session rule): sluggish start 50 % 132 -> 132 flagged, start at 70 % 126 ->
+126, 6 deg lurch 122 -> 119 of 124 usable, start at 80 % 80 -> 51, 5 ms of stiction 127 -> 112. The last two are
+where the tracking ratio was doing the work; C.4 says what the session rule makes of them.
+
+**Correction to B.3:** "no good run is flagged on any plant" is true of the fifteen plants B.3 sampled and was
+not true of the method.
+
+### C.3 Two knobs (item 2)
+
+On `b0d18c9`, `--tracking-limit-ms` replaced both checks with one number. Construction: the committed test
+fixture (`plan --chirp` with R000 and four scenarios, `.bin` logs, `score` and `main`), the chirp healthy:
+
+| session | `b0d18c9` | now |
+|---|---|---|
+| every run starts at 50 % speed, `--tracking-limit-ms 80` | 4 of 4 scored, exit 0 | 4 of 4 flagged by the release check (+4.2 to +10.3 ms), exit 1 |
+| every run lurches 6 deg, `--tracking-limit-ms 25` | 12 of 20 scored in the review's session | 3 flagged by the release check, the fourth by the release gate, none scored, exit 1 |
+| every run starts at 50 % speed, `--tracking-margin 1.6` | (no such option) | 4 of 4 flagged by the release check, exit 1 |
+| good runs, `--tracking-limit-ms 80` or `--tracking-margin 1.2` | scored, exit 0 | scored, exit 0 |
+
+`report.csv` carries `tracking_margin` and `tracking_margin_source` (`default` / `operator`; empty when the
+margin has nothing to act on), `release_check` (`plant` / `none`) and, as before, `tracking_limit_source` and
+`tracking_limit_note`. With no trusted chirp there is no plant to check the release against, and the note says
+so. `--tracking-margin` given together with `--tracking-limit-ms`, or without a trusted chirp, has nothing to
+act on, and the note says that too. `--tracking-margin 0` or below is refused.
+
+### C.4 The session against the model (item 3)
+
+**Which way: the session-level rule, kept as the gate.** It was built and measured, and I did not fall back to
+making the ratio advisory. The reason is the table below: on every mismatched rig on which the runs agree with
+each other, the per-run false flags go to 0 to 5 % and the session carries one finding instead; the faults
+that only the tracking ratio saw are still a failing exit status; and the two admitted limits are carried by
+the release check on every rig tried. It has holes, listed under "where the rule does not cover", and it moves
+a cost onto good sessions in the quiet direction (below). Those are stated, not hidden.
+
+- measured / predicted is taken over the session's scored runs whose prediction is at least 7 ms and whose
+  release passed the check against the plant (`_session_ratio`). With at least 3 such runs, two thirds of them
+  within 15 % of their median, and that median outside 0.92 to 1.08: **one** `MODEL MISMATCH FINDING`
+  (`model_mismatch_finding`, `tracking_session_ratio`, `tracking_session_ratio_runs`), and `score` exits 1.
+- Each run is then held to `1.15 x the session's median` in place of 1.15, in **both** directions. Upwards, a
+  good run in a mismatched session is not blamed and a run that stands out from the session still is.
+  Downwards (the quiet direction: unmodelled fast dynamics, a chirp at lower gain, a slow Player clock) the
+  limit comes down to where the session sits, which restores the sensitivity the review measured as lost.
+- The finding names the median and the direction, lists the causes seen in simulation, and gives three things
+  to do: re-run the chirp, compare `enc_hold_gain` and the gains with the last session, or accept with
+  `--tracking-margin <1.15 x median>` (recorded). An accepted margin moves the expected band with it
+  (`margin / 1.15`), so the accepted session has no finding and a later one that drifts from the accepted
+  ratio, either way, has it again.
+- **The cost in the quiet direction.** On a rig whose good runs sit consistently low (an extra pole at 10 or
+  15 Hz, a 25 Hz mode, a chirp at 10 % less bandwidth, a slow dipole with negative mid-band gain, loop stiffness
+  20 % higher at the hold) `b0d18c9` exited 0 with nothing flagged; now 98 to 100 % of good 20-run sessions
+  carry the finding and exit 1 until the operator re-runs the chirp or accepts the ratio. That is the brief's
+  "a low ratio hides stiction" taken at its word.
+
+**The hold gain.** The review's largest single source of false flags was a static gain (the arm settling at
+0.98 of the setpoint: 36 % of good runs), and its runs do **not** agree on a ratio (0.93 to 5.2: a fixed
+fraction of a 55 deg hold is tens of ms of "tracking time error" on a slow scenario), so no session rule can
+cover it. What it is can be measured directly: the level the arm held over the 0.3 s before the commanded
+release, over the level it was told to hold (`enc_hold_gain`). The prediction is scaled by it when it is within
+5 % of 1 and the hold is at least 5 deg; further off than that it is reported and not applied (0.90 of the
+setpoint is still flagged). It is applied to the model's release as well as to its tracking: on 14 scenarios x
+2 seeds the release then reads within 0.09 ms, on average, of the same runs on a unit-gain rig, where without
+it the offset is biased by 0.34 to 0.67 ms (0.97, 0.98) and -0.41 ms (1.02) (committed test). `ilc.identify`
+is not touched. It earns its place: static gain 0.995 to 0.97 and 1.02 go from 10 to 61 % of good runs flagged
+to 0. Whether a fault can scale itself away with it, checked: the window ends at the commanded release, before
+any of the constructed faults begins, so a release fault does not change the gain (on a gain-1 rig
+`enc_hold_gain` reads 1.000 under every fault); and on the rig at 0.98 every fault is caught as on the identified
+plant (sluggish 50 %: 100 % of runs by the release check; 6 deg lurch: 94 % against 93 %; 5 ms of stiction: the
+finding in 100 % of sessions, median 1.19 against 1.21; stiction 10 ms: 98 % on both). What it does let
+through, by design: a hold up to 5 % off the setpoint is not itself a tracking flag. It is in `report.csv` on
+every run, and a single run held 3 % short in a session of runs held at 1.00 is not flagged for it (not tried
+through the session rule; stated in C.7).
+
+**How the thresholds were chosen.** Per-run data as in C.2 (the reviewer's rig models, 132 deliveries per rig
+and fault, 66 rig-and-fault rows for the rule design plus the faults of the last two tables). A session is N of
+a row's deliveries drawn without replacement, 300 draws per row and N = 8, 12 and 20; the rule is applied to
+each draw exactly as `score` applies it (`_session_ratio`, then the per-run limit at the session's margin and
+the release check). The per-run quantities were re-computed with the final `session.py` for three rows (static
+gain 0.98, chirp at damping x1.2, deadband 0.1 deg; every eleventh delivery) and matched the stored ones to
+0.002.
+
+- 0.92 to 1.08: on fourteen clean second-order plants (3 to 20 Hz, zeta 0.23 to 1.0, with and without 40 ms of
+  delay) the session median is 0.96 to 1.06 at 8, 12 and 20 runs, and none of 42,000 sessions (1,000 draws per plant and
+  size) carries a finding. The review's "tolerated" chirp error of 5 % of bandwidth gives 1.07 (a
+  finding in 13 % of sessions); its "not tolerated" 10 % gives 1.14 and 0.88 (100 %).
+- 7 ms: with runs predicted at 6 to 7 ms admitted, the same 42,000 sessions have medians of 0.92 to 1.07 and one
+  finding on a good session (10 Hz, zeta 1.0, 8 runs, median 0.919); on the clean plants runs predicted at 6 to
+  7 ms read 0.91 to 1.12 of predicted (46 of the 60 are on that plant).
+  At 7 ms, none.
+- 15 % and two thirds: the same figures as the session-lag rule's agreement. A static gain, a 6 deg setpoint
+  lurch or a 3 % slow clock do not meet them (the runs disagree), and stay per-run flags.
+
+**Good runs on mismatched rigs: individually blamed before and now.** Construction as above. "Before" is
+`b0d18c9`'s rule on the same 132 runs (each run on its own, `max(1.15 x predicted, 4)` or release beyond 4 ms,
+no hold gain). "Now" is over 300 sessions of 20: the share of usable runs flagged for tracking, the share
+flagged by the release check, the share of sessions with the one finding, and the pooled median ratio.
+
+| rig (good runs only) | before, flagged | now, tracking | now, release check | sessions with the finding | median ratio |
+|---|---|---|---|---|---|
+| fourteen clean plants (10, 11, 12 Hz zeta 1.0 among them: 1, 2, 6 of 132 before) | 0 to 4 % | 0 | 0 | 0 | 0.97 to 1.06 |
+| static gain 0.995 / 0.99 / 0.98 / 0.97 | 10 / 22 / 38 / 61 % | 0 | 0 | 0 | 1.00 to 1.01 |
+| static gain 1.02 ; 8.3 Hz at 0.98 | 18 ; 61 % | 0 | 0 | 0 | 1.00 ; 1.01 |
+| slow dipole 0.3 Hz, +1 / +2 / +3 % | 6 / 65 / 96 % | 0.2 / 4.7 / 9.1 % | 0 | 70 / 100 / 100 % | 1.09 / 1.17 / 1.26 |
+| slow dipole 0.3 Hz, -3 % (quiet) | 0 | 0 | 0 | 100 % | 0.88 |
+| slow dipole 0.1 Hz, +2 % | 69 % | 15 % | 0 | 99 % | 1.18 |
+| slow dipole 0.1 Hz, -5 % | 84 % | **53 %** | 0 | 41 % | 1.30 |
+| slow dipole 1 Hz, +3 % ; -5 % (quiet) | 93 % ; 0 | 0 ; 1.7 % | 0 | 100 % | 1.18 ; 0.73 |
+| extra pole at 15 Hz ; 10 Hz ; 0.2 x mode at 25 Hz (quiet) | 0 | 0 | 0 | 98 ; 100 ; 100 % | 0.92 ; 0.83 ; 0.78 |
+| stiffness at the 55 deg hold -5 / -10 / -20 % | 0 / 5 / 88 % | 0 / 0.1 / 0 % | 0 / 0 / **42 %** | 0 / 95 / 100 % | 1.06 / 1.10 / 1.20 |
+| stiffness +20 % (quiet) | 2 % | 0 | 1.6 % | 100 % | 0.83 |
+| friction 0.05 / 0.1 / 0.2 deg | 0 / 4 / 43 % | 0 / 3 / 0 % | 0 / 0 / **22 %** | 0 / 10 / 100 % | 1.04 / 1.07 / 1.12 |
+| deadband 0.05 / 0.1 deg | 6 / 71 % | 0 | 0 / **23 %** | 63 / 100 % | 1.09 / 1.16 |
+| quadratic damping +30 / +60 % | 13 / 51 % | 0.1 / 1.4 % | 0 / 3 % | 90 / 96 % | 1.10 / 1.16 |
+| loop gain +20 % at 5 deg of error | 95 % | 0 | **95 %** | 1 % | 1.06 |
+| encoder noise 0.05 / 0.1 deg, identified plant | 0 | 0 | 0 | 0 | 1.01 / 1.02 |
+| noise 0.1 deg: 8.3 Hz ; 12 Hz zeta 0.7 ; 6.35 Hz zeta 0.5 | 10 ; 11 ; 43 % | 2.4 ; **11** ; 7.6 % | 0 | 3 ; 0 ; 0 % | 1.05 ; none ; none |
+| quantised to 0.09 deg ; 0.36 deg (identified) | 0 ; 1.4 % | 0 ; 2.4 % | 0 | 0 ; 2 % | 1.01 ; 0.95 |
+| quantised to 0.36 deg: 8.3 Hz ; 12 Hz zeta 0.7 | 9 ; 28 % | 6.3 ; **25 %** | 0 | 27 ; 0 % | 0.93 ; none |
+| chirp at bandwidth x0.90 (quiet) / x1.05 / x1.10 | 0 / 0 / 43 % | 0 | 0 | 100 / 13 / 100 % | 0.88 / 1.07 / 1.14 |
+| chirp at damping x1.2 | 8 % | 0 | 0 | 100 % | 1.13 |
+| composite slight / mild / mild reversed / moderate | 4 / 37 / 0 / 95 % | 0.6 / 3.2 / 0 / 1.2 % | 0 / 0 / 0 / **11 %** | 60 / 100 / 100 / 100 % | 1.09 / 1.14 / 0.90 / 1.27 |
+
+"none" in the last column: fewer than 3 runs predicted at 7 ms or more, so no session ratio is taken. The
+composites are the review's (section 3.7): slight is stiffness -3 % at 55 deg, friction 0.03 deg, dipole
++0.5 %, a pole at 40 Hz, noise 0.03 deg, 8,000 counts/rev; mild -5 %, 0.05 deg, +1 %, 30 Hz, 0.05 deg, 4,000
+counts/rev; reversed is mild with the stiffness and dipole signs reversed; moderate -10 %, 0.1 deg, +2 %, 20 Hz,
+0.05 deg, 4,000 counts/rev.
+
+**Where the rule does not cover** (bold in the table), and why:
+
+1. *The release check itself blames good runs* on rigs nonlinear enough to move the release: a loop 20 % softer
+   at the hold angle (42 %), 0.2 deg of friction (22 %), a 0.1 deg deadband (23 %), a loop gain rising 20 % with
+   error (95 %), the moderate composite (11 %). The brief keeps the release check as the gate, and the review
+   found it clean on every linear, noise, quantisation and chirp-gain probe. These rows are its limit; the
+   session rule does not touch it.
+2. *Predictions under 7 ms* (12 Hz zeta 0.7 with 0.1 deg of noise or a 0.36 deg encoder): what is measured is
+   noise against the floor, no ratio is taken, and the per-run flags are as before (11 and 25 %).
+3. *Runs that do not agree* (dipole at 0.1 Hz with -5 % mid-band gain: ratios 1.0 to 1.9): a finding in 41 % of
+   sessions, and 53 % of runs still flagged.
+
+**What the finding costs.** A small fault in every run that the release check cannot see is, from the data,
+the same thing as a model mismatch, and is now reported as one. Identified plant, 132 runs each, sessions of 20:
+
+| fault in every run | before: runs flagged | now: by the release check | now: for tracking | sessions with the finding (median) | sessions exiting 0 |
+|---|---|---|---|---|---|
+| 5 ms of stiction | 127 of 132 | 2.4 % | 0 | 100 % (1.21) | 0 |
+| start at 80 % over 0.3 s | 80 of 132 | 21 % | 0.1 % | 98 % (1.15) | 0 |
+| Player writes nothing for 40 ms at the release | 119 of 132 | 0 | 6 % | 100 % (1.26) | 0 |
+
+The session still exits 1 and the finding names these among the causes, but the per-run flags are gone, and an
+operator who accepts the finding with `--tracking-margin` accepts the fault with it. That is the price of not
+blaming twenty good runs on a rig with a 2 % dipole; rig data will say which of the two is the common case.
+
+**The two admitted limits are still caught, by the release check, on every rig tried.** Construction as above;
+"release check" is the share of usable runs it flags in 20-run sessions (usable: the release gate of PR #96
+takes 0 to 8 of the 132 first); no 20-run session of any row exits 0.
+
+| rig | sluggish start, 50 % over 0.3 s: release check | forward lurch, 6 deg: release check (+ tracking) |
+|---|---|---|
+| identified | 100 % of 132 | 93 % of 124 (+ 1.9 %) |
+| 30 % slower and less damped | 98 % of 132 | 95 % of 124 |
+| 8.3 Hz | 100 % of 132 | 94 % of 124 (+ 4.2 %) |
+| 12 Hz, zeta 0.7 | 100 % of 130 | 94 % of 124 (+ 4.5 %) |
+| 11 Hz, zeta 1.0 | 100 % of 128 | 93 % of 124 |
+| static gain 0.98 | 100 % of 132 | 94 % of 124 (+ 1.7 %) |
+| dipole 0.3 Hz +2 % | 98 % of 132 (+ 1.7 %) | 94 % of 124 (+ 4.0 %) |
+| extra pole at 10 Hz | 98 % of 132 | 100 % of 124 |
+| dipole 1 Hz -5 % | 100 % of 132 | 94 % of 124 |
+| noise 0.1 deg | 100 % of 132 | 93 % of 124 (+ 2.5 %) |
+| deadband 0.1 deg | 100 % of 132 | 94 % of 124 (+ 3.7 %) |
+| stiffness -10 % | 100 % of 132 | 94 % of 124 (+ 3.8 %) |
+| composite moderate | 100 % of 132 | 93 % of 124 (+ 3.7 %) |
+
+The up to 8 of 124 lurch runs the release check passes are slow scenarios where a 6 deg lurch moves the onset by
+less than 4 ms; on the identified plant `b0d18c9` flagged 122 of 124 and the quadrature floor 119.
+
+**Setpoint-side faults** (the review's section 1: the release check is driven by the logged setpoint and by
+design sees none of them; only the tracking ratio does). Identified plant, 132 runs each, sessions of 20:
+
+| fault in every run, on the setpoint | before: runs flagged | now: runs flagged (all for tracking) | sessions with the finding | sessions exiting 0 |
+|---|---|---|---|---|
+| Player writes nothing for 20 ms at the release | 2 of 132 | 1.5 % | 0 | **72 %** |
+| Player writes nothing for 40 ms | 119 of 132 | 6 % | 100 % | 0 |
+| Player clock 1 % slow from the release | 20 of 130 | 16 % | 51 % (median 0.86) | 0 |
+| Player clock 3 % slow | 100 of 122 | 81 % | 0 | 0 |
+| setpoint lurches 3 deg | 92 of 130 | 60 % | 11 % | 0 |
+| setpoint lurches 6 deg | 111 of 126 | 87 % | 1 % | 0 |
+| setpoint starts at 50 % over 0.3 s | 126 of 132 | 29 % | 77 % | 0 |
+
+A 20 ms Player stall passes, as on `b0d18c9`. Relaxing the margin relaxes all of these. A model-free
+comparison of the logged setpoint with the command (the review's recommendation) is not done.
+
+### C.5 The chirp (item 4)
+
+The gate is not redesigned. One sentence is added, `SUSPECT THE CHIRP, NOT THE RUNS` (`chirp_suspect`), when the
+session's releases are 3 ms or more early of the plant's in the median, two thirds of them within 2.5 ms of
+that median, and the chirp's misfit is over 5 %. It changes no status: the flags stand and `score` exits 1.
+Construction: in memory, the review's eight scenarios, the chirp and the runs through the same rate-limited
+drive (re-run on the final tree): 300 deg/s gives misfit 4.5 %, releases 2.7 to 3.4 ms early (median 2.8), no
+flag and no sentence (committed test); 275 gives 5.8 %, median -3.3 ms, no run flagged, and the sentence; 250
+gives 7.6 %, -3.9 ms, 2 of 8 flagged, the sentence; 225 gives 9.9 %, -5.0 ms, 8 of 8 flagged, the sentence.
+Through real files at 250 deg/s (committed test): three of four runs flagged "early: a lurch", the sentence
+printed once. On those rigs the session-ratio finding also fires, in the low direction (the chirp's extra delay
+makes the prediction too large): 98, 100 and 91 % of 20-run sessions at 300, 275 and 250 deg/s, medians 0.85
+to 0.89. Both point at the chirp.
+
+**Corrections to B.6 item 3**, from the review's section 4 and reproduced in C.4's data (132 good runs per
+row): the window is not "225 to 250 deg/s". On the identified plant it opens at 275 deg/s (8 of 132 good runs
+blamed by the release check), is 58 of 132 at 250 and 124 of 132 at 225, and the chirp is refused from 210 down.
+On an 8.3 Hz plant it sits at 300 deg/s (49 of 132; refused by 250). On the slow plant it is 22 of 132 at 250 and
+124 at 225, with the chirp trusted at a misfit of 5.6 and 7.0 %: **tightening the misfit limit to 7 % would not
+close it there.** B.6's "2 of 8" at 250 was the author's eight scenarios, which are among the least affected.
+
+### C.6 Tests and mutations (item 5)
+
+`neuromech/tests/test_session_dryrun.py`: 154 tests (129 at `b0d18c9`; 25 added). Every figure a test asserts is a
+literal number measured on the run it names. New, by review item:
+
+| item | tests |
+|---|---|
+| 1 | the ten 11 Hz runs in memory (each over `max`, none flagged); the real 12 Hz session exiting 0; the limit's literals |
+| 2 | override with the half-speed start (flagged by the release check, CLI exit 1) and the lurch; margin 1.6 with the half-speed start; margin and override recorded; `release_check` `plant` / `none`; `--tracking-margin 0` refused |
+| 3 | `_session_ratio` in literal numbers (3 runs, 7 ms, 0.92 / 1.08, 15 %, two thirds, the operator's band); the finding's text in four cases; chirp x1.10 and x0.90 through real files (one finding, exit 1, exit 0 with the printed margin); a knocked run in a mismatched session; 5 ms of stiction as one finding; a loose operator margin on a good session; the hold gain in literal numbers, on 0.97 / 0.98 / 1.02 rigs in memory (tracking and release), on 0.98 through real files, and 0.90 not absorbed |
+| 4 | `_chirp_suspect` in literal numbers; 250 deg/s through real files; 300 deg/s in memory says nothing |
+| 5 | exit 1 on a chirp finding alone (four clean runs, R000 refused); `ilc.identify` raising; `_chirp_trust` on R2 0.94 / 0.96, misfit 9.1 / 11.1 %, 99 and 100 moving samples, junk outside and inside the moving part; the model past the command's end (D-short on a 3 Hz plant: 18.10 against 18.57 ms); unscored rows' limit under plant / override / fixed; a run with no prediction labelled `fixed` with its release still checked; 5 ms of stiction for margin 1.20 / 1.25 and floor 6; 0.05 deg of noise on the 12 Hz plant for floor 3 |
+
+Mutations, run on the final `session.py` (one textual change per mutant in a scratch copy of the package,
+`neuromech/tests/test_session_dryrun.py` against it). The six constants the review found surviving behaviourally
+were run on the whole file with the five literal-pin tests deselected (`test_the_plant_derived_limit_in_numbers`,
+`test_a_chirp_the_plant_cannot_follow_is_not_trusted`, `test_the_session_ratio_rule_in_numbers`,
+`test_the_hold_gain_in_numbers`, `test_the_chirp_suspect_rule_in_numbers`); the rest on the whole file or on the
+tests from section B on, with nothing deselected. **45 mutants, 0 survivors.**
+
+| mutant | killed by (one example where several) |
+|---|---|
+| margin 1.15 -> 1.20 ; -> 1.25 (pins deselected) | the real 12 Hz session, the knocked run, the chirp x1.10 session, 5 ms of stiction (in memory and through files), the margin-1.6 session, the good session's limits |
+| floor 4 -> 3 ; -> 6 (pins deselected) | the real 12 Hz session, the chirp x1.10 session, the static-gain rigs, the 12 Hz noise run (3), 5 ms of stiction (6) |
+| floor in quadrature -> `max` | the real 12 Hz session, the ten 11 Hz runs |
+| chirp R2 0.95 -> 0.92 ; -> 0.975 (pins deselected) | `_chirp_trust` on fits of R2 0.94 and 0.96; the 250 deg/s session (0.975) |
+| chirp misfit 0.10 -> 0.12 ; -> 0.08 | `test_a_chirp_the_plant_cannot_follow_is_not_trusted` |
+| release tolerance 4 -> 6 ms ; -> 3 ms | `test_the_plant_derived_limit_in_numbers` |
+| `main()` ignores `chirp_flags` | exit 1 on a chirp finding alone; the unidentifiable chirp |
+| `main()` ignores `model_flags` | the chirp x1.10 session's exit status |
+| `chirp_flags` ignores "not identified" | the unidentifiable chirp |
+| the `try` around `ilc.identify` catches nothing | the unidentifiable chirp |
+| a non-moving chirp not refused (`< 100` -> `< 99`; check removed) | `test_the_chirp_gate_in_numbers` |
+| misfit over the whole record | `test_the_chirp_gate_in_numbers` |
+| model not run past the command's end (`n1 = 0`) | `test_the_model_is_run_past_the_end_of_the_command` |
+| unscored rows: never filled ; filled under the plant too ; `fillna(track_max)` -> 0 | `test_a_run_that_was_not_scored_has_no_plant_derived_limit` |
+| non-finite-prediction guard removed ; its row still labelled `plant` | `test_a_run_the_plant_has_no_prediction_for_is_held_to_the_fixed_limit_and_its_row_says_so` |
+| override turns the release check off | the override test (half-speed start, lurch) |
+| `--tracking-margin` ignored ; session margin not applied to the runs | the chirp x1.10 session |
+| session rule: never finds ; high direction only ; agreement not required ; band 0.88..1.12 / 0.96..1.04 ; agree 5 % ; share 0.9 ; operator margin does not move the band | `test_the_session_ratio_rule_in_numbers` (function-level, literal inputs) |
+| session minimum runs 3 -> 5 | the good session through files (4 runs, ratio reported) |
+| session minimum prediction 7 -> 0 ms | the real 12 Hz session (no ratio from predictions under 7 ms) |
+| session ratio includes runs whose release failed | the 250 deg/s session |
+| hold gain not applied ; window 5 % -> 2 % / 15 % | the 0.98 rig through files ; `test_the_hold_gain_in_numbers` |
+| hold gain not applied to the model's release | the 0.97 / 0.98 / 1.02 rigs in memory (release offset against the unit-gain rig) |
+| chirp suspect: never said ; early 3 -> 2 ms ; misfit 5 -> 9 % | `test_the_chirp_suspect_rule_in_numbers` |
+
+The session rule's band, agreement and share are pinned by a function-level test on literal ratios, not by a
+session through files at the edge of each threshold; a change of those constants is caught, but which rig
+would then be judged differently is what C.4's table says, not a test.
+
+### C.7 Not verified, and limits (replaces the corresponding lines of B.9)
+
+- **No rig, no real log, no real phone.** Every number above is the simulated Player, plant and encoder. The
+  mismatched rigs are the reviewer's guesses at what a rig might do; their magnitudes are unknown for this rig.
+  The first rig session should still be read as a measurement of measured / predicted, of release minus
+  predicted and of `enc_hold_gain` on runs believed good.
+- **The tracking ratio is fitted to the simulator.** C.4's table replaces B.9's "a 0.1 deg deadband alone takes
+  them past the margin": static gain, slow dynamics below the chirp's band, softening at the hold angle,
+  friction, noise against a small prediction and a chirp at other gains all move it by more than 0.15.
+- **A fault every run shares, too small for the release check, is now one finding and not a flag per run**
+  (5 ms of stiction, a start at 80 %, a 40 ms Player stall), and can be accepted away with `--tracking-margin`.
+- **Good sessions on a rig the model over-predicts now exit 1** (the quiet direction, C.4) until the chirp is
+  re-run or the ratio accepted.
+- Setpoint-side faults: a 20 ms Player stall passes in 72 % of 20-run sessions; the rest of C.4's last table.
+- 5 ms of stiction in every run on a fast, well-damped rig (12 Hz zeta 0.7, 11 Hz zeta 1.0): 28 % of 20-run
+  sessions exit 0. On a rig with an unmodelled pole at 10 Hz it cancels the low ratio (median 1.01) and every
+  session exits 0, as on `b0d18c9`.
+- The hold gain is measured over 0.3 s before the release on a hold of at least 5 deg. A rig whose gain error
+  differs between the hold and the swing is not helped by it. Not tried: a hold that drifts, and a single run
+  whose hold is a few per cent off while the others are not (it would be absorbed, not flagged).
+- The session rule needs 3 runs predicted at 7 ms or more. A fast rig has none and gets no finding in either
+  direction.
+- One faulty run among good ones through the session rule was tried once (the knocked run, committed test);
+  half a session faulty was not.
+- The chirp-suspect sentence was tried on rate limits only.
+- The C.4 and C.5 tables are the reviewer's probe harness on its rig models, extended (not committed); the
+  committed tests reproduce a subset of rows through real files.
+- ILC-corrected commands, the phone against the plant, more than one chirp in a session, `nm_figs`, the Rust
+  core, the C# designer beyond the parity gate, the PT scorer: as in B.9, untouched and not re-examined.
+
+### C.8 Gates, on the final tree
+
+Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM_THREADS=1`.
+
+| gate | result |
+|---|---|
+| `python -m pytest neuromech/tests -q` | **253 passed**, 0 failed, 0 skipped, in 725 s (228 at `b0d18c9`) |
+| `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases, every field within tolerance |
+| `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band on encoder and phone, scored 9, release flagged 0, tracking flagged 0, no session finding, exit status 0; lag 27.4 ms (22.7 to 28.4); plant 6.34 Hz, zeta 0.234, delay -0.2 ms, R2 0.998, misfit 1.2 %; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted (-0.0 to +0.3), limits 16.3 to 22.1 ms (15.9 to 21.8 under `max`) |
+| line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |
+
+The per-run data, the session draws, the mutation runner and the scratch copies of the package they ran in are
+not committed.
