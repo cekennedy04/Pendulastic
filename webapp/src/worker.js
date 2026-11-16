@@ -94,6 +94,15 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       const json = inner.finish_detrended();
       return json === undefined ? undefined : JSON.parse(json);
     },
+    // Why the analysis convention produced nothing, when it did not: a stable
+    // code from the core ("amplitude_exceeds_curve" when the scorer refused
+    // an A0 larger than its own curve, "insufficient_samples", ...), null when
+    // it scored, and 'not_available' when this wasm build predates the export
+    // -- so a stored record can tell a refusal from a stale cached wasm.
+    detrendedRefusal: () => {
+      if (typeof inner.refusal_reason !== 'function') return 'not_available';
+      return inner.refusal_reason(true) ?? null;
+    },
     finishPtScoreDetrended: () => {
       if (typeof inner.finish_pt_score_detrended !== 'function') return undefined;
       const json = inner.finish_pt_score_detrended();
@@ -165,6 +174,8 @@ export function createWorkerHandler() {
               // tell "not computed" from "dropped by structured clone".
               paramsDetrended: session.finishDetrended() ?? null,
               ptScoreDetrended: session.finishPtScoreDetrended() ?? null,
+              // Why paramsDetrended is null, when it is (null when it scored).
+              detrendedRefusal: session.detrendedRefusal(),
               // Null here means NOT MEASURED, and the record keeps that
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion() }

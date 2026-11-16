@@ -93,6 +93,25 @@ test('the convention defaults to live rather than claiming analysis', () => {
     rawJsonl: 'x', algorithmVersion: '0.1.0',
   });
   assert.equal(r.drift_correction, 'live');
+  assert.equal(r.analysis_refusal, null);
+});
+
+test('a live-convention fallback records why the analysis pair is missing', () => {
+  // A scorer refusal under detrend=true must be distinguishable from a stale
+  // cached wasm that never offered the analysis convention.
+  const refused = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0', driftCorrection: 'live',
+    analysisRefusal: 'amplitude_exceeds_curve',
+  });
+  assert.equal(refused.drift_correction, 'live');
+  assert.equal(refused.analysis_refusal, 'amplitude_exceeds_curve');
+  const stale = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0', driftCorrection: 'live',
+    analysisRefusal: 'not_available',
+  });
+  assert.notEqual(stale.analysis_refusal, refused.analysis_refusal);
 });
 
 // ---- capture protocol versioning ------------------------------------------

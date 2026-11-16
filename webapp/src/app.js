@@ -114,6 +114,7 @@ export function nextOutcome(latched, event) {
     // The analysis-convention pair rides alongside, same only-when-present rule.
     if ('paramsDetrended' in event) action.paramsDetrended = event.paramsDetrended;
     if ('ptScoreDetrended' in event) action.ptScoreDetrended = event.ptScoreDetrended;
+    if ('detrendedRefusal' in event) action.detrendedRefusal = event.detrendedRefusal;
     if ('lateralMotion' in event) action.lateralMotion = event.lateralMotion;
     return { latched: false, action };
   }
@@ -683,7 +684,8 @@ if (typeof document !== 'undefined') {
   // split between here and there. persistTrial is only ever invoked from
   // that one call site.
   async function persistTrial(params, trajectory, rawJsonl, ptScore,
-                              paramsDetrended, ptScoreDetrended, lateralMotion) {
+                              paramsDetrended, ptScoreDetrended, lateralMotion,
+                              detrendedRefusal) {
     // The STORED record uses the analysis convention (detrend=true) so it
     // agrees with the cohort reports it will be compared against; the live
     // screen keeps the capture app's convention. Which one produced a stored
@@ -715,6 +717,11 @@ if (typeof document !== 'undefined') {
       }),
       unmeasured: (storedScore && storedScore.unmeasured) || [],
       driftCorrection: useDetrended ? 'analysis' : 'live',
+      // When the record fell back to the live pair, why: the core's refusal
+      // code (e.g. 'amplitude_exceeds_curve'), or 'not_available' for a
+      // cached wasm that predates the analysis convention. null when the
+      // analysis pair was stored.
+      analysisRefusal: useDetrended ? null : (detrendedRefusal ?? 'not_available'),
       // null means NOT MEASURED and is stored as such -- see makeTrialRecord.
       lateralMotion: lateralMotion ?? null,
       params: storedParams,
@@ -2173,7 +2180,8 @@ if (typeof document !== 'undefined') {
       Promise.resolve()
         .then(() => capture.exportJsonl())
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore,
-                                         action.paramsDetrended, action.ptScoreDetrended, action.lateralMotion))
+                                         action.paramsDetrended, action.ptScoreDetrended, action.lateralMotion,
+                                         action.detrendedRefusal))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;

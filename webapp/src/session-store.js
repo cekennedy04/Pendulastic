@@ -93,7 +93,7 @@ export function trendEligible(trials) {
 export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
-  unmeasured = [], driftCorrection = 'live', settleTargetS = 5.0,
+  unmeasured = [], driftCorrection = 'live', analysisRefusal = null, settleTargetS = 5.0,
   lateralMotion = null,
   quickTest = false,
   // Whether the engine produced a score for this recording. A recording it
@@ -145,6 +145,12 @@ export function makeTrialRecord({
     // trials, so a stored number without its convention cannot be compared
     // to anything later.
     drift_correction: driftCorrection,
+    // Why `drift_correction` is 'live' on a record that wanted 'analysis':
+    // the core's refusal code ('amplitude_exceeds_curve' when the scorer
+    // refused an A0 larger than its own curve, 'insufficient_samples', ...)
+    // or 'not_available' when the wasm predated the analysis convention. null
+    // when the analysis pair was stored, and on records older than the field.
+    analysis_refusal: analysisRefusal,
     release_override_idx: releaseOverrideIdx,
     // Exclusion is a RECORD, not an erasure: an excluded trial keeps its
     // params, its raw log and its place in the list, and still exports. It

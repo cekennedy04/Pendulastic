@@ -544,6 +544,17 @@ test('a result without the analysis pair omits the keys rather than adding undef
   assert.ok(!('ptScoreDetrended' in action));
 });
 
+test('a refused analysis convention carries its reason through the reducer', () => {
+  const { action } = nextOutcome(false, {
+    type: 'result', params: { f: 1 }, paramsDetrended: null,
+    detrendedRefusal: 'amplitude_exceeds_curve',
+  });
+  assert.equal(action.paramsDetrended, null);
+  assert.equal(action.detrendedRefusal, 'amplitude_exceeds_curve');
+  const bare = nextOutcome(false, { type: 'result', params: { f: 1 } }).action;
+  assert.ok(!('detrendedRefusal' in bare));
+});
+
 // ---- capture view lifecycle (task 7) -------------------------------------
 // A stub `el` -- the view only ever reads/writes properties these objects
 // have, so no DOM is needed.

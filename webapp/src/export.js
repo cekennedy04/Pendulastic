@@ -92,6 +92,10 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       release_idx: t.release_idx,
       unmeasured: t.unmeasured || [],
       drift_correction: t.drift_correction || 'live',
+      // Why a trial stored the live convention: the core's refusal code, or
+      // 'not_available' (wasm predated the analysis convention). null when
+      // the analysis pair was stored and on trials older than the field.
+      analysis_refusal: t.analysis_refusal ?? null,
       release_override_idx: t.release_override_idx,
       // The exclusion travels WITH the trial rather than removing it. A
       // reader that wants the clinician's own count filters on this; a
