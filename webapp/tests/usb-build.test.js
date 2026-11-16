@@ -38,6 +38,20 @@ test('the USB page carries the same BUILD_ID and ALGORITHM_VERSION as src/build-
   assert.ok(built.html.includes(`'${alg}'`), 'build-id.js module (with ALGORITHM_VERSION) is bundled');
 });
 
+test('every inlined module runs strict, as an ES module does online', () => {
+  const wrappers = (s) => s.split('function (exports, __req, __dyn) {').slice(1);
+  for (const src of [built.html, built.workerSrc]) {
+    const w = wrappers(src);
+    assert.ok(w.length > 1);
+    for (const body of w) assert.match(body, /^ 'use strict';/);
+  }
+});
+
+test('"Send to laptop" (a POST to the dev server) is pinned hidden in the USB copy', () => {
+  assert.match(built.html, /<button id="send-to-laptop" hidden disabled aria-hidden="true">/);
+  assert.match(built.html, /#send-to-laptop \{ display: none !important; \}/);
+});
+
 test('transformModule throws on module syntax it does not understand rather than emitting a broken bundle', () => {
   assert.throws(() => transformModule("export default function () {}\n", 'src/x.js'), /unsupported module syntax/);
   assert.throws(() => transformModule("import x from 'pkg';\n", 'src/x.js'), /bare specifier/);

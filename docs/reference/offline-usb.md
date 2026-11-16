@@ -57,13 +57,16 @@ unverified for capture until it has been tried on a real Android phone.
 `webapp/scripts/build-usb.mjs` writes `webapp/dist-usb/` (gitignored):
 
 - `Pendulastic-offline.html` (~620 KB). The same modules as `dist/`, with only
-  their import/export syntax rewritten into one inline script. `app.css` is
+  their import/export syntax rewritten into one inline script. Each module
+  wrapper starts with `'use strict'`, so the code runs strict, as ES modules
+  do online. `app.css` is
   inlined. The wasm is inlined as base64 and handed to `init()` in place of
   the fetch. The capture worker starts from a Blob URL, with a fallback that
   runs `worker.js`'s own handler on the main thread if a browser refuses the
   Blob URL. The manifest and service-worker registration are removed, and the
   install banner is replaced by an "Offline USB copy, export after every
-  session" notice.
+  session" notice. "Send to laptop" (a POST to the dev server's `/upload`)
+  is pinned hidden and disabled, since it can never work from `file://`.
 - `README-OFFLINE.txt`: per-device instructions for whoever holds the drive.
 
 What does not change: the source files, the online build, and the maths.
