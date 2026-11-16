@@ -185,8 +185,9 @@ the rescaled alpha (`_rescale_ema_alpha(0.5, 0.01)`, imported, not copied) and t
 projection. The simplest faithful form is to build the expected trace by running
 `imu_calibration_tuner.replay_trial` at the reference footing on the generated samples instead
 of a hand copy; decided in the step that does it, with the hand copy kept only if the replay is
-too slow for the test suite. The gate becomes a duration (about 2.05 s, which is what 41 ticks at
-50 ms meant) rather than a tick count. Then the strict-xfail defect tests in
+too slow for the test suite. The gate is derived from the scorer's own constant, not kept as a
+separate number: `MIN_SCORABLE_S` if Q7 is accepted, otherwise the scorer's 40-sample count (the
+old "41 ticks at 50 ms", about 2.05 s, is dropped). Then the strict-xfail defect tests in
 `neuromech/tests/test_phone_trial.py` (a brisk lift fires the release detector; a steady 9 degree
 sag through the hold is never caught) are re-run: each must still xfail for its stated reason,
 or, if the footing move changes the outcome, the xfail is removed with the reason in the
@@ -276,13 +277,38 @@ scale"); the canonical set will have five terms. It should read the divisor from
 
 ### 3.5 Minimum-length gate (40 samples)
 
-`compute_pt_params` refuses fewer than 40 finite samples (Python `mask.sum() < 40`; Rust
-`finite_indices.len() < 40` in `compute_pt_params` and `t.len() < 40` in `score_waveform`). At
-20 Hz that is 2 s of signal; at 100 Hz it is 0.4 s, about five times looser, so a short recording
-the app refuses today would be scored after the move. Proposed (pending, Q7): convert the gate to
-seconds (2.0 s) in all three languages so the move does not silently widen what is scorable.
-This changes the reference's own behaviour for short 100 Hz curves; section 7, step 5 counts
-the corpus trials and the 120 Hz optical curves affected (not yet counted).
+The scorer refuses a curve with fewer than 40 finite samples, in all three ports:
+Python `compute_pt_params` (`mask.sum() < 40` on `np.isfinite(angle_raw)`), Rust
+`scoring.rs::compute_pt_params` (`finite_indices.len() < 40`) and C# `PtScore.cs`
+(`finiteIdx.Count < 40`, reason "fewer than 40 finite samples"). At 20 Hz that is 2 s of signal;
+at 100 Hz it is 0.4 s, about five times looser, so a short recording the app refuses today would
+be scored after the move.
+
+Proposed (pending, Q7): replace the count with a duration, defined identically in all three
+ports as a new constant `MIN_SCORABLE_S = 2.0`:
+
+- span = `t[last finite sample] - t[first finite sample]`, over the input as given (before the
+  release cut), in seconds;
+- refuse when span < `MIN_SCORABLE_S`;
+- gaps (NaN runs) inside the span count as span: the gate measures how long the curve covers, not
+  how many samples it has. Gap handling stays where it is today (the scorer's own
+  finite-filtering and the replay's EMA reset); the gate does not add a second gap rule;
+- keep a sample floor as well (at least 2 finite samples, so the span is defined); the existing
+  SG-window and `find_peaks` minimums are unchanged.
+
+Exported from each port (Python constant, Rust `pub const`, C# `const`) and pinned by
+`tests/test_pt_zone_parity.py` like the other shared constants.
+
+Out of scope: the `score_waveform` quality gate (Rust `scoring.rs::score_waveform`,
+`t.len() < 40 || finite count < 40`; Python `imu_calibration_tuner.score_waveform`, the same
+test). It is the tuner's config-search heuristic, not part of the app's scoring path, and it keeps
+its sample count in this change. Named here so nobody reads it as missed.
+
+Effect beyond the phone: the 120 Hz optical curves currently need 40 samples, 0.33 s; under the
+duration rule they need 2.0 s. Section 7, step 5 counts the optical curves that would newly be
+refused, and checks the `HEALTHY_REF` derivation population (baseline control optical trials)
+for control curves under 2.0 s that would drop out of it. If any control curve drops, Q7 goes
+back to the owner with that count before the gate changes.
 
 ## 4. Stored records
 
@@ -406,7 +432,9 @@ the scorer (1, 2) and again at the end.
    - reference before against after: every changed verdict (about 17) and every N change (about
      59), by trace;
    - the 40-sample minimum (section 3.5): how many corpus trials and optical curves it admits or
-     refuses at 100 Hz under the sample count and under the 2.0 s rule, and the decision (Q7);
+     refuses under the sample count and under the 2.0 s rule (phone at 100 Hz, optical at 120 Hz),
+     including any baseline control curve the `HEALTHY_REF` derivation would lose, and the
+     decision (Q7);
    - the oscillation-count report's release-shift sweep re-run on the new scorer, for N and for
      `area_ratio`'s share of the PT movement;
    - test-retest ICC(1,1) of PT and N before and after, both conventions.
@@ -417,7 +445,10 @@ the scorer (1, 2) and again at the end.
    (`neuromech/tests/test_session_dryrun.py`); its edge-scenario pins move under (9) and (11) and
    are re-pinned with the cause of each. Check the A-P2 and A-P3 presets (already unreachable)
    and the MAS 3 preset with `955334a`. Re-pin `neuromech/fall_speed_reference.json` (formula id
-   and scorer fingerprint) if any step after 1 changed the fingerprint.
+   and scorer fingerprint). The fingerprint hashes scorer source, so it changes again at step 2
+   and at the section 3.5 gate change, not only at step 1; the neuromech tests check only the
+   reference file's key set, so a stale fingerprint would not fail a test. Re-pinning here, on the
+   end-state scorer, is what keeps it true.
 7. **Webapp**: `npm run build:wasm`, the full webapp test suite, `BUILD_ID` check. Time `finish()`
    for a 60 s trial under node at both footings (each result calls replay five times: `finish`,
    trajectory, score, detrended params and detrended score).
@@ -469,7 +500,8 @@ the scorer (1, 2) and again at the end.
 - **Q5.** `detrend`: agree to defer unification until after #94 (section 5)?
 - **Q6.** If #94 merges first, may this PR update `HEALTHY_REF["f"]` by 0.001 after re-running
   `derive_healthy_ref.py` on the combined scorer, or should that go back to #94's owner?
-- **Q7.** Convert the 40-sample minimum to 2.0 s in all three languages (proposed), or keep the
+- **Q7.** Convert the 40-sample minimum to a 2.0 s span in all three languages (proposed; it also
+  raises the optical minimum from 0.33 s to 2.0 s), or keep the
   sample count and accept that the app scores shorter recordings at 100 Hz?
 
 None of Q1 to Q7 has been answered. Every "proposed" choice in this plan is a default pending
