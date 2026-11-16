@@ -21,9 +21,7 @@ scores move. "Not verified" is stated, never implied.
 
 ## Decisions waiting on the owner
 
-1. **Scoring footing plan, Q1–Q6** (`docs/plans/2026-11-16-app-reference-footing-plan.md`
-   on `feat/app-reference-footing`). Q7 is answered (below).
-2. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
+1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
 
 ## Decisions taken (owner, 2026-11-16)
@@ -44,6 +42,10 @@ scores move. "Not verified" is stated, never implied.
   `archive/<branch>` tags approved (in progress); branch and worktree deletions are shown to
   the owner before they happen.
 - **Nightly hygiene agent:** retired.
+- **Footing plan Q1–Q6:** the recommended options (tracked reference-footing constant;
+  trends break at 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
+  unification after #94; this change may move `HEALTHY_REF["f"]` by about 0.001).
+- **Custom domain:** `pendulastic.com`, bought by the owner, pointed at the Vercel project.
 - **Scorable-length gate (footing plan Q7):** the 40-sample minimum becomes 2.0 s of finite
   signal in all three ports, after checking it drops no `HEALTHY_REF` control curve.
 - **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
