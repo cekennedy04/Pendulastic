@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges recorded 2026-11-16; decision 3 recorded 2026-11-16.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -21,30 +21,67 @@ scores move. "Not verified" is stated, never implied.
 
 ## Decisions waiting on the owner
 
-1. **Merge the AHRS seed fix (#98, split from #92)?** It is physically correct and confirmed in Rust,
-   and it changes every scored phone trial (workstream 4).
-2. **App versus reference scoring footing.** The app (20 Hz ticks, EMA 0.3, no flex
-   projection) and the Python reference (100 Hz, EMA 0.5, flex projection) disagree on
-   56 of 179 on-screen verdicts. Either the app moves to the reference footing or the
-   thresholds are re-derived for the app's (workstream 7).
-3. ~~Re-derive `HEALTHY_REF` with the drift bound?~~ **Decided 2026-11-16: yes**, as one
-   versioned change with the bound. Implemented in draft PR #105
-   (`pt6rescaled-ref-2026-11-16`, supersedes #94); awaiting review and merge. New open
-   point from its review: the A0 invariant can refuse a correct tail correction on a
-   stiff, sagging leg (workstream 3).
-4. **Count oscillations from the first trough?** Recommended remedy for the scorer's
-   release-timing sensitivity; needs a score-formula version bump (workstream 3).
-5. **Release detector design.** September's detector was rejected as a port; four
-   design options are on file (workstream 3).
-6. **Rewrite or delete the public branches that still carry clinical fields?** #90 was
-   squash-merged, so those commits are not in `main`'s history, but they remain on
-   `neuromech/fall-speed-b13`, `neuromech/fall-speed-check` and GitHub's `refs/pull/90`
-   (workstream 1).
-7. `omega_max_n`: drop it (#83, which contains #76) or keep it.
-8. Rig decisions O1–O5: arm range ±65° or 0.75× amplitude render; actuator of at least
-   20 N·m; when to build the vertical rig; two blind clinicians per profile; clasp-knife
-   adaptation handling.
-9. Nightly hygiene agent: retire it or re-register it.
+1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
+   fields. The owner will decide later; both branches that carried them are deleted.
+2. **The A0 invariant in #105.** As written (A0 at most span × 1.27) it refuses a correct
+   settled-tail correction on a stiff, non-oscillating leg that sags against opposing
+   drift; it fired on no corpus curve. The reviewer's alternative bounds A0 by the raw span
+   plus the correction actually applied plus 2% of span, and flags rather than refuses a
+   correction above 25% of the raw span (workstream 3).
+
+## Decisions taken (owner, 2026-11-16)
+
+- **AHRS seed fix (#98):** merged with a merge commit (algorithm version 0.2.0). Every
+  phone-IMU number measured before it is stale. The live app was redeployed from main
+  (8aa1055) the same day; #102 stops Vercel's git integration overwriting it.
+- **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
+  as one versioned change. Implemented in draft PR #105 (`pt6rescaled-ref-2026-11-16`,
+  supersedes #94); its A0 rule waits on decision 2 above.
+- **Scoring footing:** move the app to the Python reference footing, together with
+  counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
+  one score-formula version bump (plan in progress on `feat/app-reference-footing`).
+- **Release detector:** deferred; no problems seen in use. Revisit only if a problem
+  turns up that is too big to ignore.
+- **Clinical-field branches:** `neuromech/fall-speed-b13` and `neuromech/fall-speed-check`
+  deleted.
+- **Cleanup:** the 43 daily-report branches deleted; archive pass, September doc rescue and
+  `archive/<branch>` tags approved (in progress); branch and worktree deletions are shown to
+  the owner before they happen.
+- **Nightly hygiene agent:** retired.
+- **Footing plan Q1–Q6:** the recommended options (tracked reference-footing constant;
+  trends break at 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
+  unification after #94; this change may move `HEALTHY_REF["f"]` by about 0.001).
+- **Custom domain:** `pendulastic.com`, bought by the owner, pointed at the Vercel project.
+- **Scorable-length gate (footing plan Q7):** the 40-sample minimum becomes 2.0 s of finite
+  signal in all three ports, after checking it drops no `HEALTHY_REF` control curve.
+- **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
+  session notes, to be added to `docs/plans/`):
+  - *Before any session:* build the Player's own `Max |setpoint|` clamp (the Angle Limit
+    fields do not bound the Player). The dry run is 9/9 in band on main (the 7/9 reading
+    came from code without #96; see O5).
+  - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with
+    asymmetric limits and a margin to the hard stops at least the fault overshoot seen
+    (+63°/−81° at ±25° limits). 0.75× renders only as a labelled invariance probe.
+  - *O3 orientation:* horizontal Mode A now, for the gyro channel and the scorer against
+    the encoder only. The app's angle counts rotation across gravity, so a horizontal swing
+    reads near zero in the app and a 30–45° tilt reads 0.50–0.71×. Next: the existing light
+    arm in a fully vertical plane (≥75°), Mode A, phone at the shank position, with on-edge
+    and tilted mounts. The owner confirmed the current motor holds the arm against gravity.
+  - *O2 actuator:* no purchase. A mass-matched shank or Mode C would be sized per scenario
+    from inverse dynamics (inertia + gravity + active torque), with a backdrivability spec.
+  - *O5 clasp-knife:* identical replays with a fixed rest between drops; adaptation in its
+    own labelled series; add one multi-drop session file with realistic gaps. Revised by the
+    owner after the dry-run bisect. Corrected by #105's review: 7/9 reproduces only on code
+    without #96 (bcb6a71); `main` and #105 deliver 9/9 at seed 11, with the clasp-knife
+    pair at PT7 0.127 and 0.128, about 0.007 above the 0.12 band edge, so the pair is in
+    band but marginal. The decision stands: once the footing change lands, refit the
+    clasp-knife presets to the middle of their band on the new scorer, drop `M-catch_release_high` (identical to
+    `B-claspknife` since af8a20a), and add a build check that flags any preset within about
+    0.03 PT7 of a band edge.
+  - *O4 clinicians:* not used for grade calibration (MAS needs a hands-on rater; the clinical
+    corpus serves). Optional later: intended-band agreement on the vertical rig.
+  - *Added checks:* phone–encoder sync and axis alignment, iOS vs Android sample rates,
+    gyro drift over a session, cable drag, and clonus (6 Hz) on the arm's 6.34 Hz resonance.
 
 ## Workstreams
 
@@ -87,9 +124,9 @@ scores move. "Not verified" is stated, never implied.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
-- **Canonical branch:** `feat/synthetic-phone-trials`, PR #99 (draft; everything from
-  #92 except the AHRS seed fix, which is #98). Independent of #98: the one test that
-  needs the fixed seed is strict-xfail while the core still has the mirrored one.
+- **Canonical branch:** `main` (#99 merged 2026-11-16: everything from #92 except the
+  AHRS seed fix, which is #98; #92 closed). Replay tests need a local wasm build and do not
+  run in CI.
 - **Entry points:** `neuromech/phone_trial.py`, `webapp/scripts/replay-trial.mjs`,
   `neuromech/README.md` §8.
 - **Known app defects it exposes** (strict-xfail tests in
@@ -124,8 +161,10 @@ scores move. "Not verified" is stated, never implied.
   `detrend=True` moves 2 phone and 20 optical trials. Rust matches Python on 463 real
   curves (both conventions). neuromech: no band changes, dry run 9 of 9. Open: the A0
   invariant (span × 1.27) refuses a correct tail correction on a stiff, non-oscillating,
-  sagging leg (fired on no corpus curve; Rust returns `None` with no reason); some
-  research CLI scripts still raise on the error.
+  sagging leg (fired on no corpus curve); the rule waits on owner decision 2. Rust now
+  returns a typed reason, and a stored app record that falls back to the live
+  convention says why (`analysis_refusal`). Some research CLI scripts still raise on
+  the error.
 - **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;
@@ -143,21 +182,22 @@ scores move. "Not verified" is stated, never implied.
 - **Onset release detector (`d2e2cee`, `35d3192`, `05b5a4e`):** REJECTED as a port
   (`docs/release-detector-port-findings`). It fixes 12 corpus trials and breaks 2, fails
   main's lift-and-hold tests, and cannot handle curves whose hold is the minimum, which
-  includes most optical control curves. See decision 5.
+  includes most optical control curves. Release detector redesign deferred by the owner.
 - **Release-timing sensitivity** (`docs/oscillation-count-sensitivity`): 40 of 162
   scorable corpus trials count a start-of-swing shoulder as half an oscillation; a 10 ms
   release shift changes N on 34 trials. Not what limits test-retest reliability.
-  `area_ratio` has a separate, larger release sensitivity. See decision 4.
+  `area_ratio` has a separate, larger release sensitivity. The owner chose to count from
+  the first trough, bundled with the app footing change.
 - **Held until a bench session can back them:** frequency cap and `f_out_of_range`
   (`c2dfe67`), Rust flex-projection tier (`f429356`).
 - **Open PRs:** #76 (drop `omega_max_n`) and #83 (desktop live view; contains #76).
-  Both conflict with `main`.
+  Both conflict with `main`. The owner chose to drop `omega_max_n`; it is being carried
+  into the app footing change, after which these two are superseded.
 - **Do not:** remove `abs()` from clinical swing-angle extraction.
 
-### 4. Rust AHRS / phone replay — CHANGE PENDING OWNER DECISION
+### 4. Rust AHRS / phone replay — SEED FIX MERGED
 - **Canonical branch:** `main` (#78 merged; #91, a negative result, merged 2026-11-11).
-- **Gravity-seed fix (PR #98, draft; branch `fix/ahrs-gravity-seed`, the seed fix alone,
-  split from #92 with the cache keys and a 0.2.0 core version bump):** the seed quaternion had the tilt sign mirrored in
+- **Gravity-seed fix (#98, merged 2026-11-16 with a merge commit; core 0.2.0):** the seed quaternion had the tilt sign mirrored in
   Python and Rust. On real trials the phone starts about 100 degrees from flat, so the
   old filter started about 145 degrees wrong about gravity and did not converge within a
   trial. The fix changes every scored trial (A0 by a median 4.4 degrees; 24 verdicts at
@@ -166,27 +206,30 @@ scores move. "Not verified" is stated, never implied.
   `docs/seed-fix-corpus-check`, `docs/seed-fix-rust-confirmation`.
 - **Rust port fidelity:** against Python at the app's settings on the same stream,
   traces are identical and verdicts agree on 179 of 179.
-- **Consequence:** every phone-IMU number measured before #98 merges used the mirrored
-  seed. The live web app has the bug until #98 merges and the app is redeployed.
-  #98 bumps the core to 0.2.0, so `ALGORITHM_VERSION` reads `0.2.0+...` once it lands.
+- **Consequence:** every phone-IMU number measured before #98 used the mirrored seed and
+  is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
+  `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
 ### 5. OptiTrack / RMSE validation — STABLE
 - **Canonical branch:** `main` (#81, #88 merged).
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
-- **Gaps:** the result "AHRS floor has zero effect on 144 paired corpus trials" is
-  recorded only in agent memory. The RMSE gate compares only the active swing window, so
-  it could not see the seed bug; do not treat it as a sufficient gate for filter changes.
+- **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
+  do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on
+  144 paired corpus trials" is now recorded in `docs/reports/2026-11-02-ahrs-floor-verdict.md`
+  (measured before the seed fix).
 
 ### 6. Bench / test-retest (September lineage) — FROZEN, to be harvested
 - **Branches:** `bench/retest-abs`, `bench/retest-diagnostics`,
   `fix/swing-angle-signed-abs-fold`, `feat/rust-abs-flex-projection`,
   `fix/optitrack-trial-quality` (local only, not on origin). About 110 to 130 commits
   that never reached `main`. #68 closed as moot for main.
-- **Holds, not on main:** the 2026-09-04 instrument-validation plan, tilted-rig protocol
-  and run sheets, dynamic-characterization run sheet, `regenerating-figures.md`,
-  September reports.
-- **Next action:** rescue those docs, tag each branch `archive/<name>`, then retire. Do
-  not start new work on these branches.
+- **Rescued 2026-11-16 (draft PR):** the instrument-validation plan, tilted-rig protocol and run
+  sheets and dynamic-characterization run sheet (now in `docs/bench/`), `regenerating-figures.md`
+  and the September reports. Redacted for the public repo; each carries a banner saying it may
+  predate the seed fix. Not rescued: the three September `docs/superpowers/` plans and specs and
+  the root-level `DEPLOYMENT_PLAN`-era notes (still on the branches and the `archive/*` tags).
+- **Next action:** each branch is tagged `archive/<name>`; retire the branches once the owner
+  approves. Do not start new work on them.
 - **Canonical bench number:** phone static accuracy 0.58° (the 0.92° in the Notion SOP
   is stale). Measured before the seed fix.
 
@@ -199,14 +242,26 @@ scores move. "Not verified" is stated, never implied.
   higher than the reference configuration and reads borderline where the reference
   reads healthy on 32 of 179 corpus trials. Zone thresholds and `HEALTHY_REF` were
   derived on the reference footing; whether they suit the app's has not been tested.
+- **Offline + custom domain (draft PR #104, `feat/offline-usb-build`):** the primary
+  offline route is the existing install-once PWA. It is the only route on iOS, and was
+  checked offline in desktop Chromium. `npm run build:usb` adds a single-file
+  `webapp/dist-usb/` copy for Android and laptops, not yet tried on a real phone. See
+  `docs/reference/offline-usb.md`. `docs/reference/custom-domain.md` covers moving to
+  `pendulastic.com` (GoDaddy registrar, Vercel host). **Owner:** buy the domain, set
+  the DNS records, try the USB file on one Android phone.
 - **Backlog:** scripted deploy; eviction soak test; zone recalibration (blocked: only 2
   legs with MAS ≥ 1); app bugs in `TODOS.md`.
 
 ### 8. Video / pose estimation, desktop apps, `web/`, `mobile/` — TO ARCHIVE
 - Idle since August. Owner decision: archive.
-- **First pass:** move `web/`, `mobile/`, `Evaluate Models Py/` and root scripts with no
-  importers and no CI test into `archive/`. #66 no longer deletes
-  `Evaluate Models Py/`.
+- **First pass (draft PR, pending merge):** `web/`, `mobile/`, `Evaluate Models Py/` and 13 root
+  scripts with no importers and no CI test moved to `archive/` (see `archive/README.md`).
+  Root scripts with no importers that were NOT moved because they feed current IMU or paper
+  work: `compute_metrics.py`, `evaluate_settled_tail_gyro_bias.py`,
+  `evaluate_tuning_grid_methodology.py`, `evaluate_pt7_discrimination.py`,
+  `model_vs_optitrack_eval.py`, `run_statistical_engine.py`, the `generate_*` figure scripts
+  (blocked on "name one canonical figure pipeline"), and the Motive scripts
+  `ExporterScript-CSV-fixed.py`, `ReconstructAndExportMarkers.py`.
 - **Frozen in place for now** (still imported by tests or other code):
   `workbench_engine.py`, `pendulastic_app.py`, `analysis_pipeline.py`,
   `batch_mediapipe.py`, `pendulastic_viewer.py`. Do not develop them, except
@@ -214,9 +269,9 @@ scores move. "Not verified" is stated, never implied.
 
 ### 9. Hygiene and reporting — STALLED
 - **Merged 2026-11-16:** #66 (repo cleanup; daily and Monday reports archived under
-  `docs/`). The 43 draft `claude/daily-report-*` PRs are closed; each report is on main.
-  Their remote branches still exist (deleting them needs the owner's say).
-- The nightly hygiene agent last ran 2026-09-23 and failed; no scheduled task exists.
+  `docs/`). The 43 draft `claude/daily-report-*` PRs are closed and their branches deleted;
+  each report is on main. Nine older daily-report branches remain.
+- The nightly hygiene agent is retired (owner, 2026-11-16).
 - Run `git worktree list` for the current worktrees rather than trusting a list here.
 - Disk: drive C: was full on 2026-11-11 and is at about 4 GB free after removing
   finished worktrees and regenerable build output. Builds and tests fail with "No space
