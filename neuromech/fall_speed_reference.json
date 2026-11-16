@@ -1,14 +1,14 @@
 {
  "what": "real per-leg peak fall speed vs A0 (median trial per leg), neuromech.fall_speed",
  "a0_source": "OptiTrack (load_optitrack); shrinks angles (plan 5b), re-pin on B11 geometry",
- "score_formula_id": "pt6rescaled-ref-2026-10-27",
- "scorer_fingerprint": "befdae131830",
+ "score_formula_id": "pt6rescaled-ref-2026-11-16",
+ "scorer_fingerprint": "e354eb787ac7",
  "row_fields": "person groups a person's legs and is numbered by first appearance in A0 order; it is not a participant ID. No study group or clinical grade is pinned (neuromech/fall_speed.py, REFERENCE_ROW_FIELDS)",
  "legs": [
   {
    "person": 1,
-   "A0": 18.892,
-   "peak": 322.81
+   "A0": 16.287,
+   "peak": 319.66
   },
   {
    "person": 1,
@@ -27,23 +27,23 @@
   },
   {
    "person": 3,
+   "A0": 22.894,
+   "peak": 360.26
+  },
+  {
+   "person": 4,
    "A0": 25.135,
    "peak": 410.21
   },
   {
-   "person": 3,
+   "person": 4,
    "A0": 26.788,
    "peak": 401.83
   },
   {
-   "person": 4,
-   "A0": 27.438,
-   "peak": 386.46
-  },
-  {
    "person": 5,
-   "A0": 28.444,
-   "peak": 255.13
+   "A0": 27.011,
+   "peak": 260.39
   },
   {
    "person": 6,
@@ -51,19 +51,19 @@
    "peak": 327.74
   },
   {
-   "person": 7,
-   "A0": 37.14,
-   "peak": 269.1
+   "person": 3,
+   "A0": 41.189,
+   "peak": 361.47
   },
   {
-   "person": 4,
-   "A0": 41.189,
-   "peak": 364.3
+   "person": 7,
+   "A0": 46.103,
+   "peak": 351.86
   },
   {
    "person": 8,
-   "A0": 46.103,
-   "peak": 351.86
+   "A0": 46.56,
+   "peak": 282.81
   },
   {
    "person": 6,
@@ -78,22 +78,22 @@
   {
    "person": 9,
    "A0": 53.816,
-   "peak": 323.95
+   "peak": 323.8
+  },
+  {
+   "person": 10,
+   "A0": 56.264,
+   "peak": 358.68
+  },
+  {
+   "person": 10,
+   "A0": 56.296,
+   "peak": 374.58
   },
   {
    "person": 5,
    "A0": 56.866,
    "peak": 174.27
-  },
-  {
-   "person": 10,
-   "A0": 59.084,
-   "peak": 375.72
-  },
-  {
-   "person": 10,
-   "A0": 60.511,
-   "peak": 360.25
   },
   {
    "person": 11,
