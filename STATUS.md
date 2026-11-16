@@ -160,20 +160,23 @@ scores move. "Not verified" is stated, never implied.
 ### 5. OptiTrack / RMSE validation — STABLE
 - **Canonical branch:** `main` (#81, #88 merged).
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
-- **Gaps:** the result "AHRS floor has zero effect on 144 paired corpus trials" is
-  recorded only in agent memory. The RMSE gate compares only the active swing window, so
-  it could not see the seed bug; do not treat it as a sufficient gate for filter changes.
+- **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
+  do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on
+  144 paired corpus trials" is now recorded in `docs/reports/2026-11-02-ahrs-floor-verdict.md`
+  (measured before the seed fix).
 
 ### 6. Bench / test-retest (September lineage) — FROZEN, to be harvested
 - **Branches:** `bench/retest-abs`, `bench/retest-diagnostics`,
   `fix/swing-angle-signed-abs-fold`, `feat/rust-abs-flex-projection`,
   `fix/optitrack-trial-quality` (local only, not on origin). About 110 to 130 commits
   that never reached `main`. #68 closed as moot for main.
-- **Holds, not on main:** the 2026-09-04 instrument-validation plan, tilted-rig protocol
-  and run sheets, dynamic-characterization run sheet, `regenerating-figures.md`,
-  September reports.
-- **Next action:** rescue those docs, tag each branch `archive/<name>`, then retire. Do
-  not start new work on these branches.
+- **Rescued 2026-11-16 (draft PR):** the instrument-validation plan, tilted-rig protocol and run
+  sheets and dynamic-characterization run sheet (now in `docs/bench/`), `regenerating-figures.md`
+  and the September reports. Redacted for the public repo; each carries a banner saying it may
+  predate the seed fix. Not rescued: the three September `docs/superpowers/` plans and specs and
+  the root-level `DEPLOYMENT_PLAN`-era notes (still on the branches and the `archive/*` tags).
+- **Next action:** each branch is tagged `archive/<name>`; retire the branches once the owner
+  approves. Do not start new work on them.
 - **Canonical bench number:** phone static accuracy 0.58° (the 0.92° in the Notion SOP
   is stale). Measured before the seed fix.
 
