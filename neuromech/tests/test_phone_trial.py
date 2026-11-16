@@ -121,15 +121,29 @@ _SEED_MIRRORED = re.search(r"-gy\s*/\s*denom\s*,\s*gx\s*/\s*denom",
                            open(os.path.join(CORE, "ahrs.rs"), encoding="utf-8").read()) is not None
 
 
+# The condition reads the SOURCE, but the replay runs the BUILT wasm, which can lag it. If the two disagree this
+# test fails (or XPASSes) for that reason alone, so every way it can go wrong says to rebuild first.
+_REBUILD = "if the wasm is older than mobile-imu-core/src, rebuild it first: cd webapp && npm run build:wasm"
+
+
+def _wasm_staleness():
+    src = max(os.path.getmtime(os.path.join(CORE, f)) for f in os.listdir(CORE) if f.endswith(".rs"))
+    if os.path.exists(WASM) and os.path.getmtime(WASM) < src:
+        return " -- the wasm under test is OLDER than mobile-imu-core/src, so it may not be this source's seed"
+    return ""
+
+
 @needs_app
 @pytest.mark.xfail(_SEED_MIRRORED, strict=True,
-                   reason="this core's gravity_seed has the tilt sign mirrored (fixed on fix/ahrs-gravity-seed)")
+                   reason="this core's gravity_seed has the tilt sign mirrored (fixed on fix/ahrs-gravity-seed); "
+                          "an XPASS here means the wasm does not match the source: " + _REBUILD)
 def test_the_hold_reads_steady_after_a_lift(tmp_path):
     """The mirrored gravity_seed made a still leg read 166..178 deg after a lift."""
     tu, app, _ = _run(tmp_path, phone=PT.Phone.ideal())
     t = np.array(app["trajectory"]["t"]); a = np.array(app["trajectory"]["angle_deg"], dtype=float)
     hold = a[(t > tu["release_t_s"] - 2.0) & (t < tu["release_t_s"] - 0.1)]
-    assert np.ptp(hold) < 1.0, f"a still leg read {hold.min():.1f}..{hold.max():.1f} deg"
+    assert np.ptp(hold) < 1.0, (f"a still leg read {hold.min():.1f}..{hold.max():.1f} deg. The source has the fixed "
+                                f"seed, so either the seed bug is back or the wasm is stale; {_REBUILD}{_wasm_staleness()}")
 
 
 @needs_app
