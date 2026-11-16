@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges recorded 2026-11-16.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges recorded 2026-11-16; decision 3 recorded 2026-11-16.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -27,8 +27,11 @@ scores move. "Not verified" is stated, never implied.
    projection) and the Python reference (100 Hz, EMA 0.5, flex projection) disagree on
    56 of 179 on-screen verdicts. Either the app moves to the reference footing or the
    thresholds are re-derived for the app's (workstream 7).
-3. **Re-derive `HEALTHY_REF` with the drift bound?** The bound is correct but moves four
-   reference parameters by 2 to 5 percent (workstream 3).
+3. ~~Re-derive `HEALTHY_REF` with the drift bound?~~ **Decided 2026-11-16: yes**, as one
+   versioned change with the bound. Implemented in draft PR #105
+   (`pt6rescaled-ref-2026-11-16`, supersedes #94); awaiting review and merge. New open
+   point from its review: the A0 invariant can refuse a correct tail correction on a
+   stiff, sagging leg (workstream 3).
 4. **Count oscillations from the first trough?** Recommended remedy for the scorer's
    release-timing sensitivity; needs a score-formula version bump (workstream 3).
 5. **Release detector design.** September's detector was rejected as a port; four
@@ -100,8 +103,9 @@ scores move. "Not verified" is stated, never implied.
 - **Implementations:** Python `pendulastic_pt_score.py` (reference),
   Rust `mobile-imu-core/src/` (`scoring.rs`, `pt_score.rs`; ships in the webapp),
   C# `neuromech/designer/PtScore.cs` (given-release, `detrend=False` path only; it has
-  no release detector and no drift correction). `run_statistical_engine.py` holds a
-  fourth `HEALTHY_REF` copy.
+  no release detector and no drift correction). `run_statistical_engine.py` held a
+  fourth `HEALTHY_REF` copy; with #105 it imports the scorer's, and
+  `tests/test_pt_zone_parity.py` pins every copy to Python.
 - **Conventions:** on screen the app scores with `detrend=False`; the record the app
   STORES uses `detrend=True` (`finish_detrended` in `wasm.rs`, `persistTrial` in
   `webapp/src/app.js`). `neuromech.build.score_angle` is 100 Hz, release given,
@@ -110,9 +114,18 @@ scores move. "Not verified" is stated, never implied.
 - **Lineage comparison** (`docs/scorer-lineage-comparison`): test-retest under
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
-- **Drift-correction bound (PR #94, draft):** ported to Python and Rust with caller
-  handling of the new `AmplitudeExceedsCurveError`; `detrend=False` output is
-  bit-identical on the corpus. Independent review: code correct. Waits on decision 3.
+- **Drift-correction bound + re-derived `HEALTHY_REF` (PR #105, draft; supersedes #94,
+  which stays open):** the bound in Python and Rust, `AmplitudeExceedsCurveError`
+  reported (not swallowed) by the viewer, workbench, live view and broad handlers, and
+  `HEALTHY_REF` re-derived with the bound (phi 0.6407→0.6264, omega_max_n
+  6.4839→6.6702, area 0.1766→0.1678, f unchanged; 37 trials, 11 legs, 7 people) in
+  Python, Rust, C# and `run_statistical_engine.py`. `SCORE_FORMULA_ID`
+  `pt6rescaled-ref-2026-11-16`, core 0.3.0. Bound alone: `detrend=False` bit-identical;
+  `detrend=True` moves 2 phone and 20 optical trials. Rust matches Python on 463 real
+  curves (both conventions). neuromech: no band changes, dry run 9 of 9. Open: the A0
+  invariant (span × 1.27) refuses a correct tail correction on a stiff, non-oscillating,
+  sagging leg (fired on no corpus curve; Rust returns `None` with no reason); some
+  research CLI scripts still raise on the error.
 - **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;
