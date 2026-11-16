@@ -191,9 +191,14 @@ scores move. "Not verified" is stated, never implied.
 
 ### 8. Video / pose estimation, desktop apps, `web/`, `mobile/` — TO ARCHIVE
 - Idle since August. Owner decision: archive.
-- **First pass:** move `web/`, `mobile/`, `Evaluate Models Py/` and root scripts with no
-  importers and no CI test into `archive/`. #66 no longer deletes
-  `Evaluate Models Py/`.
+- **First pass (draft PR, pending merge):** `web/`, `mobile/`, `Evaluate Models Py/` and 13 root
+  scripts with no importers and no CI test moved to `archive/` (see `archive/README.md`).
+  Root scripts with no importers that were NOT moved because they feed current IMU or paper
+  work: `compute_metrics.py`, `evaluate_settled_tail_gyro_bias.py`,
+  `evaluate_tuning_grid_methodology.py`, `evaluate_pt7_discrimination.py`,
+  `model_vs_optitrack_eval.py`, `run_statistical_engine.py`, the `generate_*` figure scripts
+  (blocked on "name one canonical figure pipeline"), and the Motive scripts
+  `ExporterScript-CSV-fixed.py`, `ReconstructAndExportMarkers.py`.
 - **Frozen in place for now** (still imported by tests or other code):
   `workbench_engine.py`, `pendulastic_app.py`, `analysis_pipeline.py`,
   `batch_mediapipe.py`, `pendulastic_viewer.py`. Do not develop them, except
