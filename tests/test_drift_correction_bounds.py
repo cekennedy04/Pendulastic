@@ -219,8 +219,8 @@ _P21_RIGHT_T1 = _resolve("21", "Right", "trial_1_optitrack.csv")
     ("21", "Right", "_P21_RIGHT_T1"),
 ])
 def test_the_reported_trials_no_longer_exceed_their_own_curves(pid, side, path_ref):
-    """MINT_18 Left trial_1 reported A0 169.8 on a curve spanning 70.3;
-    CHAT_21 Right trial_1 reported 58.0 on a curve spanning 33.9. Both passed
+    """Participant 18's left trial 1 reported A0 169.8 on a curve spanning 70.3;
+    participant 21's right trial 1 reported 58.0 on a curve spanning 33.9. Both passed
     conditioning_verdict as ok, so neither was in the ill-conditioned
     population that the flagging change had just rescued -- they were in the
     accepted one, feeding the grouping variable."""

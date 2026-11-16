@@ -1806,6 +1806,9 @@ class PostProcessingPanel(tk.Frame):
                 # The scorer refused this source's curve (A0 larger than the
                 # curve itself). Say so and stop: falling through to a lower-
                 # priority source would show its score as if it were this one's.
+                for var in (self.a1_var, self.omega_var, self.n_var, self.f_var,
+                            self.r2n_var, self.mas_var):
+                    var.set("—")   # nothing from an earlier source left on screen
                 self.score_var.set("refused")
                 self.status_var.set(
                     f"PT scoring ({src.upper()}): A0 exceeds its own curve, not scored: {exc}")
