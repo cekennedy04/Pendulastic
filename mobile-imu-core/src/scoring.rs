@@ -721,7 +721,8 @@ fn finite_extent(x: &[f64]) -> (usize, f64, f64) {
 ///
 /// The reference RAISES `AmplitudeExceedsCurveError` here. This crate does
 /// not panic -- a panic inside wasm takes the whole trial result down -- so
-/// [`compute_pt_params`] turns `false` into its ordinary refusal, `None`.
+/// [`compute_pt_params_checked`] turns `false` into a typed refusal,
+/// [`PtRefusal::AmplitudeExceedsCurve`].
 /// A degenerate curve (fewer than two finite samples, a non-finite A0, or a
 /// span of zero) is not judged, exactly as in the reference.
 pub fn amplitude_within_curve(a0: f64, angle_raw: &[f64]) -> bool {
@@ -736,6 +737,33 @@ pub fn amplitude_within_curve(a0: f64, angle_raw: &[f64]) -> bool {
     a0 <= span * (1.0 + MAX_TOTAL_CORRECTION_FRAC + AMPLITUDE_SLACK_FRAC)
 }
 
+/// Why [`compute_pt_params_checked`] declined to return parameters.
+///
+/// The two are different claims and a caller must be able to tell them apart:
+/// `Unscorable` is a clinical outcome (a near-rigid joint, a trial too short to
+/// characterise), while `AmplitudeExceedsCurve` is the reference's
+/// `AmplitudeExceedsCurveError` -- A0 came out larger than the curve it was
+/// measured from, which is a computation the scorer refuses to report.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PtRefusal {
+    /// Fewer than 40 finite samples, too little post-release signal, or a
+    /// first-swing amplitude under 3 degrees.
+    Unscorable,
+    /// A0 exceeds what the raw curve plus a permitted correction allows (see
+    /// [`amplitude_within_curve`]).
+    AmplitudeExceedsCurve,
+}
+
+/// [`compute_pt_params_checked`] without the reason: `None` for either refusal.
+pub fn compute_pt_params(
+    t: &[f64],
+    angle_raw: &[f64],
+    release_idx: Option<usize>,
+    detrend: bool,
+) -> Option<PtParams> {
+    compute_pt_params_checked(t, angle_raw, release_idx, detrend).ok()
+}
+
 /// Compute the Popović PT parameters from a knee-angle time series.
 ///
 /// `release_idx` bypasses auto-detection and forces the release point (a frame
@@ -744,22 +772,22 @@ pub fn amplitude_within_curve(a0: f64, angle_raw: &[f64]) -> bool {
 /// from the scrub view. `detrend` applies the pre-release baseline drift
 /// correction.
 ///
-/// Returns `None` when the trial cannot be characterised at all: fewer than 40
-/// finite samples, too little post-release signal, or a first-swing amplitude
-/// under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
+/// Returns `Err(PtRefusal::Unscorable)` when the trial cannot be characterised
+/// at all: fewer than 40 finite samples, too little post-release signal, or a
+/// first-swing amplitude under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
 /// reporting nothing beats reporting a confident number derived from noise.
 ///
-/// Also `None` when A0 comes out larger than the curve it was measured from
-/// (see [`amplitude_within_curve`]). The reference raises
-/// `AmplitudeExceedsCurveError` for that; refusing is this crate's equivalent,
-/// because the alternative here is a panic inside wasm. Neither language
-/// returns a number in that case.
-pub fn compute_pt_params(
+/// `Err(PtRefusal::AmplitudeExceedsCurve)` when A0 comes out larger than the
+/// curve it was measured from (see [`amplitude_within_curve`]). The reference
+/// raises `AmplitudeExceedsCurveError` for that; a typed refusal is this
+/// crate's equivalent, because the alternative here is a panic inside wasm.
+/// Neither language returns a number in that case.
+pub fn compute_pt_params_checked(
     t: &[f64],
     angle_raw: &[f64],
     release_idx: Option<usize>,
     detrend: bool,
-) -> Option<PtParams> {
+) -> Result<PtParams, PtRefusal> {
     assert_eq!(
         t.len(),
         angle_raw.len(),
@@ -769,7 +797,7 @@ pub fn compute_pt_params(
         .filter(|&i| angle_raw[i].is_finite())
         .collect();
     if finite_indices.len() < 40 {
-        return None;
+        return Err(PtRefusal::Unscorable);
     }
     let t_c: Vec<f64> = finite_indices.iter().map(|&i| t[i]).collect();
     // Pristine raw, for neutral_deg_raw below.
@@ -867,7 +895,7 @@ pub fn compute_pt_params(
     let t_r: Vec<f64> = t_c[rel_i..].to_vec();
     let ang_r: Vec<f64> = ang_s[rel_i..].to_vec();
     if t_r.len() < 25 {
-        return None;
+        return Err(PtRefusal::Unscorable);
     }
 
     // A pendulum cannot oscillate faster than ~3 Hz; enforce a minimum
@@ -891,7 +919,7 @@ pub fn compute_pt_params(
     let mut phi: Vec<f64> = ang_r.iter().map(|a| a - neutral).collect();
     let mut a0_raw = phi[0];
     if a0_raw.abs() < 3.0 {
-        return None;
+        return Err(PtRefusal::Unscorable);
     }
     let phi_negated = a0_raw < 0.0;
     if phi_negated {
@@ -922,7 +950,7 @@ pub fn compute_pt_params(
     // than panic. Checked against the pristine raw samples and under both
     // conventions, as the reference does.
     if !amplitude_within_curve(a0, &ang_c_raw) {
-        return None;
+        return Err(PtRefusal::AmplitudeExceedsCurve);
     }
 
     // Re-detect peaks on phi with an amplitude threshold. `prominence` is
@@ -1118,7 +1146,7 @@ pub fn compute_pt_params(
         SpasticityType::Balanced
     };
 
-    Some(PtParams {
+    Ok(PtParams {
         r2n,
         n,
         phi_max_ratio,

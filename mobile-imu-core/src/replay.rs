@@ -75,6 +75,23 @@ pub enum TrialError {
     /// No qualifying release: recoverable retroactively via
     /// `ReplayConfig::release_override` (KTD9), never by re-recording.
     ReleaseNeverDetected,
+    /// The scorer refused: A0 exceeds what the raw curve plus a permitted
+    /// drift correction allows (the reference's `AmplitudeExceedsCurveError`;
+    /// `scoring::PtRefusal::AmplitudeExceedsCurve`). Kept distinct from
+    /// `InsufficientSamples` so a stored record can say which it was.
+    AmplitudeExceedsCurve,
+}
+
+impl TrialError {
+    /// Stable machine-readable code, for the wasm boundary and stored records.
+    /// These strings are a persisted contract: do not rename them.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TrialError::InsufficientSamples => "insufficient_samples",
+            TrialError::ReleaseNeverDetected => "release_never_detected",
+            TrialError::AmplitudeExceedsCurve => "amplitude_exceeds_curve",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

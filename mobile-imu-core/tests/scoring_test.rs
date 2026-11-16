@@ -12,8 +12,8 @@
 mod golden;
 
 use mobile_imu_core::scoring::{
-    amplitude_within_curve, baseline_drift_slope, compute_pt_params, credible_drift_slope,
-    score_waveform, SpasticityType,
+    amplitude_within_curve, baseline_drift_slope, compute_pt_params, compute_pt_params_checked,
+    credible_drift_slope, score_waveform, PtRefusal, SpasticityType,
 };
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -830,6 +830,25 @@ fn an_amplitude_larger_than_its_curve_is_refused_not_reported() {
     let plain = compute_pt_params(t, ang, None, false).expect("scorable undetrended");
     close(plain.a0_deg, golden::TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG, 1e-6, "A0 (plain)");
     assert!(amplitude_within_curve(plain.a0_deg, ang));
+}
+
+#[test]
+fn the_refusal_says_why() {
+    // The typed refusal keeps the A0 invariant distinguishable from an
+    // ordinary unscorable trial, so the app can record which it was.
+    let (t, ang) = (golden::TRIAL_A0_OVER_CURVE_T, golden::TRIAL_A0_OVER_CURVE_ANG);
+    assert_eq!(
+        compute_pt_params_checked(t, ang, None, true).err(),
+        Some(PtRefusal::AmplitudeExceedsCurve)
+    );
+    assert!(compute_pt_params_checked(t, ang, None, false).is_ok());
+    // Too few samples is the other refusal, not this one.
+    let short_t: Vec<f64> = (0..30).map(|i| i as f64 * 0.02).collect();
+    let short_a = vec![180.0; 30];
+    assert_eq!(
+        compute_pt_params_checked(&short_t, &short_a, None, true).err(),
+        Some(PtRefusal::Unscorable)
+    );
 }
 
 #[test]

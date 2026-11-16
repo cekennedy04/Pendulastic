@@ -128,6 +128,17 @@ impl WasmSession {
         Some(params_json::params_to_json(&p))
     }
 
+    /// Why scoring under the chosen convention produced no result, as a stable
+    /// code (`TrialError::code`: "insufficient_samples",
+    /// "release_never_detected", "amplitude_exceeds_curve"), or `undefined`
+    /// when it scored. Lets the stored record say WHY the analysis convention
+    /// is missing instead of looking like an older wasm that lacked it.
+    ///
+    /// Pure delegation, per this module's logic-free rule.
+    pub fn refusal_reason(&self, detrend: bool) -> Option<String> {
+        self.inner.finish_with(None, detrend).err().map(|e| e.code().to_string())
+    }
+
     /// The composite score under the analysis convention — the number that must
     /// agree with the cohort reports.
     pub fn finish_pt_score_detrended(&self) -> Option<String> {

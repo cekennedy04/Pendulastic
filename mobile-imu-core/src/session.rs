@@ -5,7 +5,7 @@ use crate::ahrs::Vec3;
 use crate::calibration::ReleaseDetector;
 use crate::flex_axis::{lateral_motion, FlexAxisEstimator, LateralMotion, DEFAULT_THRESHOLD};
 use crate::replay::{replay, RawSample, ReplayConfig, Sensor, TrialError, TrialResult};
-use crate::scoring::{compute_pt_params, PtParams};
+use crate::scoring::{compute_pt_params_checked, PtParams, PtRefusal};
 use crate::stillness::{SampleBuf, GYRO_BIAS_WINDOW_S, ZERO_CAPTURE_GUARD_RAD_S};
 
 /// Maximum accumulated pose rotation permitted across the pre-release hold.
@@ -236,8 +236,12 @@ impl TrialSession {
     ) -> Result<(TrialResult, PtParams), TrialError> {
         let cfg = ReplayConfig { release_override, ..self.cfg };
         let r = replay(&self.samples, &cfg)?;
-        let p = compute_pt_params(&r.t, &r.angle_deg, None, detrend)
-            .ok_or(TrialError::InsufficientSamples)?;
+        // The scorer's refusal keeps its reason: an A0 that exceeds its own
+        // curve is not the same claim as a trial too short to score.
+        let p = compute_pt_params_checked(&r.t, &r.angle_deg, None, detrend).map_err(|e| match e {
+            PtRefusal::Unscorable => TrialError::InsufficientSamples,
+            PtRefusal::AmplitudeExceedsCurve => TrialError::AmplitudeExceedsCurve,
+        })?;
         Ok((r, p))
     }
 

@@ -215,3 +215,12 @@ fn a_handling_excursion_still_revokes_release_detection() {
         assert_eq!(replay(&log, &cfg).err(), Some(TrialError::ReleaseNeverDetected), "mag={mag} steps={steps}");
     }
 }
+
+#[test]
+fn trial_error_codes_are_a_stable_contract() {
+    // Persisted in stored records via the wasm `refusal_reason`; renaming one
+    // breaks every record already on a phone.
+    assert_eq!(TrialError::InsufficientSamples.code(), "insufficient_samples");
+    assert_eq!(TrialError::ReleaseNeverDetected.code(), "release_never_detected");
+    assert_eq!(TrialError::AmplitudeExceedsCurve.code(), "amplitude_exceeds_curve");
+}
