@@ -57,6 +57,20 @@ def test_baseline_filter_accepts_pre_and_any_case_of_default(world):
     assert len(rows) == 3 and unloadable == []
 
 
+def test_a_listed_non_control_is_excluded_even_under_the_control_prefix(monkeypatch, tmp_path):
+    """NOT_CONTROL_PIDS wins over the folder prefix: a participant filed under
+    the control prefix on disk must not enter the reference. Checked by
+    participant ID, with the folder lookup stubbed to claim every ID is a
+    control."""
+    monkeypatch.setattr(dhr.pp, "find_participant_dir",
+                        lambda root, pid: str(tmp_path / f"{dhr.pp.CONTROL_PREFIX}_{pid}"))
+    assert dhr.NOT_CONTROL_PIDS, "the exclusion list must not be empty"
+    for pid in dhr.NOT_CONTROL_PIDS:
+        assert dhr._is_control(pid) is False
+        assert dhr._is_control(f"{dhr.pp.CONTROL_PREFIX}_{pid}") is False
+    assert dhr._is_control("6") is True
+
+
 def test_only_interpretable_trials_enter(world, monkeypatch):
     recs, _, tmp = world
     recs += [_rec(tmp, "6", "left", "pre", 1), _rec(tmp, "6", "left", "pre", 2)]

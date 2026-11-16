@@ -27,8 +27,11 @@ median of a different population from the one the reference is applied to.
 
 RESULT 2026-11-16, with the drift-correction bound (shipped as HEALTHY_REF,
 SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16"). 37 interpretable trials, 11
-legs, the same 7 people; run with --allow-unloadable (7 baseline control
-trials cannot be loaded). Trial median, leave-one-person-out range in brackets:
+legs, the same 7 people. The 7 trials that could not be loaded all belonged to
+a participant whose folder carries the control prefix but who is not a control
+participant (NOT_CONTROL_PIDS); its other 9 baseline trials were uninterpretable.
+Excluding it by ID changes no value, and the run no longer needs
+--allow-unloadable. Trial median, leave-one-person-out range in brackets:
 
     R2n            0.9312  [0.915 - 0.966]   literature anchor 1.0 kept
     N              6.0000  [6.00  - 6.50 ]   literature anchor 6.5 kept
@@ -65,8 +68,9 @@ Usage:
     # reused only for the same source file and the same scorer source.
     # Fails closed (exit 2) if any baseline control trial cannot be loaded;
     # pass --allow-unloadable to accept the smaller cohort explicitly
-    # (2026-10-27: P2 right solo T4/T5 are unloadable rig-geometry failures;
-    # 2026-11-16: 7 baseline control trials are unloadable).
+    # (2026-10-27: two trials were unloadable rig-geometry failures; from
+    # 2026-11-16 their participant is excluded by NOT_CONTROL_PIDS and no
+    # baseline control trial is unloadable).
 """
 import argparse
 import hashlib
@@ -82,7 +86,20 @@ import pt_report_common as prc
 KEYS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"]
 
 
+# Participants whose recording folder carries the control prefix on disk but
+# who are not control participants. The folder prefix is how discovery finds
+# the cohort, so a folder filed under the wrong study would otherwise put its
+# trials into the reference. Excluded by participant ID, never by folder name.
+# Participant 2: not a control participant (2026-11-16). Its baseline trials
+# were already unloadable or uninterpretable, so excluding it leaves the
+# 2026-11-16 HEALTHY_REF unchanged; this makes that explicit rather than
+# dependent on the loader failing.
+NOT_CONTROL_PIDS = frozenset({"2"})
+
+
 def _is_control(pid) -> bool:
+    if pp.strip_prefix(str(pid)) in NOT_CONTROL_PIDS:
+        return False
     d = pp.find_participant_dir(prc.OPTI_ROOT, str(pid))
     return bool(d) and os.path.basename(d).startswith(pp.CONTROL_PREFIX + "_")
 
