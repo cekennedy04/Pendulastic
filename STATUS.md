@@ -21,7 +21,7 @@ scores move. "Not verified" is stated, never implied.
 
 ## Decisions waiting on the owner
 
-1. **Merge the AHRS seed fix (#92)?** It is physically correct and confirmed in Rust,
+1. **Merge the AHRS seed fix (#98, split from #92)?** It is physically correct and confirmed in Rust,
    and it changes every scored phone trial (workstream 4).
 2. **App versus reference scoring footing.** The app (20 Hz ticks, EMA 0.3, no flex
    projection) and the Python reference (100 Hz, EMA 0.5, flex projection) disagree on
@@ -148,7 +148,8 @@ scores move. "Not verified" is stated, never implied.
 
 ### 4. Rust AHRS / phone replay — CHANGE PENDING OWNER DECISION
 - **Canonical branch:** `main` (#78 merged; #91, a negative result, merged 2026-11-11).
-- **Gravity-seed fix (PR #92, draft):** the seed quaternion had the tilt sign mirrored in
+- **Gravity-seed fix (PR #98, draft; branch `fix/ahrs-gravity-seed`, the seed fix alone,
+  split from #92 with the cache keys and a 0.2.0 core version bump):** the seed quaternion had the tilt sign mirrored in
   Python and Rust. On real trials the phone starts about 100 degrees from flat, so the
   old filter started about 145 degrees wrong about gravity and did not converge within a
   trial. The fix changes every scored trial (A0 by a median 4.4 degrees; 24 verdicts at
@@ -157,9 +158,9 @@ scores move. "Not verified" is stated, never implied.
   `docs/seed-fix-corpus-check`, `docs/seed-fix-rust-confirmation`.
 - **Rust port fidelity:** against Python at the app's settings on the same stream,
   traces are identical and verdicts agree on 179 of 179.
-- **Consequence:** every phone-IMU number measured before #92 merges used the mirrored
-  seed. The live web app has the bug until #92 merges and the app is redeployed.
-  `ALGORITHM_VERSION` must be bumped when it lands.
+- **Consequence:** every phone-IMU number measured before #98 merges used the mirrored
+  seed. The live web app has the bug until #98 merges and the app is redeployed.
+  #98 bumps the core to 0.2.0, so `ALGORITHM_VERSION` reads `0.2.0+...` once it lands.
 
 ### 5. OptiTrack / RMSE validation — STABLE
 - **Canonical branch:** `main` (#81, #88 merged).
