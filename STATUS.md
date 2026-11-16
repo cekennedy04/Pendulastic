@@ -189,6 +189,13 @@ scores move. "Not verified" is stated, never implied.
   higher than the reference configuration and reads borderline where the reference
   reads healthy on 32 of 179 corpus trials. Zone thresholds and `HEALTHY_REF` were
   derived on the reference footing; whether they suit the app's has not been tested.
+- **Offline + custom domain (draft PR #104, `feat/offline-usb-build`):** the primary
+  offline route is the existing install-once PWA. It is the only route on iOS, and was
+  checked offline in desktop Chromium. `npm run build:usb` adds a single-file
+  `webapp/dist-usb/` copy for Android and laptops, not yet tried on a real phone. See
+  `docs/reference/offline-usb.md`. `docs/reference/custom-domain.md` covers moving to
+  `pendulastic.com` (GoDaddy registrar, Vercel host). **Owner:** buy the domain, set
+  the DNS records, try the USB file on one Android phone.
 - **Backlog:** scripted deploy; eviction soak test; zone recalibration (blocked: only 2
   legs with MAS ≥ 1); app bugs in `TODOS.md`.
 
