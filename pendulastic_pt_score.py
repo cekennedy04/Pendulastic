@@ -154,7 +154,21 @@ HEALTHY_REF = {
 
     # ---- DATA-DERIVED, no published value exists ----
     #
-    # RE-DERIVED 2026-10-27 by derive_healthy_ref.py: 39 INTERPRETABLE
+    # RE-DERIVED 2026-11-16 with the drift-correction bound in place
+    # (_baseline_drift_slope / _credible_drift_slope; SCORE_FORMULA_ID
+    # "pt6rescaled-ref-2026-11-16"): 37 interpretable baseline control trials,
+    # 11 legs, 7 people, same script and cohort rules as below. The bound
+    # refuses the pre-release fallback fit on a few control curves whose hold
+    # was short or sloping, so their A0 is now the undetrended one. Of the
+    # 39 trials below, one becomes unscorable and two fall under the
+    # excursion gate; one trial the gate refused before now passes. The
+    # A0-normalised ratios move: phi_max_ratio -2.2%, omega_max_n +2.9%,
+    # omega_min_n 1.9% larger in magnitude, area_ratio -5.0%; f unchanged
+    # (N and R2n stay literature-anchored). Each value below is the new
+    # median; the 2026-10-27 value is noted beside it. Leave-one-person-out
+    # ranges are in derive_healthy_ref.py's docstring.
+    #
+    # Previously RE-DERIVED 2026-10-27 by derive_healthy_ref.py: 39 INTERPRETABLE
     # baseline control trials, 12 legs, 7 people, on the reconstruction and
     # release detection that ship (seed-window, lift-and-hold and drift-fit
     # fixes). The 2026-09-09 values below each entry came from 46 trials
@@ -180,7 +194,7 @@ HEALTHY_REF = {
     # Popovic's phi-max is the first goniogram maximum in RADIANS (published
     # healthy 0.34-0.61 rad). Ours is A2/A0, a dimensionless ratio. Different
     # quantity; the published range cannot be used.
-    "phi_max_ratio": 0.6407,   # was 0.6667 (2026-09-09)
+    "phi_max_ratio": 0.6264,   # 0.6407 (2026-10-27); 0.6667 (2026-09-09)
 
     # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
     # Ours is divided by A0. Different quantity.
@@ -192,7 +206,7 @@ HEALTHY_REF = {
     # velocity is roughly fixed by the release height while A0 varies, so it
     # is largely 1/A0 -- and a below-reference-only penalty therefore never
     # charges a small-A0 spastic leg for it.
-    "omega_max_n":   6.4839,
+    "omega_max_n":   6.6702,   # 6.4839 (2026-10-27)
 
     # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
     # velocity in the return direction. Until 2026-09-09 this module computed
@@ -200,26 +214,27 @@ HEALTHY_REF = {
     # value sat at ~0.001 for every trial and one of the seven parameters was
     # a static zero-offset in the sum.
     #
-    # Median of the 39 interpretable control trials, and it mirrors
-    # omega_max_n almost exactly, which is what a pendulum should do:
-    # -6.3624 against +6.4839 (leave-one-person-out -6.689 to -6.289). Was
-    # -9.4152 against +9.5672 on the superseded 46-trial set.
+    # Median of the 37 interpretable control trials, and it mirrors
+    # omega_max_n closely, which is what a pendulum should do: -6.4839
+    # against +6.6702 (leave-one-person-out -6.701 to -6.356). Was -6.3624
+    # against +6.4839 before the drift bound (2026-10-27), and -9.4152
+    # against +9.5672 on the superseded 46-trial set.
     #
     # Popovic's published healthy range is -12 to -9 rad/s. The superseded
     # value happened to land inside it; this one does not, and neither claim
     # means much: ours is normalised by A0 (units 1/s) and theirs is not, so
     # the two are not like-for-like. Diagnostic only -- not scored.
-    "omega_min_n":   -6.3624,
+    "omega_min_n":   -6.4839,   # -6.3624 (2026-10-27)
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
-    "f":             0.9511,   # was 0.8839 (2026-09-09)
+    "f":             0.9511,   # unchanged 2026-11-16; was 0.8839 (2026-09-09)
 
     # Same: introduced in that study, no published healthy value. ALSO the
     # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
     # 90% swing, depending purely on which controls are included. This cohort
     # cannot pin it, and it is the parameter the swing-centred frame changed.
-    "area_ratio":    0.1766,   # was 0.0945; LOO 0.154-0.213, still least stable
+    "area_ratio":    0.1678,   # 0.1766 (2026-10-27), 0.0945 before; LOO 0.151-0.204
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
@@ -755,7 +770,7 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     to prevent.
 
     `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
-    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-10-27",
+    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16",
     not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
     renamed. It is a column name in generated CSVs and in the neuromech
     manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
@@ -961,13 +976,17 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6rescaled-ref-2026-10-27"   # 6-term set, divisor = terms
+SCORE_FORMULA_ID = "pt6rescaled-ref-2026-11-16"   # 6-term set, divisor = terms
 #                                                 actually scored; see the
 #                                                 n_scored note in
 #                                                 compute_pt_score_breakdown.
 #                                                 "-ref-": HEALTHY_REF
-#                                                 re-derived 2026-10-27
+#                                                 re-derived 2026-11-16 with
+#                                                 the drift-correction bound
 #                                                 (derive_healthy_ref.py).
+#                                                 Bump the date whenever
+#                                                 HEALTHY_REF moves, because
+#                                                 every reported score does.
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.

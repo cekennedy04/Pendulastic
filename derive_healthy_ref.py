@@ -25,6 +25,25 @@ is measured from that resting angle -- varies. A median over trials the scorer
 refuses (or over trials whose release was mis-detected, which shrinks A0) is a
 median of a different population from the one the reference is applied to.
 
+RESULT 2026-11-16, with the drift-correction bound (shipped as HEALTHY_REF,
+SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16"). 37 interpretable trials, 11
+legs, the same 7 people; run with --allow-unloadable (7 baseline control
+trials cannot be loaded). Trial median, leave-one-person-out range in brackets:
+
+    R2n            0.9312  [0.915 - 0.966]   literature anchor 1.0 kept
+    N              6.0000  [6.00  - 6.50 ]   literature anchor 6.5 kept
+    phi_max_ratio  0.6264  [0.605 - 0.648]   was 0.6407
+    omega_max_n    6.6702  [6.409 - 6.769]   was 6.4839
+    omega_min_n   -6.4839  [-6.701 - -6.356] was -6.3624 (diagnostic only)
+    f              0.9511  [0.942 - 0.981]   unchanged
+    area_ratio     0.1678  [0.151 - 0.204]   was 0.1766, still the least stable
+
+The bound refuses the pre-release fallback drift fit on control curves whose
+hold is under 1 s, slopes over 4 deg/s, or would be corrected by more than a
+quarter of the curve's range; those trials now read their undetrended A0. The
+same cached curves with the scorer before the bound reproduce the 2026-10-27
+row below exactly (39 trials).
+
 RESULT 2026-10-27 (39 interpretable trials, 12 legs, 7 people: P6, 7, 8, 9,
 10, 12, 23), trial median, leave-one-person-out range in brackets:
 
@@ -46,7 +65,8 @@ Usage:
     # reused only for the same source file and the same scorer source.
     # Fails closed (exit 2) if any baseline control trial cannot be loaded;
     # pass --allow-unloadable to accept the smaller cohort explicitly
-    # (2026-10-27: P2 right solo T4/T5 are unloadable rig-geometry failures).
+    # (2026-10-27: P2 right solo T4/T5 are unloadable rig-geometry failures;
+    # 2026-11-16: 7 baseline control trials are unloadable).
 """
 import argparse
 import hashlib
