@@ -58,7 +58,11 @@ phone session manifest (one phone recording per run, in run order). For every ru
               that predicts (tracking_pred_ms): flagged over sqrt((TRACKING_PRED_MARGIN x predicted)^2 +
               TRACKING_PRED_FLOOR_MS^2). The model has no gain term, so the prediction is scaled by the level
               the arm actually held before the release over the level it was told to hold (enc_hold_gain),
-              when that is within HOLD_GAIN_MAX_DEV of 1. The release is held to the same plant: the model
+              when that is within HOLD_GAIN_MAX_DEV of 1 AND the run shows the same gain once the swing has
+              settled (enc_late_gain, within HOLD_GAIN_LATE_TOL); the gain used is enc_gain_applied (1.0 when
+              it is not applied). A run whose two gains are more than HOLD_LATE_MAX_DIFF apart held off
+              where it settles (pushed past the setpoint and relaxing after the release, say): the plant does
+              not describe that hold, and the run is "tracking flagged" for it. The release is held to the same plant: the model
               is driven with the setpoint the log recorded for the run, and a release more than
               RELEASE_PRED_TOL_S from the model's (enc_lag_minus_pred_ms) is "tracking flagged" too. That is
               the check that sees a fault present in EVERY run (stiction, a slow start, a forward lurch),
@@ -528,6 +532,24 @@ CHIRP_MAX_MISFIT = 0.10                    # nor one whose model leaves more tha
 # to it, as long as it is within this of the setpoint's; further off than that is not a scale, and is not hidden.
 HOLD_GAIN_MAX_DEV = 0.05
 HOLD_GAIN_MIN_DEG = 5.0                    # a hold closer to zero than this does not measure a gain
+# ... and it is the run's gain only if the run shows it again once the swing has settled (re-review 2026-11-16, R.4):
+# a hold a few per cent past the setpoint that relaxes over a second or two after the release is NOT a gain, and
+# scaling the prediction by it hid a fault on that run (5 ms of stiction flagged in 1 to 10 of 132 runs, not 112).
+# Late gain: the arm against the identified plant driven by the LOGGED setpoint, least squares, from this long after
+# the commanded release to the command's end; it must agree with the hold gain within HOLD_GAIN_LATE_TOL, over a
+# model motion of at least HOLD_GAIN_LATE_MIN_DEG rms, or the hold gain is reported and not applied.
+HOLD_GAIN_LATE_S = 2.5
+HOLD_GAIN_LATE_TOL = 0.01
+HOLD_GAIN_LATE_MIN_DEG = 1.0
+# Not applying the gain is not enough: the relaxing hold itself moves the release and the lag-aligned tracking error
+# (measured / predicted 0.75 on such runs with no fault), and 5 ms of stiction on them still read 0.95 and was flagged
+# in 11 to 22 of 132. A run that held more than this far from where it settles has a hold the plant does not
+# describe, and is flagged for it, whatever its tracking error. The cost, measured: a rig with a slow mode the chirp
+# cannot see does the same thing on its own (a 0.3 Hz dipole of -3 % reads 0.02 to 0.03 on half its runs), and at
+# 0.025 that flags 27 of 66 good runs on it (0 before), 3 of 66 with a 1 Hz dipole of -5 %; 0.02 flagged 29 and 25,
+# and 0.03 would miss a 3 % hold. A 0.1 Hz dipole of -5 % goes from 53 to 62 of 66; the other mismatched rigs
+# tried, at most 2 more in 66; clean and static-gain rigs, none.
+HOLD_LATE_MAX_DIFF = 0.025
 # The session against the model (review 2026-11-14, section 3). measured / predicted is 1.0 when the identified
 # plant describes the runs. When the runs agree with each other on a ratio that is not 1, that is a statement
 # about the model (or about a fault every run shares), not about any one run: one MODEL MISMATCH FINDING, and
@@ -586,6 +608,31 @@ def _hold_gain(t, sp, t_all, pos_all, t_rel):
     if not abs(level) >= HOLD_GAIN_MIN_DEG: return np.nan, 1.0
     g = float(np.mean(pos_all[ma])) / level
     return g, (g if abs(g - 1.0) <= HOLD_GAIN_MAX_DEV else 1.0)
+
+
+def _late_gain(t, t_rel, t_log, pos_log, sp_log, fit):
+    """The arm's gain once the swing has settled: least squares of the recorded position on the identified plant
+    driven by the logged setpoint (same time base, so no alignment), from HOLD_GAIN_LATE_S after the commanded
+    release to the command's last sample. NaN when the model moves less than HOLD_GAIN_LATE_MIN_DEG rms there."""
+    m = (t_log >= t_rel + HOLD_GAIN_LATE_S) & (t_log <= t[-1])
+    if m.sum() < 100: return np.nan
+    y = _model_response(np.asarray(sp_log, float), fit)[m]; x = np.asarray(pos_log, float)[m]
+    if not float(np.sqrt(np.mean(y ** 2))) >= HOLD_GAIN_LATE_MIN_DEG: return np.nan
+    return float(np.sum(x * y) / np.sum(y * y))
+
+
+def _gain_to_apply(g_used, g_late):
+    """_hold_gain's gain, if the run shows it again after the swing (_late_gain); 1.0 otherwise."""
+    return g_used if (g_used != 1.0 and abs(g_late - g_used) <= HOLD_GAIN_LATE_TOL) else 1.0
+
+
+def _hold_verdict(g_hold, g_late):
+    """"" or why the run's hold is not one the plant describes: the arm held more than HOLD_LATE_MAX_DIFF (of the
+    setpoint) away from the gain it settles at after the swing. Both must have been measured."""
+    if not (np.isfinite(g_hold) and np.isfinite(g_late)) or not abs(g_hold - g_late) > HOLD_LATE_MAX_DIFF: return ""
+    return (f"the arm held {g_hold:.3f} of the setpoint before the release and settled at {g_late:.3f} of the plant's "
+            f"response after the swing (more than {100 * HOLD_LATE_MAX_DIFF:g} % apart): a hold pushed or pulled off where "
+            "the arm settles, which the plant does not describe and which moves both the release and the tracking error")
 
 
 def _plant_prediction(t, sp, sw, t_rel, fit, t_log=None, sp_log=None, gain=1.0):
@@ -668,9 +715,13 @@ def _model_finding(R, rid="R000"):
             f"{means}. Each run has been held to the session's ratio ({accept:.2f} x predicted) and not to the model's, so a run "
             f"flagged for tracking below is one that stands out from this session. What to do: (1) play {rid} again and re-score: "
             f"a chirp taken at other gains, or before the rig warmed up, is the cheapest explanation; (2) compare the held angle "
-            f"with the setpoint (enc_hold_gain) and the gains with the last session's; (3) if this is simply what the rig does, "
-            f"accept it: score with --tracking-margin {accept:.2f}, which is recorded in report.csv. The release check against "
-            f"the plant is not affected by any of this. `score` exits with status 1.")
+            f"with the setpoint (enc_hold_gain) and the gains with the last session's; (3) do NOT make this session pass with its "
+            f"own ratio (it corresponds to --tracking-margin {accept:.2f}): a fault that every run shares looks exactly like this, "
+            f"and in simulation accepting the margin a faulty session printed let 5 ms of stiction in every run exit 0 in 58 to "
+            f"84 % of sessions. A margin is accepted only from a session trusted on other grounds (a fresh chirp, the rig cold and "
+            f"warm, a known-good reference session) and carried forward; it is not stored, so pass it with --tracking-margin on "
+            f"every later session (it is recorded in report.csv). The release check against the plant is not affected by any of "
+            f"this. `score` exits with status 1.")
 
 
 def _plant_verdict(time_err_ms, rms_deg, lag_s, pred, margin=TRACKING_PRED_MARGIN, limit_ms=None, session=None):
@@ -828,9 +879,11 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
     if fit is not None:
         for w in work:
             g, g_used = _hold_gain(w["t"], w["sp"], w["t_all"], w["pos_all"], w["t_rel"])
-            w["pred"] = _plant_prediction(w["t"], w["sp"], w["sw"], w["t_rel"], fit, w["t_all"],
-                                          np.asarray(w["e"]["position_setpoint"], float)[w["k0"]:], gain=g_used)
-            w["row"].update(enc_hold_gain=g, tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
+            sp_log = np.asarray(w["e"]["position_setpoint"], float)[w["k0"]:]
+            g_late = _late_gain(w["t"], w["t_rel"], w["t_all"], w["pos_all"], sp_log, fit)
+            g_app = _gain_to_apply(g_used, g_late); w["hold_why"] = _hold_verdict(g, g_late)
+            w["pred"] = _plant_prediction(w["t"], w["sp"], w["sw"], w["t_rel"], fit, w["t_all"], sp_log, gain=g_app)
+            w["row"].update(enc_hold_gain=g, enc_late_gain=g_late, enc_gain_applied=g_app, tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
                             enc_lag_minus_pred_ms=(w["rel"]["lag_s"] - w["pred"]["lag_s"]) * 1e3)
     released = (f" The release is still checked against the plant identified from {chirp['rid']} (within "
                 f"{RELEASE_PRED_TOL_S * 1e3:g} ms of predicted): the override replaces the tracking limit, not the release check."
@@ -916,13 +969,14 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
     if source == "plant":
         R = _session_ratio([w["row"]["tracking_time_err_ms"] / w["pred"]["time_err_ms"] for w in judged
                             if np.isfinite(w["pred"]["time_err_ms"]) and w["pred"]["time_err_ms"] >= MODEL_RATIO_MIN_PRED_MS
-                            and not abs(w["rel"]["lag_s"] - w["pred"]["lag_s"]) > RELEASE_PRED_TOL_S], margin)
+                            and not abs(w["rel"]["lag_s"] - w["pred"]["lag_s"]) > RELEASE_PRED_TOL_S and not w.get("hold_why")], margin)
     for w in judged:
         row, rel = w["row"], w["rel"]; pred = w["pred"] if fit is not None else no_pred
         terr, rms = row["tracking_time_err_ms"], row["tracking_aligned_rmse_deg"]
         if source == "plant" and np.isfinite(pred["time_err_ms"]):
             row["tracking_limit_ms"] = _tracking_limit(pred["time_err_ms"], R["margin"])
             why = _plant_verdict(terr, rms, rel["lag_s"], pred, margin=R["margin"], session=R["median"] if R["mismatch"] else None)
+            if w.get("hold_why"): why = w["hold_why"] + ("; and " + why if why else "")
         else:                                            # the fixed limit, the operator's, or a run the plant has no prediction for
             row["tracking_limit_ms"] = track_max
             if source == "plant": row["tracking_limit_source"] = "fixed"       # this run only, and the row says so

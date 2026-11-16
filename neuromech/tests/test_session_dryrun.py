@@ -748,9 +748,13 @@ def _judge(sid, fit, plant=None, respond=None, fault=None, seed=11, phase_ms=0.0
     if rel["kind"] not in ("", "lag"): return out
     rms, terr = SS._tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
     g, g_used = SS._hold_gain(t, sp, t_all, pos_all, t_rel)
-    pred = SS._plant_prediction(t, sp, sw, t_rel, fit, t_all, spp[k0:], gain=g_used if hold_gain else 1.0)
-    out.update(time_err_ms=terr, pred_ms=pred["time_err_ms"], ratio=terr / pred["time_err_ms"], gain=g,
+    g_late = SS._late_gain(t, t_rel, t_all, pos_all, spp[k0:], fit); g_app = SS._gain_to_apply(g_used, g_late)
+    pred = SS._plant_prediction(t, sp, sw, t_rel, fit, t_all, spp[k0:], gain=g_app if hold_gain else 1.0)
+    out.update(time_err_ms=terr, pred_ms=pred["time_err_ms"], ratio=terr / pred["time_err_ms"], gain=g, late=g_late, applied=g_app,
                dlag_ms=(rel["lag_s"] - pred["lag_s"]) * 1e3, why=SS._plant_verdict(terr, rms, rel["lag_s"], pred, margin=margin))
+    hv = SS._hold_verdict(g, g_late) if hold_gain else ""
+    out["hold_why"] = hv
+    if hv: out["why"] = hv + ("; and " + out["why"] if out["why"] else "")
     return out
 
 
@@ -1022,6 +1026,9 @@ def chirped(tmp_path_factory):
       stiction5  every run leaves the hold 5 ms late (the chirp is healthy)
       badchirp   R000 from a drive limited to 150 deg/s; the runs are good
       sat250     a drive limited to 250 deg/s, chirp and runs alike
+    and, for the re-review of 2026-11-16:
+      relaxed    good, and B-claspknife holds 1.04 of the setpoint, relaxes to 1 over 0.6 s after the release,
+                 and leaves the hold 5 ms late
     -> (sessions root, {rig: encoder folder})."""
     root = tmp_path_factory.mktemp("chirped"); sess = str(root / "sessions")
     old = SS.SESS
@@ -1043,7 +1050,8 @@ def chirped(tmp_path_factory):
                 knocked=(good, _bump(8, 200, 400), wider, 0.0, "B-claspknife"),
                 stiction5=(good, _stiction(5)),
                 badchirp=(good, None, lambda u: _slew_limited(u, 150.0)),
-                sat250=(lambda u: _slew_limited(u, 250.0), None))
+                sat250=(lambda u: _slew_limited(u, 250.0), None),
+                relaxed=(good, lambda y, k, s: _stiction(5)(_relaxing_hold(1.04, 600)(y, k, s), k, s), None, 0.0, "B-claspknife"))
     dirs = {}
     for which, spec in rigs.items():
         respond, fault, chirp_respond, phase_ms, only = tuple(spec) + (None, None, None, 0.0, None)[len(spec):]
@@ -1262,6 +1270,14 @@ def test_the_hold_gain_in_numbers():
     assert SS._hold_gain(t, np.full(3000, 40.0), t, pos, 2.0) == pytest.approx((0.98, 0.98))
     pos[1700:1850] = 0.0
     assert SS._hold_gain(t, np.full(3000, 40.0), t, pos, 2.0)[0] == pytest.approx(0.49)
+    # re-review 2026-11-16: applied only when the run shows the same gain after the swing (within 1 %) ...
+    assert (SS.HOLD_GAIN_LATE_S, SS.HOLD_GAIN_LATE_TOL, SS.HOLD_GAIN_LATE_MIN_DEG, SS.HOLD_LATE_MAX_DIFF) == (2.5, 0.01, 1.0, 0.025)
+    A = SS._gain_to_apply
+    assert A(0.98, 0.985) == 0.98 and A(0.98, 0.991) == 1.0 and A(0.98, np.nan) == 1.0 and A(1.0, 1.0) == 1.0
+    # ... and a hold more than 2.5 % from where the run settles is flagged; unmeasured is not
+    V = SS._hold_verdict
+    assert V(1.0, 1.024) == "" and V(1.024, 1.0) == "" and V(np.nan, 1.1) == "" and V(1.1, np.nan) == ""
+    assert V(1.04, 1.0).startswith("the arm held 1.040 of the setpoint before the release and settled at 1.000") and V(1.0, 0.974) != ""
 
 
 @pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 12)])
@@ -1289,6 +1305,45 @@ def test_a_gain_further_off_than_5_percent_is_not_absorbed():
     rig = lambda u: 0.90 * SS._model_response(u, DR.PLANT)                                                # noqa: E731
     res = [_judge(sid, _fit_of("identified"), respond=rig) for sid in SLOW_SIDS]
     assert all(abs(r["gain"] - 0.90) < 0.002 for r in res) and sum(bool(r["why"]) for r in res) >= 7, [(r["gain"], r["why"][:30]) for r in res]
+
+
+@pytest.mark.parametrize("gain", [0.93, 1.07])
+def test_a_gain_7_percent_off_kept_through_the_swing_is_flagged_not_absorbed(gain):
+    """Re-review item 3. The arm holds 7 % off the setpoint and keeps that gain through the swing (so the late gain
+    agrees with the hold gain and the hold verdict has nothing to say): that is past HOLD_GAIN_MAX_DEV, the
+    prediction is not scaled, and the runs are flagged for tracking. With the limit at 0.08 they would be absorbed."""
+    rig = lambda u: gain * SS._model_response(u, DR.PLANT)                                                # noqa: E731
+    res = [_judge(sid, _fit_of("identified"), respond=rig) for sid in SLOW_SIDS]
+    assert all(abs(r["gain"] - gain) < 0.002 and abs(r["late"] - gain) < 0.002 and r["applied"] == 1.0 for r in res), [(r["gain"], r["late"]) for r in res]
+    assert all(r["hold_why"] == "" for r in res)
+    assert all(r["why"].startswith("tracking error ") for r in res), [(round(r["ratio"], 2), r["why"][:40]) for r in res]
+
+
+def _relaxing_hold(g, back_ms):
+    """The re-reviewer's relaxing hold: the arm holds g of the setpoint and relaxes linearly to 1 over back_ms
+    from the commanded release."""
+    def f(y, k, s):
+        n = np.arange(len(y)) - k
+        return y * np.where(n < 0, g, g + (1 - g) * np.clip(n / back_ms, 0, 1))
+    return f
+
+
+@pytest.mark.parametrize("g, back_ms", [(1.04, 600), (1.03, 2000), (0.97, 600)])
+def test_one_run_whose_hold_relaxes_after_the_release_is_flagged_with_stiction_on_it(g, back_ms):
+    """Re-review item 1. One run in eight holds g of the setpoint and relaxes to 1 over back_ms after the release,
+    and carries 5 ms of stiction; the other seven are good. On 1d0d812 its hold gain scaled the prediction and the
+    stiction was flagged in 1 to 10 of 132 such runs; not applying the gain alone (the late-gain check) still left
+    the relaxing hold moving the release and the tracking error, and 11 to 22 of 132 flagged. Now the run is flagged
+    for its hold in every one of the eight positions, and no good run is."""
+    fit = _fit_of("identified"); st = _stiction(5); rx = _relaxing_hold(g, back_ms)
+    both = lambda y, k, s: st(rx(y, k, s), k, s)                                                          # noqa: E731
+    good = [_judge(sid, fit, PLANTS["identified"]) for sid in SLOW_SIDS]
+    assert all(r["why"] == "" and r["hold_why"] == "" for r in good), [r["why"][:40] for r in good]
+    for bad in SLOW_SIDS:
+        r = _judge(bad, fit, PLANTS["identified"], fault=both)
+        assert r["kind"] in ("", "lag") and r["applied"] == 1.0 and r["hold_why"].startswith(f"the arm held {r['gain']:.3f} of the setpoint"), (bad, r["gain"], r.get("late"))
+        assert abs(r["gain"] - g) < 0.003 and abs(r["late"] - 1.0) < 0.01, (bad, r["gain"], r["late"])
+        assert r["why"].startswith(r["hold_why"]), r["why"]
 
 
 def test_the_session_ratio_rule_in_numbers():
@@ -1327,7 +1382,8 @@ def test_the_model_mismatch_finding_says_what_was_found_and_what_to_do():
                          "67 % of them within 15 % of it; expected 0.92 to 1.08. The runs carry 20 % more tracking error than the plant "
                          "identified from R000 predicts, and they agree on it"), hi
     assert "Each run has been held to the session's ratio (1.38 x predicted) and not to the model's" in hi
-    assert "(1) play R000 again and re-score" in hi and "enc_hold_gain" in hi and "score with --tracking-margin 1.38, which is recorded in report.csv" in hi
+    assert "(1) play R000 again and re-score" in hi and "enc_hold_gain" in hi and "(3) do NOT make this session pass with its own ratio (it corresponds to --tracking-margin 1.38)" in hi
+    assert "58 to 84 % of sessions" in hi and "a known-good reference session) and carried forward; it is not stored, so pass it with --tracking-margin on every later session" in hi
     assert "The release check against the plant is not affected by any of this. `score` exits with status 1." in hi
     lo = SS._model_finding(SS._session_ratio([0.88] * 4), "R007")
     assert "session median of 0.88 over 4 run(s), 100 % of them" in lo and "The runs carry 12 % less tracking error than the plant identified from R007 predicts" in lo
@@ -1368,7 +1424,7 @@ def test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run
     f = rep.model_mismatch_finding.iloc[0]
     assert (rep.model_mismatch_finding == f).all() and f in out and len(SS.model_flags(rep.reset_index())) == 1
     assert "session median of 1.15 over 4 run(s), 100 % of them within 15 % of it; expected 0.92 to 1.08." in f and "15 % more tracking error" in f
-    assert "score with --tracking-margin 1.32" in f
+    assert "corresponds to --tracking-margin 1.32" in f
     assert ((rep.tracking_session_ratio > 1.14) & (rep.tracking_session_ratio < 1.16)).all() and (rep.tracking_session_ratio_runs == 4).all()
     assert np.allclose(rep.tracking_limit_ms, np.sqrt((1.15 * rep.tracking_session_ratio * rep.tracking_pred_ms) ** 2 + 16.0))
     assert _score_chirped(chirped, "chirp110", "cli") == 1
@@ -1388,7 +1444,7 @@ def test_the_quiet_direction_is_a_finding_too(chirped, capsys):
     capsys.readouterr(); rep = _score_chirped(chirped, "chirp090"); out = capsys.readouterr().out
     assert (rep.status == "scored").all() and out.count("MODEL MISMATCH FINDING") == 1, rep.status.tolist()
     f = rep.model_mismatch_finding.iloc[0]
-    assert "session median of 0.88 over 4 run(s)" in f and "12 % less tracking error" in f and "score with --tracking-margin 1.01" in f, f
+    assert "session median of 0.88 over 4 run(s)" in f and "12 % less tracking error" in f and "corresponds to --tracking-margin 1.01" in f, f
     assert (rep.tracking_limit_ms < np.sqrt((1.15 * rep.tracking_pred_ms) ** 2 + 16.0) - 1.5).all()       # tighter than the model's
     assert _score_chirped(chirped, "chirp090", "cli") == 1 and _score_chirped(chirped, "chirp090", "cli", "--tracking-margin", "1.01") == 0
 
@@ -1412,7 +1468,7 @@ def test_stiction_too_small_for_the_release_check_is_one_finding(chirped, capsys
     assert (rep.tracking_time_err_ms > np.sqrt((1.15 * rep.tracking_pred_ms) ** 2 + 16.0)).sum() == 3
     f = rep.model_mismatch_finding.iloc[0]
     assert "session median of 1.22 over 4 run(s)" in f and "a fault in every run that is too small for the release check (a few ms of stiction" in f
-    assert "score with --tracking-margin 1.40" in f and out.count("MODEL MISMATCH FINDING") == 1
+    assert "corresponds to --tracking-margin 1.40" in f and out.count("MODEL MISMATCH FINDING") == 1
     assert _score_chirped(chirped, "stiction5", "cli") == 1 and _score_chirped(chirped, "stiction5", "cli", "--tracking-margin", "1.40") == 0
 
 
@@ -1435,6 +1491,18 @@ def test_the_tracking_margin_does_not_turn_the_release_check_off(chirped, capsys
     assert none.tracking_margin.isna().all() and (none.tracking_margin_source.fillna("") == "").all() and "--tracking-margin has no effect without a trusted chirp." in out
     capsys.readouterr(); both = _score_chirped(chirped, "good", tracking_margin=1.3, tracking_limit_ms=30.0); out = capsys.readouterr().out
     assert both.tracking_margin.isna().all() and (both.tracking_limit_ms == 30.0).all() and "--tracking-margin is ignored when --tracking-limit-ms is given." in out
+
+
+def test_one_run_with_a_relaxing_hold_and_stiction_is_flagged_through_real_files(chirped, capsys):
+    """Re-review item 1, through score(): the one run is flagged for its hold, its gain is reported and not applied,
+    the other three are scored, and the session has no finding."""
+    capsys.readouterr(); rep = _score_chirped(chirped, "relaxed"); out = capsys.readouterr().out
+    bad = rep.loc["B-claspknife"]
+    assert bad.status.startswith("tracking flagged: the arm held 1.04"), bad.status
+    assert abs(bad.enc_hold_gain - 1.04) < 0.003 and abs(bad.enc_late_gain - 1.0) < 0.01 and bad.enc_gain_applied == 1.0
+    assert (rep.drop("B-claspknife").status == "scored").all() and (rep.model_mismatch_finding.fillna("") == "").all(), rep.status.tolist()
+    assert (rep.tracking_session_ratio_runs == 3).all()                  # a hold the plant does not describe says nothing about the model
+    assert "TRACKING FLAGGED on 1 run(s)" in out and _score_chirped(chirped, "relaxed", "cli") == 1
 
 
 def test_a_rig_that_settles_at_98_percent_scores_clean_through_real_files(chirped):

@@ -1529,3 +1529,101 @@ Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM
 
 The per-run data, the session draws, the mutation runner and the scratch copies of the package they ran in are
 not committed.
+
+### C.9 After the re-review (2026-11-16)
+
+The re-review (`docs/reports/2026-11-14-neuromech-chirp-tracking-limit-review.md` on
+`docs/chirp-tracking-limit-review`, section "Re-review (2026-11-16)") asked for three changes and one sentence.
+All of it is simulation.
+
+**R.4, the hold gain on one run.** A run that holds 3 to 4 % past the setpoint and relaxes over 0.6 to 2 s after
+the release had its prediction scaled by that "gain", and 5 ms of stiction on it was flagged in 1 to 10 of 132
+runs (112 without the hold offset). Two changes:
+
+1. The hold gain is applied only when the run shows the same gain once the swing has settled: `enc_late_gain`
+   is the least-squares gain of the recorded position on the identified plant driven by the logged setpoint,
+   from 2.5 s after the commanded release to the command's end. It must agree with `enc_hold_gain` within 1 %,
+   over at least 1 deg rms of model motion; `enc_gain_applied` is what was used. On linear rigs the late gain
+   reproduces the static gain to 0.001; it is measurable on 57 of 66 scenarios.
+2. That alone did not do it. With the gain not applied, the relaxing hold still moves the release and the
+   lag-aligned tracking error by itself: measured / predicted 0.75 on such runs with no fault, 0.95 with 5 ms of
+   stiction, flagged in 11 to 22 of 132. So a run whose `enc_hold_gain` and `enc_late_gain` are more than 2.5 %
+   apart is tracking flagged for its hold ("the arm held 1.040 of the setpoint before the release and settled
+   at 1.000 ..."), and is left out of the session ratio.
+
+66 scenarios x 2 seeds, identified plant (scratch probe, not committed):
+
+| case | gain applied | flagged | of which for the hold | median ratio |
+|---|---|---|---|---|
+| clean | 114 | 0 | 0 | 1.01 |
+| static 0.98 ; 0.97 ; 1.02 | 114 | 6 ; 8 ; 0 | 0 | 1.00 ; 1.02 ; 1.01 |
+| static 0.93 ; 1.07 | 0 | 128 ; 128 | 0 | 1.58 ; 1.46 |
+| 5 ms stiction | 114 | 109 | 0 | 1.22 |
+| hold 1.04, back over 0.6 s ; 2 s (no fault) | 0 | 121 ; 114 | 114 | 0.75 ; 0.94 |
+| hold 1.04, back over 0.6 s ; 2 s, + 5 ms stiction | 0 | 114 ; 116 | 114 | 0.95 ; 1.13 |
+| hold 1.03, back over 0.6 s ; 2 s, + 5 ms stiction | 0 | 114 ; 114 | 114 | 1.00 ; 1.14 |
+| static 0.98 + 5 ms stiction | 114 | 83 | 0 | 1.21 |
+
+Not covered, and costs:
+
+- The 18 runs (9 scenarios) where the swing leaves less than 1 deg rms of model motion after 2.5 s have no late
+  gain. Their hold gain is not applied and their hold is not judged. That is where the relaxing hold with
+  stiction still passes (18 of 132). It is also where the static-gain rigs lose: 6 and 8 of 132 flagged at 0.98
+  and 0.97, against 0 when the hold gain was applied unconditionally. The committed 14-scenario test is unchanged
+  (all measurable).
+- A rig with a slow mode the chirp cannot see does the same thing as a relaxing hold, and it is flagged for it.
+  Good runs on 66 scenarios: a 0.3 Hz dipole of -3 % goes from 0 flagged to 27; a 1 Hz dipole of -5 % from 0 to
+  3; a 0.1 Hz dipole of -5 % from 53 to 62. On the other rigs tried (dipoles +1 to +3 %, poles at 10 and 15 Hz, a
+  25 Hz mode, stiffness, friction, deadband, quadratic damping, error-dependent loop gain, the moderate
+  composite), the added flags are 0 to 2. At 2 % the -3 % and -5 % dipoles would add 29 and 25. At 3 % a 3 %
+  hold (0.030) would be missed. The two cases cannot be told apart from one run: the arm holds somewhere other
+  than where it settles.
+
+**R.3, accepting a margin.** Step (3) of the finding and README step 3 now say:
+
+- never make a session pass with its own ratio;
+- in simulation, accepting the margin a faulty session printed let 5 ms of stiction exit 0 in 58 to 84 % of
+  sessions, an 85 % start in 40 to 100 %, and a 40 ms stall in 25 to 75 %;
+- a margin is accepted only from a session trusted on other grounds and carried forward;
+- it is not stored, so it must be passed on every later session.
+
+The finding names the margin as "corresponds to --tracking-margin X" and no longer says "score with".
+
+**R.5, K14.** A behavioural test: a rig at 0.93 and at 1.07 of the setpoint, with that gain kept through the
+swing (late gain equal to hold gain, no hold verdict), is flagged for tracking on all eight runs.
+
+**Under 7 ms.** README: where predictions are under 7 ms there is no session ratio, a shared fault passes at the
+per-run rate, and encoder noise or resolution can still flag good runs. Measure `enc_hold_rms_deg` on the first
+real log.
+
+New tests (six): `test_a_gain_7_percent_off_kept_through_the_swing_is_flagged_not_absorbed` (0.93, 1.07);
+`test_one_run_whose_hold_relaxes_after_the_release_is_flagged_with_stiction_on_it` (1.04 over 0.6 s, 1.03 over 2 s,
+0.97 over 0.6 s, each with 5 ms of stiction, in each of the eight positions, the other seven good and unflagged);
+`test_one_run_with_a_relaxing_hold_and_stiction_is_flagged_through_real_files` (one run of four through `score()`
+and the CLI: flagged for the hold, gain not applied, no finding, the ratio taken over the other three, exit 1).
+`test_the_hold_gain_in_numbers` pins the new constants and `_gain_to_apply` / `_hold_verdict` at their edges.
+
+Mutants of the new code: a copy of the package per mutant, `test_session_dryrun.py` with
+`test_the_hold_gain_in_numbers` (the literal pin) deselected.
+
+| mutant | result |
+|---|---|
+| K14 `HOLD_GAIN_MAX_DEV` 0.05 -> 0.08 | killed (the 7 % test, both signs) |
+| `HOLD_LATE_MAX_DIFF` 0.025 -> 0.035 ; 0.045 | killed (relaxing-hold tests) |
+| `HOLD_LATE_MAX_DIFF` 0.025 -> 0.01 | **survived** (pinned literally only) |
+| hold verdict never flags ; not added in `score()` | killed ; killed (real-files test) |
+| gain applied without the late check | killed |
+| hold-flagged runs kept in the session ratio | survived the first run; killed after `tracking_session_ratio_runs == 3` was added to the real-files test |
+| late tolerance 0.01 -> 0.03 ; late window from 0.5 s | killed ; killed |
+
+### C.10 Gates, on the tree after the re-review
+
+Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM_THREADS=1`, on top of
+`1d0d812` (C.8 was on the pre-rebase tree).
+
+| gate | result |
+|---|---|
+| `python -m pytest neuromech/tests -q` | **270 passed**, 0 failed, 0 skipped, in 293 s (264 at `1d0d812`) |
+| `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases |
+| `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band on encoder and phone, scored 9, release flagged 0, tracking flagged 0; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted |
+| line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |

@@ -121,7 +121,17 @@ plant: `tracking_pred_ms` is the tracking error the plant itself produces on tha
 limit (`tracking_limit_ms`) is √((1.15 × predicted)² + 4²) ms. The 4 ms is error the prediction does not
 contain (the Player's 100 Hz staircase, encoder noise); it is added in quadrature because it does not go away
 when the prediction is large. The model has no gain term, so the prediction is scaled by what the arm held
-before the release over what it was told to hold (`enc_hold_gain`), as long as that is within 5 % of 1. The
+before the release over what it was told to hold (`enc_hold_gain`), as long as that is within 5 % of 1 and the
+run shows the same gain, within 1 %, once the swing has settled (`enc_late_gain`: the arm against the plant driven by
+the logged setpoint, from 2.5 s after the release; a hold that relaxes after the release is not a gain). The gain
+used is `enc_gain_applied` (1.0 when not applied). A run whose two gains are more than 2.5 % apart held somewhere
+it does not settle (a hold pushed 3 to 4 % past the setpoint that relaxes after the release, say). Not scaling
+its prediction is not enough: the relaxing hold moves the release and the tracking error on its own, and 5 ms of
+stiction on such a run went unflagged in 110 to 121 of 132 runs. The run is tracking flagged for its hold
+("the arm held 1.040 of the setpoint before the release and settled at 1.000 …"): 114 of 132 such runs. The
+other 18 swing too little after 2.5 s to measure a late gain, and there the hold gain is neither applied nor
+judged (which also costs static gains of 0.98 and 0.97 six and eight flagged runs of 132). The cost: a rig with a slow mode
+the chirp cannot see does this by itself, and a 0.3 Hz dipole of −3 % has 27 of 66 good runs flagged for it. The
 second check is on the release: the identified plant is driven by the setpoint the log recorded and its
 release is compared with the arm's (`enc_release_lag_pred_ms`, `enc_lag_minus_pred_ms`, limit 4 ms).
 
@@ -160,9 +170,16 @@ limit: against a prediction that is too large, small faults pass. Do this:
 2. Compare `enc_hold_gain` with 1 and the gains with the last session's. Remember that a small fault in every
    run looks the same from here: 5 ms of stiction or a start at 80 % speed in every run gives this finding
    (session ratio about 1.2), not a flag per run.
-3. If it is simply what the rig does, accept it with the margin the finding printed:
-   `python -m neuromech.session score ... --tracking-margin 1.32`. It is recorded, and a later session that
-   moves away from the accepted ratio in either direction gets the finding again.
+3. **Do not make the session pass with its own ratio.** The margin a finding prints (1.15 × this session's
+   median) is the margin that makes *this* session pass, whatever caused it, and a fault every run shares looks
+   exactly like a model mismatch. In simulation, scoring a faulty session with the margin it printed itself let
+   5 ms of stiction in every run exit 0 in 58 to 84 % of sessions, a start at 85 % speed in 40 to 100 %, and a
+   40 ms Player stall in 25 to 75 % (re-review 2026-11-16, R.3); a margin taken from an earlier good session
+   caught all of them. Accept a margin only from a session you trust on other grounds (a fresh chirp with the
+   rig cold and warm, a known-good reference session) and carry it forward:
+   `python -m neuromech.session score ... --tracking-margin 1.32`. **It is not stored**: pass it on every later
+   session. It is recorded in `report.csv`, and a later session that moves away from the accepted ratio in
+   either direction gets the finding again.
 
 **What a tracking flag against the plant is worth, so far.** In simulation only, on rigs the fitted model does
 not describe. The table is from the independent review of 2026-11-14
@@ -188,10 +205,19 @@ sessions carry the one finding.
 | extra pole at 10 Hz ; 0.2 × mode at 25 Hz (quiet direction) | 0 | 0 | 100 % (0.83 ; 0.78) |
 | several mild departures at once (the review's "moderate" composite) | 95 % | 1 % + **11 %** (release check) | 100 % (1.27) |
 
+The table predates the hold check (2.5 % between `enc_hold_gain` and `enc_late_gain`). Per run, on 66 scenarios,
+that check adds 27 flagged good runs of 66 on a 0.3 Hz dipole of −3 % (none before), 9 on a 0.1 Hz dipole of
+−5 % (53 to 62), 3 on a 1 Hz dipole of −5 %, at most 2 on each other rig tried, and none on a clean rig or a
+static gain.
+
 Not covered, in bold above: nonlinearity strong enough to move the release itself (the release check then
 blames good runs: 20 % softening, 0.2° of friction, a 0.1° deadband, a loop gain that rises 20 % with error:
 95 %), a rig where the prediction is under 7 ms and noise or quantisation is what is measured, and a mismatch
-on which the runs do not agree with each other.
+on which the runs do not agree with each other. **Where predictions are under 7 ms there is no session ratio at
+all**: a fault every run shares that the release check misses passes at the per-run rate (on the 12 Hz, ζ 0.7
+rig 25 to 100 % of 20-run sessions exit 0, re-review R.3), and encoder noise or resolution can still flag good
+runs (0.1° rms noise: 10 % of runs; a 0.36° encoder: 24 %); measure `enc_hold_rms_deg` on the first real log
+and, if it is 0.1° or more or the encoder steps are about 0.36°, derive the floor from it.
 
 What this does not catch, measured in simulation (report, sections B and C): a start at 90 % speed, a 1°
 lurch and 2 ms of stiction pass. A small fault in every run that the release check cannot see (5 ms of
@@ -328,7 +354,7 @@ a change the band lets through. The reference is OptiTrack A0; re-pin it on B11'
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 264 tests
+python -m pytest neuromech/tests                                    # 270 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
