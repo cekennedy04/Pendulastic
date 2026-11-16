@@ -113,9 +113,19 @@ def test_sideways_motion_is_reported_at_the_planted_size(tmp_path):
     assert tu["lateral_fraction"] > 0.2 and rows["lateral motion"]["ok"], rows["lateral motion"]
 
 
+# Whether the core this replay builds from still has the mirrored gravity seed. The seed fix lands in
+# its own PR (an AHRS change lands alone), so this file must hold on either side of it: read the Rust
+# source, as test_the_mirrored_gates_match_the_rust_core does, and expect the failure only while the
+# old seed is there. Strict, so the mark cannot outlive the bug.
+_SEED_MIRRORED = re.search(r"-gy\s*/\s*denom\s*,\s*gx\s*/\s*denom",
+                           open(os.path.join(CORE, "ahrs.rs"), encoding="utf-8").read()) is not None
+
+
 @needs_app
+@pytest.mark.xfail(_SEED_MIRRORED, strict=True,
+                   reason="this core's gravity_seed has the tilt sign mirrored (fixed on fix/ahrs-gravity-seed)")
 def test_the_hold_reads_steady_after_a_lift(tmp_path):
-    """The mirrored gravity_seed (fixed 2026-11-09) made a still leg read 166..178 deg after a lift."""
+    """The mirrored gravity_seed made a still leg read 166..178 deg after a lift."""
     tu, app, _ = _run(tmp_path, phone=PT.Phone.ideal())
     t = np.array(app["trajectory"]["t"]); a = np.array(app["trajectory"]["angle_deg"], dtype=float)
     hold = a[(t > tu["release_t_s"] - 2.0) & (t < tu["release_t_s"] - 0.1)]
