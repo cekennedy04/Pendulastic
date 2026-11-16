@@ -149,6 +149,11 @@ All of these limits (0.20° hold, ratio 1.5, 12 ms, −10…+80 ms, the phone's 
 25 ms tracking) are **provisional**: they were set on the simulated plant and on constructed faults. No rig
 log has been through them, and the first rig session should be read as a test of the limits.
 
+**Do not report scores from a real rig session yet.** The fixed 25 ms tracking limit is known to be
+wrong on both sides of the simulated plant; until the chirp-derived limit (branch
+`neuromech/chirp-derived-tracking-limit`) is reviewed and merged, a real session's report is a measurement
+of the limits, not a judgement of the runs.
+
 ## 5. Correct the commands (ILC)
 
 ```bash
