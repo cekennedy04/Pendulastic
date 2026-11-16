@@ -63,8 +63,13 @@ scores move. "Not verified" is stated, never implied.
   - *O2 actuator:* no purchase. A mass-matched shank or Mode C would be sized per scenario
     from inverse dynamics (inertia + gravity + active torque), with a backdrivability spec.
   - *O5 clasp-knife:* identical replays with a fixed rest between drops; adaptation in its
-    own labelled series; keep the band-edge presets and add band-centre twins; add one
-    multi-drop session file with realistic gaps.
+    own labelled series; add one multi-drop session file with realistic gaps. Revised by the
+    owner after the dry-run bisect (7/9 is not a regression: the documented scorer fixes
+    5058c9a and #79 moved the preset's intended PT7 to 0.139, and rig tracking lag costs a
+    steady 0.021–0.024): once the footing change lands, refit the clasp-knife presets to the
+    middle of their band on the new scorer, drop `M-catch_release_high` (identical to
+    `B-claspknife` since af8a20a), and add a build check that flags any preset within about
+    0.03 PT7 of a band edge.
   - *O4 clinicians:* not used for grade calibration (MAS needs a hands-on rater; the clinical
     corpus serves). Optional later: intended-band agreement on the vertical rig.
   - *Added checks:* phone–encoder sync and axis alignment, iOS vs Android sample rates,
