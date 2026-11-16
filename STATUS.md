@@ -90,10 +90,11 @@ scores move. "Not verified" is stated, never implied.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
-- **Canonical branch:** `feat/synthetic-trial-generator`, PR #92 (draft; see
-  workstream 4 for why).
+- **Canonical branch:** `feat/synthetic-phone-trials`, PR #99 (draft; everything from
+  #92 except the AHRS seed fix, which is #98). Independent of #98: the one test that
+  needs the fixed seed is strict-xfail while the core still has the mirrored one.
 - **Entry points:** `neuromech/phone_trial.py`, `webapp/scripts/replay-trial.mjs`,
-  `neuromech/README.md` §7.
+  `neuromech/README.md` §8.
 - **Known app defects it exposes** (strict-xfail tests in
   `neuromech/tests/test_phone_trial.py`): a brisk lift fires the release detector, and a
   steady 9 degree sag through the hold is never caught. On rig-format recordings the
