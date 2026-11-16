@@ -1,6 +1,6 @@
 # Plan: the knee-spasticity emulator — one program from three bodies of work
 
-**Date:** 2026-10-26 · **Branch:** `feat/neuromech-emulator` (off `bench/retest-diagnostics`)
+**Date:** 2026-10-26 · **Branch:** `main` (landed as PR #70; `feat/neuromech-emulator` is superseded)
 **Supersedes as the build plan:** `2026-10-25-001-plan-vertical-rig-neuromuscular-model.md` (kept; its
 findings stand and are cited here) and the neuromech report published 2026-10-26.
 
