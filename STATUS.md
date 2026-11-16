@@ -21,17 +21,16 @@ scores move. "Not verified" is stated, never implied.
 
 ## Decisions waiting on the owner
 
-1. **Rig decisions O1–O5:** arm range ±65° or 0.75× amplitude render; actuator of at
-   least 20 N·m; when to build the vertical rig; two blind clinicians per profile;
-   clasp-knife adaptation handling. A literature review and an independent second opinion
-   are being prepared (2026-11-16).
+1. **Scoring footing plan, Q1–Q6** (`docs/plans/2026-11-16-app-reference-footing-plan.md`
+   on `feat/app-reference-footing`). Q7 is answered (below).
 2. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
 
 ## Decisions taken (owner, 2026-11-16)
 
 - **AHRS seed fix (#98):** merged with a merge commit (algorithm version 0.2.0). Every
-  phone-IMU number measured before it is stale. The live app must be redeployed from main.
+  phone-IMU number measured before it is stale. The live app was redeployed from main
+  (8aa1055) the same day; #102 stops Vercel's git integration overwriting it.
 - **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
   as one versioned change (in progress).
 - **Scoring footing:** move the app to the Python reference footing, together with
@@ -45,6 +44,29 @@ scores move. "Not verified" is stated, never implied.
   `archive/<branch>` tags approved (in progress); branch and worktree deletions are shown to
   the owner before they happen.
 - **Nightly hygiene agent:** retired.
+- **Scorable-length gate (footing plan Q7):** the 40-sample minimum becomes 2.0 s of finite
+  signal in all three ports, after checking it drops no `HEALTHY_REF` control curve.
+- **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
+  session notes, to be added to `docs/plans/`):
+  - *Before any session:* build the Player's own `Max |setpoint|` clamp (the Angle Limit
+    fields do not bound the Player) and find why the dry run fell from 9/9 to 7/9 in band.
+  - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with
+    asymmetric limits and a margin to the hard stops at least the fault overshoot seen
+    (+63°/−81° at ±25° limits). 0.75× renders only as a labelled invariance probe.
+  - *O3 orientation:* horizontal Mode A now, for the gyro channel and the scorer against
+    the encoder only. The app's angle counts rotation across gravity, so a horizontal swing
+    reads near zero in the app and a 30–45° tilt reads 0.50–0.71×. Next: the existing light
+    arm in a fully vertical plane (≥75°), Mode A, phone at the shank position, with on-edge
+    and tilted mounts. The owner confirmed the current motor holds the arm against gravity.
+  - *O2 actuator:* no purchase. A mass-matched shank or Mode C would be sized per scenario
+    from inverse dynamics (inertia + gravity + active torque), with a backdrivability spec.
+  - *O5 clasp-knife:* identical replays with a fixed rest between drops; adaptation in its
+    own labelled series; keep the band-edge presets and add band-centre twins; add one
+    multi-drop session file with realistic gaps.
+  - *O4 clinicians:* not used for grade calibration (MAS needs a hands-on rater; the clinical
+    corpus serves). Optional later: intended-band agreement on the vertical rig.
+  - *Added checks:* phone–encoder sync and axis alignment, iOS vs Android sample rates,
+    gyro drift over a session, cable drag, and clonus (6 Hz) on the arm's 6.34 Hz resonance.
 
 ## Workstreams
 
