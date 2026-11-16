@@ -79,10 +79,21 @@ pub fn quat_to_euler_deg(q: Quat) -> (f64, f64, f64) {
 /// so without seeding the filter needs tens of seconds to converge. Seeding
 /// from the first accel packet eliminates that delay completely.
 ///
-/// Derivation: shortest-arc quaternion from `[0,0,1]` to `g_hat`.
-/// `q_unnorm = [1 + g_hat·ẑ, cross(ẑ, g_hat)] = [1 + gz, [-gy, gx, 0]]`,
-/// `|q_unnorm| = sqrt(2·(1 + gz))`. Special case `gz ≈ -1` (anti-aligned):
-/// rotate 180° around X instead.
+/// Derivation: the quaternion [`MadgwickAhrs::update`]'s own gravity model
+/// maps onto `g_hat`. The filter predicts the accelerometer reading from `q`
+/// as `[2(q2q4 - q1q3), 2(q1q2 + q3q4), 1 - 2(q2² + q3²)]`, and the seed must
+/// make that equal `g_hat`. That is the shortest arc from `g_hat` to
+/// `[0,0,1]` -- the INVERSE of the arc from `[0,0,1]` to `g_hat`:
+/// `q_unnorm = [1 + gz, [gy, -gx, 0]]`, `|q_unnorm| = sqrt(2·(1 + gz))`.
+/// Special case `gz ≈ -1` (anti-aligned): rotate 180° around X instead.
+///
+/// Until 2026-11-09 this returned the other arc, `[1 + gz, [-gy, gx, 0]]`,
+/// as the reference did. The two agree only for a sensor lying flat, which
+/// is all the tests covered. For any other start the filter began with TWICE
+/// the sensor's tilt as orientation error and worked it off at `beta`'s
+/// ~2.5 deg/s: a still phone tilted 10° read its hold as 166° creeping to
+/// 178°. Found by replaying synthetic whole trials through the app
+/// (`neuromech/phone_trial.py`); fixed in the reference in the same change.
 pub fn gravity_seed(accel: Vec3) -> Quat {
     let n = norm3(accel);
     if n < 1e-9 {
@@ -94,7 +105,7 @@ pub fn gravity_seed(accel: Vec3) -> Quat {
         // gz ≈ -1: 180° — pick X axis.
         return [0.0, 1.0, 0.0, 0.0];
     }
-    [(1.0 + gz) / denom, -gy / denom, gx / denom, 0.0]
+    [(1.0 + gz) / denom, gy / denom, -gx / denom, 0.0]
 }
 
 /// Residual floor for the gradient-descent correction, below which the step

@@ -38,7 +38,10 @@ OUT = os.path.join(ROOT, "neuromech", "out")
 MIN_POST_RELEASE_S = 5.0      # neutral is the median of the last 25 % of the record
 MAX_RELEASE_OFF_DEG = 15.0    # released within 15 deg of full extension, as the protocol asks
 FINGERPRINTED = ("pendulastic_pt_score", "imu_calibration_tuner", "imu_calibration_config",
-                 "rmse_pipeline_common", "imu_flex_axis")
+                 "rmse_pipeline_common", "imu_flex_axis",
+                 # the AHRS (and its gravity seed) the tuner replays through; a filter fix
+                 # changes every trace, so it must change the cache key too
+                 "pendulastic_imu_server")
 
 
 def _fingerprint() -> str:
