@@ -103,6 +103,12 @@ def a0_by_leg_from_optitrack():
         try:
             t, angle, _q = pts.load_optitrack_detailed(path)
             val = pts.compute_pt_params(t, angle).get("A0_deg")
+        except pts.AmplitudeExceedsCurveError as exc:
+            # Left out of the leg's A0 like any unscorable trial, but named:
+            # the broad handler below would drop it from the grouping silently.
+            print(f"  WARNING {path}: A0 exceeds its own curve, not used: {exc}",
+                  file=sys.stderr)
+            continue
         except Exception:
             continue
         if val is not None and float(val) == float(val):
@@ -240,6 +246,10 @@ def imu_leg_params(pid, leg):
             t = np.asarray(res[0], dtype=float)
             angle = np.asarray(res[1], dtype=float)
             params = pts.compute_pt_params(t, angle)
+        except pts.AmplitudeExceedsCurveError as exc:
+            print(f"  WARNING {imu_path}: A0 exceeds its own curve, not used: {exc}",
+                  file=sys.stderr)
+            continue
         except Exception:
             continue
         if not params:

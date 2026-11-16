@@ -13,6 +13,7 @@ import json
 import math
 import os
 import queue
+import sys
 import threading
 import time
 from typing import Callable, Optional
@@ -118,12 +119,17 @@ try:
     from pendulastic_pt_score import (
         compute_pt_params, compute_pt_score_simple, pt_to_mas, excursion_ok,
         HEALTHY_REF, load_optitrack, load_optitrack_detailed, draw_pt_annotations,
+        AmplitudeExceedsCurveError,
     )
     _PT_AVAIL = True
 except Exception:
     compute_pt_params = compute_pt_score_simple = pt_to_mas = None
     excursion_ok = None
     HEALTHY_REF = load_optitrack = draw_pt_annotations = None
+
+    class AmplitudeExceedsCurveError(AssertionError):
+        """Placeholder so the except clauses below still name a class when
+        the scorer failed to import (nothing raises it then)."""
     load_optitrack_detailed = None
     _PT_AVAIL = False
 
@@ -1792,9 +1798,18 @@ class PostProcessingPanel(tk.Frame):
             # own truthfulness gate already treats raw signal as authoritative
             # for IMU data; match that here.
             try:
-                p = compute_pt_params(t, arr, detrend=False)
-            except TypeError:
-                p = compute_pt_params(t, arr)   # backward compat
+                try:
+                    p = compute_pt_params(t, arr, detrend=False)
+                except TypeError:
+                    p = compute_pt_params(t, arr)   # backward compat
+            except AmplitudeExceedsCurveError as exc:
+                # The scorer refused this source's curve (A0 larger than the
+                # curve itself). Say so and stop: falling through to a lower-
+                # priority source would show its score as if it were this one's.
+                self.score_var.set("refused")
+                self.status_var.set(
+                    f"PT scoring ({src.upper()}): A0 exceeds its own curve, not scored: {exc}")
+                return
             if p is None:
                 continue
             score = compute_pt_score_simple(p)
@@ -2345,6 +2360,12 @@ class AnalysisPanel(tk.Frame):
                     if t is not None:
                         try:
                             params = compute_pt_params(t, angle)
+                        except AmplitudeExceedsCurveError as exc:
+                            # Counted as unscored like any other, but named:
+                            # the broad handler below would hide the reason.
+                            print(f"  WARNING {r['path']}: A0 exceeds its own curve, "
+                                  f"not scored: {exc}", file=sys.stderr)
+                            params = None
                         except Exception:
                             params = None
                         if params:

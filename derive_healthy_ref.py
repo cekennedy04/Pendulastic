@@ -121,7 +121,15 @@ def control_trials(cache=None):
             print(f"  {key}: unloadable ({type(e).__name__}: {e})")
             unloadable.append(key)
             continue
-        p = pts.compute_pt_params(t, ang)
+        try:
+            p = pts.compute_pt_params(t, ang)
+        except pts.AmplitudeExceedsCurveError:
+            # Fails closed, deliberately: a median over a silently smaller
+            # cohort is a different reference. Name the trial first, which
+            # the traceback alone does not.
+            print(f"  {key}: REFUSED, A0 exceeds its own curve; fix or exclude this "
+                  "trial (excluded_trials.json) before deriving.", file=sys.stderr)
+            raise
         if p and pts.mas_estimate(p)["interpretable"]:
             out.append((pid, leg, p))
     return out, unloadable

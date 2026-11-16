@@ -122,7 +122,14 @@ def score_corpus(verbose=True) -> list[dict]:
                 t, ang = tuner.replay_trial(samples, dict(cfg), tick_s=tuner.ANALYSIS_TICK_S)
                 t, ang = np.asarray(t, float), np.asarray(ang, float)
                 for conv, det in (("prod", False), ("detrend", True)):
-                    p = pts.compute_pt_params(t, ang, detrend=det)
+                    try:
+                        p = pts.compute_pt_params(t, ang, detrend=det)
+                    except pts.AmplitudeExceedsCurveError as e:
+                        # Refused under this convention only; the other
+                        # convention's result is kept, not lost to the
+                        # trial-wide handler below.
+                        rec[conv] = {"error": f"AmplitudeExceedsCurveError: {e}"[:160]}
+                        continue
                     if not p:
                         rec[conv] = {"error": "compute_pt_params returned None"}
                         continue

@@ -80,10 +80,15 @@ try:
     from pendulastic_pt_score import (compute_pt_params, compute_pt_score,
                                       compute_pt_score_simple, HEALTHY_REF, pt_to_mas,
                                       PT_HEALTHY_MAX, PT_BORDERLINE_MAX,
-                                      load_optitrack, draw_pt_annotations)
+                                      load_optitrack, draw_pt_annotations,
+                                      AmplitudeExceedsCurveError)
     _PT_AVAIL = True
 except Exception:
     _PT_AVAIL = False
+
+    class AmplitudeExceedsCurveError(AssertionError):
+        """Placeholder so the except clauses below still name a class when
+        the scorer failed to import (nothing raises it then)."""
 
 _MP_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "mediapipe")
 _MP_MODEL = next(
@@ -4252,18 +4257,27 @@ class PendulaticViewer(tk.Tk):
         # causing N and all other parameters to be computed from the wrong origin.
         # Fix: always detect from the full (unmasked) array where the hold
         # baseline is present, then pass that frame as an explicit anchor.
-        if self._manual_release_fi is not None:
-            _release_idx = self._manual_release_fi
-        else:
-            _t_full = np.arange(len(self._angles)) / max(self.fps, 1.0)
-            _p_full = compute_pt_params(_t_full, np.array(self._angles, dtype=float))
-            if _p_full is not None and len(_p_full.get("t_r", [])) > 0:
-                _release_idx = int(round(float(_p_full["t_r"][0]) * max(self.fps, 1.0)))
+        # The scorer refuses a curve whose A0 exceeds the curve itself
+        # (AmplitudeExceedsCurveError). Shown as unscored, with the reason in
+        # the status bar, never as a number and never as a crash.
+        try:
+            if self._manual_release_fi is not None:
+                _release_idx = self._manual_release_fi
             else:
-                _release_idx = None
+                _t_full = np.arange(len(self._angles)) / max(self.fps, 1.0)
+                _p_full = compute_pt_params(_t_full, np.array(self._angles, dtype=float))
+                if _p_full is not None and len(_p_full.get("t_r", [])) > 0:
+                    _release_idx = int(round(float(_p_full["t_r"][0]) * max(self.fps, 1.0)))
+                else:
+                    _release_idx = None
 
-        t = np.arange(len(angles)) / max(self.fps, 1.0)
-        params = compute_pt_params(t, angles, release_idx=_release_idx)
+            t = np.arange(len(angles)) / max(self.fps, 1.0)
+            params = compute_pt_params(t, angles, release_idx=_release_idx)
+        except AmplitudeExceedsCurveError as exc:
+            _clear()
+            self._pt_score_lbl.config(text="refused", fg="#DC2626")
+            self._status(f"PT not scored: A0 exceeds its own curve ({exc})")
+            return
         if params is None:
             _clear(); return
 
@@ -4497,6 +4511,11 @@ class PendulaticViewer(tk.Tk):
             return None
         try:
             p = compute_pt_params(np.arange(len(arr)) / max(self.fps, 1.0), arr)
+        except AmplitudeExceedsCurveError as exc:
+            # No release time from a curve the scorer refuses; say why rather
+            # than letting the broad handler below make it look like no data.
+            self._status(f"Release not found: A0 exceeds its own curve ({exc})")
+            return None
         except Exception:
             return None
         if p is None:
@@ -8618,7 +8637,7 @@ class ValidationWindow(tk.Toplevel):
         try:
             from pendulastic_pt_score import (
                 compute_pt_params, compute_pt_score_simple, pt_to_mas,
-                load_optitrack, HEALTHY_REF,
+                load_optitrack, HEALTHY_REF, AmplitudeExceedsCurveError,
             )
         except ImportError as e:
             messagebox.showerror("Import error",
@@ -8713,8 +8732,24 @@ class ValidationWindow(tk.Toplevel):
         _m_rel_i = _drop_release_idx(t_m_raw, _m_ang)
         if _m_rel_i is None:
             _m_rel_i = _vel_release_idx(t_m_raw, _m_ang)
-        params_m = compute_pt_params(t_m_raw, _m_ang, release_idx=_m_rel_i)
-        params_o = compute_pt_params(t_o_raw, angs_o)
+        # A curve the scorer refuses (A0 larger than the curve itself) is shown
+        # as unscored, the way a None from the scorer already is, and the
+        # refusal is said aloud rather than taking the window down.
+        refusals = []
+
+        def _params_or_refusal(which, *args, **kwargs):
+            try:
+                return compute_pt_params(*args, **kwargs)
+            except AmplitudeExceedsCurveError as exc:
+                refusals.append(f"{which}: {exc}")
+                return None
+
+        params_m = _params_or_refusal("Model", t_m_raw, _m_ang, release_idx=_m_rel_i)
+        params_o = _params_or_refusal("OptiTrack", t_o_raw, angs_o)
+        if refusals:
+            messagebox.showwarning("PT not scored",
+                                   "A0 exceeds its own curve, not scored.\n\n"
+                                   + "\n\n".join(refusals), parent=self)
 
         # ── alignment ─────────────────────────────────────────────────────────
         align_mode = self._align_var.get()

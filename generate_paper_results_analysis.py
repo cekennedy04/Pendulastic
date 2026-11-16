@@ -173,6 +173,13 @@ def a0_by_leg_from_optitrack():
         try:
             t, angle, _quality = _pts.load_optitrack_detailed(path)
             val = _pts.compute_pt_params(t, angle).get("A0_deg")
+        except _pts.AmplitudeExceedsCurveError as exc:
+            # Left out of the leg's A0 like any unscorable trial, but named:
+            # the broad handler below would drop it from the grouping silently.
+            import sys
+            print(f"  WARNING {path}: A0 exceeds its own curve, not used: {exc}",
+                  file=sys.stderr)
+            continue
         except Exception:
             continue
         if val is not None and float(val) == float(val):

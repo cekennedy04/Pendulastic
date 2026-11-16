@@ -15,6 +15,7 @@ import datetime
 import json
 import csv
 import os
+import sys
 from typing import Optional
 
 import tkinter as tk
@@ -662,7 +663,15 @@ class WorkbenchView(tk.Frame):
             if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
                 continue
             params = engine.windowed_pt_params(t, y)
-            full_params = pendulastic_pt_score.compute_pt_params(t, y)
+            # A trace whose A0 exceeds its own curve is refused by the scorer
+            # (AmplitudeExceedsCurveError): no score, the reason kept on the
+            # row as pt_refusal and shown in the table, never a crash.
+            params["pt_refusal"] = None
+            try:
+                full_params = pendulastic_pt_score.compute_pt_params(t, y)
+            except pendulastic_pt_score.AmplitudeExceedsCurveError as exc:
+                full_params = None
+                params["pt_refusal"] = f"A0 exceeds its own curve, not scored: {exc}"
             if full_params is not None:
                 params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
                 params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
@@ -708,6 +717,10 @@ class WorkbenchView(tk.Frame):
             if pt["pt_score"] is not None:
                 pt_str = f"{pt['pt_score']:.3f}"
                 mas_str = str(pt["mas"])
+            elif pt.get("pt_refusal"):
+                pt_str = "refused"
+                mas_str = "n/a"
+                print(f"  WARNING {label}: {pt['pt_refusal']}", file=sys.stderr)
             else:
                 pt_str = "n/a"
                 mas_str = "n/a"
@@ -1126,6 +1139,8 @@ class WorkbenchView(tk.Frame):
             f"OptiTrack dropout: {opti_signals['optitrack_dropout_frac'] * 100:.0f}%\n"
             f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}"
         )
+        if opti_signals.get("optitrack_pt_refusal"):
+            signals_text += f"\nOptiTrack PT: {opti_signals['optitrack_pt_refusal']}"
         tk.Label(dialog, text=signals_text, justify="left", anchor="w").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
 

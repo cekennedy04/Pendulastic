@@ -122,3 +122,13 @@ def test_web_bridge_reports_it_as_an_unscorable_trial(tmp_path):
     pd.DataFrame({"time_sec": t, "knee_angle_deg": ang}).to_csv(csv_path, index=False)
     with pytest.raises(ValueError, match="cannot be scored.*exceeds the curve"):
         PTScoreBridge().compute(str(csv_path), {"id": "t1"})
+
+
+def test_workbench_quality_signals_report_the_refusal():
+    """The Flag Trial Quality dialog calls this inside a broad handler; the
+    refusal comes back as its own signal so the dialog can show it."""
+    import workbench_engine as engine
+    sig = engine.compute_optitrack_quality_signals(*_a0_over_curve())
+    assert sig["optitrack_area_ratio_warn"] is False
+    assert "A0 exceeds its own curve" in sig["optitrack_pt_refusal"]
+    assert engine.compute_optitrack_quality_signals(*_clean_swing())["optitrack_pt_refusal"] is None

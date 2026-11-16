@@ -32,7 +32,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pendulastic_pt_score import (
     compute_pt_params, compute_pt_score_simple, pt_to_mas,
-    BASE_DIR, OUT_DIR as OPTI_OUT_DIR,
+    BASE_DIR, OUT_DIR as OPTI_OUT_DIR, AmplitudeExceedsCurveError,
 )
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -129,6 +129,12 @@ def hpe_pt_score(csv_path: str) -> dict | None:
             "f_hz":          _p("f_hz"),
             "area_ratio":    _p("area_ratio"),
         }
+    except AmplitudeExceedsCurveError as exc:
+        # Unscored like any other None, but named: the broad handler below
+        # would make it indistinguishable from a file with too little data.
+        print(f"  WARNING {csv_path}: A0 exceeds its own curve, not scored: {exc}",
+              file=sys.stderr)
+        return None
     except Exception:
         return None
 
