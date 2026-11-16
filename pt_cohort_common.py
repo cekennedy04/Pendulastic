@@ -288,7 +288,7 @@ def load_metadata_diagnosis(pid):
     legacy Participant_ one, and can over-match on a prefix scan -- so every
     candidate's own participant_id field must equal `pid` exactly before its
     diagnosis is used. Multiple real folders can exist for one participant
-    (e.g. MINT_13 and Participant_13_right_post); the first with a non-empty
+    (e.g. MINT_{pid} and Participant_{pid}_right_post); the first with a non-empty
     diagnosis wins."""
     for path in participant_paths.glob_participants(REC_ROOT, "metadata.json"):
         try:

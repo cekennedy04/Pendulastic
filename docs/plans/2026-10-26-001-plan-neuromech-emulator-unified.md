@@ -169,14 +169,14 @@ diagnosis ("ungrouped") or failed to score; the split was not recorded and is to
 the next run. The controls row is 2 people.
 
 Signed extraction (magnitude): controls 71.1° → 108.9°. Detrend default moves each cohort 1–3°.
-Only Control_16 and Control_23 have raw phone sensor files; controls 2, 6, 7, 8, 9, 10, 12 were
+Only two of the nine controls have raw phone sensor files; the other seven were
 recorded as video only and cannot enter this measurement.
 
 **The instruments disagree, by about 30°.** OptiTrack A0 on the same trials is 28.8° smaller than
 the phone's (median; n = 104; 4 % within 5°), i.e. a rest near 140°, which is where the 142° came
 from. It cannot referee: 10 of 104 trials have ≥ 90 % camera coverage and every one of those carries
 a poorly-conditioned-hinge warning, which shrinks a projected angle. MediaPipe video scatters too
-far to use (control medians 3–62°; Control_16 at 3° against the phone's 66°). The phone's rotation
+far to use (control medians 3–62°; one control at 3° against the phone's 66°). The phone's rotation
 magnitude is the measurement verified on the bench (0.58°). **Competing explanation (review
 2026-10-28):** the known single-phone over-read points the same way. One phone measures shank
 rotation in space, the thigh also moves during the drop, and gyro-integral/OptiTrack was 1.41 before

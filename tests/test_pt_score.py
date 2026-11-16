@@ -601,10 +601,10 @@ def test_load_hpe_model_curves_return_rejected_reports_did_not_track_swing(tmp_p
 #
 # A spastic limb arrests at its own resting angle, so flexion-past-neutral
 # collapses to ~0 even on a full-amplitude swing. Real example driving these
-# tests -- Participant_19 Right/pre, a stroke participant's affected leg:
+# tests -- one real Right/pre trial:
 # held at 180 deg, released, travels to ~132 deg, settles at ~135 deg. Total
 # excursion 44-48 deg, but overshoot past neutral only 0.3-2.8 deg. Five such
-# trials exist across the dataset (P13, P14, P19), all with PT7 >= 1.42.
+# trials exist across the dataset, all with PT7 >= 1.42.
 # ══════════════════════════════════════════════════════════════════════════
 
 def _spastic_trial(n=300, fps=30.0, hold_deg=180.0, settle_deg=135.0, overshoot=2.5):
@@ -1474,7 +1474,7 @@ def test_the_centred_frame_leaves_a_clean_swing_alone():
 # dropped. _detect_release used to fire on the LIFT -- the first threshold
 # crossing -- so phi[0] measured from rest to rest came out ~0 and
 # compute_pt_params discarded the trial under its sub-3 deg floor. 15
-# Control_6/7/8 baseline trials were lost this way (A0 ~ -1.8..+1.1 deg at the
+# P6/7/8 baseline trials were lost this way (A0 ~ -1.8..+1.1 deg at the
 # detected "release" vs 41-70 deg at the real drop).
 
 def _rest_lift_hold_drop(fps=120.0, rest_s=1.5, lift_s=0.7, hold_s=2.0,
@@ -1548,7 +1548,7 @@ def test_lift_does_not_enter_the_baseline_drift_fit(monkeypatch):
     recording), the drift slope falls back to a fit over the pre-release
     baseline. For a trial that starts at rest, everything before the drop
     includes the LIFT -- a 55 deg ramp -- and fitting through it made A0 read
-    134-352 deg on real Control_6/7/8 trials. Only the still hold is baseline.
+    134-352 deg on real P6/7/8 trials. Only the still hold is baseline.
     The tail estimate is forced to None so the fallback is what's tested."""
     import pendulastic_pt_score as pts
     monkeypatch.setattr(pts, "_settled_tail_drift_slope", lambda *a, **k: None)

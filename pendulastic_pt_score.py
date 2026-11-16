@@ -2636,7 +2636,7 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
 # monotonically from rest, sits still in extension, and only then is
 # released. The first threshold crossing is the lift, and measuring phi[0]
 # from there gives rest-minus-rest ~ 0 deg, so compute_pt_params discarded
-# the trial (15 Control_6/7/8 baseline trials, 2026-10-27). A real release
+# the trial (15 P6/7/8 baseline trials, 2026-10-27). A real release
 # reverses within a fraction of a second -- a pendulum overshoots -- and an
 # arrested limb drops once and stays near where it landed, so "monotonic to
 # a still plateau, then leaves it and swings back through the starting
@@ -3025,7 +3025,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
         # Only the still hold is baseline. A trial that opens at rest has a
         # lift before it (see _lift_hold_end), and fitting through that ramp
-        # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
+        # read A0 as 134-352 deg on real P6/7/8 trials. A trial held
         # from its first frame stays within the band throughout, so its
         # window is unchanged.
         baseline_start = baseline_end

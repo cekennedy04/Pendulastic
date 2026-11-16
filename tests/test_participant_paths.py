@@ -54,13 +54,13 @@ def test_ungrouped_diagnosis_gets_no_prefix(diagnosis):
 # ── parsing a folder name back to an id ────────────────────────────────────
 
 @pytest.mark.parametrize("name, pid", [
-    ("Control_10", "10"),
-    ("CHAT_19", "19"),
-    ("MINT_11", "11"),
+    ("Control_910", "910"),
+    ("CHAT_919", "919"),
+    ("MINT_911", "911"),
     ("Participant_10", "10"),
     ("control_10", "10"),          # Windows round-trips casing inconsistently
-    ("MINT_5", "5"),
-    ("DOSA_11", "11"),        # the MS study's former prefix still resolves
+    ("MINT_905", "905"),
+    ("DOSA_911", "911"),        # the MS study's former prefix still resolves
 ])
 def test_pid_from_dir_name_reads_every_prefix(name, pid):
     assert pp.pid_from_dir_name(name) == pid
@@ -83,7 +83,7 @@ def test_legacy_suffix_names_yield_the_same_id_they_always_did():
 def test_strip_prefix_passes_unprefixed_values_through():
     """strip_prefix stands in for .replace("Participant_", "") on values that
     may or may not carry a prefix; a bare id must survive unchanged."""
-    assert pp.strip_prefix("Control_23") == "23"
+    assert pp.strip_prefix("Control_923") == "923"
     assert pp.strip_prefix("23") == "23"
     assert pp.strip_prefix("unknown") == "unknown"
 
@@ -94,22 +94,22 @@ def test_pids_in_path_is_identical_under_both_schemes():
     """THE property that keeps excluded_trials.json valid across the rename:
     the key is built from the id, and the id does not move when the prefix
     does."""
-    legacy = "Participant_15/Left/pre/Trial_4_imu.csv"
-    renamed = "MINT_15/Left/pre/Trial_4_imu.csv"
-    assert pp.pids_in_path(legacy) == pp.pids_in_path(renamed) == ["15"]
+    legacy = "Participant_915/Left/pre/Trial_4_imu.csv"
+    renamed = "MINT_915/Left/pre/Trial_4_imu.csv"
+    assert pp.pids_in_path(legacy) == pp.pids_in_path(renamed) == ["915"]
 
 
 def test_pids_in_path_reports_every_distinct_participant():
     """Callers treat >1 as unattributable (archived data has a stray nested
     folder from another participant). That check only works if BOTH ids are
     seen, including across mixed naming."""
-    mixed = "MINT_13/Participant_0_control/Position_1/trial_1.csv"
-    assert pp.pids_in_path(mixed) == ["0", "13"]
+    mixed = "MINT_913/Participant_0_control/Position_1/trial_1.csv"
+    assert pp.pids_in_path(mixed) == ["0", "913"]
 
 
 def test_strip_leading_pid_leaves_the_condition_label():
-    assert pp.strip_leading_pid("MINT_13_left_post") == "left_post"
-    assert pp.strip_leading_pid("DOSA_13_left_post") == "left_post"
+    assert pp.strip_leading_pid("MINT_913_left_post") == "left_post"
+    assert pp.strip_leading_pid("DOSA_913_left_post") == "left_post"
     assert pp.strip_leading_pid("Participant_13_left_post") == "left_post"
     assert pp.strip_leading_pid("Session_post") == "Session_post"
 
@@ -117,21 +117,21 @@ def test_strip_leading_pid_leaves_the_condition_label():
 # ── resolving a participant to a directory ─────────────────────────────────
 
 def test_find_participant_dir_accepts_either_scheme(tmp_path):
-    for name, pid in (("Control_10", "10"), ("Participant_11", "11")):
+    for name, pid in (("Control_910", "910"), ("Participant_11", "11")):
         (tmp_path / name).mkdir()
-    assert os.path.basename(pp.find_participant_dir(str(tmp_path), "10")) == "Control_10"
+    assert os.path.basename(pp.find_participant_dir(str(tmp_path), "910")) == "Control_910"
     assert os.path.basename(pp.find_participant_dir(str(tmp_path), "11")) == "Participant_11"
     assert pp.find_participant_dir(str(tmp_path), "99") is None
 
 
 def test_a_short_id_never_claims_a_longer_one(tmp_path):
-    """Participant 2 and participant 20 both exist in this study. A prefix or
-    substring match would hand P2's resolver P20's folder -- and with it, the
-    wrong person's recordings."""
-    (tmp_path / "Control_20").mkdir()
-    assert pp.find_participant_dir(str(tmp_path), "2") is None
-    (tmp_path / "Control_2").mkdir()
-    assert os.path.basename(pp.find_participant_dir(str(tmp_path), "2")) == "Control_2"
+    """Short ids that prefix longer ones (2 and 20) both exist in this study.
+    A prefix or substring match would hand the short id's resolver the longer
+    id's folder -- and with it, the wrong person's recordings."""
+    (tmp_path / "Control_9020").mkdir()
+    assert pp.find_participant_dir(str(tmp_path), "902") is None
+    (tmp_path / "Control_902").mkdir()
+    assert os.path.basename(pp.find_participant_dir(str(tmp_path), "902")) == "Control_902"
 
 
 def test_legacy_sub_layout_is_still_found(tmp_path):
@@ -196,13 +196,13 @@ def test_participant_dir_creates_with_the_right_prefix(tmp_path):
 # ── enumeration ────────────────────────────────────────────────────────────
 
 def test_iter_participant_dirs_covers_both_schemes_and_skips_files(tmp_path):
-    for name in ("Control_2", "CHAT_19", "MINT_11", "Participant_test"):
+    for name in ("Control_902", "CHAT_919", "MINT_911", "Participant_test"):
         (tmp_path / name).mkdir()
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
     (tmp_path / "Archive").mkdir()
     found = {pid: name for pid, name, _full in pp.iter_participant_dirs(str(tmp_path))}
-    assert found == {"2": "Control_2", "19": "CHAT_19",
-                     "11": "MINT_11", "test": "Participant_test"}
+    assert found == {"902": "Control_902", "919": "CHAT_919",
+                     "911": "MINT_911", "test": "Participant_test"}
 
 
 def test_iter_participant_dirs_on_a_missing_root_is_empty_not_an_error(tmp_path):
@@ -211,7 +211,7 @@ def test_iter_participant_dirs_on_a_missing_root_is_empty_not_an_error(tmp_path)
 
 
 def test_glob_participants_unions_the_prefixes_without_duplicates(tmp_path):
-    for name in ("Control_2", "MINT_11", "Participant_test"):
+    for name in ("Control_902", "MINT_911", "Participant_test"):
         d = tmp_path / name
         d.mkdir()
         (d / "metadata.json").write_text("{}", encoding="utf-8")
@@ -221,14 +221,14 @@ def test_glob_participants_unions_the_prefixes_without_duplicates(tmp_path):
 
 
 def test_participant_glob_for_scopes_to_one_participant(tmp_path):
-    for name in ("Control_2", "Control_20"):
+    for name in ("Control_902", "Control_9020"):
         d = tmp_path / name / "Left" / "pre"
         d.mkdir(parents=True)
         (d / "Trial_1_imu.csv").write_text("x", encoding="utf-8")
-    hits = pp.participant_glob_for(str(tmp_path), "2", "**", "Trial_*_imu.csv",
+    hits = pp.participant_glob_for(str(tmp_path), "902", "**", "Trial_*_imu.csv",
                                    recursive=True)
     assert len(hits) == 1
-    assert "Control_2" in hits[0] and "Control_20" not in hits[0]
+    assert "Control_902" in hits[0] and "Control_9020" not in hits[0]
 
 
 def test_participant_glob_for_an_absent_participant_is_empty(tmp_path):
