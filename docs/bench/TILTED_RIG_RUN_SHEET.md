@@ -1,4 +1,4 @@
-> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Identical copies exist on the other September branches (see the `archive/*` tags). Originally at the repository root as `TILTED_RIG_RUN_SHEET.md`. Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
+> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Originally at the repository root as `TILTED_RIG_RUN_SHEET.md`. Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
 
 # Tilted-Rig Run Sheet — app angle-accuracy validation
 

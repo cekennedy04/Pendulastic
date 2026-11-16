@@ -25,7 +25,7 @@ two legs share that key):
 
 - It was measured **before the 2026-11-16 AHRS gravity-seed fix (#98)**, with the mirrored seed.
   The floor and the seed are different mechanisms and the seed fix was confirmed separately
-  (`docs/reports/` seed-fix corpus check and Rust confirmation), but this number has not been
+  (PR #98; corpus check and Rust confirmation are on the `docs/seed-fix-corpus-check` and `docs/seed-fix-rust-confirmation` branches), but this number has not been
   re-run on the fixed seed.
 - The RMSE gate compares only the active swing window, so it could not see the seed bug. Do
   not treat "unchanged on 144 of 144" as a sufficient gate for filter changes.

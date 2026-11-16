@@ -1,4 +1,4 @@
-> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Identical copies exist on the other September branches (see the `archive/*` tags). Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
+> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
 
 # MediaPipe: an OptiTrack-gated discovery bug hid 28 trials, and the metrics were never accurate anyway
 
@@ -41,11 +41,11 @@ estimation at all:
 
 | participant | trials | why no OptiTrack |
 |---|---|---|
-| P17 Left/pre, Right/pre | 10 | Motive errored out on 2026-08-18; no take saved (already in `excluded_trials.json`) |
+| one participant, both legs, one session | 10 | Motive saved no take (already in `excluded_trials.json`) |
 | P14 Left/post, Right/post | 8 | no export |
 | P18 Right/pre | 4 | no export |
 | P13 Right (two timepoints) | 2 | no export |
-| P6, P4, P5, Participant_test | 4 | no export |
+| P6, P4, P5, a test folder | 4 | no export |
 
 These are exactly the trials where MediaPipe is the *only* quantitative channel
 available, and they were the ones the pipeline could not see.
@@ -121,32 +121,6 @@ and the difference is methodological, not new data: that table calls
 `pt_to_mas()` directly, so it prints a grade for trials the excursion gate
 refuses, and it scores a different trial subset. Restricting to trials where
 both channels are gradeable is the honest comparison, and it is much worse.
-
-#### What the newly-covered trials actually look like
-
-One participant's pre session is the clearest case for why coverage and usefulness are
-different things. Those ten trials have no OptiTrack at all (Motive saved no
-take), so MediaPipe is the only quantitative channel that will ever exist for
-them. They now have one — and it does not carry a verdict:
-
-| leg | trial | detection | N | A0 (deg) | PT7 | MAS |
-|---|---|---|---|---|---|---|
-| left | 1 | 15.5% | 2.0 | **157.9** | 0.604 | refused (impossible excursion) |
-| left | 2 | 15.7% | 1.5 | 6.6 | 1.143 | refused (excursion) |
-| left | 3 | 24.1% | 0.5 | 25.6 | 1.680 | 4 |
-| left | 4 | 8.3% | — | — | — | refused (unscoreable) |
-| left | 5 | 21.9% | — | — | — | refused (unscoreable) |
-| right | 1 | 6.1% | — | — | — | refused (unscoreable) |
-| right | 2 | 55.7% | 7.5 | 30.9 | 0.771 | 3 |
-| right | 3 | 42.0% | 5.0 | 26.3 | 1.040 | 4 |
-| right | 4 | 47.1% | 13.5 | 6.8 | 0.834 | refused (excursion) |
-| right | 5 | 52.7% | 5.5 | 34.0 | 0.978 | 4 |
-
-Four of ten produce a grade, and all four land at MAS 3 or 4 on excursions of
-25–34°. The gate is doing its job on the other six — a 157.9° A0 is not a knee.
-But the four that pass sit exactly in PT7's known non-monotonic region, where a
-barely-moving leg and a severely spastic one score alike. Report these as
-tracked, not as graded.
 
 **The world angle is not the fix.** This is the first corpus-wide test of the
 `knee_angle_world_deg` column — the earlier check ran on a handful of trials.
@@ -324,7 +298,6 @@ proposed), and that constant decides which trials appear gradeable.
 |---|---|
 | `imu_vs_optitrack_baseline.png` | PT7 agreement with OptiTrack for the IMU and both MediaPipe columns, with the detrend-convention control as its own panel |
 | `mediapipe_gate_nonmonotonic.png` | gate pass rate **and** PT7 error against tracking quality — neither improves with better tracking |
-| `<case>_case_study.png` | the ten recovered pre trials of one participant, on a log A0 axis spanning a 157.9° artefact and a 6.6° collapsed swing |
 
 They are deliberately framed as pipeline boundaries. None of them is a case for
 using MediaPipe as a diagnostic.

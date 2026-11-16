@@ -1,4 +1,4 @@
-> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Identical copies exist on the other September branches (see the `archive/*` tags). Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
+> **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
 
 # The IMU grades a healthy leg MAS 4, and the reason is baseline drift
 
@@ -9,7 +9,7 @@ comparison built on it, and the mechanism behind the IMU's composite failing.
 
 Two recording sessions turned out to be the same participant, re-recorded (operator-confirmed;
 the participant ID is withheld from this public copy).
-Merged: the earlier (June) session became `june_pre`, and 2026-09-08 became `pre`, a clean
+Merged: the earlier session became `june_pre`, and the later one became `pre`, a clean
 single-day session with 10 trials across all three channels.
 
 **The clinician graded both legs MAS 0 for the September session.** That makes
