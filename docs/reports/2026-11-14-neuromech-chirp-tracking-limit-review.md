@@ -663,3 +663,346 @@ harness (not committed):
   `SystemExit`.
 - **Mutations**: one private copy of the package per mutant, one textual change in `session.py`, then
   `pytest neuromech/tests/test_session_dryrun.py`.
+
+## Re-review (2026-11-16)
+
+The review above was of `b0d18c9`. This section is of the fixes: `0bba810` on the old #96 base
+(`b0d18c9..0bba810`), and the candidate, local branch `neuromech/chirp-tracking-limit-v2` at `1d0d812`. That
+branch is the same work rebased onto current main (`fb97478`, `1d0d812` on `a955ecb`). The author's account is
+section C of `docs/reports/2026-11-11-neuromech-release-alignment.md`.
+
+### Verdict: fixes required (two, both small), then ready for a draft PR
+
+The floor, the two knobs, the exit status on a chirp finding and the documentation of section 3 are fixed. The
+session rule works as described: on the clean, static-gain and chirp-gain probes either nothing is flagged or
+the one finding fires with (almost) no per-run flags, and the remaining per-run false flags on good runs are
+the author's numbers, reproduced. Two things remain:
+
+1. **Hold-gain scaling can hide a fault on one run** (section R.4). A run whose hold sits 3 to 4 % past the
+   setpoint and relaxes over 0.6 to 2 s gets an inflated prediction. A fault that run carries then passes: 5 ms
+   of stiction is flagged in 1 to 10 runs of 132 instead of 112, a start at 80 % speed in 4 to 6 instead of 51,
+   and a 40 ms Player stall in 10 to 20 instead of 110. Section C's claim that the scaling cannot absorb a fault
+   does not hold for this case. C.7 lists it as not tried.
+2. **Accepting the printed margin accepts a shared fault, and the README tells the operator to do exactly that**
+   (section R.3). Taken from the faulty session itself, the printed margin lets 58 to 84 % of sessions with 5 ms
+   of stiction in every run exit 0. With a 40 ms Player stall the share is 25 to 75 %. Taken from an earlier
+   good session, the same mechanism catches all of these: 0 % exit 0. The text needs to say which one to use.
+
+Section R.5 lists the mutation survivors. They call for tests, not for a change of behaviour.
+
+### R.1 Equivalence and gates
+
+- **v2 equals `0bba810` plus main.**
+  - `neuromech/session.py`, `neuromech/dryrun.py`, `neuromech/tests/test_session_dryrun.py` and the section-C
+    report are byte-identical between `0bba810` and `1d0d812`.
+  - `neuromech/README.md` differs in one place: the test count, 253 against 264.
+  - The 11 extra tests are main's `fall_speed` tests (#90).
+  - `git diff a955ecb 1d0d812` touches the five files of the two commits and nothing else.
+- **pytest `neuromech/tests` on v2**, with the library built in the worktree (67 scenarios): **264 passed**
+  (669 s).
+- **Parity**: `PARITY OK`, 355 cases.
+- **Dry run** (`--seed 11 --discard`):
+  - 9 of 9 delivered in band; 0 release flagged, 0 tracking flagged.
+  - Tracking error 1.00 of predicted (0.98 to 1.01), limits 16.3 to 22.1 ms.
+  - No finding; exit 0. These are section C's numbers.
+- **Line endings**: the diff of v2 against main has no CR, and `--ignore-cr-at-eol` gives the same stat (5
+  files, +2184 / -39). The only CRLF files in the tree (`recalibrate.bat`, `webapp/tests/app.test.js`) predate
+  this branch and are untouched by it.
+
+### R.2 The mismatch table on the new code (question 1)
+
+Method:
+- The same rigs and harness as section 3, re-run through v2's functions: `_hold_gain`, `_plant_prediction` with
+  the gain, `_plant_verdict` with the session margin, and `_session_ratio`. Pass 3 of `score` is mirrored
+  exactly.
+- 66 scenarios x 2 seeds per rig; good runs only.
+- Sessions of 20 usable runs, drawn 300 times.
+- "Accepted" means the same sessions re-scored with the `--tracking-margin` the finding prints, 1.15 x the
+  session median. This is done when the finding fires in over half the sessions.
+
+Per-run columns are shares of all runs in all draws.
+
+| rig | median ratio | sessions with the finding | runs flagged, tracking / release | sessions exit 0 | accepted margin: exit 0 (tracking / release flagged) |
+|---|---|---|---|---|---|
+| identified; slow; 3 Hz; 8.3 Hz; 11 and 12 Hz zeta 1.0; 12 and 10 Hz zeta 0.7 | 0.95 to 1.04, or none (prediction under 7 ms) | 0 % | 0 / 0 | **100 %** | |
+| static gain 0.98, 0.97, 0.96, 1.02; 8.3 Hz x 0.98 | 0.99 to 1.02 | 0 % | 0 / 0 | 100 % | |
+| static gain 0.94 (outside the hold-gain window) | 1.54 | 6 % | 92.5 % / 0 | 0 % | |
+| dipole 0.1 Hz -5 % | 1.30 | 43 % | **51.2 %** / 0 | 0 % | |
+| dipole 0.1 Hz +2 % | 1.18 | 98 % | 15.2 % / 0 | 0 % | 1.36: 2 % (16.4 % / 0) |
+| dipole 0.3 Hz +2 % | 1.17 | 100 % | 4.2 % / 0 | 0 % | 1.34: 32 % (5.0 % / 0) |
+| dipole 0.3 Hz +1 % | 1.08 | 68 % | 0.2 % / 0 | 28 % | 1.25: 100 % |
+| loop stiffness -10 % at the hold | 1.10 | 94 % | 0.1 % / 0 | 4 % | 1.27: 100 % |
+| loop stiffness -20 % at the hold | 1.20 | 100 % | 4.2 % / **42.1 %** | 0 % | 1.38: 0 % (4.3 % / 42.1 %) |
+| friction 0.1 deg | 1.07 | 6 % | 2.5 % / 0 | 54 % | |
+| friction 0.2 deg | 1.12 | 100 % | 3.4 % / **21.1 %** | 0 % | 1.29: 0 % (3.3 % / 21.1 %) |
+| deadband 0.1 deg | 1.16 | 100 % | 3.7 % / **23.2 %** | 0 % | 1.33: 0 % (4.1 % / 23.2 %) |
+| chirp at bandwidth x1.05 | 1.07 | 11 % | 0 / 0 | 89 % | |
+| chirp at bandwidth x1.10; damping x1.2 | 1.14; 1.13 | 100 % | 0 / 0 | 0 % | 1.31, 1.30: 100 % |
+| composite slight / mild / moderate | 1.09 / 1.14 / 1.27 | 58 / 100 / 100 % | 0.7 / 2.7 / 4.3 % ; release 0 / 0 / 10.5 % | 31 / 0 / 0 % | 1.25 / 1.31 / 1.47: 100 / 56 / 7 % |
+| noise 0.1 deg: 8.3 Hz; 12 Hz zeta 0.7; 6.35 Hz zeta 0.5 | 1.05; none; none | 3 / 0 / 0 % | 2.2 / **10.0** / 7.4 % ; 0 | 58 / 9 / 17 % | |
+| quantised 0.36 deg: identified; 8.3 Hz; 12 Hz zeta 0.7 | 0.94; 0.92; none | 2 / 26 / 0 % | 2.3 / 6.2 / **23.9 %** ; 0 | 59 / 16 / 0 % | |
+
+**The floor is fixed.** 11 and 12 Hz at zeta 1.0 give 0 flags in 264 runs. My 7 and 10 false flags at `b0d18c9`
+are gone.
+
+**The author's remaining per-run flags are reproduced:**
+
+| rig | author | measured here | how it is flagged |
+|---|---|---|---|
+| slow dipole | 53 % | 51.2 % | tracking |
+| loop 20 % softer | 42 % | 42.1 % | release, plus 4.2 % tracking |
+| friction / deadband | 22 to 25 % | 21.1 / 23.2 % | release, plus 3 to 4 % tracking |
+
+**Acceptable, with one caveat.**
+- Each of these sessions exits 1, so no rig that the model does not describe passes as clean.
+- Except for the slow dipole, the flags are release flags. Those are the plant check doing its job on a rig
+  whose release is not the identified plant's. The README names the release check as the half that cannot be
+  relaxed.
+- The slow dipole's per-run flags come with a finding in only 43 % of sessions. Its ratios spread too widely
+  for the agreement rule, so the operator sees about half the runs flagged for tracking with no session-level
+  explanation. Section C's point 3 says so (finding in 41 %).
+
+**The caveat is noise and resolution.** Where the prediction is under 7 ms, no ratio is taken, and the floor is
+the only allowance:
+- 0.1 deg of noise on the 12 Hz plant: 10 % of runs flagged, 91 % of sessions exit 1.
+- A 0.36 deg encoder on the 12 Hz plant: 24 % of runs flagged, 100 % of sessions exit 1.
+- Even on the identified plant, 41 % of sessions with a 0.36 deg encoder exit 1.
+
+Section C documents these rows. Whether they matter depends on the real encoder's noise and resolution, which
+nobody has measured. Measuring `enc_hold_rms_deg` on the first real log settles it (recommendation R.7).
+
+### R.3 The cost of the low finding, and accepting the printed margin (questions 2 and 3)
+
+**The low finding.** Rigs where the model over-predicts give the finding in 99 to 100 % of good sessions:
+- extra pole 10 or 15 Hz; a 25 Hz mode;
+- the chirp at 0.9 x bandwidth;
+- loop stiffness +20 %; quiet dipoles; 8.3 Hz with a 15 Hz pole.
+
+Exit 0 is then 0 to 1 %. With the printed margin (0.84 to 1.05), these sessions exit 0 in 68 to 100 % of draws:
+100 % for all but the 1 Hz dipole (68 %) and stiffness +20 % (70 %, its release flags).
+
+**The cost is worth paying.** Without the low finding a shared fault is invisible on such a rig. On the 10 Hz
+extra-pole rig with the default margin, 5 ms of stiction in every run lifts the median ratio from 0.83 to 1.01.
+It gives no finding and **100 % of sessions exit 0**. A start at 85 % speed exits 0 in 87 %. With the margin
+accepted on a good session of that rig (0.95), both give the finding in 100 % of sessions.
+
+The cost is one re-score per rig. The operator must also pass the margin on every later session: nothing
+stores it.
+
+**Accepting the printed margin can accept a real fault.** I put a fault in every run, of the kind and size the
+release check does not see, and scored each session three ways.
+
+| rig | fault in every run | (a) default: sessions exit 0 | (b) margin accepted on an earlier good session: exit 0 | (c) margin printed by this session: exit 0 |
+|---|---|---|---|---|
+| identified | 5 ms stiction | 0 % | (no margin needed) | **58 %** (margin 1.40) |
+| identified | start at 85 % | 1 % | | **40 %** (1.27) |
+| identified | start at 80 % | 0 % | | 1 % (1.32; per-run flags remain) |
+| identified | Player stall 40 ms / 30 ms / 20 ms | 0 / 13 / 75 % | | **25 / 43 %** (1.45 / 1.24) |
+| slow, less damped | 5 ms stiction | 0 % | | **84 %** (1.30) |
+| slow, less damped | start at 85 % / Player stall 40 ms | 12 / 0 % | | **100 / 75 %** |
+| dipole 0.3 Hz +2 % | 5 ms stiction; 80 % / 85 % start; stall 40 ms | 0 % | **0 %** (1.34; finding in 99 to 100 %) | 32 / 23 / 56 / 35 % |
+| extra pole 10 Hz | 5 ms stiction; 80 % / 85 % start; stall 40 ms | 100 / 26 / 87 / 14 % | **0 %** (0.95; finding in 100 %) | |
+| 12 Hz zeta 0.7 (prediction under 7 ms, no ratio) | 5 ms stiction; 85 % start; stall 40 / 20 ms | 30 / 45 / 25 / 100 % | | |
+
+A 20 ms stall exits 0 in 75 % under the default margin; section C says 72 %. A 5 ms stiction, an 80 % start
+and a 40 ms stall each exit 0 in 0 % (section C: 0 %). Both are reproduced.
+
+The design is sound when the margin comes from a session known to be good. Drift from it is caught in either
+direction, as the README says. It is unsound when the margin comes from the session that raised the finding:
+that moves the band onto the session's own median by construction.
+
+**How loudly this is documented: not loudly enough.**
+- The finding text names "a fault in every run that is too small for the release check" among the causes, and
+  README step 2 says the same. Both are good.
+- But the finding's step (3) and README step 3 both say: if this is simply what the rig does, score with the
+  printed margin. The finding is printed by the session under suspicion, and nothing in it can tell that
+  session apart from a good one.
+
+The required text change:
+- Accept a margin only from a session you have other reason to trust, such as a fresh chirp with the rig cold
+  and warm, or a known-good reference session.
+- Carry that margin forward.
+- Never accept it from a session you are trying to judge.
+- Quote the 58 to 84 % from this table, or the author's own.
+
+The 12 Hz zeta 0.7 row shows a second, smaller gap. Where predictions are under 7 ms there is no session ratio,
+so a shared fault the release check misses passes at the rate the fixed-style limit gives: 25 to 100 % exit 0
+here. Section C's point 2 implies this but does not state it for faults. One sentence is enough.
+
+### R.4 Hold-gain scaling and one run (question 4)
+
+The setup: one faulty run on the identified plant, judged alone with the default margin. That is what
+`_plant_verdict` does with it inside a good session, whose ratio is 1.0 and raises no finding. The run's
+position is the plant's times a gain g before the commanded release, returning linearly to 1 over `rec` ms
+after it.
+
+| the run | hold gain applied | runs flagged (tracking / release / any) | median ratio |
+|---|---|---|---|
+| no fault | 1.000 | 0 / 0 / 0 of 132 | 1.01 |
+| g 0.96 persisting (a static gain on this run) | 0.960 | 0 / 0 / 0 | 1.01 |
+| g 0.96 or 1.04, back over 150 ms | 0.96 / 1.04 | 96 / 126 / 126 ; 4 / 129 / 129 | 1.51 ; 0.37 |
+| 5 ms stiction alone | | 112 / 3 / **112** | 1.21 |
+| ... with g 1.04, back over 600 ms / 2000 ms | 1.04 | **0 / 10 / 10** ; **0 / 2 / 2** | 0.82 ; 0.98 |
+| ... with g 1.03, back over 600 ms / 2000 ms | 1.03 | **2 / 8 / 10** ; **0 / 1 / 1** | 0.93 ; 1.06 |
+| start at 80 % alone | | 41 / 27 / **51** | 1.16 |
+| ... with g 1.04 or 1.03, back over 600 or 2000 ms | | **4 to 6** | 0.83 to 1.03 |
+| Player stall 40 ms alone | | 110 / 0 / **110** | 1.26 |
+| ... with g 1.04, back over 600 / 2000 ms | | **19 ; 10** | 0.90 ; 1.01 |
+| ... with g 1.03, back over 600 / 2000 ms | | **16 ; 20** | 1.00 ; 1.09 |
+| Player stall 60 ms alone / with g 1.03 or 1.04 | | 128 / 98 to 110 | 1.88 / 1.48 to 1.68 |
+| g 0.96, back over 600 / 2000 ms, with the same faults | | 98 to 128 ; 63 to 125 | 1.08 to 1.27 |
+
+**What these runs show:**
+- A gain that persists is handled correctly: no flag, ratio 1.01.
+- A gain that relaxes quickly (150 ms) changes the release shape, and the release check flags the run. That
+  is the case section C reasoned about.
+- **A hold 3 to 4 % past the setpoint that relaxes over 0.6 to 2 s inflates the prediction.** Its ratio is
+  0.65 to 0.87 with no fault at all. It is still inside the 0.05 window, so it is applied, and it leaves the
+  release shape alone. In that run it hides:
+  - 5 ms of stiction: 1 to 10 of 132 flagged instead of 112;
+  - an 80 % start: 4 to 6 instead of 51;
+  - a 40 ms Player stall: 10 to 20 instead of 110.
+- A hold short of the setpoint (g 0.96) does not hide these faults: the scaled prediction gets smaller.
+- One run is below the session rule's reach. The session ratio is a median, and this run does not move it.
+
+**Fix.** Apply g only when the run shows the same gain where the arm is still again after the swing. Use the
+final hold or plateau, measured as `_hold_gain` measures the first. Otherwise report g and do not apply it.
+That keeps every static-gain rig in R.2 clean, because their gain persists, and removes this case. Add a test
+with one such run carrying 5 ms of stiction among good runs.
+
+Whether a real arm can hold a few per cent past its setpoint and then relax over a second is a question for the
+rig. A friction-held overshoot is one way, but I have not measured one. The point is that the code assumes the
+hold gain is the run's gain, and does not check it.
+
+### R.5 Mutations of the session rule (question 5)
+
+Method:
+- Each mutant is a private copy of v2's tracked `neuromech` package and root modules, with the built library,
+  and one textual change in `session.py`. `neuromech/tests/test_session_dryrun.py` is then run against it
+  (154 tests).
+- An unmutated copy passes 154 of 154.
+- Constant mutants (K) run with all six literal-pin tests deselected, so only behaviour can kill them:
+  - `test_the_plant_derived_limit_in_numbers`
+  - `test_a_chirp_the_plant_cannot_follow_is_not_trusted`
+  - `test_the_hold_gain_in_numbers`
+  - `test_the_session_ratio_rule_in_numbers`
+  - `test_the_chirp_suspect_rule_in_numbers`
+  - `test_the_chirp_gate_in_numbers`
+- Branch mutants (S, H, F, C) run the whole file.
+
+| mutant | result | killed by |
+|---|---|---|
+| K1 min pred 7->5 | **SURVIVED** |  |
+| K2 min pred 7->10 | **SURVIVED** |  |
+| K3 min runs 3->2 | **SURVIVED** |  |
+| K4 min runs 3->4 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do` |
+| K5 band 0.90/1.10 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run` |
+| K6 band 0.94/1.06 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run` |
+| K7 low 0.92->0.85 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_small_fault_in_every_run_is_one_finding_and_the_low_direction_restores_the_limit`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, ... |
+| K8 high 1.08->1.12 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run` |
+| K9 agree 0.15->0.10 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run` |
+| K10 agree 0.15->0.25 | killed | `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run` |
+| K11 share 2/3->0.5 | **SURVIVED** |  |
+| K12 share 2/3->0.8 | killed | `test_a_run_far_from_the_sessions_ratio_is_still_the_run_that_is_flagged` |
+| K13 hold dev 0.05->0.03 | killed | `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[0.97-12]` |
+| K14 hold dev 0.05->0.08 | **SURVIVED** |  |
+| K15 hold min deg 5->1 | **SURVIVED** |  |
+| K16 hold min deg 5->20 | **SURVIVED** |  |
+| K17 suspect early 3->2 ms | **SURVIVED** |  |
+| K18 suspect early 3->5 ms | killed | `test_a_chirp_the_drive_only_just_followed_is_said_once_and_about_the_chirp` |
+| K19 suspect spread 2.5->1.5 ms | **SURVIVED** |  |
+| K20 suspect spread 2.5->4 ms | **SURVIVED** |  |
+| K21 suspect misfit 5->3 % | **SURVIVED** |  |
+| K22 suspect misfit 5->8 % | killed | `test_a_chirp_the_drive_only_just_followed_is_said_once_and_about_the_chirp` |
+| S1 band not moved by an accepted margin | killed | `test_the_session_ratio_rule_in_numbers`, `test_the_model_mismatch_finding_says_what_was_found_and_what_to_do`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, ... |
+| S2 mismatch margin = accepted x median | killed | `test_the_session_ratio_rule_in_numbers`, `test_the_tracking_margin_does_not_turn_the_release_check_off` |
+| S3 mismatch does not rescale the runs | killed | `test_the_session_ratio_rule_in_numbers`, `test_a_small_fault_in_every_run_is_one_finding_and_the_low_direction_restores_the_limit`, `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, ... |
+| S4 agreement not required | killed | `test_the_session_ratio_rule_in_numbers` |
+| S5 ratio set keeps release-flagged runs | killed | `test_a_chirp_the_drive_only_just_followed_is_said_once_and_about_the_chirp` |
+| S6 exit ignores model_flags | killed | `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, `test_stiction_too_small_for_the_release_check_is_one_finding` |
+| S7 finding not printed | killed | `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, `test_a_run_far_from_the_sessions_ratio_is_still_the_run_that_is_flagged`, ... |
+| S8 finding not in report.csv | killed | `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, `test_a_run_far_from_the_sessions_ratio_is_still_the_run_that_is_flagged`, ... |
+| H1 hold gain always applied | killed | `test_the_hold_gain_in_numbers`, `test_a_gain_further_off_than_5_percent_is_not_absorbed` |
+| H2 hold gain never applied | killed | `test_the_hold_gain_in_numbers`, `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[0.98-10]`, `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[1.02-5]`, ... |
+| H3 hold window runs 100 ms past release | killed | `test_a_good_run_is_not_flagged_against_its_own_plant[3`, `test_a_good_run_is_not_flagged_against_its_own_plant[identified]`, `test_a_good_run_is_not_flagged_against_its_own_plant[8`, `test_a_good_run_is_not_flagged_against_its_own_plant[12`, ... |
+| H4 gain not applied to the tracking prediction | killed | `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[0.98-10]`, `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[1.02-5]`, ... |
+| H5 gain not applied to the release prediction | killed | `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[0.98-10]`, `test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault[1.02-5]`, ... |
+| F1 floor back to max() | killed | `test_the_plant_derived_limit_in_numbers`, `test_with_a_chirp_each_run_is_held_to_its_own_plants_prediction`, `test_the_floor_is_added_in_quadrature_between_the_plants_that_were_sampled`, `test_a_real_session_on_a_fast_well_damped_rig_exits_0`, ... |
+| F2 floor dropped | killed | `test_the_plant_derived_limit_in_numbers`, `test_a_good_run_is_not_flagged_against_its_own_plant[12`, `test_with_a_chirp_each_run_is_held_to_its_own_plants_prediction`, `test_the_floor_is_added_in_quadrature_between_the_plants_that_were_sampled`, ... |
+| F3 --tracking-limit-ms turns the release check off again | killed | `test_the_tracking_limit_override_replaces_the_tracking_limit_and_not_the_release_check`, `test_a_run_the_plant_has_no_prediction_for_is_held_to_the_fixed_limit_and_its_row_says_so` |
+| F4 --tracking-margin ignored | killed | `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_quiet_direction_is_a_finding_too`, `test_stiction_too_small_for_the_release_check_is_one_finding`, `test_the_tracking_margin_does_not_turn_the_release_check_off` |
+| F5 margin source always default | killed | `test_a_session_the_model_does_not_describe_is_one_finding_not_a_flag_per_run`, `test_the_tracking_margin_does_not_turn_the_release_check_off` |
+| C1 suspect agreement not required | killed | `test_the_chirp_suspect_rule_in_numbers` |
+| C2 suspect misfit gate removed | killed | `test_the_chirp_suspect_rule_in_numbers` |
+
+Unmutated copy: 154 of 154. **42 mutants: 31 killed, 11 survived, all eleven constants with their literal pins
+deselected** (every branch mutant is killed, including the two that would reopen section 7's change 2: F3, and
+the exit status: S6). With the pins in place all eleven would die: each constant is asserted literally (test lines 1254, 1301,
+1302, 1452; read, not run as mutants). Without the pins, nothing in the behaviour holds them:
+
+- the ratio rule's thresholds: `MODEL_RATIO_MIN_PRED_MS` 5 or 10 (K1, K2), `MODEL_RATIO_MIN_RUNS` 2 (K3),
+  `MODEL_RATIO_AGREE_SHARE` 0.5 (K11). The band and the agreement width are held behaviourally (K5 to K10).
+- the hold-gain window and level: `HOLD_GAIN_MAX_DEV` 0.08 (K14: a gain 8 % off would be absorbed and every
+  test passes), `HOLD_GAIN_MIN_DEG` 1 or 20 (K15, K16). The narrow side (0.03, K13) is held.
+- the chirp-suspect sentence: early 2 ms, spread 1.5 or 4 ms, misfit 3 % (K17, K19 to K21). It changes no
+  status, so this costs a sentence, not a verdict.
+
+K14 is the one that matters, because of R.4: the wider the window, the more a hold offset can inflate the
+prediction. A behavioural test at about 0.93 and 1.07 (a run that holds 7 % off and keeps that gain through the
+swing is flagged, not absorbed) should come with change 1. K1 to K3 and K11 want one session each at the edge
+(predictions of 6 and 8 ms; two agreeing runs; 60 % agreement). The rest are optional.
+
+### R.6 Section C's other claims
+
+- **Tracking margin and release check.** `--tracking-margin` is separate, recorded (`tracking_margin`,
+  `tracking_margin_source`) and refused at 0 or below. `--tracking-limit-ms` keeps the release check: with a
+  trusted chirp, `_plant_verdict` is called with the real prediction and `limit_ms`. Read in the code and
+  covered by the tests; mutant F3 above.
+- **SUSPECT THE CHIRP.** The sentence and its rule are read in the code. The rule changes no status and exit,
+  as claimed. Mutants K17 to K22 and C1 to C2 are above.
+- **The 45 mutants with 0 survivors.** Not re-run as written. My own set above is a different set, and its
+  survivors are listed.
+- **The section-3 sensitivity.** The README now carries it in numbers, and says it is from simulation, at
+  magnitudes chosen by the reviewer. Change 3 of section 7 is done.
+
+### R.7 Changes
+
+Required:
+
+1. **Hold gain (R.4).** Apply the hold gain only when the run's gain after the swing agrees with it, or bound
+   what it can add to the prediction. Add a test with one run held 3 to 4 % past the setpoint that relaxes over
+   about a second and carries 5 ms of stiction, among good runs.
+2. **Accepting a margin (R.3).**
+   - The finding's step (3) and README step 3 should say that a margin is accepted from a session trusted on
+     other grounds and carried forward, never from the session being judged.
+   - They should say why, in numbers: accepting the printed margin lets 58 to 84 % of sessions with 5 ms of
+     stiction in every run exit 0.
+   - Say that the margin is not stored and must be passed every time.
+3. **A behavioural test for the hold-gain window** (R.5, K14): a run that holds about 7 % off the setpoint and
+   keeps that gain is flagged, not absorbed; today `HOLD_GAIN_MAX_DEV` 0.08 passes every test but the literal
+   pin.
+
+Recommended:
+
+- Store an accepted margin with the rig's chirp, or in the session's plan, so that it does not depend on the
+  operator retyping it.
+- One sentence that a shared fault is not seen by the session rule where predictions are under 7 ms (R.3, 12 Hz
+  row).
+- Measure the real encoder's hold noise and resolution (`enc_hold_rms_deg`) on the first real log. If noise is
+  0.1 deg or more, or steps are about 0.36 deg, derive the floor from it (R.2).
+- Edge tests for the other ratio-rule survivors of R.5 (K1 to K3, K11).
+- Carried over from section 7: compare the logged setpoint with the command, independently of the plant.
+
+### R.8 Not verified in the re-review
+
+- **Anything on the real rig.** As before, every rig here is a simulation at magnitudes I chose, and the hold
+  overshoot of R.4 is one of them.
+- **`score` end to end.** Not run through real files and the CLI for the new paths: the finding printed and
+  exit 1, the printed margin then exiting 0, and a low finding. Only the dry run went through the real program.
+  The harness mirrors pass 3 of `score` function by function. The session draws ignore the session-lag rule,
+  and include only runs the release gate of #96 accepts.
+- **Section C's mutation table, and its tables' exact rows.** Sampled through my own rigs only.
+- **The phone path** against the new hold-gain and session checks.
+- **More than one faulty run in a session** below the median's reach; half a session faulty.
+- **The mutation runs** used `test_session_dryrun.py` only, not the other test files.
+- **`0bba810` itself** was not run. Its content was compared to v2 file by file, and v2 was run.
