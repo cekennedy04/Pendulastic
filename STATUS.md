@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges recorded 2026-11-16.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -33,16 +33,15 @@ scores move. "Not verified" is stated, never implied.
    release-timing sensitivity; needs a score-formula version bump (workstream 3).
 5. **Release detector design.** September's detector was rejected as a port; four
    design options are on file (workstream 3).
-6. **Rewrite history to remove clinical data already pushed on PR #90's branch?**
+6. **Rewrite or delete the public branches that still carry clinical fields?** #90 was
+   squash-merged, so those commits are not in `main`'s history, but they remain on
+   `neuromech/fall-speed-b13`, `neuromech/fall-speed-check` and GitHub's `refs/pull/90`
    (workstream 1).
 7. `omega_max_n`: drop it (#83, which contains #76) or keep it.
 8. Rig decisions O1–O5: arm range ±65° or 0.75× amplitude render; actuator of at least
    20 N·m; when to build the vertical rig; two blind clinicians per profile; clasp-knife
    adaptation handling.
 9. Nightly hygiene agent: retire it or re-register it.
-10. Merge #95 (orientation) and #96 (release alignment)? Both independently reviewed
-    and re-reviewed; #96 is simulation only. Merge #66, then close the daily-report
-    drafts it replaces?
 
 ## Workstreams
 
@@ -56,26 +55,21 @@ scores move. "Not verified" is stated, never implied.
   plan in `docs/plans/2026-10-26-001-plan-neuromech-emulator-unified.md`.
 - **Merged 2026-11-11:** #87 (provenance, B14), #86 (plan review). #82 closed as
   contained in #90.
-- **Open PRs:** #90 (fall-speed check, B13). Its reference file now holds only person,
-  A0 and peak. Earlier commits on that branch and on `neuromech/fall-speed-check` still
-  contain per-leg clinical fields and are public; see decision 6.
-- **Current numbers (main, 2026-11-10):** `python -m neuromech.build` writes 67
-  scenarios. The A-P2 and A-P3 presets are unreachable on the current scorer. The dry
-  run delivers 7 of 9 runs in their intended band; the two misses are one scenario
-  (`B-claspknife` and `M-catch_release_high` share parameters) and are pinned by a test
-  from #89.
-- **Why the two runs miss** (`docs/reports/2026-11-10-neuromech-band-edge-misses.md` on
-  `neuromech/band-edge-misses`): `session.score` gives the scorer the commanded release
-  while the delivered motion starts about 18 ms later; the scorer then counts a
-  start-of-swing shoulder as half an oscillation. 40 of 67 scenarios are affected.
-- **Release alignment (PR #96, ready for review):** `neuromech/session-release-alignment` scores rig
-  sessions from the delivered release and flags runs where it cannot be found. Reviewed
-  twice (`docs/release-alignment-review`, `docs/release-alignment-rereview`); simulated
-  dry run 9 of 9 in band. Simulation only, and not yet fit to judge a real rig session:
-  the fixed 25 ms tracking limit suits only the simulated plant and must be derived from
-  each session's chirp first (measured to work in the re-review, not implemented). A
-  forward lurch in every run and a 50 % sluggish start are not flagged. The
-  chirp-derived limit is in progress on `neuromech/chirp-derived-tracking-limit`.
+- **Merged 2026-11-16 (squash):** #96 (release alignment) and #90 (fall-speed check, B13;
+  reference file holds only person, A0 and peak; see decision 6).
+- **Current numbers (main, 2026-11-16):** `python -m neuromech.build` writes 67
+  scenarios. The A-P2 and A-P3 presets are unreachable on the current scorer. The
+  simulated dry run delivers 9 of 9 runs in their intended band (7 of 9 before #96).
+- **Release alignment (#96, merged):** rig sessions are scored from the delivered release
+  (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
+  found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
+  rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
+- **Chirp-derived tracking limit (in progress, no PR):**
+  `neuromech/chirp-derived-tracking-limit` judges each run against the plant identified
+  from the session's chirp. Its review (`docs/chirp-tracking-limit-review`) found the
+  release check robust under model mismatch but the tracking ratio fitted to the
+  simulator's plant family; fixes are being applied, then a re-review. The branch was
+  cut from #96 before it was squash-merged, so it must be rebased onto `main`.
 - **Another session's work, not part of this plan:** `docs/neuromech-elbow-plan`
   (worktree `Pendulastic-wt-elbow`).
 - **Rig path versus app path** (simulation only;
@@ -85,8 +79,8 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** review the chirp-derived tracking limit; land #96 and #90; then rig
-  sessions.
+- **Next actions:** finish, re-review and land the chirp-derived tracking limit; then
+  the first rig session, read as a measurement of the limits.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
@@ -118,15 +112,15 @@ scores move. "Not verified" is stated, never implied.
 - **Drift-correction bound (PR #94, draft):** ported to Python and Rust with caller
   handling of the new `AmplitudeExceedsCurveError`; `detrend=False` output is
   bit-identical on the corpus. Independent review: code correct. Waits on decision 3.
-- **`compare_pair` orientation (PR #95, ready for review):** reworked in its own PR after the first
+- **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;
   anything else is reported undetermined and scored as given. Corpus: 66 as given, 55
   mirrored, 24 undetermined; median 14.67 degrees (range 13.86 to 15.30) against 21.80
   on main. Independent review (`docs/compare-pair-orientation-review`): rule right on
   every pair it could check against the markers (114 of 114); required fixes applied
-  and confirmed in a re-review. Until it merges, main's IMU-versus-OptiTrack RMSE is
-  inflated.
+  and confirmed in a re-review. The thresholds were set on the same 145 pairs; do not
+  quote them as validated on another corpus.
 - **Found by that review, open:** four corpus trials where the optical and the phone
   curve are both inverted (their agreement is not meaningful; phone side to look at);
   the IMU sweeps score raw RMSE against a relative reference (median 143 degrees);
@@ -204,10 +198,9 @@ scores move. "Not verified" is stated, never implied.
   `workbench_engine.compare_pair`, which the RMSE pipeline uses.
 
 ### 9. Hygiene and reporting — STALLED
-- **Open PRs:** #66 (repo cleanup; archives the daily and Monday reports). Its
-  `.gitignore` now ignores only rendered bench figures, and `Evaluate Models Py/` is kept
-  for the archive pass; mergeable, CI green.
-  43 draft `claude/daily-report-*` PRs are open and should be closed once #66 lands.
+- **Merged 2026-11-16:** #66 (repo cleanup; daily and Monday reports archived under
+  `docs/`). The 43 draft `claude/daily-report-*` PRs are closed; each report is on main.
+  Their remote branches still exist (deleting them needs the owner's say).
 - The nightly hygiene agent last ran 2026-09-23 and failed; no scheduled task exists.
 - Run `git worktree list` for the current worktrees rather than trusting a list here.
 - Disk: drive C: was full on 2026-11-11 and is at about 4 GB free after removing
