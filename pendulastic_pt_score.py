@@ -2469,8 +2469,8 @@ _TAIL_MAX_DISPLACEMENT_FRAC = 0.15
 # recording, so a slope that is merely noisy becomes an enormous displacement.
 # Measured on the phone corpus at 75109c5 (2026-11-10): with detrend=True the
 # unguarded fallback removed 0.7 to 6.3 times the curve's whole range on four
-# trials (participants 4 and 13) and reported A0 of 139.8 to 234.8 deg where
-# the same trials read 27.6 to 115.5 deg undetrended.
+# trials and reported A0 of 139.8 to 234.8 deg where the same trials read 27.6
+# to 115.5 deg undetrended.
 #
 # A held leg is not moving, so spread in that window is noise, and a line
 # through noise has no slope worth extrapolating. Require the same minimum
@@ -4546,7 +4546,17 @@ def main() -> None:
                              "pt_score_6param":float("nan"),"est_MAS_6param":"?","error":str(exc)})
             continue
 
-        params = compute_pt_params(t, angle)
+        try:
+            params = compute_pt_params(t, angle)
+        except AmplitudeExceedsCurveError as exc:
+            # One refused trial must not abort the batch; it is reported, not
+            # scored, exactly like an unscorable one.
+            msg = f"refused: {exc}"
+            print(f"  [REFUSED] {msg}\n")
+            errors.append(f"{tag}: {msg}")
+            summary.append({**entry,"pt_score_4param":float("nan"),"est_MAS_4param":"?",
+                             "pt_score_6param":float("nan"),"est_MAS_6param":"?","error":msg})
+            continue
         if params is None:
             msg = "insufficient oscillation data (no clear release or angle range < 3°)"
             print(f"  [WARN] {msg}\n")
@@ -4572,7 +4582,11 @@ def main() -> None:
 
         # Compute Popovic PT score from each tracked HPE curve
         for mdl in hpe_curves:
-            p_hpe = compute_pt_params(mdl["t"], mdl["ang"])
+            try:
+                p_hpe = compute_pt_params(mdl["t"], mdl["ang"])
+            except AmplitudeExceedsCurveError as exc:
+                print(f"  [REFUSED] HPE curve {mdl.get('name', '?')}: {exc}")
+                p_hpe = None
             if p_hpe:
                 mdl["pt"]  = compute_pt_score_simple(p_hpe)
                 mdl["mas"] = pt_to_mas(mdl["pt"])

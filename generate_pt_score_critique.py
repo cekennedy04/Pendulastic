@@ -27,6 +27,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -90,9 +91,15 @@ def build_rows():
         except Exception:
             continue
 
-        pt_imu = pts.compute_pt_params(t_imu, ang_imu)
-        pt_opti = pts.compute_pt_params(ref_t, ref_angle)
-        pt_mp = pts.compute_pt_params(t_mp, ang_mp)
+        try:
+            pt_imu = pts.compute_pt_params(t_imu, ang_imu)
+            pt_opti = pts.compute_pt_params(ref_t, ref_angle)
+            pt_mp = pts.compute_pt_params(t_mp, ang_mp)
+        except pts.AmplitudeExceedsCurveError as exc:
+            # One refused trial must not abort the run; it is reported and
+            # skipped like any other unscorable trial.
+            print(f"[REFUSED] {key}: {exc}", file=sys.stderr)
+            continue
         if pt_imu is None or pt_opti is None or pt_mp is None:
             continue
 
