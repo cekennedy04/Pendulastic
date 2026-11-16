@@ -590,6 +590,14 @@ def test_compute_implementation_fingerprint_covers_analysis_pipeline_and_pt_scor
     assert "pendulastic_pt_score" in rpc._FINGERPRINTED_MODULES
 
 
+def test_compute_implementation_fingerprint_covers_the_ahrs():
+    # imu_calibration_tuner replays every IMU candidate through
+    # pendulastic_imu_server's MadgwickAHRS and _gravity_seed. The seed-sign fix
+    # changed every replayed trace without touching any listed module, so a
+    # sweep manifest would have kept serving RMSEs from the old filter.
+    assert "pendulastic_imu_server" in rpc._FINGERPRINTED_MODULES
+
+
 def test_compute_implementation_fingerprint_changes_with_analysis_pipeline_source(monkeypatch):
     import analysis_pipeline
     real_getsource = rpc.inspect.getsource

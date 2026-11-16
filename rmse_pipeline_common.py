@@ -447,7 +447,10 @@ def compute_input_fingerprints(trial, methodology, stat_cache, force=False, mode
 _FINGERPRINTED_MODULES = ("rmse_pipeline_common", "workbench_engine",
                           "imu_calibration_tuner", "reconstruct_imu_raw_logs",
                           "sweep_imu_config", "sweep_mediapipe_config", "batch_mediapipe",
-                          "analysis_pipeline", "pendulastic_pt_score")
+                          "analysis_pipeline", "pendulastic_pt_score",
+                          # the AHRS imu_calibration_tuner replays through (gravity seed
+                          # included): a filter change moves every IMU score
+                          "pendulastic_imu_server")
 
 
 # Raw landmark extraction reaches a strict SUBSET of the modules above:
