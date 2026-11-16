@@ -3,7 +3,7 @@
     python -m neuromech.session plan  --name S1 [--sids A-P0,A-P1p | --groups A,M] [--reps 3]
                                       [--repeat A-P1p:10] [--seed 7] [--chirp] [--no-blind]
     python -m neuromech.session score --name S1 --encoder-dir DIR [--phone-manifest FILE.json]
-                                      [--accept-session-lag-ms MS] [--tracking-limit-ms MS]
+                                      [--accept-session-lag-ms MS] [--tracking-margin M] [--tracking-limit-ms MS]
     python -m neuromech.session check-log --bin LOG.bin --player FILE.csv
 
 CHECK-LOG answers the one bench question the program cannot answer itself: does StretchExperiment's log
@@ -55,16 +55,38 @@ phone session manifest (one phone recording per run, in run order). For every ru
               report but it does not count as a delivery of its scenario, and `score` exits 1.
               The limit is THIS RIG'S when the session has a chirp run (plan --chirp, R000): the plant is
               identified from the chirp, each command is passed through it, and the run is held to what
-              that predicts (tracking_pred_ms): flagged over max(TRACKING_PRED_MARGIN x predicted,
-              TRACKING_PRED_FLOOR_MS). The release is held to the same plant: the model is driven with the
-              setpoint the log recorded for the run, and a release more than RELEASE_PRED_TOL_S from the
-              model's (enc_lag_minus_pred_ms) is "tracking flagged" too. That is the check that sees a
-              fault present in EVERY run (stiction, a slow start, a forward lurch), which comparing runs
-              with each other cannot. Without a usable chirp the limit falls back to the fixed
-              TRACKING_TIME_ERR_MAX_MS, and the output and report.csv say so (tracking_limit_source,
-              tracking_limit_note): that number belongs to the simulated plant, flags good runs on a slower
-              rig and misses faults on a faster one. --tracking-limit-ms MS is an explicit override: every
-              run is judged by MS alone (the plant's prediction is still reported) and it is recorded.
+              that predicts (tracking_pred_ms): flagged over sqrt((TRACKING_PRED_MARGIN x predicted)^2 +
+              TRACKING_PRED_FLOOR_MS^2). The model has no gain term, so the prediction is scaled by the level
+              the arm actually held before the release over the level it was told to hold (enc_hold_gain),
+              when that is within HOLD_GAIN_MAX_DEV of 1. The release is held to the same plant: the model
+              is driven with the setpoint the log recorded for the run, and a release more than
+              RELEASE_PRED_TOL_S from the model's (enc_lag_minus_pred_ms) is "tracking flagged" too. That is
+              the check that sees a fault present in EVERY run (stiction, a slow start, a forward lurch),
+              which comparing runs with each other cannot.
+              The tracking ratio is also judged ACROSS THE SESSION (_session_ratio), because a model that
+              does not describe the rig is not N faulty runs. When the runs agree with each other on
+              measured / predicted and their median is outside MODEL_RATIO_LOW..MODEL_RATIO_HIGH, that is ONE
+              "MODEL MISMATCH FINDING" (model_mismatch_finding, tracking_session_ratio and the number of runs
+              it was taken over, tracking_session_ratio_runs): each run is then held
+              to the session's ratio, so only a run that stands out from the session is flagged; `score`
+              exits 1; and the finding prints the --tracking-margin that accepts it. A ratio that is
+              consistently LOW raises the same finding: against a prediction that is too large, faults pass.
+              Two knobs, neither of which turns the release check off (release_check says "plant" whenever a
+              trusted chirp exists): --tracking-margin M replaces TRACKING_PRED_MARGIN (tracking_margin,
+              tracking_margin_source), and --tracking-limit-ms MS replaces the plant-derived tracking limit
+              with one number (tracking_limit_source "override"; the prediction is still reported).
+              Without a usable chirp the limit falls back to the fixed TRACKING_TIME_ERR_MAX_MS and there is
+              no release check against a plant; the output and report.csv say so (tracking_limit_source,
+              tracking_limit_note, release_check "none"): that number belongs to the simulated plant, flags
+              good runs on a slower rig and misses faults on a faster one.
+  chirp       R000's row carries the identified plant (plant_wn_hz, plant_zeta, plant_delay_ms, plant_r2), how
+              much of the chirp's own motion the model leaves unexplained (plant_misfit), and whether it is
+              used: plant_trusted is False, with the reason in plant_untrusted_why, when the fit's R2 is under
+              CHIRP_MIN_R2 or the misfit over CHIRP_MAX_MISFIT. An untrusted or unidentifiable chirp is a
+              "CHIRP FINDING" and `score` exits 1. A chirp that is trusted but not clean, in a session whose
+              releases are all early by about the same amount, gets one sentence (chirp_suspect, "SUSPECT THE
+              CHIRP, NOT THE RUNS"): a drive that could not quite follow the chirp fits a delay the rig does
+              not have, and good runs are then flagged as lurches.
 The hold, uniqueness, session and tracking limits are all provisional: set on dryrun's plant and on
 constructed faults, with no rig log behind them.
 Output: sessions/<name>/report.csv and a printed summary.
@@ -497,11 +519,31 @@ def _tracking(t, sp, swing, t_rec, x, lag_s):
 # a 50 % sluggish start on every plant from the identified one upwards. With a chirp run in the session the
 # plant is known, so each run is compared with what THAT plant does with ITS command.
 # The numbers: docs/reports/2026-11-11-neuromech-release-alignment.md, section B. All simulated. PROVISIONAL.
-TRACKING_PRED_MARGIN = 1.15                # flagged when measured > this x predicted
-TRACKING_PRED_FLOOR_MS = 4.0               # ... and never flagged under this many ms, whatever the prediction
+TRACKING_PRED_MARGIN = 1.15                # flagged when measured > sqrt((this x predicted)^2 + floor^2)
+TRACKING_PRED_FLOOR_MS = 4.0               # error the prediction does not contain (Player staircase, encoder noise), in quadrature
 RELEASE_PRED_TOL_S = 0.004                 # delivered release against the model's, the model driven by the logged setpoint
 CHIRP_MIN_R2 = 0.95                        # a chirp fit below this is not a plant to judge a session by
 CHIRP_MAX_MISFIT = 0.10                    # nor one whose model leaves more than this share of the chirp unexplained
+# The model has no gain term. The level the arm actually held is measured on each run and the prediction scaled
+# to it, as long as it is within this of the setpoint's; further off than that is not a scale, and is not hidden.
+HOLD_GAIN_MAX_DEV = 0.05
+HOLD_GAIN_MIN_DEG = 5.0                    # a hold closer to zero than this does not measure a gain
+# The session against the model (review 2026-11-14, section 3). measured / predicted is 1.0 when the identified
+# plant describes the runs. When the runs agree with each other on a ratio that is not 1, that is a statement
+# about the model (or about a fault every run shares), not about any one run: one MODEL MISMATCH FINDING, and
+# each run is then held to the session's ratio, not to 1.
+MODEL_RATIO_MIN_PRED_MS = 7.0              # the ratio means something only where the prediction is well above the floor:
+#                                            on clean plants runs predicted 6 to 7 ms read 0.91 to 1.12, and with them
+#                                            admitted a good 10 Hz, zeta 1.0 session of 8 had a median of 0.919
+MODEL_RATIO_MIN_RUNS = 3
+MODEL_RATIO_LOW, MODEL_RATIO_HIGH = 0.92, 1.08     # the session's median ratio, over the accepted one, inside this: no finding
+MODEL_RATIO_AGREE = 0.15                   # "agree": within this fraction of the session's median ...
+MODEL_RATIO_AGREE_SHARE = 2.0 / 3.0        # ... for at least this share of the runs
+# A chirp the drive could not quite follow is still trusted below CHIRP_MAX_MISFIT and gives a plant with delay
+# it does not have: every release then looks early by about the same amount. Said once, about the chirp.
+CHIRP_SUSPECT_EARLY_S = 0.003
+CHIRP_SUSPECT_SPREAD_S = 0.0025
+CHIRP_SUSPECT_MISFIT = 0.05
 
 
 def _model_response(u, fit, fs=FS):
@@ -534,8 +576,20 @@ def _chirp_trust(fit, sp, pos):
     return "", misfit
 
 
-def _plant_prediction(t, sp, sw, t_rel, fit, t_log=None, sp_log=None):
-    """What the identified plant does with this run. -> dict(time_err_ms, lag_s):
+def _hold_gain(t, sp, t_all, pos_all, t_rel):
+    """The level the arm held over the level it was told to hold, over the RELEASE_HOLD_STILL_S before the commanded
+    release. -> (measured gain or NaN, the gain to scale the prediction by). The second is 1.0 when the hold is
+    too close to zero to measure a gain, or the gain is more than HOLD_GAIN_MAX_DEV from 1."""
+    m = (t >= t_rel - RELEASE_HOLD_STILL_S) & (t < t_rel); ma = (t_all >= t_rel - RELEASE_HOLD_STILL_S) & (t_all < t_rel)
+    if m.sum() < 3 or ma.sum() < 3: return np.nan, 1.0
+    level = float(np.mean(sp[m]))
+    if not abs(level) >= HOLD_GAIN_MIN_DEG: return np.nan, 1.0
+    g = float(np.mean(pos_all[ma])) / level
+    return g, (g if abs(g - 1.0) <= HOLD_GAIN_MAX_DEV else 1.0)
+
+
+def _plant_prediction(t, sp, sw, t_rel, fit, t_log=None, sp_log=None, gain=1.0):
+    """What the identified plant does with this run, scaled by `gain` (_hold_gain). -> dict(time_err_ms, lag_s):
       time_err_ms   the tracking time error of the COMMAND passed through the model, measured exactly as a
                     recording's is (onset-matched release, then _tracking)
       lag_s         the release lag of the model driven by the setpoint the LOG recorded (t_log, sp_log: the
@@ -545,28 +599,100 @@ def _plant_prediction(t, sp, sw, t_rel, fit, t_log=None, sp_log=None):
     out = dict(time_err_ms=np.nan, lag_s=np.nan)
     n1 = int(round(1.0 * FS))                    # the arm is still moving after the command's last sample
     spx = np.concatenate([sp, np.full(n1, sp[-1])]); tx = t[0] + np.arange(len(spx)) / FS
-    y = _model_response(spx, fit)
+    y = gain * _model_response(spx, fit)
     rel = _delivered_release(t, sp, tx, y, t_rel)
     if np.isfinite(rel["lag_s"]): out["time_err_ms"] = _tracking(t, sp, sw, tx, y, rel["lag_s"])[1]
     if sp_log is not None:
-        out["lag_s"] = _delivered_release(t, sp, t_log, _model_response(sp_log, fit), t_rel)["lag_s"]
+        out["lag_s"] = _delivered_release(t, sp, t_log, gain * _model_response(sp_log, fit), t_rel)["lag_s"]
     return out
 
 
-def _tracking_limit(pred_ms):
-    """The plant-derived limit on a run's tracking time error, from its predicted one."""
-    return max(TRACKING_PRED_MARGIN * pred_ms, TRACKING_PRED_FLOOR_MS)
+def _tracking_limit(pred_ms, margin=TRACKING_PRED_MARGIN):
+    """The plant-derived limit on a run's tracking time error, from its predicted one. The floor is what the
+    prediction does not contain (the Player's staircase, the encoder's noise). It adds to the plant's error in
+    quadrature and does not go away when the prediction is large, so it is added, not taken as a minimum:
+    max(1.15 x predicted, 4) flagged good runs wherever the prediction was 3.5 to 6 ms."""
+    return math.hypot(margin * pred_ms, TRACKING_PRED_FLOOR_MS)
 
 
-def _plant_verdict(time_err_ms, rms_deg, lag_s, pred):
-    """"" if the run did what the identified plant does with its command, else why it is tracking flagged."""
+def _session_ratio(ratios, margin=TRACKING_PRED_MARGIN):
+    """The session's runs against the model. ratios: measured / predicted tracking error of every scored run
+    whose prediction is at least MODEL_RATIO_MIN_PRED_MS and whose release passed the check against the plant.
+    margin: the one in force (the default, or --tracking-margin: an operator who scores with 1.35 has accepted a
+    session that sits at 1.35 / 1.15 = 1.17 of predicted).
+    -> dict(n, median, share, low, high, mismatch, margin, accepted): share is the fraction of runs within
+    MODEL_RATIO_AGREE of the median; mismatch is True when the runs agree with each other and their median is
+    outside low..high; margin is what each run is then held to: the default margin times the session's median, in
+    place of `margin`; accepted is the margin that was passed in."""
+    q = np.asarray([x for x in ratios if np.isfinite(x)], float)
+    centre = margin / TRACKING_PRED_MARGIN
+    out = dict(n=len(q), median=np.nan, share=np.nan, low=MODEL_RATIO_LOW * centre, high=MODEL_RATIO_HIGH * centre,
+               mismatch=False, margin=margin, accepted=margin)
+    if len(q) < MODEL_RATIO_MIN_RUNS: return out
+    m = float(np.median(q)); share = float(np.mean(np.abs(q / m - 1.0) <= MODEL_RATIO_AGREE))
+    out.update(median=m, share=share)
+    if share >= MODEL_RATIO_AGREE_SHARE and not out["low"] <= m <= out["high"]:
+        out.update(mismatch=True, margin=TRACKING_PRED_MARGIN * m)
+    return out
+
+
+def _model_finding(R, rid="R000"):
+    """The one sentence for a session whose runs agree on a ratio the model does not predict."""
+    m = R["median"]; accept = TRACKING_PRED_MARGIN * m
+    centre = R["low"] / MODEL_RATIO_LOW; operator = abs(centre - 1.0) > 1e-9
+    said = f" (--tracking-margin {R['accepted']:g} accepts {centre:.2f})" if operator else ""
+    if operator and m > R["high"]:
+        means = (f"The runs carry more tracking error than the margin in force accepts ({m:.2f} of predicted against {centre:.2f}), "
+                 f"and they agree on it: the rig is further from the plant identified from {rid} than it was when that margin was "
+                 f"chosen, or every run shares a fault that is too small for the release check (a few ms of stiction, a start at "
+                 f"80 % speed)")
+    elif operator:
+        means = (f"The runs sit at {m:.2f} of what the plant identified from {rid} predicts, below the {centre:.2f} that the margin in "
+                 f"force accepts, and they agree on it. Nothing is flagged by that, and that is the problem: the margin is looser "
+                 f"than this session needs, and a fault of that size passes")
+    elif m > R["high"]:
+        means = (f"The runs carry {100 * (m - 1):.0f} % more tracking error than the plant identified from {rid} predicts, and "
+                 f"they agree on it: that is a statement about the model, or about something every run shares, not about any "
+                 f"one run. Causes seen in simulation: the arm settling short of or past the setpoint through the swing, slow "
+                 f"dynamics below the chirp's band, a loop that is softer at the hold angle than at the chirp's, friction or a "
+                 f"deadband, a chirp recorded at a higher gain than the runs; and a fault in every run that is too small for the "
+                 f"release check (a few ms of stiction, a start at 80 % speed)")
+    else:
+        means = (f"The runs carry {100 * (1 - m):.0f} % less tracking error than the plant identified from {rid} predicts, and "
+                 f"they agree on it. Nothing is flagged by that, and that is the problem: against a prediction that is too large "
+                 f"a fault of that size passes. Causes seen in simulation: fast dynamics the model does not have (an extra "
+                 f"pole or a resonance above the chirp's band), a chirp recorded at a lower gain than the runs, a Player clock "
+                 f"running slow")
+    return (f"MODEL MISMATCH FINDING: measured / predicted tracking error has a session median of {m:.2f} over {R['n']} run(s), "
+            f"{100 * R['share']:.0f} % of them within {100 * MODEL_RATIO_AGREE:.0f} % of it; expected {R['low']:.2f} to {R['high']:.2f}{said}. "
+            f"{means}. Each run has been held to the session's ratio ({accept:.2f} x predicted) and not to the model's, so a run "
+            f"flagged for tracking below is one that stands out from this session. What to do: (1) play {rid} again and re-score: "
+            f"a chirp taken at other gains, or before the rig warmed up, is the cheapest explanation; (2) compare the held angle "
+            f"with the setpoint (enc_hold_gain) and the gains with the last session's; (3) if this is simply what the rig does, "
+            f"accept it: score with --tracking-margin {accept:.2f}, which is recorded in report.csv. The release check against "
+            f"the plant is not affected by any of this. `score` exits with status 1.")
+
+
+def _plant_verdict(time_err_ms, rms_deg, lag_s, pred, margin=TRACKING_PRED_MARGIN, limit_ms=None, session=None):
+    """"" if the run did what the identified plant does with its command, else why it is tracking flagged.
+    margin: the tracking margin in force. limit_ms: a fixed tracking limit in place of the plant-derived one
+    (--tracking-limit-ms); the release half is judged against the plant either way. session: the session's
+    median ratio when the margin is the session's (a model mismatch finding), for the sentence."""
     why = []
-    lim = _tracking_limit(pred["time_err_ms"])
-    if not time_err_ms <= lim:
-        why.append(f"tracking error {time_err_ms:.1f} ms (rms {rms_deg:.2f} deg with the release lag removed) is "
-                   f"{time_err_ms / pred['time_err_ms']:.2f} times the {pred['time_err_ms']:.1f} ms the plant identified from the "
-                   f"chirp predicts for this command (limit {lim:.1f} ms = max({TRACKING_PRED_MARGIN:g} x predicted, "
-                   f"{TRACKING_PRED_FLOOR_MS:g} ms)): the arm did not follow this command")
+    if limit_ms is not None:
+        if not time_err_ms <= limit_ms:
+            why.append(f"tracking error {time_err_ms:.1f} ms (rms {rms_deg:.2f} deg with the release lag removed) is over the limit of "
+                       f"{limit_ms:g} ms: the arm did not follow this command")
+    elif np.isfinite(pred["time_err_ms"]):
+        lim = _tracking_limit(pred["time_err_ms"], margin)
+        if not time_err_ms <= lim:
+            why.append(f"tracking error {time_err_ms:.1f} ms (rms {rms_deg:.2f} deg with the release lag removed) is "
+                       f"{time_err_ms / pred['time_err_ms']:.2f} times the {pred['time_err_ms']:.1f} ms the plant identified from the "
+                       f"chirp predicts for this command (limit {lim:.1f} ms = sqrt(({margin:.3g} x predicted)^2 + "
+                       f"{TRACKING_PRED_FLOOR_MS:g}^2)"
+                       + (f", the margin being the session's median ratio {session:.2f} x {TRACKING_PRED_MARGIN:g}" if session is not None else "")
+                       + "): more error than the fitted model predicts for this command"
+                       + (", and more than the rest of this session shows" if session is not None else ""))
     d = lag_s - pred["lag_s"]
     if np.isfinite(pred["lag_s"]) and not abs(d) <= RELEASE_PRED_TOL_S:
         why.append(f"the release is {d * 1e3:+.1f} ms from where the plant identified from the chirp puts it for the "
@@ -574,6 +700,22 @@ def _plant_verdict(time_err_ms, rms_deg, lag_s, pred):
                    f"{RELEASE_PRED_TOL_S * 1e3:g} ms): the arm did not leave the hold as this rig's plant does ("
                    + ("late: stiction or a slow start" if d > 0 else "early: a lurch, or something pushing the arm") + ")")
     return "; and ".join(why)
+
+
+def _chirp_suspect(dlags_s, misfit, rid="R000"):
+    """"" or the sentence that says the chirp, not the runs, is the suspect: the session's releases sit early
+    of the plant's by about the same amount and the chirp fit, though trusted, is not a clean one."""
+    d = np.asarray([x for x in dlags_s if np.isfinite(x)], float)
+    if len(d) < MODEL_RATIO_MIN_RUNS or not (np.isfinite(misfit) and misfit > CHIRP_SUSPECT_MISFIT): return ""
+    m = float(np.median(d))
+    if not m <= -CHIRP_SUSPECT_EARLY_S: return ""
+    if float(np.mean(np.abs(d - m) <= CHIRP_SUSPECT_SPREAD_S)) < MODEL_RATIO_AGREE_SHARE: return ""
+    return (f"SUSPECT THE CHIRP, NOT THE RUNS: across this session the release is {m * 1e3:+.1f} ms from where the plant identified "
+            f"from {rid} puts it (median of {len(d)} runs, most of them within {CHIRP_SUSPECT_SPREAD_S * 1e3:g} ms of that), and the "
+            f"model leaves {100 * misfit:.1f} % of the chirp unexplained. A chirp the drive could not quite follow (8 deg at 10 Hz "
+            f"is 500 deg/s; a release asks for much less) fits a plant with delay the rig does not have, and every good run then "
+            f"looks early by that much. If runs below are flagged \"early: a lurch\" by about this amount, look at {rid} before "
+            f"the runs: play the chirp again, or score with it left out to see the runs against the fixed limit.")
 
 
 def _score_trace(t, rig_deg, rest_model_deg, t_release, lead_s, tail_s=None):
@@ -601,7 +743,7 @@ def _summ(prm, est):
 
 
 def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=False, accept_session_lag_ms=None,
-          tracking_limit_ms=None):
+          tracking_limit_ms=None, tracking_margin=None):
     d = os.path.join(SESS, name)
     planned = json.load(open(os.path.join(d, "session.json"), encoding="utf-8")).get("provenance")
     prov = provenance()
@@ -654,7 +796,8 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
             why, misfit = _chirp_trust(fit, sp, pos)
             row.update(status="identified", **{f"plant_{k}": v for k, v in fit.items()}, plant_misfit=misfit, plant_trusted=not why,
                        plant_untrusted_why=why)
-            chirp = dict(fit=fit if not why else None, why=f"the plant identified from {rid} is not trusted: {why}" if why else "", rid=rid)
+            chirp = dict(fit=fit if not why else None, why=f"the plant identified from {rid} is not trusted: {why}" if why else "", rid=rid,
+                         misfit=misfit)
             rows.append(row); continue
         sw = ph == 2
         row["tracking_rmse_deg"] = float(np.sqrt(np.mean((pos[sw] - sp[sw]) ** 2)))
@@ -675,29 +818,42 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
                      None if accept_session_lag_ms is None else accept_session_lag_ms / 1e3)
     # What each run is held to. With a trusted chirp fit: what that plant does with the run's own command and
     # setpoint. Otherwise, or when the operator names a limit, one fixed number -- and the report says which.
+    # Two checks, two knobs. The tracking error is held to the plant's prediction times a margin (--tracking-margin),
+    # or to one fixed number (--tracking-limit-ms, or no usable chirp). The release is held to the plant's whenever
+    # there is a trusted plant: neither knob turns that off.
     fit = chirp["fit"]
+    if tracking_margin is not None and not float(tracking_margin) > 0:
+        raise SystemExit(f"--tracking-margin must be a positive number (got {tracking_margin})")
+    margin = TRACKING_PRED_MARGIN if tracking_margin is None else float(tracking_margin)
     if fit is not None:
         for w in work:
+            g, g_used = _hold_gain(w["t"], w["sp"], w["t_all"], w["pos_all"], w["t_rel"])
             w["pred"] = _plant_prediction(w["t"], w["sp"], w["sw"], w["t_rel"], fit, w["t_all"],
-                                          np.asarray(w["e"]["position_setpoint"], float)[w["k0"]:])
-            w["row"].update(tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
+                                          np.asarray(w["e"]["position_setpoint"], float)[w["k0"]:], gain=g_used)
+            w["row"].update(enc_hold_gain=g, tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
                             enc_lag_minus_pred_ms=(w["rel"]["lag_s"] - w["pred"]["lag_s"]) * 1e3)
+    released = (f" The release is still checked against the plant identified from {chirp['rid']} (within "
+                f"{RELEASE_PRED_TOL_S * 1e3:g} ms of predicted): the override replaces the tracking limit, not the release check."
+                if fit is not None else f" There is no release check against a plant: {chirp['why']}.")
     if tracking_limit_ms is not None:
         source = "override"
-        note = (f"TRACKING LIMIT OVERRIDE USED: every run is held to --tracking-limit-ms {float(tracking_limit_ms):g} and to nothing "
-                "else" + (f"; the plant identified from {chirp['rid']} is reported (tracking_pred_ms, enc_lag_minus_pred_ms) but does "
-                          "not judge the runs." if fit is not None else f"; {chirp['why']}."))
+        note = (f"TRACKING LIMIT OVERRIDE USED: every run's tracking error is held to --tracking-limit-ms {float(tracking_limit_ms):g} "
+                f"in place of the plant-derived limit." + released
+                + (" --tracking-margin is ignored when --tracking-limit-ms is given." if tracking_margin is not None else ""))
     elif fit is not None:
         source = "plant"
         note = (f"tracking is judged against the plant identified from {chirp['rid']} ({fit['wn_hz']:.2f} Hz, zeta {fit['zeta']:.3f}, "
-                f"delay {fit['delay_ms']:.1f} ms): a run is flagged when its tracking error is over max({TRACKING_PRED_MARGIN:g} x "
-                f"predicted, {TRACKING_PRED_FLOOR_MS:g} ms) or its release is more than {RELEASE_PRED_TOL_S * 1e3:g} ms from predicted.")
+                f"delay {fit['delay_ms']:.1f} ms): a run is flagged when its tracking error is over sqrt(({margin:g} x predicted)^2 + "
+                f"{TRACKING_PRED_FLOOR_MS:g}^2) ms or its release is more than {RELEASE_PRED_TOL_S * 1e3:g} ms from predicted."
+                + (f" TRACKING MARGIN SET BY THE OPERATOR: --tracking-margin {margin:g} (the default is {TRACKING_PRED_MARGIN:g}); the "
+                   f"release check is unchanged." if tracking_margin is not None else ""))
     else:
         source = "fixed"
         note = (f"TRACKING LIMIT IS NOT PLANT-DERIVED: {chirp['why']}, so every run is held to the fixed "
                 f"{TRACKING_TIME_ERR_MAX_MS:g} ms. That number belongs to the simulated plant (6.35 Hz, zeta 0.23): on a slower rig "
                 "it flags good runs, on a faster or ILC-corrected one it passes sluggish starts, and it cannot see a fault "
-                "that is in every run (stiction, a slow start, a forward lurch). Plan the session with --chirp and play R000.")
+                "that is in every run (stiction, a slow start, a forward lurch). Plan the session with --chirp and play R000."
+                + (" --tracking-margin has no effect without a trusted chirp." if tracking_margin is not None else ""))
     track_max = TRACKING_TIME_ERR_MAX_MS if tracking_limit_ms is None else float(tracking_limit_ms)
     # Pass 2: score.
     for w in work:
@@ -717,20 +873,7 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
         row.update({f"enc_{k}": v for k, v in dlv.items()})
         row["delivered_band_ok"] = row["enc_band"] == row["int_band"]
         row["tracking_aligned_rmse_deg"], row["tracking_time_err_ms"] = _tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
-        status = "scored"
-        # The score above is kept in either case: it is an honest score of what the arm did. What the arm did was
-        # not the command, so the run does not count as a delivery of its scenario, whatever band it landed in.
-        if source == "plant" and np.isfinite(pred["time_err_ms"]):
-            row["tracking_limit_ms"] = _tracking_limit(pred["time_err_ms"])
-            why = _plant_verdict(row["tracking_time_err_ms"], row["tracking_aligned_rmse_deg"], rel["lag_s"], pred)
-            if why:
-                status = f"tracking flagged: {why}"; row["delivered_band_ok"] = False
-        else:                                            # the fixed limit, or the operator's
-            row["tracking_limit_ms"] = track_max
-            if not row["tracking_time_err_ms"] <= track_max:
-                status = (f"tracking flagged: tracking error {row['tracking_time_err_ms']:.1f} ms (rms {row['tracking_aligned_rmse_deg']:.2f} deg "
-                          f"with the release lag removed) is over the limit of {track_max:g} ms: the arm did not follow this command")
-                row["delivered_band_ok"] = False
+        status = "scored"; w["scored"] = True            # whether it is tracking flagged is decided in pass 3
         if phones:
             tp, _ap, wp = _phone_angle(phones[i]); te = np.arange(len(e["position"])) / FS
             # Three things can go wrong here and each is called what it is: the sync (pulse alignment), the
@@ -763,6 +906,29 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
                     row.update({f"ph_{k}": v for k, v in ph_s.items()})
                     row["phone_status"] = f"ok (sign {sg:+.0f}, lag {lag:.3f} s, bias {bias:+.3f} deg/s removed)"
         row["status"] = status
+    # Pass 3: tracking. It comes last because, like the lag, part of it is a question about the session: runs that
+    # agree with each other on a ratio the model does not predict are one finding about the model, not N faults.
+    # The score is kept in every case: it is an honest score of what the arm did. A flagged run does not count as
+    # a delivery of its scenario, whatever band it landed in.
+    judged = [w for w in work if w.get("scored")]
+    no_pred = dict(time_err_ms=np.nan, lag_s=np.nan)
+    R = _session_ratio([], margin)
+    if source == "plant":
+        R = _session_ratio([w["row"]["tracking_time_err_ms"] / w["pred"]["time_err_ms"] for w in judged
+                            if np.isfinite(w["pred"]["time_err_ms"]) and w["pred"]["time_err_ms"] >= MODEL_RATIO_MIN_PRED_MS
+                            and not abs(w["rel"]["lag_s"] - w["pred"]["lag_s"]) > RELEASE_PRED_TOL_S], margin)
+    for w in judged:
+        row, rel = w["row"], w["rel"]; pred = w["pred"] if fit is not None else no_pred
+        terr, rms = row["tracking_time_err_ms"], row["tracking_aligned_rmse_deg"]
+        if source == "plant" and np.isfinite(pred["time_err_ms"]):
+            row["tracking_limit_ms"] = _tracking_limit(pred["time_err_ms"], R["margin"])
+            why = _plant_verdict(terr, rms, rel["lag_s"], pred, margin=R["margin"], session=R["median"] if R["mismatch"] else None)
+        else:                                            # the fixed limit, the operator's, or a run the plant has no prediction for
+            row["tracking_limit_ms"] = track_max
+            if source == "plant": row["tracking_limit_source"] = "fixed"       # this run only, and the row says so
+            why = _plant_verdict(terr, rms, rel["lag_s"], pred, limit_ms=track_max)
+        if why:
+            row["status"] = f"tracking flagged: {why}"; row["delivered_band_ok"] = False
     rep = pd.DataFrame(rows)
     rep["provenance_mismatch"] = ",".join(stale)
     # the session's lag, what was concluded from it, and the override if one was used to score: on every row,
@@ -772,11 +938,21 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
     rep["session_lag_finding"] = S["finding"]
     rep["session_lag_override_ms"] = S["override_s"] * 1e3
     # The limit each run was held to (provisional), where it came from, and the sentence that says so: on every row.
-    # A run that was not scored, and a session without a trusted chirp, carry the fixed or overriding number.
+    # Under the fixed or overriding number every row carries it. Under the plant a run that was not scored has no
+    # limit of its own (NaN): it was never held to one.
     if "tracking_limit_ms" not in rep: rep["tracking_limit_ms"] = np.nan
-    rep["tracking_limit_ms"] = rep["tracking_limit_ms"].fillna(track_max)
-    rep["tracking_limit_source"] = source
+    if source != "plant": rep["tracking_limit_ms"] = rep["tracking_limit_ms"].fillna(track_max)
+    if "tracking_limit_source" not in rep: rep["tracking_limit_source"] = np.nan
+    rep["tracking_limit_source"] = rep["tracking_limit_source"].fillna(source)
     rep["tracking_limit_note"] = note
+    rep["tracking_margin"] = margin if source == "plant" else np.nan
+    rep["tracking_margin_source"] = ("operator" if tracking_margin is not None else "default") if source == "plant" else ""
+    rep["release_check"] = "plant" if fit is not None else "none"
+    rep["tracking_session_ratio"] = R["median"]
+    rep["tracking_session_ratio_runs"] = R["n"]
+    rep["model_mismatch_finding"] = _model_finding(R, chirp["rid"]) if R["mismatch"] else ""
+    rep["chirp_suspect"] = (_chirp_suspect([w["rel"]["lag_s"] - w["pred"]["lag_s"] for w in work if w["rel"]["kind"] in ("", "lag")],
+                                           chirp.get("misfit", np.nan), chirp["rid"]) if fit is not None else "")
     rep.to_csv(os.path.join(d, "report.csv"), index=False)
     _print(rep); return rep
 
@@ -865,6 +1041,13 @@ def chirp_flags(rep):
     return out
 
 
+def model_flags(rep):
+    """[finding] when the session's runs agree on a tracking ratio the identified plant does not predict
+    (_session_ratio). One finding for the session; `score` exits 1 on it."""
+    v = rep.model_mismatch_finding.iloc[0] if "model_mismatch_finding" in rep and len(rep) else ""
+    return [v] if isinstance(v, str) and v else []
+
+
 def tracking_flags(rep):
     """[(run_id, reason)] for every run whose tracking error was over the limit: scored, but not a delivery."""
     out = []
@@ -918,14 +1101,19 @@ def _print(rep):
         for rid, trace, why in flagged: print(f"  {rid} {trace}: {why}")
     tracked = tracking_flags(rep)
     if tracked:
-        print(f"\nTRACKING FLAGGED on {len(tracked)} run(s); the arm did not follow the command, so these are NOT deliveries of "
-              f"their scenarios (counted in the totals above; their scores are in report.csv):")
+        print(f"\nTRACKING FLAGGED on {len(tracked)} run(s); these are NOT counted as deliveries of their scenarios (they are in "
+              f"the totals above; their scores are in report.csv):")
         for rid, why in tracked: print(f"  {rid}: {why}")
     for rid, why in chirp_flags(rep):
         print(f"\nCHIRP FINDING: the chirp run {rid} is {why}. No plant-derived limit is taken from it. Look at {rid} before "
               f"interpreting this session: a chirp the model cannot reproduce means stiction or a deadband coarse enough to "
               f"show at every turning point, a drive that saturates on the chirp (8 deg at 10 Hz is 500 deg/s), or a log that "
               f"is not the chirp. `score` exits with status 1.")
+    for finding in model_flags(rep):                     # said ONCE: it is about the session and the model
+        print("\n" + finding)
+    suspect = rep.chirp_suspect.iloc[0] if "chirp_suspect" in rep and len(rep) else ""
+    if isinstance(suspect, str) and suspect:
+        print("\n" + suspect)
     note = rep.tracking_limit_note.iloc[0] if "tracking_limit_note" in rep and len(rep) else ""
     if isinstance(note, str) and note:                   # said ONCE, like the session finding
         print("\n" + note)
@@ -958,7 +1146,13 @@ def main(argv=None):
     b.add_argument("--tracking-limit-ms", type=float, default=None, metavar="MS",
                    help="override: flag a run whose tracking error is over MS, in place of the limit derived from the session's "
                         f"chirp run (or of the fixed {TRACKING_TIME_ERR_MAX_MS:g} ms used when there is no usable chirp). The limit used and "
-                        "where it came from are written to report.csv (tracking_limit_ms, tracking_limit_source).")
+                        "where it came from are written to report.csv (tracking_limit_ms, tracking_limit_source). With a trusted "
+                        "chirp the release is still checked against the plant: this replaces the tracking limit only.")
+    b.add_argument("--tracking-margin", type=float, default=None, metavar="M",
+                   help=f"the margin on the plant-derived tracking limit: a run is flagged when its tracking error is over "
+                        f"sqrt((M x predicted)^2 + {TRACKING_PRED_FLOOR_MS:g}^2) ms (default {TRACKING_PRED_MARGIN:g}). Use the value a MODEL "
+                        "MISMATCH FINDING printed to accept a rig the identified plant does not quite describe. It does not touch "
+                        "the release check. Recorded in report.csv (tracking_margin, tracking_margin_source).")
     c = sub.add_parser("check-log"); c.add_argument("--bin", required=True); c.add_argument("--player", required=True)
     x = ap.parse_args(argv)
     if x.cmd == "check-log":
@@ -968,8 +1162,9 @@ def main(argv=None):
              reps=x.reps, repeat=x.repeat, seed=x.seed, chirp=x.chirp, blind=not x.no_blind)
     else:
         rep = score(x.name, x.encoder_dir, x.phone_manifest, x.allow_provenance_mismatch,
-                    accept_session_lag_ms=x.accept_session_lag_ms, tracking_limit_ms=x.tracking_limit_ms)
-        if release_flags(rep) or tracking_flags(rep) or error_flags(rep) or chirp_flags(rep):
+                    accept_session_lag_ms=x.accept_session_lag_ms, tracking_limit_ms=x.tracking_limit_ms,
+                    tracking_margin=x.tracking_margin)
+        if release_flags(rep) or tracking_flags(rep) or error_flags(rep) or chirp_flags(rep) or model_flags(rep):
             sys.exit(1)
 
 
