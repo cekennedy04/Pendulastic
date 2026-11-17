@@ -94,6 +94,7 @@ export function makeTrialRecord({
   sessionId, side, params, trajectory, rawJsonl, algorithmVersion,
   captureQuality = 'clean', releaseIdx = 0, releaseOverrideIdx = null,
   unmeasured = [], driftCorrection = 'live', analysisRefusal = null, scoringQuality = null,
+  scoreFormulaId = null, scoringFooting = null,
   settleTargetS = 5.0,
   lateralMotion = null,
   quickTest = false,
@@ -121,6 +122,13 @@ export function makeTrialRecord({
     side,
     timestamp: Date.now(),
     algorithm_version: algorithmVersion,
+    // The composite's formula (pt_score::SCORE_FORMULA_ID) and the replay
+    // footing (replay::SCORING_FOOTING) of the wasm that scored this trial.
+    // null on a record from a wasm before crate 0.4.0, which scored on the
+    // old app footing (50 ms ticks, EMA 0.3, no flex projection); the trends
+    // view reads null as that footing and breaks the series where it changes.
+    score_formula_id: scoreFormulaId,
+    scoring_footing: scoringFooting,
     capture_quality: captureQuality,
     // Which capture protocol physically produced this trial -- distinct from
     // algorithm_version, which says how it was SCORED. Trials terminated by

@@ -249,7 +249,7 @@ def synthesize(t_swing, theta_swing, *, name="trial", phone: Phone | None = None
     prm_k, est_k = B.score_angle(t[keep], knee[keep], t_rel) if keep.sum() > 400 else (None, {})
     tick_t, tick_a = app_ticks(ts, 180.0 + np.interp(ts, t, theta))
     prm, est = None, {}
-    if len(tick_t) > 41:
+    if tick_t[-1] - tick_t[1] >= B.P.MIN_SCORABLE_S:
         prm = B.P.compute_pt_params(tick_t[1:], tick_a[1:], release_idx=int(np.searchsorted(tick_t[1:], t_rel)), detrend=False)
         est = B.P.mas_estimate(prm) if prm else {}
     # The app takes its zero pose on the first sample at or past the capture rate, not at the release, so
@@ -280,9 +280,18 @@ def synthesize(t_swing, theta_swing, *, name="trial", phone: Phone | None = None
     return Trial(name=name, t_s=ts, accel=accel, gyro=gyro, truth=truth)
 
 
-def app_ticks(t_s, angle, tick_s=0.05, alpha=0.3):
-    """The app's fixed-cadence stage (resample.rs): a 50 ms zero-order hold carrying the state as of just
-    before each tick, so tick 0 is NaN, then an EMA seeded by the first finite value."""
+# The app's scoring footing from crate 0.4.0 (replay.rs ReplayConfig::reference(), the reference's
+# imu_calibration_config.REFERENCE_REPLAY_CONFIG): 10 ms ticks, EMA 0.5 as tuned on the 50 ms grid,
+# rescaled to the tick exactly as resample.rs rescale_ema_alpha / imu_calibration_tuner._rescale_ema_alpha
+# do. The flex projection needs no mirror here: the planted angle is already the rotation about the knee.
+APP_TICK_S = 0.01
+APP_EMA_ALPHA = 1.0 - (1.0 - 0.5) ** (APP_TICK_S / 0.05)
+
+
+def app_ticks(t_s, angle, tick_s=APP_TICK_S, alpha=APP_EMA_ALPHA):
+    """The app's fixed-cadence stage (resample.rs): a zero-order hold carrying the state as of just
+    before each tick, so tick 0 is NaN, then an EMA seeded by the first finite value. 10 ms ticks and
+    the rescaled EMA since crate 0.4.0 (50 ms and 0.3 before)."""
     n = int((t_s[-1] - t_s[0]) / tick_s) + 1
     ticks = t_s[0] + np.arange(n) * tick_s
     k = np.searchsorted(t_s, ticks, side="left") - 1          # last sample strictly before the tick

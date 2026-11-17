@@ -679,6 +679,99 @@ def main():
     parts.append(f64_slice("E2E_OCK_ANG", ang_ock,
                            "Same log, method='ockendon' - exercises ockendon_deg in situ."))
 
+    # ---- replay at the REFERENCE footing (crate 0.4.0) ---------------------
+    # ReplayConfig::reference(): 10 ms ticks, EMA 0.5 per 50 ms rescaled to the
+    # tick, flex-axis projection on -- imu_calibration_config's
+    # REFERENCE_REPLAY_CONFIG. Three synthetic logs, each a rigid body rotating
+    # about a FIXED sensor-frame axis k by theta(t), so gyro = rate * k and
+    # accel = gravity rotated into the sensor frame (Rodrigues), consistent
+    # with each other as above:
+    #   REF_INPLANE  -- k = x, the E2E swing: flex and across-gravity agree.
+    #   REF_YAW      -- k tilted 30 deg toward the hold's vertical: the swing
+    #                   has a yaw component, so the flex tier (rotation about
+    #                   the learnt axis) and the across-gravity tier differ.
+    #   REF_NOCOMMIT -- a small swing whose |omega| clears the 1 rad/s capture
+    #                   threshold on fewer than MIN_COMMIT_SAMPLES samples, so
+    #                   the axis never commits and the provisional one is used.
+    from imu_calibration_tuner import ANALYSIS_TICK_S as _ATICK
+    from imu_flex_axis import MIN_COMMIT_SAMPLES as _MIN_COMMIT
+    ref_params = {"beta": 0.041, "ema_alpha": 0.5, "flex_axis_capture": True,
+                  "gravity_seed": True, "method": "relative"}
+
+    def _rodrigues(v, k, ang):
+        k = np.asarray(k, dtype=float)
+        v = np.asarray(v, dtype=float)
+        return (v * math.cos(ang) + np.cross(k, v) * math.sin(ang)
+                + k * float(np.dot(k, v)) * (1.0 - math.cos(ang)))
+
+    def _ref_log(axis, a0_deg, f_hz, tau, total_s, hold_s=2.0, fs=100.0):
+        k = np.asarray(axis, dtype=float)
+        k = k / np.linalg.norm(k)
+        a, w = math.radians(a0_deg), 2.0 * math.pi * f_hz
+        raw, ts_l, ts_ms_l, acc_l, gyr_l = [], [], [], [], []
+        for i in range(int(round(total_s * fs))):
+            t_i = i / fs
+            ts_ms = int(round(t_i * 1000.0))
+            if t_i < hold_s:
+                theta, rate = 0.0, 0.0
+            else:
+                tt = t_i - hold_s
+                env = math.exp(-tt / tau)
+                theta = a * (1.0 - env * math.cos(w * tt))
+                rate = a * env * (math.cos(w * tt) / tau + w * math.sin(w * tt))
+            ripple_a = 0.0015 * math.sin(2.0 * math.pi * 7.0 * t_i)
+            accel = (_rodrigues([0.0, 0.0, 1.0], k, -theta)
+                     + e2e_accel_bias + ripple_a)
+            ripple_g = 0.002 * math.sin(2.0 * math.pi * 9.0 * t_i)
+            gyro = rate * k + e2e_gyro_bias + ripple_g
+            ts_l.append(t_i)
+            ts_ms_l.append(ts_ms)
+            acc_l.append(accel)
+            gyr_l.append(gyro)
+            raw.append({"t": t_i, "role": ROLE_DISTAL, "sensor": "accel",
+                        "v": accel.tolist(), "phone_ts_ms": ts_ms})
+            raw.append({"t": t_i, "role": ROLE_DISTAL, "sensor": "gyro",
+                        "v": gyro.tolist(), "phone_ts_ms": ts_ms})
+        return raw, ts_l, ts_ms_l, acc_l, gyr_l
+
+    parts.append("// ---- replay at the reference footing (see gen_fixtures.py) ----\n\n")
+    ref_cases = [
+        ("REF_INPLANE", [1.0, 0.0, 0.0], 45.0, 1.0, 1.2,
+         "In-plane swing about the sensor x axis."),
+        ("REF_YAW", [1.0, 0.0, math.tan(math.radians(30.0))], 45.0, 1.0, 1.2,
+         "Swing about an axis tilted 30 deg toward the hold's vertical (a yaw component)."),
+        ("REF_NOCOMMIT", [1.0, 0.0, 0.0], 14.0, 1.0, 0.5,
+         "Small swing whose axis never commits (provisional axis used)."),
+    ]
+    ref_angles = {}
+    for tag, axis, a0d, fhz, tau, doc in ref_cases:
+        raw, ts_l, ts_ms_l, acc_l, gyr_l = _ref_log(axis, a0d, fhz, tau, total_s=6.0)
+        n_fast = sum(1 for g in gyr_l if np.linalg.norm(g) >= 1.0)
+        if tag == "REF_NOCOMMIT":
+            assert 0 < n_fast < _MIN_COMMIT, f"{tag}: {n_fast} samples clear the threshold"
+        else:
+            assert n_fast >= _MIN_COMMIT, f"{tag}: only {n_fast} samples clear the threshold"
+        t_ref, ang_ref = replay_trial(raw, ref_params, tick_s=_ATICK)
+        assert len(t_ref) > 0, f"{tag} never zeroed"
+        ref_angles[tag] = (raw, np.asarray(ang_ref))
+        parts.append(f"// {doc}\n")
+        parts.append(f64_slice(f"{tag}_RAW_T", ts_l, "Per-step timestamp (s)."))
+        parts.append(f"pub const {tag}_RAW_TS_MS: &[i64] = &["
+                     + ", ".join(str(v) for v in ts_ms_l) + "];\n\n")
+        parts.append(f64_slice(f"{tag}_RAW_ACCEL", np.asarray(acc_l),
+                               "Raw accel (g's), flattened xyz per step."))
+        parts.append(f64_slice(f"{tag}_RAW_GYRO", np.asarray(gyr_l),
+                               "Raw gyro (rad/s), flattened xyz per step."))
+        parts.append(f64_slice(f"{tag}_T", t_ref,
+                               "replay_trial tick times at ANALYSIS_TICK_S."))
+        parts.append(f64_slice(f"{tag}_ANG", ang_ref,
+                               "replay_trial angle at the reference footing (index 0 NaN)."))
+    # The yaw case must actually separate the tiers, or it tests nothing.
+    raw_y, a_flex = ref_angles["REF_YAW"]
+    _, a_grav = replay_trial(raw_y, dict(ref_params, flex_axis_capture=False), tick_s=_ATICK)
+    sep = float(np.nanmax(np.abs(a_flex - np.asarray(a_grav))))
+    assert sep > 1.0, f"REF_YAW: flex and gravity tiers differ by only {sep:.3f} deg"
+
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("".join(parts))
     print(f"wrote {OUT} ({os.path.getsize(OUT)} bytes)")

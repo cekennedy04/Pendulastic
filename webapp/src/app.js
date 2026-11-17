@@ -118,6 +118,7 @@ export function nextOutcome(latched, event) {
     if ('scoringQuality' in event) action.scoringQuality = event.scoringQuality;
     if ('scoringQualityDetrended' in event) action.scoringQualityDetrended = event.scoringQualityDetrended;
     if ('lateralMotion' in event) action.lateralMotion = event.lateralMotion;
+    if ('provenance' in event) action.provenance = event.provenance;
     return { latched: false, action };
   }
   if (event.reason === 'unscorable') {
@@ -695,7 +696,8 @@ if (typeof document !== 'undefined') {
   // that one call site.
   async function persistTrial(params, trajectory, rawJsonl, ptScore,
                               paramsDetrended, ptScoreDetrended, lateralMotion,
-                              detrendedRefusal, scoringQuality, scoringQualityDetrended) {
+                              detrendedRefusal, scoringQuality, scoringQualityDetrended,
+                              provenance = null) {
     // The STORED record uses the analysis convention (detrend=true) so it
     // agrees with the cohort reports it will be compared against; the live
     // screen keeps the capture app's convention. Which one produced a stored
@@ -738,6 +740,11 @@ if (typeof document !== 'undefined') {
       scoringQuality: (useDetrended ? scoringQualityDetrended : scoringQuality) ?? null,
       // null means NOT MEASURED and is stored as such -- see makeTrialRecord.
       lateralMotion: lateralMotion ?? null,
+      // Which formula and replay footing scored this trial, read from the
+      // wasm (worker.js scoringProvenance). The trends view breaks a series
+      // where the footing changes (crate 0.4.0, owner decision Q2).
+      scoreFormulaId: provenance?.scoreFormulaId ?? null,
+      scoringFooting: provenance?.scoringFooting ?? null,
       params: storedParams,
       trajectory,
       rawJsonl,
@@ -2196,7 +2203,7 @@ if (typeof document !== 'undefined') {
         .then((rawJsonl) => persistTrial(p, action.trajectory, rawJsonl, action.ptScore,
                                          action.paramsDetrended, action.ptScoreDetrended, action.lateralMotion,
                                          action.detrendedRefusal, action.scoringQuality,
-                                         action.scoringQualityDetrended))
+                                         action.scoringQualityDetrended, action.provenance))
         .catch((err) => {
           el('session-status').textContent =
             `trial was scored but NOT saved: ${err instanceof Error ? err.message : String(err)}`;

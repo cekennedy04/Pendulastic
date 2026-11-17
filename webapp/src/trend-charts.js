@@ -105,7 +105,10 @@ export function drawChart(ctx, { series, width, height, kind, captions = [] }) {
     ctx.fillStyle = ctx.strokeStyle;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    pts.forEach((p, i) => (i ? ctx.lineTo(toX(p.x), toY(p.y)) : ctx.moveTo(toX(p.x), toY(p.y))));
+    // No segment joins points scored on different footings (crate 0.4.0
+    // moved the app onto the reference footing; owner decision Q2).
+    pts.forEach((p, i) => (i && p.seg === pts[i - 1].seg
+      ? ctx.lineTo(toX(p.x), toY(p.y)) : ctx.moveTo(toX(p.x), toY(p.y))));
     ctx.stroke();
     for (const p of pts) {
       ctx.beginPath();
@@ -164,7 +167,7 @@ export function seriesFor(points, key) {
     leg,
     points: points
       .filter((p) => p.leg === leg)
-      .map((p) => ({ x: p.date, y: p[key], hollow: p.thin || p.anyUnmeasured })),
+      .map((p) => ({ x: p.date, y: p[key], hollow: p.thin || p.anyUnmeasured, seg: p.footing ?? null })),
   }));
 }
 

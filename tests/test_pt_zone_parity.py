@@ -322,6 +322,36 @@ def test_the_scorable_span_gate_matches_in_all_three_languages():
     assert int(n.group(1)) == int(nc.group(1)) == pt.MIN_SCORABLE_SAMPLES
 
 
+def test_the_phone_replays_on_the_reference_footing():
+    """Crate 0.4.0 moved the phone onto the footing the corpus is scored on
+    (owner decision Q1, plan 2026-11-16 section 3.1): ReplayConfig::reference()
+    in replay.rs and REFERENCE_REPLAY_CONFIG + ANALYSIS_TICK_S here. If either
+    side changes alone, the app and the reference score different curves."""
+    import imu_calibration_config as icc
+    import imu_calibration_tuner as tuner
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    core = os.path.join(root, "mobile-imu-core", "src")
+    replay_rs = open(os.path.join(core, "replay.rs"), encoding="utf-8").read()
+    resample_rs = open(os.path.join(core, "resample.rs"), encoding="utf-8").read()
+    ahrs_rs = open(os.path.join(core, "ahrs.rs"), encoding="utf-8").read()
+    body = re.search(r"pub fn reference\(\) -> Self \{(.*?)\n    \}", replay_rs, re.S)
+    assert body, "ReplayConfig::reference() not found"
+    body = body.group(1)
+    ref = icc.REFERENCE_REPLAY_CONFIG
+    assert float(re.search(r"ema_alpha: ([0-9.]+),", body).group(1)) == ref["ema_alpha"]
+    assert "tick_s: ANALYSIS_TICK_S," in body
+    assert ("flex_axis_capture: true," in body) == ref["flex_axis_capture"]
+    assert "method: Method::Relative," in body and ref["method"] == "relative"
+    assert "beta: crate::ahrs::BETA," in body
+    beta = re.search(r"pub const BETA: f64 = ([0-9.]+);", ahrs_rs)
+    assert beta and float(beta.group(1)) == ref["beta"]
+    tick = re.search(r"pub const ANALYSIS_TICK_S: f64 = ([0-9.]+);", resample_rs)
+    assert tick and float(tick.group(1)) == tuner.ANALYSIS_TICK_S
+    assert ref["gravity_seed"] is True   # the Rust AHRS always gravity-seeds
+    footing = re.search(r'pub const SCORING_FOOTING: &str = "([^"]+)";', replay_rs)
+    assert footing and footing.group(1) == "ref-100hz-ema0.5-flex"
+
+
 def test_the_selectable_superset_matches_between_languages():
     """ALL_PT_KEYS is wider than the scored set and must agree in both.
 

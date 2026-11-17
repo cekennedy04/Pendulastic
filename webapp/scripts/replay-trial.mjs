@@ -27,7 +27,8 @@ import { captureQualityOf, SETTLE_TARGET_S } from '../src/capture-feedback.js';
 
 const STATE_NAMES = ['moving', 'holding', 'ready', 'released', 'settled'];
 // capture.js posts exactly this with `start`; it is inline there, not exported.
-const CAPTURE_CFG = { beta: 0.041, emaAlpha: 0.3 };
+// The wasm ignores both since crate 0.4.0 (it scores on ReplayConfig::reference()).
+const CAPTURE_CFG = { beta: 0.041, emaAlpha: 0.5 };
 
 function parseArgs(argv) {
   const out = { file: null, batch: 1, trajectory: false, wasm: null };

@@ -297,3 +297,30 @@ test('a session whose only trials are excluded yields no point at all', () => {
   );
   assert.deepEqual(s, [], 'an all-excluded session still plotted');
 });
+
+// Owner decision Q2 (2026-11-16): crate 0.4.0 moved the app onto the reference
+// footing, so trials from either side of the upgrade never share a median and
+// the line is never drawn across the change.
+test('a session mixing footings gives one point per footing, never a pooled median', async () => {
+  const { LEGACY_FOOTING } = await import('../src/views/trends.js');
+  const s = sessionSeries(
+    [{ id: 's1', timestamp: 1 }],
+    { s1: [
+      { side: 'left', params: { a0_deg: 40 }, scoring_footing: null },
+      { side: 'left', params: { a0_deg: 50 }, scoring_footing: 'ref-100hz-ema0.5-flex' },
+    ] },
+    { scoreOf: () => 0.3 },
+  );
+  assert.equal(s.length, 2);
+  assert.deepEqual(s.map((p) => [p.footing, p.a0]).sort(),
+    [[LEGACY_FOOTING, 40], ['ref-100hz-ema0.5-flex', 50]].sort());
+});
+
+test('trend series points carry their footing so the chart can break the line', async () => {
+  const { seriesFor } = await import('../src/trend-charts.js');
+  const [leg] = seriesFor([
+    { leg: 'left', date: 1, a0: 40, footing: 'app-20hz-ema0.3' },
+    { leg: 'left', date: 2, a0: 41, footing: 'ref-100hz-ema0.5-flex' },
+  ], 'a0');
+  assert.deepEqual(leg.points.map((p) => p.seg), ['app-20hz-ema0.3', 'ref-100hz-ema0.5-flex']);
+});

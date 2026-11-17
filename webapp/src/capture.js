@@ -115,7 +115,7 @@ export async function startCapture({ onState, onResult, onError, onSamples }) {
       else onError(m.reason);
     }
   };
-  worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3 } });
+  worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.5 } });
 
   let buf = new Float64Array(CAP * FLOATS_PER_SAMPLE);
   let n = 0;

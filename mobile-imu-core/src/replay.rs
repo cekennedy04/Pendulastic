@@ -3,7 +3,8 @@
 //! This is the sequencing the Python reference performs in
 //! `imu_calibration_tuner.replay_trial` — bias calibration, release capture,
 //! per-sample fusion, tick resample, EMA. It owns no algorithm: every stage is
-//! a call into `ahrs`, `calibration`, `stillness`, `resample`, `goniometry`.
+//! a call into `ahrs`, `calibration`, `stillness`, `resample`, `goniometry`,
+//! `flex_axis`.
 //!
 //! Ordering is a contract, not a style choice. Accel must be processed before
 //! gyro at the same timestamp (the gyro branch reads the stored accel), and
@@ -15,8 +16,9 @@ use crate::ahrs::{gravity_seed, qconj, qmul, MadgwickAhrs, Quat, Vec3};
 use crate::calibration::{
     calibrate_accel_bias, calibrate_gyro_bias, gravity_dir_from_hold, ReleaseDetector,
 };
+use crate::flex_axis::FlexAxisEstimator;
 use crate::goniometry::{ockendon_deg, OCKENDON_FT_RATIO};
-use crate::resample::{ema_smooth, tick_resample, TICK_S};
+use crate::resample::{ema_smooth, rescale_ema_alpha, tick_resample, ANALYSIS_TICK_S, TICK_S};
 use crate::stillness::{is_stationary_window, SampleBuf, GYRO_BIAS_WINDOW_S};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,23 +50,66 @@ pub enum Method {
 #[derive(Clone, Copy, Debug)]
 pub struct ReplayConfig {
     pub beta: f64,
+    /// EMA alpha as tuned on the [`TICK_S`] (50 ms) grid. [`replay`] rescales
+    /// it to `tick_s` with [`rescale_ema_alpha`], exactly as `replay_trial`
+    /// does, so the same value means the same filter at every tick.
     pub ema_alpha: f64,
     pub method: Method,
     /// KTD10: the live path passes no magnetometer even when one is present.
     pub use_mag: bool,
     /// KTD9 `set_release_override`: index into the sample slice.
     pub release_override: Option<usize>,
+    /// Output grid, seconds: [`ANALYSIS_TICK_S`] on the reference footing,
+    /// [`TICK_S`] on the pre-0.4.0 app footing.
+    pub tick_s: f64,
+    /// Project the swing onto a flexion axis learnt from the swing itself
+    /// (`replay_trial`'s `flex_axis_capture`). Off, the swing is the rotation
+    /// across gravity, as the app scored before 0.4.0.
+    pub flex_axis_capture: bool,
+}
+
+/// Name of the footing [`ReplayConfig::reference`] builds, stored on every
+/// trial record from crate 0.4.0 (`scoring_footing`). Pinned against the
+/// config's own fields by `tests/replay_test.rs`.
+pub const SCORING_FOOTING: &str = "ref-100hz-ema0.5-flex";
+
+impl ReplayConfig {
+    /// The reference footing: the configuration `imu_calibration_tuner`
+    /// scores the corpus with (`imu_calibration_config.REFERENCE_REPLAY_CONFIG`
+    /// in Python) — 10 ms ticks, EMA 0.5 per 50 ms, flex projection on. The
+    /// app scores on it from crate 0.4.0 so a trial scores the same on the
+    /// phone and on the desktop. Pinned here, not passed in from JS, so
+    /// `ALGORITHM_VERSION` (crate version, git revision, wasm hash) changes
+    /// whenever it does.
+    pub fn reference() -> Self {
+        Self {
+            beta: crate::ahrs::BETA,
+            ema_alpha: 0.5,
+            method: Method::Relative,
+            use_mag: false,
+            release_override: None,
+            tick_s: ANALYSIS_TICK_S,
+            flex_axis_capture: true,
+        }
+    }
+
+    /// The app footing before crate 0.4.0: 50 ms ticks, EMA 0.3, no flex
+    /// projection. Kept for the fixtures that pin the AHRS, the hold and the
+    /// tick stage, which the footing change does not alter, and for
+    /// re-scoring a pre-0.4.0 record the way it was scored.
+    pub fn app_pre_v0_4() -> Self {
+        Self {
+            ema_alpha: 0.3,
+            tick_s: TICK_S,
+            flex_axis_capture: false,
+            ..Self::reference()
+        }
+    }
 }
 
 impl Default for ReplayConfig {
     fn default() -> Self {
-        Self {
-            beta: crate::ahrs::BETA,
-            ema_alpha: 0.3,
-            method: Method::Relative,
-            use_mag: false,
-            release_override: None,
-        }
+        Self::reference()
     }
 }
 
@@ -98,6 +143,10 @@ pub struct TrialResult {
     pub release_quat: Quat,
     /// Index into the input slice where release fired.
     pub release_idx: usize,
+    /// The flexion axis the swing was projected onto (sensor frame, unit),
+    /// or `None` when `flex_axis_capture` is off or no sample after the zero
+    /// cleared the capture threshold.
+    pub flex_axis: Option<Vec3>,
 }
 
 fn sub3(a: Vec3, b: Vec3) -> Vec3 {
@@ -123,8 +172,32 @@ pub const NOMINAL_GYRO_DT_S: f64 = 0.01;
 /// Rotation magnitude from the zero pose, in degrees. Quaternion delta rather
 /// than differenced Euler angles: pitch extraction is unreliable near ±90°,
 /// exactly where a pendulum swing's tibia passes.
-fn swing_deg(q_zero: Quat, q_cur: Quat, g_zero: Option<Vec3>) -> f64 {
+///
+/// Three tiers, in `replay_trial`'s order (`_swing_from_quats`): a captured
+/// flexion axis, else the rotation across gravity, else the total rotation.
+/// Every tier reports a magnitude (`abs()`): the clinical corpus is scored on
+/// it, and a signed variant regressed its test-retest, so it stays out.
+fn swing_deg(q_zero: Quat, q_cur: Quat, g_zero: Option<Vec3>, flex_axis: Option<Vec3>) -> f64 {
     let d = qmul(qconj(q_zero), q_cur);
+
+    // With a flexion axis, report only the rotation about it. The axis is
+    // learnt from the swing's own gyro (`FlexAxisEstimator`), so rotation
+    // about any other axis -- the yaw drift the gravity tier removes, and
+    // also any abduction or wobble across the knee -- is discarded.
+    if let Some(a) = flex_axis {
+        let q = if d[0] >= 0.0 {
+            d
+        } else {
+            [-d[0], -d[1], -d[2], -d[3]]
+        };
+        let sin_half = (q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if sin_half <= 1e-9 {
+            return 0.0;
+        }
+        let theta = 2.0 * q[0].min(1.0).acos();
+        let along = (q[1] * a[0] + q[2] * a[1] + q[3] * a[2]) / sin_half;
+        return (theta * along).to_degrees().abs();
+    }
 
     // With a gravity reference, report rotation ACROSS the vertical only and
     // discard rotation about it. Ported from the reference 2026-10-27.
@@ -185,7 +258,8 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     let mut last_ts: Option<i64> = None;
     let mut seeded = false;
     let mut calib_was_stable = false;
-        let mut zero: Option<(Quat, usize, Option<Vec3>)> = None;
+    let mut zero: Option<(Quat, usize, Option<Vec3>)> = None;
+    let mut flex = FlexAxisEstimator::default();
 
     let mut sample_t: Vec<f64> = Vec::with_capacity(samples.len());
     let mut sample_q: Vec<Quat> = Vec::with_capacity(samples.len());
@@ -237,6 +311,18 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                     zero = Some((ahrs.q, i, gravity_dir_from_hold(&accel_hold)));
                 }
 
+                // The flexion axis is learnt from the zero-capture sample
+                // onward, as `replay_trial` feeds it: raw gyro, with the
+                // bias-corrected accel as gravity, before this sample is
+                // integrated. The estimator ignores sub-threshold samples and
+                // stops once committed, so it is fed unconditionally after
+                // the zero. Under a release override the feed starts at the
+                // override's sample, because the axis belongs to the swing the
+                // zero pose starts; the reference has no override to compare.
+                if cfg.flex_axis_capture && zero.is_some() {
+                    flex.update(s.v, accel);
+                }
+
                 if zero.is_none() {
                     let stable = is_stationary_window(&gyro_hold, &accel_hold, s.t);
                     if stable && !calib_was_stable {
@@ -267,11 +353,15 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     }
 
     let (release_quat, release_idx, g_zero) = zero.ok_or(TrialError::ReleaseNeverDetected)?;
+    // The final estimate projects every sample, pre-release ones included, as
+    // `replay_trial` projects every tick with the axis it ends on. If the
+    // swing never commits an axis the provisional one is used, as there.
+    let flex_axis = if cfg.flex_axis_capture { flex.axis() } else { None };
 
     let angle_raw: Vec<f64> = sample_q
         .iter()
         .map(|q| {
-            let sw = swing_deg(release_quat, *q, g_zero);
+            let sw = swing_deg(release_quat, *q, g_zero, flex_axis);
             match cfg.method {
                 Method::Relative => 180.0 - sw,
                 Method::Ockendon => ockendon_deg(sw, OCKENDON_FT_RATIO),
@@ -279,11 +369,12 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
         })
         .collect();
 
-    let (t, held) = tick_resample(&sample_t, &angle_raw, TICK_S);
+    let (t, held) = tick_resample(&sample_t, &angle_raw, cfg.tick_s);
     Ok(TrialResult {
         t,
-        angle_deg: ema_smooth(&held, cfg.ema_alpha),
+        angle_deg: ema_smooth(&held, rescale_ema_alpha(cfg.ema_alpha, cfg.tick_s)),
         release_quat,
         release_idx,
+        flex_axis,
     })
 }

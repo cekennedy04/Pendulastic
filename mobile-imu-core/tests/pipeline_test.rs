@@ -95,6 +95,9 @@ fn run(method: Method, use_mag: bool) -> TrialResult {
         method,
         use_mag,
         release_override: None,
+        // The golden run's footing (50 ms, no flex), which these fixtures pin.
+        tick_s: mobile_imu_core::resample::TICK_S,
+        flex_axis_capture: false,
     };
     replay(&raw_log(), &cfg).expect("release must be detected")
 }
