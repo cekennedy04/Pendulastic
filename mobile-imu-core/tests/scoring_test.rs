@@ -946,3 +946,36 @@ fn quality_codes_are_a_stable_contract() {
     );
     assert_eq!(QualityFlag::A0ExceedsCurve.code(), "a0_exceeds_curve");
 }
+
+/// A hold, then an ideal damped pendulum released exactly at 1.0 s (100 Hz).
+fn ideal_swing(damping: f64) -> (Vec<f64>, Vec<f64>) {
+    let t: Vec<f64> = (0..1000).map(|i| i as f64 / 100.0).collect();
+    let a = t
+        .iter()
+        .map(|&ti| {
+            let tt = (ti - 1.0).max(0.0);
+            let phi = if ti < 1.0 {
+                45.0
+            } else {
+                45.0 * (-damping * tt).exp() * (2.0 * std::f64::consts::PI * tt).cos()
+            };
+            120.0 + phi
+        })
+        .collect();
+    (t, a)
+}
+
+#[test]
+fn n_does_not_move_with_the_release_by_30_ms() {
+    // Mirrors tests/test_pt_score.py: N counted from the first trough (plan
+    // 2026-11-16 section 3.2), so a release flagged up to 30 ms either side
+    // gives one N.
+    for (damping, expected) in [(0.3, 8.5), (0.5, 6.0), (0.8, 3.5)] {
+        let (t, a) = ideal_swing(damping);
+        for shift in -3i64..=3 {
+            let r = (100 + shift) as usize;
+            let p = compute_pt_params(&t, &a, Some(r), false).expect("scorable");
+            assert_eq!(p.n, expected, "damping {damping}, shift {shift}");
+        }
+    }
+}

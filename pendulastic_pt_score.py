@@ -230,7 +230,7 @@ HEALTHY_REF = {
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
-    "f":             0.9511,   # unchanged 2026-11-16; was 0.8839 (2026-09-09)
+    "f":             0.9501,   # 2026-11-16 with N from the first trough; 0.9511 before, 0.8839 (2026-09-09)
 
     # Same: introduced in that study, no published healthy value. ALSO the
     # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
@@ -3465,6 +3465,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # see _active_oscillation_window_end's own docstring for why an
     # unbounded resting tail miscounts noise as real oscillation cycles.
     window_end_t = _active_oscillation_window_end(t_r, ang_r, pk_i2, tr_i2, neutral, A0)
+
+    # Count N from the first trough (plan 2026-11-16, section 3.2). A peak found
+    # before the first counted trough is the release, not a half-cycle: the
+    # swing-centred frame turns the first instants after release -- the limb
+    # still settling off the hand, or the boxcar centre falling faster than
+    # the limb -- into a "shoulder" peak whose prominence sits on the count
+    # threshold, so whether it was counted flipped with 10 ms of release
+    # timing (docs/reports oscillation-count sensitivity, e29916087). Kept
+    # when no trough is ever counted (owner decision Q3): that leaves a
+    # heavily damped rebound alone.
+    #
+    # Dropped AFTER the window bound is computed, so the window still sees
+    # every extremum (owner decision, 2026-11-16). Dropping it before let the
+    # gap median be set by resting-tail extrema on a fall with a real mid-fall
+    # rebound, and counted them (N 1.0 -> 2.0 on one corpus trial); after it,
+    # every corpus N change is the intended -0.5.
+    _first_tr = next((int(i) for i in tr_i2
+                      if (phi[int(i)] - phi_centre[int(i)]) < -min_amp), None)
+    if _first_tr is not None:
+        pk_i2 = pk_i2[pk_i2 > _first_tr]
+
     pk_i2 = pk_i2[t_r[pk_i2] <= window_end_t]
     tr_i2 = tr_i2[t_r[tr_i2] <= window_end_t]
 

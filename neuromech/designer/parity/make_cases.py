@@ -204,6 +204,15 @@ def edge_cases(idx_rows, seed):
     # duplicate timestamps in the source time base
     td = np.repeat(np.arange(0, 12, 0.02), 2)[:len(t)]; td = np.sort(td)
     E.append(("dup-timestamps", td, swing(40.0, tt=td), 2.0))
+    # N counted from the first trough: the release flagged up to 30 ms either side of the true one
+    for zeta in (0.05, 0.13):
+        sw = swing(45.0, zeta=zeta)
+        for shift in (-0.03, -0.01, 0.0, 0.01, 0.03):
+            E.append((f"release-shift-z{zeta:g}-{shift:+g}s", t, sw, 2.0 + shift))
+    # lone early peak, no counted trough (owner decision Q3)
+    from scipy.interpolate import PchipInterpolator
+    lone = 100.0 + PchipInterpolator([0, 2.0, 2.5, 2.9, 3.4, 12.0], [60, 60, 0, 8, 0, 0])(t)
+    E.append(("lone-early-peak", t, lone, 2.0))
     for name, tt, aa, rel in E:
         _write_case(idx_rows, f"edge/{name}", "edge", tt, aa, rel)
 

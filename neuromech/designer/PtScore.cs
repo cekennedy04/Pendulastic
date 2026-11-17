@@ -128,7 +128,7 @@ namespace Pendulastic
             d["phi_max_ratio"] = 0.6264;
             d["omega_max_n"] = 6.6702;
             d["omega_min_n"] = -6.4839;
-            d["f"] = 0.9511;
+            d["f"] = 0.9501;
             d["area_ratio"] = 0.1678;
             return d;
         }
@@ -251,12 +251,24 @@ namespace Pendulastic
             }
 
             double window_end_t = ActiveOscillationWindowEnd(t_r, ang_r, pk, tr, neutral, A0);
+
+            double[] phi_g = new double[L];
+            for (int i = 0; i < L; i++) phi_g[i] = phi[i] - phi_centre[i];
+            // Count N from the first trough (pendulastic_pt_score, plan 2026-11-16 section 3.2): a peak before
+            // the first counted trough is the release, not a half-cycle; kept when no trough is counted. Dropped
+            // AFTER the window bound is computed, so the window still sees every extremum.
+            int gateTr = -1;
+            for (int k = 0; k < tr.Length; k++) if (phi_g[tr[k]] < -min_amp) { gateTr = tr[k]; break; }
+            if (gateTr >= 0)
+            {
+                var kept = new List<int>();
+                for (int k = 0; k < pk.Length; k++) if (pk[k] > gateTr) kept.Add(pk[k]);
+                pk = kept.ToArray();
+            }
             pk = FilterByTime(pk, t_r, window_end_t);
             tr = FilterByTime(tr, t_r, window_end_t);
 
             // ── 1. R2n (A1 = peak-to-peak of the first oscillation) ──
-            double[] phi_g = new double[L];
-            for (int i = 0; i < L; i++) phi_g[i] = phi[i] - phi_centre[i];
             int firstNegTr = -1;
             for (int k = 0; k < tr.Length; k++) if (phi_g[tr[k]] < -min_amp) { firstNegTr = tr[k]; break; }
             double A1, first_trough_depth;

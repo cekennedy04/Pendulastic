@@ -202,17 +202,21 @@ def test_a_pure_delay_changes_neither_N_nor_the_band(delayed, ms):
     assert np.max(np.abs(got.enc_pt7 - ref.enc_pt7)) < 1e-3, (got.enc_pt7 - ref.enc_pt7).tolist()
 
 
-def test_the_commanded_release_counts_a_late_delivery_as_an_extra_half_cycle():
+def test_the_commanded_release_misreads_a_late_delivery():
     """What the alignment is for, and the proof that the test above can fail: B-claspknife's own command,
-    20 ms late, scored from the commanded release gains half a cycle; from its own release it does not."""
+    20 ms late, scored from the commanded release reads area_ratio 12% low; from its own release it does not.
+    Until 2026-11-16 it also gained half a cycle (6.5 for 6.0). N is now counted from the first trough
+    (plan 2026-11-16 section 3.2), which is exactly the fix for that, so N must NOT move any more."""
     import pandas as pd
     man = pd.read_csv(os.path.join(SS.OUT, "scenario_manifest.csv")).set_index("sid")
     t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", "B-claspknife.csv"))
     t_rel = float(t[np.argmax(ph == 2)]); lead = t_rel - float(t[np.argmax(ph == 1)]) + SS.SCORE_LEAD_S
     late = np.interp(t - 0.020, t, sp); rest = float(man.loc["B-claspknife", "rest_model_deg"])
-    N = lambda rel: SS._summ(*SS._score_trace(t, late, rest, rel, lead))["N"]
-    assert N(t_rel) == man.loc["B-claspknife", "N"] + 0.5
-    assert N(t_rel + 0.020) == man.loc["B-claspknife", "N"]
+    S = lambda rel: SS._summ(*SS._score_trace(t, late, rest, rel, lead))  # noqa: E731
+    ontime, commanded = S(t_rel + 0.020), S(t_rel)
+    assert ontime["N"] == man.loc["B-claspknife", "N"] and commanded["N"] == ontime["N"]
+    assert abs(ontime["area_ratio"] - man.loc["B-claspknife", "area_ratio"]) < 1e-3
+    assert commanded["area_ratio"] < 0.90 * ontime["area_ratio"], (commanded["area_ratio"], ontime["area_ratio"])
 
 
 @pytest.mark.parametrize("ms", [0, 15, 20, 30])

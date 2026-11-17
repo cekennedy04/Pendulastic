@@ -104,7 +104,7 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // parameter sat at ~0.001 for every trial and contributed nothing.
     // Mirrors omega_max_n. -6.3624 (2026-10-27); -9.4152 before.
     omega_min_n: -6.4839,
-    f: 0.9511, // unchanged 2026-11-16; 0.8839 before 2026-10-27
+    f: 0.9501, // 2026-11-16 with N from the first trough; 0.9511 before, 0.8839 before 2026-10-27
     // Least trustworthy entry: leave-one-person-out 0.151-0.204.
     // 0.1766 (2026-10-27); 0.0945 before.
     area_ratio: 0.1678,
@@ -1555,7 +1555,8 @@ mod tests {
         //
         // Now higher, because omega_max_n left the canonical set (2026-11-16):
         // with f unscorable only FOUR terms carry the scale, and area_ratio's
-        // share widens again, /5 -> /4.
+        // share widens again, /5 -> /4. f's reference moving 0.9511 -> 0.9501
+        // (N from the first trough) leaves it alone: f is unscorable here.
         assert!((full - 1.693_882_790_072_013_7_f64).abs() < 1e-15, "full={full:.17}");
     }
 

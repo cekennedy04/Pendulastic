@@ -1110,6 +1110,15 @@ pub fn compute_pt_params_with_limit(
 
     // Bound to the active-oscillation window before counting anything.
     let window_end_t = active_oscillation_window_end(&t_r, &ang_r, &pk_i, &tr_i, neutral, a0);
+
+    // Count N from the first trough (`pendulastic_pt_score`, plan 2026-11-16
+    // section 3.2): a peak before the first counted trough is the release, not
+    // a half-cycle, and kept when no trough is counted. Dropped AFTER the
+    // window bound is computed, so the window still sees every extremum.
+    if let Some(ft) = tr_i.iter().copied().find(|&i| phi_g[i] < -min_amp) {
+        pk_i.retain(|&i| i > ft);
+    }
+
     pk_i.retain(|&i| t_r[i] <= window_end_t);
     tr_i.retain(|&i| t_r[i] <= window_end_t);
 

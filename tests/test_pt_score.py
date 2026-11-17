@@ -1624,3 +1624,40 @@ def test_arrested_limb_with_late_tremor_is_not_a_lift():
     i = _detect_release(t, a)
     assert t[i] < 1.0, f"release moved to t={t[i]:.2f}, into the resting tail"
     assert compute_pt_params(t, a, detrend=False) is not None
+
+
+def _ideal_swing(damping, fs=100.0, release_s=1.0, a0=45.0, f=1.0):
+    """A hold, then an ideal damped pendulum released exactly at release_s."""
+    import numpy as np
+    t = np.arange(0.0, 10.0, 1.0 / fs)
+    tt = np.clip(t - release_s, 0.0, None)
+    phi = np.where(t < release_s, a0, a0 * np.exp(-damping * tt) * np.cos(2 * np.pi * f * tt))
+    return t, 120.0 + phi
+
+
+@pytest.mark.parametrize("damping,expected_n", [(0.3, 8.5), (0.5, 6.0), (0.8, 3.5)])
+def test_n_does_not_move_with_the_release_by_30_ms(damping, expected_n):
+    # Plan 2026-11-16 section 3.2 / oscillation-count report e29916087: before
+    # N was counted from the first trough, a release flagged 20 to 30 ms early
+    # turned the swing-centred frame's start into a counted "shoulder" peak
+    # (8.5 -> 9.0, 6.0 -> 6.5, 3.5 -> 4.0 on these curves). Mirrored in
+    # mobile-imu-core/tests/scoring_test.rs and the C# parity cases.
+    import pendulastic_pt_score as p
+    t, a = _ideal_swing(damping)
+    r = 100
+    got = [p.compute_pt_params(t, a, release_idx=r + s, detrend=False)["N"] for s in range(-3, 4)]
+    assert got == [expected_n] * 7, got
+
+
+def test_a_peak_is_kept_when_no_trough_is_ever_counted():
+    # Owner decision Q3: with no counted trough there is nothing to count from,
+    # so a lone early peak (a heavily damped rebound) is left alone.
+    import numpy as np
+    import pendulastic_pt_score as p
+    fs = 100.0
+    t = np.arange(0.0, 8.0, 1.0 / fs)
+    from scipy.interpolate import PchipInterpolator
+    a = 100.0 + PchipInterpolator([0, 1.0, 1.5, 1.9, 2.4, 8.0], [60, 60, 0, 8, 0, 0])(t)
+    params = p.compute_pt_params(t, a, release_idx=100, detrend=False)
+    assert params is not None
+    assert params["N"] == 0.5, params["N"]

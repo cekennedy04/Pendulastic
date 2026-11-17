@@ -80,7 +80,7 @@ What changes for **the reference** (reference footing, main's scorer to the new 
 | drop `omega_max_n` alone: verdicts | 17 | 16 |
 | both: verdicts | 17 | 17 |
 | both: PT median change, median abs | -0.010, 0.032 | -0.007, 0.032 |
-| first trough: N changes | 59 trials (58 by -0.5, 1 up) | 65 (64 by -0.5, 1 up) |
+| first trough: N changes | 59 trials, all -0.5 | 65, all -0.5 |
 
 **Discrepancy to resolve before implementing (9):** the oscillation-count report found option B
 changes N on 43 trials; this spike finds 59 on screen. The report ran at `e9a3a01`, before the
@@ -117,6 +117,10 @@ of section 7 explains every one of the 59 from its trace, as the report did for 
   replayed trials, both conventions, it is identical to the planned insertion except on that one
   trial, which goes to N 0.5 instead of 2.0, and N changes on 59 / 65 trials, every one by -0.5.
   This moves the insertion point section 3.2 names, so it goes back to the owner before step 2.
+- **Owner approved the fix (2026-11-16)** and it is what shipped: the drop is applied after
+  `_active_oscillation_window_end`, with the window computed on the undropped extrema. The
+  "1 up" this table first showed was that trial under the original insertion point; with the
+  fix every N change is -0.5.
 
 At the app's current 20 Hz footing option B would change N on only 12 trials: the shoulder is
 mostly a property of the 100 Hz grid, so (9) matters to the app because of (8).
@@ -240,12 +244,14 @@ C#: no replay exists in the designer (it scores given curves), so (8) does not t
 ### 3.2 (9) Count N from the first trough
 
 Rule (option B of `docs/oscillation-count-sensitivity`): after the second, swing-centred pass and
-before the active-oscillation window bound, drop every peak whose index is below the first trough
+**after** the active-oscillation window bound has been computed on the undropped extrema (moved
+from "before" by the owner on 2026-11-16, see the step 2 gate result in section 2), drop every peak whose index is below the first trough
 that clears the count gate (`phi - phi_centre < -min_amp`). If no trough clears the gate, drop
 nothing. Trough detection, the centred frame, `A0` and the symmetry integral stay exactly as
 `b44dc7d` left them.
 
-Insertion points, by code (line numbers will move with #94):
+Insertion points, by code (line numbers will move with #94). As planned, each was before the
+window bound; as shipped, each is immediately after it and before the window retains:
 
 - Python `pendulastic_pt_score.compute_pt_params`: about 5 lines after the second-pass block
   (`if len(_ext0) >= 3 and _dt_c > 0:` ... the two `find_peaks` calls on `_phi_sc`) and before
@@ -412,7 +418,9 @@ still better, unify on it in its own change together with re-deriving `phi_max_r
   before and after this change.
 - **(9): marginally.** Re-derived on the 39 interpretable optical controls with option B: `f`
   trial median 0.9511 to 0.9501; `N` median 6.0 unchanged (the `N` reference is the literature
-  anchor 6.5 anyway); every other entry unchanged. Not re-derived here. If #94 re-derives
+  anchor 6.5 anyway); every other entry unchanged. Re-derived with `derive_healthy_ref.py` on
+  the combined scorer after #105 merged: 37 trials, `f` 0.9511 to 0.9501, every other entry
+  unchanged, so this PR sets `HEALTHY_REF["f"]` = 0.9501 in all three ports (Q6). If #94 re-derives
   `HEALTHY_REF` before this lands, its `f` is computed under the old count and will be 0.001 high
   for the new formula; the fix is to re-run `derive_healthy_ref.py` once on the final combined
   scorer, after the rebase, and update `f` only if it moves at the fourth decimal.
@@ -566,6 +574,13 @@ Later on 2026-11-16, draft PR #105 superseded #94. It takes crate 0.3.0 and a ne
 re-derives `HEALTHY_REF` with `f` unchanged. If #105 lands first, this change becomes crate 0.4.0
 with the next formula id, rebases onto #105, and re-runs the three parity checks and step 6. Q6
 is then moot unless the combined scorer moves `f`, which is re-checked after the rebase.
+
+#105 merged to main first. This branch took it by a merge commit (no rebase, no force-push),
+so the crate becomes 0.4.0, the formula id stays `pt5trough-ref-2026-11-16` (distinct from
+#105's `pt6rescaled-ref-2026-11-16`), and the trends series breaks at 0.4.0 rather than 0.3.0
+(Q2). The re-run moved `f` by 0.0010, so Q6 applies (section 6). #105's quality flags
+(`large_drift_correction`, `a0_exceeds_curve_scored_uncorrected`, `a0_exceeds_curve`) include
+no length flag; the Q7 span gate refuses before any drift fit, so the two do not overlap.
 
 ## Not verified
 
