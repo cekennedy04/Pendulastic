@@ -398,6 +398,12 @@ test('the uncalibrated badge is styled neutrally, not as a zone', () => {
   assert.ok(!['zone-healthy', 'zone-borderline', 'zone-impaired'].includes(badge.className));
 });
 
+test('the uncalibrated chip carries a short explanation, and only it does', () => {
+  // A bare "NOT CLASSIFIED" reads as a failure in a demo.
+  assert.match(zoneDisplay('impaired', false).note, /not yet calibrated/);
+  assert.equal(zoneDisplay('healthy', true).note, undefined);
+});
+
 test('the app ships with classification OFF by default', () => {
   // zoneDisplay's default argument is the module-level flag, so calling it
   // with one argument is what the renderer actually does.

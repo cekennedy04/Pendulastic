@@ -23,11 +23,17 @@ test('all seven are offered and the canonical five are a strict subset', () => {
   assert.ok(!CANONICAL_KEYS.includes('omega_max_n'));
 });
 
-test('the app starts with everything visible', () => {
-  assert.deepEqual(defaultSelection(), ALL_PT_KEYS);
-  // ...and that default is deliberately NOT canonical, so the panel always
-  // opens saying so rather than implying a verdict.
-  assert.equal(isCanonical(defaultSelection()), false);
+test('the panel starts on the scored set, so its total matches the headline score', () => {
+  assert.deepEqual(defaultSelection(), CANONICAL_KEYS);
+  assert.equal(isCanonical(defaultSelection()), true);
+  // A fresh copy each time: toggling must never mutate the constant.
+  assert.notEqual(defaultSelection(), CANONICAL_KEYS);
+});
+
+test('every parameter is still listed under the default selection', () => {
+  const rows = selectionRows({ selection: defaultSelection(), breakdown: [], unscorable: [], total: 0 });
+  assert.deepEqual(rows.map((r) => r.key), ALL_PT_KEYS);
+  assert.deepEqual(rows.filter((r) => r.selected).map((r) => r.key), CANONICAL_KEYS);
 });
 
 test('canonicity ignores order, because the UI emits toggle order', () => {

@@ -25,10 +25,9 @@ Background: `DYNAMIC_CHARACTERIZATION_RUN_SHEET.md` (same folder).
       `https://pendulastic-app.vercel.app/?research=1`. Doing everything in Safari keeps the
       scored captures and the raw recordings in one store, so a single export holds both.
       Open a session and read the footer `build … · algorithm …`. Write it on the log.
-      On 2026-11-17 the live site served `algorithm 0.2.0+8aa1055a6e88…`, which is the
-      #98 seed fix. `main` is at `0.3.0+…` (re-derived HEALTHY_REF). That changes the
-      score reference, not capture or export, so either version works for today. Record
-      which one you used.
+      On 2026-11-17 the live site serves `algorithm 0.4.0+aeb3f76…`. After the
+      bench-readiness redeploy (the fix/app-bench-readiness PR) the footer shows a
+      new build id; **record whatever the footer shows**, build and algorithm both.
 
 ## Per-trial routine
 1. Arm at zero and still. Start the phone (see the block for which mode).
@@ -82,6 +81,12 @@ the tap shows up in both traces.
 | PID FIR Filter | **ON** (D without the filter screeches) |
 | Step speed | **30** × 5 trials |
 | Staircase | 0 → +A → −A → +A → 0, dwells 3/3/3/6 s |
+
+After Stop the status line must read `saved — N samples, T s`. If a raw trial instead
+shows **`NOT saved: …`**, log it as `ERROR: NOT saved: <text>` and keep going. This
+should no longer happen after the bench-readiness fix (raw Stop no longer asks the
+app to score, so a still or unscorable recording is saved like any other); if it does,
+it is a bug worth reporting with the trial number.
 
 ## If time remains (optional, ~10 min)
 - Repeat P = 1 × 3 to check repeatability.
