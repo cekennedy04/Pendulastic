@@ -38,7 +38,7 @@ def world(monkeypatch, tmp_path):
 
     params = {k: 1.0 for k in dhr.KEYS}
     monkeypatch.setattr(dhr.prc, "discover_all_trials", discover)
-    monkeypatch.setattr(dhr, "_is_control", lambda pid: str(pid) in {"6", "7"})
+    monkeypatch.setattr(dhr, "_is_control", lambda pid: str(pid) in {"906", "907"})
     monkeypatch.setattr(dhr.pts, "load_optitrack", load)
     monkeypatch.setattr(dhr.pts, "compute_pt_params", lambda t, a: dict(params))
     monkeypatch.setattr(dhr.pts, "mas_estimate",
@@ -48,10 +48,10 @@ def world(monkeypatch, tmp_path):
 
 def test_baseline_filter_accepts_pre_and_any_case_of_default(world):
     recs, _, tmp = world
-    recs += [_rec(tmp, "6", "left", "pre", 1),
-             _rec(tmp, "6", "left", "Default", 2),
-             _rec(tmp, "6", "left", "default", 3),
-             _rec(tmp, "6", "left", "post", 4),
+    recs += [_rec(tmp, "906", "left", "pre", 1),
+             _rec(tmp, "906", "left", "Default", 2),
+             _rec(tmp, "906", "left", "default", 3),
+             _rec(tmp, "906", "left", "post", 4),
              _rec(tmp, "13", "left", "pre", 1)]          # not a control
     rows, unloadable = dhr.control_trials()
     assert len(rows) == 3 and unloadable == []
@@ -63,13 +63,13 @@ def test_the_recorded_diagnosis_must_agree_with_the_control_prefix(monkeypatch, 
     participant, or one with no diagnosis on record, stays out."""
     monkeypatch.setattr(dhr.pp, "find_participant_dir",
                         lambda root, pid: str(tmp_path / f"{dhr.pp.CONTROL_PREFIX}_{pid}"))
-    diagnoses = {"6": "Unaffected Control", "7": "control", "20": "MS",
-                 "21": "Stroke", "22": "Other Motor Impairment", "23": None}
+    diagnoses = {"906": "Unaffected Control", "907": "control", "920": "MS",
+                 "921": "Stroke", "922": "Other Motor Impairment", "923": None}
     monkeypatch.setattr(dhr.pp, "diagnosis_from_metadata",
                         lambda root, pid: diagnoses.get(pid))
-    assert dhr._is_control("6") is True
-    assert dhr._is_control(f"{dhr.pp.CONTROL_PREFIX}_7") is True
-    for pid in ("20", "21", "22", "23"):
+    assert dhr._is_control("906") is True
+    assert dhr._is_control(f"{dhr.pp.CONTROL_PREFIX}_907") is True
+    for pid in ("920", "921", "922", "923"):
         assert dhr._is_control(pid) is False, pid
 
 
@@ -79,12 +79,12 @@ def test_a_control_diagnosis_does_not_admit_a_folder_outside_the_control_prefix(
                         lambda root, pid: str(tmp_path / f"{dhr.pp.MS_PREFIX}_{pid}"))
     monkeypatch.setattr(dhr.pp, "diagnosis_from_metadata",
                         lambda root, pid: "Unaffected Control")
-    assert dhr._is_control("6") is False
+    assert dhr._is_control("906") is False
 
 
 def test_only_interpretable_trials_enter(world, monkeypatch):
     recs, _, tmp = world
-    recs += [_rec(tmp, "6", "left", "pre", 1), _rec(tmp, "6", "left", "pre", 2)]
+    recs += [_rec(tmp, "906", "left", "pre", 1), _rec(tmp, "906", "left", "pre", 2)]
     monkeypatch.setattr(dhr.pts, "mas_estimate",
                         lambda p, _n=iter([True, False]): {"interpretable": next(_n)})
     rows, _ = dhr.control_trials()
@@ -93,7 +93,7 @@ def test_only_interpretable_trials_enter(world, monkeypatch):
 
 def test_cache_is_reused_only_for_the_same_source_and_scorer(world, monkeypatch, tmp_path):
     recs, loads, tmp = world
-    rec = _rec(tmp, "6", "left", "pre", 1)
+    rec = _rec(tmp, "906", "left", "pre", 1)
     recs.append(rec)
     cache = str(tmp_path / "cache")
     os.makedirs(cache)
@@ -113,18 +113,18 @@ def test_cache_is_reused_only_for_the_same_source_and_scorer(world, monkeypatch,
 
 def test_a_pre_metadata_cache_entry_is_not_trusted(world, tmp_path):
     recs, loads, tmp = world
-    recs.append(_rec(tmp, "6", "left", "pre", 1))
+    recs.append(_rec(tmp, "906", "left", "pre", 1))
     cache = tmp_path / "cache"
     cache.mkdir()
-    np.savez(cache / "6_left_pre_T1.npz", t=np.arange(3.0), ang=np.ones(3))
+    np.savez(cache / "906_left_pre_T1.npz", t=np.arange(3.0), ang=np.ones(3))
     dhr.control_trials(str(cache))
     assert len(loads) == 1
 
 
 def test_unloadable_trials_fail_closed_unless_accepted(world, capsys):
     recs, _, tmp = world
-    recs += [_rec(tmp, "6", "left", "pre", 1), _rec(tmp, "7", "right", "pre", 1),
-             _rec(tmp, "7", "right", "pre_broken", 2)]
+    recs += [_rec(tmp, "906", "left", "pre", 1), _rec(tmp, "907", "right", "pre", 1),
+             _rec(tmp, "907", "right", "pre_broken", 2)]
     assert dhr.main([]) == 2
     assert "could not be loaded" in capsys.readouterr().out
     assert dhr.main(["--allow-unloadable"]) == 0
