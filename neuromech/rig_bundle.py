@@ -21,6 +21,9 @@ What goes in, and why:
                         write), as player files (t_s, setpoint_deg, no header, starting at 0), plus R-chirp
   library/INDEX.csv     per file: group, title, duration, peak, fastest per-write rate; scenarios left out are
                         listed with the reason. Expected scores stay on the analysis PC (the bench grades blind).
+  library_x0.70/        the labelled scaled render (owner, 2026-11-17): everything after the 5 deg sync pulses
+                        x0.70, so a 55 deg release becomes 38.5. An invariance probe only: its expected scores
+                        differ from the 1:1 library. Same guard / raw check, own INDEX.csv and README.txt.
   smoke_5deg.csv        a slow 5 deg sine for first contact and the check-log test
   bench_log.csv         a blank run log for library files played with PLAY.bat
   logs/                 where StretchExperiment's .bin logs go
@@ -59,6 +62,10 @@ LIMIT_DEG = 40.0               # owner decision 2026-11-17: hard limit +/-40 deg
 RATE_DPS = 600.0               # owner decision 2026-11-17: at most 600 deg/s per write
 WRITE_MS = 10                  # both players write every 10 ms
 GUARD_FUNCS = ("check_trajectory", "check", "check_player")
+LIB_SCALE = 0.70               # owner decision 2026-11-17: the labelled scaled library set
+SCALED_LABEL = ("SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the 1:1 library.\n"
+                "Everything after the 5 deg sync pulses is multiplied by {scale:.2f} (pulses unchanged). Never compare a\n"
+                "score from these files with the 1:1 library's expected values; INDEX.csv lists what was left out and why.")
 EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup>
@@ -83,7 +90,8 @@ def source_state():
     sha = git("rev-parse", "HEAD")
     dirty = git("status", "--porcelain", "--untracked-files=no", "--", "neuromech", "motor_reference.py",
                 "pendulastic_pt_score.py")
-    return sha, [ln[3:] for ln in dirty.splitlines() if ln.strip()]
+    # git() strips the output, which eats the first line's leading status column: split on the path instead
+    return sha, [ln.split(None, 1)[1] for ln in dirty.splitlines() if ln.strip()]
 
 
 def build_library(allow_near_edge=False):
@@ -128,7 +136,7 @@ def guard_status():
                      + "; update rig_bundle.GUARD_FUNCS to its check function")
 
 
-def guard_verdict(fn, t, sp):
+def guard_verdict(fn, t, sp, info=None):
     """None if the guard passes the file, else its reason. Accepts the shapes a check function might return:
     None/True/'' (pass), a string (reason), False, a dict or an object with ok/reason(s)."""
     r = fn(t, sp)
@@ -138,6 +146,11 @@ def guard_verdict(fn, t, sp):
         return "refused by rig_guard"
     if isinstance(r, str):
         return r
+    if info is not None:
+        for k in ("predicted_peak_deg", "scale_needed"):
+            v = r.get(k) if isinstance(r, dict) else getattr(r, k, None)
+            if v is not None:
+                info[k] = round(float(v), 1) if k == "predicted_peak_deg" else v
     ok = r.get("ok") if isinstance(r, dict) else getattr(r, "ok", None)
     why = (r.get("reason") or r.get("reasons")) if isinstance(r, dict) else (getattr(r, "reason", None) or getattr(r, "reasons", None))
     if ok is None:
@@ -167,34 +180,63 @@ def per_write_rate(t, sp):
     return float(np.max(np.abs(np.diff(np.interp(tw, t, sp))))) / (WRITE_MS / 1000.0) if len(tw) > 1 else 0.0
 
 
-def export_library(out_lib, guard=None):
-    """Player files for every built scenario the guard (or the raw fallback) passes, and an index of all."""
+def sync_end_index(fs=1000.0):
+    """First sample after motor_reference's square sync pulses (lead, then PULSE_COUNT x (pulse + gap))."""
+    import motor_reference as mr
+    return int(round(mr.LEAD_S * fs)) + mr.PULSE_COUNT * (int(round(mr.PULSE_WIDTH_S * fs)) + int(round(mr.PULSE_GAP_S * fs)))
+
+
+def scaled_render(t, sp, scale):
+    """The file with everything after the sync pulses multiplied by scale; the 5 deg pulses stay 5 deg so the
+    alignment edge is unchanged. The signal is 0 where the scaling starts, so nothing steps."""
+    fs = 1.0 / float(t[1] - t[0])
+    i = sync_end_index(fs)
+    if abs(float(sp[i - 1])) > 1e-9 or abs(float(sp[i])) > 1e-9:
+        raise ValueError("the file is not at 0 after the sync pulses; not a motor_reference preamble")
+    out = np.array(sp, dtype=float, copy=True)
+    out[i:] *= scale
+    return out
+
+
+def export_library(out_lib, guard=None, scale=1.0):
+    """Player files for every built scenario the guard (or the raw fallback) passes, and an index of all.
+    scale != 1: the labelled scaled render (an invariance probe), file names <sid>_x<scale>.csv, no chirp."""
     import pandas as pd
     from neuromech import session as SS
     man = pd.read_csv(os.path.join(B.OUT, "scenario_manifest.csv"))
     os.makedirs(out_lib)
+    tag = "" if scale == 1.0 else f"_x{scale:.2f}"
     rows = []
 
-    def add(sid, group, title, t, sp, phase):
+    def add(sid, group, title, t, sp):
+        if scale != 1.0:
+            sp = scaled_render(t, sp, scale)
         peak = float(np.max(np.abs(sp)))
+        info = {}
         why = raw_verdict(t, sp)
         if why is None and guard is not None:
-            why = guard_verdict(guard, t, sp)
+            why = guard_verdict(guard, t, sp, info)
+        name = sid + tag + ".csv"
         if why is None:
-            ilc.write_player(os.path.join(out_lib, sid + ".csv"), t, sp)
-        rows.append(dict(file="" if why else sid + ".csv", sid=sid, group=group, title=title,
+            ilc.write_player(os.path.join(out_lib, name), t, sp)
+        rows.append(dict(file="" if why else name, sid=sid, scale=f"{scale:.2f}", group=group, title=title,
                          duration_s=round(float(t[-1]), 1), peak_deg=round(peak, 1),
                          max_rate_per_write_dps=round(per_write_rate(t, sp), 0),
+                         guard_predicted_peak_deg=info.get("predicted_peak_deg", ""),
                          included="yes" if why is None else "NO: " + why))
 
-    t, sp, _, _, ph = SS.chirp_command()
-    add("R-chirp", "R0", "identification chirp 0.2-10 Hz, 8 deg (play first in a session)", t, sp, ph)
+    if scale == 1.0:
+        t, sp, _, _, _ = SS.chirp_command()
+        add("R-chirp", "R0", "identification chirp 0.2-10 Hz, 8 deg (play first in a session)", t, sp)
     for _, r in man.iterrows():
         a = np.genfromtxt(os.path.join(B.OUT, "setpoints", f"{r.sid}.csv"), delimiter=",", names=True)
-        add(r.sid, r.group, r.title, a["t_s"], a["setpoint_deg"], a["phase"].astype(int))
+        add(r.sid, r.group, r.title, a["t_s"], a["setpoint_deg"])
     with open(os.path.join(out_lib, "INDEX.csv"), "w", newline="", encoding="ascii", errors="replace") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\r\n")
         w.writeheader(); w.writerows(rows)
+    if scale != 1.0:
+        with open(os.path.join(out_lib, "README.txt"), "w", newline="\r\n", encoding="ascii") as fh:
+            fh.write(SCALED_LABEL.format(scale=scale) + "\n")
     return rows
 
 
@@ -292,7 +334,8 @@ START_HERE = r"""PENDULUM RIG BUNDLE  -  START HERE
 ==================================
 Built {date} from commit {sha7} ({sha}).
 Scorer {score_id}, model {model_hash}. {n_lib} scenario files in library\ ({n_out} left out; see
-library\INDEX.csv for each one and why).
+library\INDEX.csv for each one and why). {n_sc} files in library_x{scale:.2f}\ ({n_sc_out} left out):
+SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the 1:1 library.
 Everything here was made on the analysis PC; this PC needs no Python and nothing installed.
 
 PLAYBACK GUARD: {guard}
@@ -308,6 +351,10 @@ Results from this rig are NOT validated yet: do not report scores from a real ri
    *.exe.config             keep each beside its exe: lets it run on .NET 3.5 or .NET 4.x
    library\                 ready-made scenario files; library\INDEX.csv lists them (peak, length, the
                             fastest change between two 10 ms writes: the 5 deg sync pulses alone are 500)
+   library_x{scale:.2f}\            the same scenarios with everything after the sync pulses scaled by
+                            {scale:.2f}, so the 55 deg release fits under 40. SCALED RENDER: an invariance
+                            probe only; its expected scores differ from the 1:1 library. Its own
+                            INDEX.csv and README.txt list what is in and what was left out.
    smoke_5deg.csv           a slow +/-5 deg sine, 20 s: the FIRST thing to play
    PLAY.bat, DRYRUN.bat, PICK_VARIABLE.bat, _run.bat, play_setpoints.ps1
                             the plain player: drag a .csv onto PLAY.bat (no Designer needed)
@@ -372,7 +419,8 @@ Results from this rig are NOT validated yet: do not report scores from a real ri
       parameters and type targets, or move the knobs by hand. The right side shows the PT7 score, zone,
       a rough MAS, the seven parameters, the rig's motion (top plot) and the knee angle the phone should
       show (bottom plot). Check "Rig: peak ... deg" in the text: it must be under 40.
-   b. Or load a scenario: Open file... -> library\<name>.csv (see library\INDEX.csv for what each is).
+   b. Or load a scenario: Open file... -> library\<name>.csv (see library\INDEX.csv for what each is),
+      or library_x{scale:.2f}\<name>_x{scale:.2f}.csv (scaled render; label the trial "x{scale:.2f}").
       The Designer re-scores it with its own copy of the scorer and shows both plots.
    c. DRY RUN FIRST, every new movement: tick "Dry run: no motion, no log", press PLAY. Nothing is sent
       to the rig; the red cursor runs along the plots and the status line reports the timing
@@ -407,6 +455,8 @@ Results from this rig are NOT validated yet: do not report scores from a real ri
      SIMULATION ONLY. Do not report scores from a real rig session yet.
    * The scenario expectations are simulation results on the current scorer ({score_id}).
    * The library's scenarios are not MAS settings: grades 2-4 are PT7-band presets, not clinical MAS.
+   * library_x{scale:.2f}\ is a scaled render, an invariance probe: its scores are not the 1:1 library's
+     expected values and must be reported as x{scale:.2f} runs.
 
 
 9. BRING BACK  (on the stick, in this folder)
@@ -460,6 +510,8 @@ def main(argv=None):
     UK.smoke_file(os.path.join(out, "smoke_5deg.csv"))
     guard, guard_line = guard_status()
     rows = export_library(os.path.join(out, "library"), guard)
+    srows = export_library(os.path.join(out, f"library_x{LIB_SCALE:.2f}"), guard, LIB_SCALE)
+    n_sc = sum(r["included"] == "yes" for r in srows)
     os.makedirs(os.path.join(out, "logs"))
     with open(os.path.join(out, "logs", "PUT_STRETCHEXPERIMENT_LOGS_HERE.txt"), "w", newline="\r\n") as fh:
         fh.write("Copy every StretchExperiment .bin log from this session into this folder.\n")
@@ -472,6 +524,7 @@ def main(argv=None):
         fh.write(START_HERE.format(date=now.strftime("%Y-%m-%d %H:%M UTC"), sha=sha, sha7=sha[:7],
                                    score_id=prov["score_formula_id"], model_hash=prov["model_hash"],
                                    n_lib=n_lib, n_out=len(rows) - n_lib, guard=guard_line,
+                                   n_sc=n_sc, n_sc_out=len(srows) - n_sc, scale=LIB_SCALE,
                                    guard_banner=GUARD_TEXT[guard is not None][0],
                                    unvalidated_guard=GUARD_TEXT[guard is not None][1]))
     privacy_scan(out)
@@ -484,7 +537,9 @@ def main(argv=None):
                 motor_use=("allowed after the guard's own bench checks" if guard is not None
                            else "NO: built before the playback guard merged"),
                 limit_deg=LIMIT_DEG, rate_limit_dps_per_write=RATE_DPS,
-                library_files=n_lib, library_left_out=len(rows) - n_lib)
+                library_files=n_lib, library_left_out=len(rows) - n_lib,
+                scaled_library=f"library_x{LIB_SCALE:.2f}: scaled render {LIB_SCALE:.2f}x after the sync pulses, invariance probe only",
+                scaled_library_files=n_sc, scaled_library_left_out=len(srows) - n_sc)
     if meta["designer_score_formula_id"] != meta["score_formula_id"]:
         raise SystemExit(f"the Designer's scorer ({meta['designer_score_formula_id']}) is not the library's "
                          f"({meta['score_formula_id']}); port the scorer change to PtScore.cs first")
@@ -499,7 +554,8 @@ def main(argv=None):
             for f in sorted(fs):
                 p = os.path.join(dp, f)
                 z.write(p, stem + "/" + os.path.relpath(p, out).replace(os.sep, "/"))
-    print(f"bundle -> {out}  ({len(files) + 2} files, {n_lib} library files, {len(rows) - n_lib} left out)")
+    print(f"bundle -> {out}  ({len(files) + 2} files, {n_lib} library files, {len(rows) - n_lib} left out; "
+          f"library_x{LIB_SCALE:.2f}: {n_sc} files, {len(srows) - n_sc} left out)")
     print(f"guard  -> {guard_line}")
     print(f"zip    -> {zpath}  ({os.path.getsize(zpath) / 1e6:.1f} MB)")
     if dirty:

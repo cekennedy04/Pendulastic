@@ -48,6 +48,38 @@ def test_guard_verdict_refuses_to_guess_an_unknown_shape():
         RB.guard_verdict(lambda t, sp: {"peak": 3}, [0, 1], [0, 0])
 
 
+def test_guard_verdict_records_the_predicted_peak():
+    info = {}
+    ret = {"ok": False, "reasons": ["predicted 44 deg"], "predicted_peak_deg": 44.04, "scale_needed": 0.9}
+    assert RB.guard_verdict(lambda t, sp: ret, [0, 1], [0, 0], info) == "predicted 44 deg"
+    assert info == {"predicted_peak_deg": 44.0, "scale_needed": 0.9}
+
+
+def _preamble_file(a0=55.0):
+    import motor_reference as mr
+    t, sp = mr.preamble(a0_deg=a0)
+    swing = a0 * np.cos(np.linspace(0, 20, 5000)) * np.exp(-np.linspace(0, 3, 5000))
+    sp = np.r_[sp, swing]
+    return np.arange(len(sp)) / 1000.0, sp
+
+
+def test_scaled_render_keeps_the_sync_pulses_and_scales_the_rest():
+    t, sp = _preamble_file()
+    i = RB.sync_end_index()
+    out = RB.scaled_render(t, sp, 0.70)
+    assert np.array_equal(out[:i], sp[:i]) and np.abs(out[:i]).max() == 5.0     # pulses unchanged
+    assert np.allclose(out[i:], 0.70 * sp[i:])
+    assert np.abs(out).max() == pytest.approx(0.70 * 55.0)                      # 38.5: under the 40 deg limit
+    assert RB.raw_verdict(t, out) is None and "over 40" in RB.raw_verdict(t, sp)
+    assert out[0] == 0 and np.abs(np.diff(out[i - 2:i + 2])).max() < 1e-9       # no step where scaling starts
+
+
+def test_scaled_render_refuses_a_file_without_the_preamble():
+    t, sp = _file(np.r_[0, np.full(3000, 10.0)])
+    with pytest.raises(ValueError):
+        RB.scaled_render(t, sp, 0.70)
+
+
 def test_privacy_scan_stops_a_personal_path_or_participant_folder(tmp_path):
     (tmp_path / "ok.txt").write_text("copy logs here\r\n")
     RB.privacy_scan(str(tmp_path))
