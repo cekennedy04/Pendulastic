@@ -551,6 +551,21 @@ test('a result without the analysis pair omits the keys rather than adding undef
   assert.ok(!('ptScoreDetrended' in action));
 });
 
+test('the analysis refusal reason and scoring quality ride through the reducer', () => {
+  const q = { drift_correction: 'tail', quality_flags: ['large_drift_correction'] };
+  const { action } = nextOutcome(false, {
+    type: 'result', params: { f: 1 }, paramsDetrended: null,
+    detrendedRefusal: 'insufficient_samples', scoringQuality: null, scoringQualityDetrended: q,
+  });
+  assert.equal(action.paramsDetrended, null);
+  assert.equal(action.detrendedRefusal, 'insufficient_samples');
+  assert.equal(action.scoringQuality, null);
+  assert.deepEqual(action.scoringQualityDetrended, q);
+  const bare = nextOutcome(false, { type: 'result', params: { f: 1 } }).action;
+  assert.ok(!('detrendedRefusal' in bare));
+  assert.ok(!('scoringQualityDetrended' in bare));
+});
+
 // ---- capture view lifecycle (task 7) -------------------------------------
 // A stub `el` -- the view only ever reads/writes properties these objects
 // have, so no DOM is needed.

@@ -40,12 +40,19 @@ CONCURRENT_PARAMS = {
     "pt4":   ("pt_score_4param","pt_score_4param",  "PT score (4-param)"),
 }
 
+# The PT-parameter reference values are the scorer's own HEALTHY_REF, read
+# from it rather than copied: this file held a fourth, hand-copied set that
+# had drifted to values no scorer used (phi 0.787, omega 5.692, area 0.09,
+# N 7.0). pt_score_4param's 0.09 is a cutoff on the 4-parameter score, not a
+# HEALTHY_REF entry, and stays a literal.
+from pendulastic_pt_score import HEALTHY_REF as _PT_HEALTHY_REF  # noqa: E402
+
 CHANGE_PARAMS = [
-    ("phi_max_ratio",  "First-swing ratio",          0.787),
-    ("omega_max_n",    "Norm. peak velocity",         5.692),
-    ("area_ratio",     "Extension area ratio",        0.09),
+    ("phi_max_ratio",  "First-swing ratio",          _PT_HEALTHY_REF["phi_max_ratio"]),
+    ("omega_max_n",    "Norm. peak velocity",         _PT_HEALTHY_REF["omega_max_n"]),
+    ("area_ratio",     "Extension area ratio",        _PT_HEALTHY_REF["area_ratio"]),
     ("pt_score_4param","PT score (4-param)",          0.09),
-    ("N",              "Oscillation cycles",          7.0),
+    ("N",              "Oscillation cycles",          _PT_HEALTHY_REF["N"]),
 ]
 
 HEALTHY_REF = {p[0]: p[2] for p in CHANGE_PARAMS}

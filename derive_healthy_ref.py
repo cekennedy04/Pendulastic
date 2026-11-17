@@ -11,7 +11,10 @@ the duplicate when capture timestamps prove the right-leg take is the real one
 including ones mas_estimate refuses to grade.
 
 Population: participants whose OptiTrack folder carries the control prefix
-(participant_paths.CONTROL_PREFIX), baseline condition only (pre* / default),
+(participant_paths.CONTROL_PREFIX) AND whose recorded diagnosis
+(Recordings/<participant>/metadata.json, read through participant_paths and
+mapped by participant_paths.group_for_diagnosis) is the control group, baseline
+condition only (pre* / default),
 excluded_trials.json honoured, and only INTERPRETABLE trials -- the ones the
 excursion and oscillation gates let through. Interpretability depends on A0
 and A1 only, never on HEALTHY_REF, so this is not circular.
@@ -24,6 +27,28 @@ whatever its resting angle, so peak velocity is roughly fixed while A0 -- which
 is measured from that resting angle -- varies. A median over trials the scorer
 refuses (or over trials whose release was mis-detected, which shrinks A0) is a
 median of a different population from the one the reference is applied to.
+
+RESULT 2026-11-16, with the drift-correction bound (shipped as HEALTHY_REF,
+SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16"). 37 interpretable trials, 11
+legs, the same 7 people. A folder's study prefix alone does not admit a
+participant: the recorded diagnosis must agree, so a participant filed under
+the wrong study is kept out by data rather than by an ID list in code. Trials
+that cannot be loaded or are uninterpretable never enter either way. Trial
+median, leave-one-person-out range in brackets:
+
+    R2n            0.9312  [0.915 - 0.966]   literature anchor 1.0 kept
+    N              6.0000  [6.00  - 6.50 ]   literature anchor 6.5 kept
+    phi_max_ratio  0.6264  [0.605 - 0.648]   was 0.6407
+    omega_max_n    6.6702  [6.409 - 6.769]   was 6.4839
+    omega_min_n   -6.4839  [-6.701 - -6.356] was -6.3624 (diagnostic only)
+    f              0.9511  [0.942 - 0.981]   unchanged
+    area_ratio     0.1678  [0.151 - 0.204]   was 0.1766, still the least stable
+
+The bound refuses the pre-release fallback drift fit on control curves whose
+hold is under 1 s, slopes over 4 deg/s, or would be corrected by more than a
+quarter of the curve's range; those trials now read their undetrended A0. The
+same cached curves with the scorer before the bound reproduce the 2026-10-27
+row below exactly (39 trials).
 
 RESULT 2026-10-27 (39 interpretable trials, 12 legs, 7 people: P6, 7, 8, 9,
 10, 12, 23), trial median, leave-one-person-out range in brackets:
@@ -45,8 +70,9 @@ Usage:
     # load_optitrack is ~19 s per trial and scoring is ~0.1 s. An entry is
     # reused only for the same source file and the same scorer source.
     # Fails closed (exit 2) if any baseline control trial cannot be loaded;
-    # pass --allow-unloadable to accept the smaller cohort explicitly
-    # (2026-10-27: P2 right solo T4/T5 are unloadable rig-geometry failures).
+    # pass --allow-unloadable to accept the smaller cohort explicitly.
+    # --rec-root points at the Recordings tree holding metadata.json when it
+    # is not beside this script (e.g. when run from a worktree).
 """
 import argparse
 import hashlib
@@ -63,8 +89,18 @@ KEYS = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ra
 
 
 def _is_control(pid) -> bool:
-    d = pp.find_participant_dir(prc.OPTI_ROOT, str(pid))
-    return bool(d) and os.path.basename(d).startswith(pp.CONTROL_PREFIX + "_")
+    """A reference participant needs BOTH signals: an OptiTrack folder under
+    the control prefix (how discovery finds the cohort) and a recorded
+    diagnosis that maps to the control group. A folder filed under the wrong
+    study, or a participant with no recorded diagnosis, stays out -- the
+    reference fails closed rather than trusting a folder name. No participant
+    ID is listed here; correcting a participant's group is a metadata edit."""
+    pid = pp.strip_prefix(str(pid))
+    d = pp.find_participant_dir(prc.OPTI_ROOT, pid)
+    if not (d and os.path.basename(d).startswith(pp.CONTROL_PREFIX + "_")):
+        return False
+    diagnosis = pp.diagnosis_from_metadata(prc.REC_ROOT, pid)
+    return pp.group_for_diagnosis(diagnosis) == pp.CONTROL_PREFIX
 
 
 def _loader_fingerprint() -> str:
@@ -122,6 +158,10 @@ def control_trials(cache=None):
             unloadable.append(key)
             continue
         p = pts.compute_pt_params(t, ang)
+        if p and p.get("quality_flags"):
+            # Flagged trials stay in (flag, never exclude); naming them keeps
+            # the cohort auditable.
+            print(f"  {key}: flagged {', '.join(p['quality_flags'])}", file=sys.stderr)
         if p and pts.mas_estimate(p)["interpretable"]:
             out.append((pid, leg, p))
     return out, unloadable
@@ -131,6 +171,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--opti-root", help="where OptiTrack_Recordings actually is")
+    ap.add_argument("--rec-root", help="where Recordings (participant metadata.json) is")
     ap.add_argument("--cache", help="directory for per-trial (t, angle) .npz files")
     ap.add_argument("--allow-unloadable", action="store_true",
                     help="derive anyway when some baseline control trials cannot be "
@@ -138,6 +179,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.opti_root:
         prc.OPTI_ROOT = os.path.abspath(os.path.expanduser(a.opti_root))
+    if a.rec_root:
+        prc.REC_ROOT = os.path.abspath(os.path.expanduser(a.rec_root))
     if a.cache:
         os.makedirs(a.cache, exist_ok=True)
 

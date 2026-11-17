@@ -287,6 +287,35 @@ test('finish posts a composite PT score alongside the existing result shape', as
     `breakdown must sum to the reported score: sum=${sum}, score=${ptScore.score}`);
 });
 
+test('finish reports why the analysis convention is missing, or null when it scored', async () => {
+  // A stored record falls back to the live pair when detrend=true yields
+  // nothing; detrendedRefusal is what tells a scorer refusal apart from an
+  // older cached wasm. On this fixture both conventions score, so it is null.
+  const handle = createWorkerHandler();
+  const posted = [];
+  const post = (msg) => posted.push(msg);
+  await handle({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.3, wasmSource } }, post);
+  for (const batch of fixture.batches) {
+    await handle({ type: 'batch', buf: Float64Array.from(batch).buffer }, post);
+  }
+  await handle({ type: 'finish' }, post);
+  const result = posted.find((m) => m.type === 'result');
+  assert.ok(result, 'the fixture must still be scorable');
+  assert.ok('detrendedRefusal' in result, 'the key is always posted');
+  if (result.paramsDetrended) {
+    assert.equal(result.detrendedRefusal, null);
+  } else {
+    assert.equal(typeof result.detrendedRefusal, 'string');
+  }
+  // How each convention's score was reached travels with the result.
+  for (const q of [result.scoringQuality, result.scoringQualityDetrended]) {
+    assert.ok(q && typeof q === 'object', 'scoring quality must be reported by this wasm');
+    assert.ok(['tail', 'baseline', 'none'].includes(q.drift_correction));
+    assert.ok(Array.isArray(q.quality_flags));
+  }
+  assert.equal(result.scoringQuality.drift_correction, 'none', 'the live convention never corrects');
+});
+
 test('a malformed start cfg resolves to a real protocol message, not silence', async () => {
   const handle = createWorkerHandler();
   const posted = [];

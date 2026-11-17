@@ -113,6 +113,66 @@ pub struct PtParams {
     pub pk_i: Vec<usize>,
     /// Surviving trough indices into `t_r`/`phi`.
     pub tr_i: Vec<usize>,
+
+    // ---- how the score was reached ----
+    /// Which drift correction was applied to the curve that was scored.
+    pub drift_correction: DriftCorrection,
+    /// The slope that was removed (deg/s); 0.0 when none was.
+    pub drift_slope_deg_s: f64,
+    /// A correction that was tried and dropped because A0 crossed
+    /// [`a0_limit`] with it applied; `None` when nothing was dropped.
+    pub drift_correction_rejected: Option<DriftCorrection>,
+    /// Quality flags. None of them stops a trial being scored.
+    pub quality_flags: Vec<QualityFlag>,
+}
+
+/// Which drift correction produced the scored curve
+/// (`compute_pt_params(...)["drift_correction"]` in the reference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftCorrection {
+    /// No correction: `detrend=false`, or no credible estimate.
+    None,
+    /// The settled-tail estimate.
+    Tail,
+    /// The bounded pre-release baseline fallback.
+    Baseline,
+}
+
+impl DriftCorrection {
+    /// The reference's string for it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            DriftCorrection::None => "none",
+            DriftCorrection::Tail => "tail",
+            DriftCorrection::Baseline => "baseline",
+        }
+    }
+}
+
+/// A quality flag on a scored trial (`pendulastic_pt_score.FLAG_*`). Flags
+/// never refuse a trial (owner decision 2026-11-16: the app scores every kind
+/// of swing); they say how the score was reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityFlag {
+    /// The applied correction moved the curve by more than 25% of its raw span.
+    LargeDriftCorrection,
+    /// A0 crossed [`a0_limit`] with the correction applied, so the curve was
+    /// scored without it.
+    A0ExceedsCurveScoredUncorrected,
+    /// A0 crossed [`a0_limit`] with no correction to drop -- only a
+    /// computation fault can do this. Scored as computed.
+    A0ExceedsCurve,
+}
+
+impl QualityFlag {
+    /// The reference's string for it; a persisted contract.
+    pub fn code(&self) -> &'static str {
+        match self {
+            QualityFlag::LargeDriftCorrection => "large_drift_correction",
+            QualityFlag::A0ExceedsCurveScoredUncorrected => "a0_exceeds_curve_scored_uncorrected",
+            QualityFlag::A0ExceedsCurve => "a0_exceeds_curve",
+        }
+    }
 }
 
 /// `_SG_WINDOW_S`: the smoothing window as a PHYSICAL DURATION.
@@ -579,6 +639,179 @@ pub const MIN_SCORABLE_S: f64 = 2.0;
 /// smoothing and peak-finding always have samples. At 20 Hz and above the span
 /// binds (40 samples at 20 Hz span 1.95 s).
 pub const MIN_SCORABLE_SAMPLES: usize = 40;
+/// `pendulastic_pt_score._BASELINE_MIN_SECONDS`: the pre-release baseline
+/// fallback needs the same discipline as the tail fit, and used to have none of
+/// it. It is fitted over the HOLD -- well under a second on many trials -- and
+/// then extrapolated across the entire recording, so a slope that is merely
+/// noisy becomes an enormous displacement. Measured on the phone corpus at
+/// 75109c5 (2026-11-10): with detrend on, the unguarded fallback removed 0.7 to
+/// 6.3 times the curve's whole range on four trials and reported A0 of 139.8 to
+/// 234.8 deg where the same trials read 27.6 to 115.5 deg undetrended.
+///
+/// A held leg is not moving, so spread in that window is noise, and a line
+/// through noise has no slope worth extrapolating. Require the same minimum
+/// window the tail requires before believing one.
+const BASELINE_MIN_SECONDS: f64 = TAIL_MIN_SECONDS;
+
+/// `pendulastic_pt_score._MAX_TOTAL_CORRECTION_FRAC`: bound on what the
+/// fallback's finished correction may do. The slope is applied across the whole
+/// trial, so a bound on the fit window alone does not constrain what actually
+/// happens to the curve. Real drift is small next to the swing it sits on (the
+/// measured median is 0.833 deg/s, 14% of a ~60 deg swing over 10 s); a
+/// "correction" that moves the curve by more than a quarter of its own range is
+/// not removing a bias from the signal, it is rewriting the signal.
+const MAX_TOTAL_CORRECTION_FRAC: f64 = 0.25;
+
+/// `pendulastic_pt_score._MIN_BASELINE`: fewest baseline samples worth fitting
+/// a line through.
+const MIN_BASELINE: usize = 10;
+
+/// `pendulastic_pt_score._AMPLITUDE_SLACK_FRAC`: smoothing can overshoot a
+/// sharp release by a little, so the A0 bound is not exact. 2% of the range is
+/// far below the scale of any real defect and comfortably above
+/// Savitzky-Golay ringing.
+const AMPLITUDE_SLACK_FRAC: f64 = 0.02;
+
+/// `pendulastic_pt_score._baseline_drift_slope` -- sensor drift in deg/s from
+/// the pre-release hold, or `None` meaning "do not correct".
+///
+/// The historical fallback, used when the settled tail cannot be trusted. It
+/// had no guards at all, which meant it was least restrained on exactly the
+/// trials where the tail estimator had already refused to guess -- the ones
+/// with the worst data.
+///
+/// The window is `[baseline_start, baseline_end)`: the caller trims the lift
+/// ramp off the front so only the still hold is fitted. Argument order follows
+/// the reference (`baseline_end` first, `baseline_start` its trailing default).
+///
+/// Three guards, in the reference's order: at least `MIN_BASELINE` (10) finite
+/// samples, spanning at least `BASELINE_MIN_SECONDS` (1.0 s), with a fitted
+/// slope no larger than `MAX_DRIFT_DEG_S` (4 deg/s). `None` rather than a
+/// doubtful number, for the same reason the tail estimator does: no correction
+/// leaves the curve as measured, while a wrong one rewrites it.
+pub fn baseline_drift_slope(
+    t: &[f64],
+    ang: &[f64],
+    baseline_end: usize,
+    baseline_start: usize,
+) -> Option<f64> {
+    // The reference slices with Python semantics, which clamp an end past the
+    // array; clamping first gives the same verdict from the same two checks.
+    let end = baseline_end.min(t.len()).min(ang.len());
+    if end < baseline_start || end - baseline_start < MIN_BASELINE {
+        return None;
+    }
+    let (seg_t, seg_a): (Vec<f64>, Vec<f64>) = t[baseline_start..end]
+        .iter()
+        .zip(&ang[baseline_start..end])
+        .filter(|(tt, aa)| tt.is_finite() && aa.is_finite())
+        .map(|(tt, aa)| (*tt, *aa))
+        .unzip();
+    if seg_t.len() < MIN_BASELINE {
+        return None;
+    }
+    if seg_t[seg_t.len() - 1] - seg_t[0] < BASELINE_MIN_SECONDS {
+        // Too short a lever arm. Extrapolating it across the trial multiplies
+        // whatever noise it fitted by the ratio of the two durations.
+        return None;
+    }
+    let slope = polyfit1(&seg_t, &seg_a)?.0;
+    if !slope.is_finite() || slope.abs() > MAX_DRIFT_DEG_S {
+        return None;
+    }
+    Some(slope)
+}
+
+/// `pendulastic_pt_score._credible_drift_slope` -- the slope, or `None` if
+/// applying it across the trial would rewrite it.
+///
+/// Guards the BASELINE fallback specifically. That estimator bounds the slope
+/// within the hold it was fitted on, but the correction is applied to the whole
+/// recording, so that bound does not constrain what finally happens to the
+/// curve. This checks the thing that actually matters: the total displacement
+/// the correction imposes, against the range of the signal it is imposed on.
+///
+/// Deliberately NOT applied to the settled-tail estimator, which was tuned on
+/// 93 IMU trials against measured accuracy and needs the headroom -- see the
+/// call site.
+///
+/// This is what A0 depends on. `neutral` is the tail median, so a correction
+/// that drags the tail drags the reference the amplitude is measured from, and
+/// `A0 = phi[0] = release - neutral` inherits the whole displacement.
+// `duration <= 0.0` and `ang_range <= 0.0` are written the way the reference
+// writes them on purpose: a NaN duration is false on both and falls through to
+// the final comparison, which is also false, so both languages hand the slope
+// back. Rewriting either as a negated `>` would refuse there instead.
+pub fn credible_drift_slope(slope: Option<f64>, t: &[f64], ang: &[f64]) -> Option<f64> {
+    let slope = slope?;
+    if !slope.is_finite() {
+        return None;
+    }
+    if t.len() < 2 {
+        return None;
+    }
+    let duration = t[t.len() - 1] - t[0];
+    let (n_finite, lo, hi) = finite_extent(ang);
+    if duration <= 0.0 || n_finite < 2 {
+        return None;
+    }
+    let ang_range = hi - lo;
+    if ang_range <= 0.0 {
+        return None;
+    }
+    if slope.abs() * duration > MAX_TOTAL_CORRECTION_FRAC * ang_range {
+        return None;
+    }
+    Some(slope)
+}
+
+/// Count, minimum and maximum of the finite samples of `x` -- what the
+/// reference gets from `x[np.isfinite(x)]` followed by `nanmin`/`nanmax`.
+fn finite_extent(x: &[f64]) -> (usize, f64, f64) {
+    let mut n = 0usize;
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for &v in x.iter().filter(|v| v.is_finite()) {
+        n += 1;
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    (n, lo, hi)
+}
+
+/// Range of the finite raw samples, or `None` for a degenerate curve
+/// (`pendulastic_pt_score._raw_span`).
+fn raw_span(angle_raw: &[f64]) -> Option<f64> {
+    let (n_finite, lo, hi) = finite_extent(angle_raw);
+    if n_finite < 2 {
+        return None;
+    }
+    let span = hi - lo;
+    if span > 0.0 {
+        Some(span)
+    } else {
+        None
+    }
+}
+
+/// `pendulastic_pt_score._a0_limit`: the largest A0 the raw curve plus the
+/// correction actually applied allows -- raw span + |slope| * duration + 2% of
+/// span. `None` when the curve is degenerate (not judged).
+///
+/// A0 is measured from a reference inside the curve, so after a linear
+/// correction of |slope| * duration it cannot exceed the raw span by more than
+/// that displacement plus smoothing slack: a sanctioned correction can never
+/// cross this bound, only a computation that moved the reference some other
+/// way. It replaced a fixed span * 1.27, which refused correct settled-tail
+/// corrections on stiff, sagging legs.
+pub fn a0_limit(angle_raw: &[f64], slope: Option<f64>, duration: f64) -> Option<f64> {
+    let span = raw_span(angle_raw)?;
+    let applied = match slope {
+        Some(s) if duration.is_finite() => s.abs() * duration,
+        _ => 0.0,
+    };
+    Some(span + applied + AMPLITUDE_SLACK_FRAC * span)
+}
 
 /// Compute the Popović PT parameters from a knee-angle time series.
 ///
@@ -593,11 +826,35 @@ pub const MIN_SCORABLE_SAMPLES: usize = 40;
 /// finite span, too little post-release signal, or a first-swing amplitude
 /// under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
 /// reporting nothing beats reporting a confident number derived from noise.
+///
+/// Neither drift bound nor the A0 bound refuses a trial (owner decision
+/// 2026-11-16). A drift estimate out of bounds is skipped and the curve scored
+/// without it; an A0 past [`a0_limit`] drops the correction and scores the
+/// uncorrected curve; both are recorded in `drift_correction` and
+/// `quality_flags`.
 pub fn compute_pt_params(
     t: &[f64],
     angle_raw: &[f64],
     release_idx: Option<usize>,
     detrend: bool,
+) -> Option<PtParams> {
+    compute_pt_params_with_limit(t, angle_raw, release_idx, detrend, a0_limit)
+}
+
+/// Signature of the A0 bound, so a test can force the rescore branch.
+#[doc(hidden)]
+pub type A0LimitFn = fn(&[f64], Option<f64>, f64) -> Option<f64>;
+
+/// Test seam: [`compute_pt_params`] with the A0 bound supplied by the caller
+/// (the reference test monkeypatches `_a0_limit` the same way). The bound is
+/// used for the uncorrected rescore too. Not part of the supported API.
+#[doc(hidden)]
+pub fn compute_pt_params_with_limit(
+    t: &[f64],
+    angle_raw: &[f64],
+    release_idx: Option<usize>,
+    detrend: bool,
+    limit_fn: A0LimitFn,
 ) -> Option<PtParams> {
     assert_eq!(
         t.len(),
@@ -638,7 +895,6 @@ pub fn compute_pt_params(
     // Detection fires once the threshold is CROSSED, so rel_i can land a few
     // samples into real motion. Trim a small time margin off the END of the
     // baseline window so that detection lag never enters the fit.
-    const MIN_BASELINE: usize = 10;
     const LAG_MARGIN_SEC: f64 = 0.05;
     let baseline_end = if rel_i > 0 {
         t_c[..rel_i].partition_point(|&x| x < t_c[rel_i] - LAG_MARGIN_SEC)
@@ -662,21 +918,54 @@ pub fn compute_pt_params(
             baseline_start -= 1;
         }
     }
+    let mut drift_source = DriftCorrection::None;
     let slope: Option<f64> = if detrend {
-        settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i).or_else(|| {
-            if baseline_end - baseline_start >= MIN_BASELINE {
-                polyfit1(
-                    &t_c[baseline_start..baseline_end],
-                    &ang_c_raw[baseline_start..baseline_end],
-                )
-                .map(|(s, _)| s)
-            } else {
-                None
+        // Tail unusable (trial ended mid-swing, too short, still ringing):
+        // fall back to the historical baseline fit rather than to nothing --
+        // but guarded, because unguarded it was worst exactly where the tail
+        // estimator had already declined to guess.
+        //
+        // The total-correction bound applies HERE and not to the tail
+        // estimator. That one was tuned against 93 IMU trials by measured
+        // accuracy, and it legitimately corrects more than a quarter of a
+        // curve's range on the trials that drift most -- the reference's
+        // synthetic with 6 deg of true drift over a 27.7 deg swing fits
+        // 0.97 deg/s and needs 35% of the range to remove it. Bounding that
+        // path would switch the correction off on exactly the trials it
+        // exists for.
+        //
+        // A fallback that fails these bounds is SKIPPED, never a refusal: the
+        // trial is scored uncorrected and `drift_correction` says so.
+        match settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i) {
+            Some(s) => {
+                drift_source = DriftCorrection::Tail;
+                Some(s)
             }
-        })
+            None => {
+                let b = credible_drift_slope(
+                    baseline_drift_slope(&t_c, &ang_c_raw, baseline_end, baseline_start),
+                    &t_c,
+                    &ang_c_raw,
+                );
+                if b.is_some() {
+                    drift_source = DriftCorrection::Baseline;
+                }
+                b
+            }
+        }
     } else {
         None
     };
+    let mut quality_flags: Vec<QualityFlag> = Vec::new();
+    let duration = t_c[t_c.len() - 1] - t_c[0];
+    if let (Some(s), Some(span)) = (slope, raw_span(&ang_c_raw)) {
+        // Only the settled-tail estimator can get here (the fallback is
+        // bounded above). It is applied, because it was tuned for the trials
+        // that drift most, and flagged so the size of the correction shows.
+        if s.abs() * duration > MAX_TOTAL_CORRECTION_FRAC * span {
+            quality_flags.push(QualityFlag::LargeDriftCorrection);
+        }
+    }
     let ang_c: Vec<f64> = match slope {
         Some(s) => ang_c_raw
             .iter()
@@ -748,6 +1037,35 @@ pub fn compute_pt_params(
         .filter(|v| v.is_finite())
         .fold(f64::NEG_INFINITY, f64::max)
         .max(a0_raw);
+
+    // A0 is measured from a reference INSIDE the curve, so it cannot exceed
+    // the raw span by more than the correction actually applied. Crossing
+    // [`a0_limit`] means the reference moved some other way -- a computation
+    // fault, and A0 is the variable spasticity grouping thresholds. Never a
+    // refusal: the curve is scored WITHOUT the correction instead, and
+    // flagged. Mirrors the reference exactly, including the recursion.
+    if let Some(limit) = limit_fn(&ang_c_raw, slope, duration) {
+        if a0.is_finite() && a0 > limit {
+            if slope.is_some() {
+                let rejected = drift_source;
+                // The corrected pass's flags describe a correction that was
+                // thrown away (e.g. LargeDriftCorrection), so they are
+                // dropped: only the reason and the uncorrected pass's own
+                // flags describe the curve that was actually scored.
+                let fallback =
+                    compute_pt_params_with_limit(t, angle_raw, release_idx, false, limit_fn);
+                return fallback.map(|mut p| {
+                    let mut flags = vec![QualityFlag::A0ExceedsCurveScoredUncorrected];
+                    flags.extend(p.quality_flags.iter().copied());
+                    p.quality_flags = flags;
+                    p.drift_correction_rejected = Some(rejected);
+                    p
+                });
+            }
+            // Uncorrected and still over: only a computation bug does this.
+            quality_flags.push(QualityFlag::A0ExceedsCurve);
+        }
+    }
 
     // Re-detect peaks on phi with an amplitude threshold. `prominence` is
     // required, not just `height`: height alone checks a candidate's absolute
@@ -969,6 +1287,10 @@ pub fn compute_pt_params(
         omega_s,
         pk_i,
         tr_i,
+        drift_correction: drift_source,
+        drift_slope_deg_s: slope.unwrap_or(0.0),
+        drift_correction_rejected: None,
+        quality_flags,
     })
 }
 

@@ -125,11 +125,11 @@ namespace Pendulastic
             Dictionary<string, double> d = new Dictionary<string, double>();
             d["R2n"] = 1.0;
             d["N"] = 6.5;
-            d["phi_max_ratio"] = 0.6407;
-            d["omega_max_n"] = 6.4839;
-            d["omega_min_n"] = -6.3624;
+            d["phi_max_ratio"] = 0.6264;
+            d["omega_max_n"] = 6.6702;
+            d["omega_min_n"] = -6.4839;
             d["f"] = 0.9511;
-            d["area_ratio"] = 0.1766;
+            d["area_ratio"] = 0.1678;
             return d;
         }
 

@@ -74,6 +74,24 @@ pub fn params_to_json(p: &PtParams) -> String {
     )
 }
 
+/// How a trial's score was reached: which drift correction was applied, any
+/// correction that was dropped, and the quality flags. Separate from
+/// [`params_to_json`], whose 20-key payload is pinned.
+pub fn scoring_quality_to_json(p: &PtParams) -> String {
+    let flags: Vec<String> = p.quality_flags.iter().map(|f| format!("\"{}\"", f.code())).collect();
+    let rejected = match p.drift_correction_rejected {
+        Some(d) => format!("\"{}\"", d.code()),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"drift_correction\":\"{}\",\"drift_slope_deg_s\":{},\"drift_correction_rejected\":{},\"quality_flags\":[{}]}}",
+        p.drift_correction.code(),
+        fmt_f64(p.drift_slope_deg_s),
+        rejected,
+        flags.join(",")
+    )
+}
+
 /// Capture-quality JSON for one trial's lateral motion.
 ///
 /// `None` (not measured) serialises as the JSON literal `null`, NOT as zeros.
