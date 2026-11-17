@@ -7,6 +7,7 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:shell": "node scripts/build-shell.mjs",
     "build:dist": "node scripts/build-wasm.mjs && node scripts/build-dist.mjs",
+    "build:usb": "node scripts/build-wasm.mjs && node scripts/build-usb.mjs",
     "fixtures": "node tests/fixtures/make-fixture.mjs"
   }
 }
