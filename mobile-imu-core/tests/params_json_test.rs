@@ -10,9 +10,11 @@ mod golden;
 
 use mobile_imu_core::ahrs::Vec3;
 use mobile_imu_core::flex_axis::LateralMotion;
-use mobile_imu_core::params_json::{lateral_motion_to_json, params_to_json};
+use mobile_imu_core::params_json::{lateral_motion_to_json, params_to_json, scoring_quality_to_json};
 use mobile_imu_core::replay::{replay, Method, RawSample, ReplayConfig, Sensor};
-use mobile_imu_core::scoring::{compute_pt_params, PtParams, SpasticityType};
+use mobile_imu_core::scoring::{
+    compute_pt_params, DriftCorrection, PtParams, QualityFlag, SpasticityType,
+};
 
 /// Same raw-log reconstruction `pipeline_test.rs` uses: chronological
 /// accel/mag/gyro samples rebuilt from `gen_fixtures.py`'s golden trial.
@@ -146,6 +148,10 @@ fn finite_params() -> PtParams {
         omega_s: Vec::new(),
         pk_i: Vec::new(),
         tr_i: Vec::new(),
+        drift_correction: mobile_imu_core::scoring::DriftCorrection::None,
+        drift_slope_deg_s: 0.0,
+        drift_correction_rejected: None,
+        quality_flags: Vec::new(),
     }
 }
 
@@ -206,4 +212,24 @@ fn lateral_motion_serialises_both_fields() {
         peak_deg_s: 42.5,
     }));
     assert_eq!(j, "{\"lateral_fraction\":0.25,\"lateral_peak_deg_s\":42.5}");
+}
+
+#[test]
+fn scoring_quality_says_which_correction_and_which_flags() {
+    let plain = finite_params();
+    assert_eq!(
+        scoring_quality_to_json(&plain),
+        "{\"drift_correction\":\"none\",\"drift_slope_deg_s\":0,\"drift_correction_rejected\":null,\"quality_flags\":[]}"
+    );
+    let mut p = finite_params();
+    p.drift_correction = DriftCorrection::None;
+    p.drift_correction_rejected = Some(DriftCorrection::Tail);
+    p.quality_flags = vec![
+        QualityFlag::LargeDriftCorrection,
+        QualityFlag::A0ExceedsCurveScoredUncorrected,
+    ];
+    assert_eq!(
+        scoring_quality_to_json(&p),
+        "{\"drift_correction\":\"none\",\"drift_slope_deg_s\":0,\"drift_correction_rejected\":\"tail\",\"quality_flags\":[\"large_drift_correction\",\"a0_exceeds_curve_scored_uncorrected\"]}"
+    );
 }

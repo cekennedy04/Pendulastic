@@ -222,5 +222,4 @@ fn trial_error_codes_are_a_stable_contract() {
     // breaks every record already on a phone.
     assert_eq!(TrialError::InsufficientSamples.code(), "insufficient_samples");
     assert_eq!(TrialError::ReleaseNeverDetected.code(), "release_never_detected");
-    assert_eq!(TrialError::AmplitudeExceedsCurve.code(), "amplitude_exceeds_curve");
 }

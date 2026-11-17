@@ -382,12 +382,13 @@ def main():
 
         `legacy` swaps in the fallback as it stood before 3ca6bf4 (a bare
         polyfit behind the 10-sample minimum, no credibility bound), to record
-        what the guards changed. `unchecked` disables the A0 invariant so the
-        A0 it would have refused can be recorded.
+        what the guards changed. `unchecked` disables the A0 bound so the A0
+        the corrected curve gives is recorded even where the bound would drop
+        the correction.
         """
         rec = {}
         saved = (_pts._settled_tail_drift_slope, _pts._baseline_drift_slope,
-                 _pts._credible_drift_slope, _pts._assert_amplitude_within_curve)
+                 _pts._credible_drift_slope, _pts._a0_limit)
 
         def tail(*a, **k):
             rec["tail"] = saved[0](*a, **k)
@@ -410,12 +411,12 @@ def main():
         _pts._baseline_drift_slope = base
         _pts._credible_drift_slope = cred
         if unchecked:
-            _pts._assert_amplitude_within_curve = lambda *a, **k: None
+            _pts._a0_limit = lambda *a, **k: None
         try:
             p = compute_pt_params(t_sig, ang_sig, detrend=True)
         finally:
             (_pts._settled_tail_drift_slope, _pts._baseline_drift_slope,
-             _pts._credible_drift_slope, _pts._assert_amplitude_within_curve) = saved
+             _pts._credible_drift_slope, _pts._a0_limit) = saved
         return rec, p
 
     def usize_const(name, v, doc=""):
@@ -494,44 +495,46 @@ def main():
     emit_fallback("TRIAL_FALLBACK_OVER_BOUND", *creeping_hold_then_ringing_swing(1.5, 3.0, 8.0),
                   "Creeping hold whose correction exceeds 25% of the range", "total_correction")
 
-    # ---- the A0 invariant --------------------------------------------------
-    # The reference RAISES AmplitudeExceedsCurveError when A0 exceeds the raw
-    # span plus the permitted correction; the Rust core returns None instead
-    # (a panic in wasm would take the trial down). The bounded fallback can no
-    # longer get there, but the settled-tail estimator is deliberately not
-    # bounded by the 25% rule, and this is a curve where it does: a slow sag
-    # (tau 4 s) largely cancelled by +2.5 deg/s of drift, so the raw curve spans
-    # only ~32 deg while the corrected one has its full amplitude back.
+    # ---- the A0 bound ------------------------------------------------------
+    # Neither bound refuses a trial (owner decision 2026-11-16). This is the
+    # curve the earlier fixed rule (A0 <= span * 1.27) refused: a slow sag
+    # (tau 4 s) largely cancelled by +2.5 deg/s of drift, so the raw curve
+    # spans only ~32 deg while the settled-tail correction restores its full
+    # amplitude. The correction-aware bound (raw span + |applied slope| *
+    # duration + 2% of span) admits it, because a sanctioned linear correction
+    # can never cross that bound; the correction is more than 25% of the raw
+    # span, so the trial is scored AND flagged large_drift_correction.
     n_hold9, fs9 = int(2.0 * 50.0), 50.0
     t9 = np.arange(n_hold9 + int(12 * fs9)) / fs9
     a9 = np.full(len(t9), 180.0)
     x9 = t9[n_hold9:] - t9[n_hold9]
     a9[n_hold9:] = 180.0 - 60.0 * (1.0 - np.exp(-x9 / 4.0))
     a9 = a9 + 2.5 * t9
-    try:
-        compute_pt_params(t9, a9, detrend=True)
-        raise SystemExit("TRIAL_A0_OVER_CURVE no longer raises - fixture is stale")
-    except _pts.AmplitudeExceedsCurveError:
-        pass
-    rec9, p9 = traced_detrend(t9, a9, unchecked=True)
+    rec9, p9 = traced_detrend(t9, a9)
     plain9 = compute_pt_params(t9, a9, detrend=False)
     span9 = float(np.max(a9) - np.min(a9))
-    limit9 = span9 * (1.0 + _pts._MAX_TOTAL_CORRECTION_FRAC + _pts._AMPLITUDE_SLACK_FRAC)
+    dur9 = float(t9[-1] - t9[0])
+    old_limit9 = span9 * (1.0 + _pts._MAX_TOTAL_CORRECTION_FRAC + _pts._AMPLITUDE_SLACK_FRAC)
+    limit9 = _pts._a0_limit(a9, rec9["tail"], dur9)
     assert rec9["tail"] is not None, "A0_OVER_CURVE: expected the settled tail to answer"
-    assert p9["A0_deg"] > 1.05 * limit9, "A0_OVER_CURVE: too close to the limit to pin across languages"
-    assert plain9 is not None
-    parts.append("// ---- A0 invariant (see gen_fixtures.py) ----\n\n")
+    assert p9 is not None, "A0_OVER_CURVE: must score"
+    assert p9["drift_correction"] == "tail"
+    assert p9["quality_flags"] == [_pts.FLAG_LARGE_DRIFT_CORRECTION], p9["quality_flags"]
+    assert p9["A0_deg"] > 1.05 * old_limit9, "A0_OVER_CURVE: no longer exercises the old refusal"
+    assert p9["A0_deg"] < 0.95 * limit9, "A0_OVER_CURVE: too close to the new bound to pin"
+    assert plain9 is not None and plain9["quality_flags"] == []
+    parts.append("// ---- A0 bound (see gen_fixtures.py) ----\n\n")
     parts.append(f64_slice("TRIAL_A0_OVER_CURVE_T", t9, "Slow sag masked by drift - time base."))
     parts.append(f64_slice("TRIAL_A0_OVER_CURVE_ANG", a9, "Slow sag masked by drift - angle (deg)."))
-    parts.append(bool_const("TRIAL_A0_OVER_CURVE_DETREND_RAISES", True,
-                            "compute_pt_params(TRIAL_A0_OVER_CURVE, detrend=True) raises AmplitudeExceedsCurveError."))
     parts.append(f64_const("TRIAL_A0_OVER_CURVE_TAIL_SLOPE", rec9["tail"],
                            "_settled_tail_drift_slope on it (deg/s) - the correction that was applied."))
     parts.append(f64_const("TRIAL_A0_OVER_CURVE_SPAN_DEG", span9, "max - min of the raw curve."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_OLD_LIMIT_DEG", old_limit9,
+                           "The retired fixed rule: span * 1.27. This curve's A0 is above it."))
     parts.append(f64_const("TRIAL_A0_OVER_CURVE_LIMIT_DEG", limit9,
-                           "span * (1 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC)."))
-    parts.append(f64_const("TRIAL_A0_OVER_CURVE_UNCHECKED_A0_DEG", p9["A0_deg"],
-                           "The A0 the invariant refuses (computed with the check disabled)."))
+                           "_a0_limit: span + |tail slope| * duration + 2% of span."))
+    parts.append(f64_const("TRIAL_A0_OVER_CURVE_DETREND_A0_DEG", p9["A0_deg"],
+                           "compute_pt_params(TRIAL_A0_OVER_CURVE, detrend=True)['A0_deg'] - scored, flagged."))
     parts.append(f64_const("TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG", plain9["A0_deg"],
                            "compute_pt_params(TRIAL_A0_OVER_CURVE, detrend=False)['A0_deg'] - inside the curve, scores."))
 

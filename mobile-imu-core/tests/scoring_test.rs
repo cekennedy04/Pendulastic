@@ -12,8 +12,8 @@
 mod golden;
 
 use mobile_imu_core::scoring::{
-    amplitude_within_curve, baseline_drift_slope, compute_pt_params, compute_pt_params_checked,
-    credible_drift_slope, score_waveform, PtRefusal, SpasticityType,
+    a0_limit, baseline_drift_slope, compute_pt_params, credible_drift_slope, score_waveform,
+    DriftCorrection, QualityFlag, SpasticityType,
 };
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -806,67 +806,64 @@ fn detrend_false_is_untouched_by_the_fallback_guards() {
     }
 }
 
-// ---- the A0 invariant ------------------------------------------------------
+// ---- the A0 bound ----------------------------------------------------------
 
 #[test]
-fn an_amplitude_larger_than_its_curve_is_refused_not_reported() {
-    // The reference raises AmplitudeExceedsCurveError on this curve with
-    // detrend on: a slow sag largely cancelled by drift, so the raw curve
-    // spans 32 deg while the tail-corrected one reads A0 = 43.6, past the
-    // 40.7 deg the raw span plus a sanctioned correction allows. Rust refuses
-    // the trial -- no panic, and no number.
+fn a_stiff_sagging_leg_is_scored_and_flagged_not_refused() {
+    // The curve the retired span * 1.27 rule refused: a slow sag largely
+    // cancelled by drift, raw span 32 deg, tail-corrected A0 43.6. The
+    // correction-aware bound (span + |slope| * duration + 2% of span = 51.8)
+    // admits it, and the correction is over 25% of the raw span, so the trial
+    // is scored with a flag -- in both languages (owner decision 2026-11-16).
     let (t, ang) = (golden::TRIAL_A0_OVER_CURVE_T, golden::TRIAL_A0_OVER_CURVE_ANG);
     let span = ang.iter().copied().fold(f64::NEG_INFINITY, f64::max)
         - ang.iter().copied().fold(f64::INFINITY, f64::min);
     close(span, golden::TRIAL_A0_OVER_CURVE_SPAN_DEG, 1e-9, "span");
-    assert!(!amplitude_within_curve(golden::TRIAL_A0_OVER_CURVE_UNCHECKED_A0_DEG, ang));
-    assert!(amplitude_within_curve(golden::TRIAL_A0_OVER_CURVE_LIMIT_DEG - 1e-9, ang));
-    assert_eq!(
-        compute_pt_params(t, ang, None, true).is_none(),
-        golden::TRIAL_A0_OVER_CURVE_DETREND_RAISES,
-        "where the reference raises, Rust must refuse the trial"
-    );
-    // Undetrended, the same curve has an A0 inside its range and scores.
+    let duration = t[t.len() - 1] - t[0];
+    let limit = a0_limit(ang, Some(golden::TRIAL_A0_OVER_CURVE_TAIL_SLOPE), duration).unwrap();
+    close(limit, golden::TRIAL_A0_OVER_CURVE_LIMIT_DEG, 1e-9, "limit");
+
+    let p = compute_pt_params(t, ang, None, true).expect("scored, never refused");
+    close(p.a0_deg, golden::TRIAL_A0_OVER_CURVE_DETREND_A0_DEG, 1e-6, "A0 (detrended)");
+    assert!(p.a0_deg > golden::TRIAL_A0_OVER_CURVE_OLD_LIMIT_DEG, "the old rule would refuse it");
+    assert_eq!(p.drift_correction, DriftCorrection::Tail);
+    close(p.drift_slope_deg_s, golden::TRIAL_A0_OVER_CURVE_TAIL_SLOPE, 1e-9, "slope");
+    assert_eq!(p.drift_correction_rejected, None);
+    assert_eq!(p.quality_flags, vec![QualityFlag::LargeDriftCorrection]);
+
     let plain = compute_pt_params(t, ang, None, false).expect("scorable undetrended");
     close(plain.a0_deg, golden::TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG, 1e-6, "A0 (plain)");
-    assert!(amplitude_within_curve(plain.a0_deg, ang));
+    assert_eq!(plain.drift_correction, DriftCorrection::None);
+    assert!(plain.quality_flags.is_empty());
 }
 
 #[test]
-fn the_refusal_says_why() {
-    // The typed refusal keeps the A0 invariant distinguishable from an
-    // ordinary unscorable trial, so the app can record which it was.
-    let (t, ang) = (golden::TRIAL_A0_OVER_CURVE_T, golden::TRIAL_A0_OVER_CURVE_ANG);
-    assert_eq!(
-        compute_pt_params_checked(t, ang, None, true).err(),
-        Some(PtRefusal::AmplitudeExceedsCurve)
-    );
-    assert!(compute_pt_params_checked(t, ang, None, false).is_ok());
-    // Too few samples is the other refusal, not this one.
-    let short_t: Vec<f64> = (0..30).map(|i| i as f64 * 0.02).collect();
-    let short_a = vec![180.0; 30];
-    assert_eq!(
-        compute_pt_params_checked(&short_t, &short_a, None, true).err(),
-        Some(PtRefusal::Unscorable)
-    );
-}
-
-#[test]
-fn amplitude_within_curve_matches_the_reference_at_its_edges() {
-    // The limit is span * (1 + 0.25 + 0.02), inclusive.
-    let ang = [100.0, 120.0, 150.0, 110.0]; // span 50 -> limit 63.5
-    assert!(amplitude_within_curve(50.0, &ang));
-    assert!(amplitude_within_curve(63.0, &ang), "smoothing overshoot and a sanctioned correction");
-    assert!(amplitude_within_curve(63.5, &ang));
-    assert!(!amplitude_within_curve(63.6, &ang));
-    assert!(!amplitude_within_curve(500.0, &ang));
+fn a0_limit_matches_the_reference_at_its_edges() {
+    // span + |slope| * duration + 2% of span.
+    let ang = [100.0, 120.0, 150.0, 110.0]; // span 50
+    close(a0_limit(&ang, None, 10.0).unwrap(), 51.0, 1e-12, "no correction");
+    close(a0_limit(&ang, Some(-0.5), 10.0).unwrap(), 56.0, 1e-12, "|slope| * duration");
+    close(a0_limit(&ang, Some(0.5), f64::NAN).unwrap(), 51.0, 1e-12, "non-finite duration");
     // NaN samples are not part of the span.
-    assert!(!amplitude_within_curve(63.6, &[100.0, f64::NAN, 150.0, f64::NAN]));
-    // A degenerate curve is not judged: the reference returns without raising.
-    assert!(amplitude_within_curve(500.0, &[]));
-    assert!(amplitude_within_curve(500.0, &[10.0]));
-    assert!(amplitude_within_curve(500.0, &[10.0, f64::NAN]));
-    assert!(amplitude_within_curve(500.0, &[7.0, 7.0, 7.0]));
-    assert!(amplitude_within_curve(f64::NAN, &ang));
-    assert!(amplitude_within_curve(f64::INFINITY, &ang));
+    close(a0_limit(&[100.0, f64::NAN, 150.0, f64::NAN], None, 1.0).unwrap(), 51.0, 1e-12, "nan");
+    // A degenerate curve is not judged.
+    assert!(a0_limit(&[], None, 1.0).is_none());
+    assert!(a0_limit(&[10.0], None, 1.0).is_none());
+    assert!(a0_limit(&[10.0, f64::NAN], None, 1.0).is_none());
+    assert!(a0_limit(&[7.0, 7.0, 7.0], None, 1.0).is_none());
+}
+
+#[test]
+fn quality_codes_are_a_stable_contract() {
+    // Persisted in stored app records; renaming one breaks every record on a
+    // phone, and they must match the reference's strings.
+    assert_eq!(DriftCorrection::None.code(), "none");
+    assert_eq!(DriftCorrection::Tail.code(), "tail");
+    assert_eq!(DriftCorrection::Baseline.code(), "baseline");
+    assert_eq!(QualityFlag::LargeDriftCorrection.code(), "large_drift_correction");
+    assert_eq!(
+        QualityFlag::A0ExceedsCurveScoredUncorrected.code(),
+        "a0_exceeds_curve_scored_uncorrected"
+    );
+    assert_eq!(QualityFlag::A0ExceedsCurve.code(), "a0_exceeds_curve");
 }

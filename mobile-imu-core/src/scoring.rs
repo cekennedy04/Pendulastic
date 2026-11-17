@@ -113,6 +113,66 @@ pub struct PtParams {
     pub pk_i: Vec<usize>,
     /// Surviving trough indices into `t_r`/`phi`.
     pub tr_i: Vec<usize>,
+
+    // ---- how the score was reached ----
+    /// Which drift correction was applied to the curve that was scored.
+    pub drift_correction: DriftCorrection,
+    /// The slope that was removed (deg/s); 0.0 when none was.
+    pub drift_slope_deg_s: f64,
+    /// A correction that was tried and dropped because A0 crossed
+    /// [`a0_limit`] with it applied; `None` when nothing was dropped.
+    pub drift_correction_rejected: Option<DriftCorrection>,
+    /// Quality flags. None of them stops a trial being scored.
+    pub quality_flags: Vec<QualityFlag>,
+}
+
+/// Which drift correction produced the scored curve
+/// (`compute_pt_params(...)["drift_correction"]` in the reference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftCorrection {
+    /// No correction: `detrend=false`, or no credible estimate.
+    None,
+    /// The settled-tail estimate.
+    Tail,
+    /// The bounded pre-release baseline fallback.
+    Baseline,
+}
+
+impl DriftCorrection {
+    /// The reference's string for it.
+    pub fn code(&self) -> &'static str {
+        match self {
+            DriftCorrection::None => "none",
+            DriftCorrection::Tail => "tail",
+            DriftCorrection::Baseline => "baseline",
+        }
+    }
+}
+
+/// A quality flag on a scored trial (`pendulastic_pt_score.FLAG_*`). Flags
+/// never refuse a trial (owner decision 2026-11-16: the app scores every kind
+/// of swing); they say how the score was reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualityFlag {
+    /// The applied correction moved the curve by more than 25% of its raw span.
+    LargeDriftCorrection,
+    /// A0 crossed [`a0_limit`] with the correction applied, so the curve was
+    /// scored without it.
+    A0ExceedsCurveScoredUncorrected,
+    /// A0 crossed [`a0_limit`] with no correction to drop -- only a
+    /// computation fault can do this. Scored as computed.
+    A0ExceedsCurve,
+}
+
+impl QualityFlag {
+    /// The reference's string for it; a persisted contract.
+    pub fn code(&self) -> &'static str {
+        match self {
+            QualityFlag::LargeDriftCorrection => "large_drift_correction",
+            QualityFlag::A0ExceedsCurveScoredUncorrected => "a0_exceeds_curve_scored_uncorrected",
+            QualityFlag::A0ExceedsCurve => "a0_exceeds_curve",
+        }
+    }
 }
 
 /// `_SG_WINDOW_S`: the smoothing window as a PHYSICAL DURATION.
@@ -706,62 +766,38 @@ fn finite_extent(x: &[f64]) -> (usize, f64, f64) {
     (n, lo, hi)
 }
 
-/// `pendulastic_pt_score._assert_amplitude_within_curve`, as a predicate:
-/// `false` when A0 exceeds what the raw curve plus a permitted correction
-/// allows.
-///
-/// A0 is an amplitude measured from a reference that lies INSIDE the curve
-/// (`neutral` is a median of a window of it), so it cannot exceed the curve's
-/// own range by more than a sanctioned drift correction. The bound is the raw
-/// span plus the correction the drift guard permits plus smoothing slack --
-/// against the detrended curve the check would be vacuous, and against the raw
-/// span alone it refuses legitimate tail corrections (the reference records a
-/// real optical trial landing 0.35 deg over its raw span after a 0.30 deg/s
-/// correction).
-///
-/// The reference RAISES `AmplitudeExceedsCurveError` here. This crate does
-/// not panic -- a panic inside wasm takes the whole trial result down -- so
-/// [`compute_pt_params_checked`] turns `false` into a typed refusal,
-/// [`PtRefusal::AmplitudeExceedsCurve`].
-/// A degenerate curve (fewer than two finite samples, a non-finite A0, or a
-/// span of zero) is not judged, exactly as in the reference.
-pub fn amplitude_within_curve(a0: f64, angle_raw: &[f64]) -> bool {
+/// Range of the finite raw samples, or `None` for a degenerate curve
+/// (`pendulastic_pt_score._raw_span`).
+fn raw_span(angle_raw: &[f64]) -> Option<f64> {
     let (n_finite, lo, hi) = finite_extent(angle_raw);
-    if n_finite < 2 || !a0.is_finite() {
-        return true;
+    if n_finite < 2 {
+        return None;
     }
     let span = hi - lo;
-    if span <= 0.0 {
-        return true;
+    if span > 0.0 {
+        Some(span)
+    } else {
+        None
     }
-    a0 <= span * (1.0 + MAX_TOTAL_CORRECTION_FRAC + AMPLITUDE_SLACK_FRAC)
 }
 
-/// Why [`compute_pt_params_checked`] declined to return parameters.
+/// `pendulastic_pt_score._a0_limit`: the largest A0 the raw curve plus the
+/// correction actually applied allows -- raw span + |slope| * duration + 2% of
+/// span. `None` when the curve is degenerate (not judged).
 ///
-/// The two are different claims and a caller must be able to tell them apart:
-/// `Unscorable` is a clinical outcome (a near-rigid joint, a trial too short to
-/// characterise), while `AmplitudeExceedsCurve` is the reference's
-/// `AmplitudeExceedsCurveError` -- A0 came out larger than the curve it was
-/// measured from, which is a computation the scorer refuses to report.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PtRefusal {
-    /// Fewer than 40 finite samples, too little post-release signal, or a
-    /// first-swing amplitude under 3 degrees.
-    Unscorable,
-    /// A0 exceeds what the raw curve plus a permitted correction allows (see
-    /// [`amplitude_within_curve`]).
-    AmplitudeExceedsCurve,
-}
-
-/// [`compute_pt_params_checked`] without the reason: `None` for either refusal.
-pub fn compute_pt_params(
-    t: &[f64],
-    angle_raw: &[f64],
-    release_idx: Option<usize>,
-    detrend: bool,
-) -> Option<PtParams> {
-    compute_pt_params_checked(t, angle_raw, release_idx, detrend).ok()
+/// A0 is measured from a reference inside the curve, so after a linear
+/// correction of |slope| * duration it cannot exceed the raw span by more than
+/// that displacement plus smoothing slack: a sanctioned correction can never
+/// cross this bound, only a computation that moved the reference some other
+/// way. It replaced a fixed span * 1.27, which refused correct settled-tail
+/// corrections on stiff, sagging legs.
+pub fn a0_limit(angle_raw: &[f64], slope: Option<f64>, duration: f64) -> Option<f64> {
+    let span = raw_span(angle_raw)?;
+    let applied = match slope {
+        Some(s) if duration.is_finite() => s.abs() * duration,
+        _ => 0.0,
+    };
+    Some(span + applied + AMPLITUDE_SLACK_FRAC * span)
 }
 
 /// Compute the Popović PT parameters from a knee-angle time series.
@@ -772,22 +808,22 @@ pub fn compute_pt_params(
 /// from the scrub view. `detrend` applies the pre-release baseline drift
 /// correction.
 ///
-/// Returns `Err(PtRefusal::Unscorable)` when the trial cannot be characterised
-/// at all: fewer than 40 finite samples, too little post-release signal, or a
-/// first-swing amplitude under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
+/// Returns `None` when the trial cannot be characterised at all: fewer than 40
+/// finite samples, too little post-release signal, or a first-swing amplitude
+/// under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
 /// reporting nothing beats reporting a confident number derived from noise.
 ///
-/// `Err(PtRefusal::AmplitudeExceedsCurve)` when A0 comes out larger than the
-/// curve it was measured from (see [`amplitude_within_curve`]). The reference
-/// raises `AmplitudeExceedsCurveError` for that; a typed refusal is this
-/// crate's equivalent, because the alternative here is a panic inside wasm.
-/// Neither language returns a number in that case.
-pub fn compute_pt_params_checked(
+/// Neither drift bound nor the A0 bound refuses a trial (owner decision
+/// 2026-11-16). A drift estimate out of bounds is skipped and the curve scored
+/// without it; an A0 past [`a0_limit`] drops the correction and scores the
+/// uncorrected curve; both are recorded in `drift_correction` and
+/// `quality_flags`.
+pub fn compute_pt_params(
     t: &[f64],
     angle_raw: &[f64],
     release_idx: Option<usize>,
     detrend: bool,
-) -> Result<PtParams, PtRefusal> {
+) -> Option<PtParams> {
     assert_eq!(
         t.len(),
         angle_raw.len(),
@@ -797,7 +833,7 @@ pub fn compute_pt_params_checked(
         .filter(|&i| angle_raw[i].is_finite())
         .collect();
     if finite_indices.len() < 40 {
-        return Err(PtRefusal::Unscorable);
+        return None;
     }
     let t_c: Vec<f64> = finite_indices.iter().map(|&i| t[i]).collect();
     // Pristine raw, for neutral_deg_raw below.
@@ -847,6 +883,7 @@ pub fn compute_pt_params_checked(
             baseline_start -= 1;
         }
     }
+    let mut drift_source = DriftCorrection::None;
     let slope: Option<f64> = if detrend {
         // Tail unusable (trial ended mid-swing, too short, still ringing):
         // fall back to the historical baseline fit rather than to nothing --
@@ -861,16 +898,39 @@ pub fn compute_pt_params_checked(
         // 0.97 deg/s and needs 35% of the range to remove it. Bounding that
         // path would switch the correction off on exactly the trials it
         // exists for.
-        settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i).or_else(|| {
-            credible_drift_slope(
-                baseline_drift_slope(&t_c, &ang_c_raw, baseline_end, baseline_start),
-                &t_c,
-                &ang_c_raw,
-            )
-        })
+        //
+        // A fallback that fails these bounds is SKIPPED, never a refusal: the
+        // trial is scored uncorrected and `drift_correction` says so.
+        match settled_tail_drift_slope(&t_c, &ang_c_raw, rel_i) {
+            Some(s) => {
+                drift_source = DriftCorrection::Tail;
+                Some(s)
+            }
+            None => {
+                let b = credible_drift_slope(
+                    baseline_drift_slope(&t_c, &ang_c_raw, baseline_end, baseline_start),
+                    &t_c,
+                    &ang_c_raw,
+                );
+                if b.is_some() {
+                    drift_source = DriftCorrection::Baseline;
+                }
+                b
+            }
+        }
     } else {
         None
     };
+    let mut quality_flags: Vec<QualityFlag> = Vec::new();
+    let duration = t_c[t_c.len() - 1] - t_c[0];
+    if let (Some(s), Some(span)) = (slope, raw_span(&ang_c_raw)) {
+        // Only the settled-tail estimator can get here (the fallback is
+        // bounded above). It is applied, because it was tuned for the trials
+        // that drift most, and flagged so the size of the correction shows.
+        if s.abs() * duration > MAX_TOTAL_CORRECTION_FRAC * span {
+            quality_flags.push(QualityFlag::LargeDriftCorrection);
+        }
+    }
     let ang_c: Vec<f64> = match slope {
         Some(s) => ang_c_raw
             .iter()
@@ -895,7 +955,7 @@ pub fn compute_pt_params_checked(
     let t_r: Vec<f64> = t_c[rel_i..].to_vec();
     let ang_r: Vec<f64> = ang_s[rel_i..].to_vec();
     if t_r.len() < 25 {
-        return Err(PtRefusal::Unscorable);
+        return None;
     }
 
     // A pendulum cannot oscillate faster than ~3 Hz; enforce a minimum
@@ -919,7 +979,7 @@ pub fn compute_pt_params_checked(
     let mut phi: Vec<f64> = ang_r.iter().map(|a| a - neutral).collect();
     let mut a0_raw = phi[0];
     if a0_raw.abs() < 3.0 {
-        return Err(PtRefusal::Unscorable);
+        return None;
     }
     let phi_negated = a0_raw < 0.0;
     if phi_negated {
@@ -944,13 +1004,27 @@ pub fn compute_pt_params_checked(
         .max(a0_raw);
 
     // A0 is measured from a reference INSIDE the curve, so it cannot exceed
-    // the curve's own range by more than a permitted drift correction. The
-    // reference raises here (a wrong computation, not bad data, and A0 is the
-    // variable spasticity grouping thresholds); this refuses the trial rather
-    // than panic. Checked against the pristine raw samples and under both
-    // conventions, as the reference does.
-    if !amplitude_within_curve(a0, &ang_c_raw) {
-        return Err(PtRefusal::AmplitudeExceedsCurve);
+    // the raw span by more than the correction actually applied. Crossing
+    // [`a0_limit`] means the reference moved some other way -- a computation
+    // fault, and A0 is the variable spasticity grouping thresholds. Never a
+    // refusal: the curve is scored WITHOUT the correction instead, and
+    // flagged. Mirrors the reference exactly, including the recursion.
+    if let Some(limit) = a0_limit(&ang_c_raw, slope, duration) {
+        if a0.is_finite() && a0 > limit {
+            if slope.is_some() {
+                let rejected = drift_source;
+                return compute_pt_params(t, angle_raw, release_idx, false).map(|mut p| {
+                    let mut flags = quality_flags.clone();
+                    flags.push(QualityFlag::A0ExceedsCurveScoredUncorrected);
+                    flags.extend(p.quality_flags.iter().copied());
+                    p.quality_flags = flags;
+                    p.drift_correction_rejected = Some(rejected);
+                    p
+                });
+            }
+            // Uncorrected and still over: only a computation bug does this.
+            quality_flags.push(QualityFlag::A0ExceedsCurve);
+        }
     }
 
     // Re-detect peaks on phi with an amplitude threshold. `prominence` is
@@ -1146,7 +1220,7 @@ pub fn compute_pt_params_checked(
         SpasticityType::Balanced
     };
 
-    Ok(PtParams {
+    Some(PtParams {
         r2n,
         n,
         phi_max_ratio,
@@ -1173,6 +1247,10 @@ pub fn compute_pt_params_checked(
         omega_s,
         pk_i,
         tr_i,
+        drift_correction: drift_source,
+        drift_slope_deg_s: slope.unwrap_or(0.0),
+        drift_correction_rejected: None,
+        quality_flags,
     })
 }
 

@@ -134,45 +134,105 @@ def test_the_settled_tail_estimator_is_deliberately_not_bounded_by_it():
     assert abs(p["neutral_deg_raw"] - p["neutral_deg"]) > 0.5
 
 
-# ── the invariant ────────────────────────────────────────────────────────────
+# ── the A0 bound: correction-aware, and never a refusal ──────────────────────
+# Owner decision 2026-11-16: no bound may refuse a trial. An out-of-bounds
+# drift estimate is skipped; an A0 past the bound drops the correction and the
+# curve is scored uncorrected, flagged.
 
-def test_an_amplitude_larger_than_its_curve_raises():
-    t = np.linspace(0.0, 10.0, 100)
-    ang = np.linspace(-35.0, 35.0, 100)          # 70 deg range
-    with pytest.raises(pts.AmplitudeExceedsCurveError) as exc:
-        pts._assert_amplitude_within_curve(169.8, ang, t)
-    msg = str(exc.value)
-    assert "169.8" in msg and "70.0" in msg
-    assert "drift" in msg.lower(), "the message must name the usual cause"
-
-
-def test_an_amplitude_inside_its_curve_is_silent():
-    t = np.linspace(0.0, 10.0, 100)
-    ang = np.linspace(-35.0, 35.0, 100)
-    pts._assert_amplitude_within_curve(23.1, ang, t)     # must not raise
-
-
-def test_smoothing_overshoot_is_tolerated_but_a_real_defect_is_not():
-    t = np.linspace(0.0, 10.0, 100)
-    ang = np.linspace(0.0, 100.0, 100)
-    pts._assert_amplitude_within_curve(101.0, ang, t)          # ringing
-    with pytest.raises(pts.AmplitudeExceedsCurveError):
-        pts._assert_amplitude_within_curve(140.0, ang, t)      # a defect
+def test_a0_limit_is_raw_span_plus_applied_correction_plus_slack():
+    ang = np.linspace(-35.0, 35.0, 100)          # 70 deg span
+    assert pts._a0_limit(ang, None, 10.0) == pytest.approx(70.0 * 1.02)
+    assert pts._a0_limit(ang, -0.5, 10.0) == pytest.approx(70.0 + 5.0 + 1.4)
 
 
 def test_a_degenerate_curve_is_not_judged():
-    """No range to compare against; the guard must not invent a verdict."""
-    t = np.linspace(0.0, 10.0, 100)
-    pts._assert_amplitude_within_curve(5.0, np.full(100, 3.0), t)
-    pts._assert_amplitude_within_curve(5.0, np.full(100, np.nan), t)
+    """No range to compare against; the bound must not invent a verdict."""
+    assert pts._a0_limit(np.full(100, 3.0), None, 10.0) is None
+    assert pts._a0_limit(np.full(100, np.nan), None, 10.0) is None
 
 
-def test_the_invariant_catches_the_defect_it_was_written_for(monkeypatch):
-    """End to end: restore the unguarded fallback and the guard must fire.
+def _sag_masked_by_drift():
+    """The curve the retired span * 1.27 rule refused (golden
+    TRIAL_A0_OVER_CURVE): a slow sag largely cancelled by +2.5 deg/s drift."""
+    fs, n_hold = 50.0, 100
+    t = np.arange(n_hold + int(12 * fs)) / fs
+    a = np.full(len(t), 180.0)
+    x = t[n_hold:] - t[n_hold]
+    a[n_hold:] = 180.0 - 60.0 * (1.0 - np.exp(-x / 4.0))
+    return t, a + 2.5 * t
 
+
+def test_a_stiff_sagging_leg_is_scored_with_a_flag_not_refused():
+    t, a = _sag_masked_by_drift()
+    span = float(np.max(a) - np.min(a))
+    p = compute_pt_params(t, a, detrend=True)
+    assert p is not None, "a severe leg must be scored"
+    assert p["A0_deg"] > 1.27 * span, "the retired rule would have refused this"
+    assert p["drift_correction"] == "tail"
+    assert p["quality_flags"] == [pts.FLAG_LARGE_DRIFT_CORRECTION]
+    assert p["drift_correction_rejected"] is None
+
+
+def test_a0_past_the_bound_drops_the_correction_and_scores_uncorrected(monkeypatch):
+    """Force the bound below A0 when a correction is applied: the trial is
+    scored as detrend=False would score it, with the reason attached."""
+    t, a = _sag_masked_by_drift()
+    real = pts._a0_limit
+    monkeypatch.setattr(pts, "_a0_limit",
+                        lambda ang, slope, dur: 1.0 if slope is not None else real(ang, slope, dur))
+    p = compute_pt_params(t, a, detrend=True)
+    plain = compute_pt_params(t, a, detrend=False)
+    assert p is not None and plain is not None
+    assert p["A0_deg"] == plain["A0_deg"]
+    assert p["drift_correction"] == "none"
+    assert p["drift_correction_rejected"] == "tail"
+    assert pts.FLAG_A0_EXCEEDS_CURVE_UNCORRECTED in p["quality_flags"]
+
+
+def test_a0_past_the_bound_with_nothing_to_drop_is_still_scored(monkeypatch):
+    t, a = _sag_masked_by_drift()
+    monkeypatch.setattr(pts, "_a0_limit", lambda ang, slope, dur: 1.0)
+    p = compute_pt_params(t, a, detrend=False)
+    assert p is not None
+    assert p["quality_flags"] == [pts.FLAG_A0_EXCEEDS_CURVE]
+
+
+def test_flags_are_surfaced_in_one_shared_line():
+    """Viewer, workbench and live view all show scoring_flag_text, so a
+    flagged score reads the same everywhere; an unflagged one shows nothing."""
+    t, a = _sag_masked_by_drift()
+    flagged = compute_pt_params(t, a, detrend=True)
+    text = pts.scoring_flag_text(flagged)
+    assert pts.FLAG_LARGE_DRIFT_CORRECTION in text and "tail" in text
+    assert pts.scoring_flag_text(compute_pt_params(t, a, detrend=False)) == ""
+    assert pts.scoring_flag_text(None) == ""
+
+
+def test_workbench_quality_signals_carry_the_flags():
+    import workbench_engine
+    t, a = _sag_masked_by_drift()
+    sig = workbench_engine.compute_optitrack_quality_signals(t, a)
+    assert pts.FLAG_LARGE_DRIFT_CORRECTION in sig["optitrack_scoring_flags"]
+
+
+def test_the_original_defect_is_prevented_by_the_fallback_bounds(monkeypatch):
+    """End to end on the real trial that exposed it. With the fallback's
+    bounds in place the inflating correction is skipped and A0 stays inside
+    the curve. Restore the unguarded fallback and the correction is applied
+    again -- the correction-aware A0 bound widens with it, so it is the
+    large-correction FLAG that makes the defect visible, not a refusal.
     Without this, a later 'simplification' of the bounds would leave the
-    invariant untested and the corpus unprotected.
-    """
+    corpus unprotected and nothing would show it."""
+    path = _resolve("18", "Left", "trial_1_optitrack.csv")
+    if path in (None, "MISSING"):
+        pytest.skip("real corpus not present")
+    t, ang, _q = pts.load_optitrack_detailed(path)
+    t, ang = np.asarray(t), np.asarray(ang, dtype=float)
+    span = float(np.nanmax(ang) - np.nanmin(ang))
+    p = compute_pt_params(t, ang)
+    assert p is not None and p["A0_deg"] <= span
+    assert pts.FLAG_LARGE_DRIFT_CORRECTION not in p["quality_flags"]
+
     def _legacy(t, ang, baseline_end, baseline_start=0):
         # main's fallback as it stood at 75109c5: the lift-trimmed window,
         # fitted with no guard at all.
@@ -183,13 +243,9 @@ def test_the_invariant_catches_the_defect_it_was_written_for(monkeypatch):
 
     monkeypatch.setattr(pts, "_baseline_drift_slope", _legacy)
     monkeypatch.setattr(pts, "_credible_drift_slope", lambda s, t, a: s)
-
-    path = _resolve("18", "Left", "trial_1_optitrack.csv")
-    if path in (None, "MISSING"):
-        pytest.skip("real corpus not present")
-    t, ang, _q = pts.load_optitrack_detailed(path)
-    with pytest.raises(pts.AmplitudeExceedsCurveError):
-        compute_pt_params(np.asarray(t), np.asarray(ang))
+    legacy = compute_pt_params(t, ang)
+    assert legacy is not None and legacy["A0_deg"] > span, "the defect must reproduce"
+    assert pts.FLAG_LARGE_DRIFT_CORRECTION in legacy["quality_flags"]
 
 
 # ── the two real trials that exposed it ──────────────────────────────────────

@@ -3062,64 +3062,67 @@ def _credible_drift_slope(slope: Optional[float], t: np.ndarray,
     return slope
 
 
-class AmplitudeExceedsCurveError(AssertionError):
-    """A0 came out larger than the curve it was measured from.
-
-    An internal-consistency failure, deliberately distinct from a data-quality
-    warning. Those describe a recording; this describes a bug in the
-    reconstruction, and the repository rule that analysis code flags rather
-    than refuses is about the former. Nothing is being excluded here -- the
-    trial is fine and will score correctly once the defect is fixed.
-    """
-
-
-# Smoothing can overshoot a sharp release by a little, so the bound is not
-# exact. 2% of the range is far below the scale of any real defect and
+# Smoothing can overshoot a sharp release by a little, so the A0 bound below is
+# not exact. 2% of the range is far below the scale of any real defect and
 # comfortably above Savitzky-Golay ringing.
 _AMPLITUDE_SLACK_FRAC = 0.02
 
+# Quality flags compute_pt_params attaches to a scored trial. None of them stops
+# a trial being scored (owner decision 2026-11-16: the app scores every kind of
+# swing, and no bound may refuse a severe leg); each says how the score was
+# reached so a reader can weigh it.
+FLAG_LARGE_DRIFT_CORRECTION = "large_drift_correction"
+FLAG_A0_EXCEEDS_CURVE_UNCORRECTED = "a0_exceeds_curve_scored_uncorrected"
+FLAG_A0_EXCEEDS_CURVE = "a0_exceeds_curve"
 
-def _assert_amplitude_within_curve(A0: float, angle_raw: np.ndarray,
-                                   t: np.ndarray) -> None:
-    """Raise if A0 exceeds what the raw curve plus a permitted correction allows.
 
-    The comparison basis matters, and the obvious two choices are both wrong.
+def scoring_flag_text(params: Optional[dict]) -> str:
+    """One line describing how a trial's score was reached, for a status bar
+    or table cell: '' when nothing is flagged. Callers show this rather than
+    re-deriving it, so every tool says the same thing."""
+    if not params:
+        return ""
+    flags = list(params.get("quality_flags") or [])
+    if not flags:
+        return ""
+    text = f"scored with flags: {', '.join(flags)} (drift correction: " \
+           f"{params.get('drift_correction', 'none')}"
+    rejected = params.get("drift_correction_rejected")
+    if rejected:
+        text += f"; {rejected} correction dropped"
+    return text + ")"
 
-    Against the DETRENDED curve the check is vacuous: `neutral` is a median of a
-    window inside that curve, so |phi| <= its range by construction and A0 can
-    never exceed it except by smoothing ringing. It would also have passed the
-    defect it exists for, because a runaway correction inflates the detrended
-    range along with the amplitude.
 
-    Against the RAW curve alone it is too strict, because detrending legitimately
-    moves the signal: a real optical trial spanning 16.2 deg took a 0.30 deg/s
-    tail correction (3.5 deg, 22% of its range) and A0 landed 0.35 deg over the
-    raw span. Nothing was wrong with it.
-
-    So the bound is the raw span plus the correction the drift guard actually
-    permits. Anything past that means the reference was moved by something other
-    than a sanctioned correction, which is exactly the failure being guarded.
-    """
+def _raw_span(angle_raw: np.ndarray) -> Optional[float]:
+    """Range of the finite raw samples, or None for a degenerate curve."""
     finite = np.asarray(angle_raw, dtype=float)
     finite = finite[np.isfinite(finite)]
-    if len(finite) < 2 or not np.isfinite(A0):
-        return
+    if len(finite) < 2:
+        return None
     span = float(np.nanmax(finite) - np.nanmin(finite))
-    if span <= 0:
-        return
-    if A0 <= span * (1.0 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC):
-        return
-    raise AmplitudeExceedsCurveError(
-        f"A0 = {A0:.1f} deg exceeds the curve's range of {span:.1f} deg by more "
-        f"than the drift correction may account for (limit "
-        f"{span * (1.0 + _MAX_TOTAL_CORRECTION_FRAC + _AMPLITUDE_SLACK_FRAC):.1f} "
-        f"deg) "
-        f"([{np.nanmin(finite):.1f}, {np.nanmax(finite):.1f}] over "
-        f"{float(t[-1] - t[0]):.1f}s). A0 is measured from a reference inside "
-        "the curve, so this cannot happen physically -- the reference has been "
-        "moved outside it. The usual cause is the drift correction: check "
-        "whether the fitted slope is being extrapolated far beyond the window "
-        "it was fitted on.")
+    return span if span > 0 else None
+
+
+def _a0_limit(angle_raw: np.ndarray, slope: Optional[float],
+              duration: float) -> Optional[float]:
+    """Largest A0 the raw curve plus the correction actually applied allows.
+
+    A0 is measured from a reference inside the curve (`neutral` is a median of
+    a window of it), so after a linear correction of |slope| * duration it
+    cannot exceed the raw span by more than that displacement, plus smoothing
+    slack. A sanctioned correction therefore can never cross this bound; only
+    a computation that moved the reference some other way can.
+
+    Correction-aware rather than a fixed multiple of the span: the earlier
+    span * 1.27 refused correct settled-tail corrections on stiff, sagging
+    legs that drift against their own sag, which are exactly the severe legs
+    the score must not drop. None when the curve is degenerate (not judged).
+    """
+    span = _raw_span(angle_raw)
+    if span is None:
+        return None
+    applied = abs(slope) * duration if slope is not None and np.isfinite(duration) else 0.0
+    return span + applied + _AMPLITUDE_SLACK_FRAC * span
 
 
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
@@ -3205,8 +3208,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     _LAG_MARGIN_SEC = 0.05
     baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
     slope = None
+    drift_source = "none"
     if detrend:
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
+        if slope is not None:
+            drift_source = "tail"
         # Only the still hold is baseline. A trial that opens at rest has a
         # lift before it (see _lift_hold_end), and fitting through that ramp
         # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
@@ -3231,10 +3237,24 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
             # with 6 deg of true drift over a 27.7 deg swing fits 0.97 deg/s
             # and needs 35% of the range to remove it. Bounding that path would
             # switch the correction off on exactly the trials it exists for.
+            #
+            # A fallback that fails these bounds is SKIPPED, never a refusal:
+            # the trial is scored uncorrected and `drift_correction` says so.
             slope = _credible_drift_slope(
                 _baseline_drift_slope(t_c, ang_c_raw, baseline_end,
                                       baseline_start),
                 t_c, ang_c_raw)
+            if slope is not None:
+                drift_source = "baseline"
+    quality_flags = []
+    duration = float(t_c[-1] - t_c[0])
+    raw_span = _raw_span(ang_c_raw)
+    if (slope is not None and raw_span is not None
+            and abs(slope) * duration > _MAX_TOTAL_CORRECTION_FRAC * raw_span):
+        # Only the settled-tail estimator can get here (the fallback is bounded
+        # above). It is applied, because it was tuned for exactly the trials
+        # that drift most, and flagged so the size of the correction is visible.
+        quality_flags.append(FLAG_LARGE_DRIFT_CORRECTION)
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
@@ -3305,14 +3325,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     A0 = max(float(np.nanmax(phi_s[:first_n])), A0_raw)
 
     # A0 is an amplitude measured from a reference that lies INSIDE the curve
-    # (neutral is a median of a window of it), so it cannot exceed the curve's
-    # own range by more than a permitted drift correction. Violating that is
-    # not bad data, it is a wrong computation, and it is worth failing loudly
-    # for: A0 is the variable spasticity_grouping.classify_leg thresholds to
-    # label a leg, so a silently inflated one moves the grouping rather than an
-    # outcome, and moves it in the direction that looks healthy. Raising, not
-    # flagging, is the point: the trial's data is fine.
-    _assert_amplitude_within_curve(A0, angle_raw, t)
+    # (neutral is a median of a window of it), so it cannot exceed the raw
+    # curve's span by more than the correction actually applied (_a0_limit).
+    # Crossing that means the reference was moved by something other than the
+    # correction -- a computation fault, and A0 is the variable
+    # spasticity_grouping.classify_leg thresholds, so an inflated one would
+    # move the grouping. It is never a refusal (owner decision 2026-11-16):
+    # the curve is scored WITHOUT the correction instead, and flagged.
+    a0_limit = _a0_limit(ang_c_raw, slope, duration)
+    if a0_limit is not None and np.isfinite(A0) and A0 > a0_limit:
+        if slope is not None:
+            fallback = compute_pt_params(t, angle_raw, release_idx=release_idx,
+                                         detrend=False)
+            if fallback is not None:
+                fallback["quality_flags"] = (quality_flags
+                                             + [FLAG_A0_EXCEEDS_CURVE_UNCORRECTED]
+                                             + list(fallback["quality_flags"]))
+                fallback["drift_correction_rejected"] = drift_source
+            return fallback
+        # Uncorrected and still over: only a computation bug can do this.
+        # Scored as computed, flagged.
+        quality_flags.append(FLAG_A0_EXCEEDS_CURVE)
 
     # Re-detect peaks on phi with amplitude threshold. prominence=min_amp
     # (not just height=min_amp) is required: height alone only checks a
@@ -3495,6 +3528,14 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         P_plus=P_plus, P_minus=P_minus, P_total=P_total,
         pk_i=pk_i2, tr_i=tr_i2,
         spasticity_type=spasticity_type,
+        # How the curve was corrected, and anything a reader should weigh.
+        # "tail", "baseline" or "none"; the slope is 0.0 when none was applied.
+        drift_correction=drift_source,
+        drift_slope_deg_s=float(slope) if slope is not None else 0.0,
+        # The correction that was tried and dropped because A0 crossed its
+        # bound, or None.
+        drift_correction_rejected=None,
+        quality_flags=quality_flags,
     )
 
 
@@ -4546,17 +4587,7 @@ def main() -> None:
                              "pt_score_6param":float("nan"),"est_MAS_6param":"?","error":str(exc)})
             continue
 
-        try:
-            params = compute_pt_params(t, angle)
-        except AmplitudeExceedsCurveError as exc:
-            # One refused trial must not abort the batch; it is reported, not
-            # scored, exactly like an unscorable one.
-            msg = f"refused: {exc}"
-            print(f"  [REFUSED] {msg}\n")
-            errors.append(f"{tag}: {msg}")
-            summary.append({**entry,"pt_score_4param":float("nan"),"est_MAS_4param":"?",
-                             "pt_score_6param":float("nan"),"est_MAS_6param":"?","error":msg})
-            continue
+        params = compute_pt_params(t, angle)
         if params is None:
             msg = "insufficient oscillation data (no clear release or angle range < 3°)"
             print(f"  [WARN] {msg}\n")
@@ -4582,11 +4613,7 @@ def main() -> None:
 
         # Compute Popovic PT score from each tracked HPE curve
         for mdl in hpe_curves:
-            try:
-                p_hpe = compute_pt_params(mdl["t"], mdl["ang"])
-            except AmplitudeExceedsCurveError as exc:
-                print(f"  [REFUSED] HPE curve {mdl.get('name', '?')}: {exc}")
-                p_hpe = None
+            p_hpe = compute_pt_params(mdl["t"], mdl["ang"])
             if p_hpe:
                 mdl["pt"]  = compute_pt_score_simple(p_hpe)
                 mdl["mas"] = pt_to_mas(mdl["pt"])
@@ -4595,6 +4622,9 @@ def main() -> None:
                 mdl["pt"]  = None
                 mdl["mas"] = None
 
+        if params["quality_flags"]:
+            print(f"  [FLAG] {', '.join(params['quality_flags'])} "
+                  f"(drift correction: {params['drift_correction']})")
         print(f"  A0={params['A0_deg']:.1f}°  A1_pp={params['A1_deg']:.1f}°  "
               f"neutral={params['neutral_deg']:.1f}°  type={stype}")
         print(f"  R2n={params['R2n']:.3f}  N={params['N']:.1f}  "

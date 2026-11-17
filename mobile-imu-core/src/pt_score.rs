@@ -772,6 +772,10 @@ fn params_from_scalars(
         omega_s: Vec::new(),
         pk_i: Vec::new(),
         tr_i: Vec::new(),
+        drift_correction: crate::scoring::DriftCorrection::None,
+        drift_slope_deg_s: 0.0,
+        drift_correction_rejected: None,
+        quality_flags: Vec::new(),
     }
 }
 
@@ -909,6 +913,10 @@ mod tests {
             omega_s: Vec::new(),
             pk_i: Vec::new(),
             tr_i: Vec::new(),
+            drift_correction: crate::scoring::DriftCorrection::None,
+            drift_slope_deg_s: 0.0,
+            drift_correction_rejected: None,
+            quality_flags: Vec::new(),
         };
         overrides(&mut p);
         p

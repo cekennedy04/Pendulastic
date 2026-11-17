@@ -129,14 +129,25 @@ impl WasmSession {
     }
 
     /// Why scoring under the chosen convention produced no result, as a stable
-    /// code (`TrialError::code`: "insufficient_samples",
-    /// "release_never_detected", "amplitude_exceeds_curve"), or `undefined`
-    /// when it scored. Lets the stored record say WHY the analysis convention
-    /// is missing instead of looking like an older wasm that lacked it.
+    /// code (`TrialError::code`), or `undefined` when it scored. Lets a stored
+    /// record that fell back to the live convention say why, instead of
+    /// looking like an older wasm that lacked the analysis convention.
     ///
     /// Pure delegation, per this module's logic-free rule.
     pub fn refusal_reason(&self, detrend: bool) -> Option<String> {
         self.inner.finish_with(None, detrend).err().map(|e| e.code().to_string())
+    }
+
+    /// How the chosen convention's score was reached:
+    /// `{"drift_correction":..,"drift_slope_deg_s":..,
+    /// "drift_correction_rejected":..,"quality_flags":[..]}`, or `undefined`
+    /// when unscorable. A separate call so `finish`'s pinned 20-key payload is
+    /// untouched.
+    ///
+    /// Pure delegation, per this module's logic-free rule.
+    pub fn scoring_quality(&self, detrend: bool) -> Option<String> {
+        let (_, p) = self.inner.finish_with(None, detrend).ok()?;
+        Some(params_json::scoring_quality_to_json(&p))
     }
 
     /// The composite score under the analysis convention — the number that must
