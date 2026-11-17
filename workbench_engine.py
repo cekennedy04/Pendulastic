@@ -1305,21 +1305,15 @@ def compute_optitrack_quality_signals(ref_t: np.ndarray, ref_angle: np.ndarray) 
     n = len(ref_angle)
     dropout_frac = (1.0 - float(np.sum(np.isfinite(ref_angle))) / n) if n else 1.0
 
-    # A curve the scorer refuses (A0 larger than the curve itself) gives no
-    # area-ratio signal; the refusal is returned as its own signal so the
-    # caller can show it, rather than being lost in the caller's broad handler.
-    pt_refusal = None
-    try:
-        pt_params = pendulastic_pt_score.compute_pt_params(ref_t, ref_angle)
-    except pendulastic_pt_score.AmplitudeExceedsCurveError as exc:
-        pt_params = None
-        pt_refusal = f"A0 exceeds its own curve, not scored: {exc}"
+    pt_params = pendulastic_pt_score.compute_pt_params(ref_t, ref_angle)
     area_ratio_warn = bool(pt_params["quality_warn"]) if pt_params is not None else False
+    # How the score was reached ('' when unflagged); shown, never a refusal.
+    scoring_flags = pendulastic_pt_score.scoring_flag_text(pt_params)
 
     return {
         "optitrack_dropout_frac": dropout_frac,
         "optitrack_area_ratio_warn": area_ratio_warn,
-        "optitrack_pt_refusal": pt_refusal,
+        "optitrack_scoring_flags": scoring_flags,
     }
 
 

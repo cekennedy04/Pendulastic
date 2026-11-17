@@ -305,6 +305,13 @@ test('finish reports why the analysis convention is missing, or null when it sco
   } else {
     assert.equal(typeof result.detrendedRefusal, 'string');
   }
+  // How each convention's score was reached travels with the result.
+  for (const q of [result.scoringQuality, result.scoringQualityDetrended]) {
+    assert.ok(q && typeof q === 'object', 'scoring quality must be reported by this wasm');
+    assert.ok(['tail', 'baseline', 'none'].includes(q.drift_correction));
+    assert.ok(Array.isArray(q.quality_flags));
+  }
+  assert.equal(result.scoringQuality.drift_correction, 'none', 'the live convention never corrects');
 });
 
 test('a malformed start cfg resolves to a real protocol message, not silence', async () => {

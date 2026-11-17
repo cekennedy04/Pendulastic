@@ -15,7 +15,6 @@ import datetime
 import json
 import csv
 import os
-import sys
 from typing import Optional
 
 import tkinter as tk
@@ -663,18 +662,13 @@ class WorkbenchView(tk.Frame):
             if not self._visible_vars.get(label, tk.BooleanVar(value=True)).get():
                 continue
             params = engine.windowed_pt_params(t, y)
-            # A trace whose A0 exceeds its own curve is refused by the scorer
-            # (AmplitudeExceedsCurveError): no score, the reason kept on the
-            # row as pt_refusal and shown in the table, never a crash.
-            params["pt_refusal"] = None
-            try:
-                full_params = pendulastic_pt_score.compute_pt_params(t, y)
-            except pendulastic_pt_score.AmplitudeExceedsCurveError as exc:
-                full_params = None
-                params["pt_refusal"] = f"A0 exceeds its own curve, not scored: {exc}"
+            full_params = pendulastic_pt_score.compute_pt_params(t, y)
             if full_params is not None:
                 params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
                 params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+                # How the score was reached; never a reason to drop the trace.
+                params["pt_flags"] = list(full_params.get("quality_flags") or [])
+                params["drift_correction"] = full_params.get("drift_correction")
             else:
                 params["pt_score"] = None
                 params["mas"] = None
@@ -717,10 +711,6 @@ class WorkbenchView(tk.Frame):
             if pt["pt_score"] is not None:
                 pt_str = f"{pt['pt_score']:.3f}"
                 mas_str = str(pt["mas"])
-            elif pt.get("pt_refusal"):
-                pt_str = "refused"
-                mas_str = "n/a"
-                print(f"  WARNING {label}: {pt['pt_refusal']}", file=sys.stderr)
             else:
                 pt_str = "n/a"
                 mas_str = "n/a"
@@ -1114,7 +1104,8 @@ class WorkbenchView(tk.Frame):
 
         raw_diag = self._raw_diagnostics or {}
         opti_trace = self._traces.get("optitrack")
-        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False}
+        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False,
+                        "optitrack_scoring_flags": ""}
         if opti_trace is not None:
             ref_t, ref_angle = opti_trace
             try:
@@ -1137,10 +1128,9 @@ class WorkbenchView(tk.Frame):
             f"Hold gravity on Z: {f'{hold_z * 100:.0f}%' if hold_z is not None else 'unavailable'}\n"
             f"Hold stillness gate: {'n/a' if hold_ok is None else ('passed' if hold_ok else 'FAILED')}\n"
             f"OptiTrack dropout: {opti_signals['optitrack_dropout_frac'] * 100:.0f}%\n"
-            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}"
+            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}\n"
+            f"OptiTrack scoring: {opti_signals.get('optitrack_scoring_flags') or 'no flags'}"
         )
-        if opti_signals.get("optitrack_pt_refusal"):
-            signals_text += f"\nOptiTrack PT: {opti_signals['optitrack_pt_refusal']}"
         tk.Label(dialog, text=signals_text, justify="left", anchor="w").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
 

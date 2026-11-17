@@ -120,25 +120,9 @@ def visible_zone_bands(y_max):
     return bands
 
 
-def _warn_amplitude_refusal(what, exc):
-    """A trial the scorer refused with AmplitudeExceedsCurveError is left out of
-    a report as unscorable, and says so: the refusal is printed with the trial
-    it belongs to, because the exception itself does not know which trial it
-    was raised for and a report that merely came out one trial short would
-    hide it. Returns the reason text for callers that record one."""
-    reason = f"A0 exceeds its own curve, not scored: {exc}"
-    print(f"  WARNING {what}: {reason}", file=sys.stderr)
-    return reason
-
-
 def score_trial(pid, trial, t, angle):
     """Compute PT params + full 7-param PT score for one trial. Returns None
-    if no clean release/oscillation was detected.
-
-    Raises pendulastic_pt_score.AmplitudeExceedsCurveError when A0 comes out
-    larger than the curve it was measured from. That is deliberately not
-    folded into None here: the report paths below catch it where they can
-    name the trial and record why it was not scored."""
+    if no clean release/oscillation was detected."""
     params = pt.compute_pt_params(t, angle)
     if params is None:
         return None
@@ -595,19 +579,11 @@ def trial_candidates(participant_id, include_archive=True):
                 continue
 
             pid_key = f"{participant_id}_{rec['leg']}_{rec['condition']}"
-            refusal = None
-            try:
-                record = score_trial(pid_key, rec["trial"], t, angle)
-            except pt.AmplitudeExceedsCurveError as exc:
-                # Unscoreable, with the reason on the row: the same status a
-                # None from the scorer gets, never a silent omission.
-                record = None
-                refusal = _warn_amplitude_refusal(f"{pid_key} trial {rec['trial']}", exc)
+            record = score_trial(pid_key, rec["trial"], t, angle)
             status = "unscoreable" if record is None else "scored"
-            reasons = ([refusal] if refusal else []) + list(quality.warnings)
             out.append({"leg": rec["leg"], "condition": rec["condition"], "trial": rec["trial"],
                        "path": csv_path, "status": status,
-                       "reason": "; ".join(reasons) or None,
+                       "reason": "; ".join(quality.warnings) or None,
                        "quality": quality, "record": record})
     return out
 
@@ -726,12 +702,7 @@ def _row5_source_pt7(rec, curve_key):
     curve = rec.get(curve_key)
     if curve is None:
         return None, None
-    try:
-        params = pt.compute_pt_params(curve["t"], curve["ang"])
-    except pt.AmplitudeExceedsCurveError as exc:
-        _warn_amplitude_refusal(
-            f"{rec.get('pid')} trial {rec.get('trial')} ({curve_key})", exc)
-        return None, None
+    params = pt.compute_pt_params(curve["t"], curve["ang"])
     if params is None:
         return None, None
     return pt.compute_pt_score(params), params
@@ -1273,14 +1244,7 @@ def collect_participant(participant_id, include_archive=True):
                     t, angle = pt.load_optitrack(r["path"])
                 except Exception:
                     continue
-                try:
-                    rec = score_trial(f"{participant_id}_{leg}_{cond}", r["trial"], t, angle)
-                except pt.AmplitudeExceedsCurveError as exc:
-                    # Same outcome trial_candidates gives it (unscoreable), so
-                    # the report and the trial list agree on what was scored.
-                    _warn_amplitude_refusal(
-                        f"{participant_id}_{leg}_{cond} trial {r['trial']}", exc)
-                    continue
+                rec = score_trial(f"{participant_id}_{leg}_{cond}", r["trial"], t, angle)
                 if rec is not None:
                     trials.append(rec)
             by_leg_tp[(leg, cond)] = trials

@@ -95,13 +95,23 @@ export async function createSession({ beta, emaAlpha, wasmSource }) {
       return json === undefined ? undefined : JSON.parse(json);
     },
     // Why the analysis convention produced nothing, when it did not: a stable
-    // code from the core ("amplitude_exceeds_curve" when the scorer refused
-    // an A0 larger than its own curve, "insufficient_samples", ...), null when
-    // it scored, and 'not_available' when this wasm build predates the export
-    // -- so a stored record can tell a refusal from a stale cached wasm.
+    // code from the core ("insufficient_samples", "release_never_detected"),
+    // null when it scored, and 'not_available' when this wasm build predates
+    // the export -- so a stored record can tell an unscorable analysis pass
+    // from a stale cached wasm.
     detrendedRefusal: () => {
       if (typeof inner.refusal_reason !== 'function') return 'not_available';
       return inner.refusal_reason(true) ?? null;
+    },
+    // How a convention's score was reached: {drift_correction,
+    // drift_slope_deg_s, drift_correction_rejected, quality_flags}. Neither
+    // drift bound nor the A0 bound refuses a trial; they skip a correction and
+    // flag it, and this is where the flag travels. null when unscorable or when
+    // this wasm build predates the export (feature-detected, as above).
+    scoringQuality: (detrend) => {
+      if (typeof inner.scoring_quality !== 'function') return null;
+      const json = inner.scoring_quality(Boolean(detrend));
+      return json === undefined ? null : JSON.parse(json);
     },
     finishPtScoreDetrended: () => {
       if (typeof inner.finish_pt_score_detrended !== 'function') return undefined;
@@ -176,6 +186,9 @@ export function createWorkerHandler() {
               ptScoreDetrended: session.finishPtScoreDetrended() ?? null,
               // Why paramsDetrended is null, when it is (null when it scored).
               detrendedRefusal: session.detrendedRefusal(),
+              // How each convention's score was reached (flags, correction).
+              scoringQuality: session.scoringQuality(false),
+              scoringQualityDetrended: session.scoringQuality(true),
               // Null here means NOT MEASURED, and the record keeps that
               // distinction rather than defaulting it to zero.
               lateralMotion: session.lateralMotion() }

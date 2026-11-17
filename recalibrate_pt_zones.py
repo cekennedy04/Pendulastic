@@ -110,14 +110,7 @@ def leg_scores(opti_root: str | None, mas_csv: str | None, verbose: bool = True)
             dropped[(arm, f"load failed: {type(exc).__name__}")] = \
                 dropped.get((arm, f"load failed: {type(exc).__name__}"), 0) + 1
             continue
-        try:
-            params = pts.compute_pt_params(t, ang)
-        except pts.AmplitudeExceedsCurveError:
-            # Fails closed, deliberately: dropping a trial would bias the
-            # thresholds. Name it first, which the traceback alone does not.
-            print(f"\n  REFUSED {rec['path']}: A0 exceeds its own curve; fix or exclude "
-                  "this trial (excluded_trials.json) before recalibrating.", file=sys.stderr)
-            raise
+        params = pts.compute_pt_params(t, ang)
         if not params:
             unscorable += 1
             dropped[(arm, "compute_pt_params returned nothing")] = \

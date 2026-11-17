@@ -544,15 +544,19 @@ test('a result without the analysis pair omits the keys rather than adding undef
   assert.ok(!('ptScoreDetrended' in action));
 });
 
-test('a refused analysis convention carries its reason through the reducer', () => {
+test('the analysis refusal reason and scoring quality ride through the reducer', () => {
+  const q = { drift_correction: 'tail', quality_flags: ['large_drift_correction'] };
   const { action } = nextOutcome(false, {
     type: 'result', params: { f: 1 }, paramsDetrended: null,
-    detrendedRefusal: 'amplitude_exceeds_curve',
+    detrendedRefusal: 'insufficient_samples', scoringQuality: null, scoringQualityDetrended: q,
   });
   assert.equal(action.paramsDetrended, null);
-  assert.equal(action.detrendedRefusal, 'amplitude_exceeds_curve');
+  assert.equal(action.detrendedRefusal, 'insufficient_samples');
+  assert.equal(action.scoringQuality, null);
+  assert.deepEqual(action.scoringQualityDetrended, q);
   const bare = nextOutcome(false, { type: 'result', params: { f: 1 } }).action;
   assert.ok(!('detrendedRefusal' in bare));
+  assert.ok(!('scoringQualityDetrended' in bare));
 });
 
 // ---- capture view lifecycle (task 7) -------------------------------------

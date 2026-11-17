@@ -129,10 +129,10 @@ jobs:
       # Still a file list and not `pytest tests/`: the GUI suite needs a
       # display.
       #
-      # test_drift_correction_bounds.py and test_amplitude_refusal_callers.py
-      # pin the drift-correction bound and what every non-GUI caller does with
-      # AmplitudeExceedsCurveError; the four bound tests that read OptiTrack
-      # files skip here, where there is no study data. test_derive_healthy_ref.py
+      # test_drift_correction_bounds.py pins the drift-correction bounds and
+      # the correction-aware A0 bound, neither of which may refuse a trial,
+      # and the flags they attach; the bound tests that read OptiTrack files
+      # skip here, where there is no study data. test_derive_healthy_ref.py
       # pins which trials may enter HEALTHY_REF (synthetic, no study data).
       - run: |
           python -m pytest -q \
@@ -149,7 +149,6 @@ jobs:
             tests/test_camera_utils.py \
             tests/test_rmse_compare_floor.py \
             tests/test_drift_correction_bounds.py \
-            tests/test_amplitude_refusal_callers.py \
             tests/test_derive_healthy_ref.py \
             neuromech/tests
       # Two files in neuromech/tests carry the model's own contract, and both
