@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; merges, 0.4.0 live and hosting decision recorded 2026-11-17.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; merges, 0.4.0 live and hosting decision recorded 2026-11-17; #112 merged 2026-11-17.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -110,23 +110,33 @@ scores move. "Not verified" is stated, never implied.
   dropped). The A-P2 and A-P3 presets are unreachable on the current scorer. The
   simulated dry run delivers 9 of 9 runs in their intended band at seeds 11, 1, 3, 7
   and 42 (7 of 9 before #96).
-- **O5 preset refit (#112, draft, 2026-11-17):** presets refitted to their band middles on
+- **O5 preset refit (#112, merged 2026-11-17, reviewed and re-reviewed):** presets refitted to their band middles on
   the five-term scorer (`B-claspknife` 0.078 band 0 -> 0.200 band 1; `K-HM1` 0.149 ->
   0.193; `B-spasm`, `B-flexor`, `B-clonus` off their edges), `M-catch_release_high`
   dropped, and the build now exits 1 when a scenario not on the allowlist
   (`scenarios.NEAR_EDGE_ALLOWED`, 10 probes with reasons) sits within 0.03 PT7 of a
   band edge. The `M-tone_L*` ladder is deliberately not moved (see the PR).
+  Owner merged it as is (B-claspknife in band 1, release 25 -> 36 deg; the
+  `catch_release_high` profile now uses 36 deg). **Open owner decisions from the review:**
+  (a) `M-tone_L*` grades disagree with intent (L1 band 0, L3/L4 band 1+): accept, or add an
+  intent-mismatch report to the build; (b) `R-friction` (bearing friction alone) scores
+  0.0056 below the MAS 1 edge and is only allowlisted: record it as a scorer/rig finding?
+  (c) duplicate Params under two names, `C-wmax-low`/`C-f-low` and
+  `R-reflex-force`/`S-lam1`: drop one of each? Smaller follow-ups: the edge check does not
+  stop `session.plan` from playing a flagged library.
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** #112 (O5 preset refit, draft).
+- **Open PRs:** none for this workstream.
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
   gain gated by the gain after the swing, and a flag for a hold the arm does not settle
   at. Reviewed and re-reviewed (`docs/chirp-tracking-limit-review`); 286 tests, dry run
-  9 of 9. **Simulation only, not verified on a real rig.** Known costs (README and report
+  9 of 9. **Simulation only, not verified on a real rig.** The 250 deg/s chirp test already
+  saw 4 early releases on main before #112 (A-P0 sits 0.002 ms past the 4 ms limit, so
+  3 vs 4 is rounding); #112 made the pin accept either. Known costs (README and report
   section C): slow rig modes the chirp cannot see flag good runs; a constant encoder
   offset still moves release and tracking; no session ratio where predictions are under
   7 ms; a margin must never be accepted from the session being judged.
