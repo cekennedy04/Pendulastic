@@ -1,7 +1,7 @@
 // Main-thread UI glue: wires the four-state capture state machine and the
 // scored-result table onto startCapture's three callbacks. No DOM framework,
 // no build step -- plain ES module loaded directly by the browser.
-import { startCapture } from './capture.js';
+import { startCapture, requestMotionPermission, stopAndExportRaw } from './capture.js';
 import { installState, installInstructions } from './install-gate.js';
 import { openDb, put, getAll, getOne, STORES } from './db.js';
 import {
@@ -339,6 +339,9 @@ const ZONE_LABEL = {
 const ZONE_CLASSIFICATION_CALIBRATED = false;
 
 const ZONE_UNCALIBRATED_LABEL = 'not classified';
+// Shown beside the chip (and as its tooltip): a bare "NOT CLASSIFIED" reads as
+// a failure in a demo, when it is a deliberate gate.
+export const ZONE_UNCALIBRATED_NOTE = 'zones not yet calibrated';
 
 // Plain-English names for the scored parameters, for the unmeasured notice.
 // The raw keys are what the breakdown table shows; this is what a clinician
@@ -417,7 +420,7 @@ export function unmeasuredNotice(unmeasured, nScored) {
 // class it carries -- never the raw zone while uncalibrated.
 export function zoneDisplay(zone, calibrated = ZONE_CLASSIFICATION_CALIBRATED) {
   if (!calibrated) {
-    return { text: ZONE_UNCALIBRATED_LABEL, className: 'zone-uncalibrated' };
+    return { text: ZONE_UNCALIBRATED_LABEL, className: 'zone-uncalibrated', note: ZONE_UNCALIBRATED_NOTE };
   }
   const key = typeof zone === 'string' && zone in ZONE_LABEL ? zone : 'unknown';
   return { text: ZONE_LABEL[key], className: `zone-${key}` };
@@ -903,7 +906,7 @@ if (typeof document !== 'undefined') {
       currentSide = null;
       await put(db, STORES.settings, { key: SETTING_KEYS.activePatient, value: null });
       await put(db, STORES.settings, { key: SETTING_KEYS.side, value: null });
-      el('result').hidden = true;
+      setResultVisible(false);
       el('waveform-wrap').hidden = true;
       el('pt-score').hidden = true;
       hideExportControls();
@@ -1169,8 +1172,19 @@ if (typeof document !== 'undefined') {
     node.hidden = text === null;
     node.textContent = text || '';
   }
+  // The raw-parameter table lives inside a <details> that is closed by
+  // default; both are shown and hidden together, and every new trial starts
+  // with the disclosure closed again.
+  function setResultVisible(visible) {
+    el('result').hidden = !visible;
+    const details = el('result-details');
+    if (details) {
+      details.hidden = !visible;
+      if (!visible) details.open = false;
+    }
+  }
   function renderResult(params) {
-    el('result').hidden = false;
+    setResultVisible(true);
     // An unscored recording carries null params (an SSR staircase or any
     // non-swing, kept for its raw log). Say so rather than rendering a table
     // of "undefined", and never coerce the missing values to zeros.
@@ -1468,40 +1482,84 @@ if (typeof document !== 'undefined') {
     } catch { /* best effort */ }
   }
 
+  // True from the Start tap until startCapture settles (the iOS permission
+  // prompt window), so the router refuses to navigate away mid-start.
+  let researchStarting = false;
+
+  function researchResetButtons() {
+    el('research-stop').hidden = true;
+    el('research-start').hidden = false;
+  }
+
   async function researchStart() {
+    // FIRST, synchronously, inside the tap: iOS only grants motion access
+    // within the user gesture (see requestMotionPermission).
+    const permission = requestMotionPermission();
     resetResearchTrace();
     researchStartMs = Date.now();
     el('research-start').hidden = true;
     el('research-stop').hidden = false;
+    el('research-status').textContent = 'starting…';
+    researchStarting = true;
+    // A start failure (no sensors, permission refused) arrives via onError
+    // BEFORE startCapture resolves; after that, onError is a worker fault
+    // mid-recording, which is shown but does not stop the recording -- Stop
+    // still tries to save the raw log.
+    let startFailure = null;
+    let started = false;
+    let handle = null;
+    try {
+      handle = await startCapture({
+        permission,
+        onState: () => {},
+        onResult: () => {},
+        onError: (reason) => {
+          if (!started) { startFailure = reason; return; }
+          el('research-status').textContent = `ERROR while recording: ${reason}`;
+        },
+        onSamples: (buf) => {
+          const { state, points } = foldGyroBatch(buf, researchWaveState);
+          researchWaveState = state;
+          researchSampleCount += points.length;
+          researchSeries = capSeries(researchSeries.concat(points), RESEARCH_MAX_POINTS);
+          drawResearchTrace(researchSeries);
+          el('research-timer').textContent = `${((Date.now() - researchStartMs) / 1000).toFixed(1)} s`;
+        },
+      });
+    } catch (err) {
+      startFailure = err instanceof Error ? err.message : String(err);
+    } finally {
+      researchStarting = false;
+    }
+    started = true;
+    if (startFailure !== null) {
+      handle?.close?.();
+      researchResetButtons();
+      el('research-status').textContent = `NOT recording: ${startFailure}`;
+      return;
+    }
+    if (el('research-stop').hidden) {
+      // Stop was tapped while the permission prompt was up: nothing useful
+      // was recorded, so release the capture instead of leaving it headless.
+      handle.close?.();
+      el('research-status').textContent = 'cancelled before recording began';
+      return;
+    }
+    researchHandle = handle;
     el('research-status').textContent = 'recording…';
-    // No onState/onResult/onError work: this mode does not score or auto-stop.
-    researchHandle = await startCapture({
-      onState: () => {},
-      onResult: () => {},
-      onError: () => {},
-      onSamples: (buf) => {
-        const { state, points } = foldGyroBatch(buf, researchWaveState);
-        researchWaveState = state;
-        researchSampleCount += points.length;
-        researchSeries = capSeries(researchSeries.concat(points), RESEARCH_MAX_POINTS);
-        drawResearchTrace(researchSeries);
-        el('research-timer').textContent = `${((Date.now() - researchStartMs) / 1000).toFixed(1)} s`;
-      },
-    });
   }
 
   async function researchStop() {
     const handle = researchHandle;
     researchHandle = null;
-    el('research-stop').hidden = true;
-    el('research-start').hidden = false;
+    researchResetButtons();
     if (!handle) return;
     el('research-status').textContent = 'saving…';
     try {
-      // stop() flushes the final batch and posts finish (its result is ignored);
-      // exportJsonl still works afterward -- the session keeps the raw log.
-      handle.stop();
-      const raw = await handle.exportJsonl();
+      // Flush WITHOUT finish: this mode never scores, and a finish on a
+      // still/unscorable log used to cost the recording (bench audit
+      // 2026-11-17). See capture.js stopAndExportRaw / createReplyRouter.
+      const raw = await stopAndExportRaw(handle);
       await persistResearchRecording(raw);
       const durS = ((Date.now() - researchStartMs) / 1000).toFixed(1);
       el('research-status').textContent = `saved — ${researchSampleCount} samples, ${durS} s`;
@@ -1514,7 +1572,7 @@ if (typeof document !== 'undefined') {
 
   const researchView = createResearchView({
     el,
-    isRecording: () => researchHandle != null,
+    isRecording: () => researchHandle != null || researchStarting,
     redraw: () => drawResearchTrace(researchSeries),
   });
   router.register('research', researchView);
@@ -2016,6 +2074,12 @@ if (typeof document !== 'undefined') {
     const badge = zoneDisplay(zone);
     zoneEl.textContent = badge.text;
     zoneEl.className = badge.className;
+    zoneEl.title = badge.note ?? '';
+    const zoneNote = el('pt-score-zone-note');
+    if (zoneNote) {
+      zoneNote.hidden = !badge.note;
+      zoneNote.textContent = badge.note ?? '';
+    }
     // The 4-parameter score, shown alongside the 7-parameter one because
     // pendulastic_app.py's live view displays THIS number -- without it the
     // phone and the desktop capture app report different figures for the same
@@ -2122,7 +2186,9 @@ if (typeof document !== 'undefined') {
     // Both gates are surfaced separately: the corrective action for motion
     // and for drift differ, so "it failed" is not enough for the clinician
     // (task-6 dispatch, requirement 2).
-    el('calm').textContent = `${calm_s.toFixed(2)} s / 0.95 s`;
+    // No-break spaces keep each number with its unit; a narrow gate may wrap
+    // only at the slash, never leave a lone "s" on its own line.
+    el('calm').textContent = `${calm_s.toFixed(2)} s / 0.95 s`;
     el('drift').textContent = `${drift_deg.toFixed(2)}° / 5.00°`;
   }
 
@@ -2287,21 +2353,35 @@ if (typeof document !== 'undefined') {
     // AudioContext to start inside a user gesture, and the first await ends
     // that window.
     cues.unlock();
-    // Recording never waits on a participant or a leg. With no participant
-    // set, the trial is filed as unassigned under the built-in QUICK-TEST
-    // participant -- kept and exported, left out of per-person trends -- so a
-    // trial always has somewhere to be saved. The leg stays optional and is
-    // stored as "not set".
-    if (!currentPatient) {
-      await ensureSessionReady();
-      const patient = (await getOne(db, STORES.patients, QUICK_TEST_PATIENT_ID)) ?? makeQuickTestPatient();
-      await put(db, STORES.patients, patient);
-      await applyParticipantAction({ type: 'select', patient });
-    }
-    faulted = false; // fresh trial: the previous trial's latch must not carry over
+    // Same rule, same reason, for motion access: the request is STARTED here,
+    // before the IndexedDB awaits below, and its promise handed to
+    // startCapture. Requesting it after those awaits (as startCapture used to)
+    // runs outside the gesture, where iOS may refuse or throw.
+    const permission = requestMotionPermission();
+    // Shown before the first await so a double tap cannot start two captures.
     el('start').hidden = true;
     el('stop').hidden = false;
-    el('result').hidden = true;
+    try {
+      // Recording never waits on a participant or a leg. With no participant
+      // set, the trial is filed as unassigned under the built-in QUICK-TEST
+      // participant -- kept and exported, left out of per-person trends -- so
+      // a trial always has somewhere to be saved. The leg stays optional and
+      // is stored as "not set".
+      if (!currentPatient) {
+        await ensureSessionReady();
+        const patient = (await getOne(db, STORES.patients, QUICK_TEST_PATIENT_ID)) ?? makeQuickTestPatient();
+        await put(db, STORES.patients, patient);
+        await applyParticipantAction({ type: 'select', patient });
+      }
+    } catch (err) {
+      const g = el('guide');
+      g.className = 'fault';
+      g.textContent = `ERROR\ncould not prepare the session: ${err instanceof Error ? err.message : String(err)}`;
+      resetToIdle();
+      return;
+    }
+    faulted = false; // fresh trial: the previous trial's latch must not carry over
+    setResultVisible(false);
     el('waveform-wrap').hidden = true;
     el('pt-score').hidden = true;
     hideExportControls();
@@ -2315,7 +2395,23 @@ if (typeof document !== 'undefined') {
     // onError) would capture and act on a finished trial's session as though
     // it were the one just started.
     session = null;
-    session = await startCapture({ onState, onResult, onError });
+    let handle;
+    try {
+      // A refused permission is reported through onError (shown as ERROR,
+      // UI reset to idle) and returns a never-started handle.
+      handle = await startCapture({ onState, onResult, onError, permission });
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    if (el('stop').hidden) {
+      // Stop (or an onError) ended this trial while startCapture was still
+      // pending -- e.g. during the iOS prompt. Do not let the capture run on
+      // headless with no Stop button.
+      handle.close?.();
+      return;
+    }
+    session = handle;
   });
 
   // Ends the trial. Called by the Stop button AND by the settle auto-stop --

@@ -250,15 +250,34 @@ tells you if not.
 The app is deployed to Vercel project `pendulastic-app`, live at
 **https://pendulastic-app.vercel.app**. Deploying is a **local build followed
 by a folder upload** — it is *not* triggered by pushing to GitHub, and cannot
-be (see the next section for why). To ship a new build:
+be (see the next section for why). To ship a new build, from a clean checkout
+of `origin/main`:
 
 ```
 cd webapp
-npm install                                   # first time only
-npm run build:dist                            # rebuilds the wasm, assembles webapp/dist/
+npm ci                                        # first time only (package-lock.json is committed)
 npx vercel login                              # first time only; opens the browser
-npx vercel deploy --prod --yes --project pendulastic-app dist
+npm run deploy:dry-run                        # optional: every check and the build, no upload
+npm run deploy
 ```
+
+`npm run deploy` (`scripts/deploy.mjs`) is the only supported way to deploy. It:
+
+1. refuses if anything under `webapp/` or `mobile-imu-core/` is uncommitted;
+2. refuses unless `HEAD` is exactly `origin/main` (it fetches first) — merge
+   the PR, then deploy;
+3. runs `npm run build:dist` and then `npm test` against that fresh build;
+4. runs `npx vercel deploy --prod --yes --project pendulastic-app dist` —
+   always with `--project`, so it can never land in whatever project the
+   folder happens to be linked to;
+5. fetches `https://pendulastic-app.vercel.app/src/build-id.js` and fails
+   unless its `BUILD_ID` equals the one just built;
+6. restores the tracked `src/build-id.js` that `build:dist` rewrote, pass or
+   fail.
+
+`--dry-run` (`npm run deploy:dry-run`) does 1–3 and 6 and prints the deploy
+command instead of running it. Record the `BUILD_ID` it prints; after a real
+deploy the app's footer (Session view) shows the same id.
 
 Prerequisites are the same as the build step above: Node, `cargo` with the
 `wasm32-unknown-unknown` target, and a matching `wasm-bindgen` CLI. `npx vercel`
@@ -282,14 +301,15 @@ Things that will bite you:
   either.
 - **A rebuild requires a redeploy.** Nothing keeps the live site in sync with
   the repo. After any change under `mobile-imu-core/src/` or `webapp/src/`,
-  run the two commands above again.
+  merge it, then run `npm run deploy` again.
 - **Testers must *install* the app, not bookmark it.** iOS evicts IndexedDB
   for ordinary sites after ~7 days of disuse, and recordings live on the
   phone. A Home Screen install is exempt. Export trials (in-app export) before
   clearing site data or changing hosts.
 
-To verify a deploy landed: open the URL in a private Safari tab and check the
-build id shown at the bottom of the app's Session view matches `dist/src/build-id.js`.
+`npm run deploy` already checks the served `BUILD_ID`. To check by eye as
+well: open the URL in a private Safari tab and confirm the build id shown at
+the bottom of the app's Session view matches the one the deploy printed.
 
 ## Deploying to a static host
 

@@ -82,6 +82,11 @@ html, body {
      layout width on a narrow phone screen. */
   width: 100%;
   overflow-x: hidden;
+  /* `clip`, where supported (iOS 16+), does the same job WITHOUT making html
+     and body scroll containers. `hidden` does, and a scroll container that
+     never scrolls silently disables `position: sticky` for everything inside
+     it -- which is what the pinned Stop button below relies on. */
+  overflow-x: clip;
 }
 
 body {
@@ -151,6 +156,19 @@ body {
 
 #stop, #research-stop {
   background: var(--fault-bg);
+}
+
+/* Stop must be reachable without scrolling for the whole trial. On a 390x844
+   iPhone the banner, the install strip and the 34vh state guide put it below
+   the fold, and the operator's other hand is holding the leg. Sticky to the
+   bottom of the viewport: it sits in normal flow when there is room and pins
+   to the bottom edge when there is not. The shadow separates it from the
+   content scrolling underneath. */
+#stop, #research-stop {
+  position: sticky;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 50;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.28);
 }
 
 /* Research recorder (gated). */
@@ -280,6 +298,14 @@ body {
   #guide.ready { animation: none; }
 }
 
+/* Short phones (390x844, 375x812): give the state guide a little less of the
+   screen so the hold gates and the pinned Stop button fit beneath it without
+   scrolling. Must come AFTER the base #guide rule to win. The guide is still
+   the largest element on the page. */
+@media (max-height: 860px) {
+  #guide { min-height: 26vh; }
+}
+
 /* ---- Waveform plot -------------------------------------------------------
    Spec §5's result-screen waveform. Plain 2D canvas, drawn directly in
    app.js -- no charting library (task binding constraint). The point is
@@ -370,8 +396,12 @@ body {
 #gates dd {
   font-family: var(--mono);
   margin: 0;
+  /* app.js joins each number to its unit with a no-break space, so a wrap
+     can only happen at the " / " -- never a lone "s" on its own line. */
+  overflow-wrap: normal;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(16px, 4.6vw, 20px);
+  /* Sized so "0.52 s / 0.95 s" fits one line in a half-width gate at 375 px. */
+  font-size: clamp(15px, 4.1vw, 20px);
   font-weight: 700;
   color: var(--fg);
 }
@@ -437,6 +467,11 @@ body {
    app.js ZONE_CLASSIFICATION_CALIBRATED). Neutral on purpose: any of the
    red/amber/green zone colours would read as a verdict. */
 #pt-score-zone.zone-uncalibrated { background: var(--pt-unknown-bg); }
+#pt-score-zone-note {
+  font-size: clamp(12px, 3.4vw, 14px);
+  color: var(--fg3);
+}
+#pt-score-zone-note[hidden] { display: none; }
 
 /* Unmeasured-parameter notice. Sits above the number because it changes how
    the number should be read. Amber, not red: the trial is valid and kept --
@@ -544,9 +579,20 @@ body {
    All 20 scored parameters, unfiltered (task-6 requirement 4) -- several are
    only meaningful read together, and no clinical prioritisation has been
    established for this app. */
+#result-details[hidden] { display: none; }
+#result-details {
+  margin: 4px 16px 16px;
+}
+#result-details summary {
+  cursor: pointer;
+  padding: 10px 2px;
+  font-weight: 600;
+  font-size: clamp(14px, 3.8vw, 16px);
+  color: var(--fg2);
+}
 #result {
-  width: calc(100% - 32px);
-  margin: 8px 16px 16px;
+  width: 100%;
+  margin: 0;
   border-collapse: collapse;
   font-size: clamp(13px, 3.6vw, 15px);
 }
