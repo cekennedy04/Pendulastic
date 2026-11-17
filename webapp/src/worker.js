@@ -19,6 +19,19 @@ import * as wasmExports from './wasm/mobile_imu_core.js';
 
 let ready = null;
 
+// Which formula and which replay footing the loaded wasm scores with, so a
+// stored record names them from the binary that produced it rather than from
+// a JS copy. null for a wasm build that predates the exports (crate < 0.4.0):
+// such a build scored on the old app footing, and a reader must not guess.
+export function scoringProvenance(exports = wasmExports) {
+  // try/catch too: new glue over a stale cached .wasm binary throws on the
+  // call, and that must cost the provenance, never the trial's result.
+  const read = (name) => {
+    try { return typeof exports[name] === 'function' ? exports[name]() : null; } catch { return null; }
+  };
+  return { scoreFormulaId: read('score_formula_id'), scoringFooting: read('scoring_footing') };
+}
+
 export async function createSession({ beta, emaAlpha, wasmSource }) {
   // The positional `init(wasmSource)` form is deprecated by wasm-bindgen (it
   // warns on every run) and is slated for removal; the object form is the
@@ -191,7 +204,8 @@ export function createWorkerHandler() {
               scoringQualityDetrended: session.scoringQuality(true),
               // Null here means NOT MEASURED, and the record keeps that
               // distinction rather than defaulting it to zero.
-              lateralMotion: session.lateralMotion() }
+              lateralMotion: session.lateralMotion(),
+              provenance: scoringProvenance() }
           : { type: 'error', reason: 'unscorable' });
       } else if (m.type === 'reference') {
         // The healthy reference the result screen shows BESIDE each measured

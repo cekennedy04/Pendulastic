@@ -19,10 +19,15 @@ pub struct WasmSession {
 
 #[wasm_bindgen]
 impl WasmSession {
+    /// `beta` and `ema_alpha` are accepted and IGNORED since crate 0.4.0: the
+    /// footing is fixed inside the core ([`ReplayConfig::reference`]) so that
+    /// `ALGORITHM_VERSION`, which hashes the wasm and not the JS, identifies
+    /// everything that can move a score. The signature stays so a cached old
+    /// `capture.js` still loads a new wasm and the other way round.
     #[wasm_bindgen(constructor)]
     pub fn new(beta: f64, ema_alpha: f64) -> WasmSession {
-        let cfg = ReplayConfig { beta, ema_alpha, ..ReplayConfig::default() };
-        WasmSession { inner: TrialSession::new(cfg) }
+        let _ = (beta, ema_alpha);
+        WasmSession { inner: TrialSession::new(ReplayConfig::reference()) }
     }
 
     /// Flat batch, 7 doubles per sample: `[t_ms, ax, ay, az, gx, gy, gz]`.
@@ -188,6 +193,26 @@ impl WasmSession {
 #[wasm_bindgen]
 pub fn healthy_reference() -> String {
     crate::pt_score::healthy_ref_to_json(&HEALTHY_REF)
+}
+
+/// The scored set and reference the composite is computed under
+/// (`pt_score::SCORE_FORMULA_ID`), so a record can carry the id of the wasm
+/// that scored it rather than a JS copy of it.
+///
+/// Pure delegation, per this module's logic-free rule.
+#[wasm_bindgen]
+pub fn score_formula_id() -> String {
+    crate::pt_score::SCORE_FORMULA_ID.to_string()
+}
+
+/// The replay footing trials are scored on ([`replay::SCORING_FOOTING`]).
+/// A record without it predates crate 0.4.0 and was scored on the old app
+/// footing (50 ms ticks, EMA 0.3, no flex projection).
+///
+/// Pure delegation, per this module's logic-free rule.
+#[wasm_bindgen]
+pub fn scoring_footing() -> String {
+    crate::replay::SCORING_FOOTING.to_string()
 }
 
 /// The composite score for a trial's STORED parameters, for the trends view.

@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; reference-footing PR 2026-11-17.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -42,7 +42,10 @@ scores move. "Not verified" is stated, never implied.
   removed. Every score records which correction it used and its flags.
 - **Scoring footing:** move the app to the Python reference footing, together with
   counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
-  one score-formula version bump (plan in progress on `feat/app-reference-footing`).
+  one score-formula version bump. Implemented in draft PR `feat/app-reference-footing`
+  (core 0.4.0, `pt5trough-ref-2026-11-16`); the owner wants it landed before the
+  2026-11-18 status meeting if independent review passes. Step 2 change approved: the
+  first-trough drop runs after the active-oscillation window bound.
 - **Release detector:** deferred; no problems seen in use. Revisit only if a problem
   turns up that is too big to ignore.
 - **Clinical-field branches:** `neuromech/fall-speed-b13` and `neuromech/fall-speed-check`
@@ -52,7 +55,7 @@ scores move. "Not verified" is stated, never implied.
   the owner before they happen.
 - **Nightly hygiene agent:** retired.
 - **Footing plan Q1–Q6:** the recommended options (tracked reference-footing constant;
-  trends break at 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
+  trends break at the footing change, 0.4.0 since #105 took 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
   unification after #94; this change may move `HEALTHY_REF["f"]` by about 0.001).
 - **Custom domain:** `pendulastic.com`, bought by the owner, pointed at the Vercel project.
 - **Scorable-length gate (footing plan Q7):** the 40-sample minimum becomes 2.0 s of finite
@@ -198,9 +201,17 @@ scores move. "Not verified" is stated, never implied.
   the first trough, bundled with the app footing change.
 - **Held until a bench session can back them:** frequency cap and `f_out_of_range`
   (`c2dfe67`), Rust flex-projection tier (`f429356`).
-- **Open PRs:** #76 (drop `omega_max_n`) and #83 (desktop live view; contains #76).
-  Both conflict with `main`. The owner chose to drop `omega_max_n`; it is being carried
-  into the app footing change, after which these two are superseded.
+- **App reference footing (draft PR, `feat/app-reference-footing`; core 0.4.0,
+  `pt5trough-ref-2026-11-16`):** five terms (`omega_max_n` shown, not scored), N counted
+  from the first trough, `HEALTHY_REF["f"]` 0.9511 to 0.9501, a 2.0 s scorable span in all
+  three ports, and the app scored on the reference footing (`ReplayConfig::reference()`:
+  10 ms ticks, EMA 0.5 rescaled, flex projection). Rust matches Python on 179 of 179
+  corpus trials (traces within 2e-13 deg, verdicts identical, both conventions); the wasm
+  matches the native core on the app-clock feed. App before to after: 59 on-screen and 62
+  stored verdicts change, PT a median 0.074 lower; the app and the reference now agree on
+  every trial. Reference before to after: 17 verdicts, N -0.5 on 59 trials. neuromech: 11
+  intended bands move, no preset refitted; 14 scenarios sit within 0.03 PT7 of an edge.
+  When it merges, #76 and #83 are closed as superseded.
 - **Do not:** remove `abs()` from clinical swing-angle extraction.
 
 ### 4. Rust AHRS / phone replay — SEED FIX MERGED
@@ -246,10 +257,11 @@ scores move. "Not verified" is stated, never implied.
   `feat/webapp-workbench-restyle` are stale; do not build or deploy from them.
 - **Entry points:** `webapp/` (vanilla ES modules, wasm from `mobile-imu-core`);
   deploy is a manual Vercel upload of `webapp/dist` to project `pendulastic-app`.
-- **Known gap to the reference:** see decision 2. The app's PT score is a median 0.058
-  higher than the reference configuration and reads borderline where the reference
-  reads healthy on 32 of 179 corpus trials. Zone thresholds and `HEALTHY_REF` were
-  derived on the reference footing; whether they suit the app's has not been tested.
+- **Gap to the reference:** closed by the reference-footing PR (workstream 3): from core
+  0.4.0 the app scores on the reference footing and agrees with Python on every corpus
+  trial. Records carry `score_formula_id` and `scoring_footing`; the trends view breaks a
+  series where the footing changes. Until it merges, the app reads a median 0.057 higher
+  than the reference and disagrees on 56 of 179 on-screen verdicts.
 - **Offline + custom domain (draft PR #104, `feat/offline-usb-build`):** the primary
   offline route is the existing install-once PWA. It is the only route on iOS, and was
   checked offline in desktop Chromium. `npm run build:usb` adds a single-file

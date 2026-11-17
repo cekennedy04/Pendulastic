@@ -91,7 +91,8 @@ def test_scored_parameter_count_matches_the_rust():
     )
 
 
-def test_omega_min_n_is_not_scored():
+@pytest.mark.parametrize("key", ["omega_min_n", "omega_max_n"])
+def test_velocity_term_is_not_scored(key):
     """The collinearity fix, pinned.
 
     omega_min_n is -omega_max_n for any limb dropped from the extension
@@ -100,21 +101,28 @@ def test_omega_min_n_is_not_scored():
     twice -- 94% of a healthy limb's score came from the pair. If someone adds
     it back, this fails rather than the score quietly growing a double weight
     again.
+
+    omega_max_n joined it 2026-11-16: on real legs it is ~350/A0 and its
+    penalise-below term charges the loosest legs most (see _PARAM_KEYS). Both
+    stay selectable through ALL_PT_KEYS; neither may re-enter the canonical set
+    without this test being changed on purpose.
     """
-    assert "omega_min_n" not in pt._PARAM_KEYS
-    assert "omega_min_n" in pt._DIAGNOSTIC_KEYS
-    assert "omega_min_n" not in pt.compute_pt_score_breakdown(
+    assert key not in pt._PARAM_KEYS
+    assert key in pt._DIAGNOSTIC_KEYS
+    assert key in pt.ALL_PT_KEYS
+    assert key not in pt.compute_pt_score_breakdown(
         dict.fromkeys(pt._PARAM_KEYS + pt._DIAGNOSTIC_KEYS, 1.0))
 
 
-def test_the_rust_breakdown_has_no_omega_min_n_field():
-    """Python's breakdown dict has six keys and no omega_min_n at all, so a
-    seventh field on the Rust struct would be a parity break."""
+def test_the_rust_breakdown_has_no_velocity_field():
+    """Python's breakdown dict has five keys and neither velocity term
+    (omega_min_n left 2026-10-26, omega_max_n 2026-11-16), so an extra field
+    on the Rust struct would be a parity break."""
     src = open(RUST, encoding="utf-8").read()
     body = re.search(r"pub struct PtScoreBreakdown \{(.*?)\n\}", src, re.S)
     assert body, "PtScoreBreakdown not found"
     fields = set(re.findall(r"pub (\w+): f64", body.group(1)))
-    assert fields == {"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"}, fields
+    assert fields == {"r2n", "n", "phi_max_ratio", "f", "area_ratio"}, fields
 
 
 def test_the_rust_total_sums_exactly_the_scored_fields():
@@ -124,7 +132,7 @@ def test_the_rust_total_sums_exactly_the_scored_fields():
     body = re.search(r"pub fn total\(&self\) -> f64 \{(.*?)\n    \}", src, re.S)
     assert body, "total() not found"
     summed = re.findall(r"self\.(\w+)", body.group(1))
-    assert sorted(summed) == sorted({"r2n", "n", "phi_max_ratio", "omega_max_n", "f", "area_ratio"})
+    assert sorted(summed) == sorted({"r2n", "n", "phi_max_ratio", "f", "area_ratio"})
     assert len(summed) == len(set(summed)), f"a term is summed twice: {summed}"
     assert len(summed) == pt._N_PARAMS
 
@@ -298,6 +306,52 @@ def test_all_three_languages_agree_on_the_canonical_scored_set():
         f"JS {_js_list('CANONICAL_KEYS')} != Python {py_keys}")
 
 
+def test_the_scorable_span_gate_matches_in_all_three_languages():
+    """MIN_SCORABLE_S and MIN_SCORABLE_SAMPLES (Q7, 2026-11-16) gate which
+    curves are scored at all. A port that disagrees scores a short trial the
+    others refuse."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rs = open(os.path.join(root, "mobile-imu-core", "src", "scoring.rs"), encoding="utf-8").read()
+    cs = open(os.path.join(root, "neuromech", "designer", "PtScore.cs"), encoding="utf-8").read()
+    m = re.search(r"pub const MIN_SCORABLE_S: f64 = ([0-9.]+);", rs)
+    n = re.search(r"pub const MIN_SCORABLE_SAMPLES: usize = (\d+);", rs)
+    mc = re.search(r"public const double MIN_SCORABLE_S = ([0-9.]+);", cs)
+    nc = re.search(r"public const int MIN_SCORABLE_SAMPLES = (\d+);", cs)
+    assert m and n and mc and nc, "MIN_SCORABLE_S / _SAMPLES missing from Rust or C#"
+    assert float(m.group(1)) == float(mc.group(1)) == pt.MIN_SCORABLE_S
+    assert int(n.group(1)) == int(nc.group(1)) == pt.MIN_SCORABLE_SAMPLES
+
+
+def test_the_phone_replays_on_the_reference_footing():
+    """Crate 0.4.0 moved the phone onto the footing the corpus is scored on
+    (owner decision Q1, plan 2026-11-16 section 3.1): ReplayConfig::reference()
+    in replay.rs and REFERENCE_REPLAY_CONFIG + ANALYSIS_TICK_S here. If either
+    side changes alone, the app and the reference score different curves."""
+    import imu_calibration_config as icc
+    import imu_calibration_tuner as tuner
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    core = os.path.join(root, "mobile-imu-core", "src")
+    replay_rs = open(os.path.join(core, "replay.rs"), encoding="utf-8").read()
+    resample_rs = open(os.path.join(core, "resample.rs"), encoding="utf-8").read()
+    ahrs_rs = open(os.path.join(core, "ahrs.rs"), encoding="utf-8").read()
+    body = re.search(r"pub fn reference\(\) -> Self \{(.*?)\n    \}", replay_rs, re.S)
+    assert body, "ReplayConfig::reference() not found"
+    body = body.group(1)
+    ref = icc.REFERENCE_REPLAY_CONFIG
+    assert float(re.search(r"ema_alpha: ([0-9.]+),", body).group(1)) == ref["ema_alpha"]
+    assert "tick_s: ANALYSIS_TICK_S," in body
+    assert ("flex_axis_capture: true," in body) == ref["flex_axis_capture"]
+    assert "method: Method::Relative," in body and ref["method"] == "relative"
+    assert "beta: crate::ahrs::BETA," in body
+    beta = re.search(r"pub const BETA: f64 = ([0-9.]+);", ahrs_rs)
+    assert beta and float(beta.group(1)) == ref["beta"]
+    tick = re.search(r"pub const ANALYSIS_TICK_S: f64 = ([0-9.]+);", resample_rs)
+    assert tick and float(tick.group(1)) == tuner.ANALYSIS_TICK_S
+    assert ref["gravity_seed"] is True   # the Rust AHRS always gravity-seeds
+    footing = re.search(r'pub const SCORING_FOOTING: &str = "([^"]+)";', replay_rs)
+    assert footing and footing.group(1) == "ref-100hz-ema0.5-flex"
+
+
 def test_the_selectable_superset_matches_between_languages():
     """ALL_PT_KEYS is wider than the scored set and must agree in both.
 
@@ -351,13 +405,19 @@ def test_deselecting_a_term_redistributes_its_share():
     """
     params = {"R2n": 0.8, "N": 4.0, "phi_max_ratio": 0.4, "omega_max_n": 6.0,
               "omega_min_n": -5.0, "f": 0.7, "area_ratio": 0.2}
-    six = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
-    five = pt.compute_pt_score_breakdown(
+    n = len(pt._PARAM_KEYS)
+    full = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS)
+    less = pt.compute_pt_score_breakdown(
         params, keys=[k for k in pt._PARAM_KEYS if k != "f"])
-    for k, v in five.items():
-        assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
+    for k, v in less.items():
+        assert v == pytest.approx(full[k] * n / (n - 1), abs=1e-15), k
     alone = pt.compute_pt_score_breakdown(params, keys=["N"])
-    assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)
+    assert alone["N"] == pytest.approx(full["N"] * n, abs=1e-15)
+    # And the reverse: re-adding omega_max_n (selectable, not canonical) widens
+    # the divisor rather than stacking a term on top of the canonical five.
+    plus = pt.compute_pt_score_breakdown(params, keys=pt._PARAM_KEYS + ["omega_max_n"])
+    for k in pt._PARAM_KEYS:
+        assert plus[k] == pytest.approx(full[k] * n / (n + 1), abs=1e-15), k
 
 
 def test_healthy_ref_is_identical_in_every_copy():

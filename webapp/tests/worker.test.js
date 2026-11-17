@@ -260,7 +260,9 @@ test('finish posts a composite PT score alongside the existing result shape', as
   // -- but ONLY against a freshly built wasm. A stale webapp/src/wasm/ still
   // returned seven fields, so every run that did not rebuild passed, and the
   // first thing to see the failure would have been a deploy.
-  const SCORED = ['r2n', 'n', 'phi_max_ratio', 'omega_max_n', 'f', 'area_ratio'];
+  // omega_max_n left too on 2026-11-16: on real legs it is ~350/A0 and
+  // penalised the wrong direction (pendulastic_pt_score._PARAM_KEYS).
+  const SCORED = ['r2n', 'n', 'phi_max_ratio', 'f', 'area_ratio'];
   assert.ok(Array.isArray(ptScore.breakdown), 'breakdown must be an array');
   assert.deepEqual(
     ptScore.breakdown.map((b) => b.key).sort(),
@@ -330,4 +332,22 @@ test('a malformed start cfg resolves to a real protocol message, not silence', a
   assert.equal(posted[0].type, 'state',
     'undefined gains are currently coerced to NaN and accepted; a change here needs a decision, not a silent pass');
   assert.equal(posted[0].code, 0, 'a fresh session opens in Moving');
+});
+
+test('the wasm names the formula and footing it scores with, for the stored record', async () => {
+  const { scoringProvenance } = await import('../src/worker.js');
+  await createSession({ beta: 0.041, emaAlpha: 0.5, wasmSource });
+  assert.deepEqual(scoringProvenance(), {
+    scoreFormulaId: 'pt5trough-ref-2026-11-16',
+    scoringFooting: 'ref-100hz-ema0.5-flex',
+  });
+  // A wasm that predates the exports reads as not reported, never guessed.
+  assert.deepEqual(scoringProvenance({}), { scoreFormulaId: null, scoringFooting: null });
+});
+
+test('a provenance export that throws reads as not reported, never as a lost result', async () => {
+  const { scoringProvenance } = await import('../src/worker.js');
+  const boom = () => { throw new Error('stale wasm'); };
+  assert.deepEqual(scoringProvenance({ score_formula_id: boom, scoring_footing: boom }),
+    { scoreFormulaId: null, scoringFooting: null });
 });

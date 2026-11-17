@@ -33,6 +33,23 @@ DEFAULT_CONFIG = {
     "source_trial": None,
 }
 
+#: The reference footing, named in tracked code (owner decision Q1,
+#: 2026-11-16). The corpus has always been scored with EMA 0.5, but that value
+#: lived only in the gitignored imu_calibration_config.json; DEFAULT_CONFIG's
+#: 0.3 is what a fresh checkout and _replay_raw_imu_fallback use, and it is
+#: deliberately left alone so desktop paths do not move. Replay with
+#: tick_s=imu_calibration_tuner.ANALYSIS_TICK_S. The phone core scores on the
+#: same footing from crate 0.4.0 (mobile-imu-core ReplayConfig::reference(),
+#: SCORING_FOOTING "ref-100hz-ema0.5-flex"); tests/test_pt_zone_parity.py pins
+#: the two together.
+REFERENCE_REPLAY_CONFIG = {
+    "beta": 0.041,
+    "ema_alpha": 0.5,
+    "flex_axis_capture": True,
+    "gravity_seed": True,
+    "method": "relative",
+}
+
 _REQUIRED_TYPES = {
     "beta": (int, float),
     "ema_alpha": (int, float),

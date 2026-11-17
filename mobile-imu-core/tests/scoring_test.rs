@@ -14,6 +14,7 @@ mod golden;
 use mobile_imu_core::scoring::{
     a0_limit, baseline_drift_slope, compute_pt_params, compute_pt_params_with_limit,
     credible_drift_slope, score_waveform, DriftCorrection, QualityFlag, SpasticityType,
+    MIN_SCORABLE_S, MIN_SCORABLE_SAMPLES,
 };
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -510,6 +511,54 @@ fn lift_ramp_stays_out_of_the_baseline_drift_fit() {
     close(p.neutral_deg, golden::TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG, 1e-6, "neutral (detrend)");
 }
 
+/// A short, well-formed swing at `fs` covering `span_s` seconds of finite signal.
+fn short_swing(span_s: f64, fs: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = (span_s * fs).round() as usize + 1;
+    let t: Vec<f64> = (0..n).map(|i| i as f64 / fs).collect();
+    let a = t
+        .iter()
+        .map(|&tt| {
+            let phi = if tt < 0.3 {
+                40.0
+            } else {
+                40.0 * (-0.8 * (tt - 0.3)).exp() * (2.0 * std::f64::consts::PI * (tt - 0.3)).cos()
+            };
+            120.0 + phi
+        })
+        .collect();
+    (t, a)
+}
+
+/// Q7, 2026-11-16: the minimum is 2.0 s of finite span, not 40 samples, at
+/// every rate. Mirrors `test_the_minimum_curve_is_a_duration_not_a_sample_count`.
+#[test]
+fn the_minimum_curve_is_a_duration_not_a_sample_count() {
+    assert_eq!(MIN_SCORABLE_S, 2.0);
+    assert_eq!(MIN_SCORABLE_SAMPLES, 40);
+    for fs in [20.0_f64, 100.0, 120.0] {
+        let (t, a) = short_swing(1.9, fs);
+        assert!(t.len() >= 38);
+        let rel = (0.3 * fs) as usize;
+        assert!(compute_pt_params(&t, &a, Some(rel), false).is_none(), "fs={fs}");
+    }
+}
+
+/// A NaN run inside the span neither shortens nor lengthens it.
+#[test]
+fn a_gap_inside_the_span_counts_as_span() {
+    let (t, mut a) = short_swing(1.98, 100.0);
+    for v in &mut a[100..150] {
+        *v = f64::NAN;
+    }
+    assert!(compute_pt_params(&t, &a, Some(30), false).is_none());
+    let (t3, mut a3) = short_swing(2.5, 100.0);
+    for v in &mut a3[100..150] {
+        *v = f64::NAN;
+    }
+    // Index 30 is the release in the input frame, before the finite mask.
+    assert!(compute_pt_params(&t3, &a3, Some(30), false).is_some());
+}
+
 // ---- the bounded baseline fallback (port of 3ca6bf4) ------------------------
 //
 // TRIAL_LIFT_RING above reaches the fallback with a FLAT hold: its slope is ~0
@@ -896,4 +945,37 @@ fn quality_codes_are_a_stable_contract() {
         "a0_exceeds_curve_scored_uncorrected"
     );
     assert_eq!(QualityFlag::A0ExceedsCurve.code(), "a0_exceeds_curve");
+}
+
+/// A hold, then an ideal damped pendulum released exactly at 1.0 s (100 Hz).
+fn ideal_swing(damping: f64) -> (Vec<f64>, Vec<f64>) {
+    let t: Vec<f64> = (0..1000).map(|i| i as f64 / 100.0).collect();
+    let a = t
+        .iter()
+        .map(|&ti| {
+            let tt = (ti - 1.0).max(0.0);
+            let phi = if ti < 1.0 {
+                45.0
+            } else {
+                45.0 * (-damping * tt).exp() * (2.0 * std::f64::consts::PI * tt).cos()
+            };
+            120.0 + phi
+        })
+        .collect();
+    (t, a)
+}
+
+#[test]
+fn n_does_not_move_with_the_release_by_30_ms() {
+    // Mirrors tests/test_pt_score.py: N counted from the first trough (plan
+    // 2026-11-16 section 3.2), so a release flagged up to 30 ms either side
+    // gives one N.
+    for (damping, expected) in [(0.3, 8.5), (0.5, 6.0), (0.8, 3.5)] {
+        let (t, a) = ideal_swing(damping);
+        for shift in -3i64..=3 {
+            let r = (100 + shift) as usize;
+            let p = compute_pt_params(&t, &a, Some(r), false).expect("scorable");
+            assert_eq!(p.n, expected, "damping {damping}, shift {shift}");
+        }
+    }
 }

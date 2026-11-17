@@ -103,15 +103,19 @@ namespace Pendulastic
         public const double PT_HEALTHY_MAX = 0.1709;
         public const double PT_BORDERLINE_MAX = 0.3528;
         public const string PT_ZONES_CALIBRATED_FOR = "pt7-2026-08-24";
-        public const string SCORE_FORMULA_ID = "pt6rescaled-ref-2026-11-16";
+        public const string SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16";
         public const double EXCURSION_REF_MEAN_DEG = 46.6;
         public const double EXCURSION_REF_SD_DEG = 11.1;
         public const int EXCURSION_REF_N = 53;
         public const double MIN_INTERPRETABLE_A0_DEG = 30.0;   // 25 -> 30 on 2026-10-27, see pendulastic_pt_score
         public const double MAX_INTERPRETABLE_A0_DEG = 120.0;
+        /// <summary>MIN_SCORABLE_S: finite span (last finite t minus first, s) below which compute_pt_params refuses. Q7, 2026-11-16.</summary>
+        public const double MIN_SCORABLE_S = 2.0;
+        /// <summary>MIN_SCORABLE_SAMPLES: finite-sample floor kept beside the span.</summary>
+        public const int MIN_SCORABLE_SAMPLES = 40;
 
-        /// <summary>_PARAM_KEYS: the scored set (omega_min_n is diagnostic only since pt6).</summary>
-        public static readonly string[] ScoredKeys = new string[] { "R2n", "N", "phi_max_ratio", "omega_max_n", "f", "area_ratio" };
+        /// <summary>_PARAM_KEYS: the scored set (omega_min_n diagnostic since pt6, omega_max_n since pt5).</summary>
+        public static readonly string[] ScoredKeys = new string[] { "R2n", "N", "phi_max_ratio", "f", "area_ratio" };
 
         /// <summary>HEALTHY_REF, same keys and values as the Python.</summary>
         public static readonly Dictionary<string, double> HEALTHY_REF = MakeRef();
@@ -124,7 +128,7 @@ namespace Pendulastic
             d["phi_max_ratio"] = 0.6264;
             d["omega_max_n"] = 6.6702;
             d["omega_min_n"] = -6.4839;
-            d["f"] = 0.9511;
+            d["f"] = 0.9501;
             d["area_ratio"] = 0.1678;
             return d;
         }
@@ -170,7 +174,8 @@ namespace Pendulastic
             int nTot = angleRaw.Length;
             List<int> finiteIdx = new List<int>(nTot);
             for (int i = 0; i < nTot; i++) if (IsFinite(angleRaw[i])) finiteIdx.Add(i);
-            if (finiteIdx.Count < 40) { r.HasParams = false; r.NoneReason = "fewer than 40 finite samples"; return; }
+            if (finiteIdx.Count < MIN_SCORABLE_SAMPLES) { r.HasParams = false; r.NoneReason = "fewer than 40 finite samples"; return; }
+            if (t[finiteIdx[finiteIdx.Count - 1]] - t[finiteIdx[0]] < MIN_SCORABLE_S) { r.HasParams = false; r.NoneReason = "less than 2.0 s of finite signal"; return; }
 
             int nc = finiteIdx.Count;
             double[] t_c = new double[nc];
@@ -246,12 +251,24 @@ namespace Pendulastic
             }
 
             double window_end_t = ActiveOscillationWindowEnd(t_r, ang_r, pk, tr, neutral, A0);
+
+            double[] phi_g = new double[L];
+            for (int i = 0; i < L; i++) phi_g[i] = phi[i] - phi_centre[i];
+            // Count N from the first trough (pendulastic_pt_score, plan 2026-11-16 section 3.2): a peak before
+            // the first counted trough is the release, not a half-cycle; kept when no trough is counted. Dropped
+            // AFTER the window bound is computed, so the window still sees every extremum.
+            int gateTr = -1;
+            for (int k = 0; k < tr.Length; k++) if (phi_g[tr[k]] < -min_amp) { gateTr = tr[k]; break; }
+            if (gateTr >= 0)
+            {
+                var kept = new List<int>();
+                for (int k = 0; k < pk.Length; k++) if (pk[k] > gateTr) kept.Add(pk[k]);
+                pk = kept.ToArray();
+            }
             pk = FilterByTime(pk, t_r, window_end_t);
             tr = FilterByTime(tr, t_r, window_end_t);
 
             // ── 1. R2n (A1 = peak-to-peak of the first oscillation) ──
-            double[] phi_g = new double[L];
-            for (int i = 0; i < L; i++) phi_g[i] = phi[i] - phi_centre[i];
             int firstNegTr = -1;
             for (int k = 0; k < tr.Length; k++) if (phi_g[tr[k]] < -min_amp) { firstNegTr = tr[k]; break; }
             double A1, first_trough_depth;

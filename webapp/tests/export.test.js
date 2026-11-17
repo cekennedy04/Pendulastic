@@ -325,7 +325,7 @@ const masRecords = [{
   stronger_leg: '', notes: 'settled, no catch', mas_flexion: '2', mas_extension: '',
 }];
 
-// The schema string is asserted by 'the manifest schema is v6' further down;
+// The schema string is asserted by 'the manifest schema is v7' further down;
 // this one moved with the bump rather than being duplicated at two versions.
 
 test('a mas csv is emitted beside the trials', () => {
@@ -422,10 +422,10 @@ test('a text-backed file is unaffected by the blob support', () => {
 // Adding fields to the trial entries changes the manifest SHAPE, and the v2
 // spec's own rule was that a consumer must not be handed a different shape
 // under an unchanged version string.
-test('the manifest schema is v6', () => {
+test('the manifest schema is v7', () => {
   const files = buildExportFiles({ session: masSession, patient: masPatient, trials: masTrials });
   const m = JSON.parse(files.find((f) => f.name.endsWith('-manifest.json')).text);
-  assert.equal(m.schema, 'pendulastic/session-export/v6');
+  assert.equal(m.schema, 'pendulastic/session-export/v7');
 });
 
 // The shared masTrials fixture is deliberately legacy-shaped, to exercise the
@@ -490,4 +490,21 @@ test('a trial recorded before exclusion existed exports as not-excluded', () => 
   assert.equal('excluded_at' in m.trials[0], true);
   assert.equal(m.trials[0].excluded_at, null);
   assert.equal(m.trials[0].quick_test, false);
+});
+
+// Owner decision Q2: an imported session must keep the footings apart exactly
+// as a recorded one does, so the manifest carries what scored each trial.
+test('footing provenance survives export and import, and trends keep the footings apart', async () => {
+  const { parseManifest } = await import('../src/trend-import.js');
+  const { sessionSeries } = await import('../src/views/trends.js');
+  const trials = [
+    { ...masTrials[0], side: 'left', score_formula_id: null, scoring_footing: null },
+    { ...masTrials[0], side: 'left', score_formula_id: 'pt5trough-ref-2026-11-16', scoring_footing: 'ref-100hz-ema0.5-flex' },
+  ];
+  const files = buildExportFiles({ session: masSession, patient: masPatient, trials });
+  const m = parseManifest(files.find((f) => f.name.endsWith('-manifest.json')).text);
+  assert.deepEqual(m.trials.map((t) => t.scoring_footing), [null, 'ref-100hz-ema0.5-flex']);
+  assert.deepEqual(m.trials.map((t) => t.score_formula_id), [null, 'pt5trough-ref-2026-11-16']);
+  const s = sessionSeries([{ id: 's', timestamp: 1 }], { s: m.trials }, { scoreOf: () => 0.2 });
+  assert.equal(s.length, 2);
 });

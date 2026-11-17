@@ -92,15 +92,20 @@ def test_every_run_delivers_its_intended_band(report):
 def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_their_edge(tmp_path):
     """Was test_default_session_misses_exactly_the_two_edge_scenarios (7 of 9, pinned by #89).
 
-    B-claspknife and M-catch_release_high (one scenario built twice) intend PT7 0.139, 0.02 above the 0/1
-    edge, and were delivered at ~0.116, band 0. More than half of that undershoot was the session's own:
-    it scored the delivered trace from the COMMANDED release, the hold left inside the record was counted
-    as a half-oscillation (N 6.0 -> 6.5), and that alone cost 0.013. Scored from the delivered release N
-    is the intended 6.0 and both runs are in band at ~0.128.
+    Re-pinned 2026-11-16 for the five-term scorer (pt5trough-ref-2026-11-16, omega_max_n out of the
+    canonical score). No preset was refit; the presets are a follow-up on the new scorer.
 
-    Pinned both ways, so neither half can drift unnoticed: every default run is in its band, AND the two
-    catch runs still undershoot by the plant's real share and still sit within 0.012 of the edge. A change
-    that takes them back out of band, or one that makes them look comfortably mid-band, fails here."""
+    The edge moved. B-claspknife and M-catch_release_high (one scenario built twice) intended PT7 0.139,
+    0.02 above the 0/1 edge, on the six-term scorer; on five terms (with #105's HEALTHY_REF) they intend 0.078,
+    mid band 0, and are
+    no longer edge runs. C-f-high is the new one: it intends 0.2813, 0.0013 above the 1/1+ edge, and the
+    plant's undershoot (0.0000 to 0.0017 at seeds 1, 3, 7, 11; 42 overshoots by 0.0045 through an extra
+    half-cycle) delivers it in band 1 on three of five seeds. So "every run in band" now excludes exactly
+    C-f-high, which is pinned as an edge run instead: it must still intend within 0.005 above the edge and
+    be delivered within 0.01 of it, in either band.
+
+    The catch runs are still pinned on their undershoot, which the drop made smaller: the plant's share
+    came through peak velocity (its resonance raises it), and peak velocity is no longer scored."""
     old = SS.SESS
     try:
         SS.SESS = str(tmp_path)
@@ -109,17 +114,21 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
         SS.SESS = old
     sc = rep[rep.sid != "R-chirp"]
     assert (sc.status == "scored").all(), sc.status.tolist()
-    assert sc.delivered_band_ok.astype(bool).all(), sc[["sid", "int_band", "enc_band"]].values.tolist()
-    edge = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
-    assert len(edge) == 2 and (edge.enc_N == edge.int_N).all(), edge[["sid", "int_N", "enc_N"]].values.tolist()
-    # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share
-    # (its resonance raises peak velocity), measured at 0.010 to 0.012 at seeds 1, 3, 7, 11 and 42 after the
-    # delivered release took the session's share (0.013) out. 0.008 to 0.014 is that measurement +-0.003. It
-    # pins "still an edge run": below 0.008 something is flattering the delivery, above 0.014 the session is
-    # adding undershoot of its own again. (Being in band, asserted above, is the 0.12 edge; the old
-    # `< 0.132` was the same pin written as an absolute number.) Re-baseline it if the scorer or plant changes.
-    under = edge.int_pt7 - edge.enc_pt7
-    assert ((under > 0.008) & (under < 0.014)).all(), edge[["sid", "int_pt7", "enc_pt7"]].values.tolist()
+    on_edge = sc[sc.sid == "C-f-high"]
+    rest = sc[sc.sid != "C-f-high"]
+    assert rest.delivered_band_ok.astype(bool).all(), rest[["sid", "int_band", "enc_band"]].values.tolist()
+    assert len(on_edge) == 1
+    assert ((on_edge.int_pt7 > 0.28) & (on_edge.int_pt7 < 0.285)).all(), on_edge.int_pt7.tolist()
+    assert ((on_edge.enc_pt7 - 0.28).abs() < 0.01).all(), on_edge.enc_pt7.tolist()
+    catch = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
+    assert len(catch) == 2 and (catch.enc_N == catch.int_N).all(), catch[["sid", "int_N", "enc_N"]].values.tolist()
+    # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share,
+    # measured at 0.0045 to 0.0051 at seeds 1, 3, 7, 11 and 42 on the five-term scorer (0.010 to 0.012 on six
+    # terms, where peak velocity was scored). 0.0015 to 0.008 is that measurement +-0.003: below it something
+    # is flattering the delivery, above it the session is adding undershoot of its own again.
+    # Re-baseline it if the scorer or plant changes.
+    under = catch.int_pt7 - catch.enc_pt7
+    assert ((under > 0.0015) & (under < 0.008)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
     # The METHOD, pinned on this plant: the onset-matched release is 27.4 ms after the commanded one here
     # (22.6 to 28.5 by scenario). An onset of 10 deg instead of 2 gives 19.7 ms and passed every test in this
     # file before this assertion existed; a whole-drop cross-correlation gives 14.5 to 19.
@@ -193,17 +202,21 @@ def test_a_pure_delay_changes_neither_N_nor_the_band(delayed, ms):
     assert np.max(np.abs(got.enc_pt7 - ref.enc_pt7)) < 1e-3, (got.enc_pt7 - ref.enc_pt7).tolist()
 
 
-def test_the_commanded_release_counts_a_late_delivery_as_an_extra_half_cycle():
+def test_the_commanded_release_misreads_a_late_delivery():
     """What the alignment is for, and the proof that the test above can fail: B-claspknife's own command,
-    20 ms late, scored from the commanded release gains half a cycle; from its own release it does not."""
+    20 ms late, scored from the commanded release reads area_ratio 12% low; from its own release it does not.
+    Until 2026-11-16 it also gained half a cycle (6.5 for 6.0). N is now counted from the first trough
+    (plan 2026-11-16 section 3.2), which is exactly the fix for that, so N must NOT move any more."""
     import pandas as pd
     man = pd.read_csv(os.path.join(SS.OUT, "scenario_manifest.csv")).set_index("sid")
     t, sp, ph = ilc.read_cmd(os.path.join(SS.OUT, "setpoints", "B-claspknife.csv"))
     t_rel = float(t[np.argmax(ph == 2)]); lead = t_rel - float(t[np.argmax(ph == 1)]) + SS.SCORE_LEAD_S
     late = np.interp(t - 0.020, t, sp); rest = float(man.loc["B-claspknife", "rest_model_deg"])
-    N = lambda rel: SS._summ(*SS._score_trace(t, late, rest, rel, lead))["N"]
-    assert N(t_rel) == man.loc["B-claspknife", "N"] + 0.5
-    assert N(t_rel + 0.020) == man.loc["B-claspknife", "N"]
+    S = lambda rel: SS._summ(*SS._score_trace(t, late, rest, rel, lead))  # noqa: E731
+    ontime, commanded = S(t_rel + 0.020), S(t_rel)
+    assert ontime["N"] == man.loc["B-claspknife", "N"] and commanded["N"] == ontime["N"]
+    assert abs(ontime["area_ratio"] - man.loc["B-claspknife", "area_ratio"]) < 1e-3
+    assert commanded["area_ratio"] < 0.90 * ontime["area_ratio"], (commanded["area_ratio"], ontime["area_ratio"])
 
 
 @pytest.mark.parametrize("ms", [0, 15, 20, 30])
@@ -475,8 +488,12 @@ def test_the_onset_method_is_pinned_across_the_whole_library():
     assert 26.9 < med < 27.9, med                                         # measured 27.4
     assert v.min() > 21.5 and v.max() < 29.5, (v.min(), v.max())          # measured 22.6 to 28.4
     assert np.abs(v - med).max() < SS.SESSION_LAG_TOL_S * 1e3             # so no good run is far from its session
-    assert wrong_band == [], wrong_band                                   # measured 0 of 66
-    assert len(wrong_N) <= 10, wrong_N                                    # measured 10 of 66 (44 from the commanded release)
+    # measured 2 of 66 on the five-term scorer with #105's HEALTHY_REF: C-f-high intends 0.2813, 0.0013 above
+    # the 1/1+ edge, and the plant's undershoot crosses it (see the default-session test above); H-HM3 intends
+    # 0.2748, 0.0052 below the same edge, and the plant's overshoot crosses it at this seed. Both are edge runs
+    # the presets were not refit for (a follow-up on the new scorer). 0 of 66 on six terms.
+    assert set(wrong_band) <= {"C-f-high", "H-HM3"}, wrong_band
+    assert len(wrong_N) <= 10, wrong_N                                    # measured 9 of 66 on five terms, 10 on six (44 from the commanded release)
 
 
 # ── an ambiguous onset must fail (review 2026-11-11, required change 1) ───────────────────────────────
@@ -1512,7 +1529,9 @@ def test_stiction_too_small_for_the_release_check_is_one_finding(chirped, capsys
     assert (rep.status == "scored").all() and (rep.enc_lag_minus_pred_ms.abs() < 4.0).all(), rep.status.tolist()
     assert (rep.tracking_time_err_ms > np.sqrt((1.15 * rep.tracking_pred_ms) ** 2 + 16.0)).sum() == 3
     f = rep.model_mismatch_finding.iloc[0]
-    assert "session median of 1.22 over 4 run(s)" in f and "a fault in every run that is too small for the release check (a few ms of stiction" in f
+    # 1.21 on the five-term scorer (1.22 on six): the session's runs are scored scenarios, so the median moves
+    # in the second decimal with the scorer. Re-baseline it when the scorer changes.
+    assert "session median of 1.21 over 4 run(s)" in f and "a fault in every run that is too small for the release check (a few ms of stiction" in f
     assert "corresponds to --tracking-margin 1.40" in f and out.count("MODEL MISMATCH FINDING") == 1
     assert _score_chirped(chirped, "stiction5", "cli") == 1 and _score_chirped(chirped, "stiction5", "cli", "--tracking-margin", "1.40") == 0
 

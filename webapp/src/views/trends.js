@@ -19,7 +19,14 @@ export function median(values) {
   return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
 }
 
-// One point per (session, leg). `scoreOf(trial) -> number | null` is injected
+// The replay footing a trial was scored on. A record without the field
+// predates crate 0.4.0 and was scored on the old app footing.
+export const LEGACY_FOOTING = 'app-20hz-ema0.3';
+export function footingOf(trial) {
+  return (trial && trial.scoring_footing) || LEGACY_FOOTING;
+}
+
+// One point per (session, leg, footing). `scoreOf(trial) -> number | null` is injected
 // so this module never reaches for the wasm, and the whole join stays testable
 // with plain objects.
 //
@@ -40,16 +47,22 @@ export function sessionSeries(sessions, trialsBySession, { scoreOf }) {
     // and still export -- they are filtered here, not dropped upstream.
     const trials = trendEligible((trialsBySession || {})[session.id] || []);
     const byLeg = new Map();
+    // Grouped by footing too: a trial scored on the old app footing and one
+    // scored on the reference footing (crate 0.4.0) are not one measurement,
+    // so they never share a median (owner decision Q2: break the series).
     for (const t of trials) {
       const leg = t.side || 'unset';
-      if (!byLeg.has(leg)) byLeg.set(leg, []);
-      byLeg.get(leg).push(t);
+      const footing = footingOf(t);
+      const key = JSON.stringify([leg, footing]);
+      if (!byLeg.has(key)) byLeg.set(key, { leg, footing, group: [] });
+      byLeg.get(key).group.push(t);
     }
-    for (const [leg, group] of byLeg) {
+    for (const { leg, footing, group } of byLeg.values()) {
       out.push({
         sessionId: session.id,
         date: session.timestamp,
         leg,
+        footing,
         a0: median(group.map((t) => t.params && t.params.a0_deg)),
         pt7: median(group.map((t) => scoreOf(t))),
         n: group.length,

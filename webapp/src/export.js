@@ -65,7 +65,10 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
     // are unaffected; a manifest reader must treat null params as "not scored".
     // v6 adds `research` to each trial: true for a deliberate raw research
     // recording from the gated bench recorder, false (or absent) otherwise.
-    schema: 'pendulastic/session-export/v6',
+    // v7 adds `score_formula_id` and `scoring_footing` to each trial (crate
+    // 0.4.0 moved the app onto the reference footing). null = a trial scored
+    // before the fields existed, on the old app footing.
+    schema: 'pendulastic/session-export/v7',
     exported_at: new Date().toISOString(),
     // A session-level default; the trial-level value below is the one that
     // is actually true if the app updated mid-session.
@@ -84,6 +87,10 @@ export function buildExportFiles({ session, patient, trials, masRecords = [] }) 
       // not guaranteed to complete under a single app version, so this must
       // not be assumed to match the session-level field above.
       algorithm_version: t.algorithm_version,
+      // Which formula and replay footing scored this trial. Carried so an
+      // importing device's trends keep the footings apart (owner decision Q2).
+      score_formula_id: t.score_formula_id ?? null,
+      scoring_footing: t.scoring_footing ?? null,
       capture_quality: t.capture_quality,
       // Absent means 1: a trial recorded before this field existed must keep
       // protocol 1 rather than being relabelled on its way out.

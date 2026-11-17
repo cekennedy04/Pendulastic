@@ -199,13 +199,15 @@ HEALTHY_REF = {
     # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
     # Ours is divided by A0. Different quantity.
     #
+    # NOT in the canonical score since 2026-11-16 (see _PARAM_KEYS); kept so the
+    # parameter panel and the simple score still have a reference.
     # Was 9.5672 (2026-09-09), which healthy_ref_frequency_audit.py showed
     # physics cannot reach; this value sits 1.26x above its 5.16 model rather
-    # than 1.85x. Caveat that matters for interpretation: across control
-    # trials this ratio falls steeply with A0 (rho -0.88) because peak
-    # velocity is roughly fixed by the release height while A0 varies, so it
-    # is largely 1/A0 -- and a below-reference-only penalty therefore never
-    # charges a small-A0 spastic leg for it.
+    # than 1.85x. Across control trials this ratio falls steeply with A0
+    # (rho -0.88) because peak velocity is roughly fixed by the release height
+    # while A0 varies, so it is largely 1/A0 -- and a below-reference-only
+    # penalty therefore never charged a small-A0 spastic leg for it, which is
+    # why it left the canonical score.
     "omega_max_n":   6.6702,   # 6.4839 (2026-10-27)
 
     # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
@@ -228,7 +230,7 @@ HEALTHY_REF = {
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
-    "f":             0.9511,   # unchanged 2026-11-16; was 0.8839 (2026-09-09)
+    "f":             0.9501,   # 2026-11-16 with N from the first trough; 0.9511 before, 0.8839 (2026-09-09)
 
     # Same: introduced in that study, no published healthy value. ALSO the
     # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
@@ -719,8 +721,9 @@ def oscillation_ok(params: Optional[dict]) -> bool:
     undefined rather than small.
 
     A limb that falls and arrests returns A1 = 0, which forces R2n, N, f and
-    phi_max_ratio to exactly 0.0. Four of the six scored parameters are
-    "penalise if BELOW reference", so all four saturate at once and the trial
+    phi_max_ratio to exactly 0.0. Four of the six then-scored parameters were
+    "penalise if BELOW reference" (three of the five since omega_max_n left
+    the canonical set), so they saturate at once and the trial
     scores ~1.85-2.14 -- read as MAS 4, and marked interpretable, off four
     zeros that mean "not measured" rather than "measured as nothing". The
     emulator reaches this three ways (a tonic arrest, lead-pipe rigidity, and a
@@ -769,8 +772,9 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     to prevent.
 
     `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
-    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16",
-    not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
+    sums, which is five terms under SCORE_FORMULA_ID "pt5trough-ref-2026-11-16",
+    not seven: omega_min_n left on 2026-10-26 and omega_max_n on 2026-11-16.
+    The name is deliberately NOT
     renamed. It is a column name in generated CSVs and in the neuromech
     manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
     `enc_pt7`, `int_pt7`), so renaming it would silently invalidate stored
@@ -959,14 +963,50 @@ MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 # pipeline's peak velocity inflated, or is this reference stale" -- and those
 # are distinguishable from the cohort, which is why recalibrate_pt_zones
 # reports the measured median instead of this module guessing.
-_PARAM_KEYS  = ["R2n","N","phi_max_ratio","omega_max_n","f","area_ratio"]
-_N_PARAMS    = len(_PARAM_KEYS)   # 6 scored parameters
+#
+# ── omega_max_n LEFT the canonical set (measured 2026-10-27, landed 2026-11-16) ─
+#
+# The cohort answered, and the answer made "inflated or stale" moot for the
+# score. Measured on the OptiTrack cohort (51 interpretable baseline trials at
+# the then-25-deg gate, #73's release fix, exclusions applied):
+#
+#   peak velocity vs A0      Spearman +0.02, log-log slope -0.06   (physics: 1.0)
+#   omega_max_n vs A0        Spearman -0.78 per trial, -0.91 per leg
+#   peak velocity            median ~350 deg/s, flat across A0 27-75 deg
+#
+#   group (leg medians)          omega_max_n    A0     peak deg/s
+#   control legs (n=10)                6.18     54.0       349
+#   other legs graded MAS 0 (n=4)     12.39     36.5       416
+#   MAS >= 1 legs (n=4)               11.97     33.3       356
+#
+# Peak speed is set by the release, not by the swing, so omega_max_n is
+# ~350/A0: a re-expression of the excursion, inverted. A0 SHRINKS with tone
+# (it is the spasticity grouping variable), so omega_max_n RISES with severity
+# and a penalise-below term charges the loosest legs most -- at ANY reference.
+# At 9.5672 the mean penalty was 0.052 on control legs and 0 on the others;
+# at 6.18 (today's control median) the direction is the same, only smaller; at
+# 4.76 the term is zero on 42 of 44 healthy trials. The emulator cannot show
+# this: it ties peak velocity to A0 by construction, which is why 9b5c511's
+# emulator argument for keeping the term was sound there and wrong here.
+#
+# NOT claimed as an accuracy gain: no variant separated MAS 0 from MAS >= 1 on
+# this cohort (leg AUC 0.48 / 0.55 / 0.54 current / re-derived / dropped), and
+# the impaired arm is 4 legs from 2 people. It removes a term whose direction
+# is demonstrably wrong; it does not show the remaining five are right.
+#
+# It stays in ALL_PT_KEYS, so the parameter panel can still score it on any
+# trial and anyone can see what it would have contributed. It is no longer in
+# the canonical score, mas_estimate or the zone thresholds. A velocity term
+# can come back if it is normalised by something the release does not set and
+# shown to FALL with clinician-examined MAS.
+_PARAM_KEYS  = ["R2n","N","phi_max_ratio","f","area_ratio"]
+_N_PARAMS    = len(_PARAM_KEYS)   # 5 scored parameters
 
-#: Computed and reported, never summed into the score. Only omega_min_n, and
-#: only because it is ALGEBRAICALLY -omega_max_n for a limb dropped from full
-#: extension -- no reference value can fix a duplicate, which is why that drop
-#: stands where omega_max_n's did not.
-_DIAGNOSTIC_KEYS = ["omega_min_n"]
+#: Computed and reported, never summed into the canonical score. omega_min_n
+#: because it is ALGEBRAICALLY -omega_max_n for a limb dropped from full
+#: extension; omega_max_n because on real legs it is ~350/A0 and penalises the
+#: wrong direction (see above). Both remain selectable via ALL_PT_KEYS.
+_DIAGNOSTIC_KEYS = ["omega_max_n", "omega_min_n"]
 
 #: Identifies the scored set a calibrated threshold belongs to. Bump it
 #: whenever _PARAM_KEYS changes: PT_HEALTHY_MAX and PT_BORDERLINE_MAX are
@@ -975,17 +1015,19 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6rescaled-ref-2026-11-16"   # 6-term set, divisor = terms
-#                                                 actually scored; see the
-#                                                 n_scored note in
-#                                                 compute_pt_score_breakdown.
-#                                                 "-ref-": HEALTHY_REF
-#                                                 re-derived 2026-11-16 with
-#                                                 the drift-correction bound
-#                                                 (derive_healthy_ref.py).
-#                                                 Bump the date whenever
-#                                                 HEALTHY_REF moves, because
-#                                                 every reported score does.
+SCORE_FORMULA_ID = "pt5trough-ref-2026-11-16"   # 5-term set (omega_max_n
+#                                               dropped), N counted from the
+#                                               first trough, divisor = terms
+#                                               actually scored; see the
+#                                               n_scored note in
+#                                               compute_pt_score_breakdown.
+#                                               "-ref-": HEALTHY_REF as
+#                                               re-derived 2026-11-16 with
+#                                               the drift-correction bound
+#                                               (#105). Bump the date
+#                                               whenever HEALTHY_REF moves,
+#                                               because every reported
+#                                               score does.
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.
@@ -1018,10 +1060,13 @@ through omega_max_n, and the return is not scored at all.
 # Simplified 4-parameter score: excludes area_ratio (unreliable for marker-based
 # angles) and f (adds only small discriminative power). Useful as a cross-check.
 #
-# omega_max_n is 1 of 4 here rather than 1 of 6, so whatever is wrong with its
-# reference (see _PARAM_KEYS) weighs MORE in this score than in the composite.
-# Nothing to change until that constant is re-derived; noted so the next person
-# re-deriving it checks both denominators.
+# STILL CONTAINS omega_max_n, which left the canonical set on 2026-11-16 for
+# penalising the wrong direction on real legs (see _PARAM_KEYS). Here it is 1
+# of 4, so the defect weighs MORE than it did in the composite. Deliberately
+# not changed in the same commit: pendulastic_app.py's live view displays this
+# number, so changing it is a separate, visible decision about a figure a
+# clinician has been reading -- and changing both scores at once would make any
+# shift in a recorded result unattributable.
 _SIMPLE_KEYS = ["R2n","N","phi_max_ratio","omega_max_n"]
 
 #: Every Popovic parameter the pipeline can score, in publication order --
@@ -2983,6 +3028,33 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
     return float(t_r[settle_idx])
 
 
+#: The shortest curve compute_pt_params will characterise, as a SPAN of finite
+#: signal: time of the last finite sample minus time of the first, in seconds.
+#: NaN runs inside the span count as span -- this gate measures how long the
+#: curve covers, not how densely; gaps are handled where they always were (the
+#: finite mask in compute_pt_params, and the replay's EMA reset). 2.0 s is what
+#: the 40-sample minimum meant at the phone app's old 20 Hz tick. As a sample
+#: count alone it was five times looser at 100 Hz (0.4 s) and six at 120 Hz
+#: optical (0.33 s), so moving the app to the 100 Hz analysis tick would have
+#: silently widened what is scorable. Owner decision Q7, 2026-11-16
+#: (docs/plans/2026-11-16-app-reference-footing-plan.md, section 3.5).
+#: Identical in mobile-imu-core/src/scoring.rs and neuromech/designer/PtScore.cs.
+MIN_SCORABLE_S = 2.0
+
+#: Kept beside the span as a floor, so the smoothing and peak-finding always
+#: have samples to work on. At 20 Hz and above the span is the binding gate (40
+#: samples at 20 Hz span 1.95 s, so 41 are needed there); the floor only binds
+#: on curves sampled below 20 Hz.
+MIN_SCORABLE_SAMPLES = 40
+
+
+def _scorable_span_ok(t: np.ndarray, mask: np.ndarray) -> bool:
+    """At least MIN_SCORABLE_SAMPLES finite samples AND MIN_SCORABLE_S of
+    finite span (last finite time minus first finite time)."""
+    if int(mask.sum()) < MIN_SCORABLE_SAMPLES:
+        return False
+    tf = np.asarray(t, dtype=float)[mask]
+    return float(tf[-1] - tf[0]) >= MIN_SCORABLE_S
 def _baseline_drift_slope(t: np.ndarray, ang: np.ndarray,
                           baseline_end: int,
                           baseline_start: int = 0) -> Optional[float]:
@@ -3142,7 +3214,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                  auto-detection and use this frame as the release point.
     """
     mask = np.isfinite(angle_raw)
-    if mask.sum() < 40:
+    if not _scorable_span_ok(t, mask):
         return None
 
     t_c   = t[mask]
@@ -3392,6 +3464,27 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # see _active_oscillation_window_end's own docstring for why an
     # unbounded resting tail miscounts noise as real oscillation cycles.
     window_end_t = _active_oscillation_window_end(t_r, ang_r, pk_i2, tr_i2, neutral, A0)
+
+    # Count N from the first trough (plan 2026-11-16, section 3.2). A peak found
+    # before the first counted trough is the release, not a half-cycle: the
+    # swing-centred frame turns the first instants after release -- the limb
+    # still settling off the hand, or the boxcar centre falling faster than
+    # the limb -- into a "shoulder" peak whose prominence sits on the count
+    # threshold, so whether it was counted flipped with 10 ms of release
+    # timing (docs/reports oscillation-count sensitivity, e29916087). Kept
+    # when no trough is ever counted (owner decision Q3): that leaves a
+    # heavily damped rebound alone.
+    #
+    # Dropped AFTER the window bound is computed, so the window still sees
+    # every extremum (owner decision, 2026-11-16). Dropping it before let the
+    # gap median be set by resting-tail extrema on a fall with a real mid-fall
+    # rebound, and counted them (N 1.0 -> 2.0 on one corpus trial); after it,
+    # every corpus N change is the intended -0.5.
+    _first_tr = next((int(i) for i in tr_i2
+                      if (phi[int(i)] - phi_centre[int(i)]) < -min_amp), None)
+    if _first_tr is not None:
+        pk_i2 = pk_i2[pk_i2 > _first_tr]
+
     pk_i2 = pk_i2[t_r[pk_i2] <= window_end_t]
     tr_i2 = tr_i2[t_r[tr_i2] <= window_end_t]
 

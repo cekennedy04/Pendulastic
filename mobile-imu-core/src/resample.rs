@@ -1,5 +1,6 @@
 //! The fixed-cadence stage: resample a continuous orientation/angle
-//! trajectory onto the reference's 50 ms tick grid, then EMA-smooth it.
+//! trajectory onto a fixed tick grid (the reference's 10 ms analysis grid by
+//! default since crate 0.4.0; 50 ms before), then EMA-smooth it.
 //!
 //! Ported from `imu_calibration_tuner.replay_trial`'s tick-snapshot and EMA
 //! steps. This runs **before** any scoring, and it is part of the algorithm
@@ -9,8 +10,32 @@
 //! one of those windows by roughly 5x. The reference never does that, and
 //! neither does this.
 
-/// Display/scoring cadence, in seconds — `imu_calibration_tuner.TICK_S`.
+/// The live display cadence and the step the EMA alpha is tuned at, in
+/// seconds — `imu_calibration_tuner.TICK_S`. Until crate 0.4.0 it was also the
+/// app's scoring grid; scoring now runs on [`ANALYSIS_TICK_S`].
 pub const TICK_S: f64 = 0.05;
+
+/// The reference's analysis grid, in seconds —
+/// `imu_calibration_tuner.ANALYSIS_TICK_S`. The phone scores on it from crate
+/// 0.4.0, so the app and the reference score the same curve. At 0.05 s the
+/// scorer's 0.10 s smoothing window falls below the Savitzky-Golay floor and
+/// the parameters it governs are filtered over 0.25 s instead.
+pub const ANALYSIS_TICK_S: f64 = 0.01;
+
+/// The EMA coefficient that keeps `alpha`'s time constant on a `tick_s` grid
+/// instead of the [`TICK_S`] grid it was tuned on — a port of
+/// `imu_calibration_tuner._rescale_ema_alpha`. One step retains `1 - alpha`,
+/// so solving `(1 - a_new)^(TICK_S / tick_s) = 1 - alpha` moves the grid and
+/// leaves the filter alone; reusing the 50 ms alpha at 10 ms would make it
+/// five times lighter. `alpha` is clamped to [0, 1], and 1.0 (no smoothing)
+/// stays 1.0 at every rate.
+pub fn rescale_ema_alpha(alpha: f64, tick_s: f64) -> f64 {
+    let a = alpha.clamp(0.0, 1.0);
+    if tick_s == TICK_S || a >= 1.0 {
+        return a;
+    }
+    1.0 - (1.0 - a).powf(tick_s / TICK_S)
+}
 
 /// Resample `(t, value)` onto a fixed `tick_s` grid starting at `t[0]`, using
 /// `replay_trial`'s zero-order hold: each tick carries the state as of just

@@ -184,6 +184,11 @@ def edge_cases(idx_rows, seed):
     # too few samples / too few post-release samples
     t30 = np.arange(0, 0.39, 0.01)
     E.append(("short-39-samples", t30, swing(40.0, hold=0.1, tt=t30), 0.1))
+    # span gate (MIN_SCORABLE_S = 2.0 s of finite signal): plenty of samples, either side of 2.0 s
+    t19 = np.arange(0, 1.95, 0.01)
+    E.append(("short-span-1p94s", t19, swing(40.0, hold=0.3, tt=t19), 0.3))
+    t21 = np.arange(0, 2.06, 0.01)
+    E.append(("span-2p05s", t21, swing(40.0, hold=0.3, tt=t21), 0.3))
     t2 = np.arange(0, 3.0, 0.01)
     E.append(("release-near-end", t2, swing(40.0, hold=2.85, tt=t2), 2.85))
     E.append(("release-after-end", t, swing(40.0), 50.0))
@@ -199,6 +204,15 @@ def edge_cases(idx_rows, seed):
     # duplicate timestamps in the source time base
     td = np.repeat(np.arange(0, 12, 0.02), 2)[:len(t)]; td = np.sort(td)
     E.append(("dup-timestamps", td, swing(40.0, tt=td), 2.0))
+    # N counted from the first trough: the release flagged up to 30 ms either side of the true one
+    for zeta in (0.05, 0.13):
+        sw = swing(45.0, zeta=zeta)
+        for shift in (-0.03, -0.01, 0.0, 0.01, 0.03):
+            E.append((f"release-shift-z{zeta:g}-{shift:+g}s", t, sw, 2.0 + shift))
+    # lone early peak, no counted trough (owner decision Q3)
+    from scipy.interpolate import PchipInterpolator
+    lone = 100.0 + PchipInterpolator([0, 2.0, 2.5, 2.9, 3.4, 12.0], [60, 60, 0, 8, 0, 0])(t)
+    E.append(("lone-early-peak", t, lone, 2.0))
     for name, tt, aa, rel in E:
         _write_case(idx_rows, f"edge/{name}", "edge", tt, aa, rel)
 

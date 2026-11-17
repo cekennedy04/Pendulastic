@@ -1,8 +1,8 @@
 {
  "what": "real per-leg peak fall speed vs A0 (median trial per leg), neuromech.fall_speed",
  "a0_source": "OptiTrack (load_optitrack); shrinks angles (plan 5b), re-pin on B11 geometry",
- "score_formula_id": "pt6rescaled-ref-2026-11-16",
- "scorer_fingerprint": "e354eb787ac7",
+ "score_formula_id": "pt5trough-ref-2026-11-16",
+ "scorer_fingerprint": "6726215ea5d1",
  "row_fields": "person groups a person's legs and is numbered by first appearance in A0 order; it is not a participant ID. No study group or clinical grade is pinned (neuromech/fall_speed.py, REFERENCE_ROW_FIELDS)",
  "legs": [
   {

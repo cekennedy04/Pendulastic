@@ -61,7 +61,7 @@ fn synthetic() -> (TrialResult, PtParams) {
     let t_r = t[2..].to_vec();
     let ang_r = angle_deg[2..].to_vec();
 
-    let r = TrialResult { t, angle_deg, release_quat: IDENTITY_QUAT, release_idx: 999 };
+    let r = TrialResult { t, angle_deg, release_quat: IDENTITY_QUAT, release_idx: 999, flex_axis: None };
     let mut p = finite_params();
     p.t_r = t_r;
     p.ang_r = ang_r;
@@ -159,6 +159,9 @@ fn real_pipeline_peak_and_trough_indices_land_on_the_scored_tick() {
         method: Method::Relative,
         use_mag: false,
         release_override: None,
+        // The golden run's footing (50 ms, no flex), which the fixture pins.
+        tick_s: mobile_imu_core::resample::TICK_S,
+        flex_axis_capture: false,
     };
     let r = replay(&raw_log(), &cfg).expect("release must be detected");
     let p = compute_pt_params(&r.t, &r.angle_deg, None, false).expect("trial must be scorable");

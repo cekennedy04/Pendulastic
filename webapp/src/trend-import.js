@@ -8,6 +8,8 @@
 import { MAS_FIELDS } from './mas-store.js';
 
 const ACCEPTED = new Set([
+  // v7 carries each trial's score_formula_id and scoring_footing.
+  'pendulastic/session-export/v7',
   // v6 marks deliberate research recordings; v5 keeps unscored trials with
   // `params: null`. Both are read through the same paths as v4 -- a reader
   // must treat null params as "not scored", never as zeros.
@@ -32,7 +34,7 @@ export function parseManifest(text) {
   if (!ACCEPTED.has(m && m.schema)) {
     // Named, not generic: the operator needs to tell an old export from a
     // corrupt file, and only the version string distinguishes them.
-    throw new Error(`Unsupported export schema "${m && m.schema}". This app reads v1 to v6.`);
+    throw new Error(`Unsupported export schema "${m && m.schema}". This app reads v1 to v7.`);
   }
   return {
     schema: m.schema,

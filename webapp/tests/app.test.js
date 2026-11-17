@@ -433,7 +433,7 @@ test('re-enabled zone labels name the band and nothing else', () => {
 
 // -- Unmeasured-parameter notice -------------------------------------------
 // An unmeasured parameter sits at 0.0, and the score penalises r2n,
-// phi_max_ratio, n and omega_max_n for being BELOW the healthy reference --
+// phi_max_ratio and n for being BELOW the healthy reference --
 // so "could not be computed" contributes the LARGEST penalty that parameter
 // can produce. The score reads more impaired the less was measurable. The
 // notice exists to say so; without it the number is actively misleading.
@@ -453,9 +453,9 @@ test('the no-return-swing case names the physical cause, not a capture fault', (
 });
 
 test('the notice quantifies how much the score is overstated', () => {
-  // Two of seven parameters unmeasured = up to 29% of the scale.
-  const n = unmeasuredNotice(['r2n', 'phi_max_ratio']);
-  assert.ok(/29% of the scale/.test(n.text), n.text);
+  // Two of five scored parameters unmeasured = up to 40% of the scale.
+  const n = unmeasuredNotice(['r2n', 'phi_max_ratio'], 5);
+  assert.ok(/40% of the scale/.test(n.text), n.text);
   assert.ok(/overstates impairment/.test(n.text), n.text);
 });
 
@@ -467,11 +467,18 @@ test('a single unmeasured parameter reads in the singular', () => {
 });
 
 test('three unmeasured parameters list correctly and scale correctly', () => {
-  const n = unmeasuredNotice(['r2n', 'phi_max_ratio', 'f']);
+  const n = unmeasuredNotice(['r2n', 'phi_max_ratio', 'f'], 5);
   assert.equal(n.count, 3);
   assert.ok(/They count/.test(n.text), n.text);
-  assert.ok(/43% of the scale/.test(n.text), n.text);
+  assert.ok(/60% of the scale/.test(n.text), n.text);
   assert.ok(/, .* and /.test(n.text), `should use a serial list: ${n.text}`);
+});
+
+test('the share is read from the score, not a hard-coded term count', () => {
+  // The divisor is the payload's n_scored: four when f is unscorable.
+  assert.ok(/50% of the scale/.test(unmeasuredNotice(['r2n', 'phi_max_ratio'], 4).text));
+  // A payload without n_scored falls back to the five canonical terms.
+  assert.ok(/40% of the scale/.test(unmeasuredNotice(['r2n', 'phi_max_ratio']).text));
 });
 
 test('parameters are named in plain language, not raw keys alone', () => {

@@ -28,6 +28,12 @@ is measured from that resting angle -- varies. A median over trials the scorer
 refuses (or over trials whose release was mis-detected, which shrinks A0) is a
 median of a different population from the one the reference is applied to.
 
+RESULT 2026-11-16, with N counted from the first trough on top of the bound
+(SCORE_FORMULA_ID "pt5trough-ref-2026-11-16"): the same 37 trials; f trial
+median 0.9511 -> 0.9501 [0.942 - 0.975], every other entry unchanged. The
+first-trough rule drops one shoulder peak before the first trough on some
+trials, which moves the peak spacing f is read from.
+
 RESULT 2026-11-16, with the drift-correction bound (shipped as HEALTHY_REF,
 SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16"). 37 interpretable trials, 11
 legs, the same 7 people. A folder's study prefix alone does not admit a
