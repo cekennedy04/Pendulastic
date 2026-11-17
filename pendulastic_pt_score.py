@@ -91,8 +91,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # nothing further for this cohort (real trials' genuine oscillations already
 # had real prominence -- confirmed by recomputing again after bug 2's fix:
 # identical medians except f, which moved a negligible 0.9137->0.8982), so
-# only bug 1's recalibration is reflected below. Same n=4 control
-# (P2,8,9,12), n=3 MS (P11,13,14), pre/baseline trials only, both legs
+# only bug 1's recalibration is reflected below. Same n=4 control,
+# n=3 MS, pre/baseline trials only, both legs
 # pooled methodology as the 2026-08-10 pass -- see that recalibration's own
 # note below for the earlier history and the
 # n=7-total-participants power caveat, which still applies here.
@@ -108,8 +108,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # invalidated the scores the ORIGINAL n=13 control / n=8 MS calibration was
 # computed from. That larger cohort isn't present in this repo's live data,
 # so these medians come from whatever's currently classified in
-# participant_groups.json instead: n=4 control (P2,8,9,12), n=3 MS
-# (P11,13,14), pre/baseline trials only, both legs pooled, corrected
+# participant_groups.json instead: n=4 control, n=3 MS,
+# pre/baseline trials only, both legs pooled, corrected
 # pipeline. Control-vs-MS separation still holds (PT7 median 0.111 vs 0.448,
 # Mann-Whitney p=0.0001) but with only 7 participants this is a much
 # lower-powered estimate than the original -- replace with the full cohort
@@ -119,10 +119,10 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # RECALIBRATED 2026-09-09. Two entries are literature-anchored and five are
 # our own medians, each flagged individually below.
 #
-# This replaces a set measured on n=4 controls (P2, P8, P9, P12) under the
+# This replaces a set measured on n=4 controls under the
 # settled-angle frame. Three of those four are on record with OptiTrack
-# reconstruction defects -- P9's Left and Right files are byte-identical
-# across all 5 trials, and P2 loses 9 of 16 trials to "rig geometry is
+# reconstruction defects -- one has Left and Right files byte-identical
+# across all 5 trials, and another loses 9 of 16 trials to "rig geometry is
 # unsupported" and "optical coverage 0.0%" -- which is the concrete reason
 # the previous set was flagged invalid.
 #
@@ -251,13 +251,12 @@ HEALTHY_REF = {
 # Why the axis changed: PT7 measures spasticity SEVERITY, MS is a DIAGNOSIS,
 # and this study's MS arm genuinely spans the full severity range including
 # participants with no measurable spasticity (user-confirmed; corroborated by
-# mas_scores.csv, where P5 is graded MAS 0 on both legs at every timepoint and
-# P13 reaches MAS 0 by 1-week-post). An MS participant graded MAS 0 SHOULD
+# mas_scores.csv, where MS-arm legs graded MAS 0 occur at every timepoint). An MS participant graded MAS 0 SHOULD
 # score like a control -- their leg really does swing like one. Calibrating a
 # severity threshold against a diagnosis label therefore mislabels genuine
 # mild cases as calibration failures, and it was the reason the previous
 # cohort appeared to "separate" cleanly at n=7 (it happened to hold the two
-# most-affected participants, P13 and P14) yet appeared to collapse when
+# most-affected participants) yet appeared to collapse when
 # every metadata-classifiable participant was included.
 #
 # Result, MAS 0 vs MAS>=1 across participant-legs:
@@ -273,17 +272,17 @@ HEALTHY_REF = {
 # the same day): healthy max +15%, borderline max +19%. An earlier revision
 # of this note claimed the diagnosis-axis threshold might be "2-3x too
 # aggressive"; that was WRONG and is retracted -- it came from a looser
-# pairing that let post-treatment conditions and P2's duo artifact into the
+# pairing that let post-treatment conditions and a duo-session artifact into the
 # MAS-0 pool. The real gap is ~15-19%.
 #
 # THREE ASSUMPTIONS THIS CALIBRATION RESTS ON. None are measurements:
 #
-#  1. P4's left/right MAS grades were transposed, and mas_scores.csv has been
+#  1. One participant's left/right MAS grades were transposed, and mas_scores.csv has been
 #     corrected accordingly (left 1+ -> 0, right 0 -> 1+; see that file's own
-#     notes column, and the mas_scores.csv.bak-2026-08-24-pre-P4-swap backup,
+#     notes column, and the local pre-swap backup,
 #     since that file is gitignored and has no version history). Operator
 #     judgment, supported by biomechanics rather than by re-checking the
-#     source clinical record: as recorded, P4's left leg scored healthy on
+#     source clinical record: as recorded, the left leg scored healthy on
 #     all 7 PT params (N=3.5, R2n 1.01-1.17 against a 1.03 healthy ref,
 #     area_ratio 0.015-0.074) while carrying the dataset's most severe grade,
 #     and its right leg showed a damped spastic signature (N=1.0-1.5,
@@ -293,15 +292,15 @@ HEALTHY_REF = {
 #     one imputation. NOTE the evidence cannot distinguish "MAS entry
 #     transposed" from "recordings transposed" -- they are observationally
 #     identical here, and only the former was acted on. Verify against the
-#     original clinical record before relying on P4 for anything else.
+#     original clinical record before relying on that participant for anything else.
 #
-#  2. P11 and P18 (both legs each) have no MAS grade at all and are imputed
+#  2. Two participants (both legs each) have no MAS grade at all and are imputed
 #     MAS 0. The data supports 0 over 1: imputing 0 gives p=0.002-0.03 across
 #     configurations while imputing 1 gives p=0.07-0.86 and never reaches
-#     significance, because P18 scores 0.0051/0.0431 -- biomechanically
+#     significance, because one scores 0.0051/0.0431 -- biomechanically
 #     unimpaired, so placing it in the spastic group destroys the grouping.
 #     Supporting, not proving: a genuinely-spastic leg could in principle
-#     score low. P17 is also ungraded (mas_grade=-1, pending) but has no
+#     score low. A third participant is also ungraded (mas_grade=-1, pending) but has no
 #     scoreable trials, so it cannot affect this either way.
 #
 #  3. All 15 control legs are ASSUMED MAS 0, not clinician-assessed
@@ -314,7 +313,7 @@ HEALTHY_REF = {
 # STILL PROVISIONAL, and the aggregation caveat that sank the previous
 # calibration applies here too, only less severely. 29 participant-legs from
 # 15 participants is small, and the MAS>=1 arm is just 6 legs from 4
-# participants (P4r, P13 both, P14 both, P15r). Legs within a participant are
+# participants. Legs within a participant are
 # not independent, so even the per-leg p=0.00196 is optimistic; a strict
 # per-participant test would have less power still. Treat these as a
 # provisional working threshold, NOT a validated clinical cutoff. The path to
@@ -322,13 +321,13 @@ HEALTHY_REF = {
 # participants not already represented -- a data-collection problem, not an
 # analysis one.
 #
-# P2's pre_duo trials are EXCLUDED throughout (its pre_solo trials are kept).
+# pre_duo trials are EXCLUDED throughout (pre_solo trials are kept).
 # Duo sessions record both legs' markers together and are documented
 # elsewhere in this file as unreliable for exactly that reason
 # ("area_ratio inflated by marker mixing"); those four trials score PT7
 # 1.58-1.87, far outside any plausible unaffected range.
 #
-# Data-hygiene trap for anyone editing the baseline filter: P16's condition
+# Data-hygiene trap for anyone editing the baseline filter: one participant's condition
 # string is literally "control", meaning that participant's baseline session,
 # NOT a group label. A filter of the shape startswith("pre") or "baseline"
 # silently drops all 8 of its very-low trials (0.0068-0.0221) and biases the
@@ -611,7 +610,7 @@ def pt_zone(score: Optional[float]) -> str:
 # the old labeled-marker reconstruction was found). That "two SD below the
 # control mean"
 # derivation is CIRCULAR and must not be quoted as the justification. The only
-# two trials dragging the control distribution down are P9 left and right at
+# two trials dragging the control distribution down are one participant's left and right at
 # A0 9.0 -- precisely the two this gate then catches. Drop them and the
 # remaining 51 controls read mean 48.0, sd 8.3, two SD below = 31.5.
 #
@@ -656,10 +655,10 @@ def pt_zone(score: Optional[float]) -> str:
 # graded correctly -- no longer holds. After the seed-window, lift-and-hold
 # release and drift-fit fixes, the 81 MAS-matched baseline OptiTrack trials
 # put exactly three MAS>=1 trials in the HEALTHY zone, and they are exactly
-# the three with A0 between 25 and 30 (P13 L T2 27.3, P13 R T5 27.2, P14 L T1
-# 28.4). At 25 two MAS 1 legs (P13 L/R) were graded healthy; at 30 they are
+# the three with A0 between 25 and 30 (27.3, 27.2 and
+# 28.4). At 25 two MAS 1 legs were graded healthy; at 30 they are
 # refused instead and no MAS>=1 leg is graded healthy. Cost: 4 more MAS-0
-# trials refused (17/60 vs 13/60) and one examined MAS-0 leg (P5 L) loses its
+# trials refused (17/60 vs 13/60) and one examined MAS-0 leg loses its
 # grade. Refusing a grade is the recoverable error; a spastic leg reported
 # healthy is not. Evidence is 3 trials from 2 people -- re-derive with more
 # clinician-examined MAS>=1 legs, and the message now names high tone as one
@@ -680,7 +679,7 @@ MIN_INTERPRETABLE_A0_DEG = 30.0
 # real maximum and rejects nothing that was ever measured.
 #
 # It is not hypothetical. The seed-window bug documented in
-# the old seeded reconstruction produced A0 = 418.1 deg on P9 Left/Right trial_3
+# the old seeded reconstruction produced A0 = 418.1 deg on one participant's trial_3
 # at 97.3% coverage, and that value passed the floor-only gate and had a MAS
 # grade printed off it. A one-sided gate only guards one failure direction.
 MAX_INTERPRETABLE_A0_DEG = 120.0
@@ -976,15 +975,15 @@ MAS_RANK = {g: i for i, g in enumerate(MAS_ORDER)}   # 0..5
 #   peak velocity            median ~350 deg/s, flat across A0 27-75 deg
 #
 #   group (leg medians)          omega_max_n    A0     peak deg/s
-#   Control_ legs (n=10)               6.18     54.0       349
-#   MS legs graded MAS 0 (n=4)        12.39     36.5       416
+#   control legs (n=10)                6.18     54.0       349
+#   other legs graded MAS 0 (n=4)     12.39     36.5       416
 #   MAS >= 1 legs (n=4)               11.97     33.3       356
 #
 # Peak speed is set by the release, not by the swing, so omega_max_n is
 # ~350/A0: a re-expression of the excursion, inverted. A0 SHRINKS with tone
 # (it is the spasticity grouping variable), so omega_max_n RISES with severity
 # and a penalise-below term charges the loosest legs most -- at ANY reference.
-# At 9.5672 the mean penalty was 0.052 on Control_ legs and 0 on the MS legs;
+# At 9.5672 the mean penalty was 0.052 on control legs and 0 on the others;
 # at 6.18 (today's control median) the direction is the same, only smaller; at
 # 4.76 the term is zero on 42 of 44 healthy trials. The emulator cannot show
 # this: it ties peak velocity to A0 by construction, which is why 9b5c511's
@@ -2728,7 +2727,7 @@ def _detect_release(t: np.ndarray, ang: np.ndarray,
 # monotonically from rest, sits still in extension, and only then is
 # released. The first threshold crossing is the lift, and measuring phi[0]
 # from there gives rest-minus-rest ~ 0 deg, so compute_pt_params discarded
-# the trial (15 Control_6/7/8 baseline trials, 2026-10-27). A real release
+# the trial (15 P6/7/8 baseline trials, 2026-10-27). A real release
 # reverses within a fraction of a second -- a pendulum overshoots -- and an
 # arrested limb drops once and stays near where it landed, so "monotonic to
 # a still plateau, then leaves it and swings back through the starting
@@ -3287,7 +3286,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
             drift_source = "tail"
         # Only the still hold is baseline. A trial that opens at rest has a
         # lift before it (see _lift_hold_end), and fitting through that ramp
-        # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
+        # read A0 as 134-352 deg on real P6/7/8 trials. A trial held
         # from its first frame stays within the band throughout, so its
         # window is unchanged.
         baseline_start = baseline_end

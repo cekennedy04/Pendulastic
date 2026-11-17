@@ -288,7 +288,7 @@ def load_metadata_diagnosis(pid):
     legacy Participant_ one, and can over-match on a prefix scan -- so every
     candidate's own participant_id field must equal `pid` exactly before its
     diagnosis is used. Multiple real folders can exist for one participant
-    (e.g. MINT_13 and Participant_13_right_post); the first with a non-empty
+    (e.g. MINT_{pid} and Participant_{pid}_right_post); the first with a non-empty
     diagnosis wins."""
     for path in participant_paths.glob_participants(REC_ROOT, "metadata.json"):
         try:
@@ -583,8 +583,8 @@ def build_cohort_snapshot():
     # min/max envelope only gets more honest with more trials, unlike the
     # per-participant full report (run_pt_analysis.py's own, separate
     # TRIAL_THRESHOLD gate) which genuinely needs enough trials for a
-    # meaningful release-alignment figure. So pids 6/7/10 (Control, short
-    # one trial on one leg) and pid 4 (MS, same situation) now count
+    # meaningful release-alignment figure. So participants short one trial
+    # on one leg (in either arm) now count
     # toward both the composition banner and the stats/range comparison.
     #
     # Unions over _ARMS, not a hardcoded MS|Control pair: when Stroke became

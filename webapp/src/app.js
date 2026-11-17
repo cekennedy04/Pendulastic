@@ -308,7 +308,7 @@ const ZONE_LABEL = {
 // it wrong. It claimed the control cohort scored WORSE than the MS cohort
 // (1.668 vs 0.626) and blamed three compromised control participants. That was
 // true of the tree on 2026-08-28 and is NOT true now: commits 9abe37c
-// (recovering the P2 trials Motive had exported in local rigid-body
+// (recovering trials Motive had exported in local rigid-body
 // coordinates) and a658c3f (estimating drift from the settled tail) removed
 // the inversion. Recomputed at this commit the controls score 0.155 against
 // the MS cohort's 0.475 -- separated, and in the right direction. Anyone
@@ -318,7 +318,7 @@ const ZONE_LABEL = {
 // Two reasons survive, and they are enough on their own:
 //
 // 1. HEALTHY_REF cannot be reproduced from its stated provenance. It is
-//    annotated "control median n=4" over P2/P8/P9/P12; recomputing exactly
+//    annotated "control median n=4"; recomputing exactly
 //    that gives area_ratio 0.1390 against the stated 0.0768 (81% off),
 //    omega_min_n 31% off, N 14% off, phi_max_ratio 11% off -- only R2n and f
 //    land within 5%. No script deriving it exists in any commit. So nobody can

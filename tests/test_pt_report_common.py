@@ -1238,8 +1238,8 @@ def test_make_report_figure_sidecar_holds_both_legs_not_just_the_last(tmp_path, 
 def test_row5_source_mas_suppresses_a_grade_for_a_collapsed_swing():
     """A clinician-facing table must not print a MAS grade PT7 cannot support.
 
-    On this corpus that is P9 left/right at A0 9.0 deg, which used to render as
-    MAS 1 and are independently known to be a duplicated-export rig defect."""
+    On this corpus that is one participant's left/right at A0 9.0 deg, which
+    used to render with a grade and are independently known to be a duplicated-export rig defect."""
     params = [{"A0_deg": 9.0}, {"A0_deg": 9.2}]
     assert common._row5_source_mas(0.278, params) is None
 
@@ -1261,7 +1261,7 @@ def test_row5_source_mas_falls_back_when_excursion_is_unknown():
 # -- The excursion gate must guard BOTH directions (2026-08-31) -------------
 # _row5_source_mas checked only the floor. pendulastic_pt_score's own docstring
 # warns why that is not enough: "A one-sided gate only guards one failure
-# direction." A seed-window bug produced A0 = 418.1 deg on P9 Left/Right
+# direction." A seed-window bug produced A0 = 418.1 deg on one participant's
 # trial_3 at 97.3% coverage, and that value was being graded MAS "4" -- the
 # worst grade on the scale, off a number that cannot be an interior knee angle
 # at all (they live in [0, 180]).

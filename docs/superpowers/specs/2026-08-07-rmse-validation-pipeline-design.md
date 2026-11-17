@@ -49,7 +49,7 @@ reduce RMSE against OptiTrack ground truth.
 
 - `batch_imu_vs_optitrack_rmse.py`, `model_vs_optitrack_eval.py`, `sweep_mediapipe_config.py`,
   and `sweep_imu_config.py` already compute real RMSE-vs-OptiTrack numbers, but each is an
-  explicitly one-off/diagnostic script: hardcoded to specific participants (P2/P4), scoped to a
+  explicitly one-off/diagnostic script: hardcoded to specific participants, scoped to a
   single participant for iteration speed (P14, or "every trial" but only when run by hand), or
   simply never wired into anything that runs automatically.
 - Investigating "which recording methodology is more accurate" during this design surfaced the

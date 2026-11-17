@@ -31,8 +31,8 @@ the converted files was checked in context and all are legitimate:
 
 ## 3. A study-prefixed corpus, and the counterfactual
 
-A synthetic corpus was built with folders named `Control_8`, `CHAT_12`,
-`MINT_15`, `DOSA_16` and legacy `Participant_9` -- 8 legs, 16 trials, waveforms
+A synthetic corpus was built with one folder in each scheme (`Control_`,
+`CHAT_`, `MINT_`, `DOSA_` and legacy `Participant_`) -- 8 legs, 16 trials, waveforms
 from `rig_neuromuscular_model`, with a matching `mas_scores.csv`.
 
 | consumer | result |

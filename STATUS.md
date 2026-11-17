@@ -290,7 +290,7 @@ scores move. "Not verified" is stated, never implied.
   committing.
 
 ## Paper / thesis backlog
-- Collect MAS for P17–P24; confirm P15 left; verify the P4 left/right transposition.
+- Collect the outstanding MAS grades; resolve the two open MAS queries in `mas_scores.csv` (one overall-vs-component disagreement, one suspected left/right transposition).
 - Re-derive IMU results after the seed fix lands.
 - Name one canonical figure pipeline.
 - Gate the Python test files that do not need Tk in CI (61 of 74 are ungated).

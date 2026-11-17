@@ -31,8 +31,7 @@ by participant: P5, P13, P14, P15, P16, P18, P19, P20, P21, P22, P23, P24.
 * **P7 — not recoverable.** No OptiTrack CSV, no `.tak`, no IMU, no video, and
   the archive leaf is empty. Nothing exists in this repo or the 7_28 archive
   for the left leg. Recovery would need capture-day media held elsewhere.
-  P7 is an unaffected control and is still characterised (non-spastic by
-  recruitment), so the loss costs parameters, not a label.
+  This participant is still characterised (by recruitment rule), so the loss costs parameters, not a label.
 * **P17 — RECOVERED via IMU.** No `.tak`, so the OptiTrack export cannot be
   regenerated. But both legs have a complete IMU component set (accel, gyro,
   mag, the raw `.jsonl`) plus video. PT parameters are now computed from IMU
@@ -63,8 +62,8 @@ data did not appear in the output at all: a table listing 36 legs while
 silently omitting 2 reads as full coverage. P7 left and both P16 legs were
 invisible this way.
 
-P7 is an unaffected control, so it is still characterised (non-spastic by
-recruitment) despite having no left-leg recording at all.
+This participant is still characterised (by recruitment rule) despite having
+no left-leg recording at all.
 
 ---
 
@@ -160,10 +159,10 @@ recurs.
 ## 4. MAS coverage and internal discrepancies
 
 **Coverage.** 14 of 22 participants have a clinical MAS score. **All four
-post-stroke participants (P19, P21, P22, P24) have none.** Grades present in
+post-stroke participants have none.** Grades present in
 the corpus span only `0`, `1` and `1+` — there is no `2`, `3` or `4`.
 
-**P17 — overall grade pending, components scored.**
+**One participant — overall grade pending, components scored.**
 
 ```
 17,right,pre,,-1,,2026-08-19,,Overall MAS Grade not yet assessed,1,0
@@ -172,11 +171,11 @@ the corpus span only `0`, `1` and `1+` — there is no `2`, `3` or `4`.
 
 `-1` is `mas_validation.PENDING_MAS_GRADE`. The overall grade is not yet given,
 but flexion and extension WERE scored. That is real clinical evidence, and it
-was being discarded — P17 came back `unknown`. Components now fill in for a
+was being discarded — the participant came back `unknown`. Components now fill in for a
 pending overall grade, under their own source (`clinical-mas-components`) so a
 component-only verdict is never read as a completed assessment.
 
-**P15 left — overall grade contradicts its own components.**
+**One leg — overall grade contradicts its own components.**
 
 ```
 15,left,Pre,...,overall=0, flexion=1+, extension=0
@@ -226,14 +225,14 @@ Original note follows.
 supported by biomechanics" and explicitly **"NOT verified against source
 clinical records"**. The note itself says the finding is equally consistent
 with the RECORDINGS being transposed rather than the grades. Any analysis
-grouping P4 by leg inherits that assumption. Pre-edit backup:
-`mas_scores.csv.bak-2026-08-24-pre-P4-swap`.
+grouping that participant by leg inherits that assumption. A pre-edit backup
+of `mas_scores.csv` is kept locally.
 
 ---
 
 ## 5. Why IMU amplitude is not used to fill OptiTrack gaps
 
-P22 left and both P17 legs have IMU data and no usable OptiTrack. Deriving
+Three legs have IMU data and no usable OptiTrack. Deriving
 their spasticity label from IMU-measured swing amplitude would close every
 remaining gap. It is rejected on two measurements:
 
@@ -242,13 +241,13 @@ remaining gap. It is rejected on two measurements:
   16 legs where both exist. The OptiTrack-derived threshold cannot be reused on
   IMU amplitudes.
 * **No calibration set.** An IMU-specific threshold cannot be fitted here.
-  Clinical MAS covers P2–P15; the IMU recordings cover P14–P24. Exactly **one**
-  known-MAS-0 leg has IMU data (P15 left, 63.2°) and it sits **inside** the
+  Clinical MAS and the IMU recordings barely overlap in participants. Exactly **one**
+  known-MAS-0 leg has IMU data (63.2°) and it sits **inside** the
   range of the three known-MAS≥1 legs that do (56.8–75.5°). There is no
   separation to fit to.
 
 Any IMU threshold would therefore be invented rather than derived. Once MAS is
-collected for the P17–P24 range this becomes tractable and should be revisited.
+collected for the later participants this becomes tractable and should be revisited.
 
 ---
 
@@ -282,11 +281,10 @@ the four could run from a clean install. Now declared.
 ## Current characterisation coverage
 
 All 22 real participants carry a spasticity characterisation; **none are
-unknown at participant level**. 16 non-spastic, 6 spastic (P4, P13, P14, P15,
-P17, P21).
+unknown at participant level**. 16 non-spastic, 6 spastic.
 
 At LEG level, 44 legs are enumerated: 34 non-spastic, 9 spastic, **1 unknown**
-(P22 left, §2).
+(§2).
 
 Label provenance across the 44 legs:
 
@@ -302,8 +300,8 @@ Label provenance across the 44 legs:
 
 ## Open items
 
-- [ ] Collect clinical MAS for P17–P24, especially the four stroke participants. This removes the derived-label caveat AND makes an IMU threshold calibratable.
-- [ ] Confirm P15 left: overall MAS 0 vs flexion component 1+ (§4).
-- [ ] Verify the P4 left/right transposition against source clinical records (§4).
+- [ ] Collect clinical MAS for the ungraded participants, especially the four stroke participants. This removes the derived-label caveat AND makes an IMU threshold calibratable.
+- [ ] Confirm the leg whose overall grade disagrees with its flexion component (§4).
+- [ ] Verify the suspected left/right transposition against source clinical records (§4).
 - [ ] Decide whether P7 left and P17 OptiTrack are recoverable from capture-day media, or should be recorded as permanently absent (§1).
 - [ ] Adopt a naming convention for non-participant folders under `Recordings/` (§3).

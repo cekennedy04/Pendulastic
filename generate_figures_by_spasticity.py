@@ -16,7 +16,7 @@ trials, different stratification, its own outputs.
 Grouping unit is the LEG
 ------------------------
 MAS is assessed per leg and the PT parameters are computed per leg, so a leg is
-the unit. P4 is the case that forces it: MAS 0 on the left, 1+ on the right.
+the unit. A participant graded differently on each leg is the case that forces it.
 Rolling that participant up to one label would throw away the contrast the
 pendulum test is supposed to see.
 
@@ -81,7 +81,7 @@ PARAMS = list(pcc._PARAM_KEYS) + ["pt7", "A0_deg"]
 # already makes, not an examination. Counting those 17 legs as clinician-
 # labelled inflated the supposedly-clean subset with the very assumption the
 # subset exists to avoid. Also excludes SRC_MAS_OPERATOR (grades the operator
-# set after the fact, e.g. P17's, derived from the components).
+# set after the fact, derived from the components).
 CLINICAL_SOURCES = sg.CLINICIAN_ASSESSED_SOURCES
 
 
@@ -267,8 +267,8 @@ def leg_param_medians():
             by_leg_tp = {}
         # The BASELINE condition, taken as the participant's chronologically
         # first timepoint rather than by matching the name "pre". Condition
-        # names are not standardised -- P16's baseline is called "control" and
-        # P2's are "pre_duo"/"pre_solo" -- so a startswith("pre") filter
+        # names are not standardised -- one baseline is called "control" and
+        # another's are "pre_duo"/"pre_solo" -- so a startswith("pre") filter
         # silently dropped P16 entirely and read as "P16 has no data".
         baseline = _timepoints[0][0] if _timepoints else None
         for (leg, condition), trials in by_leg_tp.items():

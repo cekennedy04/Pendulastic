@@ -48,7 +48,7 @@ confirmed scope boundary, not an oversight.
 
 **Not migrated:** the 5 existing participant folders already on disk under `Recordings/`
 (`Participant_13_left_post`, `Participant_13_left_pre`, `Participant_13_right_post`,
-`Participant_13_right_pre`, `Participant_P001_msparticipant2`) are left exactly as they are.
+`Participant_13_right_pre`, `Participant_P001_<suffix>`) are left exactly as they are.
 
 ---
 

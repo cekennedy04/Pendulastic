@@ -500,7 +500,7 @@ def test_orchestrator_flags_an_ill_conditioned_axis_instead_of_refusing():
     where nothing downstream can see or reverse it -- 2.5x the operator's
     entire history of confirmed exclusions in excluded_trials.json. It also
     emptied three legs completely, including the corpus's only MAS 1+ leg
-    (P4 right) at 100% optical coverage, whose MAS grade had been corrected
+    at 100% optical coverage, whose MAS grade had been corrected
     on the strength of the very signature those refused trials carry.
 
     Analysis code reports quality; it does not enforce it. excluded_trials

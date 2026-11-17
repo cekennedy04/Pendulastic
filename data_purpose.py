@@ -55,7 +55,7 @@ PURPOSE_TRAINING = "training"
 # Folder names under Recordings/ that are not real participants. A participant
 # id is the bare number after the study prefix (Control_/CHAT_/MINT_) or the
 # legacy Participant_ one; anything else is scaffolding or a stray import
-# (Participant_test, Participant_P001_msparticipant2). Checked by shape rather
+# (Participant_test, a legacy Participant_P001_<suffix> import). Checked by shape rather
 # than by an ever-growing deny list, with the list kept for numeric oddities.
 NON_PARTICIPANT_IDS = {"test", "0", "demo"}
 
@@ -159,7 +159,7 @@ def unattributed_folders() -> list:
     """Every participant-shaped folder that is NOT recognised as a participant.
 
     Returned so it can be REPORTED rather than silently skipped. Naming
-    conventions have drifted across the study -- Participant_P001_msparticipant2
+    conventions have drifted across the study -- a Participant_P001_<suffix> folder
     is a legacy HPE-benchmark import with an old id scheme and no metadata --
     and a folder that quietly fails the id test looks exactly like a folder that
     was never there. Each entry is (root, folder, n_files) so the size of what

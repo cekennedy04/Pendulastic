@@ -161,7 +161,7 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
     # Redundant-wrapper fallback (2026-08-11 fix): Recordings/ was
     # reorganized to nest each participant's legacy per-condition folders
     # under one participant parent (e.g.
-    # Recordings/MINT_13/Participant_13_left_post/...), but
+    # Recordings/MINT_{pid}/Participant_{pid}_left_post/...), but
     # OptiTrack_Recordings/ never got that extra wrapper for those legacy
     # folders -- they still sit as flat top-level siblings
     # (OptiTrack_Recordings/Participant_13_left_post/...), alongside a
@@ -173,7 +173,7 @@ def find_optitrack_match(imu_path: str, rec_root: str, opti_root: str) -> Option
     # de-wrapped path with parts[0] dropped, tried strictly after every
     # depth of the direct path so a genuine mirrored match is always
     # preferred over the fallback.
-    # Prefix-agnostic: the wrapper may be MINT_13/ while the legacy folder
+    # Prefix-agnostic: the wrapper may be MINT_{pid}/ while the legacy folder
     # inside it is still Participant_13_left_post/ (see participant_paths).
     part_candidates = [parts]
     if len(parts) > 1:
@@ -403,7 +403,7 @@ def comparable_rmse(row: dict) -> float:
     """The RMSE that means the same thing on every reference.
 
     A marker-path reference has no origin (87d7645 returns a relative curve),
-    so its raw rmse_deg is dominated by the missing zero -- MINT_13 Left/post
+    so its raw rmse_deg is dominated by the missing zero -- P13 Left/post
     trial_4 reads 143.9 raw against 16.7 offset-removed. Only there is the
     offset taken out. A rigid-body reference is bone-grounded, so a constant
     offset against it is real disagreement and stays in the number. Rows

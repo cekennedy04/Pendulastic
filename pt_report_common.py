@@ -661,8 +661,8 @@ def _row5_source_mas(source_mean, source_params):
     collapses they renormalise on a tiny clean motion and a barely-moving leg
     scores mild -- see pendulastic_pt_score's excursion-gate block. The report
     is a clinician-facing surface, so it must not print a grade the score does
-    not support. On this corpus that suppresses exactly P9 left/right (A0 9.0
-    deg, previously shown as MAS 1), which are independently known to be a
+    not support. On this corpus that suppresses exactly one participant's left/right
+    (A0 9.0 deg, previously shown with a grade), which are independently known to be a
     duplicated-export rig defect.
 
     Falls back to grading whenever excursion cannot be established at all --
@@ -680,7 +680,7 @@ def _row5_source_mas(source_mean, source_params):
     # used to compare against MIN_INTERPRETABLE_A0_DEG only, and
     # pendulastic_pt_score's own note says why a floor is not enough: "A
     # one-sided gate only guards one failure direction." The seed-window bug
-    # produced A0 = 418.1 deg on P9 Left/Right trial_3 at 97.3% coverage, and
+    # produced A0 = 418.1 deg on one participant's trial_3 at 97.3% coverage, and
     # that was being graded MAS "4" -- the worst grade on the scale, off a
     # number that cannot be an interior knee angle at all, since those live in
     # [0, 180]. Calling excursion_ok means the ceiling cannot go missing again,
@@ -1575,8 +1575,7 @@ def _lag_align_candidate(rec, cand):
 
     pt.load_hpe_model_curves's own alignment is Y-baseline-shift only; it
     assumes the model/IMU clock is already synchronized with OptiTrack's,
-    which real trials contradict (confirmed on Participant_16 Left/Control/
-    Trial_1: compare_pair finds lag=-0.717s and rmse=6.95 deg for the exact
+    which real trials contradict (confirmed on a control baseline trial: compare_pair finds lag=-0.717s and rmse=6.95 deg for the exact
     same curve load_hpe_model_curves itself scores at rmse=49+ deg with no
     lag correction at all -- and, since compute_pt_params's release
     detection and oscillation-cycle counting run on whatever slice of the

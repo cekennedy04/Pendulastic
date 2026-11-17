@@ -725,7 +725,7 @@ def compare_pair(ref_t, ref_y, test_t, test_y,
     # and refuses to invent a zero, so the offset is whatever the hinge
     # eigenvector's arbitrary sign made it, and raw RMSE mostly reports that.
     #
-    # Measured on MINT_13 Left/post trial_4: rmse 143.90 with bias 142.93 --
+    # Measured on P13 Left/post trial_4: rmse 143.90 with bias 142.93 --
     # 99.5% of the "error" is the missing zero -- against 16.69 here. The IMU
     # had not regressed at all; the reference had stopped claiming an origin.
     diff = test_f - ref_f

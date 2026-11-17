@@ -123,13 +123,13 @@ def test_trials_sharing_participant_position_and_number_stay_distinct(capsys):
     on those three, each leg overwrote the other and the 2026-11-02 corpus run
     paired only 56 of its 144 trials. The IMU path is the trial's identity.
     """
-    left = "CHAT_19/Left/pre/Trial_1_imu.csv"
-    right = "CHAT_19/Right/pre/Trial_1_imu.csv"
+    left = "CHAT_919/Left/pre/Trial_1_imu.csv"
+    right = "CHAT_919/Right/pre/Trial_1_imu.csv"
     rmse._report_comparison(
-        [_row("CHAT_19", "unknown", rmse_deg=3.0, imu_path=left),
-         _row("CHAT_19", "unknown", rmse_deg=9.0, imu_path=right)],
-        [_row("CHAT_19", "unknown", rmse_deg=3.0, imu_path=left),
-         _row("CHAT_19", "unknown", rmse_deg=9.0, imu_path=right)])
+        [_row("CHAT_919", "unknown", rmse_deg=3.0, imu_path=left),
+         _row("CHAT_919", "unknown", rmse_deg=9.0, imu_path=right)],
+        [_row("CHAT_919", "unknown", rmse_deg=3.0, imu_path=left),
+         _row("CHAT_919", "unknown", rmse_deg=9.0, imu_path=right)])
     out = capsys.readouterr().out
     assert "over 2 trial(s)" in out, "both legs must be paired"
     assert "before 6.0000" in out

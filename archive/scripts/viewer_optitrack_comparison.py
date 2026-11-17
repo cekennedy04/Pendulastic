@@ -54,7 +54,7 @@ _MAS_NUMS = {"0": 0, "1": 1, "1+": 1.5, "2": 2, "3": 3, "4": 4, "?": -1}
 BEST_HPE = "mediapipe_full"   # best comprehensive model from hpe_mas_evaluation.py
 
 # Viewer participant IDs that need explicit mapping (don't follow P→numeric rule)
-# P001 and P005 are both P5 (MS participant 2); P004/P008/P010 use zero-padded format
+# P001 and P005 are both P5; P004/P008/P010 use zero-padded format
 _VIEWER_PID_MAP = {
     "P001": "5",
     "P004": "4",
@@ -66,17 +66,39 @@ _VIEWER_PID_MAP = {
 # Participants excluded from clinical analysis
 _EXCLUDE_PIDS = {"0", "TEST"}
 
-# MS participants (all others treated as healthy controls)
-_MS_PIDS = {"4", "5"}
+# MS participants (all others treated as healthy controls); read lazily from
+# untracked local config, see _local_group_ids.
+_MS_PIDS = None
+
+# Group membership by participant id is kept out of the public repo. It lives
+# in the untracked legacy_analysis_groups.json (gitignored) in the repo root.
+def _local_group_ids(key, roots):
+    import json
+    for root in roots:
+        path = os.path.join(root, "legacy_analysis_groups.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return {str(x) for x in json.load(f)[key]}
+    raise SystemExit("legacy_analysis_groups.json with a %r list is required "
+                     "(untracked; not in the public repo)" % key)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Load sessions.json viewer data
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _ms_pids():
+    global _MS_PIDS
+    if _MS_PIDS is None:
+        _MS_PIDS = _local_group_ids(
+            "viewer_optitrack_ms",
+            (BASE_DIR, os.path.dirname(os.path.dirname(BASE_DIR))))
+    return _MS_PIDS
+
+
 def _norm_pid(raw: str) -> str:
     """Normalize viewer participant ID to the same numeric prefix used in OptiTrack CSVs.
-    'P001' → '5' (MSParticipant2), 'P004' → '4', '6' → '6', etc.
+    'P001' → '5', 'P004' → '4', '6' → '6', etc.
     """
     s = str(raw).strip()
     # Explicit mapping takes priority (handles zero-padded and alias IDs)
@@ -130,8 +152,8 @@ def load_viewer_sessions() -> pd.DataFrame:
         pt4     = s.get("pt_4")
 
         # Determine diagnosis from numeric PID (overrides sessions.json diagnosis
-        # since P001/P005 appear under different names but are all P5)
-        if num_pid in _MS_PIDS:
+        # since P001/P005 appear under different names but are the same participant)
+        if num_pid in _ms_pids():
             diag = "MS"
         elif num_pid in _EXCLUDE_PIDS:
             diag = "Excluded"
