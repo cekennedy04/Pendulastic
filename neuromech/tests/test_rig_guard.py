@@ -92,15 +92,26 @@ def fixtures():
         "over_speed": ("0,0\n0.5,0\n0.505,7\n1.5,7\n2,0\n", "speed"),
         "pulse_6deg_ok": ("0,0\n0.2,0\n0.201,6\n0.28,6\n0.281,0\n1,0\n", ""),
         "predicted_overshoot": (_rows(*_overshoot_file()), "predicted"),
+        # content between the 10 ms grid points (PR #117 review): reads ~0 at every k*10 ms, but a late tick
+        # writes on any millisecond
+        "alias_50hz_5deg": (_rows(*_alias50()), "speed"),
+        "spike_1ms_offgrid": ("0,0\n0.504,0\n0.505,30\n0.506,0\n1,0\n", "speed"),
+        "three_columns": ("0,0\n0.5,1,99\n1,0\n", "parse"),
+        "bom_ok": ("﻿" + ok_small, ""),
     }
     return fx
+
+
+def _alias50(amp=5.0):
+    t = np.arange(0, 2.0005, 0.001)
+    return t, amp * np.sin(2 * np.pi * 50 * t)
 
 
 def write_fixtures(d):
     os.makedirs(d, exist_ok=True)
     exp = {}
     for name, (text, kind) in fixtures().items():
-        with open(os.path.join(d, name + ".csv"), "w", newline="") as fh:
+        with open(os.path.join(d, name + ".csv"), "w", newline="", encoding="utf-8") as fh:
             fh.write(text)
         exp[name] = kind
     return exp
@@ -121,10 +132,25 @@ def test_refusal_messages_name_the_time_and_the_value(tmp_path):
     write_fixtures(str(tmp_path))
     r = G.check_file(str(tmp_path / "nan.csv")); assert "t = 0.500 s" in r["reason"] and "nan" in r["reason"].lower()
     r = G.check_file(str(tmp_path / "over_limit.csv")); assert "41.00 deg" in r["reason"] and "limit is 40.0" in r["reason"]
-    r = G.check_file(str(tmp_path / "over_speed.csv")); assert "7.00 deg" in r["reason"] and "600 deg/s" in r["reason"] and "t = 0.51 s" in r["reason"]
+    r = G.check_file(str(tmp_path / "over_speed.csv")); assert "7.00 deg" in r["reason"] and "600 deg/s" in r["reason"] and "t = 0.495 s" in r["reason"]
+    r = G.check_file(str(tmp_path / "alias_50hz_5deg.csv")); assert "within 10 ms" in r["reason"] and r["max_step_deg"] > 9
+    r = G.check_file(str(tmp_path / "three_columns.csv")); assert "3 columns" in r["reason"]
     r = G.check_file(str(tmp_path / "predicted_overshoot.csv"))
     assert r["raw_peak_deg"] <= 40 and r["max_step_deg"] <= 6 and r["predicted_peak_deg"] > 40
     assert "predicted to reach" in r["reason"]
+
+
+def test_content_between_grid_points_is_seen():
+    # the 0/10/20 ms grid alone sees nothing of a 50 Hz wiggle; the players' 1 ms clock can land anywhere
+    t, sp = _alias50()
+    assert np.abs(G.stream(t, sp)).max() < 1e-9
+    r = G.check_trajectory(t, sp)
+    assert not r["ok"] and r["kind"] == "speed" and abs(r["max_step_deg"] - 10.0) < 1e-6
+    # the prediction is the worst of the ten 1 ms phases, never below phase 0
+    t2, sp2 = _overshoot_file()
+    p0, _ = G.predicted_peak(G.stream(t2, sp2))
+    pall, _ = G.predicted_peak_all_phases(t2, sp2)
+    assert pall >= p0
 
 
 def test_the_hard_limit_can_only_be_lowered():
@@ -259,7 +285,10 @@ def test_csharp_player_refusals_and_backstop(guardtest, tmp_path):
     for must in ("operator_limit_above_hard_limit", "refuse_nan", "refuse_inf", "refuse_over_limit", "refuse_over_speed",
                  "refuse_bad_start_angle", "refuse_setpoint_read_failure", "ramp_in_from_current",
                  "backstop_clamps_and_stops_at_the_limit", "backstop_never_sends_nan", "backstop_limits_step_and_stops",
-                 "bypass_refused_against_the_rig", "write_failures_stop_and_say_the_rig_holds",
+                 "bypass_refused_against_the_rig", "write_failures_try_to_return_then_say_the_rig_holds",
+                 "write_failures_mid_swing_return_to_0", "refuse_alias_between_grid_points", "refuse_1ms_spike_off_grid",
+                 "refuse_return_speed_0", "refuse_return_speed_1000", "period_is_not_settable",
+                 "refuse_encoder_equal_to_setpoint", "refuse_three_columns", "stop_during_ramp_in_cancels_the_play",
                  "lock_refuses_a_second_player", "lock_released_plays", "watchdog_off_is_said_and_logged",
                  "watchdog_on_tracking_arm_plays", "watchdog_stops_an_arm_that_does_not_follow",
                  "watchdog_stops_when_the_encoder_goes_silent", "watchdog_configured_but_unreadable_refuses",
@@ -403,10 +432,70 @@ def test_powershell_backstop_stops_and_returns_to_zero(ps, tmp_path):
 
 
 @need_ps
-def test_powershell_failed_writes_stop_and_say_the_rig_holds(ps, tmp_path):
+def test_powershell_failed_writes_try_a_return_then_say_the_rig_holds(ps, tmp_path):
     write_fixtures(str(tmp_path))
     r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0,write=fail")
-    assert r.returncode == 4 and "holds the last value" in r.stdout and "E-stop" in r.stdout
+    assert r.returncode == 4 and "Trying to ramp the setpoint to 0" in r.stdout and "RIG HOLDING LAST SETPOINT" in r.stdout, r.stdout
+    rows = list(csv.DictReader(open(_sent(ps.dir, "*_error.csv")[-1], newline="")))
+    assert any(x["phase"] == "abort_return" for x in rows) and any("USE THE E-STOP" in x["note"] for x in rows)
+
+
+@need_ps
+def test_powershell_removed_and_unknown_options_are_refused(ps, tmp_path):
+    write_fixtures(str(tmp_path))
+    for extra in (("-PeriodMs", "1"), ("-NoReturn",), ("-Typo",)):
+        r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", *extra)
+        assert r.returncode == 1 and "unknown option" in r.stdout and "Playing." not in r.stdout, (extra, r.stdout)
+
+
+@need_ps
+def test_powershell_return_speed_is_bounded(ps, tmp_path):
+    write_fixtures(str(tmp_path))
+    for v in ("0", "0.5", "60.5", "1000"):
+        r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", "-ReturnDps", v)
+        assert r.returncode == 1 and "return speed" in r.stdout and "Playing." not in r.stdout, (v, r.stdout)
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=3", "-ReturnDps", "60")
+    assert r.returncode == 0, r.stdout
+    sent = _writes(list(csv.DictReader(open(_sent(ps.dir)[-1], newline=""))))
+    assert sent[-1] == 0 and max(abs(np.diff(sent))) <= 6
+
+
+@need_ps
+def test_powershell_rereads_the_setpoint_after_enter(ps, tmp_path):
+    write_fixtures(str(tmp_path))
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", "-TestSetpointAfterEnter", "3")
+    assert r.returncode == 1 and "moved from 0.00 to 3.00" in r.stdout and "Playing." not in r.stdout, r.stdout
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", "-TestSetpointAfterEnter", "fail")
+    assert r.returncode == 1 and "could not read the setpoint again" in r.stdout
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", "-TestSetpointAfterEnter", "0.4")
+    assert r.returncode == 0, r.stdout                                 # within 0.5 deg: ramps from the fresh value
+    rows = list(csv.DictReader(open(_sent(ps.dir)[-1], newline="")))
+    assert abs(_writes(rows)[0] - 0.4) < 1e-9
+    r = ps(tmp_path / "ok_small.csv", "-TestSetpointAfterEnter", "3")   # test switches never reach a rig
+    assert r.returncode == 1 and "tests only" in r.stdout
+
+
+@need_ps
+def test_powershell_refuses_the_setpoint_as_its_own_encoder(ps, tmp_path):
+    write_fixtures(str(tmp_path))
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", "-TestFakeEncoder", "track", "-EncoderUrl", "fake://setpoint")
+    assert r.returncode == 1 and "is the setpoint variable" in r.stdout, r.stdout
+
+
+@need_ps
+@pytest.mark.parametrize("how", ["signal", "key"])
+def test_powershell_ctrl_c_stops_through_the_return_to_zero(ps, tmp_path, how):
+    # in its own console (the Ctrl+C must not reach pytest): a console signal, and a keystroke in its input
+    f = tmp_path / "slow.csv"; f.write_text(_rows(*_slow(10.0)))
+    r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps.dir / "play_setpoints.ps1"),
+                        "-File", str(f), "-NoPrompt", "-TestFakeDataSocket", "read=0", "-TestCtrlC", f"{how}@0.6"],
+                       creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=120)
+    assert r.returncode == 1
+    rows = list(csv.DictReader(open(_sent(ps.dir, "slow_*.csv")[-1], newline="")))
+    stop = [x for x in rows if x["phase"] == "stop"]
+    assert stop and "Ctrl+C" in stop[0]["note"], rows[-5:]
+    sent = _writes(rows)
+    assert sent[-1] == 0 and max(sent) < 10 and rows[-1]["phase"] == "abort_return"
 
 
 @need_ps

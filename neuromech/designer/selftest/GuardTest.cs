@@ -31,7 +31,12 @@ namespace Pendulastic
         public bool SyncConnectTo(string url, int mode, int timeoutMs) { return ConnectOk; }
         public int Reads, ReadOkFor = int.MaxValue;
         public bool SyncRead(int timeoutMs) { Reads++; return ReadOk && Reads <= ReadOkFor; }
-        public bool SyncWrite(object v, int timeoutMs) { Writes++; Written.Add(Convert.ToDouble(v, CultureInfo.InvariantCulture)); return WriteOk; }
+        public int FailWritesFrom = int.MaxValue, FailWritesTo = int.MaxValue;     // writes number From..To (1-based) fail
+        public bool SyncWrite(object v, int timeoutMs)
+        {
+            Writes++; Written.Add(Convert.ToDouble(v, CultureInfo.InvariantCulture));
+            return WriteOk && !(Writes >= FailWritesFrom && Writes <= FailWritesTo);
+        }
         public bool SyncDisconnect(int timeoutMs) { return true; }
     }
 
@@ -148,6 +153,22 @@ namespace Pendulastic
             Report("refuse_bad_start_angle", Throws(p, T(0, 1), T(2, 0), out msg) && msg.Contains("first angle"), msg);
             p = Player(null, "start_t");
             Report("refuse_bad_start_time", Throws(p, T(0.5, 1), T(0, 0), out msg) && msg.Contains("start at 0"), msg);
+            // content between the 10 ms grid points: a 5 deg 50 Hz wiggle reads 0 at every k*10 ms but not between
+            int na = 2001; double[] ta = new double[na], spa = new double[na];
+            for (int i = 0; i < na; i++) { ta[i] = i / 1000.0; spa[i] = 5 * Math.Sin(2 * Math.PI * 50 * ta[i]); }
+            p = Player(null, "alias50hz");
+            Report("refuse_alias_between_grid_points", Throws(p, ta, spa, out msg) && msg.Contains("within 10 ms"), msg);
+            p = Player(null, "spike");
+            Report("refuse_1ms_spike_off_grid", Throws(p, T(0, 0.504, 0.505, 0.506, 1), T(0, 0, 30, 0, 0), out msg) && msg.Contains("within 10 ms"), msg);
+            p = Player(null, "rdps0"); p.ReturnDps = 0;
+            Report("refuse_return_speed_0", Throws(p, t, sp, out msg) && msg.Contains("return speed"), msg);
+            p = Player(null, "rdps1000"); p.ReturnDps = 1000;
+            Report("refuse_return_speed_1000", Throws(p, t, sp, out msg) && msg.Contains("return speed"), msg);
+            Report("period_is_not_settable", !typeof(RigPlayer).GetProperty("PeriodMs").CanWrite && new RigPlayer().PeriodMs == RigGuard.PeriodMs, "");
+            p = Player(new FakeSocket(), "enc_is_sp"); p.EncoderUrl = p.Url;
+            Report("refuse_encoder_equal_to_setpoint", Throws(p, t, sp, out msg) && msg.Contains("is the setpoint variable"), msg);
+            GuardReport cols = RigGuard.Parse(new string[] { "0,0", "1,0,99" }, out tn, out spn);
+            Report("refuse_three_columns", cols != null && cols.Kind == "parse", cols == null ? "accepted" : cols.Reason);
 
             // 3. the current setpoint must be readable, finite and inside the limit; no step to 0
             FakeSocket f = new FakeSocket(); f.ReadOk = false;
@@ -161,17 +182,21 @@ namespace Pendulastic
             Report("refuse_setpoint_beyond_limit", p.Status.StartsWith("REFUSED") && f.Writes == 0, p.Status);
             f = new FakeSocket(); f.Data.Value = 3;
             p = Player(f, "ramp"); p.Start(t, sp); p.Join();
-            double pk, st, lv; int cnt;
+            double pk, st, lv; int cnt; string[] rows;
             Sent(Rows(p), out pk, out st, out lv, out cnt);
             Report("ramp_in_from_current", p.Status == "done" && Has(Rows(p), "ramp_in") && f.Written.Count > 0 && Math.Abs(f.Written[0] - 3) < 0.2 && lv == 0 && st <= 6,
                    p.Status + " first=" + (f.Written.Count > 0 ? f.Written[0].ToString(Inv) : "-") + " maxstep=" + st.ToString(Inv));
+            f = new FakeSocket(); f.Data.Value = 10;                                // STOP during the ramp-in: no play
+            p = Player(f, "stop_in_ramp"); p.Start(t, sp); p.Stop(); p.Join(); rows = Rows(p);
+            Sent(rows, out pk, out st, out lv, out cnt);
+            Report("stop_during_ramp_in_cancels_the_play", p.Status.StartsWith("cancelled") && !Has(rows, "play") && lv == 0 && f.Written[f.Written.Count - 1] == 0, p.Status);
 
             // 4. the per-write backstop: stops the play and returns to 0 at the return speed
             double[] tb, spb; Slow(45, out tb, out spb);           // passes nothing but the parser; bypass to reach the backstop
             p = Player(null, "bypass_real"); p.DryRun = false; p.TestBypassLoadChecks = true;
             Report("bypass_refused_against_the_rig", Throws(p, tb, spb, out msg) && msg.Contains("fake socket"), msg);
             p = Player(null, "backstop_limit"); p.TestBypassLoadChecks = true; p.Start(tb, spb); p.Join();
-            string[] rows = Rows(p);
+            rows = Rows(p);
             Sent(rows, out pk, out st, out lv, out cnt);
             Report("backstop_clamps_and_stops_at_the_limit", p.Status.Contains("guard") && Has(rows, "guard") && Has(rows, "abort_return")
                    && pk <= 40 + 1e-9 && st <= 6 + 1e-9 && lv == 0 && p.LastLog.Contains("_guard"),
@@ -186,10 +211,16 @@ namespace Pendulastic
             Sent(rows, out pk, out st, out lv, out cnt);
             Report("backstop_limits_step_and_stops", p.Status.Contains("guard") && st <= 6 + 1e-9 && lv == 0, p.Status + " step=" + st.ToString(Inv));
 
-            // 5. failed writes: the player stops and says the rig holds the last value (it cannot do more)
+            // 5. failed writes: a guarded return to 0 first; RIG HOLDING only when that cannot get through
             f = new FakeSocket(); f.WriteOk = false;
-            p = Player(f, "writefail"); p.Start(t, sp); p.Join();
-            Report("write_failures_stop_and_say_the_rig_holds", p.Status.StartsWith("STOPPED") && p.Status.Contains("holds the last value") && f.Writes == 20, p.Status);
+            p = Player(f, "writefail"); p.Start(t, sp); p.Join(); rows = Rows(p);
+            Report("write_failures_try_to_return_then_say_the_rig_holds", p.Holding && p.Status.StartsWith("RIG HOLDING") && f.Writes > 20
+                   && Has(rows, "abort_return") && p.LastLog.Contains("_error"), p.Status + " writes=" + f.Writes);
+            f = new FakeSocket(); f.FailWritesFrom = 80; f.FailWritesTo = 99;     // 20 failures mid-swing, then the link recovers
+            p = Player(f, "writeblip"); p.Start(t, sp); p.Join(); rows = Rows(p);
+            Sent(rows, out pk, out st, out lv, out cnt);
+            Report("write_failures_mid_swing_return_to_0", !p.Holding && p.Status.Contains("ramped back to 0") && f.Written[f.Written.Count - 1] == 0
+                   && st <= 6 + 1e-9 && Has(rows, "error"), p.Status + " last=" + f.Written[f.Written.Count - 1].ToString(Inv));
 
             // 6. one writer at a time (both directions with PowerShell are in test_rig_guard.py)
             string lockWhy;

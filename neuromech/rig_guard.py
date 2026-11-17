@@ -11,12 +11,14 @@ same fixture files to all three and requires the same verdict and the same predi
 Rules (owner decisions 2026-11-17; HARD_LIMIT_DEG and MAX_STEP_DEG are compiled into the players and an
 operator can only lower the limit):
   * refuse: fewer than two rows, a header, a non-number, NaN/Inf, time not starting at 0, first angle not 0,
-    time not strictly increasing, any |angle| > limit, any change > 6 deg between consecutive 10 ms writes
-    (600 deg/s) on the stream the player sends, or a predicted delivered peak > limit;
+    a row without exactly two columns, time not strictly increasing, any |angle| > limit, any change > 6 deg
+    between two whole milliseconds of the players' clock up to 10 ms apart (600 deg/s; a late tick moves a
+    write to any millisecond, so the 0/10/20 ms grid alone would miss a 50 Hz wiggle or a 1 ms spike), or a
+    predicted delivered peak > limit on any of the ten 1 ms phases of the write grid;
   * never clip: a file over the limit is refused whole (a live Designer design is instead offered a smaller
     rig amplitude scale, played only on an explicit Yes).
 
-Predicted delivered peak: the player's 10 ms staircase (the file read at k * 10 ms, then 2 s held at the end)
+Predicted delivered peak: the player's 10 ms staircase (the file read at k * 10 ms + phase, phase 0..9 ms, then 2 s held at the end)
 through the identified closed-loop rig response, y'' = wn^2 (u - y) - 2 zeta wn y', 6.35 Hz / zeta 0.23
 (2026-10-26, 23 SSR logs: gain 1.26 at 3 Hz, ~2.0 at 5 Hz, 2.2 at resonance), and through detuned copies:
 wn x0.9 and x1.1 (the drift the LABVIEW spec tolerates before re-identifying) and zeta 0.18. The largest
@@ -95,8 +97,8 @@ def parse_lines(lines):
         if row == 1 and not ok_a and not _nonfinite_word(a_s):
             return None, None, _fail("header", f"the file starts with a header row ('{_clip(s)}'); player files have none."
                                      " Use the session's player\\ file, not commands\\")
-        if len(p) < 2:
-            return None, None, _fail("parse", f"row {row} does not have two columns: '{_clip(s)}'")
+        if len(p) != 2:
+            return None, None, _fail("parse", f"row {row} has {len(p)} columns, not two (t_s,setpoint_deg): '{_clip(s)}'")
         b_s = p[1].strip(); ok_b = bool(_NUM.match(b_s))
         if ok_a: a = float(a_s)
         elif _nonfinite_word(a_s): a = float("nan")
@@ -124,13 +126,38 @@ def at(t, sp, sec):
     return out
 
 
-def stream(t, sp):
-    """The writes an on-time player sends: the file at k * 10 ms until the clock reaches the end, then the last angle."""
+def stream(t, sp, phase_ms=0):
+    """The writes an on-time player sends: the file at (k * 10 + phase_ms) ms until the clock reaches the end,
+    then the last angle (RigGuard.Stream)."""
     dur = float(t[-1])
     k = np.arange(int(math.floor(dur * 1000.0 / PERIOD_MS)) + 2)
-    e = k * PERIOD_MS / 1000.0
+    e = (k * PERIOD_MS + phase_ms) / 1000.0
     e = e[e < dur]
     return np.concatenate([at(t, sp, e), [float(sp[-1])]])
+
+
+def max_step(t, sp):
+    """(deg, at_s): the largest change between the angles the players could send at two whole milliseconds of
+    their clock up to 10 ms apart, from a setpoint at 0 (RigGuard.MaxStep). Late ticks put writes on any ms."""
+    dur = float(t[-1])
+    m = max(1, int(math.ceil(dur * 1000.0 - 1e-9)))
+    g = np.concatenate([at(t, sp, np.arange(m) / 1000.0), [float(sp[-1])]])
+    diffs = [np.abs(g[d:] - g[:-d]) for d in range(1, min(PERIOD_MS, m) + 1)]
+    top = max(float(x.max()) for x in diffs)
+    if abs(float(g[0])) >= top:
+        return abs(float(g[0])), 0.0
+    i = min(int(np.flatnonzero(x == top)[0]) for x in diffs if float(x.max()) == top)   # C#'s first i reaching the max
+    return top, i / 1000.0
+
+
+def predicted_peak_all_phases(t, sp):
+    """(peak_deg, at_s) over all ten 1 ms phases of the 10 ms write grid (RigGuard.PredictedPeakAllPhases)."""
+    best, best_t = 0.0, 0.0
+    for p in range(PERIOD_MS):
+        pk, pt = predicted_peak(stream(t, sp, p))
+        if pk > best:
+            best, best_t = pk, pt + p / 1000.0
+    return best, best_t
 
 
 def _discrete(wn_hz, zeta, dt=SIM_STEP_S):
@@ -204,28 +231,25 @@ def check_trajectory(t, sp, limit_deg=HARD_LIMIT_DEG):
     a = np.abs(sp); ip = int(np.argmax(a))
     raw_peak, raw_peak_t = float(a[ip]), float(t[ip])
     over = np.flatnonzero(a > limit_deg + EPS)
-    st = stream(t, sp)
-    d = np.abs(np.diff(np.concatenate([[0.0], st])))
-    k = int(np.argmax(d))
-    max_step, max_step_t = float(d[k]), min(k * PERIOD_MS / 1000.0, float(t[-1]))
-    pred, pred_t = predicted_peak(st)
+    step, step_t = max_step(t, sp)
+    pred, pred_t = predicted_peak_all_phases(t, sp)
     reasons = []
     if len(over):
         i = int(over[0])
         reasons.append(("peak", f"at t = {t[i]:.3f} s the angle is {sp[i]:.2f} deg (peak {raw_peak:.2f} deg at {raw_peak_t:.3f} s); "
                                 f"the limit is {limit_deg:.1f} deg"))
-    if max_step > MAX_STEP_DEG + EPS:
-        reasons.append(("speed", f"at t = {max_step_t:.2f} s the setpoint changes by {max_step:.2f} deg in one 10 ms write "
-                                 f"({max_step * 1000.0 / PERIOD_MS:.0f} deg/s); the limit is {MAX_STEP_DEG:.0f} deg per write "
+    if step > MAX_STEP_DEG + EPS:
+        reasons.append(("speed", f"from t = {step_t:.3f} s the setpoint changes by {step:.2f} deg within 10 ms "
+                                 f"({step * 1000.0 / PERIOD_MS:.0f} deg/s); the limit is {MAX_STEP_DEG:.0f} deg per write "
                                  f"({MAX_SPEED_DPS:.0f} deg/s)"))
     if pred > limit_deg + EPS:
         reasons.append(("predicted", f"the arm is predicted to reach {pred:.2f} deg near t = {pred_t:.2f} s (the commanded peak is "
                                      f"{raw_peak:.2f} deg; the rig overshoots fast content, up to 2x at 5 Hz); the limit is {limit_deg:.1f} deg"))
     ok = not reasons
-    scale = None if ok else scale_to_fit(raw_peak, max_step, pred, limit_deg)
-    return dict(scale_needed=scale,ok=ok, kind="" if ok else reasons[0][0], reason="" if ok else reasons[0][1], reasons=[r for _, r in reasons],
-                limit_deg=float(limit_deg), raw_peak_deg=raw_peak, raw_peak_t=raw_peak_t, max_step_deg=max_step,
-                max_step_t=max_step_t, predicted_peak_deg=pred, predicted_peak_t=pred_t,
+    scale = None if ok else scale_to_fit(raw_peak, step, pred, limit_deg)
+    return dict(scale_needed=scale, ok=ok, kind="" if ok else reasons[0][0], reason="" if ok else reasons[0][1], reasons=[r for _, r in reasons],
+                limit_deg=float(limit_deg), raw_peak_deg=raw_peak, raw_peak_t=raw_peak_t, max_step_deg=step,
+                max_step_t=step_t, predicted_peak_deg=pred, predicted_peak_t=pred_t,
                 scale_to_fit=scale)
 
 
@@ -239,7 +263,7 @@ def check_lines(lines, limit_deg=HARD_LIMIT_DEG):
 
 def read_any(path):
     """(t, sp) from a player file (no header) or a commands/setpoints file (header with t_s, setpoint_deg)."""
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         lines = fh.read().splitlines()
     first = next((l for l in lines if l.strip()), "")
     if first and not _NUM.match(first.split(",")[0].strip()) and not _nonfinite_word(first.split(",")[0]):
@@ -253,7 +277,7 @@ def read_any(path):
 
 def check_file(path, limit_deg=HARD_LIMIT_DEG):
     """The player's verdict on a player file, read exactly as the player reads it."""
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         return check_lines(fh.read().splitlines(), limit_deg)
 
 

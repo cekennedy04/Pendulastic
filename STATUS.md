@@ -73,7 +73,10 @@ scores move. "Not verified" is stated, never implied.
     actual-position variable is unconfirmed, so it reports OFF until one is picked); a staged
     first-run checklist with a hard-stop margin step (`designer/RIG_CHECKLIST.txt`);
     Designer default scale 0.70 and a scale-down offer for bigger live designs. At ±40°
-    3 of 66 library scenarios are playable (the rest release from ≥ 55°). See
+    3 of 64 library scenarios are playable at 1:1 (the rest release from ≥ 55°). After the PR #117
+    review: speed and predicted peak checked on every 1 ms phase (not just the 10 ms grid), Ctrl+C and
+    error paths return to 0, PLAY re-reads the setpoint after Enter, no `-PeriodMs`/`-NoReturn`,
+    return speed 1–60 °/s, no `Local\` lock fallback, 2-column rows only. See
     `neuromech/README.md` "Playback safety guard". The dry run is 9/9 in band on main (the 7/9 reading
     came from code without #96; see O5).
   - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with

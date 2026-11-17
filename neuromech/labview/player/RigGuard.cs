@@ -15,8 +15,12 @@
 //   fewer than two rows [rows]; a header line [header]; a field that is not a number [parse];
 //   any NaN/Inf [nonfinite]; time not starting at 0 [start_time]; first angle not 0 [start_angle];
 //   time not strictly increasing [time_order]; any |angle| > limit [peak];
-//   any write-to-write change > 6 deg on the 10 ms stream the player actually sends [speed];
+//   any change > 6 deg between two moments up to 10 ms apart on the players' 1 ms clock [speed];
 //   predicted delivered peak > limit [predicted].
+// The players read the file at whole milliseconds of their own clock, nominally every 10 ms, but a late tick
+// moves a write to any millisecond. So the speed rule looks at every pair of milliseconds up to 10 ms apart
+// (not just the 0/10/20 ms grid: a 50 Hz wiggle or a 1 ms spike hides between grid points), and the
+// prediction is run for all ten 1 ms phases of the 10 ms grid; the worst phase counts.
 // The predicted delivered peak is the 10 ms staircase the player sends, held 2 s at the end, passed through
 // the identified closed-loop rig response (2nd order, 6.35 Hz, zeta 0.23, measured 2026-10-26 from 23 SSR
 // logs: gain 1.26 at 3 Hz, ~2.0 at 5 Hz) AND through five detuned copies of it (natural frequency -10 %/+10 %,
@@ -63,7 +67,21 @@ namespace Pendulastic
         public const double TailS = 2.0;                      // the players hold the last value 2 s
         public const double StartTol = 1e-6, StartAngleTol = 0.01, Eps = 1e-9;
 
+        // returns to 0 (STOP, q/Esc, guard/watchdog stop, end of a run, error paths): the speed is an operator
+        // setting within [1, 60] deg/s; every ramp keeps writing until the value SENT equals the target, or
+        // until its planned time plus RampExtraS has passed (then the caller reports the rig holding)
+        public const double DefaultReturnDps = 10.0, MinReturnDps = 1.0, MaxReturnDps = 60.0;
+        public const double RampExtraS = 5.0;
+
         static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        /// <summary>Null when a return speed is usable.</summary>
+        public static string CheckReturnDps(double dps)
+        {
+            if (double.IsNaN(dps) || double.IsInfinity(dps) || dps < MinReturnDps - Eps || dps > MaxReturnDps + Eps)
+                return "the return speed must be " + F(MinReturnDps, 0) + " to " + F(MaxReturnDps, 0) + " deg/s (got " + dps.ToString(Inv) + ")";
+            return null;
+        }
 
         static string F(double v, int dec) { return v.ToString("F" + dec.ToString(Inv), Inv); }
 
@@ -101,8 +119,8 @@ namespace Pendulastic
                 if (row == 1 && !okA && !IsNonFiniteWord(p[0]))
                     return Fail("header", "the file starts with a header row ('" + Clip(s) + "'); player files have none."
                         + " Use the session's player\\ file, not commands\\");
-                if (p.Length < 2)
-                    return Fail("parse", "row " + row + " does not have two columns: '" + Clip(s) + "'");
+                if (p.Length != 2)
+                    return Fail("parse", "row " + row + " has " + p.Length + " columns, not two (t_s,setpoint_deg): '" + Clip(s) + "'");
                 bool okB = double.TryParse(p[1].Trim(), NumberStyles.Float, Inv, out b);
                 if (!okA) { if (IsNonFiniteWord(p[0])) a = double.NaN; else return Fail("parse", "row " + row + ": the time '" + Clip(p[0]) + "' is not a number"); }
                 if (!okB) { if (IsNonFiniteWord(p[1])) b = double.NaN; else return Fail("parse", "row " + row + ": the angle '" + Clip(p[1]) + "' is not a number"); }
@@ -135,13 +153,16 @@ namespace Pendulastic
         }
 
         /// <summary>The writes an on-time player sends: At(k * 10 ms) until the clock reaches the end, then the last angle.</summary>
-        public static double[] Stream(double[] t, double[] sp)
+        public static double[] Stream(double[] t, double[] sp) { return Stream(t, sp, 0); }
+
+        /// <summary>The same stream with every write phaseMs (0..9) later: At((k * 10 + phaseMs) ms).</summary>
+        public static double[] Stream(double[] t, double[] sp, int phaseMs)
         {
             double dur = t[t.Length - 1];
             List<double> o = new List<double>();
             for (int k = 0; ; k++)
             {
-                double e = k * PeriodMs / 1000.0;
+                double e = (k * PeriodMs + phaseMs) / 1000.0;
                 if (e >= dur) { o.Add(sp[sp.Length - 1]); break; }
                 o.Add(At(t, sp, e));
             }
@@ -171,6 +192,38 @@ namespace Pendulastic
                 if (Math.Abs(y) > peak) { peak = Math.Abs(y); atS = step * dt; }
             }
             return peak;
+        }
+
+        /// <summary>The largest change between the angles the players could send at two whole milliseconds of their
+        /// clock up to one write period (10 ms) apart, starting from a setpoint at 0. atS is the earlier moment.</summary>
+        public static double MaxStep(double[] t, double[] sp, out double atS)
+        {
+            double dur = t[t.Length - 1];
+            int m = (int)Math.Ceiling(dur * 1000.0 - 1e-9);
+            if (m < 1) m = 1;
+            double[] g = new double[m + 1];
+            for (int i = 0; i < m; i++) g[i] = At(t, sp, i / 1000.0);
+            g[m] = sp[sp.Length - 1];                          // at and after the end: the last angle
+            double best = Math.Abs(g[0]); atS = 0;
+            for (int i = 0; i < m; i++)
+                for (int d = 1; d <= PeriodMs && i + d <= m; d++)
+                {
+                    double x = Math.Abs(g[i + d] - g[i]);
+                    if (x > best) { best = x; atS = i / 1000.0; }
+                }
+            return best;
+        }
+
+        /// <summary>The predicted peak over all ten 1 ms phases of the 10 ms write grid (atS on the file's clock).</summary>
+        public static double PredictedPeakAllPhases(double[] t, double[] sp, out double atS)
+        {
+            double best = 0; atS = 0;
+            for (int p = 0; p < PeriodMs; p++)
+            {
+                double at; double pk = PredictedPeak(Stream(t, sp, p), out at);
+                if (pk > best) { best = pk; atS = at + p / 1000.0; }
+            }
+            return best;
         }
 
         /// <summary>The conservative predicted delivered peak: the largest over the nominal plant and its detuned copies.</summary>
@@ -215,17 +268,10 @@ namespace Pendulastic
                 if (a > r.RawPeakDeg) { r.RawPeakDeg = a; r.RawPeakT = t[i]; }
                 if (firstOver < 0 && a > limitDeg + Eps) firstOver = i;
             }
-            double[] st = Stream(t, sp);
-            r.MaxStepDeg = 0; r.MaxStepT = 0;
-            double prev = 0;                                   // the player starts from a setpoint at 0
-            for (int k = 0; k < st.Length; k++)
-            {
-                double d = Math.Abs(st[k] - prev);
-                if (d > r.MaxStepDeg) { r.MaxStepDeg = d; r.MaxStepT = Math.Min(k * PeriodMs / 1000.0, t[n - 1]); }
-                prev = st[k];
-            }
             double at;
-            r.PredictedPeakDeg = PredictedPeak(st, out at);
+            r.MaxStepDeg = MaxStep(t, sp, out at);
+            r.MaxStepT = at;
+            r.PredictedPeakDeg = PredictedPeakAllPhases(t, sp, out at);
             r.PredictedPeakT = at;
 
             if (firstOver >= 0)
@@ -237,7 +283,7 @@ namespace Pendulastic
             else if (r.MaxStepDeg > MaxStepDeg + Eps)
             {
                 r.Kind = "speed";
-                r.Reason = "at t = " + F(r.MaxStepT, 2) + " s the setpoint changes by " + F(r.MaxStepDeg, 2) + " deg in one 10 ms write ("
+                r.Reason = "from t = " + F(r.MaxStepT, 3) + " s the setpoint changes by " + F(r.MaxStepDeg, 2) + " deg within 10 ms ("
                     + F(r.MaxStepDeg * 1000.0 / PeriodMs, 0) + " deg/s); the limit is " + F(MaxStepDeg, 0) + " deg per write (" + F(MaxSpeedDps, 0) + " deg/s)";
             }
             else if (r.PredictedPeakDeg > limitDeg + Eps)
@@ -290,22 +336,23 @@ namespace Pendulastic
         // -- single writer: the Designer and play_setpoints.ps1 never write the setpoint at the same time --
         public const string WriterLockName = "PendulasticSetpointWriter";
 
-        /// <summary>Take the machine-wide writer lock (Global\, or Local\ if this session may not create Global
-        /// objects). Returns the held mutex, or null with why set when another player holds it. The caller must
+        /// <summary>Take the machine-wide writer lock (Global\ only: a fallback to a per-session Local\ name would let
+        /// two players write at once). Returns the held mutex, or null with why set when another player holds it or
+        /// the lock cannot be opened (e.g. made by a player running as administrator). The caller must
         /// ReleaseMutex on the SAME thread when its return to 0 is complete. A lock abandoned by a player that
         /// died counts as taken over (its process is gone; the ramp-in starts from the setpoint it left).</summary>
         public static System.Threading.Mutex AcquireWriterLock(out string why)
         {
             why = null;
             System.Threading.Mutex m = null;
-            string[] names = new string[] { "Global\\" + WriterLockName, "Local\\" + WriterLockName };
-            for (int i = 0; i < names.Length && m == null; i++)
+            try { m = new System.Threading.Mutex(false, "Global\\" + WriterLockName); }
+            catch (Exception e)
             {
-                try { m = new System.Threading.Mutex(false, names[i]); }
-                catch (UnauthorizedAccessException) { m = null; }
-                catch (System.IO.IOException) { m = null; }
+                why = "the setpoint-writer lock (Global\\" + WriterLockName + ") cannot be opened (" + e.GetType().Name + "): another"
+                    + " player is probably running as administrator or as another user. Close every player (the Pendulum Designer"
+                    + " and PLAY.bat), then start this one again the same way as the others";
+                return null;
             }
-            if (m == null) { why = "could not create the setpoint-writer lock"; return null; }
             bool got;
             try { got = m.WaitOne(0, false); }
             catch (System.Threading.AbandonedMutexException) { got = true; }
@@ -356,6 +403,18 @@ namespace Pendulastic
                         }
                 }
             return worst;
+        }
+
+        /// <summary>Null when the picked encoder variable is usable: it must not be the setpoint variable itself
+        /// (the watchdog would then only ever see what it sent).</summary>
+        public static string EncoderUrlProblem(string encoderUrl, string setpointUrl)
+        {
+            if (encoderUrl == null || setpointUrl == null) return null;
+            string a = encoderUrl.Trim().TrimEnd('/').ToLowerInvariant(), b = setpointUrl.Trim().TrimEnd('/').ToLowerInvariant();
+            if (a.Length > 0 && a == b)
+                return "the encoder variable is the setpoint variable (" + encoderUrl.Trim() + "); pick the variable that holds the arm's"
+                    + " ACTUAL position, or none (watchdog OFF)";
+            return null;
         }
 
         public static double FollowBoundDeg(double predictedFollowingError) { return FollowFloorDeg + FollowModelFactor * predictedFollowingError; }

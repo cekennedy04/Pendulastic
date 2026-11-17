@@ -94,22 +94,27 @@ EVERY RUN (in runsheet.csv order)
 SAFETY  (the rules are in RigGuard.cs; keep it beside play_setpoints.ps1 or nothing plays)
   * Hard limit 40 deg, built in. -MaxDeg and the Designer's Max |angle| can only LOWER it.
   * PLAY refuses a whole file (never clips it) that: goes beyond the limit; changes faster than
-    6 deg per 10 ms write (600 deg/s); is PREDICTED to carry the arm past the limit (the rig
-    overshoots fast content, about 2x at 5 Hz); has a header, a NaN, or does not start at 0.
+    6 deg within 10 ms (600 deg/s); is PREDICTED to carry the arm past the limit (the rig
+    overshoots fast content, about 2x at 5 Hz); has a header, a NaN, a row without exactly two
+    columns, or does not start at 0.
     Every refusal leaves sent\\<file>_<time>_refused.csv. The Designer offers a smaller scale
     for its own designs (plays only if you say Yes; the score shown is the scaled one).
-  * If the current setpoint cannot be read, it does not play (no jump to 0).
+  * If the current setpoint cannot be read, it does not play (no jump to 0). PLAY reads it again
+    after Enter and refuses if it moved: no Manual Control or Stretch profile while PLAY waits.
   * Every write is checked again; if that check ever fires during a run, the run stops and
     ramps to 0 (exit 5, "STOPPED BY THE GUARD"). Do not repeat that run; bring sent\\ back.
   * Only one player (PLAY.bat or the Designer) can drive the rig at a time.
   * Optional encoder watchdog: PICK_ENCODER.bat, if the rig publishes the arm's ACTUAL position.
     It stops a run whose arm goes past 43 deg or stops following (exit 6). Without it every run
     says "encoder watchdog OFF". It is software in the same program, not a hardware cutoff.
-  * q or Esc during a run stops it and ramps the setpoint back to 0 at 10 deg/s.
+  * q or Esc during a run stops it and ramps the setpoint back to 0 at 10 deg/s (Ctrl+C is
+    caught and does the same). NEVER close the window or press Ctrl+Break mid-run.
   * At the end it holds the last angle 2 s, then ramps to 0.
-  * NOT covered: if writes keep failing, or the window is closed mid-run, the rig HOLDS the
-    last setpoint. The E-stop is the real guard; the Angle Limit fields on the front panel do
-    NOT bound this player.
+  * If writes fail or something breaks, it first tries to ramp the setpoint to 0 (exit 4).
+    "RIG HOLDING LAST SETPOINT -- USE THE E-STOP" means it could not.
+  * NOT covered: if writes cannot get through, or the window is closed mid-run, the rig HOLDS
+    the last setpoint. The E-stop is the real guard; the Angle Limit fields on the front panel
+    do NOT bound this player.
   * "Updates ... 95th pct" over 25 ms: close other programs and play the run again.
 
 BRING BACK on the stick: runsheet.csv, logs\\, and sent\\ (what the player wrote, for checking).

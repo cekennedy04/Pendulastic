@@ -108,14 +108,20 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
 - **Hard limit ±40° rig angle**, compiled in. `-MaxDeg` / the Designer's *Max |angle|* can only lower it
   (`-MaxDeg 45` is refused; the Designer's control stops at 40).
 - **Refused at load, whole, never clipped** (the message names the time and value): a header, a
-  non-number, NaN/Inf, time not starting at 0 or not increasing, a first angle other than 0, any
-  |angle| over the limit, any change over **6° between consecutive 10 ms writes (600 °/s)** on the
-  stream the player actually sends (the file read at k·10 ms), or a **predicted delivered peak** over
-  the limit. The library's 5° sync pulses are 5° in one write (500 °/s) and pass.
+  non-number, NaN/Inf, a row without exactly two columns (`0,0,99` or a decimal-comma file), time not
+  starting at 0 or not increasing, a first angle other than 0, any |angle| over the limit, any change
+  over **6° within 10 ms (600 °/s)**, or a **predicted delivered peak** over the limit. The players
+  read the file at whole milliseconds of their clock, nominally every 10 ms, but a late tick puts a
+  write on any millisecond; so the speed rule compares every pair of milliseconds up to 10 ms apart,
+  not just the 0/10/20 ms grid (which a 5° 50 Hz wiggle or a 1 ms 30° spike slips through), and the
+  prediction runs on all ten 1 ms phases of the write grid. The library's 5° sync pulses are 5° in
+  one write (500 °/s) and pass. A UTF-8 BOM is accepted by all three (both players and `rig_guard`).
 - **Predicted delivered peak**: the 10 ms staircase (plus the 2 s end hold) through the identified
   closed loop (section 4 of the LabVIEW spec: 2nd order, 6.35 Hz, ζ 0.23; gain 1.26 at 3 Hz, ~2.0 at
-  5 Hz) and five detuned copies (ωn ×0.9 and ×1.1, ζ 0.18); the largest |angle| of the six. It is a
-  model of the rig as identified on 2026-10-26, not a guarantee: re-identify after any gain change.
+  5 Hz) and five detuned copies (ωn ×0.9 and ×1.1, ζ 0.18); the largest |angle| of the six, worst
+  phase. It is a model of the rig as identified on 2026-10-26 with its P/I/D at the identified values,
+  not a guarantee: re-identify after any gain change. Saturation and integrator windup (a low
+  Controller Output Range) are not modelled.
 - **Designer, live designs only**: a design over the limit is offered the largest rig amplitude scale
   (0.01 steps) that passes with the predicted peak ≤ limit − 1°, rescored at that scale; it plays only
   on an explicit Yes, and the score shown and logged is the scaled swing's. The default scale is
@@ -127,15 +133,32 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
   the Designer shows "STOPPED by the guard"); a guard row is logged. On a fast file a Windows tick
   late by tens of ms can trip it (the library's swings move at most 7° per write, typically ≤ 3°).
 - **Ramp-in**: if the current setpoint cannot be read (or reads NaN or beyond the limit) the player
-  refuses to start: no step to 0 from wherever the arm is.
+  refuses to start: no step to 0 from wherever the arm is. PLAY reads it again right after Enter and
+  refuses if that fails or it moved more than 0.5° while the prompt waited; it ramps from the fresh
+  value. The Designer reads it after its confirm box, when the play starts.
+- **Returns to 0**: STOP / q / Esc / Ctrl+C, a guard or watchdog stop, and the end of a run all ramp the
+  setpoint to 0 at the return speed (10 °/s; PLAY's `-ReturnDps` takes 1–60). Every ramp keeps writing
+  until the value sent is the target and the write went through, for at most its time + 5 s. STOP or
+  q during the ramp-in cancels the play that would follow. PLAY catches Ctrl+C (as a keystroke and as
+  a console signal) from its Enter prompt to the end and treats it like q; **Ctrl+Break and closing the
+  window are not caught**. The write period is fixed at 10 ms (no `-PeriodMs`), and there is no
+  `-NoReturn`: PLAY refuses any option it does not know.
+- **Errors return to 0 first**: after the first write, 20 failed writes in a row or any exception start
+  a guarded ramp to 0 (through the backstop, tolerating failed writes, bounded in time) before the lock
+  is released; the outcome is logged (`error` rows, sent log `*_error.csv`, PLAY exit 4). If the writes
+  cannot get through, both players say **RIG HOLDING LAST SETPOINT -- USE THE E-STOP** (the Designer in
+  a message box).
 - **Logged**: every refusal leaves `sent/<file>_<time>_refused.csv`; backstop events are `guard` rows
   in the sent log (`t_wall_s,t_file_s,phase,setpoint_deg,note`). `session check-log ... --sent <sent log>`
   fails a run with any refusal, guard or error row. `session plan` writes `guard.csv` (each run's
   verdict and predicted peak) and warns how many runs the players will refuse;
   `python -m neuromech.rig_guard <files|dir> [--index out.csv]` / `--library` does the same anywhere.
-- **One writer at a time**: a machine-wide named mutex (`Global\PendulasticSetpointWriter`, or `Local\`
-  if the session may not create Global objects) is taken before the ramp-in and released after the
-  return to 0; a second player (Designer or PLAY) refuses to start. Tested in both directions.
+- **One writer at a time**: a machine-wide named mutex (`Global\PendulasticSetpointWriter`, never a
+  per-session `Local\` fallback, which would let two players write) is taken before the ramp-in and
+  released after the return to 0; a second player (Designer or PLAY) refuses to start, and so does a
+  player that cannot open the lock (e.g. the other one runs as administrator). Tested in both
+  directions. It does **not** cover LabVIEW's own writers: no Manual Control or Stretch profile while
+  a player waits or plays.
 - **Optional encoder watchdog**: if the operator picks a variable holding the arm's ACTUAL position
   (Designer *Encoder: Pick...*, or `PICK_ENCODER.bat` → `encoder_url.txt`), the player reads it every
   5th write (50 ms, 20 ms read timeout) and stops the content and ramps the setpoint to 0 (PLAY exit 6)
@@ -143,15 +166,19 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
   5° + 1.5 × the following error the identified plant (and its detuned copies) predicts for this file
   (the 150 ms window absorbs network/read latency and the plant's lag; 5° covers encoder noise,
   stiction and the 0.4–0.6° tracking RMSE measured on library swings), or after 10 failed reads in a row.
-  Before starting it refuses if the variable cannot be read or reads more than 5° from the setpoint
-  (wrong variable). Not picked: play proceeds and the console / status bar says **"encoder watchdog
-  OFF"**. **Unconfirmed:** nothing in this repo lists an actual-position network variable in
+  Before starting it refuses if the variable cannot be read, reads more than 5° from the setpoint
+  (wrong variable), or is the setpoint variable itself. The +3° is a software stop at 43° actual, not a
+  cutoff; it is there to avoid false stops (the mechanical hard stops are the last line). Each look is
+  a synchronous read of up to 20 ms inside the write loop, so a slow read delays that tick's write
+  (and a fast file then steps further, which the backstop may stop). Not picked: play proceeds and the
+  console / status bar says **"encoder watchdog OFF"**. **Unconfirmed:** nothing in this repo lists an actual-position network variable in
   `variables - network - RT (separate)` (only the setpoint `M1JointAngleDesired`, fallback
   `M1AngleSetPoint`); check in Distributed System Manager whether one exists before relying on it. The
   watchdog runs in the same host process as the player: a second opinion that moves the setpoint, not
   an independent hardware cutoff.
-- **Not covered — the E-stop is the answer**: after 20 failed writes the player stops and the rig
-  HOLDS the last value it received; a player killed mid-play also leaves the last setpoint held.
+- **Not covered — the E-stop is the answer**: if writes cannot get through, the rig HOLDS the last
+  value it received; a player killed mid-play (closed window, Ctrl+Break, crash) also leaves the last
+  setpoint held.
 
 **Staged first real playback** (owner, 2026-11-17; the kit's `RIG_CHECKLIST.txt`, from
 `designer/RIG_CHECKLIST.txt`, is the operator's copy):
@@ -161,12 +188,15 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
    the arm to +63°/−81° with the Angle Limits at ±25°) leaves a clear margin to both. If it does not,
    lower the limit for the session (Designer *Max |angle|*, or `-MaxDeg`).
 1. Nobody inside the arm's swing envelope; a person with the E-stop in hand; StretchExperiment's
-   Controller Output Range set conservatively during playback; arm at 0.
+   Controller Output Range set conservatively during playback (it also changes the plant: the
+   overshoot prediction does not model saturation); P/I/D at the identified values (the prediction is
+   only valid for that loop); arm at 0. No Manual Control or Stretch profile while a player waits or
+   plays. Stop with STOP / q / Esc, never by closing the window or Ctrl+Break.
 2. 5° smoke file (`smoke_5deg.csv`, DRYRUN first) → a default MAS design at rig amplitude scale 0.3 →
    0.5 → 0.70 (the default). Stop at the first surprise and bring `sent\` back.
 
-At ±40° the built library (66 scenarios) has 3 playable files (C-A0-low, C-A0-small-ok, D-lowlift):
-every other scenario releases from 55° or more (the library writes rig angle 1:1).
+At ±40° the built library (64 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
+D-lowlift): every other scenario releases from 55° or more (the library writes rig angle 1:1).
 
 **Once, before the first session:** play any player file with the log running, then
 

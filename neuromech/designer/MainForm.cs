@@ -89,8 +89,10 @@ namespace Pendulastic
                 // test hook: start a dry-run play by itself (used to check the window and its timing headless)
                 string[] a = Environment.GetCommandLineArgs();
                 if (Array.IndexOf(a, "--dry-run-play") >= 0) { cDry.Checked = true; Play(); }
-                int u = Array.IndexOf(a, "--trial-play");          // test hook: a logged play to this URL, no confirm box
-                if (u >= 0 && u + 1 < a.Length) { tUrl.Text = a[u + 1]; tLabel.Text = "hook test"; skipConfirm = true; Play(); }
+                // test hook: a logged play with no confirm box. Forced to a DRY RUN: a play without the confirm box
+                // (limit, watchdog, E-stop) must never reach the rig
+                int u = Array.IndexOf(a, "--trial-play");
+                if (u >= 0 && u + 1 < a.Length) { tUrl.Text = a[u + 1]; tLabel.Text = "hook test"; cDry.Checked = true; skipConfirm = true; Play(); }
             };
         }
 
@@ -494,11 +496,14 @@ namespace Pendulastic
                 if (playingRow >= 0)
                 {
                     var c = grid.Rows[playingRow].Cells["notes"];
-                    if (player.Status.StartsWith("STOPPED") || player.Status.StartsWith("stopped") || player.Status.StartsWith("REFUSED"))
+                    if (player.Status.StartsWith("STOPPED") || player.Status.StartsWith("stopped") || player.Status.StartsWith("REFUSED")
+                        || player.Status.StartsWith("RIG HOLDING") || player.Status.StartsWith("cancelled"))
                         c.Value = (Convert.ToString(c.Value) + " " + player.Status).Trim();
                     SaveTrials();
                     playingRow = -1;
                 }
+                if (player.Holding)
+                    MessageBox.Show(this, player.Status, "RIG HOLDING LAST SETPOINT -- USE THE E-STOP", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 lTrial.BackColor = Color.FromArgb(235, 235, 235);
                 lTrial.Text = "  Last: " + lTrial.Text.Trim() + "    Next: trial " + NextTrialNumber();
             }

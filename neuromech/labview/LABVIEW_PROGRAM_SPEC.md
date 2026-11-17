@@ -63,25 +63,33 @@ Guards, in the order they act:
    - hard limit **±40°**, compiled in; the operator's `Max |angle|` / `-MaxDeg` can only lower it;
    - **refuse to start** (whole file, never clipped; the message names the time and value) on a header,
      non-number, NaN/Inf, bad start (t ≠ 0 or angle ≠ 0), non-increasing time, any |angle| over the
-     limit, any change over **6° per 10 ms write (600 °/s)** on the 10 ms stream actually sent, or a
-     **predicted delivered peak** over the limit: the 10 ms staircase + 2 s hold through the identified
-     closed loop of §4 (6.35 Hz, ζ 0.23) and five detuned copies (ωn ×0.9/×1.1, ζ 0.18), largest |angle|;
+     limit, a row without exactly two columns, any change over **6° within 10 ms (600 °/s)** between
+     any two whole milliseconds of the Player's clock (a late tick writes on any millisecond, so the
+     10 ms grid alone is not enough), or a **predicted delivered peak** over the limit: the 10 ms
+     staircase + 2 s hold, on all ten 1 ms phases, through the identified closed loop of §4 (6.35 Hz,
+     ζ 0.23) and five detuned copies (ωn ×0.9/×1.1, ζ 0.18), largest |angle|;
    - **clamp every write** (backstop): no NaN/Inf, ±limit, ≤ 6° per write; if it ever engages during
      play the run stops and ramps to 0 at 10 °/s and the event is logged (`guard` rows in `sent/`);
    - **no blind start**: if the current setpoint cannot be read (or is NaN / beyond the limit) the
-     Player refuses to start instead of stepping to 0;
+     Player refuses to start instead of stepping to 0; PLAY reads it again after Enter and refuses if it
+     moved more than 0.5°;
+   - every ramp to 0 (stop, end, guard/watchdog stop) runs until the value sent is 0 and acknowledged
+     (time-bounded); Ctrl+C in PLAY is a stop; any error after the first write first tries a guarded
+     ramp to 0 and otherwise reports RIG HOLDING LAST SETPOINT; the write period is fixed at 10 ms and
+     the return speed is limited to 1–60 °/s;
    - every refusal leaves `sent/<file>_<time>_refused.csv`; `session check-log --sent` fails a run with
      any guard event;
    - the Designer offers a live design over the limit a smaller rig amplitude scale (predicted peak
      ≤ limit − 1°, rescored), played only on an explicit Yes; opened files are refused, not scaled;
-   - one writer at a time (named mutex `PendulasticSetpointWriter`), held from ramp-in to return-to-0;
+   - one writer at a time (named mutex `Global\PendulasticSetpointWriter`, no `Local\` fallback), held
+     from ramp-in to return-to-0; it does not cover LabVIEW's own writers (Manual Control, Stretch);
    - optional encoder watchdog on an operator-picked actual-position variable (|actual| > limit + 3°,
      or following error > 5° + 1.5 × the plant's predicted error over a 150 ms window → stop and ramp
      the setpoint to 0). Whether StretchExperiment publishes the actual position as a network variable
      is **not confirmed** in this repo; without one every run reports "encoder watchdog OFF". It runs
      in the host process, so it is not an independent cutoff.
-   Not covered: 20 failed writes, or a Player killed mid-run, leave the rig **holding the last
-   setpoint** — guard 4 (the E-stop) is the protection there. A LabVIEW-built Player VI must implement
+   Not covered: writes that cannot get through, or a Player killed mid-run, leave the rig **holding the
+   last setpoint** — guard 4 (the E-stop) is the protection there. A LabVIEW-built Player VI must implement
    the same rules (port `RigGuard.cs`), or not be used.
 3. **Dry Run** switch on the Player: the whole file plays with nothing written. Use it for every new file.
 4. **The amplifier fault** (SET lamp flashing; E-Stop release → SET) — the only protection that has
