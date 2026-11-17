@@ -163,6 +163,10 @@ def pick_canonical(group: pd.DataFrame) -> pd.DataFrame:
 
 # Group membership by participant id is kept out of the public repo. It lives
 # in the untracked legacy_analysis_groups.json (gitignored) in the repo root.
+# Those ids use the earlier (July 2026) participant numbering, not today's
+# Recordings/ folder ids: a number there need not be the same person as the
+# same number in participant_paths.py. Current groups come from each
+# participant's metadata.json.
 def _local_group_ids(key, roots):
     import json
     for root in roots:
