@@ -747,10 +747,11 @@ def _judge(sid, fit, plant=None, respond=None, fault=None, seed=11, phase_ms=0.0
     out = dict(kind=rel["kind"], time_err_ms=np.nan, pred_ms=np.nan, ratio=np.nan, dlag_ms=np.nan, gain=np.nan, why=None)
     if rel["kind"] not in ("", "lag"): return out
     rms, terr = SS._tracking(t, sp, sw, t_all, pos_all, rel["lag_s"])
-    g, g_used = SS._hold_gain(t, sp, t_all, pos_all, t_rel)
-    g_late = SS._late_gain(t, t_rel, t_all, pos_all, spp[k0:], fit); g_app = SS._gain_to_apply(g_used, g_late)
+    off = SS._idle_offset(pos, spp, k0); pos0 = pos_all - (off if np.isfinite(off) else 0.0)
+    g, g_used = SS._hold_gain(t, sp, t_all, pos0, t_rel)
+    g_late = SS._late_gain(t, t_rel, t_all, pos0, spp[k0:], fit); g_app = SS._gain_to_apply(g_used, g_late)
     pred = SS._plant_prediction(t, sp, sw, t_rel, fit, t_all, spp[k0:], gain=g_app if hold_gain else 1.0)
-    out.update(time_err_ms=terr, pred_ms=pred["time_err_ms"], ratio=terr / pred["time_err_ms"], gain=g, late=g_late, applied=g_app,
+    out.update(time_err_ms=terr, pred_ms=pred["time_err_ms"], ratio=terr / pred["time_err_ms"], gain=g, late=g_late, applied=g_app, offset=off,
                dlag_ms=(rel["lag_s"] - pred["lag_s"]) * 1e3, why=SS._plant_verdict(terr, rms, rel["lag_s"], pred, margin=margin))
     hv = SS._hold_verdict(g, g_late) if hold_gain else ""
     out["hold_why"] = hv
@@ -1029,6 +1030,7 @@ def chirped(tmp_path_factory):
     and, for the re-review of 2026-11-16:
       relaxed    good, and B-claspknife holds 1.04 of the setpoint, relaxes to 1 over 0.6 s after the release,
                  and leaves the hold 5 ms late
+      offset05   good, read by an encoder whose zero is 0.5 deg off the setpoint's, chirp and runs alike
     -> (sessions root, {rig: encoder folder})."""
     root = tmp_path_factory.mktemp("chirped"); sess = str(root / "sessions")
     old = SS.SESS
@@ -1051,7 +1053,8 @@ def chirped(tmp_path_factory):
                 stiction5=(good, _stiction(5)),
                 badchirp=(good, None, lambda u: _slew_limited(u, 150.0)),
                 sat250=(lambda u: _slew_limited(u, 250.0), None),
-                relaxed=(good, lambda y, k, s: _stiction(5)(_relaxing_hold(1.04, 600)(y, k, s), k, s), None, 0.0, "B-claspknife"))
+                relaxed=(good, lambda y, k, s: _stiction(5)(_relaxing_hold(1.04, 600)(y, k, s), k, s), None, 0.0, "B-claspknife"),
+                offset05=(lambda u: _rig(u, DR.PLANT) + 0.5, None))
     dirs = {}
     for which, spec in rigs.items():
         respond, fault, chirp_respond, phase_ms, only = tuple(spec) + (None, None, None, 0.0, None)[len(spec):]
@@ -1278,6 +1281,11 @@ def test_the_hold_gain_in_numbers():
     V = SS._hold_verdict
     assert V(1.0, 1.024) == "" and V(1.024, 1.0) == "" and V(np.nan, 1.1) == "" and V(1.1, np.nan) == ""
     assert V(1.04, 1.0).startswith("the arm held 1.040 of the setpoint before the release and settled at 1.000") and V(1.0, 0.974) != ""
+    # the encoder's zero, from the idle log before the command: the median of position - setpoint over its last 0.5 s
+    assert SS.IDLE_OFFSET_S == 0.5
+    idle = np.r_[np.full(1000, 3.0), np.full(500, 0.3)]; sp0 = np.zeros(1500)
+    assert SS._idle_offset(idle, sp0, 1500) == pytest.approx(0.3) and SS._idle_offset(idle, sp0, 1200) == pytest.approx(3.0)
+    assert np.isnan(SS._idle_offset(idle, sp0, 200)) and np.isnan(SS._idle_offset(idle, np.r_[np.zeros(1400), np.ones(100)], 1500))
 
 
 @pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 12)])
@@ -1317,6 +1325,28 @@ def test_a_gain_7_percent_off_kept_through_the_swing_is_flagged_not_absorbed(gai
     assert all(abs(r["gain"] - gain) < 0.002 and abs(r["late"] - gain) < 0.002 and r["applied"] == 1.0 for r in res), [(r["gain"], r["late"]) for r in res]
     assert all(r["hold_why"] == "" for r in res)
     assert all(r["why"].startswith("tracking error ") for r in res), [(round(r["ratio"], 2), r["why"][:40]) for r in res]
+
+
+def _dipole_rig(fp_hz, x, plant=DR.PLANT):
+    """The reviewer's slow mode: the plant times (s/zr + 1) / (s/p + 1), p = 2 pi fp_hz, zr = p / (1 + x). Gain 1 at
+    rest, 1 + x through the swing, settling back at fp_hz: a rig that holds where it settles but not on the way."""
+    from scipy.signal import cont2discrete, lfilter
+    wn = 2 * np.pi * plant["wn_hz"]; p = 2 * np.pi * fp_hz; zr = p / (1 + x)
+    num = np.polymul([wn * wn], np.array([1.0, zr]) * p / zr); den = np.polymul([1.0, 2 * plant["zeta"] * wn, wn * wn], [1.0, p])
+    bd, ad, _ = cont2discrete((num, den), 1e-3, method="foh")
+    return lambda u: lfilter(bd.ravel(), ad, np.asarray(u, float) - u[0]) + u[0]
+
+
+def test_a_slow_mode_inside_the_hold_tolerance_is_not_a_hold_flag():
+    """Re-review item 4 (2026-11-16): why the hold/late tolerance is 2.5 % and not 1 %. A rig with a 0.3 Hz dipole
+    worth +2 % (a slow mode the chirp cannot see; good runs) reads 0.014 to 0.020 between its hold gain and its
+    late gain on 7 of these 14 runs. None is flagged for its hold; at 1 % those 7 would be. (Some are flagged for
+    tracking: that rig is in the README's mismatch table.)"""
+    rig = _dipole_rig(0.3, 0.02); fit = _chirp_fit(respond=rig)[0]
+    res = [_judge(sid, fit, respond=rig) for sid in PLANT_SIDS]
+    d = [abs(r["gain"] - r["late"]) for r in res if r["kind"] in ("", "lag") and np.isfinite(r["gain"]) and np.isfinite(r["late"])]
+    assert all(r.get("hold_why", "") == "" for r in res) and max(d) < SS.HOLD_LATE_MAX_DIFF, d
+    assert sum(x > 0.01 for x in d) >= 5, d
 
 
 def _relaxing_hold(g, back_ms):
@@ -1503,6 +1533,15 @@ def test_one_run_with_a_relaxing_hold_and_stiction_is_flagged_through_real_files
     assert (rep.drop("B-claspknife").status == "scored").all() and (rep.model_mismatch_finding.fillna("") == "").all(), rep.status.tolist()
     assert (rep.tracking_session_ratio_runs == 3).all()                  # a hold the plant does not describe says nothing about the model
     assert "TRACKING FLAGGED on 1 run(s)" in out and _score_chirped(chirped, "relaxed", "cli") == 1
+
+
+def test_an_encoder_zero_offset_is_not_read_as_a_hold_through_real_files(chirped):
+    """Re-review 2026-11-16, item 3: a constant encoder offset taken through zero reads as a gain error over the late
+    window's motion (0.5 deg: 27 of 66 good runs hold-flagged). Measured in the idle log and taken out, it is not."""
+    rep = _score_chirped(chirped, "offset05")
+    assert ((rep.enc_idle_offset_deg - 0.5).abs() < 0.01).all(), rep.enc_idle_offset_deg.tolist()
+    assert ((rep.enc_hold_gain - 1.0).abs() < 0.002).all() and ((rep.enc_late_gain - 1.0).abs() < 0.002).all(), (rep.enc_hold_gain.tolist(), rep.enc_late_gain.tolist())
+    assert not rep.status.str.contains("the arm held").any(), rep.status.tolist()
 
 
 def test_a_rig_that_settles_at_98_percent_scores_clean_through_real_files(chirped):

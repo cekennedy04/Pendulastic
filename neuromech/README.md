@@ -108,6 +108,7 @@ flagged runs in its denominator ("7 of 9 runs (78%); scored 7, release flagged 1
 | `release flagged: session lag finding` | see below | see below |
 | `tracking flagged: tracking error ... times the ... the plant identified from the chirp predicts` | more error than the fitted model predicts for this command: lag-aligned RMSE ÷ the command's rms speed (`tracking_time_err_ms`) is over √((1.15 × `tracking_pred_ms`)² + 4²) ms. That is a statement about the run against the model, not yet evidence about the arm (see the mismatch table below). The scores stay in the report but the run is not a delivery of its scenario. If the sentence says "the margin being the session's median ratio", the session has a MODEL MISMATCH FINDING and this run stands out from it | look at the run; run ILC on it (section 5) or rerun |
 | `tracking flagged: the release is ... ms from where the plant identified from the chirp puts it` | the arm left the hold more than 4 ms earlier or later than this rig's plant does with the setpoint the log recorded (`enc_lag_minus_pred_ms`). Late: stiction or a slow start. Early: a lurch, or something pushing the arm. This check sees a fault that is in every run | find the cause at the rig; a rerun will not change it if every run has it |
+| `tracking flagged: the arm held X of the setpoint before the release and settled at Y ...` | the hold gain (`enc_hold_gain`) and the gain after the swing (`enc_late_gain`) are more than 2.5 % apart: the arm held somewhere it does not settle, so the plant does not describe this run's hold, and its tracking error and release cannot be trusted either way. Both gains are taken about the encoder's zero measured in the idle log before the command (`enc_idle_offset_deg`) | compare `enc_hold_gain` and `enc_late_gain` across the session's runs. Every run shows it: it is the rig (a slow mode the chirp does not see, or a zero offset the idle log did not catch), and rerunning will not help. One run: it was pushed or pulled at the hold, so rerun it. Either way check the encoder's zero against the setpoint's (`enc_idle_offset_deg`, and idle position vs setpoint by hand) |
 | `tracking flagged: tracking error ... is over the limit of 25 ms` | the session has no usable chirp (or `--tracking-limit-ms` was given), so the run's tracking error was held to one fixed number | plan with `--chirp`; see below |
 | `scoring error` | the scorer raised on the trace | read the message |
 
@@ -192,7 +193,7 @@ sessions carry the one finding.
 
 | rig | good runs flagged before | flagged now | sessions with the finding (median ratio) |
 |---|---|---|---|
-| arm settles at 0.995 / 0.99 / 0.98 / 0.97 of the setpoint | 10 / 22 / 38 / 61 % | 0 | none (absorbed by `enc_hold_gain`) |
+| arm settles at 0.995 / 0.99 / 0.98 / 0.97 of the setpoint | 10 / 22 / 38 / 61 % | 0 / 0 / 5 / 6 % (0, 0, 6 and 8 of 132 runs: the runs that swing too little after 2.5 s for a late gain, where the hold gain is not applied) | none (absorbed by `enc_hold_gain` where the late gain confirms it) |
 | slow dipole at 0.3 Hz, mid-band gain +1 / +2 / +3 % | 6 / 65 / 96 % | 0.2 / 5 / 9 % | 70 / 100 / 100 % (1.09 / 1.17 / 1.26) |
 | slow dipole at 0.1 Hz, +2 % ; −5 % | 69 % ; 84 % | 15 % ; **53 %** | 99 % ; 41 % (the runs do not agree: not covered) |
 | loop 10 / 20 % softer at the 55° hold than at the chirp's 0° | 5 / 88 % | 0.1 % / **42 %** (release check) | 95 / 100 % (1.10 / 1.20) |
@@ -205,10 +206,13 @@ sessions carry the one finding.
 | extra pole at 10 Hz ; 0.2 × mode at 25 Hz (quiet direction) | 0 | 0 | 100 % (0.83 ; 0.78) |
 | several mild departures at once (the review's "moderate" composite) | 95 % | 1 % + **11 %** (release check) | 100 % (1.27) |
 
-The table predates the hold check (2.5 % between `enc_hold_gain` and `enc_late_gain`). Per run, on 66 scenarios,
-that check adds 27 flagged good runs of 66 on a 0.3 Hz dipole of −3 % (none before), 9 on a 0.1 Hz dipole of
-−5 % (53 to 62), 3 on a 1 Hz dipole of −5 %, at most 2 on each other rig tried, and none on a clean rig or a
-static gain.
+Apart from its first row, the table predates the late-gain gate and the hold check (2.5 % between
+`enc_hold_gain` and `enc_late_gain`). Per run, on 66 scenarios, the hold check adds 27 flagged good runs of 66 on
+a 0.3 Hz dipole of −3 % (none before), 9 on a 0.1 Hz dipole of −5 % (53 to 62), 3 on a 1 Hz dipole of −5 %, at
+most 2 on each other rig tried, and none on a clean rig or a static gain. Both gains are taken about the
+encoder's zero as the idle log before the command shows it (`enc_idle_offset_deg`, the median of position minus
+setpoint over the last 0.5 s before the command). Without that, a constant encoder offset of 0.2° hold-flagged 10
+good runs of 66 and 0.5° hold-flagged 27. With it, none at 0.2, 0.5 or 1.0°.
 
 Not covered, in bold above: nonlinearity strong enough to move the release itself (the release check then
 blames good runs: 20 % softening, 0.2° of friction, a 0.1° deadband, a loop gain that rises 20 % with error:
@@ -217,7 +221,11 @@ on which the runs do not agree with each other. **Where predictions are under 7 
 all**: a fault every run shares that the release check misses passes at the per-run rate (on the 12 Hz, ζ 0.7
 rig 25 to 100 % of 20-run sessions exit 0, re-review R.3), and encoder noise or resolution can still flag good
 runs (0.1° rms noise: 10 % of runs; a 0.36° encoder: 24 %); measure `enc_hold_rms_deg` on the first real log
-and, if it is 0.1° or more or the encoder steps are about 0.36°, derive the floor from it.
+and, if it is 0.1° or more or the encoder steps are about 0.36°, derive the floor from it. **Measure the zero
+too**: on the first real log compare the idle position with the setpoint (`enc_idle_offset_deg`, and by hand). A
+constant encoder offset still moves the release and the tracking error, even though the gains no longer see it:
+of 66 good runs, 8 are flagged at 0.2°, 43 at 0.5° (8 and 42 before the hold check) and 57 at
+1.0°. A log that starts with the command has no idle segment, and there the gains are taken through zero.
 
 What this does not catch, measured in simulation (report, sections B and C): a start at 90 % speed, a 1°
 lurch and 2 ms of stiction pass. A small fault in every run that the release check cannot see (5 ms of
@@ -354,7 +362,7 @@ a change the band lets through. The reference is OptiTrack A0; re-pin it on B11'
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 270 tests
+python -m pytest neuromech/tests                                    # 272 tests
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

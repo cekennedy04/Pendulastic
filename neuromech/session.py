@@ -62,7 +62,8 @@ phone session manifest (one phone recording per run, in run order). For every ru
               settled (enc_late_gain, within HOLD_GAIN_LATE_TOL); the gain used is enc_gain_applied (1.0 when
               it is not applied). A run whose two gains are more than HOLD_LATE_MAX_DIFF apart held off
               where it settles (pushed past the setpoint and relaxing after the release, say): the plant does
-              not describe that hold, and the run is "tracking flagged" for it. The release is held to the same plant: the model
+              not describe that hold, and the run is "tracking flagged" for it. Both gains are taken about
+              the encoder's zero from the idle log before the command (enc_idle_offset_deg). The release is held to the same plant: the model
               is driven with the setpoint the log recorded for the run, and a release more than
               RELEASE_PRED_TOL_S from the model's (enc_lag_minus_pred_ms) is "tracking flagged" too. That is
               the check that sees a fault present in EVERY run (stiction, a slow start, a forward lurch),
@@ -550,6 +551,7 @@ HOLD_GAIN_LATE_MIN_DEG = 1.0
 # and 0.03 would miss a 3 % hold. A 0.1 Hz dipole of -5 % goes from 53 to 62 of 66; the other mismatched rigs
 # tried, at most 2 more in 66; clean and static-gain rigs, none.
 HOLD_LATE_MAX_DIFF = 0.025
+IDLE_OFFSET_S = 0.5                        # the idle log before the command, for the encoder's zero (_idle_offset)
 # The session against the model (review 2026-11-14, section 3). measured / predicted is 1.0 when the identified
 # plant describes the runs. When the runs agree with each other on a ratio that is not 1, that is a statement
 # about the model (or about a fault every run shares), not about any one run: one MODEL MISMATCH FINDING, and
@@ -619,6 +621,17 @@ def _late_gain(t, t_rel, t_log, pos_log, sp_log, fit):
     y = _model_response(np.asarray(sp_log, float), fit)[m]; x = np.asarray(pos_log, float)[m]
     if not float(np.sqrt(np.mean(y ** 2))) >= HOLD_GAIN_LATE_MIN_DEG: return np.nan
     return float(np.sum(x * y) / np.sum(y * y))
+
+
+def _idle_offset(pos_log, sp_log, k0, fs=FS):
+    """Encoder zero against the setpoint's zero: the median of position - logged setpoint over the last
+    IDLE_OFFSET_S of the log before the command starts (k0), where the logged setpoint does not move. NaN when
+    there is less than half of that. Both gains are taken about it: through zero, a constant offset c reads as a
+    gain error of c over the late window's motion (0.2 deg was 10 hold flags on 132 good runs, 0.5 deg 27)."""
+    n = int(IDLE_OFFSET_S * fs); lo = max(0, int(k0) - n)
+    p = np.asarray(pos_log, float)[lo:int(k0)]; s = np.asarray(sp_log, float)[lo:int(k0)]
+    if len(p) < n // 2 or not np.ptp(s) <= 1e-6: return np.nan
+    return float(np.median(p - s))
 
 
 def _gain_to_apply(g_used, g_late):
@@ -878,12 +891,14 @@ def score(name, encoder_dir, phone_manifest=None, allow_provenance_mismatch=Fals
     margin = TRACKING_PRED_MARGIN if tracking_margin is None else float(tracking_margin)
     if fit is not None:
         for w in work:
-            g, g_used = _hold_gain(w["t"], w["sp"], w["t_all"], w["pos_all"], w["t_rel"])
+            off = _idle_offset(w["e"]["position"], w["e"]["position_setpoint"], w["k0"])
+            pos0 = w["pos_all"] - (off if np.isfinite(off) else 0.0)               # the gains about the encoder's own zero
+            g, g_used = _hold_gain(w["t"], w["sp"], w["t_all"], pos0, w["t_rel"])
             sp_log = np.asarray(w["e"]["position_setpoint"], float)[w["k0"]:]
-            g_late = _late_gain(w["t"], w["t_rel"], w["t_all"], w["pos_all"], sp_log, fit)
+            g_late = _late_gain(w["t"], w["t_rel"], w["t_all"], pos0, sp_log, fit)
             g_app = _gain_to_apply(g_used, g_late); w["hold_why"] = _hold_verdict(g, g_late)
             w["pred"] = _plant_prediction(w["t"], w["sp"], w["sw"], w["t_rel"], fit, w["t_all"], sp_log, gain=g_app)
-            w["row"].update(enc_hold_gain=g, enc_late_gain=g_late, enc_gain_applied=g_app, tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
+            w["row"].update(enc_idle_offset_deg=off, enc_hold_gain=g, enc_late_gain=g_late, enc_gain_applied=g_app, tracking_pred_ms=w["pred"]["time_err_ms"], enc_release_lag_pred_ms=w["pred"]["lag_s"] * 1e3,
                             enc_lag_minus_pred_ms=(w["rel"]["lag_s"] - w["pred"]["lag_s"]) * 1e3)
     released = (f" The release is still checked against the plant identified from {chirp['rid']} (within "
                 f"{RELEASE_PRED_TOL_S * 1e3:g} ms of predicted): the override replaces the tracking limit, not the release check."

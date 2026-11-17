@@ -1627,3 +1627,66 @@ Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM
 | `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases |
 | `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band on encoder and phone, scored 9, release flagged 0, tracking flagged 0; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted |
 | line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |
+
+### C.11 Second re-review of 2baf6dc (2026-11-16)
+
+The coordinator's review of `2baf6dc` confirmed fixes 1 to 3 and asked for four more.
+
+**The encoder's zero (unstated cost).** The reviewer measured on 66 good scenarios on the identified plant that
+a constant encoder offset, with the late gain fitted through zero, reads as a gain error over the late window's
+motion. At 0.2 deg that was 10 hold-flagged runs (16 flagged in all, against 8 at `1d0d812`); at 0.5 deg it was 27
+(46, against 42). Fix: `_idle_offset` measures the encoder against the setpoint in the idle log before the
+command: the median of position minus logged setpoint over the last 0.5 s before the command starts, where the
+setpoint does not move. Both gains are then taken about that zero, and the offset is reported as
+`enc_idle_offset_deg`. A log with no idle segment (less than 0.25 s, or a moving setpoint) gets NaN, and its
+gains are taken through zero as before. The reviewer's probe, re-run on the new tree:
+
+| encoder offset | hold-flagged | flagged in all | at `1d0d812` (reviewer) | at `2baf6dc` (reviewer) |
+|---|---|---|---|---|
+| 0 | 0 | 0 | | |
+| 0.2 deg | 0 | 8 | 8 | 10 / 16 |
+| 0.5 deg | 0 | 43 | 42 | 27 / 46 |
+| 1.0 deg | 0 | 57 | | |
+
+The flags that remain come from the offset moving the release and the tracking error, which is unchanged from
+`1d0d812`. README now tells the bench to measure the idle position against the setpoint on the first real log.
+
+**The earlier cost numbers, re-measured with the offset removal in.** All are unchanged:
+
+- C.9's table, every row: clean 0; static 0.98 / 0.97 / 1.02: 6 / 8 / 0; 0.93 / 1.07: 128 / 128; the
+  relaxing holds with stiction 114 to 116.
+- Static 0.995 and 0.99: 0 of 132.
+- The slow-mode rigs at 2.5 %: 0.3 Hz -3 %: 27; 0.1 Hz -5 %: 62; 1 Hz -5 %: 3; the others within 2 of before.
+
+**README.**
+- A status-table row for "the arm held X of the setpoint ... settled at Y", with the bench action: compare the
+  two gains across runs. Every run means the rig (a slow mode or a zero offset), and a rerun will not help; one run
+  means rerun it. Check the zero either way.
+- The mismatch table's static-gain row now reads 0 / 0 / 5 / 6 % (it said 0).
+- The offset advice sits next to "measure `enc_hold_rms_deg`".
+
+**`HOLD_LATE_MAX_DIFF` = 0.01, behaviourally.**
+`test_a_slow_mode_inside_the_hold_tolerance_is_not_a_hold_flag`: a 0.3 Hz dipole of +2 % reads 0.014 to 0.020
+between hold and late gain on 7 of 14 good runs. None is hold-flagged at 2.5 %; at 1 % those 7 would be.
+`test_an_encoder_zero_offset_is_not_read_as_a_hold_through_real_files` scores a session read 0.5 deg off zero,
+chirp and runs alike: `enc_idle_offset_deg` is 0.50, both gains are 1.000, and no run is hold-flagged.
+
+Mutants, set up as in C.9:
+
+| mutant | result |
+|---|---|
+| `HOLD_LATE_MAX_DIFF` 0.025 -> 0.01 | killed (`test_a_slow_mode_inside_the_hold_tolerance_is_not_a_hold_flag`) |
+| idle offset not removed | killed (`test_an_encoder_zero_offset_is_not_read_as_a_hold_through_real_files`) |
+| idle window 0.5 s -> 0.05 s | **survived** (pinned literally only; a 50 ms idle window gives the same median on the simulated logs) |
+
+### C.12 Gates, on the tree after the second re-review
+
+Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM_THREADS=1`, after
+`python -m neuromech.build` (67 scenarios).
+
+| gate | result |
+|---|---|
+| `python -m pytest neuromech/tests -q` | **272 passed**, 0 failed, 0 skipped (2431 s under load from the mutation runs; 270 at `2baf6dc`) |
+| `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases |
+| `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band, scored 9, release flagged 0, tracking flagged 0, exit status 0; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted (-0.0 to +0.3) |
+| line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |

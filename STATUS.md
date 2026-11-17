@@ -40,9 +40,8 @@ scores move. "Not verified" is stated, never implied.
    20 N·m; when to build the vertical rig; two blind clinicians per profile; clasp-knife
    adaptation handling.
 9. Nightly hygiene agent: retire it or re-register it.
-10. Merge #95 (orientation) and #96 (release alignment)? Both independently reviewed
-    and re-reviewed; #96 is simulation only. Merge #66, then close the daily-report
-    drafts it replaces?
+10. Merge #95 (orientation)? Independently reviewed and re-reviewed (#96, release
+    alignment, is merged). Merge #66, then close the daily-report drafts it replaces?
 
 ## Workstreams
 
@@ -55,10 +54,11 @@ scores move. "Not verified" is stated, never implied.
   check-log); `neuromech/dryrun.py`; Pendulum Player in `neuromech/labview/player/`;
   plan in `docs/plans/2026-10-26-001-plan-neuromech-emulator-unified.md`.
 - **Merged 2026-11-11:** #87 (provenance, B14), #86 (plan review). #82 closed as
-  contained in #90.
-- **Open PRs:** #90 (fall-speed check, B13). Its reference file now holds only person,
-  A0 and peak. Earlier commits on that branch and on `neuromech/fall-speed-check` still
-  contain per-leg clinical fields and are public; see decision 6.
+  contained in #90. **Merged since:** #96 (release alignment, `bcb6a71`) and #90
+  (fall-speed check, B13, `a955ecb`). Earlier commits on #90's branch and on
+  `neuromech/fall-speed-check` still contain per-leg clinical fields and are public;
+  see decision 6.
+- **Open PRs:** the chirp-derived tracking limit (draft, `neuromech/chirp-tracking-limit-v2`).
 - **Current numbers (main, 2026-11-10):** `python -m neuromech.build` writes 67
   scenarios. The A-P2 and A-P3 presets are unreachable on the current scorer. The dry
   run delivers 7 of 9 runs in their intended band; the two misses are one scenario
@@ -68,14 +68,18 @@ scores move. "Not verified" is stated, never implied.
   `neuromech/band-edge-misses`): `session.score` gives the scorer the commanded release
   while the delivered motion starts about 18 ms later; the scorer then counts a
   start-of-swing shoulder as half an oscillation. 40 of 67 scenarios are affected.
-- **Release alignment (PR #96, ready for review):** `neuromech/session-release-alignment` scores rig
-  sessions from the delivered release and flags runs where it cannot be found. Reviewed
-  twice (`docs/release-alignment-review`, `docs/release-alignment-rereview`); simulated
-  dry run 9 of 9 in band. Simulation only, and not yet fit to judge a real rig session:
-  the fixed 25 ms tracking limit suits only the simulated plant and must be derived from
-  each session's chirp first (measured to work in the re-review, not implemented). A
-  forward lurch in every run and a 50 % sluggish start are not flagged. The
-  chirp-derived limit is in progress on `neuromech/chirp-derived-tracking-limit`.
+- **Release alignment (#96, merged):** rig sessions are scored from the delivered
+  release, and runs where it cannot be found are flagged. Its fixed 25 ms tracking limit
+  suits only the simulated plant.
+- **Chirp-derived tracking limit (draft PR, `neuromech/chirp-tracking-limit-v2`):** each
+  run is held to what the plant identified from the session's chirp (R000) predicts,
+  with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
+  gain gated by the gain after the swing, and a flag for a hold the arm does not settle
+  at. Reviewed and re-reviewed (`docs/chirp-tracking-limit-review`); 272 tests, dry run
+  9 of 9. **Simulation only, not verified on a real rig.** Known costs (README and report
+  section C): slow rig modes the chirp cannot see flag good runs; a constant encoder
+  offset still moves release and tracking; no session ratio where predictions are under
+  7 ms; a margin must never be accepted from the session being judged.
 - **Another session's work, not part of this plan:** `docs/neuromech-elbow-plan`
   (worktree `Pendulastic-wt-elbow`).
 - **Rig path versus app path** (simulation only;
@@ -85,8 +89,9 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** review the chirp-derived tracking limit; land #96 and #90; then rig
-  sessions.
+- **Next actions:** land the chirp-derived tracking limit; then rig sessions. On the
+  first real log measure `enc_hold_rms_deg`, the idle position against the setpoint
+  (`enc_idle_offset_deg`) and `enc_hold_gain` / `enc_late_gain` on runs believed good.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
