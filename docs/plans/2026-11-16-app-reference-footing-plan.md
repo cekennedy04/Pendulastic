@@ -582,11 +582,56 @@ so the crate becomes 0.4.0, the formula id stays `pt5trough-ref-2026-11-16` (dis
 (`large_drift_correction`, `a0_exceeds_curve_scored_uncorrected`, `a0_exceeds_curve`) include
 no length flag; the Q7 span gate refuses before any drift fit, so the two do not overlap.
 
+## Results as implemented (2026-11-17)
+
+Crate 0.4.0, `SCORE_FORMULA_ID` `pt5trough-ref-2026-11-16`, `SCORING_FOOTING`
+`ref-100hz-ema0.5-flex`, on top of #105 and #106.
+
+**Step 4, Rust core on real trials.** A native driver (scratch, not in the repo) fed each of the
+179 corpus streams to `TrialSession` with `ReplayConfig::reference()`; Python ran
+`replay_trial` at `REFERENCE_REPLAY_CONFIG` and `ANALYSIS_TICK_S` on the same streams and scored
+with the new scorer. Largest trace difference 1.7e-13 deg (tick times included), no NaN-pattern
+difference, every parameter within 1.1e-12 (A0) and N and f identical, verdicts identical on
+179 of 179 in both conventions. Through the wasm (`replay-trial.mjs`, app-clock feed, 175 logs
+the app format can hold; 64 end at SETTLED) against the native core on the same feed: every
+parameter within 4.3e-14, traces within 5.7e-14 deg, no mismatches.
+
+**Step 5, corpus before and after** (179 trials, Python = Rust as above; zone edges stale for
+every formula, so verdict counts measure movement, not clinical change):
+
+| | on screen | stored |
+|---|---|---|
+| app vs reference today (both main's scorer): verdicts that differ | 56 | 60 |
+| app vs reference after: verdicts that differ | 0 | 0 |
+| **app** before (0.3.0 footing, main) to after: verdicts that change | 59 | 62 |
+| app: PT change, median (median abs) | -0.074 (0.075) | -0.075 (0.079) |
+| app: largest transitions | borderline to healthy 37, impaired to borderline 12 | borderline to healthy 40, impaired to borderline 10 |
+| app: refused to scored / scored to refused | 5 / 2 | 7 / 4 |
+| **reference** before (main) to after: verdicts that change | 17 | 17 |
+| reference: PT change, median (median abs) | -0.013 (0.034) | -0.010 (0.035) |
+| reference: N changes | 59, all -0.5 | 66, all -0.5 |
+
+The stored gap today is 60, not section 2's 63: #105's drift bound moved it.
+
+**Step 6, neuromech end state** (67 scenarios rebuilt; before = the manifest at
+`pt6rescaled-ref-2026-10-27`, which #105 did not move by a band): 11 intended bands change, all
+from the five-term formula and the first-trough count; no preset is refitted (owner: refit after
+this lands). 14 scenarios intend a PT7 within 0.03 of a band edge; C-f-high (0.2818, 0.0018 above
+the 1/1+ edge) and S-lam6 (0.2788, 0.0012 below it) are the closest. `fall_speed_reference.json`
+re-pinned on the end-state scorer.
+
+**Step 7, webapp timing.** The five finish calls on a 32.5 s corpus log under node: median
+78 ms at the reference footing against 41 ms for a pre-0.2.0 wasm at the 50 ms footing (no
+0.3.0 build was kept), so roughly 150 ms for a 60 s trial. Not measured on a phone.
+
+**Not done in this PR (follow-ups):** the release-shift sweep re-run and test-retest ICC before
+and after (step 5); a tracked corpus script replacing the scratch drivers; the horizontal-bench
+recordings `f429356` used (step 4).
+
 ## Not verified
 
-- Every number in sections 2, 5 and 6 is from a Python spike. The Rust core was not
-  built or run for this plan.
-- Option B was emulated by patching the Python source in memory; no Rust or C# was written.
+- Sections 2, 5 and 6 are the pre-implementation Python spike; the implemented numbers are in
+  "Results as implemented", where the Rust core was run on the 179 trials.
 - Python at the app's settings is taken as the app on the strength of the seed-fix Rust
   confirmation (179 of 179 at `76dca49`); it was not re-confirmed on `8aa1055`.
 - The optical re-derivations used a separate driver reproducing `derive_healthy_ref`'s selection;
