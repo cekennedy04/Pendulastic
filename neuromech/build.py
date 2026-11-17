@@ -17,6 +17,12 @@ Outputs (neuromech/out/):
 Edge check (owner decision O5): after writing, the build lists every scenario within EDGE_MARGIN_PT7 of a
 PT7 band edge and exits 1 if one is not in scenarios.NEAR_EDGE_ALLOWED (--allow-near-edge to build anyway).
 
+Duplicate check (owner decision 2026-11-17): exits 1 if two scenarios render the same swing (identical Params,
+release and transforms: scenarios.definition_key) unless the set is in scenarios.DUPLICATE_ALLOWED.
+
+Intent report (owner decision 2026-11-17, REPORT ONLY): every scenario with a severity intent
+(profiles.SEVERITY_INTENT) whose PT7 band is not the intended one is printed; it never changes the exit status.
+
 Rig angle convention: 0 = where a PASSIVE leg of this geometry hangs; + = toward extension.
 So a leg released from full extension starts at +(rest depth) and a toned leg settles at a
 non-zero rig angle -- the clinically meaningful non-vertical rest is kept, not re-zeroed.
@@ -107,6 +113,87 @@ def report_edge_check(res, margin: float = EDGE_MARGIN_PT7) -> bool:
         print("  the edge is its purpose, add it to scenarios.NEAR_EDGE_ALLOWED with the reason.")
         print("!" * 100)
     return ok
+
+
+def duplicate_check(scenarios, allowed=None):
+    """Scenarios that render the same swing under different names (scenarios.definition_key), judged against
+    scenarios.DUPLICATE_ALLOWED. Returns a dict:
+      flagged    [sorted sids] duplicate sets not on the allowlist -- the build fails on these
+      allowed    [sorted sids] duplicate sets on the allowlist
+      not_dup    allowlisted sets that are no longer one swing (all built, but not identical; the entry can go)
+      unknown    allowlisted sets naming a sid the library does not build (stale -- the build fails on these)
+    """
+    allowed = S.DUPLICATE_ALLOWED if allowed is None else allowed
+    groups: dict = {}
+    for sc in scenarios:
+        groups.setdefault(S.definition_key(sc), []).append(sc.sid)
+    dups = [sorted(g) for g in groups.values() if len(g) > 1]
+    built = {sc.sid for sc in scenarios}
+    out = dict(flagged=[], allowed=[], not_dup=[], unknown=[])
+    for g in dups:
+        out["allowed" if frozenset(g) in allowed else "flagged"].append(g)
+    for s in allowed:
+        if not s <= built:
+            out["unknown"].append(sorted(s))
+        elif sorted(s) not in dups:
+            out["not_dup"].append(sorted(s))
+    return out
+
+
+def report_duplicate_check(res) -> bool:
+    """Print the duplicate check; True when it passes (no unlisted duplicate, no stale allowlist entry)."""
+    print(f"duplicate check: scenarios that render the same swing -- {len(res['flagged'])} flagged, "
+          f"{len(res['allowed'])} allowlisted (scenarios.DUPLICATE_ALLOWED)")
+    for g in res["allowed"]:
+        print(f"  allowlisted {' = '.join(g)}")
+    for g in res["not_dup"]:
+        print(f"  note        {' / '.join(g)} is allowlisted but no longer one swing; the entry can go")
+    ok = not res["flagged"] and not res["unknown"]
+    if not ok:
+        print("!" * 100)
+        for g in res["flagged"]:
+            print(f"  DUPLICATE   {' = '.join(g)}: identical Params, release and transforms")
+        for g in res["unknown"]:
+            print(f"  STALE       {' / '.join(g)} is in DUPLICATE_ALLOWED but not all of it is built")
+        print("  Drop all but one (keep the name that says what it probes), or, if the copies are needed, add the set")
+        print("  to scenarios.DUPLICATE_ALLOWED with the reason.")
+        print("!" * 100)
+    return ok
+
+
+def intent_band(intent) -> str | None:
+    """The MAS band a severity intent names: profiles.SEVERITY_INTENT holds whole MAS grades (0-4), and band
+    labels are the scorer's ("0", "1", "1+", "2", "3", "4"), so an intent of 1 is met only by band "1"."""
+    return None if intent is None or (isinstance(intent, float) and not np.isfinite(intent)) else str(int(intent))
+
+
+def intent_mismatch(rows, accepted=None):
+    """Every built scenario with a severity intent whose PT7 band is not the intended one (a refusal is a
+    mismatch: no band). Returns (n_with_intent, [(sid, intended, landed, pt7, refusal, accepted_reason)])."""
+    accepted = S.INTENT_MISMATCH_ACCEPTED if accepted is None else accepted
+    n, out = 0, []
+    for r in rows:
+        want = intent_band(r.get("intent"))
+        if want is None:
+            continue
+        n += 1
+        got = r.get("mas")
+        if got != want:
+            out.append((r["sid"], want, got, r.get("pt7"), r.get("refusal") or "", accepted.get(r["sid"])))
+    return n, out
+
+
+def report_intent_mismatch(res) -> None:
+    """Print the intent-mismatch report. REPORT ONLY (owner decision 2026-11-17): it never changes the exit status."""
+    n, mm = res
+    new = [m for m in mm if m[5] is None]
+    print(f"intent check (report only; does not change the exit status): {n} scenarios carry a severity intent "
+          f"(profiles.SEVERITY_INTENT), {len(mm)} land outside the intended band ({len(mm) - len(new)} accepted, "
+          f"{len(new)} not; scenarios.INTENT_MISMATCH_ACCEPTED)")
+    for sid, want, got, pt, why, acc in mm:
+        landed = f"band {got:<2}" if got is not None else f"refused ({why[:28]})" if why else "no band"
+        pt_s = f"PT7 {pt:.4f}" if pt is not None and np.isfinite(pt) else "PT7 -"
+        print(f"  {'accepted' if acc else 'MISMATCH':11s} {sid:22s} intent MAS {want:<2}  {landed:<16s} {pt_s}")
 
 
 def _render_source(sc: S.Scenario):
@@ -344,7 +431,9 @@ def main():
     missing = [g for g in S.MAS_TARGETS if g not in ladder]
     if missing:
         print(f"  note: no A-P rung for {', '.join(missing)} (unreachable on this scorer)")
-    for sc in S.build(ladder):
+    library = S.build(ladder)
+    dups = duplicate_check(library)
+    for sc in library:
         t, th, rest, tq = render(sc)
         prm, est = score(t, th, sc)
         ts, sp, vel, acc, phase, t_rel = rig_setpoint(t, th, rest, sc)
@@ -393,8 +482,14 @@ def main():
     # written last, so a build that dies part-way leaves the old provenance and the next build starts over
     json.dump(prov, open(os.path.join(OUT, "provenance.json"), "w", encoding="utf-8"), indent=1)
     print(f"wrote {len(rows)} scenarios -> {OUT}  ({prov['score_formula_id']}, model {prov['model_hash']})")
+    # The intent report is information only: it is printed and never changes the exit status (decision a).
+    report_intent_mismatch(intent_mismatch(rows))
     # The library is written either way (it is what the code builds); the exit status says it is not fit to play.
-    if not report_edge_check(edges) and "--allow-near-edge" not in sys.argv:
+    dup_ok = report_duplicate_check(dups)
+    edge_ok = report_edge_check(edges) or "--allow-near-edge" in sys.argv
+    if not dup_ok:
+        raise SystemExit("duplicate check failed: two scenarios render the same swing under different names")
+    if not edge_ok:
         raise SystemExit("edge check failed: a preset sits within "
                          f"{EDGE_MARGIN_PT7:g} PT7 of a band edge (--allow-near-edge to build anyway)")
 

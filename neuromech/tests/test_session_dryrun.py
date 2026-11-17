@@ -1203,13 +1203,18 @@ def test_an_untrusted_chirp_falls_back_and_fails_the_exit_status(chirped, capsys
 # docs/reports/2026-11-14-neuromech-chirp-tracking-limit-review.md (branch docs/chirp-tracking-limit-review).
 # Simulated, like everything above. The mismatch magnitudes are the reviewer's guesses about a rig nobody has measured.
 FAST = dict(wn_hz=11.0, zeta=1.0, delay_ms=0.0)
-GAP_SIDS = ["C-N-zero", "R-reflex-force", "R-reflex-sat", "R-reflex-vel", "S-lam1"]
+#: R-reflex-force was a fifth until it was dropped as S-lam1's duplicate (owner decision 2026-11-17).
+GAP_SIDS = ["C-N-zero", "R-reflex-sat", "R-reflex-vel", "S-lam1"]
+#: The five-run session below. Each run's synthetic log is seeded by its slot, so dropping R-reflex-force changed
+#: S-lam1's measured error (4.2 -> 3.3 ms, under b0d18c9's limit, which is the point of the test); with
+#: R-reflex-len as the fifth run S-lam1 measures 4.2 ms again and every assertion is the one it was.
+SESSION_SIDS = GAP_SIDS + ["R-reflex-len"]
 
 
 def test_the_floor_is_added_in_quadrature_between_the_plants_that_were_sampled():
     """Item 1. b0d18c9 sampled plants whose predictions were 14 ms and up, or 3 ms and down. Between them, at
-    11 Hz and zeta 1.0, these five scenarios are predicted 3.8 to 4.3 ms and measure 4.5 to 4.9 with the Player's
-    tick 2.5 or 7.5 ms into the command: over max(1.15 x predicted, 4) on all ten, and nothing is wrong with
+    11 Hz and zeta 1.0, these four scenarios are predicted 3.8 to 4.3 ms and measure 4.5 to 4.9 with the Player's
+    tick 2.5 or 7.5 ms into the command: over max(1.15 x predicted, 4) on all eight, and nothing is wrong with
     them. The floor is error the prediction does not contain; it does not stop existing at 3.5 ms."""
     fit = _chirp_fit(FAST)[0]
     res = [_judge(sid, fit, FAST, phase_ms=ph) for sid in GAP_SIDS for ph in (2.5, 7.5)]
@@ -1238,7 +1243,7 @@ def _chirped_session(root, name, sids, respond, phase_ms=0.0):
 def test_a_real_session_on_a_fast_well_damped_rig_exits_0(tmp_path):
     """The same through plan, .bin files and the CLI, at 12 Hz and zeta 1.0. S-lam1 measures 4.2 ms against a
     prediction of 3.5: over max(1.15 x 3.5, 4) = 4.03, so on b0d18c9 this good session exits 1 (the review's did)."""
-    sess, enc = _chirped_session(tmp_path, "FAST", GAP_SIDS, lambda u: _rig(u, dict(FAST, wn_hz=12.0)), phase_ms=2.5)
+    sess, enc = _chirped_session(tmp_path, "FAST", SESSION_SIDS, lambda u: _rig(u, dict(FAST, wn_hz=12.0)), phase_ms=2.5)
     old = SS.SESS
     try:
         SS.SESS = sess
