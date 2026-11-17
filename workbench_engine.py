@@ -1307,10 +1307,13 @@ def compute_optitrack_quality_signals(ref_t: np.ndarray, ref_angle: np.ndarray) 
 
     pt_params = pendulastic_pt_score.compute_pt_params(ref_t, ref_angle)
     area_ratio_warn = bool(pt_params["quality_warn"]) if pt_params is not None else False
+    # How the score was reached ('' when unflagged); shown, never a refusal.
+    scoring_flags = pendulastic_pt_score.scoring_flag_text(pt_params)
 
     return {
         "optitrack_dropout_frac": dropout_frac,
         "optitrack_area_ratio_warn": area_ratio_warn,
+        "optitrack_scoring_flags": scoring_flags,
     }
 
 

@@ -93,6 +93,43 @@ test('the convention defaults to live rather than claiming analysis', () => {
     rawJsonl: 'x', algorithmVersion: '0.1.0',
   });
   assert.equal(r.drift_correction, 'live');
+  assert.equal(r.analysis_refusal, null);
+});
+
+test('a live-convention fallback records why the analysis pair is missing', () => {
+  // An unscorable analysis pass must be distinguishable from a stale cached
+  // wasm that never offered the analysis convention.
+  const refused = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0', driftCorrection: 'live',
+    analysisRefusal: 'insufficient_samples',
+  });
+  assert.equal(refused.drift_correction, 'live');
+  assert.equal(refused.analysis_refusal, 'insufficient_samples');
+  const stale = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0', driftCorrection: 'live',
+    analysisRefusal: 'not_available',
+  });
+  assert.notEqual(stale.analysis_refusal, refused.analysis_refusal);
+});
+
+test('a stored trial carries how its score was reached, and null when not reported', () => {
+  const quality = {
+    drift_correction: 'tail', drift_slope_deg_s: 1.37, drift_correction_rejected: null,
+    quality_flags: ['large_drift_correction'],
+  };
+  const r = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0', driftCorrection: 'analysis',
+    scoringQuality: quality,
+  });
+  assert.deepEqual(r.scoring_quality, quality);
+  const old = makeTrialRecord({
+    sessionId: 's1', side: null, params, trajectory: new ArrayBuffer(8),
+    rawJsonl: 'x', algorithmVersion: '0.3.0',
+  });
+  assert.equal(old.scoring_quality, null, 'not reported is null, never an empty flag list');
 });
 
 // ---- capture protocol versioning ------------------------------------------

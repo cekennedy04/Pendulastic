@@ -42,7 +42,7 @@ pub const N_PARAMS: usize = 6;
 
 /// `pendulastic_pt_score.SCORE_FORMULA_ID` — which scored set this is. Bump it
 /// with any change to the summed parameters; see `PT_ZONES_CALIBRATED_FOR`.
-pub const SCORE_FORMULA_ID: &str = "pt6rescaled-ref-2026-10-27";
+pub const SCORE_FORMULA_ID: &str = "pt6rescaled-ref-2026-11-16";
 
 /// `pendulastic_pt_score._DENOM_FLOOR`.
 const DENOM_FLOOR: f64 = 0.1;
@@ -60,9 +60,10 @@ pub struct HealthyRef {
     pub area_ratio: f64,
 }
 
-/// `pendulastic_pt_score.HEALTHY_REF` — control-cohort medians, 2026-08-21
-/// recalibration. See that module's own extensive provenance note; this is
-/// PROVISIONAL and expected to move again (validation task V0.4).
+/// `pendulastic_pt_score.HEALTHY_REF` — control-cohort medians, last
+/// re-derived 2026-11-16 (with the drift-correction bound). See that module's
+/// own extensive provenance note; this is PROVISIONAL and expected to move
+/// again. `tests/test_pt_zone_parity.py` pins every copy to the Python one.
 pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // LITERATURE-ANCHORED. Popovic-Maneski 2017 (the paper whose PT7 formula
     // this implements): "In healthy subjects, the parameter R2n > 1". A
@@ -79,24 +80,26 @@ pub const HEALTHY_REF: HealthyRef = HealthyRef {
     // published quantity is either differently defined (phi-max is an angle
     // in rad, omega-max is unnormalised rad/s) or was introduced by
     // Popovic-Maneski with no healthy value given (f, area_ratio).
-    // Re-derived 2026-10-27 by derive_healthy_ref.py: medians of 39
-    // INTERPRETABLE baseline control trials, 12 legs, 7 people, on the
-    // corrected reconstruction and release detection. The previous set
-    // (46 trials, pre-fix, ungated) is noted per entry. Every control leg is
-    // assessed_by=ASSUMED -- no clinician examined a healthy leg.
-    phi_max_ratio: 0.6407, // was 0.6667
-    // Was 9.5672. Largely 1/A0 in practice: peak velocity is roughly fixed by
-    // the release height, so this falls steeply as A0 rises (rho -0.88).
-    omega_max_n: 6.4839,
+    // Re-derived 2026-11-16 by derive_healthy_ref.py with the drift-correction
+    // bound in place (baseline_drift_slope / credible_drift_slope): medians of
+    // 37 INTERPRETABLE baseline control trials, 11 legs, 7 people. The
+    // 2026-10-27 set (39 trials, before the bound) is noted per entry. Every
+    // control leg is assessed_by=ASSUMED -- no clinician examined a healthy leg.
+    phi_max_ratio: 0.6264, // 0.6407 (2026-10-27); 0.6667 before
+    // 6.4839 (2026-10-27); 9.5672 before. Largely 1/A0 in practice: peak
+    // velocity is roughly fixed by the release height, so this falls steeply
+    // as A0 rises (rho -0.88).
+    omega_max_n: 6.6702,
     // NOW Popovic's omega-min: the SIGNED minimum angular velocity, peak
     // velocity in the return direction. Until 2026-09-09 this was
     // min(abs(omega))/A0, the near-zero speed at a turning point, so the
     // parameter sat at ~0.001 for every trial and contributed nothing.
-    // Mirrors omega_max_n. Was -9.4152.
-    omega_min_n: -6.3624,
-    f: 0.9511, // was 0.8839
-    // Least trustworthy entry: leave-one-person-out 0.154-0.213. Was 0.0945.
-    area_ratio: 0.1766,
+    // Mirrors omega_max_n. -6.3624 (2026-10-27); -9.4152 before.
+    omega_min_n: -6.4839,
+    f: 0.9511, // unchanged 2026-11-16; 0.8839 before 2026-10-27
+    // Least trustworthy entry: leave-one-person-out 0.151-0.204.
+    // 0.1766 (2026-10-27); 0.0945 before.
+    area_ratio: 0.1678,
 };
 
 /// `pendulastic_pt_score.PT_HEALTHY_MAX` — MAS-0 75th percentile (n=23 legs).
@@ -769,6 +772,10 @@ fn params_from_scalars(
         omega_s: Vec::new(),
         pk_i: Vec::new(),
         tr_i: Vec::new(),
+        drift_correction: crate::scoring::DriftCorrection::None,
+        drift_slope_deg_s: 0.0,
+        drift_correction_rejected: None,
+        quality_flags: Vec::new(),
     }
 }
 
@@ -906,6 +913,10 @@ mod tests {
             omega_s: Vec::new(),
             pk_i: Vec::new(),
             tr_i: Vec::new(),
+            drift_correction: crate::scoring::DriftCorrection::None,
+            drift_slope_deg_s: 0.0,
+            drift_correction_rejected: None,
+            quality_flags: Vec::new(),
         };
         overrides(&mut p);
         p
@@ -1520,7 +1531,8 @@ mod tests {
         });
         let simple = pt_score_simple(&p, &HEALTHY_REF);
         let full = pt_score(&p, &HEALTHY_REF);
-        assert!((simple - 0.697_993_284_813_920_31_f64).abs() < 1e-15, "simple={simple:.17}");
+        // simple was 0.697_993_284_813_920_31 against the 2026-10-27 HEALTHY_REF.
+        assert!((simple - 0.699_705_693_206_296_5_f64).abs() < 1e-15, "simple={simple:.17}");
         // History of `full` on this fixture, all against the then-current
         // HEALTHY_REF: 1.768_336_341_387_656_72 under the 7-term sum, then
         // 1.896_321_590_796_999_47 under the 6-term sum (dropping omega_min_n
@@ -1532,8 +1544,12 @@ mod tests {
         // Now lower, because HEALTHY_REF was re-derived from the corrected
         // control cohort (2026-10-27): area_ratio's reference rose 0.0945 ->
         // 0.1766, so its term falls 1.691 -> 0.865, and phi/omega_max_n moved
-        // too. The rescale still applies (five scored terms).
-        assert!((full - 1.422_947_289_232_789_7_f64).abs() < 1e-15, "full={full:.17}");
+        // too. The rescale still applies (five scored terms): 1.422_947_289_232_789_7.
+        //
+        // Now 1.480..., because HEALTHY_REF was re-derived with the
+        // drift-correction bound (2026-11-16): area_ratio's reference fell
+        // 0.1766 -> 0.1678, so its term rises, and phi/omega_max_n moved too.
+        assert!((full - 1.480_145_961_001_270_8_f64).abs() < 1e-15, "full={full:.17}");
     }
 
 }

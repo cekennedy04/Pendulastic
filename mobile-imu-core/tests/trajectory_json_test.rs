@@ -43,6 +43,10 @@ fn finite_params() -> PtParams {
         omega_s: Vec::new(),
         pk_i: Vec::new(),
         tr_i: Vec::new(),
+        drift_correction: mobile_imu_core::scoring::DriftCorrection::None,
+        drift_slope_deg_s: 0.0,
+        drift_correction_rejected: None,
+        quality_flags: Vec::new(),
     }
 }
 

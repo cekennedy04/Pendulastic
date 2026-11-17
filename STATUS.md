@@ -30,7 +30,16 @@ scores move. "Not verified" is stated, never implied.
   phone-IMU number measured before it is stale. The live app was redeployed from main
   (8aa1055) the same day; #102 stops Vercel's git integration overwriting it.
 - **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
-  as one versioned change (in progress).
+  as one versioned change. Implemented in draft PR #105 (`pt6rescaled-ref-2026-11-16`,
+  supersedes #94).
+- **No refusals from the drift or A0 bounds** (owner: refusals must not affect severe
+  legs; the app scores every kind of swing; take the most robust option). In #105, all
+  ports that have the logic (Python and Rust; C# has neither bound): A0 is bounded by
+  raw span + |applied slope| × duration + 2% of span, replacing span × 1.27. A drift
+  estimate out of bounds is skipped and the curve scored without it; an A0 past the
+  bound drops the correction and scores the uncorrected curve with a flag; a correction
+  over 25% of the raw span is applied and flagged. `AmplitudeExceedsCurveError` is
+  removed. Every score records which correction it used and its flags.
 - **Scoring footing:** move the app to the Python reference footing, together with
   counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
   one score-formula version bump (plan in progress on `feat/app-reference-footing`).
@@ -51,7 +60,8 @@ scores move. "Not verified" is stated, never implied.
 - **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
   session notes, to be added to `docs/plans/`):
   - *Before any session:* build the Player's own `Max |setpoint|` clamp (the Angle Limit
-    fields do not bound the Player) and find why the dry run fell from 9/9 to 7/9 in band.
+    fields do not bound the Player). The dry run is 9/9 in band on main (the 7/9 reading
+    came from code without #96; see O5).
   - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with
     asymmetric limits and a margin to the hard stops at least the fault overshoot seen
     (+63°/−81° at ±25° limits). 0.75× renders only as a labelled invariance probe.
@@ -64,10 +74,11 @@ scores move. "Not verified" is stated, never implied.
     from inverse dynamics (inertia + gravity + active torque), with a backdrivability spec.
   - *O5 clasp-knife:* identical replays with a fixed rest between drops; adaptation in its
     own labelled series; add one multi-drop session file with realistic gaps. Revised by the
-    owner after the dry-run bisect (7/9 is not a regression: the documented scorer fixes
-    5058c9a and #79 moved the preset's intended PT7 to 0.139, and rig tracking lag costs a
-    steady 0.021–0.024): once the footing change lands, refit the clasp-knife presets to the
-    middle of their band on the new scorer, drop `M-catch_release_high` (identical to
+    owner after the dry-run bisect. Corrected by #105's review: 7/9 reproduces only on code
+    without #96 (bcb6a71); `main` and #105 deliver 9/9 at seed 11, with the clasp-knife
+    pair at PT7 0.127 and 0.128, about 0.007 above the 0.12 band edge, so the pair is in
+    band but marginal. The decision stands: once the footing change lands, refit the
+    clasp-knife presets to the middle of their band on the new scorer, drop `M-catch_release_high` (identical to
     `B-claspknife` since af8a20a), and add a build check that flags any preset within about
     0.03 PT7 of a band edge.
   - *O4 clinicians:* not used for grade calibration (MAS needs a hands-on rater; the clinical
@@ -96,12 +107,16 @@ scores move. "Not verified" is stated, never implied.
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Chirp-derived tracking limit (in progress, no PR):**
-  `neuromech/chirp-derived-tracking-limit` judges each run against the plant identified
-  from the session's chirp. Its review (`docs/chirp-tracking-limit-review`) found the
-  release check robust under model mismatch but the tracking ratio fitted to the
-  simulator's plant family; fixes are being applied, then a re-review. The branch was
-  cut from #96 before it was squash-merged, so it must be rebased onto `main`.
+- **Open PRs:** #107 (chirp-derived tracking limit, draft).
+- **Chirp-derived tracking limit (draft PR #107, `neuromech/chirp-tracking-limit-v2`):** each
+  run is held to what the plant identified from the session's chirp (R000) predicts,
+  with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
+  gain gated by the gain after the swing, and a flag for a hold the arm does not settle
+  at. Reviewed and re-reviewed (`docs/chirp-tracking-limit-review`); 286 tests, dry run
+  9 of 9. **Simulation only, not verified on a real rig.** Known costs (README and report
+  section C): slow rig modes the chirp cannot see flag good runs; a constant encoder
+  offset still moves release and tracking; no session ratio where predictions are under
+  7 ms; a margin must never be accepted from the session being judged.
 - **Another session's work, not part of this plan:** `docs/neuromech-elbow-plan`
   (worktree `Pendulastic-wt-elbow`).
 - **Rig path versus app path** (simulation only;
@@ -111,8 +126,9 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** finish, re-review and land the chirp-derived tracking limit; then
-  the first rig session, read as a measurement of the limits.
+- **Next actions:** land the chirp-derived tracking limit (#107); then the first rig session, read as a
+  measurement of the limits. On its first log measure `enc_hold_rms_deg`, the idle position against the
+  setpoint (`enc_idle_offset_deg`) and `enc_hold_gain` / `enc_late_gain` on runs believed good.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
@@ -132,8 +148,9 @@ scores move. "Not verified" is stated, never implied.
 - **Implementations:** Python `pendulastic_pt_score.py` (reference),
   Rust `mobile-imu-core/src/` (`scoring.rs`, `pt_score.rs`; ships in the webapp),
   C# `neuromech/designer/PtScore.cs` (given-release, `detrend=False` path only; it has
-  no release detector and no drift correction). `run_statistical_engine.py` holds a
-  fourth `HEALTHY_REF` copy.
+  no release detector and no drift correction). `run_statistical_engine.py` held a
+  fourth `HEALTHY_REF` copy; with #105 it imports the scorer's, and
+  `tests/test_pt_zone_parity.py` pins every copy to Python.
 - **Conventions:** on screen the app scores with `detrend=False`; the record the app
   STORES uses `detrend=True` (`finish_detrended` in `wasm.rs`, `persistTrial` in
   `webapp/src/app.js`). `neuromech.build.score_angle` is 100 Hz, release given,
@@ -142,10 +159,20 @@ scores move. "Not verified" is stated, never implied.
 - **Lineage comparison** (`docs/scorer-lineage-comparison`): test-retest under
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
-- **Drift-correction bound (PR #94, draft):** ported to Python and Rust with caller
-  handling of the new `AmplitudeExceedsCurveError`; `detrend=False` output is
-  bit-identical on the corpus. Independent review: code correct. Owner decided to finish it
-  and re-derive `HEALTHY_REF` with the bound (in progress on `fix/drift-bound-healthy-ref`).
+- **Drift-correction bound + re-derived `HEALTHY_REF` (PR #105, draft; supersedes #94,
+  which stays open):** the bound in Python and Rust, never a refusal (see decisions
+  taken), with the correction used and any quality flags shown in the viewer, workbench
+  and live view and stored on the app record (`scoring_quality`), and
+  `HEALTHY_REF` re-derived with the bound (phi 0.6407→0.6264, omega_max_n
+  6.4839→6.6702, area 0.1766→0.1678, f unchanged; 37 trials, 11 legs, 7 people) in
+  Python, Rust, C# and `run_statistical_engine.py`. `SCORE_FORMULA_ID`
+  `pt6rescaled-ref-2026-11-16`, core 0.3.0. Bound alone: `detrend=False` bit-identical;
+  `detrend=True` moves 2 phone and 20 optical trials. Rust matches Python on 463 real
+  curves (both conventions), including the correction used and the flags. neuromech:
+  no band changes, dry run 9 of 9. Corpus: no trial is refused by either bound at
+  either setting, the no-refusal rule moves no score, and 7 trials (6 phone, 1 optical,
+  `detrend=True`) carry the large-correction flag. A stored app record that falls back
+  to the live convention says why (`analysis_refusal`).
 - **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;

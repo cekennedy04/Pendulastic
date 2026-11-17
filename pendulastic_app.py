@@ -1815,6 +1815,12 @@ class PostProcessingPanel(tk.Frame):
             self.mas_var.set(str(mas) if mas is not None
                              else f"not interpretable (A0 {p['A0_deg']:.1f} deg)")
             self.score_var.set(f"{score:.3f}")
+            # Flags never stop a trial scoring; say how the score was reached.
+            _flags = (p.get("quality_flags") or [])
+            if _flags:
+                self.status_var.set(
+                    f"PT ({src}) scored with flags: {', '.join(_flags)} "
+                    f"(drift correction: {p.get('drift_correction', 'none')})")
 
             self._last_pt_params = p
             if self._canvas is not None and draw_pt_annotations is not None:

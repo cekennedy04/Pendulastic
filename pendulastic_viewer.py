@@ -80,7 +80,8 @@ try:
     from pendulastic_pt_score import (compute_pt_params, compute_pt_score,
                                       compute_pt_score_simple, HEALTHY_REF, pt_to_mas,
                                       PT_HEALTHY_MAX, PT_BORDERLINE_MAX,
-                                      load_optitrack, draw_pt_annotations)
+                                      load_optitrack, draw_pt_annotations,
+                                      scoring_flag_text)
     _PT_AVAIL = True
 except Exception:
     _PT_AVAIL = False
@@ -4287,6 +4288,11 @@ class PendulaticViewer(tk.Tk):
                 self._release_fi = None
 
         self._last_pt_params = params
+        # Flags never stop a trial scoring; they are shown so the score can be
+        # weighed (owner decision 2026-11-16).
+        _flag_text = scoring_flag_text(params)
+        if _flag_text:
+            self._status(f"PT {_flag_text}")
         self._last_pt_s      = pt_s
         self._last_pt_f      = pt_f
         self._last_mas       = mas

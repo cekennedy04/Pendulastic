@@ -62,15 +62,16 @@ def plant_response(sp, fs=1000.0, plant=PLANT):
     return np.concatenate([np.zeros(d), y[: len(y) - d]]) if d else y
 
 
-def player_hold(sp, rng, fs=1000.0, period_ms=10.0, late_ms=3.0):
+def player_hold(sp, rng, fs=1000.0, period_ms=10.0, late_ms=3.0, phase_ms=0.0):
     """What the RT loop receives from the Pendulum Player: every ~10 ms (Wait Until Next ms Multiple, plus
     Windows lateness up to late_ms) the Player reads the clock, interpolates the file at that time and
     writes it; the shared variable holds that value until the next write. A late write uses a LATER
-    clock reading, so jitter costs a held step, never accumulated time."""
+    clock reading, so jitter costs a held step, never accumulated time. phase_ms is where the Player's 10 ms
+    tick falls against the command's first sample (0 in the dry run; on a rig it is whatever it is)."""
     n = len(sp); t = np.arange(n) / fs
     writes, k = [], 0.0
     while k * period_ms / 1000.0 < t[-1]:
-        writes.append(k * period_ms / 1000.0 + rng.uniform(0.0, late_ms) / 1000.0); k += 1
+        writes.append((phase_ms + k * period_ms) / 1000.0 + rng.uniform(0.0, late_ms) / 1000.0); k += 1
     writes = np.clip(np.array(writes), 0, t[-1])
     vals = np.interp(writes, t, sp)
     idx = np.searchsorted(writes, t, side="right") - 1
