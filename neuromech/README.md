@@ -346,8 +346,8 @@ no flag and no session finding.
 `A-P0, A-P1p, M-tone_L4, B-clonus, B-claspknife, C-f-high, M-tone_L2, K-HM1, M-fall_no_ringdown` (`K-HM1` took
 the dropped `M-catch_release_high`'s slot). 9 of 9 runs in their intended band on the encoder and the phone at
 seeds 11, 1, 3, 7 and 42, none flagged; tracking time error 14.1 to 14.2 ms median, 1.00 to 1.01 of predicted;
-delivered release 27.4 to 27.5 ms after the commanded one (median); phone |ΔPT7| median under 0.001, max
-0.016. `B-claspknife` intends 0.200 and is delivered at 0.197 to 0.198 (it intended 0.078, band 0, before the
+delivered release 27.4 to 27.5 ms after the commanded one (median); phone |ΔPT7| median under 0.001 at every
+seed, max across seeds 0.016 (seed 3; 0.014 at seed 1, 0.005 or less at seeds 7, 11 and 42). `B-claspknife` intends 0.200 and is delivered at 0.197 to 0.198 (it intended 0.078, band 0, before the
 refit); `K-HM1` 0.193 → 0.191 to 0.192. `C-f-high` (allowlisted) intends 0.2818 and is delivered at 0.2801 to
 0.2818: band 1+ at every seed, but 0.0001 from the edge, so it is the session's deliberate edge run.
 
@@ -409,7 +409,7 @@ score sits about 0.05 above them on the same motion; that gap is printed, not ju
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 319 tests (9 skip without a local wasm build)
+python -m pytest neuromech/tests                                    # 321 passed, 2 xfailed (9 skip without a local wasm build)
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

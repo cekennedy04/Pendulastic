@@ -124,11 +124,11 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
     # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share,
     # measured after the O5 refit at 0.0025 to 0.0029 (B-claspknife, release 36 deg) and 0.0016 to 0.0018
     # (K-HM1) at seeds 1, 3, 7, 11 and 42 (the 25 deg clasp-knife gave 0.0045 to 0.0051; 0.010 to 0.012 on
-    # six terms, where peak velocity was scored). 0.0005 to 0.006 is that measurement with ~0.001 below and
+    # six terms, where peak velocity was scored). 0.001 to 0.006 is that measurement with ~0.0006 below and
     # 0.003 above: below it something is flattering the delivery, above it the session is adding undershoot
     # of its own again. Re-baseline it if the scorer, the plant or these presets change.
     under = catch.int_pt7 - catch.enc_pt7
-    assert ((under > 0.0005) & (under < 0.006)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
+    assert ((under > 0.001) & (under < 0.006)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
     # The METHOD, pinned on this plant: the onset-matched release is 27.4 ms after the commanded one here
     # (22.6 to 28.5 by scenario). An onset of 10 deg instead of 2 gives 19.7 ms and passed every test in this
     # file before this assertion existed; a whole-drop cross-correlation gives 14.5 to 19.
@@ -1321,7 +1321,8 @@ def test_the_encoder_zero_is_taken_only_from_a_still_idle():
 
 
 # `alone` (flagged without the hold gain) is a measurement on PLANT_SIDS: at 0.97 it was 12 until the O5 refit
-# (2026-11-17) changed B-claspknife, B-flexor and B-clonus, and is 16 since; 0.98 and 1.02 did not move.
+# (2026-11-17) and is 16 since: the four new flags are B-claspknife and B-flexor at both seeds (tracking time error
+# 17.5 and 16.8 ms). 0.98 and 1.02 did not move.
 @pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 16)])
 def test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault(gain, alone):
     """The review's first mismatch: a static gain of 0.98 had 36 % of good runs flagged. 14 scenarios x 2 seeds on the
@@ -1608,18 +1609,24 @@ def test_the_chirp_suspect_rule_in_numbers():
 def test_a_chirp_the_drive_only_just_followed_is_said_once_and_about_the_chirp(chirped, capsys):
     """A drive limited to 250 deg/s. The chirp asks for up to 500, the fit is still trusted (R2 0.98, misfit 8 %),
     and it identifies 3.6 ms of delay the rig does not have: good runs are then 4.0 to 4.8 ms "early" and flagged as
-    lurches (all four since the O5 refit of B-claspknife, 2026-11-17; three of four before it, the fourth at -3.9). The gate is not redesigned; the session says where to look. In memory the same rig at 300 deg/s (misfit
+    lurches. A-P0 sits at -4.002 ms, 0.002 ms past the 4 ms limit, so whether it is flagged is a matter of
+    rounding: three or four of the four runs are flagged (four on main at c48e3a1 already, before the O5 refit, with
+    the same per-run values), and the pin takes either. The gate is not redesigned; the session says where to
+    look. In memory the same rig at 300 deg/s (misfit
     4.5 %, runs 2.8 to 3.4 ms early, none flagged) says nothing."""
     capsys.readouterr(); rep = _score_chirped(chirped, "sat250"); out = capsys.readouterr().out
     early = rep[rep.status.str.contains("early: a lurch", regex=False)]
-    assert len(early) == 4 and (rep.enc_lag_minus_pred_ms < -3.9).all() and (rep.enc_lag_minus_pred_ms > -4.9).all(), rep.status.tolist()
+    assert len(early) >= 3 and (rep.enc_lag_minus_pred_ms < -3.9).all() and (rep.enc_lag_minus_pred_ms > -4.9).all(), rep.status.tolist()
     s = rep.chirp_suspect.iloc[0]
     assert (rep.chirp_suspect == s).all() and out.count("SUSPECT THE CHIRP, NOT THE RUNS") == 1 and s in out
     assert "the release is -4.1 ms from where the plant identified from R000 puts it (median of 4 runs" in s and "leaves 8.0 % of the chirp unexplained" in s, s
     assert _score_chirped(chirped, "sat250", "cli") == 1                                   # the flags stand; the sentence is where to look
-    # runs whose release failed the check say nothing about the model: the session ratio is not taken from them
-    # (all four fail it since the O5 refit, so none is used; one was before it)
-    assert (rep.tracking_session_ratio_runs == 0).all() and (rep.model_mismatch_finding.fillna("") == "").all()
+    # runs whose release failed the check say nothing about the model: the session ratio is taken only from the
+    # others (scored, release passed, prediction at least MODEL_RATIO_MIN_PRED_MS), whichever runs are early
+    kept = rep[~rep.index.isin(early.index) & (rep.tracking_pred_ms >= SS.MODEL_RATIO_MIN_PRED_MS)
+               & np.isfinite(rep.tracking_time_err_ms)]
+    assert (rep.tracking_session_ratio_runs == len(kept)).all() and len(kept) <= 4 - len(early),         (rep.tracking_session_ratio_runs.tolist(), early.index.tolist())
+    assert (rep.model_mismatch_finding.fillna("") == "").all()
     rig = lambda u: _slew_limited(u, 300.0)                                                               # noqa: E731
     fit, why, misfit = _chirp_fit(respond=rig)
     res = [_judge(sid, fit, respond=rig) for sid in SLOW_SIDS]

@@ -77,6 +77,41 @@ def test_rows_without_a_pt7_are_not_judged():
     assert res["flagged"] == [] and res["allowed"] == []
 
 
+# ── fit_param, on a stand-in scorer (no rendering) ─────────────────────────────────────────────────────
+
+def _stand_in(monkeypatch, f, field="catch_release_deg"):
+    """PT7 as f(value of `field`), in place of rendering and scoring; returns the preset to fit."""
+    monkeypatch.setattr(B, "pt7_of", lambda sc: f(getattr(sc.params, field)))
+    return S.Scenario("X-fit", "B", "", S.Params(catch_gain=4.0, catch_vth=1.2))
+
+
+def test_fit_param_finds_the_target_rising_and_falling(monkeypatch):
+    sc = _stand_in(monkeypatch, lambda v: 0.01 * v)                      # rising: 0.20 at 20
+    assert B.fit_param(sc, "catch_release_deg", 10.0, 40.0, 0.20) == pytest.approx(20.0, abs=1e-4)
+    sc = _stand_in(monkeypatch, lambda v: 0.5 - 0.01 * v)                # falling: 0.20 at 30
+    assert B.fit_param(sc, "catch_release_deg", 10.0, 40.0, 0.20) == pytest.approx(30.0, abs=1e-4)
+
+
+def test_fit_param_lands_on_the_edge_of_a_step(monkeypatch):
+    sc = _stand_in(monkeypatch, lambda v: 0.15 if v < 25.0 else 0.25)    # no value gives 0.20
+    assert B.fit_param(sc, "catch_release_deg", 10.0, 40.0, 0.20) == pytest.approx(25.0, abs=1e-4)
+
+
+def test_fit_param_refuses_a_target_outside_the_bracket(monkeypatch):
+    sc = _stand_in(monkeypatch, lambda v: 0.01 * v)
+    with pytest.raises(ValueError, match="outside the bracket"):
+        B.fit_param(sc, "catch_release_deg", 10.0, 15.0, 0.20)          # PT7 0.10..0.15: would have returned 15
+
+
+def test_fit_param_does_not_read_a_refusal_as_pt7_zero(monkeypatch):
+    sc = _stand_in(monkeypatch, lambda v: None if v < 12.0 else 0.01 * v)
+    with pytest.raises(ValueError, match="no PT7 at the bracket end 10.0"):
+        B.fit_param(sc, "catch_release_deg", 10.0, 40.0, 0.20)
+    sc = _stand_in(monkeypatch, lambda v: None if 24.0 < v < 26.0 else 0.01 * v)
+    with pytest.raises(ValueError, match="inside the bracket"):
+        B.fit_param(sc, "catch_release_deg", 10.0, 40.0, 0.25)          # the first midpoint is 25: refused
+
+
 # ── the library's own lists ────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")

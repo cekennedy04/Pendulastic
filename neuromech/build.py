@@ -203,17 +203,31 @@ def fit_param(sc: S.Scenario, field_name: str, lo: float, hi: float, target: flo
     PT7 must be monotone over the bracket; the direction is taken from its ends. PT7 is a step function of
     most fields (N counts whole swings), so the answer can be the edge of a step: the presets fitted with it
     (scenarios.BAND_MIDDLE) carry a value rounded onto the plateau nearest the target, and
-    tests/test_build_edge_check.py holds each within MID_BAND_TOL of its band middle and in band at +-5 %."""
+    tests/test_build_edge_check.py holds each within MID_BAND_TOL of its band middle and in band at +-5 %.
+
+    Raises ValueError, rather than returning a bracket end, when the target is not between the PT7s at the two
+    ends, or when the scorer refuses (no PT7) at an end or at a point the bisection visits: a refusal is not a
+    low PT7, and an answer pinned to the bracket's edge is not a fit."""
     from dataclasses import replace as _replace
 
     def at(v):
         return pt7_of(_replace(sc, params=_replace(sc.params, **{field_name: v})))
 
-    rising = (at(hi) or 0.0) > (at(lo) or 0.0)
+    p_lo, p_hi = at(lo), at(hi)
+    if p_lo is None or p_hi is None:
+        raise ValueError(f"fit_param({sc.sid}, {field_name}): no PT7 at the bracket end "
+                         f"{lo if p_lo is None else hi} (refused); choose a bracket the preset is scored across")
+    if not min(p_lo, p_hi) <= target <= max(p_lo, p_hi):
+        raise ValueError(f"fit_param({sc.sid}, {field_name}): target PT7 {target} is outside the bracket "
+                         f"[{lo}, {hi}] -> PT7 [{p_lo:.4f}, {p_hi:.4f}]")
+    rising = p_hi > p_lo
     for _ in range(iters):
         mid = 0.5 * (lo + hi)
         v = at(mid)
-        if (v is None or v < target) == rising:
+        if v is None:
+            raise ValueError(f"fit_param({sc.sid}, {field_name}): no PT7 at {mid} inside the bracket (refused); "
+                             f"PT7 is not defined across [{lo}, {hi}]")
+        if (v < target) == rising:
             lo = mid
         else:
             hi = mid
