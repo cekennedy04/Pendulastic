@@ -87,6 +87,37 @@ changes N on 43 trials; this spike finds 59 on screen. The report ran at `e9a3a0
 seed fix (#98) moved every trace, so the seed fix is the likely cause, but that is not shown. Step 2
 of section 7 explains every one of the 59 from its trace, as the report did for its 40.
 
+**Step 2 gate result (2026-11-16): the #98 explanation holds; one trial needs a decision.**
+
+- Same instrumented option B, same scorer, run on an `e9a3a01` worktree (old seed; its scorer is
+  byte-identical to `8aa1055`'s, only the AHRS seed differs): 43 on screen, 53 stored, exactly the
+  report's count. On the current seed: 59 and 65. Overlap 36; 23 change only on the new seed, 7
+  only on the old. In 22 of the 23 the shipped N itself differs between the seeds (the seed fix
+  moved the trace); the remaining one is a knife-edge shoulder (prominence about 1.3 thresholds)
+  that appears only on the new trace. The 7 old-only trials have no peak before the first trough
+  on the new trace (five were knife-edge shoulders at 1.06 to 1.62 thresholds; two were the
+  report's release-detection failure and its refused-to-interpretable side effect, both gone on
+  the new seed).
+- All 59 drop exactly one peak, always before the first counted trough. 50 are the report's
+  shoulder (within 0.2 s of the release, no peak there in the uncentred pass, the smoothed angle
+  rising less than the threshold before the trough; prominence median 1.38 thresholds). 8 are
+  the same thing later or larger: the limb hangs near the release angle for 0.2 to 0.5 s, or
+  rises 1 to 4 deg after it (release flagged while the limb is still held), or stalls mid-fall;
+  the centred frame turns the plateau into a peak. In none does the angle go down and come back
+  up before the dropped peak, so none is a half-cycle. 58 lose 0.5.
+- **The ninth is the report's window-anchor side effect and it is a defect, not a look.** A fall
+  with a real mid-fall rebound (about 10 deg, above threshold in the raw angle) whose dip is not a
+  counted trough because the centred frame hides it; B drops the rebound peak, and with it gone
+  `_active_oscillation_window_end` no longer ends the window at the first trough. Its gap median
+  is then set by three resting-tail extrema 2.6 to 4.5 s after the trough, so they are counted
+  and N goes 1.0 to 2.0 (both conventions). Counting tail noise is what the window bound exists to
+  prevent.
+- Fix measured, not yet adopted: apply the drop **after** `_active_oscillation_window_end`
+  (window computed on the undropped extrema) instead of before it as section 3.2 says. On all 167
+  replayed trials, both conventions, it is identical to the planned insertion except on that one
+  trial, which goes to N 0.5 instead of 2.0, and N changes on 59 / 65 trials, every one by -0.5.
+  This moves the insertion point section 3.2 names, so it goes back to the owner before step 2.
+
 At the app's current 20 Hz footing option B would change N on only 12 trials: the shoulder is
 mostly a property of the 100 Hz grid, so (9) matters to the app because of (8).
 
@@ -284,8 +315,8 @@ Python `compute_pt_params` (`mask.sum() < 40` on `np.isfinite(angle_raw)`), Rust
 at 100 Hz it is 0.4 s, about five times looser, so a short recording the app refuses today would
 be scored after the move.
 
-Proposed (pending, Q7): replace the count with a duration, defined identically in all three
-ports as a new constant `MIN_SCORABLE_S = 2.0`:
+Decided (Q7, owner, 2026-11-16): replace the count with a duration, defined identically in all
+three ports as a new constant `MIN_SCORABLE_S = 2.0`:
 
 - span = `t[last finite sample] - t[first finite sample]`, over the input as given (before the
   release cut), in seconds;
@@ -293,8 +324,11 @@ ports as a new constant `MIN_SCORABLE_S = 2.0`:
 - gaps (NaN runs) inside the span count as span: the gate measures how long the curve covers, not
   how many samples it has. Gap handling stays where it is today (the scorer's own
   finite-filtering and the replay's EMA reset); the gate does not add a second gap rule;
-- keep a sample floor as well (at least 2 finite samples, so the span is defined); the existing
-  SG-window and `find_peaks` minimums are unchanged.
+- keep the existing 40-sample floor as well, as a named constant `MIN_SCORABLE_SAMPLES = 40`
+  (as implemented: the span alone would let a 2 s curve at 1 Hz through, and the floor is what
+  the SG window and `find_peaks` were sized against); the existing SG-window and `find_peaks`
+  minimums are unchanged. At 20 Hz the floor and the span coincide (40 samples cover 1.95 s, so
+  the span decides); at 100 Hz and 120 Hz the span decides.
 
 Exported from each port (Python constant, Rust `pub const`, C# `const`) and pinned by
 `tests/test_pt_zone_parity.py` like the other shared constants.
@@ -309,6 +343,18 @@ duration rule they need 2.0 s. Section 7, step 5 counts the optical curves that 
 refused, and checks the `HEALTHY_REF` derivation population (baseline control optical trials)
 for control curves under 2.0 s that would drop out of it. If any control curve drops, Q7 goes
 back to the owner with that count before the gate changes.
+
+Measured before the gate landed (2026-11-16):
+
+- Phone corpus, 179 trials replayed at both footings: 167 curves pass the 40-sample floor at
+  20 Hz and at 100 Hz, and all 167 also pass the 2.0 s span (shortest admitted span 5.8 s). No
+  phone trial changes admission.
+- Optical, 264 live trials: 256 load (8 fail in the loader, unchanged), 256 pass the 40-sample
+  floor, 255 pass the span. The one newly refused curve has 154 finite samples covering 1.35 s
+  (most of the recording is tracking loss); it is not a control, and the shipped scorer already
+  refused it on screen and scored it stored as uninterpretable.
+- `HEALTHY_REF` population: 56 loadable baseline control optical curves, shortest finite span
+  7.29 s. None drops, so Q7 stands as decided.
 
 ## 4. Stored records
 
@@ -504,8 +550,22 @@ the scorer (1, 2) and again at the end.
   raises the optical minimum from 0.33 s to 2.0 s), or keep the
   sample count and accept that the app scores shorter recordings at 100 Hz?
 
-None of Q1 to Q7 has been answered. Every "proposed" choice in this plan is a default pending
-the owner's answer; no step that depends on a question is implemented until it is answered.
+**Answered by the owner, 2026-11-16: every question takes the proposed option.**
+
+| | decision |
+|---|---|
+| Q1 | new tracked reference-footing constant (`REFERENCE_REPLAY_CONFIG`); `DEFAULT_CONFIG`'s EMA stays 0.3 |
+| Q2 | break the trends series at 0.3.0 |
+| Q3 | keep the lone early peak when no trough is ever counted |
+| Q4 | `lateral_motion` moves onto the scoring axis later, in its own change |
+| Q5 | defer `detrend` unification until after #94 |
+| Q6 | if #94 lands first, this PR may update `HEALTHY_REF["f"]` by about 0.001 |
+| Q7 | 2.0 s of finite signal, identical in all three ports, after checking no `HEALTHY_REF` control curve drops (section 3.5) |
+
+Later on 2026-11-16, draft PR #105 superseded #94. It takes crate 0.3.0 and a new formula id, and it
+re-derives `HEALTHY_REF` with `f` unchanged. If #105 lands first, this change becomes crate 0.4.0
+with the next formula id, rebases onto #105, and re-runs the three parity checks and step 6. Q6
+is then moot unless the combined scorer moves `f`, which is re-checked after the rebase.
 
 ## Not verified
 
