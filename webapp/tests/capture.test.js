@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeSample, neverStartedHandle, startCapture } from '../src/capture.js';
+import {
+  encodeSample, neverStartedHandle, startCapture, createReplyRouter,
+  requestMotionPermission, MOTION_DENIED_MESSAGE, stopAndExportRaw,
+  RAW_EXPORT_TIMEOUT_MESSAGE,
+} from '../src/capture.js';
 
 // encodeSample is the pure arithmetic core of capture.js: axis mapping and
 // deg/s->rad/s conversion. It is exercised here with plain objects standing
@@ -96,4 +100,204 @@ test('startCapture returns that shape when no motion sensors exist, and reports 
   assert.match(reported, /motion sensors/, 'the operator must be told why, not just left with a dead Start button');
   assert.equal(typeof handle.exportJsonl, 'function');
   await assert.rejects(() => handle.exportJsonl(), /never started/);
+});
+
+// ---- reply routing (createReplyRouter) -------------------------------------
+function routerHarness() {
+  const calls = { errors: [], states: 0, results: 0 };
+  const router = createReplyRouter({
+    onState: () => { calls.states++; },
+    onResult: () => { calls.results++; },
+    onError: (r) => calls.errors.push(r),
+  });
+  const pendingExport = () => {
+    const p = { settled: null };
+    router.awaitExport({ resolve: (v) => { p.settled = ['ok', v]; }, reject: (e) => { p.settled = ['err', e.message]; } });
+    return p;
+  };
+  return { calls, router, pendingExport };
+}
+
+test('a finish error never settles a pending export (the raw-recorder data loss)', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const exp = pendingExport();
+  router.route({ type: 'error', reason: 'unscorable', request: 'finish' });
+  assert.equal(exp.settled, null, 'the export must still be waiting for its own reply');
+  assert.deepEqual(calls.errors, ['unscorable']);
+  router.route({ type: 'exportResult', jsonl: '{"t":0}\n' });
+  assert.deepEqual(exp.settled, ['ok', '{"t":0}\n']);
+});
+
+test('an unscorable reply from a stale worker (no request field) is still trial-level', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const exp = pendingExport();
+  router.route({ type: 'error', reason: 'unscorable' });
+  assert.equal(exp.settled, null);
+  assert.deepEqual(calls.errors, ['unscorable']);
+});
+
+test('an export error rejects the export, not the trial', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const exp = pendingExport();
+  router.route({ type: 'error', reason: 'export received before start', request: 'export' });
+  assert.deepEqual(exp.settled, ['err', 'export received before start']);
+  assert.deepEqual(calls.errors, []);
+});
+
+test('a reference error resolves the reference to null and leaves the export alone', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const exp = pendingExport();
+  let ref = 'pending';
+  router.awaitReference({ resolve: (v) => { ref = v; } });
+  router.route({ type: 'error', reason: 'boom', request: 'reference' });
+  assert.equal(ref, null);
+  assert.equal(exp.settled, null);
+  assert.deepEqual(calls.errors, []);
+});
+
+test('a batch error mid-trial is a trial fault even while an export is pending', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const exp = pendingExport();
+  router.route({ type: 'error', reason: 'worker crashed', request: 'batch' });
+  assert.equal(exp.settled, null);
+  assert.deepEqual(calls.errors, ['worker crashed']);
+});
+
+// ---- iOS motion permission ---------------------------------------------------
+function withDME(dme, fn) {
+  return async () => {
+    const had = 'DeviceMotionEvent' in globalThis;
+    const prev = globalThis.DeviceMotionEvent;
+    globalThis.DeviceMotionEvent = dme;
+    try { await fn(); } finally {
+      if (had) globalThis.DeviceMotionEvent = prev; else delete globalThis.DeviceMotionEvent;
+    }
+  };
+}
+
+test('requestMotionPermission calls iOS synchronously, inside the gesture', withDME(
+  class { static calls = 0; static requestPermission() { this.calls++; return Promise.resolve('granted'); } },
+  async () => {
+    const p = requestMotionPermission();
+    // Counted BEFORE any await: this is the whole point of the fix.
+    assert.equal(globalThis.DeviceMotionEvent.calls, 1);
+    assert.equal(await p, 'granted');
+  },
+));
+
+test('a rejected permission request reads as denied, never as an unhandled throw', withDME(
+  class { static requestPermission() { return Promise.reject(new Error('NotAllowedError')); } },
+  async () => { assert.equal(await requestMotionPermission(), 'denied'); },
+));
+
+test('a synchronously throwing permission request reads as denied', withDME(
+  class { static requestPermission() { throw new Error('must be handling a user gesture'); } },
+  async () => { assert.equal(await requestMotionPermission(), 'denied'); },
+));
+
+test('without requestPermission (Android/desktop) permission is granted', withDME(
+  class {},
+  async () => { assert.equal(await requestMotionPermission(), 'granted'); },
+));
+
+test('startCapture uses the permission it was handed and does not ask again', withDME(
+  class { static calls = 0; static requestPermission() { this.calls++; return Promise.resolve('granted'); } },
+  async () => {
+    let reported = null;
+    let workerMade = false;
+    const handle = await startCapture({
+      onState() {}, onResult() {}, onError: (r) => { reported = r; },
+      permission: Promise.resolve('denied'),
+      createWorker: () => { workerMade = true; return {}; },
+      target: new EventTarget(),
+    });
+    assert.equal(globalThis.DeviceMotionEvent.calls, 0, 'asking after an await is the iOS bug');
+    assert.equal(reported, MOTION_DENIED_MESSAGE);
+    assert.equal(workerMade, false, 'nothing starts when access is refused');
+    await assert.rejects(() => handle.exportJsonl(), /permission denied/);
+    assert.doesNotThrow(() => handle.close());
+  },
+));
+
+test('a permission promise that rejects is reported, not thrown out of startCapture', withDME(
+  class {},
+  async () => {
+    let reported = null;
+    const handle = await startCapture({
+      onState() {}, onResult() {}, onError: (r) => { reported = r; },
+      permission: Promise.reject(new Error('boom')),
+      target: new EventTarget(),
+    });
+    assert.equal(reported, MOTION_DENIED_MESSAGE);
+    assert.equal(typeof handle.stop, 'function');
+  },
+));
+
+test('the denied message tells the operator what to do', () => {
+  assert.match(MOTION_DENIED_MESSAGE, /Allow/);
+});
+// ---- worker crash, export timeout, empty recording (review of #116) --------
+test('a worker crash rejects every pending export and reports once', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const a = pendingExport();
+  const b = pendingExport();
+  let ref = 'pending';
+  router.awaitReference({ resolve: (v) => { ref = v; } });
+  router.failAll('capture worker crashed: boom');
+  router.failAll('capture worker crashed: again');
+  assert.deepEqual(a.settled, ['err', 'capture worker crashed: boom']);
+  assert.deepEqual(b.settled, ['err', 'capture worker crashed: boom']);
+  assert.equal(ref, null);
+  assert.deepEqual(calls.errors, ['capture worker crashed: boom'], 'one report, not one per call');
+  // A request made after the crash fails at once instead of hanging.
+  const c = pendingExport();
+  assert.deepEqual(c.settled, ['err', 'capture worker crashed: boom']);
+});
+
+test('startCapture wires worker.onerror and onmessageerror to fail pending requests', withDME(
+  class {},
+  async () => {
+    for (const fire of [(w) => w.onerror({ message: 'module failed', preventDefault() {} }),
+                        (w) => w.onmessageerror({})]) {
+      let worker = null;
+      const errors = [];
+      const handle = await startCapture({
+        onState() {}, onResult() {}, onError: (r) => errors.push(r),
+        createWorker: () => (worker = { postMessage() {}, terminate() {} }),
+        target: new EventTarget(),
+      });
+      const pending = handle.exportJsonl();
+      fire(worker);
+      await assert.rejects(() => pending, /capture worker/);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /capture worker/);
+      handle.close();
+    }
+  },
+));
+
+test('stopAndExportRaw times out with a loggable message instead of hanging', async () => {
+  let closed = false;
+  const handle = {
+    stop() {}, sampleCount: () => 10, close() { closed = true; },
+    exportJsonl: () => new Promise(() => {}), // a worker that never answers
+  };
+  await assert.rejects(() => stopAndExportRaw(handle, { timeoutMs: 20 }),
+    (err) => err.message === RAW_EXPORT_TIMEOUT_MESSAGE);
+  assert.match(RAW_EXPORT_TIMEOUT_MESSAGE, /timeout.*log as ERROR/);
+  assert.equal(closed, true, 'the worker is released even on timeout');
+});
+
+test('stopAndExportRaw skips an empty recording', async () => {
+  let exported = false;
+  let stoppedWith = null;
+  let closed = false;
+  const handle = {
+    stop(opts) { stoppedWith = opts; }, sampleCount: () => 0, close() { closed = true; },
+    exportJsonl: () => { exported = true; return Promise.resolve(''); },
+  };
+  assert.equal(await stopAndExportRaw(handle), null);
+  assert.deepEqual(stoppedWith, { finish: false });
+  assert.equal(exported, false);
+  assert.equal(closed, true);
 });

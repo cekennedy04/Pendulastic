@@ -77,6 +77,54 @@ def test_rows_without_a_pt7_are_not_judged():
     assert res["flagged"] == [] and res["allowed"] == []
 
 
+# ── the duplicate check and the intent report (owner decisions 2026-11-17) ─────────────────────────────
+
+def _sc(sid, **kw):
+    return S.Scenario(sid, "C", "", **kw)
+
+
+def test_two_names_for_one_swing_fail_the_duplicate_check(capsys):
+    lib = [_sc("C-a", time_scale=0.5), _sc("C-b", time_scale=0.5), _sc("C-c", time_scale=2.0),
+           _sc("S-x", params=S.severity(1.0)), _sc("R-y", params=S.Params(tone=2.0, k_f=0.75, k_df=0.025))]
+    res = B.duplicate_check(lib, allowed={})
+    assert res["flagged"] == [["C-a", "C-b"], ["R-y", "S-x"]]
+    assert not B.report_duplicate_check(res)
+    assert "DUPLICATE   C-a = C-b" in capsys.readouterr().out
+
+
+def test_shared_params_with_a_different_transform_or_release_are_not_duplicates():
+    lib = [_sc("C-a"), _sc("C-b", time_scale=2.0), _sc("C-c", theta0_deg=-30.0), _sc("C-d", omega0=-1.5)]
+    assert B.duplicate_check(lib, allowed={})["flagged"] == []
+
+
+def test_an_allowlisted_duplicate_passes_but_only_as_the_exact_set(capsys):
+    lib = [_sc("B-a"), _sc("M-a"), _sc("X-a")]
+    assert B.duplicate_check(lib, allowed={frozenset({"B-a", "M-a"}): "why"})["flagged"] == [["B-a", "M-a", "X-a"]]
+    res = B.duplicate_check(lib[:2], allowed={frozenset({"B-a", "M-a"}): "why", frozenset({"B-a", "Z-gone"}): "w"})
+    assert res["allowed"] == [["B-a", "M-a"]] and res["unknown"] == [["B-a", "Z-gone"]]
+    assert not B.report_duplicate_check(res)
+    res = B.duplicate_check([_sc("B-a"), _sc("M-a", time_scale=2.0)], allowed={frozenset({"B-a", "M-a"}): "why"})
+    assert res["not_dup"] == [["B-a", "M-a"]] and B.report_duplicate_check(res)
+
+
+def test_the_intent_report_lists_every_mismatch_and_marks_the_accepted(capsys):
+    rows = [dict(sid="M-ok", intent=1, mas="1", pt7=0.2), dict(sid="M-low", intent=1, mas="0", pt7=0.07),
+            dict(sid="M-plus", intent=1, mas="1+", pt7=0.3), dict(sid="M-ref", intent=3, mas=None, pt7=1.99,
+                                                                  refusal="No measurable oscillation"),
+            dict(sid="B-none", intent=None, mas="4", pt7=0.9)]
+    res = B.intent_mismatch(rows, accepted={"M-low": "kept"})
+    assert res[0] == 4 and [m[0] for m in res[1]] == ["M-low", "M-plus", "M-ref"]
+    B.report_intent_mismatch(res)
+    out = capsys.readouterr().out
+    assert "report only" in out and "4 scenarios carry a severity intent" in out and "3 land outside" in out
+    assert "accepted    M-low" in out and "MISMATCH    M-plus" in out and "refused (No measurable" in out
+
+
+def test_the_intent_bands_are_whole_mas_grades():
+    assert [B.intent_band(i) for i in (None, 0, 1, 2, 4)] == [None, "0", "1", "2", "4"]
+    assert set(S.INTENT_MISMATCH_ACCEPTED) <= {f"M-{n}" for n in PR.SEVERITY_INTENT}
+
+
 # ── fit_param, on a stand-in scorer (no rendering) ─────────────────────────────────────────────────────
 
 def _stand_in(monkeypatch, f, field="catch_release_deg"):
@@ -133,6 +181,17 @@ def test_every_allowlist_entry_is_built_and_says_why(library):
         assert len(why) > 20, sid
         assert library[sid].group in ("S", "C", "D", "R", "H"), (sid, "only probes may sit on an edge")
     assert not set(S.NEAR_EDGE_ALLOWED) & set(S.BAND_MIDDLE)
+
+
+def test_the_duplicate_pairs_are_dropped_and_the_library_has_no_unlisted_duplicate(library):
+    """Owner decision 2026-11-17 (c): C-wmax-low was C-f-low and R-reflex-force was S-lam1, one swing each."""
+    assert "C-wmax-low" not in library and "R-reflex-force" not in library
+    assert library["S-lam1"].params == S.Params(tone=2.0, k_f=0.75, k_df=0.025)       # the published force channel
+    assert library["C-f-low"].time_scale == 0.5 and library["C-f-low"].params == S.Params()
+    res = B.duplicate_check(list(library.values()))
+    assert res["flagged"] == [] and res["unknown"] == [], res
+    for s, why in S.DUPLICATE_ALLOWED.items():
+        assert len(why) > 20, s
 
 
 def test_the_m_copy_of_the_clasp_knife_is_dropped_and_the_profile_matches_b(library):

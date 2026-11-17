@@ -44,8 +44,8 @@ export const ALL_PT_KEYS = [
 ];
 
 /// The canonical scored set -- what `PT_HEALTHY_MAX` and `PT_BORDERLINE_MAX`
-/// are (eventually) calibrated against. Deliberately NOT the default
-/// selection: the app shows all seven so nothing is hidden, and says so.
+/// are (eventually) calibrated against, and the panel's default selection
+/// (see defaultSelection). The other two stay listed as unticked toggles.
 ///
 /// Pinned to `_PARAM_KEYS` and `pt_score::CANONICAL_PT_KEYS` by
 /// tests/test_pt_zone_parity.py. A drift here would let the phone call a
@@ -89,10 +89,15 @@ export const PARAM_CAVEAT = {
     'The only term with no upper bound, so it can dominate a score on its own.',
 };
 
-/// All seven on. The app deliberately starts from everything visible: a
-/// parameter hidden by default is a parameter nobody argues about.
+/// The scored set. All seven parameters are still LISTED (the panel renders a
+/// row and a toggle for every key in ALL_PT_KEYS, so none is hidden), but only
+/// the canonical five start ticked, so the panel's total matches the headline
+/// score on the same screen. Starting from all seven (until 2026-11-17) put
+/// "Total over this selection: 0.2002 ... Exploratory selection" directly
+/// under a headline of 0.1758 -- two different numbers for one trial, which
+/// read as a bug in every demo. "All seven" remains one tap away.
 export function defaultSelection() {
-  return ALL_PT_KEYS.slice();
+  return CANONICAL_KEYS.slice();
 }
 
 /// True when `selection` is exactly the canonical scored set, order-insensitive
