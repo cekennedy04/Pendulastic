@@ -69,6 +69,13 @@ On the rig PC: `PICK_VARIABLE.bat` once, then drag a file onto `DRYRUN.bat` (mov
 each run leaves `sent/<run>_<time>.csv`, what it wrote and when. Logs and the run sheet come back on
 the stick. The kit's `README.txt` is the bench procedure. `key.csv` never goes on the stick.
 
+For the rig PC as a whole (not one session): `python -m neuromech.rig_bundle` rebuilds the library and the
+Designer, then writes `neuromech/out/rig_bundle/` and `neuromech/out/rig_bundle_<date>_<sha7>.zip`: both
+Designer exes (built with .NET 3.5, with an `.exe.config` that also allows CLR 4, so nothing needs installing),
+the plain player, every library scenario that passes `neuromech.rig_guard` as player files (or, without
+the guard, |angle| <= 40 deg and <= 600 deg/s per 10 ms write), `START_HERE.txt` and a SHA256 `MANIFEST`.
+A bundle built without the guard is stamped NOT FOR MOTOR USE.
+
 **Once, before the first session:** play any player file with the log running, then
 
 ```bash
