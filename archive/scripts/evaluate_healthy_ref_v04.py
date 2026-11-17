@@ -3,18 +3,18 @@ evaluate_healthy_ref_v04.py
 ===========================
 SUPERSEDED 2026-10-27 by derive_healthy_ref.py. Kept as the record of how the
 2026-09-09 HEALTHY_REF was produced. Do not re-run it for a new reference: it
-imports the scorer from the retired restyle worktree, drops P9's RIGHT side
-(the real take -- P9 LEFT is the copy, and is now in excluded_trials.json), and
+imports the scorer from the retired restyle worktree, drops one participant's RIGHT side
+(the real take -- the LEFT is the copy, and is now in excluded_trials.json), and
 medians trials the scorer refuses to grade.
 
 Validation task V0.4: recalibrate HEALTHY_REF against the OptiTrack control
 cohort, using the scoring that actually ships.
 
 Scores every Control_* OptiTrack trial and CACHES the per-trial parameters to
-JSON, so control-set questions ("what if we drop P2?") cost nothing instead of
+JSON, so control-set questions ("what if we drop one participant?") cost nothing instead of
 another 20 minutes -- load_optitrack is ~19 s per trial and scoring is 0.1 s.
 
-Honours excluded_trials.json, and drops P9's right side: its Left and Right
+Honours excluded_trials.json, and drops a right side whose Left and Right
 files are byte-identical across all 5 trials (verified by md5), so that
 participant would otherwise contribute one leg counted twice.
 
@@ -48,13 +48,13 @@ Every control leg in mas_scores.csv is `assessed_by = ASSUMED`. All 17 of them.
 Every clinician-EXAMINED leg in the dataset (AN 2, VL 6, WD 10) is an MS
 patient. So there is no examined healthy leg anywhere in this data, and any
 "healthy reference" computed from it inherits that, however the arithmetic is
-done. Also note P23 contributes 7 of the 46 trials and has no mas_scores.csv
+done. Also note one participant contributes 7 of the 46 trials and has no mas_scores.csv
 row at all -- not even an assumed one.
 
 The rig failures are real and worth reading: 26 of 72 attempted trials failed,
-P2 losing 9 of 16 to "Both clusters are triangles ... rig geometry is
+one participant losing 9 of 16 to "Both clusters are triangles ... rig geometry is
 unsupported", "Cluster is never fully tracked (optical coverage 0.0%)" and
-"Cluster shows no rotation; no hinge axis exists". P2 is one of the four
+"Cluster shows no rotation; no hinge axis exists". That participant is one of the four
 participants the CURRENT reference was calibrated on.
 
 Usage:
@@ -68,6 +68,14 @@ OUT = ("C:/Users/cladi/AppData/Local/Temp/claude/"
        "C--Users-cladi/2037fe88-f614-4162-8a4b-47072e640659/scratchpad/v04_trials.json")
 sys.path.insert(0, ROOT + "/.claude/worktrees/webapp-restyle")
 import pendulastic_pt_score as P
+
+def _same_bytes(a, b):
+    """True when b exists and has exactly a's bytes (a duplicated export)."""
+    if a == b or not os.path.exists(b):
+        return False
+    with open(a, 'rb') as fa, open(b, 'rb') as fb:
+        return fa.read() == fb.read()
+
 
 KEYS = ['R2n', 'N', 'phi_max_ratio', 'omega_max_n', 'omega_min_n', 'f', 'area_ratio']
 excluded = json.load(open(os.path.join(ROOT, 'excluded_trials.json')))
@@ -86,8 +94,8 @@ for d in sorted(glob.glob(os.path.join(ROOT, 'OptiTrack_Recordings', 'Control_*'
         rec = {"pid": pid, "side": side, "cond": cond, "trial": tno, "key": key}
         if key in excluded:
             rec["status"] = "excluded_trials.json"
-        elif pid == '9' and side == 'right':
-            rec["status"] = "P9 duplicate side (byte-identical to left)"
+        elif side == 'right' and _same_bytes(csv, csv.replace(os.sep + 'Right' + os.sep, os.sep + 'Left' + os.sep)):
+            rec["status"] = "duplicate side (byte-identical to left)"
         else:
             try:
                 t, ang = P.load_optitrack(csv)

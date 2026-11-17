@@ -89,7 +89,7 @@ it would be meaningless.
 Found the same day, after the seed-window bug in `_angle_from_labeled_markers`
 surfaced. **Do not quote "two SD below the control mean" as the justification.**
 
-The only two trials pulling the control distribution down are P9 left and right
+The only two trials pulling the control distribution down are one participant's left and right
 at A0 9.0 — precisely the two the gate then catches.
 
 | control set | n | mean | sd | 2-SD floor |
@@ -115,11 +115,12 @@ trustworthy, no threshold derived from these A0 values is either.
 
 ## Effect on the corpus
 
-58 trials graded exactly as before. **2 refused** — P9 left and right, both at
-A0 9.0 deg, both previously reported as **MAS 1**.
+58 trials graded exactly as before. **2 refused** — one participant's left and right, both at
+A0 9.0 deg, both previously (wrongly) given a non-zero grade by the scorer.
 
-Those two trials are independently broken — P9's left and right exports are
-identical, and P9 is also named in the seed-window finding. The gate's first
+Those two trials are independently broken — that participant's left and right
+exports are identical, and the same participant is also named in the
+seed-window finding. The gate's first
 real catch is a trial that was already bad, which is the intended behaviour.
 Note this cuts both ways: because those same two trials set the control floor,
 the derivation had to be corrected (above).

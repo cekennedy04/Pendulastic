@@ -1,7 +1,7 @@
 """
 p13_vs_p5_comparison.py
 ========================
-Direct P13-vs-P5 comparison: highlights (1) differences in their baseline
+Direct two-participant comparison: highlights (1) differences in their baseline
 spasticity "signature" (the 7 Popovic parameters at the first timepoint) and
 (2) differences in how each participant changed over their 3 recorded
 timepoints (PT-score trajectory + per-parameter delta from first to last
@@ -115,7 +115,7 @@ def make_comparison_figure(p13_data, p5_data):
             means = _param_means(by_leg_tp, timepoints, leg, 0)
             vals = [means[k] if means else 0.0 for k in common._PARAM_KEYS]
             ax.bar(x + offset * width / 2, vals, width, label=label, color=color, alpha=0.85)
-        ax.set_title(f'{leg_label} Leg – Baseline Spasticity Signature (P13 vs P5)',
+        ax.set_title(f'{leg_label} Leg – Baseline PT-Parameter Signature',
                     fontsize=10, fontweight='bold', pad=10)
         ax.set_xticks(x)
         ax.set_xticklabels(common.PARAM_DISPLAY, fontsize=8)
@@ -151,9 +151,9 @@ def make_comparison_figure(p13_data, p5_data):
         ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
 
     fig.suptitle(
-        "Participant 13 vs Participant 5 — Spasticity Signature & Change Comparison\n"
+        "Two-Participant PT-Parameter Signature & Change Comparison\n"
         "Both use the full 7-parameter Popovic PT score. Timepoints aligned by ordinal position "
-        "(baseline / post / +1wk), not by matching protocol -- P13's conditions differ from P5's.",
+        "(baseline / post / +1wk), not by matching protocol -- the two participants' conditions differ.",
         fontsize=10, y=0.997, color='#333333')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     out_path = os.path.join(OUT_DIR, "P13_vs_P5_comparison.png")

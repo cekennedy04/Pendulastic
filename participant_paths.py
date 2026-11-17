@@ -8,7 +8,7 @@ parent study instead, so a folder can be identified at a glance:
     CHAT_{pid}      stroke participants
     MINT_{pid}      MS participants (spelled DOSA_{pid} earlier the same day)
     Participant_{pid}   legacy / ungrouped (e.g. "Other Motor Impairment",
-                        Participant_test, Participant_P001_msparticipant2)
+                        Participant_test, Participant_P001_<suffix>)
 
 Every prefix stays readable.  Nothing in the pipeline should hard-code a
 prefix: build paths with :func:`find_participant_dir` / :func:`participant_dir_name`,
@@ -72,7 +72,7 @@ def pids_in_path(rel_path):
 
 
 def strip_leading_pid(part):
-    """``"MINT_13_left_post"`` -> ``"left_post"``; unprefixed names pass through."""
+    """``"MINT_901_left_post"`` -> ``"left_post"``; unprefixed names pass through."""
     return _LEADING_PID_RE.sub("", str(part))
 
 
@@ -102,11 +102,11 @@ def group_for_diagnosis(diagnosis):
 
 
 def pid_from_dir_name(name):
-    """``"Control_10"`` -> ``"10"``.  Returns None if `name` is not a participant folder.
+    """``"Control_901"`` -> ``"901"``.  Returns None if `name` is not a participant folder.
 
     The remainder after the prefix is returned verbatim, matching the old
     ``name.replace("Participant_", "")`` behaviour, so oddities such as
-    ``Participant_P001_msparticipant2`` and the legacy
+    ``Participant_P001_<suffix>`` and the legacy
     ``Participant_5_left_side`` layout still yield the same ids they always did.
     """
     m = _DIR_RE.match(os.path.basename(str(name).rstrip("/\\")))
@@ -114,7 +114,7 @@ def pid_from_dir_name(name):
 
 
 def strip_prefix(value):
-    """``"Control_10"`` -> ``"10"``; an unprefixed value passes through unchanged.
+    """``"Control_901"`` -> ``"901"``; an unprefixed value passes through unchanged.
 
     Drop-in for the old ``value.replace("Participant_", "")`` calls that turn a
     folder name recorded in a results table back into a participant id.

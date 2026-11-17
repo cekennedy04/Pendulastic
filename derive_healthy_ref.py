@@ -5,9 +5,9 @@ Re-derive HEALTHY_REF's DATA-DERIVED entries from the control cohort, using the
 scorer and reconstruction that ship, over exactly the trials the scorer grades.
 
 Replaces evaluate_healthy_ref_v04.py, which (a) imported the scorer from the
-retired feat/webapp-workbench-restyle worktree, (b) dropped P9's RIGHT side as
+retired feat/webapp-workbench-restyle worktree, (b) dropped one participant's RIGHT side as
 the duplicate when capture timestamps prove the right-leg take is the real one
-(excluded_trials.json now excludes P9 LEFT), and (c) took every scored trial,
+(excluded_trials.json now excludes the duplicate LEFT take), and (c) took every scored trial,
 including ones mas_estimate refuses to grade.
 
 Population: participants whose OptiTrack folder carries the control prefix
@@ -50,8 +50,7 @@ quarter of the curve's range; those trials now read their undetrended A0. The
 same cached curves with the scorer before the bound reproduce the 2026-10-27
 row below exactly (39 trials).
 
-RESULT 2026-10-27 (39 interpretable trials, 12 legs, 7 people: P6, 7, 8, 9,
-10, 12, 23), trial median, leave-one-person-out range in brackets:
+RESULT 2026-10-27 (39 interpretable trials, 12 legs, 7 people), trial median, leave-one-person-out range in brackets:
 
     R2n            0.9467  [0.915 - 0.966]   literature anchor 1.0 kept
     N              6.0000  [6.00  - 6.50 ]   literature anchor 6.5 kept

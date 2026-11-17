@@ -161,6 +161,19 @@ def pick_canonical(group: pd.DataFrame) -> pd.DataFrame:
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Group membership by participant id is kept out of the public repo. It lives
+# in the untracked legacy_analysis_groups.json (gitignored) in the repo root.
+def _local_group_ids(key, roots):
+    import json
+    for root in roots:
+        path = os.path.join(root, "legacy_analysis_groups.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return {str(x) for x in json.load(f)[key]}
+    raise SystemExit("legacy_analysis_groups.json with a %r list is required "
+                     "(untracked; not in the public repo)" % key)
+
+
 def main() -> None:
     sep = "=" * 72
     print(f"\n{sep}\n  HPE MAS Evaluation vs OptiTrack Ground Truth\n{sep}\n")
@@ -182,10 +195,10 @@ def main() -> None:
     opti_df = opti_df[~opti_df["pid"].str.startswith("0")]
     opti_df = opti_df[opti_df["pid"] != "1_control"]
 
-    # MS / spastic participants: P2 (MAS 3), P4 (MAS 1+/2), P5 (borderline).
-    # All others (P1, P6–P12, …) are healthy controls.
+    non_healthy = _local_group_ids("hpe_mas_evaluation_non_healthy", (BASE_DIR,))
+
     def _is_healthy(pid_str: str) -> bool:
-        return pid_str.split("_")[0] not in ("2", "4", "5")
+        return pid_str.split("_")[0] not in non_healthy
 
     def _of(r, col): return float(r[col]) if col in r.index and pd.notna(r[col]) else float("nan")
     opti_key = {

@@ -159,7 +159,7 @@ This is a data-availability problem, not a signal-strength problem — 7 of
 the current 8 control-cohort participants have video-only recordings, zero
 IMU data at all (confirmed directly, not inferred).
 
-**Pre vs. post (treatment sensitivity):** only 1 of 4 MS participants (P15)
+**Pre vs. post (treatment sensitivity):** only 1 of 4 MS participants
 has both timepoints in the OptiTrack-matched dataset. Reported as
 descriptive/illustrative only — n=1 paired observation supports no
 inference.
@@ -276,7 +276,7 @@ cohort once available"* — the codebase's own author already flagged this
 as not-yet-solid. Figure 9 (leave-one-control-out sensitivity, testing how
 much the "healthy" threshold moves depending on which controls anchor it)
 **could not be run at all**: the current 3-modality-matched trial set has
-only **1** control participant (P16) with usable IMU+MediaPipe+OptiTrack
+only **1** control participant with usable IMU+MediaPipe+OptiTrack
 data together, not the 4 the reference was built from. This is the same
 n=1-control-arm problem from Section 5, showing up a second time in a more
 consequential place — it's not just that the group *comparison* is
@@ -330,12 +330,8 @@ specific about what it measures: *"the pendulum test is commonly used to
 quantify **knee extensor spasticity**"* (Whelan et al., 2018, title and
 throughout) — it's an extensor-spasticity instrument by design.
 
-For the one participant with the granular breakdown recorded (P15):
-
-| Leg | `mas_grade` | `mas_flexion` | `mas_extension` |
-|---|---|---|---|
-| Left | 0 | 1+ | 0 |
-| Right | 1 | 1 | 0 |
+For the one participant with the granular breakdown recorded (per-leg
+grades withheld from this public copy):
 
 **`mas_extension` is 0 on both legs** — no variance at all — while
 `mas_grade` and `mas_flexion` both vary. Section 4's reported correlation
@@ -352,7 +348,7 @@ correlate against directly, replacing `mas_grade` as Section 4's target
 variable.
 
 A second, independent participant makes the same point from a different
-angle: **P17**, a brand-new MS participant whose data appeared mid-session,
+angle: a brand-new participant whose data appeared mid-session
 has `mas_grade = -1` with the note *"Overall MAS Grade not yet assessed"* —
 but `mas_flexion` and `mas_extension` **are** recorded for both legs. If a
 clinician can score flexion/extension sub-components before committing to
@@ -420,8 +416,8 @@ of sample size:
    the full cohort** and switch the clinical-correlation target to it
    (Section 7.5) — a data-collection-protocol fix, not an analysis fix,
    and cheap to do going forward since flexion/extension sub-scores are
-   apparently already assessed per-session (P17 has them without an
-   overall grade).
+   apparently already assessed per-session (one participant has them without
+   an overall grade).
 5. **Fix the score formula's internal issues independent of more data**
    (Section 7.6): decorrelate or re-weight the 7 parameters instead of
    equal-weighting a collinear set, and stop reporting an MAS-equivalent

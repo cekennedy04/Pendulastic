@@ -2,7 +2,7 @@
 model_vs_optitrack_eval.py
 ==========================
 Evaluates pose-estimation model knee-angle outputs against OptiTrack ground
-truth for Participant 2 (healthy) and Participant 4 (MS).
+truth for the two participants it was written for.
 
 Two graph types per model × trial
   A — Model PT Score: same layout as pendulastic_pt_score.py but driven by
@@ -64,7 +64,7 @@ for d in (OUT_PT, OUT_CMP):
     os.makedirs(d, exist_ok=True)
 
 # ── Participant labels ───────────────────────────────────────────────────────
-PARTICIPANT_LABEL = {}   # populated during discovery; pid_key → "P2 (healthy)" etc.
+PARTICIPANT_LABEL = {}   # populated during discovery; pid_key → display label
 
 # Human-readable model display names
 _MODEL_DISPLAY = {
@@ -539,7 +539,7 @@ def make_rmse_heatmap(records: list[dict], out_path: str) -> None:
     cbar.ax.yaxis.set_tick_params(color="#C8D8F0")
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="#C8D8F0")
 
-    ax.set_title("RMSE vs OptiTrack Ground Truth (°)\nP2 = healthy  |  P4 = MS",
+    ax.set_title("RMSE vs OptiTrack Ground Truth (°)",
                  color="#D0DEFF", fontsize=13, pad=12)
     for sp in ax.spines.values(): sp.set_edgecolor("#3A4A6A")
 
@@ -653,7 +653,7 @@ def make_model_ranking_plot(records: list[dict], out_path: str) -> None:
     for sp in ax2.spines.values(): sp.set_edgecolor("#3A4A6A")
 
     fig.suptitle("Model Ranking: Angle RMSE vs OptiTrack  +  MAS Accuracy\n"
-                 "P2 = healthy  |  P4 = MS  |  sorted by RMSE (best on top)",
+                 "sorted by RMSE (best on top)",
                  color="#D0DEFF", fontsize=14, y=1.01)
     plt.tight_layout()
     plt.savefig(out_path, dpi=130, facecolor=fig.get_facecolor(), bbox_inches="tight")
@@ -668,7 +668,7 @@ def make_model_ranking_plot(records: list[dict], out_path: str) -> None:
 def main() -> None:
     SEP = "=" * 72
     print(f"\n{SEP}")
-    print("  Model vs OptiTrack Evaluation  (P2=healthy, P4=MS)")
+    print("  Model vs OptiTrack Evaluation")
     print(f"{SEP}\n")
 
     entries = discover_model_csvs()
@@ -689,8 +689,7 @@ def main() -> None:
         model = entry["model"]
         mdisp = _MODEL_DISPLAY.get(model, model)
 
-        pid_label = (f"P{pid.split('_')[0]} ({'healthy' if pid.startswith('2') else 'MS'})"
-                     f" — {pid.replace('_', ' ')}")
+        pid_label = f"P{pid.split('_')[0]} — {pid.replace('_', ' ')}"
         tag = f"{pid_label} | Pos{pos} T{trial} | {mdisp}"
         print(f"[{i+1}/{len(entries)}] {tag}")
 

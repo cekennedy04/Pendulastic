@@ -2,7 +2,7 @@
 validate_controls.py
 ====================
 Reliability and validity of the Pendulastic annotation for the Wartenberg
-Pendulum Test.  Healthy controls only (P1, P6–P12).
+Pendulum Test.  Healthy controls only.
 
 Metrics computed
 ----------------
@@ -406,7 +406,7 @@ def _make_figure(paired: list, ba: dict, icc2: dict, icc1: dict,
 
     fig.suptitle(
         "Pendulastic Annotation — Reliability & Validity\n"
-        "Healthy Controls  (P1, P6–P12)  |  7-param Popovic 2018 PT Score",
+        "Healthy Controls  |  7-param Popovic 2018 PT Score",
         fontsize=12.5, fontweight="bold", y=1.005)
 
     for ext in ("pdf", "png"):
@@ -531,7 +531,7 @@ def main():
         def row(m, v="", u="", n=""):
             w.writerow([m, v, u, n])
         row("analysis_variable", "PT score (7-param Popovic 2018)")
-        row("controls", "P1, P6-P12")
+        row("controls", "8 participants")
         row("", "")
         row("=== CONCURRENT VALIDITY (Pendulastic vs OptiTrack) ===")
         row("n_paired_trials",  icc2["n"])

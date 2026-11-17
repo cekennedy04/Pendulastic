@@ -486,7 +486,7 @@ fn n_counts_every_swing_rather_than_capping_at_a_clock() {
 fn release_is_the_drop_not_the_lift_when_a_trial_starts_at_rest() {
     // The leg opens at rest, is lifted to extension, held, then dropped. The
     // first threshold crossing is the lift; measured from there, A0 is rest
-    // minus rest and the trial used to be discarded (15 real Control_6/7/8
+    // minus rest and the trial used to be discarded (15 real P6/7/8
     // baseline trials, 2026-10-27).
     const { assert!(!golden::TRIAL_LIFT_HOLD_IS_NONE) };
     let p = compute_pt_params(golden::TRIAL_LIFT_HOLD_T, golden::TRIAL_LIFT_HOLD_ANG, None, false)

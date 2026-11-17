@@ -1069,9 +1069,9 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
         w = _csv_mod.writer(f)
         w.writerow(["frame", "time_s", "knee_angle_deg",
                     "pid", "leg", "ms_status", "trial", "methodology"])
-        w.writerow([0, "0.0000", "170.000", "P1", "Right", "MS", "1", "upload_csv"])
-        w.writerow([1, "0.0333", "165.000", "P1", "Right", "MS", "1", "upload_csv"])
-        w.writerow([2, "0.0667", "160.000", "P1", "Right", "MS", "1", "upload_csv"])
+        w.writerow([0, "0.0000", "170.000", "P901", "Right", "MS", "1", "upload_csv"])
+        w.writerow([1, "0.0333", "165.000", "P901", "Right", "MS", "1", "upload_csv"])
+        w.writerow([2, "0.0667", "160.000", "P901", "Right", "MS", "1", "upload_csv"])
 
     captured = {}
 
@@ -1086,7 +1086,7 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
         monkeypatch.setattr(DataManager, "save_trial",
                             classmethod(lambda cls, *a, **kw: ""))
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._run_csv_analysis(str(p), meta)
         app.update()  # process the after(0, ...) callback
     finally:

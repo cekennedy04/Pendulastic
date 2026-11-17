@@ -19,15 +19,15 @@ arm of the comparison automatically.
 
 - `run_pt_analysis.py` / `pt_report_common.py` already compute a 7-parameter PT score per
   trial and produce per-participant reports plus comparisons against two fixed reference
-  participants (P5, P13). This is the numerically authoritative pipeline in the repo.
+  participants. This is the numerically authoritative pipeline in the repo.
 - A separate, disconnected script (`ms_vs_healthy_analysis.py`) already does an MS-vs-Healthy
   comparison, but: it uses a different (4-parameter) score, reads from a static CSV built by
   a third script (`pendulastic_pt_score.py`) rather than live trial discovery, uses a dark
   dashboard visual style that doesn't match the rest of the pipeline's output, and classifies
   participants via a numeric-pid fallback (`pid >= 4 → MS`) that doesn't match the actual
-  dataset (e.g. archived controls are P6/7/8, identifiable only by a `_control` folder-name
+  dataset (e.g. archived controls are identifiable only by a `_control` folder-name
   suffix, not by pid parity). It also lumps `"Stroke"` into the `"MS"` bucket.
-- Only 2 of ~14 participants seen in the data (P13, P14) have a `metadata.json` with a
+- Only 2 of ~14 participants seen in the data have a `metadata.json` with a
   diagnosis on file. `master_app.py`'s diagnosis field actually has four values: `"MS"`,
   `"Stroke"`, `"Unaffected Control"`, `"Other Motor Impairment"` — not a binary.
 - Decided during design: build a new, consistent cohort pipeline on top of the existing
@@ -109,7 +109,7 @@ Both sources map through the same four-value vocabulary. Mapping to arms:
   - `no_entry` — the file exists but has no key for this pid
 - The `_control` (case-insensitive) folder-name convention seen in legacy `OptiTrack_Recordings`
   paths is used **only** as cosmetic suggestion text appended to a `no_entry` warning line
-  (e.g. `"P6: no_entry (folder name suggests 'control')"`). It never determines classification
+  (e.g. `"P{pid}: no_entry (folder name suggests 'control')"`). It never determines classification
   and is never auto-written into the registry.
 
 ## 7. `pt_cohort_common.py`

@@ -104,7 +104,7 @@ grab one live in our next sync if useful.
 ## 4. Roadblocks, Errors, & Solutions
 
 - **MAS/RMSE contradiction on a healthy control (resolved, `05127ec`).**
-  A control trial (Participant 16, Left/Control/Trial 1) scored RMSE 6.95
+  A control trial (left leg, baseline trial 1) scored RMSE 6.95
   and a predicted MAS of 4, while OptiTrack ground truth said MAS 0 on the
   same data. Root cause: `attach_rmse` wasn't cross-correlation-aligning
   the IMU/MediaPipe curve to OptiTrack's clock before scoring ΓÇö the

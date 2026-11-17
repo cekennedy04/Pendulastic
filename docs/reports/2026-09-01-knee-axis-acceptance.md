@@ -21,8 +21,8 @@ let this regression stop running silently once already (the `pre/`
 subdirectory), and would have done so a second time (the 2026-09-01 rename).
 
 Resolved on this machine:
-- P8 Left trial_2 → `OptiTrack_Recordings\Control_8\Left\pre\trial_2_optitrack.csv`
-- P9 Left trial_3 → `OptiTrack_Recordings\Control_9\Left\pre\trial_3_optitrack.csv`
+- P8 Left trial_2 → `OptiTrack_Recordings\P8\Left\pre\trial_2_optitrack.csv`
+- P9 Left trial_3 → `OptiTrack_Recordings\P9\Left\pre\trial_3_optitrack.csv`
 
 ## The two pinned regressions
 
@@ -130,28 +130,25 @@ Historical baseline: 6 degenerate legs across the full 214-trial corpus
 under the bug, all six MAS-0 (biased toward erasing group separation between
 healthy and impaired), against 1 pre-bug.
 
-Measured now (67-file / 51-scored sample): **13 degenerate legs**, MAS labels
-resolved from `mas_scores.csv` where possible:
+Measured now (67-file / 51-scored sample): **13 degenerate legs**. (The
+per-trial MAS column was removed from this public copy; the aggregate MAS
+counts below are unchanged.)
 
-| Trial | Leg | Reason | MAS |
-|---|---|---|---|
-| CHAT_19 Right pre trial_1 | Right | R2n=0; area_ratio=0.951 | not found |
-| CHAT_22 Left pre trial_3 | Left | R2n=0 | not found |
-| Control_10 Right pre trial_4 | Right | R2n=0 | 0 |
-| Control_23 Right pre trial_4 | Right | R2n=0 | not found |
-| Control_6 Right pre trial_1 | Right | R2n=0 | 0 |
-| Control_7 Right pre trial_1 | Right | R2n=0 | 0 |
-| Control_9 Right pre trial_3 | Right | R2n=0; area_ratio=0.959 | 0 |
-| DOSA_13 Left week_1_post trial_1 | Left | R2n=0; area_ratio=0.918 | 1 (condition mismatch, see below) |
-| DOSA_13 Right month_post trial_1 | Right | R2n=0; area_ratio=0.965 | 1 (condition mismatch, see below) |
-| DOSA_14 Left pre trial_2 | Left | R2n=0; area_ratio=0.965 | 1 |
-| DOSA_15 Left post trial_3 | Left | R2n=0; area_ratio=0.978 | 0 (condition mismatch, see below) |
-| DOSA_15 Left pre trial_4_000 | Left | R2n=0 | 0 |
-| DOSA_17 Right post trial_4 | Right | R2n=0 | 0 |
-
-("condition mismatch" = `mas_scores.csv` only has a `pre` row for that
-participant/leg; the grade shown is that row's, not a grade for the exact
-post/follow-up condition of the trial.)
+| Trial | Leg | Reason |
+|---|---|---|
+| P19 Right pre trial_1 | Right | R2n=0; area_ratio=0.951 |
+| P22 Left pre trial_3 | Left | R2n=0 |
+| P10 Right pre trial_4 | Right | R2n=0 |
+| P23 Right pre trial_4 | Right | R2n=0 |
+| P6 Right pre trial_1 | Right | R2n=0 |
+| P7 Right pre trial_1 | Right | R2n=0 |
+| P9 Right pre trial_3 | Right | R2n=0; area_ratio=0.959 |
+| P13 Left week_1_post trial_1 | Left | R2n=0; area_ratio=0.918 |
+| P13 Right month_post trial_1 | Right | R2n=0; area_ratio=0.965 |
+| P14 Left pre trial_2 | Left | R2n=0; area_ratio=0.965 |
+| P15 Left post trial_3 | Left | R2n=0; area_ratio=0.978 |
+| P15 Left pre trial_4_000 | Left | R2n=0 |
+| P17 Right post trial_4 | Right | R2n=0 |
 
 This is **not resolved** — by rate it is worse than the historical baseline,
 not better. 13 degenerate legs out of 51 scored trials in a 1-in-4 sample
@@ -185,30 +182,30 @@ carrying a specific, named reason. All 16 fall into two failure modes:
 Full list (relative paths, from the 1-in-4 sample):
 
 ```
-CHAT_19/Left/pre/trial_1        hinge axis not recoverable (70%, cov 73.3%)
-CHAT_21/Left/pre/trial_1        hinge axis not recoverable (85%, cov 74.1%)
-CHAT_21/Left/pre/trial_5        hinge axis not recoverable (87%, cov 73.8%)
-CHAT_22/Right/pre/trial_3       hinge axis not recoverable (84%, cov 49.0%)
-Control_10/Left/pre/trial_3     hinge axis not recoverable (83%, cov 97.5%)
-Control_23/Left/pre/trial_4     hinge axis not recoverable (78%, cov 86.8%)
-Control_2/Left/pre_duo/trial_4  hinge axis not recoverable (71%, cov 99.7%)
-Control_2/Right/pre_solo/trial_5 cluster never fully tracked (cov 0.0%)
-DOSA_11/Right/pre/trial_2       hinge axis not recoverable (76%, cov 92.4%)
-DOSA_15/Right/post/trial_3      hinge axis not recoverable (90%, cov 96.8%)
-DOSA_15/Right/post_1week/trial_3 hinge axis not recoverable (75%, cov 44.2%)
-DOSA_15/Right/pre/trial_2       hinge axis not recoverable (71%, cov 63.1%)
-DOSA_17/Left/post_1_week/trial_4 hinge axis not recoverable (85%, cov 84.8%)
-DOSA_17/Right/post_1_week/trial_4 hinge axis not recoverable (69%, cov 87.3%)
-DOSA_18/Left/pre/trial_4        hinge axis not recoverable (89%, cov 64.0%)
-DOSA_4/Right/pre/trial_4        cluster never fully tracked (cov 0.0%)
+P19/Left/pre/trial_1        hinge axis not recoverable (70%, cov 73.3%)
+P21/Left/pre/trial_1        hinge axis not recoverable (85%, cov 74.1%)
+P21/Left/pre/trial_5        hinge axis not recoverable (87%, cov 73.8%)
+P22/Right/pre/trial_3       hinge axis not recoverable (84%, cov 49.0%)
+P10/Left/pre/trial_3     hinge axis not recoverable (83%, cov 97.5%)
+P23/Left/pre/trial_4     hinge axis not recoverable (78%, cov 86.8%)
+P2/Left/pre_duo/trial_4  hinge axis not recoverable (71%, cov 99.7%)
+P2/Right/pre_solo/trial_5 cluster never fully tracked (cov 0.0%)
+P11/Right/pre/trial_2       hinge axis not recoverable (76%, cov 92.4%)
+P15/Right/post/trial_3      hinge axis not recoverable (90%, cov 96.8%)
+P15/Right/post_1week/trial_3 hinge axis not recoverable (75%, cov 44.2%)
+P15/Right/pre/trial_2       hinge axis not recoverable (71%, cov 63.1%)
+P17/Left/post_1_week/trial_4 hinge axis not recoverable (85%, cov 84.8%)
+P17/Right/post_1_week/trial_4 hinge axis not recoverable (69%, cov 87.3%)
+P18/Left/pre/trial_4        hinge axis not recoverable (89%, cov 64.0%)
+P4/Right/pre/trial_4        cluster never fully tracked (cov 0.0%)
 ```
 
 Every refusal names a specific, checkable reason (a percentage on-axis
 figure, or zero coverage). No trial is silently dropped — this is the
 "never rejects without saying why" contract holding. Whether 23.9% is an
 acceptable refusal rate, or whether some of the "hinge axis not recoverable"
-trials at high optical coverage (e.g. Control_10 Left at 97.5% coverage,
-Control_2 Left at 99.7%) deserve a closer look at why well-tracked marker
+trials at high optical coverage (e.g. P10 Left at 97.5% coverage,
+P2 Left at 99.7%) deserve a closer look at why well-tracked marker
 data still defeats the axis solve, was not evaluated further here and is
 flagged as a candidate follow-up.
 

@@ -169,12 +169,12 @@ def test_trial_file_paths_imu_and_rgb(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         names = [os.path.basename(p) for p in app._trial_file_paths(meta, ["imu", "rgb"])]
-        assert "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1_rgb.csv" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi.timestamps.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1_imu.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1_rgb.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1.avi" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1.avi.timestamps.csv" in names
     finally:
         app.destroy()
 
@@ -184,7 +184,7 @@ def test_trial_file_paths_optitrack_only(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         assert app._trial_file_paths(meta, ["optitrack"]) == []
     finally:
         app.destroy()
@@ -195,7 +195,7 @@ def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch)
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = []
@@ -215,7 +215,7 @@ def test_on_stop_no_placeholder_when_multi_trial_off(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._active_sources = []
         app.on_stop()
@@ -643,10 +643,10 @@ def test_transition_to_review_multi_trial_mode_skips_post_panel(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._session_trials = [{
             "trial_num": 1, "sources": ["imu"], "status": "processing",
             "meta": meta, "source_angles": None, "fps": None,
@@ -669,19 +669,19 @@ def test_finish_trial_multi_mode_updates_entry_and_increments_trial():
     app = App()
     try:
         app._acq.trial_var.set("1")
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._session_trials = [{
             "trial_num": 1, "sources": ["imu"], "status": "processing",
             "meta": meta, "source_angles": None, "fps": None,
             "base_filename": None, "file_paths": [],
         }]
         app._finish_trial_multi_mode(
-            {"imu": [1.0, 2.0]}, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+            {"imu": [1.0, 2.0]}, meta, "PID_P901_LEG_Right_MS_TRIAL_1.csv")
         app.update()
         entry = app._session_trials[0]
         assert entry["status"] == "saved"
         assert entry["source_angles"] == {"imu": [1.0, 2.0]}
-        assert entry["base_filename"] == "PID_P1_LEG_Right_MS_TRIAL_1.csv"
+        assert entry["base_filename"] == "PID_P901_LEG_Right_MS_TRIAL_1.csv"
         assert int(app._acq.trial_var.get()) == 2
     finally:
         app.destroy()
@@ -695,7 +695,7 @@ def test_transition_to_review_single_trial_mode_unchanged(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
         app.update()
         assert len(shown) == 1
@@ -1023,9 +1023,9 @@ def test_on_view_trial_shows_post_processing_panel():
     try:
         app._session_trials = [{
             "trial_num": 1, "sources": ["imu"], "status": "saved",
-            "meta": {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1},
+            "meta": {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1},
             "source_angles": {"imu": [170.0, 165.0]}, "fps": 30.0,
-            "base_filename": "PID_P1_LEG_Right_MS_TRIAL_1.csv",
+            "base_filename": "PID_P901_LEG_Right_MS_TRIAL_1.csv",
             "file_paths": [],
         }]
         app._acq.pack(fill="both", expand=True)

@@ -165,7 +165,7 @@ def test_thigh_incline_reproduces_the_target_resting_angle():
     resting value. Confirming ~39 deg needs the recorded thigh angle from the
     protocol.
     """
-    target = 129.37                     # P8 left, pre -- control leg
+    target = 129.37                     # one real left-leg pre trial
     incline = ps.thigh_incline_from_resting_deg(target)
     assert -45.0 < incline < -30.0
     t, theta = ps.simulate(dt=1e-3, duration=25.0, B=0.6, theta0_deg=0.0,

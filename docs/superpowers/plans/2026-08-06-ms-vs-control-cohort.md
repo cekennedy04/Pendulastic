@@ -174,31 +174,31 @@ import pt_cohort_common as pcc
 # ── classify_participant ─────────────────────────────────────────────────
 
 def test_classify_metadata_ms():
-    assert pcc.classify_participant("13", "MS", {}, True) == ("MS", "metadata")
+    assert pcc.classify_participant("913", "MS", {}, True) == ("MS", "metadata")
 
 
 def test_classify_metadata_unaffected_control():
-    assert pcc.classify_participant("6", "Unaffected Control", {}, True) == ("Control", "metadata")
+    assert pcc.classify_participant("906", "Unaffected Control", {}, True) == ("Control", "metadata")
 
 
 def test_classify_metadata_stroke_and_other_are_excluded():
-    assert pcc.classify_participant("9", "Stroke", {}, True) == ("Excluded", "metadata")
-    assert pcc.classify_participant("10", "Other Motor Impairment", {}, True) == ("Excluded", "metadata")
+    assert pcc.classify_participant("909", "Stroke", {}, True) == ("Excluded", "metadata")
+    assert pcc.classify_participant("910", "Other Motor Impairment", {}, True) == ("Excluded", "metadata")
 
 
 def test_classify_metadata_priority_over_registry():
-    registry = {"13": "Control"}   # deliberately conflicting with metadata
-    assert pcc.classify_participant("13", "MS", registry, True) == ("MS", "metadata")
+    registry = {"913": "Control"}   # deliberately conflicting with metadata
+    assert pcc.classify_participant("913", "MS", registry, True) == ("MS", "metadata")
 
 
 def test_classify_registry_fallback_when_no_metadata():
-    registry = {"6": "Control"}
-    assert pcc.classify_participant("6", None, registry, True) == ("Control", "registry")
+    registry = {"906": "Control"}
+    assert pcc.classify_participant("906", None, registry, True) == ("Control", "registry")
 
 
 def test_classify_unrecognized_metadata_falls_through_to_registry():
-    registry = {"6": "Control"}
-    assert pcc.classify_participant("6", "Not A Real Diagnosis", registry, True) == ("Control", "registry")
+    registry = {"906": "Control"}
+    assert pcc.classify_participant("906", "Not A Real Diagnosis", registry, True) == ("Control", "registry")
 
 
 def test_classify_unclassified_no_entry():
@@ -210,12 +210,12 @@ def test_classify_unclassified_registry_missing():
 
 
 def test_classify_registry_missing_wins_even_with_unrecognized_metadata():
-    assert pcc.classify_participant("6", "typo diagnosis", {}, False) == ("Unclassified", "registry_missing")
+    assert pcc.classify_participant("906", "typo diagnosis", {}, False) == ("Unclassified", "registry_missing")
 
 
 def test_classify_case_insensitive_matching():
-    assert pcc.classify_participant("13", "ms", {}, True) == ("MS", "metadata")
-    assert pcc.classify_participant("6", None, {"6": "control"}, True) == ("Control", "registry")
+    assert pcc.classify_participant("913", "ms", {}, True) == ("MS", "metadata")
+    assert pcc.classify_participant("906", None, {"906": "control"}, True) == ("Control", "registry")
 
 
 # ── load_registry ────────────────────────────────────────────────────────
@@ -227,9 +227,9 @@ def test_load_registry_missing_file(tmp_path, monkeypatch):
 
 def test_load_registry_reads_existing_file(tmp_path, monkeypatch):
     path = tmp_path / "participant_groups.json"
-    path.write_text(json.dumps({"6": "Control"}), encoding="utf-8")
+    path.write_text(json.dumps({"906": "Control"}), encoding="utf-8")
     monkeypatch.setattr(pcc, "REGISTRY_JSON", str(path))
-    assert pcc.load_registry() == ({"6": "Control"}, True)
+    assert pcc.load_registry() == ({"906": "Control"}, True)
 
 
 def test_load_registry_malformed_json_treated_as_missing(tmp_path, monkeypatch, capsys):
@@ -244,38 +244,38 @@ def test_load_registry_malformed_json_treated_as_missing(tmp_path, monkeypatch, 
 
 def test_load_metadata_diagnosis_reads_diagnosis_field(tmp_path, monkeypatch):
     rec_root = tmp_path / "Recordings"
-    (rec_root / "Participant_13").mkdir(parents=True)
-    (rec_root / "Participant_13" / "metadata.json").write_text(
-        json.dumps({"participant_id": "13", "diagnosis": "MS"}), encoding="utf-8")
+    (rec_root / "Participant_913").mkdir(parents=True)
+    (rec_root / "Participant_913" / "metadata.json").write_text(
+        json.dumps({"participant_id": "913", "diagnosis": "MS"}), encoding="utf-8")
     monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
-    assert pcc.load_metadata_diagnosis("13") == "MS"
+    assert pcc.load_metadata_diagnosis("913") == "MS"
 
 
 def test_load_metadata_diagnosis_returns_none_when_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(pcc, "REC_ROOT", str(tmp_path / "Recordings"))
-    assert pcc.load_metadata_diagnosis("13") is None
+    assert pcc.load_metadata_diagnosis("913") is None
 
 
 def test_load_metadata_diagnosis_prefix_collision_is_rejected(tmp_path, monkeypatch):
-    # "Participant_13*" glob-matches "Participant_130" too -- must not
+    # "Participant_913*" glob-matches "Participant_9130" too -- must not
     # mistake participant 130's metadata for participant 13's.
     rec_root = tmp_path / "Recordings"
-    (rec_root / "Participant_130").mkdir(parents=True)
-    (rec_root / "Participant_130" / "metadata.json").write_text(
+    (rec_root / "Participant_9130").mkdir(parents=True)
+    (rec_root / "Participant_9130" / "metadata.json").write_text(
         json.dumps({"participant_id": "130", "diagnosis": "MS"}), encoding="utf-8")
     monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
-    assert pcc.load_metadata_diagnosis("13") is None
+    assert pcc.load_metadata_diagnosis("913") is None
 
 
 def test_load_metadata_diagnosis_checks_multiple_matching_folders(tmp_path, monkeypatch):
-    # Real convention: Participant_13 AND Participant_13_right_post can
+    # Real convention: Participant_913 AND Participant_913_right_post can
     # both exist; metadata.json only needs to be found in one of them.
     rec_root = tmp_path / "Recordings"
-    (rec_root / "Participant_13_right_post").mkdir(parents=True)
-    (rec_root / "Participant_13_right_post" / "metadata.json").write_text(
-        json.dumps({"participant_id": "13", "diagnosis": "MS"}), encoding="utf-8")
+    (rec_root / "Participant_913_right_post").mkdir(parents=True)
+    (rec_root / "Participant_913_right_post" / "metadata.json").write_text(
+        json.dumps({"participant_id": "913", "diagnosis": "MS"}), encoding="utf-8")
     monkeypatch.setattr(pcc, "REC_ROOT", str(rec_root))
-    assert pcc.load_metadata_diagnosis("13") == "MS"
+    assert pcc.load_metadata_diagnosis("913") == "MS"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -388,10 +388,10 @@ def load_registry():
 def load_metadata_diagnosis(pid):
     """Recordings/Participant_<pid>*/metadata.json -> diagnosis field, or
     None if nothing matches. The glob pattern alone can over-match (e.g.
-    "Participant_13*" also matches "Participant_130"), so every
+    "Participant_913*" also matches "Participant_9130"), so every
     candidate's own participant_id field must equal `pid` exactly before
     its diagnosis is used. Multiple real folders can exist for one
-    participant (e.g. Participant_13 and Participant_13_right_post); the
+    participant (e.g. Participant_913 and Participant_913_right_post); the
     first with a non-empty diagnosis wins."""
     pattern = os.path.join(REC_ROOT, f"Participant_{pid}*", "metadata.json")
     for path in glob.glob(pattern):
@@ -773,15 +773,15 @@ def test_folder_hints_control_matches_case_insensitive(monkeypatch):
 # ── build_composition_rows ──────────────────────────────────────────────
 
 def test_build_composition_rows_classifies_and_counts_trials(monkeypatch):
-    monkeypatch.setattr(pcc, "load_registry", lambda: ({"6": "Control"}, True))
-    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: {"13": "MS"}.get(pid))
+    monkeypatch.setattr(pcc, "load_registry", lambda: ({"906": "Control"}, True))
+    monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: {"913": "MS"}.get(pid))
     monkeypatch.setattr(pcc.common, "leg_trial_counts",
                         lambda pid: {"13": {"left": 5, "right": 5}, "6": {"left": 4, "right": 4}}[pid])
     rows = pcc.build_composition_rows({"13", "6"})
     by_pid = {r["pid"]: r for r in rows}
-    assert by_pid["13"]["group"] == "MS" and by_pid["13"]["source"] == "metadata"
+    assert by_pid["913"]["group"] == "MS" and by_pid["913"]["source"] == "metadata"
     assert by_pid["13"]["n_trials_left"] == 5 and by_pid["13"]["n_trials_right"] == 5
-    assert by_pid["6"]["group"] == "Control" and by_pid["6"]["source"] == "registry"
+    assert by_pid["906"]["group"] == "Control" and by_pid["906"]["source"] == "registry"
 
 
 def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
@@ -796,9 +796,9 @@ def test_build_composition_rows_sorted_numerically_by_pid(monkeypatch):
 
 def test_write_composition_csv_writes_all_rows(tmp_path):
     rows = [
-        {"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+        {"pid": "913", "group": "MS", "source": "metadata", "diagnosis": "MS",
          "n_trials_left": 5, "n_trials_right": 5},
-        {"pid": "6", "group": "Unclassified", "source": "no_entry", "diagnosis": None,
+        {"pid": "906", "group": "Unclassified", "source": "no_entry", "diagnosis": None,
          "n_trials_left": 4, "n_trials_right": 4},
     ]
     out_path = tmp_path / "cohort_composition.csv"
@@ -814,11 +814,11 @@ def test_write_composition_csv_writes_all_rows(tmp_path):
 def test_print_composition_banner_lists_every_group(capsys, monkeypatch):
     monkeypatch.setattr(pcc, "_folder_hints_control", lambda pid: False)
     rows = [
-        {"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS", "n_trials_left": 5, "n_trials_right": 5},
-        {"pid": "6", "group": "Control", "source": "registry", "diagnosis": "Control", "n_trials_left": 4, "n_trials_right": 4},
-        {"pid": "9", "group": "Excluded", "source": "metadata", "diagnosis": "Stroke", "n_trials_left": 4, "n_trials_right": 4},
-        {"pid": "7", "group": "Unclassified", "source": "no_entry", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
-        {"pid": "8", "group": "Unclassified", "source": "registry_missing", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "913", "group": "MS", "source": "metadata", "diagnosis": "MS", "n_trials_left": 5, "n_trials_right": 5},
+        {"pid": "906", "group": "Control", "source": "registry", "diagnosis": "Control", "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "909", "group": "Excluded", "source": "metadata", "diagnosis": "Stroke", "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "907", "group": "Unclassified", "source": "no_entry", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
+        {"pid": "908", "group": "Unclassified", "source": "registry_missing", "diagnosis": None, "n_trials_left": 4, "n_trials_right": 4},
     ]
     pcc.print_composition_banner(rows)
     out = capsys.readouterr().out
@@ -971,7 +971,7 @@ def _stub_common(monkeypatch, qualifying, groups, trials):
 
 def test_run_cohort_comparison_skips_when_control_arm_empty(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
-    _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
+    _stub_common(monkeypatch, {"913"}, {"913": ("MS", "metadata")},
                 {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
     pcc.run_cohort_comparison()
     out = capsys.readouterr().out
@@ -981,7 +981,7 @@ def test_run_cohort_comparison_skips_when_control_arm_empty(monkeypatch, capsys,
 
 def test_run_cohort_comparison_writes_composition_csv_with_correct_groups(monkeypatch, tmp_path):
     monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
-    _stub_common(monkeypatch, {"13"}, {"13": ("MS", "metadata")},
+    _stub_common(monkeypatch, {"913"}, {"913": ("MS", "metadata")},
                 {"13": {"left": [_trial()] * 4, "right": [_trial()] * 4}})
     pcc.run_cohort_comparison()
     content = (tmp_path / "cohort_composition.csv").read_text(encoding="utf-8")
@@ -995,7 +995,7 @@ def test_run_cohort_comparison_runs_stats_and_figure_when_both_arms_present(monk
     monkeypatch.setattr(pcc, "make_cohort_comparison_figure",
                         lambda *a, **k: figure_calls.append(True), raising=False)
     _stub_common(monkeypatch, {"13", "6"},
-                {"13": ("MS", "metadata"), "6": ("Control", "registry")},
+                {"913": ("MS", "metadata"), "906": ("Control", "registry")},
                 {"13": {"left": [_trial(pt7=1.0)] * 4, "right": [_trial(pt7=1.0)] * 4},
                  "6": {"left": [_trial(pt7=2.0)] * 4, "right": [_trial(pt7=2.0)] * 4}})
     pcc.run_cohort_comparison()
@@ -1018,7 +1018,7 @@ def test_run_cohort_comparison_filters_none_summaries(monkeypatch, tmp_path):
     monkeypatch.setattr(pcc, "load_registry", lambda: ({}, True))
     monkeypatch.setattr(pcc, "load_metadata_diagnosis", lambda pid: None)
     monkeypatch.setattr(pcc, "classify_participant",
-                        lambda pid, md, reg, exists: {"13": ("MS", "metadata"), "6": ("Control", "metadata")}[pid])
+                        lambda pid, md, reg, exists: {"913": ("MS", "metadata"), "906": ("Control", "metadata")}[pid])
     monkeypatch.setattr(pcc.common, "leg_trial_counts",
                         lambda pid: {"13": {"left": 4, "right": 4}, "6": {"left": 4, "right": 4}}[pid])
     monkeypatch.setattr(pcc.common, "collect_participant", lambda pid: (
@@ -1388,7 +1388,7 @@ Run: `.venv\Scripts\python.exe run_pt_analysis.py`
 Confirm in the console output:
 - The existing per-participant report generation still runs and prints its usual output, unchanged.
 - A new `==================== MS vs Control cohort ====================` banner appears at the end.
-- P13 and P14 (the only participants with a real `metadata.json` diagnosis on file, both `"MS"`) are listed under `MS:`.
+- The participants with a real `metadata.json` diagnosis on file are listed under their arm.
 - Everyone else currently qualifying (if any) appears under `Unclassified` with `source=no_entry` (since `participant_groups.json` was just created empty in Task 2) — not `registry_missing`, since the file now exists in this checkout.
 - Since `Control:` is empty, the console prints `Cohort comparison skipped: ... 0 Control qualifying participants ...` — this is expected, not a bug, until `participant_groups.json` gets real entries.
 
@@ -1399,7 +1399,7 @@ Expected: one row per currently-qualifying participant, matching the console ban
 
 - [ ] **Step 5: Note the follow-up for the user (do not do this automatically)**
 
-Per design spec §12, backfilling `participant_groups.json` for legacy participants (e.g. the archived `Participant_6/7/8_..._control` folders) is explicitly left to the user, not automated by this plan. After Step 3's run, tell the user which pids showed up as `Unclassified (no_entry)` with a `(folder suggests 'control')` hint, so they can decide whether to add them to `participant_groups.json` — do not add entries on their behalf.
+Per design spec §12, backfilling `participant_groups.json` for legacy participants (e.g. the archived `_control`-suffixed folders) is explicitly left to the user, not automated by this plan. After Step 3's run, tell the user which pids showed up as `Unclassified (no_entry)` with a `(folder suggests 'control')` hint, so they can decide whether to add them to `participant_groups.json` — do not add entries on their behalf.
 
 - [ ] **Step 6: Final commit (only if Steps 1-4 required any fix)**
 

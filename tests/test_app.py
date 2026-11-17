@@ -23,7 +23,7 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
     from pendulastic_app import App
     app = App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("2")
         # Directly simulate the review state without going through load_trial
         # (PostProcessingPanel.load_trial signature changes in Task 5 — bypass here)
@@ -225,9 +225,9 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
         w = _csv_mod.writer(f)
         w.writerow(["frame", "time_s", "knee_angle_deg",
                     "pid", "leg", "ms_status", "trial", "methodology"])
-        w.writerow([0, "0.0000", "170.000", "P1", "Right", "MS", "1", "upload_csv"])
-        w.writerow([1, "0.0333", "165.000", "P1", "Right", "MS", "1", "upload_csv"])
-        w.writerow([2, "0.0667", "160.000", "P1", "Right", "MS", "1", "upload_csv"])
+        w.writerow([0, "0.0000", "170.000", "P901", "Right", "MS", "1", "upload_csv"])
+        w.writerow([1, "0.0333", "165.000", "P901", "Right", "MS", "1", "upload_csv"])
+        w.writerow([2, "0.0667", "160.000", "P901", "Right", "MS", "1", "upload_csv"])
 
     captured = {}
 
@@ -242,7 +242,7 @@ def test_run_csv_analysis_reads_datamanager_format(tmp_path, monkeypatch):
         monkeypatch.setattr(DataManager, "save_trial",
                             lambda *a, **kw: None)
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._run_csv_analysis(str(p), meta)
         app.update()  # process the after(0, ...) callback
     finally:
@@ -280,7 +280,7 @@ def test_run_csv_analysis_reads_time_sec_format(tmp_path, monkeypatch):
         monkeypatch.setattr(DataManager, "save_trial",
                             lambda *a, **kw: None)
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._run_csv_analysis(str(p), meta)
         app.update()
     finally:
@@ -315,7 +315,7 @@ def test_start_upload_analysis_video_zero_people_shows_error_and_aborts(
     video_path = str(tmp_path / "novideo.mp4")
     app = App()
     try:
-        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.pid_var.set("P901")
         app._upload_meta.set_file(video_path)
 
         monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
@@ -369,7 +369,7 @@ def test_start_upload_analysis_video_tracks_shows_skeleton_and_saves(
 
     app = App()
     try:
-        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.pid_var.set("P901")
         app._upload_meta.set_file(video_path)
 
         monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
@@ -451,7 +451,7 @@ def test_start_upload_analysis_video_all_undetected_shows_error_not_saved(
 
     app = App()
     try:
-        app._upload_meta.pid_var.set("P1")
+        app._upload_meta.pid_var.set("P901")
         app._upload_meta.set_file(video_path)
 
         monkeypatch.setattr(_m, "_VIEWER_AVAIL", True)
@@ -519,11 +519,11 @@ def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1,
                 "sources": ["imu"]}
         app._start_imu_recording(meta)
         expected_raw_path = os.path.join(
-            str(tmp_path), "PID_P1_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
+            str(tmp_path), "PID_P901_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
         assert _m._imu.stop_raw_log() == expected_raw_path
         app._imu_poll_stop.set()
     finally:
@@ -612,7 +612,7 @@ def test_compute_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatc
 
     app = _m.App()
     try:
-        meta = {"pid": "P2", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P902", "leg": "Right", "ms_status": "MS", "trial": 1}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
@@ -650,7 +650,7 @@ def test_compute_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypat
 
     app = _m.App()
     try:
-        meta = {"pid": "P3", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P903", "leg": "Right", "ms_status": "MS", "trial": 1}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0, 3.0], meta, source="imu")
@@ -670,7 +670,7 @@ def test_compute_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatc
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P4", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P904", "leg": "Right", "ms_status": "MS", "trial": 1}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
         csv_path = _m.DataManager.save_trial(csv_filename, [1.0, 2.0], meta, source="imu")
@@ -694,13 +694,13 @@ def test_transition_to_review_shows_saved_confirmation_for_imu(monkeypatch):
                         lambda title, msg: shown.append((title, msg)))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
         app.update()
         assert len(shown) == 1
         title, msg = shown[0]
         assert title == "Recording Saved"
-        assert "PID_P9_LEG_Right_MS_TRIAL_1_imu.csv" in msg
+        assert "PID_P909_LEG_Right_MS_TRIAL_1_imu.csv" in msg
         assert _m.DataManager.DATA_DIR in msg
     finally:
         app.destroy()
@@ -715,13 +715,13 @@ def test_transition_to_review_shows_saved_confirmation_for_rgb(monkeypatch):
                         lambda title, msg: shown.append((title, msg)))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 2}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 2}
         app._transition_to_review({"rgb": [1.0, 2.0]}, meta, from_recording=True)
         app.update()
         assert len(shown) == 1
         _, msg = shown[0]
-        assert "PID_P9_LEG_Right_MS_TRIAL_2_rgb.csv" in msg
-        assert "PID_P9_LEG_Right_MS_TRIAL_2.avi" in msg
+        assert "PID_P909_LEG_Right_MS_TRIAL_2_rgb.csv" in msg
+        assert "PID_P909_LEG_Right_MS_TRIAL_2.avi" in msg
     finally:
         app.destroy()
 
@@ -736,7 +736,7 @@ def test_transition_to_review_no_confirmation_when_not_from_recording(monkeypatc
                         lambda title, msg: shown.append((title, msg)))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 3}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 3}
         app._transition_to_review({"upload_csv": [1.0, 2.0]}, meta)
         app.update()
         assert shown == []
@@ -754,7 +754,7 @@ def test_transition_to_review_no_confirmation_for_optitrack_only(monkeypatch):
                         lambda title, msg: shown.append((title, msg)))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 4}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 4}
         app._transition_to_review({"optitrack": []}, meta, from_recording=True)
         app.update()
         assert shown == []
@@ -779,7 +779,7 @@ def test_on_stop_multi_trial_imu_defers_tuning_and_returns_to_idle(monkeypatch):
     monkeypatch.setattr(_m, "_imu", fake_imu)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = ["imu"]
@@ -808,7 +808,7 @@ def test_on_stop_multi_trial_rgb_defers_tracking_and_returns_to_idle(monkeypatch
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = ["rgb"]
@@ -835,7 +835,7 @@ def test_on_stop_multi_trial_finalizes_immediately_when_nothing_to_defer(monkeyp
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = ["optitrack"]
@@ -899,8 +899,8 @@ def test_batch_processing_worker_processes_each_queued_entry_and_finishes(monkey
         monkeypatch.setattr(app, "_compute_rgb_processing",
             lambda video, meta, base, progress=None: (rgb_calls.append(meta) or {**base, "rgb": [8.0]}))
 
-        meta1 = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
-        meta2 = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        meta1 = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta2 = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 2}
         entry_imu = {
             "trial_num": 1, "sources": ["imu"], "status": "processing",
             "meta": meta1, "source_angles": {"imu": [1.0]}, "fps": 30.0,
@@ -959,7 +959,7 @@ def test_transition_to_review_single_trial_mode_unchanged(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: shown.append(a))
     app = _m.App()
     try:
-        meta = {"pid": "P9", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P909", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._transition_to_review({"imu": [1.0, 2.0]}, meta, from_recording=True)
         app.update()
         assert len(shown) == 1
@@ -1111,7 +1111,7 @@ def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_pat
                             lambda *a, **kw: created_writers.append(a) or _FakeWriter())
         monkeypatch.setattr(_m._cv2, "VideoWriter_fourcc", lambda *a: None)
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._start_rgb_recording(meta)
 
         assert len(attached) == 1, "must attach a writer to the existing CameraSession"
@@ -1138,7 +1138,7 @@ def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
                         lambda *a, **kw: blocked.append((a, kw)))
     try:
         assert app._camera.active is None
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._start_rgb_recording(meta)
         assert "no camera" in app._acq.status_var.get().lower(), \
             "must surface an error when no camera is active"
@@ -1163,11 +1163,11 @@ def test_start_rgb_recording_no_camera_removes_rgb_from_active_sources_and_clear
     app = _m.App()
     try:
         # Simulate a prior trial's video path still hanging around.
-        app._video_path = "C:/data/P1_trial1_rgb.avi"
+        app._video_path = "C:/data/P901_trial1_rgb.avi"
         app._active_sources = ["rgb"]
         assert app._camera.active is None   # no camera selected
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 2}
         app._start_rgb_recording(meta)
 
         assert "rgb" not in app._active_sources, \
@@ -1193,9 +1193,9 @@ def test_start_rgb_recording_no_cv2_removes_rgb_from_active_sources(monkeypatch)
     app = _m.App()
     monkeypatch.setattr(_m, "_CV2_AVAIL", False)
     try:
-        app._video_path = "C:/data/P1_trial1_rgb.avi"
+        app._video_path = "C:/data/P901_trial1_rgb.avi"
         app._active_sources = ["rgb"]
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 2}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 2}
         app._start_rgb_recording(meta)
         assert "rgb" not in app._active_sources
         assert app._video_path == ""
@@ -1227,7 +1227,7 @@ def test_on_start_with_rgb_default_checked_and_no_camera_does_not_block(monkeypa
     try:
         assert app._acq._src_rgb.get() is True   # left at its default
         assert app._camera.active is None        # no working camera
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq._src_imu_browser.set(True)
         app._acq._on_imu_browser_checkbox_toggled()
 
@@ -1441,7 +1441,7 @@ def test_start_rgb_recording_writes_timestamp_sidecar_for_phone_camera(tmp_path,
                                                              "write": lambda s, f: None,
                                                              "release": lambda s: None})())
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._active_sources = ["rgb"]
         app._start_rgb_recording(meta)
 
@@ -1476,7 +1476,7 @@ def test_start_rgb_recording_skips_sidecar_for_usb_camera(tmp_path, monkeypatch)
                              lambda *a, **k: type("W", (), {"isOpened": lambda s: True,
                                                              "write": lambda s, f: None,
                                                              "release": lambda s: None})())
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._active_sources = ["rgb"]
         app._start_rgb_recording(meta)
         assert getattr(app, "_rgb_ts_path", None) is None
@@ -1882,7 +1882,7 @@ def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
         app.on_load_trial({
             "imu_path": "some/trial.jsonl", "video_path": None,
             "optitrack_path": None, "models": [],
-            "participant_id": "P5", "session_date": "2026-08-04",
+            "participant_id": "P905", "session_date": "2026-08-04",
             "femur_length_cm": 45.0, "tibia_length_cm": 38.0,
         })
         app.update()
@@ -1893,7 +1893,7 @@ def test_get_trial_meta_reflects_last_loaded_selection(tmp_path, monkeypatch):
         # keys, so every CSV exported from the main app got blank
         # participant_id/session_date columns (WorkbenchView._meta_ids()
         # falls back to "" via .get(), so it failed silently).
-        assert meta["participant_id"] == "P5"
+        assert meta["participant_id"] == "P905"
         assert meta["session_date"] == "2026-08-04"
     finally:
         app.destroy()
@@ -2652,12 +2652,12 @@ def test_trial_file_paths_imu_and_rgb(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         names = [os.path.basename(p) for p in app._trial_file_paths(meta, ["imu", "rgb"])]
-        assert "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1_rgb.csv" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi" in names
-        assert "PID_P1_LEG_Right_MS_TRIAL_1.avi.timestamps.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1_imu.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1_rgb.csv" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1.avi" in names
+        assert "PID_P901_LEG_Right_MS_TRIAL_1.avi.timestamps.csv" in names
     finally:
         app.destroy()
 
@@ -2667,7 +2667,7 @@ def test_trial_file_paths_optitrack_only(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         assert app._trial_file_paths(meta, ["optitrack"]) == []
     finally:
         app.destroy()
@@ -2683,7 +2683,7 @@ def test_on_stop_appends_processing_placeholder_in_multi_trial_mode(monkeypatch)
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = []
@@ -2703,7 +2703,7 @@ def test_on_stop_no_placeholder_when_multi_trial_off(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._active_sources = []
         app.on_stop()
@@ -2731,7 +2731,7 @@ def test_on_stop_refreshes_trial_list_widget_synchronously(monkeypatch):
     monkeypatch.setattr(_m.messagebox, "showinfo", lambda *a, **k: None)
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("1")
         app._acq._multi_trial_var.set(True)
         app._active_sources = []
@@ -2896,9 +2896,9 @@ def test_on_view_trial_shows_post_processing_panel():
     try:
         app._session_trials = [{
             "trial_num": 1, "sources": ["imu"], "status": "saved",
-            "meta": {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1},
+            "meta": {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1},
             "source_angles": {"imu": [170.0, 165.0]}, "fps": 30.0,
-            "base_filename": "PID_P1_LEG_Right_MS_TRIAL_1.csv",
+            "base_filename": "PID_P901_LEG_Right_MS_TRIAL_1.csv",
             "file_paths": [],
         }]
         app._acq.pack(fill="both", expand=True)
@@ -3010,7 +3010,7 @@ def test_on_start_triggers_optitrack_last_regardless_of_source_order(monkeypatch
     import pendulastic_app as _m
     app = _m.App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq._src_imu.set(True)
         app._acq._src_rgb.set(True)
         app._acq._src_optitrack.set(True)
@@ -3051,14 +3051,14 @@ def test_start_optitrack_recording_sends_relpath_matching_master_app_layout(monk
         sent = []
         monkeypatch.setattr(_m._motive, "start_local_motive",
                              lambda msg: sent.append(msg))
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
 
         app._start_optitrack_recording(meta)
 
         assert len(sent) == 1, "must trigger motive_sync exactly once"
         expected_relpath = os.path.join(
             participant_paths.participant_dir_name(
-                "P1", participant_paths.OPTI_ROOT),
+                "P901", participant_paths.OPTI_ROOT),
             "Right", "MS")
         assert f"relpath={expected_relpath}" in sent[0]
     finally:
@@ -3258,7 +3258,7 @@ def _arm_imu_browser(app, monkeypatch, tmp_path):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr("pendulastic_phone_server.start_imu_stream_server",
                         lambda: ("192.168.1.50", 8881))
-    app._acq.pid_var.set("P1")
+    app._acq.pid_var.set("P901")
     app._acq._src_imu_browser.set(True)
     app._acq._on_imu_browser_checkbox_toggled()
 

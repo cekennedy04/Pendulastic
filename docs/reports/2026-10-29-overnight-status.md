@@ -125,7 +125,7 @@ Two guards did it, in both languages:
 principle move release detection on real trials. The geometric argument says
 it cannot misfire on a genuine lift, and the lift-and-hold tests in
 `test_pt_score.py` (including the jitter and held-from-frame-zero cases) all
-pass — but the trials it was written for are the 15 Control_6/7/8 baseline
+pass — but the trials it was written for are the 15 P6/7/8 baseline
 trials from 2026-10-27, and those are on your machine. Re-running the cohort
 recalibration is what would confirm it: if those 15 trials still score, the
 guard is clear.
@@ -246,7 +246,7 @@ off for. That is exactly what the corpus run covers.
    `omega_peak_deg_s` / `A0_deg`, and the `f`-boundary census that answers the
    first of the two questions in `docs/reports/2026-10-27-dropping-f.md`. It
    also confirms the release-detection guard from section 2 against the 15
-   Control_6/7/8 lift-and-hold trials, which is the one check for it I could
+   P6/7/8 lift-and-hold trials, which is the one check for it I could
    not run.
 3. **The plateau rule, then the two `score_waveform` windows** (section 2, as
    corrected). Measured 2026-11-02: the plateau rule counts samples rather

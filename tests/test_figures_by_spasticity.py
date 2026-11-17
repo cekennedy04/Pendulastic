@@ -19,7 +19,7 @@ def _fake_trials(tmp_path, pid, leg, trials, folder=None):
     """A Recordings/ tree with the component CSVs derive_component_paths wants.
 
     `folder` names the participant directory, so a caller can pin either the
-    study-prefixed scheme (CHAT_22) or the legacy one (Participant_22)."""
+    study-prefixed scheme (CHAT_922) or the legacy one (Participant_922)."""
     d = (tmp_path / "Recordings" / (folder or f"Participant_{pid}")
          / leg.capitalize() / "pre")
     d.mkdir(parents=True)
@@ -105,11 +105,12 @@ def test_the_real_registry_has_p22_left_excluded():
 
 
 def test_imu_params_find_a_study_prefixed_participant_folder(tmp_path, monkeypatch):
-    """After the 2026-09-01 rename P22's folder is CHAT_22, not Participant_22.
+    """After the 2026-09-01 rename a stroke participant's folder is CHAT_{pid}, not
+    Participant_{pid}.
     The IMU lookup has to resolve the participant by id: if it kept spelling the
     folder name out, every renamed participant would silently contribute zero
     trials and the figures would just get quieter rather than fail."""
-    _fake_trials(tmp_path, "22", "left", [1, 2], folder="CHAT_22")
+    _fake_trials(tmp_path, "922", "left", [1, 2], folder="CHAT_922")
     monkeypatch.setattr(gfs, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
 
@@ -121,13 +122,13 @@ def test_imu_params_find_a_study_prefixed_participant_folder(tmp_path, monkeypat
         raise RuntimeError("stop here")
 
     monkeypatch.setattr(batch, "derive_component_paths", _derive)
-    gfs.imu_leg_params("22", "left")
+    gfs.imu_leg_params("922", "left")
     assert opened == ["Trial_1_imu.csv", "Trial_2_imu.csv"], opened
 
 
 def test_imu_params_still_find_a_legacy_participant_folder(tmp_path, monkeypatch):
-    """The archive was never renamed, so Participant_22 must keep resolving."""
-    _fake_trials(tmp_path, "22", "left", [1], folder="Participant_22")
+    """The archive was never renamed, so Participant_{pid} must keep resolving."""
+    _fake_trials(tmp_path, "922", "left", [1], folder="Participant_922")
     monkeypatch.setattr(gfs, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(common, "load_excluded_trials", lambda: {})
 
@@ -139,5 +140,5 @@ def test_imu_params_still_find_a_legacy_participant_folder(tmp_path, monkeypatch
         raise RuntimeError("stop here")
 
     monkeypatch.setattr(batch, "derive_component_paths", _derive)
-    gfs.imu_leg_params("22", "left")
+    gfs.imu_leg_params("922", "left")
     assert opened == ["Trial_1_imu.csv"], opened

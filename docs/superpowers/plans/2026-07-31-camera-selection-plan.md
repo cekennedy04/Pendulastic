@@ -1167,7 +1167,7 @@ def test_start_rgb_recording_attaches_writer_without_opening_new_capture(tmp_pat
                             lambda *a, **kw: created_writers.append(a) or _FakeWriter())
         monkeypatch.setattr(_m._cv2, "VideoWriter_fourcc", lambda *a: None)
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._start_rgb_recording(meta)
 
         assert len(attached) == 1, "must attach a writer to the existing CameraSession"
@@ -1187,7 +1187,7 @@ def test_start_rgb_recording_errors_when_no_camera_selected(monkeypatch):
                         lambda title, msg: shown.append((title, msg)))
     try:
         assert app._camera.active is None
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._start_rgb_recording(meta)
         assert shown, "must surface an error when no camera is active"
         assert not hasattr(app, "_rgb_writer") or app._rgb_writer is None

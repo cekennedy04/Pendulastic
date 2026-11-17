@@ -522,7 +522,7 @@ def test_find_optitrack_match_anchor_not_under_rec_root_returns_none(tmp_path):
 
 def test_summary_reads_offset_removed_rmse_only_where_the_reference_has_no_zero():
     """The headline must compare like with like. A marker-path reference is
-    relative (87d7645), so its raw RMSE is ~99% missing origin: MINT_13
+    relative (87d7645), so its raw RMSE is ~99% missing origin: P13
     Left/post trial_4 reads 143.9 raw vs 16.7 offset-removed. A rigid-body
     reference IS bone-grounded, so there a constant offset is real
     disagreement and must stay in the number."""

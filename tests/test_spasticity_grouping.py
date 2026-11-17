@@ -37,8 +37,8 @@ def test_unassessed_grades_carry_no_verdict(grade):
 def test_clinical_mas_beats_the_a0_proxy():
     """The proxy is a stopgap. Where a clinician has assessed the leg, the
     assessment wins even when the amplitude would have said otherwise."""
-    lab = sg.classify_leg("13", "left", arm="MS",
-                          mas_by_leg={("13", "left"): "1"},
+    lab = sg.classify_leg("913", "left", arm="MS",
+                          mas_by_leg={("913", "left"): "1"},
                           a0_deg=65.0)          # amplitude looks normal
     assert lab.level == sg.SPASTIC
     assert lab.source == sg.SRC_CLINICAL
@@ -46,29 +46,29 @@ def test_clinical_mas_beats_the_a0_proxy():
 
 
 def test_clinical_mas_zero_beats_a_low_amplitude():
-    lab = sg.classify_leg("9", "right", arm="MS",
-                          mas_by_leg={("9", "right"): "0"},
+    lab = sg.classify_leg("909", "right", arm="MS",
+                          mas_by_leg={("909", "right"): "0"},
                           a0_deg=10.0)          # amplitude looks awful
     assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CLINICAL)
 
 
 def test_control_without_mas_is_non_spastic_by_recruitment():
-    lab = sg.classify_leg("23", "left", arm="Control", mas_by_leg={}, a0_deg=None)
+    lab = sg.classify_leg("923", "left", arm="Control", mas_by_leg={}, a0_deg=None)
     assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CONTROL)
 
 
 def test_control_still_defers_to_a_real_mas_score():
     """Recruitment is an assumption; an actual assessment outranks it."""
-    lab = sg.classify_leg("6", "left", arm="Control",
-                          mas_by_leg={("6", "left"): "1"}, a0_deg=None)
+    lab = sg.classify_leg("906", "left", arm="Control",
+                          mas_by_leg={("906", "left"): "1"}, a0_deg=None)
     assert (lab.level, lab.source) == (sg.SPASTIC, sg.SRC_CLINICAL)
 
 
 # ── the A0 proxy ─────────────────────────────────────────────────────────────
 
 def test_low_amplitude_leg_without_mas_is_derived_spastic():
-    """P21 right measures ~21.5 deg and has no MAS -- the case this exists for."""
-    lab = sg.classify_leg("21", "right", arm="Stroke", mas_by_leg={}, a0_deg=21.5)
+    """A leg measuring ~21.5 deg with no MAS -- the case this exists for."""
+    lab = sg.classify_leg("921", "right", arm="Stroke", mas_by_leg={}, a0_deg=21.5)
     assert (lab.level, lab.source) == (sg.SPASTIC, sg.SRC_A0)
     assert "21.5" in lab.detail
 
@@ -77,7 +77,7 @@ def test_normal_amplitude_leg_without_mas_is_not_claimed_to_be_mas_zero():
     """Above the threshold means "no MARKED amplitude loss found", not "MAS 0".
     The detail string must say so, because the proxy provably misses mild
     spasticity (3 of 5 known MAS>=1 legs sit inside the healthy range)."""
-    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
+    lab = sg.classify_leg("918", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
     assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_A0)
     assert "mild spasticity is not detectable" in lab.detail
 
@@ -97,13 +97,13 @@ def test_nan_amplitude_is_not_treated_as_a_measurement():
 # ── nothing is ever silently dropped ─────────────────────────────────────────
 
 def test_diagnosed_leg_with_no_mas_and_no_swing_is_unknown_not_guessed():
-    lab = sg.classify_leg("19", "left", arm="Stroke", mas_by_leg={}, a0_deg=None)
+    lab = sg.classify_leg("919", "left", arm="Stroke", mas_by_leg={}, a0_deg=None)
     assert (lab.level, lab.source) == (sg.UNKNOWN, sg.SRC_NONE)
 
 
 def test_summarise_always_reports_the_unknown_row():
     """A table that omits the unknown count reads as full coverage."""
-    counts = sg.summarise({("1", "left"): sg.SpasticityLabel(
+    counts = sg.summarise({("901", "left"): sg.SpasticityLabel(
         sg.NON_SPASTIC, sg.SRC_CONTROL, "")})
     assert counts == {sg.NON_SPASTIC: 1, sg.SPASTIC: 0, sg.UNKNOWN: 0}
 
@@ -114,53 +114,63 @@ def test_load_mas_by_leg_skips_unassessed_rows(tmp_path):
     p = tmp_path / "mas.csv"
     p.write_text(
         "participant,leg,condition,mas_grade\n"
-        "13,left,pre,1\n"
-        "17,right,pre,-1\n"          # pending sentinel
-        "18,left,pre,\n"             # blank
-        "5,left,post,0\n",           # wrong timepoint
+        "913,left,pre,1\n"
+        "917,right,pre,-1\n"          # pending sentinel
+        "918,left,pre,\n"             # blank
+        "905,left,post,0\n",           # wrong timepoint
         encoding="utf-8")
     got = sg.load_mas_by_leg(str(p), condition_prefix="pre")
-    assert got == {("13", "left"): "1"}, got
+    assert got == {("913", "left"): "1"}, got
 
 
 def test_load_mas_by_leg_missing_file_is_empty_not_an_error():
     assert sg.load_mas_by_leg("/nonexistent/mas.csv") == {}
 
 
-def test_real_mas_csv_parses_and_finds_the_known_split_leg():
-    """P4 is MAS 0 left / 1+ right -- the case that forces per-LEG grouping."""
+def test_real_mas_csv_parses_and_finds_a_split_leg():
+    """The real CSV holds at least one participant graded non-spastic on one
+    leg and spastic on the other -- the case that forces per-LEG grouping.
+    Found by shape rather than by id, so no participant is named here."""
     by_leg = sg.load_mas_by_leg()
     if not by_leg:
         pytest.skip("mas_scores.csv not present in this checkout")
-    assert by_leg.get(("4", "left")) == "0"
-    assert by_leg.get(("4", "right")) == "1+"
-    assert sg.classify_leg("4", "left", arm="MS", mas_by_leg=by_leg).level == sg.NON_SPASTIC
-    assert sg.classify_leg("4", "right", arm="MS", mas_by_leg=by_leg).level == sg.SPASTIC
+    split = []
+    for pid in sorted({p for p, _leg in by_leg}):
+        left, right = by_leg.get((pid, "left")), by_leg.get((pid, "right"))
+        if left is None or right is None:
+            continue
+        if {sg.mas_level(left), sg.mas_level(right)} == {sg.NON_SPASTIC, sg.SPASTIC}:
+            split.append((pid, left, right))
+    assert split, "no participant with one spastic and one non-spastic leg"
+    for pid, left, right in split:
+        for leg, grade in (("left", left), ("right", right)):
+            got = sg.classify_leg(pid, leg, arm="MS", mas_by_leg=by_leg)
+            assert got.level == sg.mas_level(grade), (leg, grade)
 
 
 # ── both legs are always enumerated ──────────────────────────────────────────
 
 def test_both_legs_are_returned_even_with_no_data_at_all():
-    """P7 left and both P16 legs were INVISIBLE while the leg list was built
-    from whatever data existed, which reads as full coverage when it is not.
+    """Legs with no data were INVISIBLE while the leg list was built from
+    whatever data existed, which reads as full coverage when it is not.
     Enumerate from LEGS, always."""
-    got = sg.classify_participant_legs("7", arm="Control", mas_by_leg={}, a0_by_leg={})
+    got = sg.classify_participant_legs("907", arm="Control", mas_by_leg={}, a0_by_leg={})
     assert set(got) == {"left", "right"}
 
 
 def test_a_diagnosed_leg_with_no_data_is_unknown_not_absent():
-    got = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
+    got = sg.classify_participant_legs("922", arm="Stroke", mas_by_leg={},
                                        a0_by_leg={"right": 42.7})
     assert got["left"].level == sg.UNKNOWN
     assert got["right"].level == sg.NON_SPASTIC
 
 
 def test_a0_by_leg_accepts_either_key_shape():
-    plain = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
+    plain = sg.classify_participant_legs("921", arm="Stroke", mas_by_leg={},
                                          a0_by_leg={"left": 27.0, "right": 21.5})
-    tupled = sg.classify_participant_legs("21", arm="Stroke", mas_by_leg={},
-                                          a0_by_leg={("21", "left"): 27.0,
-                                                     ("21", "right"): 21.5})
+    tupled = sg.classify_participant_legs("921", arm="Stroke", mas_by_leg={},
+                                          a0_by_leg={("921", "left"): 27.0,
+                                                     ("921", "right"): 21.5})
     assert plain["left"].level == tupled["left"].level == sg.SPASTIC
 
 
@@ -169,18 +179,18 @@ def test_a0_by_leg_accepts_either_key_shape():
 def test_participant_is_spastic_if_either_leg_is():
     """Hemiparesis is unilateral. Requiring both legs would erase exactly the
     participants this grouping exists to find."""
-    legs = sg.classify_participant_legs("4", arm="MS",
-                                        mas_by_leg={("4", "left"): "0",
-                                                    ("4", "right"): "1+"})
+    legs = sg.classify_participant_legs("904", arm="MS",
+                                        mas_by_leg={("904", "left"): "0",
+                                                    ("904", "right"): "1+"})
     got = sg.participant_level(legs)
     assert got.level == sg.SPASTIC
     assert "right" in got.detail
 
 
 def test_participant_is_non_spastic_when_one_leg_is_known_and_clean():
-    """P22: left unassessable, right non-spastic. The PARTICIPANT is still
+    """Left unassessable, right non-spastic. The PARTICIPANT is still
     characterised -- and the note has to admit the left leg was not."""
-    legs = sg.classify_participant_legs("22", arm="Stroke", mas_by_leg={},
+    legs = sg.classify_participant_legs("922", arm="Stroke", mas_by_leg={},
                                         a0_by_leg={"right": 42.7})
     got = sg.participant_level(legs)
     assert got.level == sg.NON_SPASTIC
@@ -188,48 +198,48 @@ def test_participant_is_non_spastic_when_one_leg_is_known_and_clean():
 
 
 def test_participant_is_unknown_only_when_no_leg_could_be_labelled():
-    legs = sg.classify_participant_legs("99", arm="MS", mas_by_leg={}, a0_by_leg={})
+    legs = sg.classify_participant_legs("999", arm="MS", mas_by_leg={}, a0_by_leg={})
     assert sg.participant_level(legs).level == sg.UNKNOWN
 
 
 def test_control_participant_is_characterised_without_any_recordings():
-    """The whole point of the control-by-recruitment rule: P7 has no left-leg
-    data anywhere, and must still come out characterised."""
-    legs = sg.classify_participant_legs("7", arm="Control", mas_by_leg={}, a0_by_leg={})
+    """The whole point of the control-by-recruitment rule: a control with no
+    data anywhere must still come out characterised."""
+    legs = sg.classify_participant_legs("907", arm="Control", mas_by_leg={}, a0_by_leg={})
     assert sg.participant_level(legs).level == sg.NON_SPASTIC
 
 
 # ── MAS components fill in for a pending overall grade ───────────────────────
 
 def test_components_are_used_when_the_overall_grade_is_pending():
-    """P17: overall grade pending, right-leg flexion scored 1. That is real
+    """Overall grade pending, right-leg flexion scored 1. That is real
     clinical evidence and leaves the participant characterised instead of
     unknown."""
-    lab = sg.classify_leg("17", "right", arm="MS", mas_by_leg={},
-                          mas_components={("17", "right"): ("1", "0")})
+    lab = sg.classify_leg("917", "right", arm="MS", mas_by_leg={},
+                          mas_components={("917", "right"): ("1", "0")})
     assert lab.level == sg.SPASTIC
     assert lab.source == sg.SRC_CLINICAL_COMPONENT
     assert "pending" in lab.detail
 
 
 def test_components_all_zero_are_non_spastic():
-    lab = sg.classify_leg("17", "left", arm="MS", mas_by_leg={},
-                          mas_components={("17", "left"): ("0", "0")})
+    lab = sg.classify_leg("917", "left", arm="MS", mas_by_leg={},
+                          mas_components={("917", "left"): ("0", "0")})
     assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CLINICAL_COMPONENT)
 
 
 def test_components_never_override_an_overall_grade():
-    """P15 left is graded 0 overall with flexion 1+. The clinician's summary
+    """A leg graded 0 overall with flexion 1+: the clinician's summary
     judgement stands; the components must not quietly flip it."""
-    lab = sg.classify_leg("15", "left", arm="MS",
-                          mas_by_leg={("15", "left"): "0"},
-                          mas_components={("15", "left"): ("1+", "0")})
+    lab = sg.classify_leg("915", "left", arm="MS",
+                          mas_by_leg={("915", "left"): "0"},
+                          mas_components={("915", "left"): ("1+", "0")})
     assert (lab.level, lab.source) == (sg.NON_SPASTIC, sg.SRC_CLINICAL)
 
 
 def test_components_outrank_the_a0_proxy():
-    lab = sg.classify_leg("17", "right", arm="MS", mas_by_leg={},
-                          mas_components={("17", "right"): ("1", "0")},
+    lab = sg.classify_leg("917", "right", arm="MS", mas_by_leg={},
+                          mas_components={("917", "right"): ("1", "0")},
                           a0_deg=70.0)
     assert lab.source == sg.SRC_CLINICAL_COMPONENT
 
@@ -250,11 +260,11 @@ def test_load_mas_components_skips_rows_with_no_components(tmp_path):
     p = tmp_path / "mas.csv"
     p.write_text(
         "participant,leg,condition,mas_grade,mas_flexion,mas_extension\n"
-        "17,right,pre,-1,1,0\n"
-        "13,left,pre,1,,\n",
+        "917,right,pre,-1,1,0\n"
+        "913,left,pre,1,,\n",
         encoding="utf-8")
     got = sg.load_mas_components_by_leg(str(p))
-    assert got == {("17", "right"): ("1", "0")}, got
+    assert got == {("917", "right"): ("1", "0")}, got
 
 
 # ── diagnosis must not drive the label ───────────────────────────────────────
@@ -264,13 +274,13 @@ def test_ms_participant_with_mas_zero_is_non_spastic():
     have none, and they belong in the non-spastic group beside the controls --
     grouping on the chart instead of on tone is the thing this module exists
     to stop."""
-    lab = sg.classify_leg("5", "left", arm="MS", mas_by_leg={("5", "left"): "0"})
+    lab = sg.classify_leg("905", "left", arm="MS", mas_by_leg={("905", "left"): "0"})
     assert lab.level == sg.NON_SPASTIC
 
 
 def test_ms_participant_with_normal_amplitude_is_non_spastic():
     """Same, via the derived path: no clinical MAS, healthy swing."""
-    lab = sg.classify_leg("18", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
+    lab = sg.classify_leg("918", "left", arm="MS", mas_by_leg={}, a0_deg=58.4)
     assert lab.level == sg.NON_SPASTIC
 
 
@@ -287,17 +297,17 @@ def test_only_control_gets_a_label_from_diagnosis_alone(arm):
 def test_a_control_with_a_spastic_mas_is_not_forced_non_spastic():
     """Recruitment is an assumption, and an assessment overrides it in both
     directions."""
-    lab = sg.classify_leg("6", "right", arm="Control",
-                          mas_by_leg={("6", "right"): "2"})
+    lab = sg.classify_leg("906", "right", arm="Control",
+                          mas_by_leg={("906", "right"): "2"})
     assert lab.level == sg.SPASTIC
 
 
 # ── clinician-assessed MAS is kept separate from assumed and operator-set ────
 
 def test_assessor_initials_mean_the_leg_was_examined():
-    lab = sg.classify_leg("13", "left", arm="MS",
-                          mas_by_leg={("13", "left"): "1"},
-                          mas_assessors={("13", "left"): "WD"})
+    lab = sg.classify_leg("913", "left", arm="MS",
+                          mas_by_leg={("913", "left"): "1"},
+                          mas_assessors={("913", "left"): "WD"})
     assert lab.source == sg.SRC_CLINICAL
     assert "WD" in lab.detail
 
@@ -306,9 +316,9 @@ def test_assumed_grades_are_not_reported_as_clinical():
     """All 17 ASSUMED rows in this corpus are controls entered as 0 -- the same
     claim recruitment already makes, not an examination. Counting them as
     clinician-labelled silently inflated the clean subset by 17 legs."""
-    lab = sg.classify_leg("8", "left", arm="Control",
-                          mas_by_leg={("8", "left"): "0"},
-                          mas_assessors={("8", "left"): "ASSUMED"})
+    lab = sg.classify_leg("908", "left", arm="Control",
+                          mas_by_leg={("908", "left"): "0"},
+                          mas_assessors={("908", "left"): "ASSUMED"})
     assert lab.level == sg.NON_SPASTIC
     assert lab.source == sg.SRC_MAS_ASSUMED
     assert lab.source not in sg.CLINICIAN_ASSESSED_SOURCES
@@ -316,11 +326,11 @@ def test_assumed_grades_are_not_reported_as_clinical():
 
 
 def test_operator_set_grades_are_not_reported_as_clinical():
-    """P17's pre grades were set by the operator from the components after the
+    """Grades set by the operator from the components after the
     fact. Real information, weaker provenance than an examination."""
-    lab = sg.classify_leg("17", "right", arm="MS",
-                          mas_by_leg={("17", "right"): "1"},
-                          mas_assessors={("17", "right"): ""})
+    lab = sg.classify_leg("917", "right", arm="MS",
+                          mas_by_leg={("917", "right"): "1"},
+                          mas_assessors={("917", "right"): ""})
     assert lab.level == sg.SPASTIC
     assert lab.source == sg.SRC_MAS_OPERATOR
     assert lab.source not in sg.CLINICIAN_ASSESSED_SOURCES
@@ -329,15 +339,15 @@ def test_operator_set_grades_are_not_reported_as_clinical():
 def test_absent_assessor_mapping_claims_nothing_either_way():
     """A caller that does not track provenance must not have a claim invented
     for it -- neither an examination nor an accusation of one missing."""
-    lab = sg.classify_leg("13", "left", arm="MS",
-                          mas_by_leg={("13", "left"): "1"})
+    lab = sg.classify_leg("913", "left", arm="MS",
+                          mas_by_leg={("913", "left"): "1"})
     assert lab.source == sg.SRC_CLINICAL
 
 
 def test_assumed_components_are_demoted_too():
-    lab = sg.classify_leg("9", "left", arm="Control", mas_by_leg={},
-                          mas_components={("9", "left"): ("0", "0")},
-                          mas_assessors={("9", "left"): "ASSUMED"})
+    lab = sg.classify_leg("909", "left", arm="Control", mas_by_leg={},
+                          mas_components={("909", "left"): ("0", "0")},
+                          mas_assessors={("909", "left"): "ASSUMED"})
     assert lab.source == sg.SRC_MAS_ASSUMED
 
 

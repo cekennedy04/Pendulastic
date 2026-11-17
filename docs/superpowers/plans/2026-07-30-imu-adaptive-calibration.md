@@ -660,11 +660,11 @@ def test_start_imu_recording_opens_raw_log(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1,
                 "sources": ["imu"]}
         app._start_imu_recording(meta)
         expected_raw_path = os.path.join(
-            str(tmp_path), "PID_P1_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
+            str(tmp_path), "PID_P901_LEG_Right_MS_TRIAL_1_imu_raw.jsonl")
         assert _m._imu.stop_raw_log() == expected_raw_path
         app._imu_poll_stop.set()
     finally:
@@ -1785,7 +1785,7 @@ def test_run_imu_tuning_rewrites_csv_when_config_passes(tmp_path, monkeypatch):
 
     app = _m.App()
     try:
-        meta = {"pid": "P2", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P902", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._pending_review = {"imu": [1.0, 2.0, 3.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
@@ -1826,7 +1826,7 @@ def test_run_imu_tuning_falls_back_when_no_config_passes(tmp_path, monkeypatch):
 
     app = _m.App()
     try:
-        meta = {"pid": "P3", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P903", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._pending_review = {"imu": [1.0, 2.0, 3.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")
@@ -1849,7 +1849,7 @@ def test_run_imu_tuning_never_raises_on_missing_raw_log(tmp_path, monkeypatch):
     monkeypatch.setattr(_m.DataManager, "DATA_DIR", str(tmp_path))
     app = _m.App()
     try:
-        meta = {"pid": "P4", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P904", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._pending_review = {"imu": [1.0, 2.0]}
         csv_filename = _m.DataManager.build_filename(
             meta["pid"], meta["leg"], meta["ms_status"], meta["trial"], source="imu")

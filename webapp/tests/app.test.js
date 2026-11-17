@@ -369,7 +369,7 @@ test('exportLockState with no arguments is inert rather than throwing', () => {
 // tree on 2026-08-28 and was superseded by commits 9abe37c and a658c3f;
 // controls now score 0.155 against MS 0.475, the right way round):
 //   1. HEALTHY_REF does not reproduce from its stated provenance -- "control
-//      median n=4" over P2/P8/P9/P12 recomputes area_ratio 0.1390 against a
+//      median n=4" recomputes area_ratio 0.1390 against a
 //      stated 0.0768, and no deriving script exists in any commit.
 //   2. Leave-one-participant-out AUC is 0.21, below chance. A band is an
 //      individual classification; group separation does not license one.
@@ -489,7 +489,7 @@ test('an unrecognised key degrades to the key itself rather than throwing', () =
 // -- Excursion gate on the phone (ported from Python, 2026-08-31) ----------
 // Python refuses to grade a swing outside [25, 120] deg; the phone had no such
 // gate and rendered a band regardless. A0 = 418.1 deg -- a real reconstruction
-// failure on P9 at 97.3% coverage -- was being graded MAS "3".
+// failure on one trial at 97.3% coverage -- was being graded MAS "3".
 
 test('a normal swing produces no refusal', () => {
   assert.equal(excursionNotice(null), null);

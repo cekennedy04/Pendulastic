@@ -1986,7 +1986,7 @@ def test_start_rgb_recording_writes_timestamp_sidecar_for_phone_camera(tmp_path,
                                                              "write": lambda s, f: None,
                                                              "release": lambda s: None})())
 
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._active_sources = ["rgb"]
         app._start_rgb_recording(meta)
 
@@ -2021,7 +2021,7 @@ def test_start_rgb_recording_skips_sidecar_for_usb_camera(tmp_path, monkeypatch)
                              lambda *a, **k: type("W", (), {"isOpened": lambda s: True,
                                                              "write": lambda s, f: None,
                                                              "release": lambda s: None})())
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1}
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1}
         app._active_sources = ["rgb"]
         app._start_rgb_recording(meta)
         assert getattr(app, "_rgb_ts_path", None) is None
