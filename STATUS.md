@@ -105,14 +105,22 @@ scores move. "Not verified" is stated, never implied.
   contained in #90.
 - **Merged 2026-11-16 (squash):** #96 (release alignment) and #90 (fall-speed check, B13;
   reference file holds only person, A0 and peak; see decision 6).
-- **Current numbers (main, 2026-11-16):** `python -m neuromech.build` writes 67
-  scenarios. The A-P2 and A-P3 presets are unreachable on the current scorer. The
-  simulated dry run delivers 9 of 9 runs in their intended band (7 of 9 before #96).
+- **Current numbers (2026-11-17, core 0.4.0 / `pt5trough-ref-2026-11-16`, with #112):**
+  `python -m neuromech.build` writes 66 scenarios (`M-catch_release_high`
+  dropped). The A-P2 and A-P3 presets are unreachable on the current scorer. The
+  simulated dry run delivers 9 of 9 runs in their intended band at seeds 11, 1, 3, 7
+  and 42 (7 of 9 before #96).
+- **O5 preset refit (#112, draft, 2026-11-17):** presets refitted to their band middles on
+  the five-term scorer (`B-claspknife` 0.078 band 0 -> 0.200 band 1; `K-HM1` 0.149 ->
+  0.193; `B-spasm`, `B-flexor`, `B-clonus` off their edges), `M-catch_release_high`
+  dropped, and the build now exits 1 when a scenario not on the allowlist
+  (`scenarios.NEAR_EDGE_ALLOWED`, 10 probes with reasons) sits within 0.03 PT7 of a
+  band edge. The `M-tone_L*` ladder is deliberately not moved (see the PR).
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** none.
+- **Open PRs:** #112 (O5 preset refit, draft).
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold

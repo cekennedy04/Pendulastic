@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 67 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -21,13 +21,24 @@ python -m neuromech.build                # 67 scenarios -> neuromech/out/ (manif
 | B | behaviours: flexor/extensor, clasp-knife, clonus, rigidity, contracture, hypotonia, guarding, spasm, habituation | De Groote core + modules |
 | C | each of the 7 parameters and the A0 gate pushed out of range | De Groote core + kinematic transforms |
 | D | release artefacts: push, wobble, short record, low lift | De Groote core |
-| M | severity AND kind of severity: tone ladder, catch-release, catch-and-hold, no-ringdown fall, end-stop | De Groote core, via `profiles.py` |
+| M | severity AND kind of severity: tone ladder, catch-and-hold, no-ringdown fall, end-stop (the catch-release copy of `B-claspknife` was dropped, O5) | De Groote core, via `profiles.py` |
 | R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel | De Groote core |
 | H | HESS's four haptic models (Park et al. 2012, Table III), elbow values unscaled: the three-phase catch on a pendulum | De Groote core + `hess_*` module |
 | K | HESS HM#1–2 on the knee: H alone refitted so each holds its intended MAS 1 / 1+ (HM#3's MAS 2 and HM#4's MAS 3 exist only in a sliver below the arrest jump) | De Groote core + `hess_*` module |
 
 `out/scenario_manifest.csv` holds, per scenario, the expected 7 parameters, PT7, band or refusal, flags,
-the rig range and speed it needs, and the peak active muscle torque (for Mode C).
+the rig range and speed it needs, the peak active muscle torque (for Mode C), and its distance to the nearest
+PT7 band edge (`edge_dist_pt7`, `near_edge`).
+
+**Edge check (owner decision O5).** A preset within 0.03 PT7 of a band edge (`build.EDGE_MARGIN_PT7`) is one
+rig's tracking error or one scorer revision from the next band. The build prints every such scenario and
+**exits 1** if any is not in `scenarios.NEAR_EDGE_ALLOWED` (or an allowlist entry names a scenario that is not
+built); the library is still written. Presets meant to sit in a band are refitted to its middle with
+`build.fit_param` (the ladder's bisection, on one other parameter) and listed in `scenarios.BAND_MIDDLE`;
+scenarios whose purpose is the edge or an out-of-range parameter (S axis, C, R, HESS's unscaled values) are
+allowlisted, each with its reason. `--allow-near-edge` builds anyway. On `pt5trough-ref-2026-11-16`
+(2026-11-17): nothing flagged, 10 allowlisted (`S-lam1`, `S-lam6`, `C-wmax-low`, `C-f-low`, `C-f-high`,
+`R-friction`, `R-reflex-force`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
 
 ## 2. Plan a session
 
@@ -331,6 +342,15 @@ seed 11 gives tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from pr
 22.1 ms in place of 25 (15.9 to 21.8 before the floor went into quadrature, 2026-11-16), and the same 9 of 9 with
 no flag and no session finding.
 
+**Current result (2026-11-17, scorer `pt5trough-ref-2026-11-16`, after the O5 refit).** The default session is
+`A-P0, A-P1p, M-tone_L4, B-clonus, B-claspknife, C-f-high, M-tone_L2, K-HM1, M-fall_no_ringdown` (`K-HM1` took
+the dropped `M-catch_release_high`'s slot). 9 of 9 runs in their intended band on the encoder and the phone at
+seeds 11, 1, 3, 7 and 42, none flagged; tracking time error 14.1 to 14.2 ms median, 1.00 to 1.01 of predicted;
+delivered release 27.4 to 27.5 ms after the commanded one (median); phone |ΔPT7| median under 0.001 at every
+seed, max across seeds 0.016 (seed 3; 0.014 at seed 1, 0.005 or less at seeds 7, 11 and 42). `B-claspknife` intends 0.200 and is delivered at 0.197 to 0.198 (it intended 0.078, band 0, before the
+refit); `K-HM1` 0.193 → 0.191 to 0.192. `C-f-high` (allowlisted) intends 0.2818 and is delivered at 0.2801 to
+0.2818: band 1+ at every seed, but 0.0001 from the edge, so it is the session's deliberate edge run.
+
 ## 7. Does the emulator fall like a real leg?
 
 ```bash
@@ -389,7 +409,7 @@ score sits about 0.05 above them on the same motion; that gap is printed, not ju
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 286 tests (9 skip without a local wasm build)
+python -m pytest neuromech/tests                                    # 321 passed, 2 xfailed (9 skip without a local wasm build)
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 

@@ -68,7 +68,10 @@ def _build_profiles() -> dict[str, Params]:
         "tone_L3": _tone(3),
         "tone_L4": _tone(4),
         # A velocity catch that LETS GO past a stretch length: the clasp-knife.
-        "catch_release_high": Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=25.0),
+        # The same Params as scenarios' B-claspknife (release refit 25 -> 36 deg on
+        # 2026-11-17, scenarios.CLASP_RELEASE_DEG; test_build_edge_check holds the two
+        # equal). Not rendered as an M scenario since the owner dropped that copy (O5).
+        "catch_release_high": Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=36.0),
         # Falls, then arrests and holds -- no oscillation about the arrest point.
         "catch_and_hold_140": _hold(_HOLD_PENDULASTIC["catch_and_hold_140"]),
         "catch_and_hold_127": _hold(_HOLD_PENDULASTIC["catch_and_hold_127"]),

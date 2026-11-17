@@ -68,6 +68,46 @@ def severity(lam: float, **kw) -> Params:
 #: PT7 targets: the centre of each MAS band in pendulastic_pt_score._MAS (<= .12/.28/.44/.60/.78).
 MAS_TARGETS = {"0": 0.06, "1": 0.20, "1+": 0.36, "2": 0.52, "3": 0.69}
 
+#: The clasp-knife's release stretch, deg. Refit 2026-11-17 (decision O5) from 25 to 36 so the catch
+#: grades in the middle of band 1 on the five-term scorer (PT7 0.200; build.fit_param gave 36.13).
+#: At 25 it scored 0.078, band 0, and a releasing catch is a mid-severity sign (profiles.SEVERITY_INTENT
+#: ranks it 2), so band 0 contradicts what it is; on the six-term scorer it sat in band 1 at 0.139.
+CLASP_RELEASE_DEG = 36.0
+
+#: Presets whose job is to sit in a band, and the band: each is refitted to that band's middle
+#: (MAS_TARGETS) and tests/test_build_edge_check.py holds it there. The A rungs are bisected at every
+#: build; the rest carry a value build.fit_param found (refit 2026-11-17 on pt5trough-ref-2026-11-16,
+#: owner decision O5), rounded onto the PT7 plateau nearest the middle and in band at +-5 %:
+#:   B-claspknife  catch_release_deg 25 -> 36    PT7 0.078 (band 0) -> 0.200
+#:   K-HM1         H 1.036 -> 1.25               PT7 0.149 -> 0.193
+#:   B-spasm       spasm_nm 6.0 -> 4.0           PT7 0.131 -> 0.211
+#:   B-flexor      flex_vth 0.8 -> 0.55          PT7 0.298 -> 0.370
+#:   B-clonus      clonus_deg 4 -> 6             PT7 0.100 -> 0.084: beats of any size hold PT7 at 0.084 to
+#:                 0.10 (6 to 8 deg give 0.084 to 0.086), so band 0's middle is out of this knob's reach;
+#:                 6 deg is the flat part, 0.036 inside the edge, where 4 deg sat on a step 0.020 from it
+#: The B behaviours carry the band they land in (all unchanged by the footing change except the
+#: clasp-knife); the clasp-knife's band is fixed by its clinical intent.
+BAND_MIDDLE: dict[str, str] = {
+    "A-P0": "0", "A-P1": "1", "A-P1p": "1+",
+    "B-claspknife": "1", "K-HM1": "1", "B-spasm": "1", "B-flexor": "1+", "B-clonus": "0",
+}
+
+#: Scenarios that are near a PT7 band edge ON PURPOSE, or whose parameters are not ours to move: the
+#: build's edge check (build.edge_check, within build.EDGE_MARGIN_PT7) does not flag these. Each says why.
+#: An entry whose scenario is no longer built fails the build; one no longer near an edge is reported.
+NEAR_EDGE_ALLOWED: dict[str, str] = {
+    "S-lam1": "the published severity axis at its nominal lambda 1 (De Groote 2018); where it grades is the finding",
+    "S-lam6": "the published axis past the A0 gate: refused for insufficient excursion; the PT7 is never shown",
+    "C-wmax-low": "one parameter pushed out of range by a fixed time scale (x0.5); the band is wherever that lands",
+    "C-f-low": "the same 0.46 Hz swing as C-wmax-low, probing f; the time scale is the probe, not a knob",
+    "C-f-high": "f pushed past the 2.0 Hz plausibility flag (x2.5 = 2.3 Hz); the time scale is set by that flag",
+    "R-friction": "the rig's own bearing friction (rig_params), a measured property, not a preset",
+    "R-reflex-force": "the force-feedback channel at the tone the velocity and length channels share; moving it breaks the comparison",
+    "R-reflex-vel": "the velocity-feedback channel at the shared tone 2.0 N.m; moving it breaks the comparison",
+    "R-reflex-len": "the length-feedback channel at the shared tone 2.0 N.m; moving it breaks the comparison",
+    "H-HM3": "HESS Table III elbow values played unscaled (Park et al. 2012); the probe is what the port does",
+}
+
 
 def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     """mas_lambda: calibrated severity per MAS grade (from build.calibrate_ladder)."""
@@ -93,12 +133,12 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     sc += [
         Scenario("B-extensor", "B", "Extensor-dominant (quadriceps reflex only)", m2, probes="area_ratio direction, phi_max"),
         Scenario("B-flexor", "B", "Flexor-dominant (hamstring reflex on the return)",
-                 Params(tone=0.4, flex_gain=2.5, flex_vth=0.8), probes="phi_max low, area_ratio sign"),
+                 Params(tone=0.4, flex_gain=2.5, flex_vth=0.55), probes="phi_max low, area_ratio sign"),
         Scenario("B-mixed", "B", "Co-spastic: extensor + flexor reflexes", replace(m1p, flex_gain=2.0, flex_vth=0.8),
                  probes="both halves damped"),
         Scenario("B-claspknife", "B", "Clasp-knife catch then release on the first drop",
-                 Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=25.0), probes="R2n, omega_min_n, A1 shape"),
-        Scenario("B-clonus", "B", "Clonus: 6 Hz beats after the first drop", replace(m1p, clonus_deg=4.0, clonus_hz=6.0),
+                 Params(catch_gain=4.0, catch_vth=1.2, catch_release_deg=CLASP_RELEASE_DEG), probes="R2n, omega_min_n, A1 shape"),
+        Scenario("B-clonus", "B", "Clonus: 6 Hz beats after the first drop", replace(m1p, clonus_deg=6.0, clonus_hz=6.0),
                  probes="N inflation by beats, f contamination, 6 Hz at the phone's ~60 Hz rate"),
         Scenario("B-leadpipe", "B", "Lead-pipe rigidity (velocity-independent)", Params(rigid_nm=0.9),
                  probes="linear (not exponential) decay, early stop off-vertical"),
@@ -109,7 +149,7 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         Scenario("B-hypotonic", "B", "Hypotonic / flaccid (low damping)", Params(B=0.03), probes="N high, R2n ceiling"),
         Scenario("B-guarding", "B", "Non-relaxation: voluntary guarding torque", Params(guard_nm=0.8, guard_seed=3),
                  probes="irregular period; the relaxation check the literature requires"),
-        Scenario("B-spasm", "B", "Mid-swing extensor spasm at 1.5 s", replace(m1p, spasm_nm=6.0, spasm_t=1.5),
+        Scenario("B-spasm", "B", "Mid-swing extensor spasm at 1.5 s", replace(m1p, spasm_nm=4.0, spasm_t=1.5),
                  probes="period variation, phi_max, N"),
     ]
     for k, gsc in enumerate((1.0, 0.85, 0.72, 0.62, 0.55), start=1):
@@ -157,8 +197,11 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     # identification probe; rendering both would put two byte-identical 1 kHz
     # setpoint files in the run sheet. It stays in PROFILES because
     # severity_grading_test iterates that dict and wants the hardware baseline.
+    # catch_release_high is B-claspknife's Params (one scenario built twice since af8a20a); the owner
+    # dropped the M copy (decision O5, 2026-11-16). Like rig_passive it stays in PROFILES for
+    # severity_grading_test, and test_build_edge_check holds the two definitions equal.
     for name, prm in PR.PROFILES.items():
-        if name == "rig_passive":
+        if name in ("rig_passive", "catch_release_high"):
             continue
         it = PR.SEVERITY_INTENT.get(name)
         sc.append(Scenario(f"M-{name}", "M", f"{name} (intent {it if it is not None else 'n/a'})",
@@ -212,11 +255,15 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
                  _hess(3.8, 0.80, 10.0, 110.0), probes="an elbow-scale catch arresting a knee drop"),
     ]
     # ── K: HESS HM#1-2 on the knee ────────────────────────────────────────
-    # Only H is refitted, per model, against the scorer with the re-derived
-    # HEALTHY_REF (#79); Q, D, L and k_post stay as Table III. H sits at the
-    # geometric middle of the H range that grades the intended MAS (HM#1
-    # 0.672-1.596, HM#2 1.362-1.684), so each holds its band with H +/-10 %;
-    # at the band's PT7 centre HM#2 would sit 4 % below the 1+/2 edge. HM#3
+    # Only H is refitted, per model; Q, D, L and k_post stay as Table III.
+    # Refit 2026-11-17 on the five-term scorer (pt5trough-ref-2026-11-16,
+    # decision O5): HM#1's H is build.fit_param's answer for PT7 0.20, the
+    # middle of band 1 (1.276, a step edge; 1.25 is the plateau below it,
+    # PT7 0.193, in band 1 from H x0.9 to x1.1). The geometric-middle H it
+    # had (1.036, from #79's scorer) scored 0.149 here, 0.029 above the 0/1
+    # edge. HM#2 keeps the geometric middle of its 1+ range (1.514, PT7
+    # 0.322, 0.042 above the 1/1+ edge): the band's PT7 centre needs H 1.61,
+    # 5 % below the jump to MAS 2 at H 1.69. HM#3
     # and HM#4 are absent: as H rises PT7 jumps from under 0.40 to over 0.79
     # once the catch arrests the leg before rest and nothing rings down (MAS 4
     # or refused), so MAS 2 (HM#3: H 1.164-1.199, +/-1.5 %) and MAS 3 show
@@ -225,8 +272,8 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
     # settings gave no MAS 3 and one MAS 2, which flips to 1+ at -2 % H and
     # to MAS 4 at +2 %.
     sc += [
-        Scenario("K-HM1", "K", "HESS HM#1 on the knee (MAS 1): H 1.036 = 0.74x elbow",
-                 _hess(1.036, 0.15, 60.0, 130.0), probes="a HESS catch graded at its intended MAS 1"),
+        Scenario("K-HM1", "K", "HESS HM#1 on the knee (MAS 1): H 1.25 = 0.89x elbow",
+                 _hess(1.25, 0.15, 60.0, 130.0), probes="a HESS catch graded at its intended MAS 1"),
         Scenario("K-HM2", "K", "HESS HM#2 on the knee (MAS 1+): H 1.514 = 0.76x elbow",
                  _hess(1.514, 0.30, 50.0, 120.0), probes="a HESS catch graded at its intended MAS 1+"),
     ]

@@ -40,17 +40,17 @@ PLANT = dict(wn_hz=6.35, zeta=0.23, delay_ms=0.0)
 # omits the rung, so naming it here would fail the plan. M-tone_L4 is the
 # most severe rung that exists, and sits at the peak. A-P2 went the same way
 # when #79 re-derived HEALTHY_REF: the ladder now stops at 1+, so A-P1p is the
-# most severe band preset left. B-claspknife and M-catch_release_high (one
-# scenario built twice) stay in the default session because they are its edge
-# case: each intends PT7 0.139, 0.02 above the 0/1 edge. Until 2026-11-11 both
-# missed (~0.116, band 0), and more than half of that was the session program:
-# it scored the delivered trace from the COMMANDED release, and the hold left
-# inside the record counted as a half-oscillation. Scored from the delivered
-# release (session._delivered_release) both are in band at ~0.128, at seeds
-# 1, 3, 7, 11 and 42. The remaining -0.011 is the plant's own (its resonance
-# raises peak velocity), it leaves them 0.008 above the edge, and the default
-# run should keep showing that.
-DEFAULT_SIDS = ["A-P0", "A-P1p", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "M-catch_release_high", "M-fall_no_ringdown"]
+# most severe band preset left. B-claspknife was the edge case here, with
+# M-catch_release_high (the same scenario built twice): on the six-term scorer
+# both intended PT7 0.139, 0.02 above the 0/1 edge, and missed (~0.116, band 0)
+# until the session scored the delivered release (2026-11-11). On the five-term
+# scorer they intended 0.078, band 0. Decision O5 (2026-11-16) refit the
+# clasp-knife to the middle of band 1 (0.200) and dropped the M copy; K-HM1,
+# a catch fitted to the middle of band 1 the same way, takes its slot. C-f-high
+# is the edge run now: it intends 0.2818, 0.002 above the 1/1+ edge, and is
+# allowlisted as near-edge on purpose (scenarios.NEAR_EDGE_ALLOWED), so which
+# side the plant delivers it on depends on the seed.
+DEFAULT_SIDS = ["A-P0", "A-P1p", "M-tone_L4", "B-clonus", "B-claspknife", "C-f-high", "M-tone_L2", "K-HM1", "M-fall_no_ringdown"]
 
 
 def plant_response(sp, fs=1000.0, plant=PLANT):
