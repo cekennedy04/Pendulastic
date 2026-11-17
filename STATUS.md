@@ -107,12 +107,16 @@ scores move. "Not verified" is stated, never implied.
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Chirp-derived tracking limit (in progress, no PR):**
-  `neuromech/chirp-derived-tracking-limit` judges each run against the plant identified
-  from the session's chirp. Its review (`docs/chirp-tracking-limit-review`) found the
-  release check robust under model mismatch but the tracking ratio fitted to the
-  simulator's plant family; fixes are being applied, then a re-review. The branch was
-  cut from #96 before it was squash-merged, so it must be rebased onto `main`.
+- **Open PRs:** #107 (chirp-derived tracking limit, draft).
+- **Chirp-derived tracking limit (draft PR #107, `neuromech/chirp-tracking-limit-v2`):** each
+  run is held to what the plant identified from the session's chirp (R000) predicts,
+  with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
+  gain gated by the gain after the swing, and a flag for a hold the arm does not settle
+  at. Reviewed and re-reviewed (`docs/chirp-tracking-limit-review`); 286 tests, dry run
+  9 of 9. **Simulation only, not verified on a real rig.** Known costs (README and report
+  section C): slow rig modes the chirp cannot see flag good runs; a constant encoder
+  offset still moves release and tracking; no session ratio where predictions are under
+  7 ms; a margin must never be accepted from the session being judged.
 - **Another session's work, not part of this plan:** `docs/neuromech-elbow-plan`
   (worktree `Pendulastic-wt-elbow`).
 - **Rig path versus app path** (simulation only;
@@ -122,8 +126,9 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** finish, re-review and land the chirp-derived tracking limit; then
-  the first rig session, read as a measurement of the limits.
+- **Next actions:** land the chirp-derived tracking limit (#107); then the first rig session, read as a
+  measurement of the limits. On its first log measure `enc_hold_rms_deg`, the idle position against the
+  setpoint (`enc_idle_offset_deg`) and `enc_hold_gain` / `enc_late_gain` on runs believed good.
 
 ### 2. Synthetic phone-trial generator — ACTIVE (part of neuromech)
 - **Goal:** check the app end to end without a phone, against known truth.
