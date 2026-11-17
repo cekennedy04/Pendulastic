@@ -298,6 +298,22 @@ def test_all_three_languages_agree_on_the_canonical_scored_set():
         f"JS {_js_list('CANONICAL_KEYS')} != Python {py_keys}")
 
 
+def test_the_scorable_span_gate_matches_in_all_three_languages():
+    """MIN_SCORABLE_S and MIN_SCORABLE_SAMPLES (Q7, 2026-11-16) gate which
+    curves are scored at all. A port that disagrees scores a short trial the
+    others refuse."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rs = open(os.path.join(root, "mobile-imu-core", "src", "scoring.rs"), encoding="utf-8").read()
+    cs = open(os.path.join(root, "neuromech", "designer", "PtScore.cs"), encoding="utf-8").read()
+    m = re.search(r"pub const MIN_SCORABLE_S: f64 = ([0-9.]+);", rs)
+    n = re.search(r"pub const MIN_SCORABLE_SAMPLES: usize = (\d+);", rs)
+    mc = re.search(r"public const double MIN_SCORABLE_S = ([0-9.]+);", cs)
+    nc = re.search(r"public const int MIN_SCORABLE_SAMPLES = (\d+);", cs)
+    assert m and n and mc and nc, "MIN_SCORABLE_S / _SAMPLES missing from Rust or C#"
+    assert float(m.group(1)) == float(mc.group(1)) == pt.MIN_SCORABLE_S
+    assert int(n.group(1)) == int(nc.group(1)) == pt.MIN_SCORABLE_SAMPLES
+
+
 def test_the_selectable_superset_matches_between_languages():
     """ALL_PT_KEYS is wider than the scored set and must agree in both.
 

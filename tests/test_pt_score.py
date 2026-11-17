@@ -1209,6 +1209,45 @@ def test_sg_falls_back_to_the_savgol_minimum_when_the_rate_is_too_low():
     assert not np.array_equal(out, sig)
 
 
+def _short_swing(span_s, fs):
+    import numpy as np
+    t = np.arange(0.0, span_s + 0.5 / fs, 1.0 / fs)
+    t = t[t <= span_s + 1e-9]
+    phi = np.where(t < 0.3, 40.0,
+                   40.0 * np.exp(-0.8 * (t - 0.3)) * np.cos(2 * np.pi * 1.0 * (t - 0.3)))
+    return t, 120.0 + phi
+
+
+@pytest.mark.parametrize("fs", [20.0, 100.0, 120.0])
+def test_the_minimum_curve_is_a_duration_not_a_sample_count(fs):
+    # Q7, 2026-11-16: the 40-sample minimum meant 2 s at the app's old 20 Hz
+    # tick but 0.4 s at 100 Hz and 0.33 s at 120 Hz. The gate is now a span of
+    # finite signal, the same at every rate.
+    import pendulastic_pt_score as p
+    assert p.MIN_SCORABLE_S == 2.0 and p.MIN_SCORABLE_SAMPLES == 40
+    t, a = _short_swing(1.9, fs)
+    assert len(t) >= 38
+    assert p.compute_pt_params(t, a, release_idx=int(0.3 * fs), detrend=False) is None
+
+
+def test_a_gap_inside_the_span_counts_as_span():
+    # The gate measures how long the curve covers. A NaN run in the middle
+    # neither shortens nor lengthens it; only the first and last finite
+    # samples matter.
+    import numpy as np
+    import pendulastic_pt_score as p
+    t, a = _short_swing(1.98, 100.0)
+    a = a.copy(); a[100:150] = np.nan
+    assert p._scorable_span_ok(t, np.isfinite(a)) is False
+    a2 = np.concatenate([a, [np.nan] * 30])
+    t2 = np.concatenate([t, t[-1] + 0.01 * np.arange(1, 31)])
+    # Trailing NaNs do not extend the span either.
+    assert p._scorable_span_ok(t2, np.isfinite(a2)) is False
+    t3, a3 = _short_swing(2.05, 100.0)
+    a3 = a3.copy(); a3[100:150] = np.nan
+    assert p._scorable_span_ok(t3, np.isfinite(a3)) is True
+
+
 def test_compute_pt_params_does_not_depend_on_sample_rate():
     # The parameters the smoothing window governs. Same swing at 50 Hz and
     # 200 Hz -- identical motion, only the sampling differs -- so anything

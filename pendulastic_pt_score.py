@@ -2937,6 +2937,35 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
     return float(t_r[settle_idx])
 
 
+#: The shortest curve compute_pt_params will characterise, as a SPAN of finite
+#: signal: time of the last finite sample minus time of the first, in seconds.
+#: NaN runs inside the span count as span -- this gate measures how long the
+#: curve covers, not how densely; gaps are handled where they always were (the
+#: finite mask in compute_pt_params, and the replay's EMA reset). 2.0 s is what
+#: the 40-sample minimum meant at the phone app's old 20 Hz tick. As a sample
+#: count alone it was five times looser at 100 Hz (0.4 s) and six at 120 Hz
+#: optical (0.33 s), so moving the app to the 100 Hz analysis tick would have
+#: silently widened what is scorable. Owner decision Q7, 2026-11-16
+#: (docs/plans/2026-11-16-app-reference-footing-plan.md, section 3.5).
+#: Identical in mobile-imu-core/src/scoring.rs and neuromech/designer/PtScore.cs.
+MIN_SCORABLE_S = 2.0
+
+#: Kept beside the span as a floor, so the smoothing and peak-finding always
+#: have samples to work on. At 20 Hz and above the span is the binding gate (40
+#: samples at 20 Hz span 1.95 s, so 41 are needed there); the floor only binds
+#: on curves sampled below 20 Hz.
+MIN_SCORABLE_SAMPLES = 40
+
+
+def _scorable_span_ok(t: np.ndarray, mask: np.ndarray) -> bool:
+    """At least MIN_SCORABLE_SAMPLES finite samples AND MIN_SCORABLE_S of
+    finite span (last finite time minus first finite time)."""
+    if int(mask.sum()) < MIN_SCORABLE_SAMPLES:
+        return False
+    tf = np.asarray(t, dtype=float)[mask]
+    return float(tf[-1] - tf[0]) >= MIN_SCORABLE_S
+
+
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                       release_idx: Optional[int] = None,
                       detrend: bool = True) -> Optional[dict]:
@@ -2955,7 +2984,7 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                  auto-detection and use this frame as the release point.
     """
     mask = np.isfinite(angle_raw)
-    if mask.sum() < 40:
+    if not _scorable_span_ok(t, mask):
         return None
 
     t_c   = t[mask]

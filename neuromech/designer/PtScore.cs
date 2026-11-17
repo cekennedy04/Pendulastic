@@ -109,6 +109,10 @@ namespace Pendulastic
         public const int EXCURSION_REF_N = 53;
         public const double MIN_INTERPRETABLE_A0_DEG = 30.0;   // 25 -> 30 on 2026-10-27, see pendulastic_pt_score
         public const double MAX_INTERPRETABLE_A0_DEG = 120.0;
+        /// <summary>MIN_SCORABLE_S: finite span (last finite t minus first, s) below which compute_pt_params refuses. Q7, 2026-11-16.</summary>
+        public const double MIN_SCORABLE_S = 2.0;
+        /// <summary>MIN_SCORABLE_SAMPLES: finite-sample floor kept beside the span.</summary>
+        public const int MIN_SCORABLE_SAMPLES = 40;
 
         /// <summary>_PARAM_KEYS: the scored set (omega_min_n is diagnostic only since pt6).</summary>
         public static readonly string[] ScoredKeys = new string[] { "R2n", "N", "phi_max_ratio", "omega_max_n", "f", "area_ratio" };
@@ -170,7 +174,8 @@ namespace Pendulastic
             int nTot = angleRaw.Length;
             List<int> finiteIdx = new List<int>(nTot);
             for (int i = 0; i < nTot; i++) if (IsFinite(angleRaw[i])) finiteIdx.Add(i);
-            if (finiteIdx.Count < 40) { r.HasParams = false; r.NoneReason = "fewer than 40 finite samples"; return; }
+            if (finiteIdx.Count < MIN_SCORABLE_SAMPLES) { r.HasParams = false; r.NoneReason = "fewer than 40 finite samples"; return; }
+            if (t[finiteIdx[finiteIdx.Count - 1]] - t[finiteIdx[0]] < MIN_SCORABLE_S) { r.HasParams = false; r.NoneReason = "less than 2.0 s of finite signal"; return; }
 
             int nc = finiteIdx.Count;
             double[] t_c = new double[nc];

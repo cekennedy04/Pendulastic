@@ -11,7 +11,9 @@
 #[path = "fixtures/golden.rs"]
 mod golden;
 
-use mobile_imu_core::scoring::{compute_pt_params, score_waveform, SpasticityType};
+use mobile_imu_core::scoring::{
+    compute_pt_params, score_waveform, SpasticityType, MIN_SCORABLE_S, MIN_SCORABLE_SAMPLES,
+};
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
     assert!(
@@ -505,4 +507,52 @@ fn lift_ramp_stays_out_of_the_baseline_drift_fit() {
         .expect("scorable");
     close(p.a0_deg, golden::TRIAL_LIFT_RING_DETREND_A0_DEG, 1e-6, "A0 (detrend)");
     close(p.neutral_deg, golden::TRIAL_LIFT_RING_DETREND_NEUTRAL_DEG, 1e-6, "neutral (detrend)");
+}
+
+/// A short, well-formed swing at `fs` covering `span_s` seconds of finite signal.
+fn short_swing(span_s: f64, fs: f64) -> (Vec<f64>, Vec<f64>) {
+    let n = (span_s * fs).round() as usize + 1;
+    let t: Vec<f64> = (0..n).map(|i| i as f64 / fs).collect();
+    let a = t
+        .iter()
+        .map(|&tt| {
+            let phi = if tt < 0.3 {
+                40.0
+            } else {
+                40.0 * (-0.8 * (tt - 0.3)).exp() * (2.0 * std::f64::consts::PI * (tt - 0.3)).cos()
+            };
+            120.0 + phi
+        })
+        .collect();
+    (t, a)
+}
+
+/// Q7, 2026-11-16: the minimum is 2.0 s of finite span, not 40 samples, at
+/// every rate. Mirrors `test_the_minimum_curve_is_a_duration_not_a_sample_count`.
+#[test]
+fn the_minimum_curve_is_a_duration_not_a_sample_count() {
+    assert_eq!(MIN_SCORABLE_S, 2.0);
+    assert_eq!(MIN_SCORABLE_SAMPLES, 40);
+    for fs in [20.0_f64, 100.0, 120.0] {
+        let (t, a) = short_swing(1.9, fs);
+        assert!(t.len() >= 38);
+        let rel = (0.3 * fs) as usize;
+        assert!(compute_pt_params(&t, &a, Some(rel), false).is_none(), "fs={fs}");
+    }
+}
+
+/// A NaN run inside the span neither shortens nor lengthens it.
+#[test]
+fn a_gap_inside_the_span_counts_as_span() {
+    let (t, mut a) = short_swing(1.98, 100.0);
+    for v in &mut a[100..150] {
+        *v = f64::NAN;
+    }
+    assert!(compute_pt_params(&t, &a, Some(30), false).is_none());
+    let (t3, mut a3) = short_swing(2.5, 100.0);
+    for v in &mut a3[100..150] {
+        *v = f64::NAN;
+    }
+    // Index 30 is the release in the input frame, before the finite mask.
+    assert!(compute_pt_params(&t3, &a3, Some(30), false).is_some());
 }

@@ -184,6 +184,11 @@ def edge_cases(idx_rows, seed):
     # too few samples / too few post-release samples
     t30 = np.arange(0, 0.39, 0.01)
     E.append(("short-39-samples", t30, swing(40.0, hold=0.1, tt=t30), 0.1))
+    # span gate (MIN_SCORABLE_S = 2.0 s of finite signal): plenty of samples, either side of 2.0 s
+    t19 = np.arange(0, 1.95, 0.01)
+    E.append(("short-span-1p94s", t19, swing(40.0, hold=0.3, tt=t19), 0.3))
+    t21 = np.arange(0, 2.06, 0.01)
+    E.append(("span-2p05s", t21, swing(40.0, hold=0.3, tt=t21), 0.3))
     t2 = np.arange(0, 3.0, 0.01)
     E.append(("release-near-end", t2, swing(40.0, hold=2.85, tt=t2), 2.85))
     E.append(("release-after-end", t, swing(40.0), 50.0))

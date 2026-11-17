@@ -566,6 +566,20 @@ pub fn settled_tail_drift_slope(t: &[f64], ang: &[f64], rel_i: usize) -> Option<
     Some(slope)
 }
 
+/// `pendulastic_pt_score.MIN_SCORABLE_S`: the shortest curve
+/// [`compute_pt_params`] characterises, as a SPAN of finite signal (time of
+/// the last finite sample minus the first), in seconds. NaN runs inside the
+/// span count as span; gaps are handled where they always were. 2.0 s is what
+/// the 40-sample minimum meant at the old 20 Hz tick; as a count alone it was
+/// five times looser at 100 Hz and six at 120 Hz optical. Owner decision Q7,
+/// 2026-11-16 (`docs/plans/2026-11-16-app-reference-footing-plan.md` §3.5).
+pub const MIN_SCORABLE_S: f64 = 2.0;
+
+/// `pendulastic_pt_score.MIN_SCORABLE_SAMPLES`: a floor kept beside the span so
+/// smoothing and peak-finding always have samples. At 20 Hz and above the span
+/// binds (40 samples at 20 Hz span 1.95 s).
+pub const MIN_SCORABLE_SAMPLES: usize = 40;
+
 /// Compute the Popović PT parameters from a knee-angle time series.
 ///
 /// `release_idx` bypasses auto-detection and forces the release point (a frame
@@ -574,8 +588,9 @@ pub fn settled_tail_drift_slope(t: &[f64], ang: &[f64], rel_i: usize) -> Option<
 /// from the scrub view. `detrend` applies the pre-release baseline drift
 /// correction.
 ///
-/// Returns `None` when the trial cannot be characterised at all: fewer than 40
-/// finite samples, too little post-release signal, or a first-swing amplitude
+/// Returns `None` when the trial cannot be characterised at all: fewer than
+/// [`MIN_SCORABLE_SAMPLES`] finite samples or less than [`MIN_SCORABLE_S`] of
+/// finite span, too little post-release signal, or a first-swing amplitude
 /// under 3 degrees. That is a real clinical outcome (a near-rigid joint), and
 /// reporting nothing beats reporting a confident number derived from noise.
 pub fn compute_pt_params(
@@ -592,10 +607,13 @@ pub fn compute_pt_params(
     let finite_indices: Vec<usize> = (0..angle_raw.len())
         .filter(|&i| angle_raw[i].is_finite())
         .collect();
-    if finite_indices.len() < 40 {
+    if finite_indices.len() < MIN_SCORABLE_SAMPLES {
         return None;
     }
     let t_c: Vec<f64> = finite_indices.iter().map(|&i| t[i]).collect();
+    if t_c[t_c.len() - 1] - t_c[0] < MIN_SCORABLE_S {
+        return None;
+    }
     // Pristine raw, for neutral_deg_raw below.
     let ang_c_raw: Vec<f64> = finite_indices.iter().map(|&i| angle_raw[i]).collect();
 
