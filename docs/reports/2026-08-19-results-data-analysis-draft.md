@@ -51,8 +51,8 @@ All analyses were performed in Python 3.13 (`numpy`, `scipy.stats`,
 Sixty-one trials from 5 participants (4 MS, 1 healthy control) had both IMU
 and OptiTrack recordings and were included in the instrument-validation
 analysis. Modified Ashworth Scale scores were available for all 61 trials:
-the 4 MS participants (P5, P13, P14, P15) had clinician-assessed grades;
-the control participant (P16) was assigned MAS = 0 by definition (healthy,
+the 4 MS participants had clinician-assessed grades;
+the control participant was assigned MAS = 0 by definition (healthy,
 not a clinical assessment). A separate, larger sample — 37 trials
 across 5 different participants (P5, P13, P14, P15, P16, overlapping the IMU
 set) — had both video and OptiTrack recordings and was used for the
@@ -120,12 +120,12 @@ IMU-derived R2n, oscillation count, and area ratio, mean ± SD grouped by MAS
 category — direct format match to Whelan et al. (2018) Figure 3. Note the
 honest gap this figure surfaces on its own: **zero trials in the current
 cohort have MAS ≥ 2** (moderate-or-worse spasticity) — the current MS sample
-(P5, 13, 14, 15) tops out at MAS = 1+. Any claim about metric behavior at
+tops out at MAS = 1+. Any claim about metric behavior at
 higher spasticity grades is not supported by this dataset yet.
 
 **Figure 3** (`Model_Analysis_Outputs/paper_figures/fig3_trajectory_example.png`).
 Example single-trial knee-angle trajectory, IMU vs. OptiTrack overlaid
-(Participant_16, trial 16_left_control_T1) — format matches Willaert et al.
+(one participant's baseline trial) — format matches Willaert et al.
 (2020) Figure 1b. Qualitatively shows the IMU tracking the damped-oscillation
 shape well in early cycles, with growing phase/amplitude drift later in the
 trial and a different settle angle (IMU ≈117° vs. OptiTrack ≈125°) — a
@@ -161,9 +161,9 @@ sample that isn't there.
 
 ### Pre/post (MS participants with a treatment timepoint)
 
-Of the 4 IMU-validated MS participants, only **P15 has both a pre and a
-post recording** in the OptiTrack-matched dataset; P14 has pre only; P13
-and P5 have post only (their "pre" sessions exist in `mas_scores.csv` but
+Of the 4 IMU-validated MS participants, only **one has both a pre and a
+post recording** in the OptiTrack-matched dataset; one has pre only; two
+have post only (their "pre" sessions exist in `mas_scores.csv` but
 did not have a matched OptiTrack recording in this corpus). **This is not
 a pre/post comparison in any statistical sense — it is one paired
 observation.** Figure 5 is included as a descriptive/illustrative figure

@@ -90,7 +90,7 @@ def test_start_without_countdown_calls_on_start():
         class C(_Ctrl):
             def on_start(self): calls.append("start")
         p = AcquisitionPanel(r, C()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(False)
         p._on_start_clicked()
         r.update()
@@ -106,7 +106,7 @@ def test_start_with_countdown_shows_cancel():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(True)
         p._on_start_clicked()
         r.update()
@@ -228,7 +228,7 @@ def test_validate_no_source_checked_fails():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p._src_optitrack.set(False)
         p._src_rgb.set(False)
         p._src_imu.set(False)
@@ -246,13 +246,13 @@ def test_get_metadata_returns_sources_list():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P7"); p.leg_var.set("Left")
+        p.pid_var.set("P907"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
         p._src_optitrack.set(False)
         p._src_rgb.set(False)
         p._src_imu.set(True)
         result = p.get_metadata()
-        assert result["pid"] == "P7"
+        assert result["pid"] == "P907"
         assert result["leg"] == "Left"
         assert result["ms_status"] == "Stroke"
         assert result["trial"] == 3
@@ -380,7 +380,7 @@ def test_validate_rejects_video_file_and_rgb_together():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p._src_video_file.set(True)
         p._src_rgb.set(True)
         p._stored_video_path = "/fake/video.mp4"
@@ -398,7 +398,7 @@ def test_validate_rejects_video_file_without_path():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p._src_optitrack.set(False)
         p._src_rgb.set(False)
         p._src_video_file.set(True)
@@ -417,7 +417,7 @@ def test_get_metadata_includes_video_file_path():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P2")
+        p.pid_var.set("P902")
         p._src_optitrack.set(False)
         p._src_rgb.set(False)
         p._src_video_file.set(True)
@@ -942,7 +942,7 @@ def test_start_countdown_calls_on_countdown_start():
         class C(_Ctrl):
             def on_countdown_start(self): calls.append("countdown_start")
         p = AcquisitionPanel(r, C()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(True)
         p._on_start_clicked()
         r.update()
@@ -1129,7 +1129,7 @@ def test_cancel_countdown_reapplies_countdown_lock():
         r.update()
         assert str(p.countdown_chk.cget("state")) == "disabled"
 
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(True)
         p._on_start_clicked()
         r.update()

@@ -9,8 +9,8 @@ Analyses were grouping by condition (MS / Stroke / Control). Diagnosis is not
 the physiological variable the pendulum test measures -- two people with the
 same diagnosis can have very different tone, and tone is what the swing
 responds to. So the grouping unit here is the (participant, leg) pair, because
-MAS is assessed per leg and PT parameters are computed per leg. P4 is the
-worked example: MAS 0 on the left, 1+ on the right.
+MAS is assessed per leg and PT parameters are computed per leg. A participant
+graded differently on each leg is the worked example.
 
 Where a label comes from, in strict precedence order
 ----------------------------------------------------
@@ -19,7 +19,7 @@ Where a label comes from, in strict precedence order
 2. CLINICAL MAS COMPONENTS (flexion / extension) when the overall grade is
    still pending but the components were scored. Real clinical evidence, so it
    outranks anything derived -- but it never overrides an overall grade that
-   exists. P15 left is graded 0 overall with flexion 1+; the clinician's
+   exists. Where an overall grade and a component disagree, the clinician's
    summary judgement stands, and the disagreement is left visible rather than
    averaged away.
 3. CONTROL by diagnosis -> non-spastic. Unaffected controls are not assessed
@@ -54,8 +54,8 @@ sd 7.2, so mean - 2sd = 38.1 deg. Measured against the legs with clinical MAS:
 
     flags 2 of 5 known-spastic legs, 0 of 15 known-normal legs
 
-So it is specific but not sensitive. It detects MARKED amplitude loss (the P13
-legs, at 29.5 and 21.5 deg) and cannot separate mild spasticity from normal --
+So it is specific but not sensitive. It detects MARKED amplitude loss (legs at
+29.5 and 21.5 deg) and cannot separate mild spasticity from normal --
 three MAS-1 legs sit at 45-50 deg, inside the healthy range. A derived label of
 "non-spastic" therefore means "no marked amplitude loss detected", NOT "MAS 0".
 Only a clinical MAS can say the latter, which is why source is returned
@@ -79,15 +79,15 @@ OptiTrack cannot reconstruct (P22 left is the live case). Two reasons, measured
     median +20.4 deg, mean +20.3, sd 8.4 across the 16 legs where both exist.
     The OptiTrack threshold cannot be reused on IMU amplitudes.
   * An IMU-specific threshold cannot be calibrated on this cohort. Clinical MAS
-    covers P2-P15; the IMU recordings cover P14-P24. Only ONE known-MAS-0 leg
-    has IMU data (P15 left, 63.2 deg), and it sits INSIDE the range of the three
+    and the IMU recordings barely overlap in participants. Only ONE known-MAS-0 leg
+    has IMU data (63.2 deg), and it sits INSIDE the range of the three
     known-MAS>=1 legs that do (56.8-75.5). There is no separation to fit to, so
     any IMU threshold would be invented rather than derived.
 
 The consequence is deliberate: a leg with only IMU data is UNKNOWN rather than
 labelled from a number that has no calibrated meaning. Participant-level
 characterisation still succeeds through the other leg. Once MAS is collected
-for the P17-P24 range, an IMU threshold becomes derivable and this can change.
+for the later participants, an IMU threshold becomes derivable and this can change.
 """
 from __future__ import annotations
 
@@ -203,8 +203,8 @@ def load_mas_all_conditions(path: str = None) -> dict:
     """{(participant, leg, condition): grade} across every timepoint.
 
     The per-condition form. A label and the PT parameters it is compared
-    against MUST come from the same session: P17 is graded 1 on the right at
-    `pre` and 0 at `post` after training, so pairing its pre grade with its
+    against MUST come from the same session: a leg can be graded differently at
+    `pre` and at `post` after training, so pairing its pre grade with its
     post swing would compare a spastic label against a recovered leg.
     """
     path = path or MAS_CSV
@@ -267,7 +267,7 @@ def for_condition(by_key: dict, condition: str) -> dict:
     classify_leg expects, matching `condition` by prefix.
 
     Prefix, not equality, because a session's condition name is not
-    standardised: P2 records "pre_duo" and "pre_solo" against a MAS row keyed
+    standardised: one participant records "pre_duo" and "pre_solo" against a MAS row keyed
     "pre_duo"/"pre_solo", while other participants use a bare "pre".
     """
     cond = canonical_condition(condition)
@@ -389,7 +389,7 @@ def classify_leg(pid: str, leg: str, *, arm: Optional[str] = None,
         return SpasticityLabel(level, src, f"MAS {grade}{who}")
 
     # Overall grade pending, components scored. Never overrides an overall
-    # grade that exists: P15 left is graded 0 overall with flexion 1+, and the
+    # grade that exists: where an overall grade and a component disagree, the
     # clinician's summary judgement is the one to keep -- but the disagreement
     # is worth knowing about, so it is not quietly averaged away either.
     comp_level = component_level((mas_components or {}).get((pid, leg)))
@@ -477,7 +477,7 @@ def participant_level(leg_labels: dict) -> SpasticityLabel:
     """Roll per-leg labels up into one characterisation for the participant.
 
     SPASTIC if ANY leg is spastic. Spasticity is unilateral in hemiparesis --
-    P21 aside, a stroke participant can easily be spastic on one side only --
+    a participant can easily be spastic on one side only --
     so requiring both legs would erase exactly the participants this grouping
     exists to identify. NON_SPASTIC only when at least one leg is known and no
     known leg is spastic. UNKNOWN only when NO leg could be labelled.

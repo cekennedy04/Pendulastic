@@ -315,7 +315,7 @@ const ZONE_LABEL = {
 // Two reasons survive, and they are enough on their own:
 //
 // 1. HEALTHY_REF cannot be reproduced from its stated provenance. It is
-//    annotated "control median n=4" over P2/P8/P9/P12; recomputing exactly
+//    annotated "control median n=4"; recomputing exactly
 //    that gives area_ratio 0.1390 against the stated 0.0768 (81% off),
 //    omega_min_n 31% off, N 14% off, phi_max_ratio 11% off -- only R2n and f
 //    land within 5%. No script deriving it exists in any commit. So nobody can

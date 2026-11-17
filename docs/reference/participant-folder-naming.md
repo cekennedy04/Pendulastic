@@ -16,7 +16,7 @@ glance without opening its `metadata.json`:
 | `CHAT_{pid}` | Stroke | 19, 21, 22, 24 |
 | `MINT_{pid}` | MS | 4, 5, 11, 13, 14, 15, 17, 18, 20 |
 | `DOSA_{pid}` | MS — the prefix's former spelling | resolved, never written for a new folder |
-| `Participant_{pid}` | Legacy / no study | `Participant_test`, `Participant_P001_msparticipant2`, and any diagnosis that maps to no study ("Other Motor Impairment") |
+| `Participant_{pid}` | Legacy / no study | `Participant_test`, `Participant_P001_<suffix>` (a legacy import), and any diagnosis that maps to no study ("Other Motor Impairment") |
 
 The prefix is derived from `Recordings/<folder>/metadata.json`'s `diagnosis`
 field, which stays the primary record — the folder name is a cache of a fact

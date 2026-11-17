@@ -7,7 +7,7 @@ scorer and reconstruction that ship, over exactly the trials the scorer grades.
 Replaces evaluate_healthy_ref_v04.py, which (a) imported the scorer from the
 retired feat/webapp-workbench-restyle worktree, (b) dropped P9's RIGHT side as
 the duplicate when capture timestamps prove the right-leg take is the real one
-(excluded_trials.json now excludes P9 LEFT), and (c) took every scored trial,
+(excluded_trials.json now excludes the duplicate LEFT take), and (c) took every scored trial,
 including ones mas_estimate refuses to grade.
 
 Population: participants whose OptiTrack folder carries the control prefix

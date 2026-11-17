@@ -583,8 +583,8 @@ def build_cohort_snapshot():
     # min/max envelope only gets more honest with more trials, unlike the
     # per-participant full report (run_pt_analysis.py's own, separate
     # TRIAL_THRESHOLD gate) which genuinely needs enough trials for a
-    # meaningful release-alignment figure. So pids 6/7/10 (Control, short
-    # one trial on one leg) and pid 4 (MS, same situation) now count
+    # meaningful release-alignment figure. So participants short one trial
+    # on one leg (in either arm) now count
     # toward both the composition banner and the stats/range comparison.
     #
     # Unions over _ARMS, not a hardcoded MS|Control pair: when Stroke became

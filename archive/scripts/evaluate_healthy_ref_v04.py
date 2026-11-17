@@ -3,15 +3,15 @@ evaluate_healthy_ref_v04.py
 ===========================
 SUPERSEDED 2026-10-27 by derive_healthy_ref.py. Kept as the record of how the
 2026-09-09 HEALTHY_REF was produced. Do not re-run it for a new reference: it
-imports the scorer from the retired restyle worktree, drops P9's RIGHT side
-(the real take -- P9 LEFT is the copy, and is now in excluded_trials.json), and
+imports the scorer from the retired restyle worktree, drops one participant's RIGHT side
+(the real take -- the LEFT is the copy, and is now in excluded_trials.json), and
 medians trials the scorer refuses to grade.
 
 Validation task V0.4: recalibrate HEALTHY_REF against the OptiTrack control
 cohort, using the scoring that actually ships.
 
 Scores every Control_* OptiTrack trial and CACHES the per-trial parameters to
-JSON, so control-set questions ("what if we drop P2?") cost nothing instead of
+JSON, so control-set questions ("what if we drop one participant?") cost nothing instead of
 another 20 minutes -- load_optitrack is ~19 s per trial and scoring is 0.1 s.
 
 Honours excluded_trials.json, and drops P9's right side: its Left and Right
@@ -48,7 +48,7 @@ Every control leg in mas_scores.csv is `assessed_by = ASSUMED`. All 17 of them.
 Every clinician-EXAMINED leg in the dataset (AN 2, VL 6, WD 10) is an MS
 patient. So there is no examined healthy leg anywhere in this data, and any
 "healthy reference" computed from it inherits that, however the arithmetic is
-done. Also note P23 contributes 7 of the 46 trials and has no mas_scores.csv
+done. Also note one participant contributes 7 of the 46 trials and has no mas_scores.csv
 row at all -- not even an assumed one.
 
 The rig failures are real and worth reading: 26 of 72 attempted trials failed,

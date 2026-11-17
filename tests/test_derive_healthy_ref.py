@@ -21,7 +21,7 @@ def _rec(tmp_path, pid, leg, cond, trial):
 
 @pytest.fixture
 def world(monkeypatch, tmp_path):
-    """Controls are P6/P7, P13 is not. Every trial loads to a fixed series and
+    """Two synthetic controls and one non-control. Every trial loads to a fixed series and
     scores as interpretable unless its path says 'refused'."""
     recs = []
     loads = []

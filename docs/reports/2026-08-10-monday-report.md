@@ -15,7 +15,7 @@ Plain-language version, organized by: what was done, what was fixed, what's stil
 ## What was fixed
 
 - **Some sessions never got a report.** The system used to wait for a minimum trial count that some short sessions never reached. Fixed by generating a report 30 minutes after the first recording instead, using whatever trials exist by then. (`7500c4e`)
-- **Bad trials were skewing scores.** 5 trials from participant P15 were invalid ΓÇö the participant used their own muscles instead of letting the leg swing freely, which throws off the math. Fixed by adding an `excluded_trials.json` list so these are automatically skipped everywhere. (`e716c8a`)
+- **Bad trials were skewing scores.** 5 trials from one participant were invalid ΓÇö the participant used their own muscles instead of letting the leg swing freely, which throws off the math. Fixed by adding an `excluded_trials.json` list so these are automatically skipped everywhere. (`e716c8a`)
 - **A save could corrupt the score file** if the MAS score CSV's first line was blank. Fixed same day. (`4c7c54d`)
 - **Score file safety was too loose** ΓÇö tightened which columns are allowed to be auto-added to the CSV. (`28fa3e7`)
 - **The nightly cleanup checker had two early bugs** ΓÇö it once suggested deleting the main project folder itself, and it crashed when its code-checking tool ran without a properly set-up environment. Both caught and fixed the same day. (`03f5cbf`, `67313a7`)

@@ -54,7 +54,7 @@ _MAS_NUMS = {"0": 0, "1": 1, "1+": 1.5, "2": 2, "3": 3, "4": 4, "?": -1}
 BEST_HPE = "mediapipe_full"   # best comprehensive model from hpe_mas_evaluation.py
 
 # Viewer participant IDs that need explicit mapping (don't follow P→numeric rule)
-# P001 and P005 are both P5 (MS participant 2); P004/P008/P010 use zero-padded format
+# P001 and P005 are both P5; P004/P008/P010 use zero-padded format
 _VIEWER_PID_MAP = {
     "P001": "5",
     "P004": "4",
@@ -76,7 +76,7 @@ _MS_PIDS = {"4", "5"}
 
 def _norm_pid(raw: str) -> str:
     """Normalize viewer participant ID to the same numeric prefix used in OptiTrack CSVs.
-    'P001' → '5' (MSParticipant2), 'P004' → '4', '6' → '6', etc.
+    'P001' → '5', 'P004' → '4', '6' → '6', etc.
     """
     s = str(raw).strip()
     # Explicit mapping takes priority (handles zero-padded and alias IDs)

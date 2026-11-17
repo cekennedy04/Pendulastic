@@ -1,7 +1,7 @@
 """
 p13_vs_p5_comparison.py
 ========================
-Direct P13-vs-P5 comparison: highlights (1) differences in their baseline
+Direct two-participant comparison: highlights (1) differences in their baseline
 spasticity "signature" (the 7 Popovic parameters at the first timepoint) and
 (2) differences in how each participant changed over their 3 recorded
 timepoints (PT-score trajectory + per-parameter delta from first to last

@@ -2,7 +2,7 @@
 validate_controls.py
 ====================
 Reliability and validity of the Pendulastic annotation for the Wartenberg
-Pendulum Test.  Healthy controls only (P1, P6–P12).
+Pendulum Test.  Healthy controls only.
 
 Metrics computed
 ----------------

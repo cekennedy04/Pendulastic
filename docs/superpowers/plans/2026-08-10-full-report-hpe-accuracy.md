@@ -462,7 +462,7 @@ git commit -m "feat: add release_aligned_hpe_curve for per-source waveform align
 
 ```python
 def test_trial_candidates_classifies_invalid_path(tmp_path, monkeypatch):
-    invalid_dir = tmp_path / "Participant_13_left" / "INVALID_bad_run"
+    invalid_dir = tmp_path / "Participant_913_left" / "INVALID_bad_run"
     invalid_dir.mkdir(parents=True)
     csv_path = invalid_dir / "trial_1_optitrack.csv"
     csv_path.write_text("t,angle\n0,180\n")
@@ -491,7 +491,7 @@ def test_trial_candidates_classifies_unparseable(tmp_path, monkeypatch):
 
 
 def test_trial_candidates_classifies_excluded_with_reason(tmp_path, monkeypatch):
-    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir = tmp_path / "Participant_913_left_pre"
     rec_dir.mkdir(parents=True)
     csv_path = rec_dir / "trial_1_optitrack.csv"
     csv_path.write_text("t,angle\n0,180\n")
@@ -507,7 +507,7 @@ def test_trial_candidates_classifies_excluded_with_reason(tmp_path, monkeypatch)
 
 
 def test_trial_candidates_classifies_unreadable(tmp_path, monkeypatch):
-    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir = tmp_path / "Participant_913_left_pre"
     rec_dir.mkdir(parents=True)
     csv_path = rec_dir / "trial_1_optitrack.csv"
     csv_path.write_text("not,a,valid,optitrack,csv\n")
@@ -523,7 +523,7 @@ def test_trial_candidates_classifies_unreadable(tmp_path, monkeypatch):
 
 def test_trial_candidates_classifies_unscoreable_and_scored(tmp_path, monkeypatch):
     import numpy as np
-    rec_dir = tmp_path / "Participant_13_left_pre"
+    rec_dir = tmp_path / "Participant_913_left_pre"
     rec_dir.mkdir(parents=True)
     (rec_dir / "trial_1_optitrack.csv").write_text("t,angle\n0,180\n")
     monkeypatch.setattr(common, "OPTI_ROOT", str(tmp_path))
@@ -988,7 +988,7 @@ def test_collect_arm_data_returns_summaries_by_pid(monkeypatch):
 def test_build_cohort_snapshot_skipped_when_arm_empty(monkeypatch):
     monkeypatch.setattr(pcc, "current_qualifying_participants", lambda: {"13"})
     monkeypatch.setattr(pcc, "build_composition_rows",
-                        lambda pids: [{"pid": "13", "group": "MS", "source": "metadata",
+                        lambda pids: [{"pid": "913", "group": "MS", "source": "metadata",
                                       "diagnosis": "MS", "n_trials_left": 4, "n_trials_right": 4}])
 
     snapshot = pcc.build_cohort_snapshot()
@@ -1007,7 +1007,7 @@ def test_write_cohort_artifacts_no_recollection_when_arm_empty(monkeypatch, tmp_
                         lambda pid: (_ for _ in ()).throw(AssertionError("should not recollect")))
     monkeypatch.setattr(pcc, "COMPOSITION_CSV", str(tmp_path / "cohort_composition.csv"))
     snapshot = {
-        "composition_rows": [{"pid": "13", "group": "MS", "source": "metadata", "diagnosis": "MS",
+        "composition_rows": [{"pid": "913", "group": "MS", "source": "metadata", "diagnosis": "MS",
                              "n_trials_left": 4, "n_trials_right": 4}],
         "ms_pids": ["13"], "control_pids": [], "ms_summaries": None, "control_summaries": None,
         "ms_raw": None, "control_raw": None, "summaries_by_pid": {},
@@ -1037,10 +1037,10 @@ def test_leg_cohort_reference_leave_one_out_for_own_arm(monkeypatch):
         },
     }
     ref = pcc.leg_cohort_reference(snapshot, "13", "left")
-    # MS arm excludes participant 13 -> only 14's 0.50 remains.
+    # MS arm excludes the leg's own participant -> only the other's 0.50 remains.
     assert ref["ms_median"] == 0.50
     assert ref["ms_n"] == 1
-    # Control arm is untouched -- participant 13 isn't in it.
+    # Control arm is untouched -- that participant isn't in it.
     assert ref["control_median"] == 0.15   # median of 0.10, 0.20
     assert ref["control_n"] == 2
     assert ref["leave_one_out_arm"] == "MS"

@@ -8,7 +8,7 @@ parent study instead, so a folder can be identified at a glance:
     CHAT_{pid}      stroke participants
     MINT_{pid}      MS participants (spelled DOSA_{pid} earlier the same day)
     Participant_{pid}   legacy / ungrouped (e.g. "Other Motor Impairment",
-                        Participant_test, Participant_P001_msparticipant2)
+                        Participant_test, Participant_P001_<suffix>)
 
 Every prefix stays readable.  Nothing in the pipeline should hard-code a
 prefix: build paths with :func:`find_participant_dir` / :func:`participant_dir_name`,
@@ -106,7 +106,7 @@ def pid_from_dir_name(name):
 
     The remainder after the prefix is returned verbatim, matching the old
     ``name.replace("Participant_", "")`` behaviour, so oddities such as
-    ``Participant_P001_msparticipant2`` and the legacy
+    ``Participant_P001_<suffix>`` and the legacy
     ``Participant_5_left_side`` layout still yield the same ids they always did.
     """
     m = _DIR_RE.match(os.path.basename(str(name).rstrip("/\\")))

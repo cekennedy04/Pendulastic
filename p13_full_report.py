@@ -12,7 +12,7 @@ Caveat carried from pendulastic_pt_score.py's own docstring: the 4-param
 score (excludes area_ratio and f) is treated as "primary" elsewhere in this
 codebase specifically because area_ratio is unreliable for marker-based
 angles in duo-session recordings (assessor + patient both in frame) -- which
-is every P13 trial. The 7-param score used here pulls all P13 trials into
+is every trial of this participant. The 7-param score used here pulls all of them into
 the same MAS-4 zone, so the PT-score trend row is expected to show little
 separation between timepoints; that's a real property of this score on this
 data, not a plotting bug.

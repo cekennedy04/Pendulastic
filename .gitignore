@@ -48,7 +48,7 @@ participant_groups.json.*
 # at runtime, regenerated per-machine/per-IP, never committed.
 .certs/
 OptiTrack_Tracking_Data_Participant_0/
-P001_MSParticipant2_history.csv
+P001_*_history.csv
 tracking_selections.json
 imu_calibration_config.json
 imu_calibration_config.json.tmp

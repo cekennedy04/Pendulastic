@@ -257,24 +257,24 @@ Append these tests to the END of `tests/test_data_manager.py`:
 
 ```python
 def test_build_filename_with_imu_source():
-    assert DataManager.build_filename("P1", "right", "MS", 1, source="imu") == \
-        "PID_P1_LEG_Right_MS_TRIAL_1_imu.csv"
+    assert DataManager.build_filename("P901", "right", "MS", 1, source="imu") == \
+        "PID_P901_LEG_Right_MS_TRIAL_1_imu.csv"
 
 
 def test_build_filename_with_rgb_source():
-    assert DataManager.build_filename("P2", "left", "MS", 3, source="rgb") == \
-        "PID_P2_LEG_Left_MS_TRIAL_3_rgb.csv"
+    assert DataManager.build_filename("P902", "left", "MS", 3, source="rgb") == \
+        "PID_P902_LEG_Left_MS_TRIAL_3_rgb.csv"
 
 
 def test_build_filename_source_none_backward_compat():
     """source=None must produce the same output as the old 4-arg call."""
-    assert DataManager.build_filename("P1", "right", "MS", 1, source=None) == \
-        "PID_P1_LEG_Right_MS_TRIAL_1.csv"
+    assert DataManager.build_filename("P901", "right", "MS", 1, source=None) == \
+        "PID_P901_LEG_Right_MS_TRIAL_1.csv"
 
 
 def test_save_trial_source_param_written_to_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1,
             "sources": ["imu"]}  # new-style metadata (no "methodology" key)
     DataManager.save_trial("test_imu.csv", [170.0], meta, source="imu")
     with open(tmp_path / "test_imu.csv") as f:
@@ -286,7 +286,7 @@ def test_save_trial_source_param_written_to_csv(tmp_path, monkeypatch):
 def test_save_trial_backward_compat_methodology_key(tmp_path, monkeypatch):
     """Old callers that pass metadata["methodology"] still work when source=None."""
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS", "trial": 1,
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS", "trial": 1,
             "methodology": "rgb"}
     DataManager.save_trial("test.csv", [170.0], meta)
     with open(tmp_path / "test.csv") as f:
@@ -479,7 +479,7 @@ def test_start_without_countdown_calls_on_start():
         class C(_Ctrl):
             def on_start(self): calls.append("start")
         p = AcquisitionPanel(r, C()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(False)
         p._on_start_clicked()
         r.update()
@@ -493,7 +493,7 @@ def test_start_with_countdown_shows_cancel():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(True)
         p._on_start_clicked()
         r.update()
@@ -542,7 +542,7 @@ def test_validate_no_source_checked_fails():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p._src_optitrack.set(False)
         p._src_rgb.set(False)
         p._src_imu.set(False)
@@ -558,12 +558,12 @@ def test_get_metadata_returns_sources_list():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P7"); p.leg_var.set("Left")
+        p.pid_var.set("P907"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
         p._src_optitrack.set(False)
         p._src_imu.set(True)
         result = p.get_metadata()
-        assert result["pid"] == "P7"
+        assert result["pid"] == "P907"
         assert result["leg"] == "Left"
         assert result["ms_status"] == "Stroke"
         assert result["trial"] == 3
@@ -874,7 +874,7 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
     from pendulastic_app import App
     app = App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("2")
         # Directly simulate the review state without going through load_trial
         # (PostProcessingPanel.load_trial signature changes in Task 5 — bypass here)
@@ -1170,13 +1170,13 @@ def test_load_trial_sets_title():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu"]}
     # New signature: source_angles dict, fps, metadata, base_filename
     p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
-    assert "PID_P1" in p.title_var.get()
+    assert "PID_P901" in p.title_var.get()
 
 
 def test_load_trial_populates_mas():
@@ -1186,10 +1186,10 @@ def test_load_trial_populates_mas():
     p.pack(fill="both", expand=True)
     angles = [180.0 - 40.0 * (1 - math.exp(-0.03 * i)) * (0.7 + 0.3 * math.sin(0.3 * i))
               for i in range(120)]
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["rgb"]}
     p.load_trial({"rgb": angles}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert p.mas_var.get() != "—"
 
@@ -1199,10 +1199,10 @@ def test_load_trial_multi_source_stores_both():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu", "optitrack"]}
     p.load_trial({"imu": [170.0] * 30, "optitrack": [168.0] * 30},
-                 30.0, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 30.0, meta, "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert "imu" in p._source_angles
     assert "optitrack" in p._source_angles
@@ -1223,10 +1223,10 @@ def test_add_hpe_overlay_adds_to_source_angles():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu"]}
     p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     fake_angles = [175.0, 160.0, 145.0] * 20
     p._add_hpe_overlay(fake_angles, fps=30.0)
     r.update()

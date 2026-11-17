@@ -47,23 +47,23 @@ from pendulastic_app import DataManager
 
 
 def test_build_filename_basic():
-    assert DataManager.build_filename("P1", "right", "MS", 1) == \
-        "PID_P1_LEG_Right_MS_TRIAL_1.csv"
+    assert DataManager.build_filename("P901", "right", "MS", 1) == \
+        "PID_P901_LEG_Right_MS_TRIAL_1.csv"
 
 
 def test_build_filename_spaces_become_underscores():
-    assert DataManager.build_filename("P2", "left", "Unaffected Control", 3) == \
-        "PID_P2_LEG_Left_Unaffected_Control_TRIAL_3.csv"
+    assert DataManager.build_filename("P902", "left", "Unaffected Control", 3) == \
+        "PID_P902_LEG_Left_Unaffected_Control_TRIAL_3.csv"
 
 
 def test_build_filename_leg_capitalised():
-    assert DataManager.build_filename("P3", "LEFT", "Stroke", 2) == \
-        "PID_P3_LEG_Left_Stroke_TRIAL_2.csv"
+    assert DataManager.build_filename("P903", "LEFT", "Stroke", 2) == \
+        "PID_P903_LEG_Left_Stroke_TRIAL_2.csv"
 
 
 def test_save_trial_creates_file(tmp_path, monkeypatch):
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "methodology": "imu"}
     path = DataManager.save_trial("test.csv", [170.0, 165.0], meta, fps=30.0)
     assert os.path.isfile(path)
@@ -71,7 +71,7 @@ def test_save_trial_creates_file(tmp_path, monkeypatch):
 
 def test_save_trial_csv_headers(tmp_path, monkeypatch):
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "methodology": "rgb"}
     DataManager.save_trial("test.csv", [170.0, 165.0], meta, fps=30.0)
     with open(tmp_path / "test.csv") as f:
@@ -82,7 +82,7 @@ def test_save_trial_csv_headers(tmp_path, monkeypatch):
 
 def test_save_trial_fps_timestamps(tmp_path, monkeypatch):
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "methodology": "rgb"}
     DataManager.save_trial("test.csv", [170.0, 165.0], meta, fps=10.0)
     with open(tmp_path / "test.csv") as f:
@@ -93,7 +93,7 @@ def test_save_trial_fps_timestamps(tmp_path, monkeypatch):
 
 def test_save_trial_explicit_timestamps(tmp_path, monkeypatch):
     monkeypatch.setattr(DataManager, "DATA_DIR", str(tmp_path))
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "methodology": "imu"}
     DataManager.save_trial("test.csv", [170.0, 165.0], meta,
                            timestamps=[1000.0, 1000.5])
@@ -814,7 +814,7 @@ def test_start_without_countdown_calls_on_start():
         class C(_Ctrl):
             def on_start(self): calls.append("start")
         p = AcquisitionPanel(r, C()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(False)
         p._on_start_clicked()
         r.update()
@@ -828,7 +828,7 @@ def test_start_with_countdown_shows_cancel():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl()); p.pack()
-        p.pid_var.set("P1")
+        p.pid_var.set("P901")
         p.countdown_var.set(True)
         p._on_start_clicked()
         r.update()
@@ -877,11 +877,11 @@ def test_get_metadata_returns_correct_dict():
     r = _root()
     try:
         p = AcquisitionPanel(r, _Ctrl())
-        p.pid_var.set("P7"); p.leg_var.set("Left")
+        p.pid_var.set("P907"); p.leg_var.set("Left")
         p.ms_var.set("Stroke"); p.trial_var.set("3")
         p.method_var.set("imu")
         assert p.get_metadata() == {
-            "pid": "P7", "leg": "Left", "ms_status": "Stroke",
+            "pid": "P907", "leg": "Left", "ms_status": "Stroke",
             "trial": 3, "methodology": "imu"}
     finally:
         r.destroy()
@@ -1219,11 +1219,11 @@ def test_load_trial_sets_title():
     try:
         p = PostProcessingPanel(r, _Ctrl())
         p.pack(fill="both", expand=True)
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
                 "trial": 1, "methodology": "imu"}
-        p.load_trial([170.0] * 60, 30.0, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+        p.load_trial([170.0] * 60, 30.0, meta, "PID_P901_LEG_Right_MS_TRIAL_1.csv")
         r.update()
-        assert "PID_P1" in p.title_var.get()
+        assert "PID_P901" in p.title_var.get()
     finally:
         r.destroy()
 
@@ -1237,9 +1237,9 @@ def test_load_trial_populates_mas():
         # Generate a damped sinusoid that compute_pt_params can score
         angles = [160.0 + 20.0 * math.sin(i * 0.2) * math.exp(-i * 0.04)
                   for i in range(120)]
-        meta   = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+        meta   = {"pid": "P901", "leg": "Right", "ms_status": "MS",
                   "trial": 1, "methodology": "rgb"}
-        p.load_trial(angles, 30.0, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+        p.load_trial(angles, 30.0, meta, "PID_P901_LEG_Right_MS_TRIAL_1.csv")
         r.update()
         # MAS should be populated (not the placeholder "—")
         assert p.mas_var.get() != "—"
@@ -1475,11 +1475,11 @@ def test_on_new_trial_increments_trial_and_returns_to_acquisition():
     from pendulastic_app import App
     app = App()
     try:
-        app._acq.pid_var.set("P1")
+        app._acq.pid_var.set("P901")
         app._acq.trial_var.set("2")
-        meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+        meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
                 "trial": 2, "methodology": "imu"}
-        app._transition_to_review("PID_P1_LEG_Right_MS_TRIAL_2.csv",
+        app._transition_to_review("PID_P901_LEG_Right_MS_TRIAL_2.csv",
                                    [170.0] * 30, meta)
         app.update()
         app.on_new_trial()
@@ -1816,13 +1816,13 @@ Expected: all tests PASS (offline-track test skips if cv2 unavailable).
 ```
 
 Walk through:
-1. Enter Participant ID `P1`, Leg `Right`, MS Status `MS`, Trial `1`
+1. Enter Participant ID `P901`, Leg `Right`, MS Status `MS`, Trial `1`
 2. Select methodology `iPhone IMU`
 3. Click **START RECORDING** — verify form locks, telemetry canvas appears at row 13
 4. Observe sparkline updating (if phone is streaming) or static `—` (no phone)
 5. Click **STOP** — verify instant transition to PostProcessingPanel
 6. Verify PT metrics panel shows values or `—` (no data = expected without real swing)
-7. Verify `data/PID_P1_LEG_Right_MS_TRIAL_1.csv` exists in the project root
+7. Verify `data/PID_P901_LEG_Right_MS_TRIAL_1.csv` exists in the project root
 8. Click **← New Trial** — verify trial number incremented to `2`, form unlocked
 9. Repeat with methodology `RGB` (requires webcam) — verify MediaPipe progress bar appears after STOP before panel switches
 

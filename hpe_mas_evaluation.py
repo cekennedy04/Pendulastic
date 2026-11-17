@@ -182,8 +182,7 @@ def main() -> None:
     opti_df = opti_df[~opti_df["pid"].str.startswith("0")]
     opti_df = opti_df[opti_df["pid"] != "1_control"]
 
-    # MS / spastic participants: P2 (MAS 3), P4 (MAS 1+/2), P5 (borderline).
-    # All others (P1, P6–P12, …) are healthy controls.
+    # Participant ids treated as the non-healthy arm by this archived analysis.
     def _is_healthy(pid_str: str) -> bool:
         return pid_str.split("_")[0] not in ("2", "4", "5")
 

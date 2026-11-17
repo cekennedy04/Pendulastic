@@ -52,13 +52,13 @@ def test_load_trial_sets_title():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu"]}
     # New signature: source_angles dict, fps, metadata, base_filename
     p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
-    assert "PID_P1" in p.title_var.get()
+    assert "PID_P901" in p.title_var.get()
 
 
 def test_load_trial_populates_mas():
@@ -68,10 +68,10 @@ def test_load_trial_populates_mas():
     p.pack(fill="both", expand=True)
     angles = [180.0 - 40.0 * (1 - math.exp(-0.03 * i)) * (0.7 + 0.3 * math.sin(0.3 * i))
               for i in range(120)]
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["rgb"]}
     p.load_trial({"rgb": angles}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert p.mas_var.get() != "—"
 
@@ -81,10 +81,10 @@ def test_load_trial_multi_source_stores_both():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu", "optitrack"]}
     p.load_trial({"imu": [170.0] * 30, "optitrack": [168.0] * 30},
-                 30.0, meta, "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 30.0, meta, "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert "imu" in p._source_angles
     assert "optitrack" in p._source_angles
@@ -105,10 +105,10 @@ def test_add_hpe_overlay_adds_to_source_angles():
     r = _get_root()
     p = PostProcessingPanel(r, _Ctrl())
     p.pack(fill="both", expand=True)
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu"]}
     p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     fake_angles = [175.0, 160.0, 145.0] * 20
     p._add_hpe_overlay(fake_angles, fps=30.0)
     r.update()
@@ -144,10 +144,10 @@ def test_load_trial_imu_source_does_not_request_detrend(monkeypatch):
         return None
     monkeypatch.setattr(_m, "compute_pt_params", fake_compute_pt_params)
 
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["imu"]}
     p.load_trial({"imu": [170.0] * 60}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert calls == [False]
 
@@ -159,10 +159,10 @@ def test_load_trial_populates_plot_annotations():
     p.pack(fill="both", expand=True)
     angles = [180.0 - 40.0 * (1 - math.exp(-0.03 * i)) * (0.7 + 0.3 * math.sin(0.3 * i))
               for i in range(120)]
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["rgb"]}
     p.load_trial({"rgb": angles}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert p._last_pt_params is not None
     assert len(p._plot_annots) > 0
@@ -175,17 +175,17 @@ def test_plot_all_curves_resets_annotations_list():
     p.pack(fill="both", expand=True)
     angles = [180.0 - 40.0 * (1 - math.exp(-0.03 * i)) * (0.7 + 0.3 * math.sin(0.3 * i))
               for i in range(120)]
-    meta = {"pid": "P1", "leg": "Right", "ms_status": "MS",
+    meta = {"pid": "P901", "leg": "Right", "ms_status": "MS",
             "trial": 1, "sources": ["rgb"]}
     p.load_trial({"rgb": angles}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     first_annots = list(p._plot_annots)
     assert len(first_annots) > 0
     # Reloading clears + redraws; stale artist objects from the first pass
     # must not linger in the new list.
     p.load_trial({"rgb": angles}, 30.0, meta,
-                 "PID_P1_LEG_Right_MS_TRIAL_1.csv")
+                 "PID_P901_LEG_Right_MS_TRIAL_1.csv")
     r.update()
     assert p._plot_annots is not first_annots
 

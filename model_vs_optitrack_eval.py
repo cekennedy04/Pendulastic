@@ -2,7 +2,7 @@
 model_vs_optitrack_eval.py
 ==========================
 Evaluates pose-estimation model knee-angle outputs against OptiTrack ground
-truth for Participant 2 (healthy) and Participant 4 (MS).
+truth for the two participants it was written for.
 
 Two graph types per model × trial
   A — Model PT Score: same layout as pendulastic_pt_score.py but driven by
@@ -64,7 +64,7 @@ for d in (OUT_PT, OUT_CMP):
     os.makedirs(d, exist_ok=True)
 
 # ── Participant labels ───────────────────────────────────────────────────────
-PARTICIPANT_LABEL = {}   # populated during discovery; pid_key → "P2 (healthy)" etc.
+PARTICIPANT_LABEL = {}   # populated during discovery; pid_key → display label
 
 # Human-readable model display names
 _MODEL_DISPLAY = {

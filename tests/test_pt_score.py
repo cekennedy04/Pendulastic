@@ -1003,14 +1003,14 @@ def test_excursion_gate_stays_clear_of_the_lowest_spastic_leg():
     """What actually constrains the threshold.
 
     The "two SD below the control mean" story is circular: the only two trials
-    pulling that mean down are P9 left/right at A0 9.0, which are exactly the
+    pulling that mean down are one participant's left/right at A0 9.0, which are exactly the
     trials the gate catches. Excluding them the 51 clean controls give a 2-SD
     floor of 31.5 -- ABOVE the lowest spastic leg (28.7), so a clean control
     bound would refuse grades on the study's own cases.
 
     The constraint was the spastic minimum (28.7) until 2026-10-27, when the
     corrected reconstruction showed the spastic trials just above 25 (A0
-    27.2-28.4, P13 L/R and P14 L) were exactly the MAS>=1 trials graded
+    27.2-28.4) were exactly the MAS>=1 trials graded
     HEALTHY. Refusing them is the recoverable error, so the gate now sits
     above them. Pin both sides: high enough to refuse those trials, low
     enough to keep grading the bulk of controls (median A0 ~52).

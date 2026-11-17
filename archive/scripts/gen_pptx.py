@@ -254,15 +254,15 @@ def s2_study_design(prs):
     hline(slide, In(1.58), col_l, col_w)
 
     rows = [
-        ('P1',  'Control', 'MAS 0',        '—'),
-        ('P2',  'Control', 'MAS 0–3',       '1 (left)'),
-        ('P4',  'MS',      'MAS 0–2',       '5'),
-        ('P5',  'MS',      'MAS 0 (all)*',  '11'),
-        ('P6',  'Control', 'MAS 1–4 †',     '5'),
-        ('P7',  'Control', 'MAS 0–1+',      '1'),
-        ('P8',  'Control', 'MAS 0–1',       '7'),
-        ('P9',  'Control', 'MAS 0–2',       '—'),
-        ('P10', 'Control', 'MAS 0',         '5'),
+        ('—',  'Control', 'MAS 0',        '—'),
+        ('—',  'Control', 'MAS 0–3',       '1 (left)'),
+        ('—',  'MS',      'MAS 0–2',       '5'),
+        ('—',  'MS',      'MAS 0 (all)*',  '11'),
+        ('—',  'Control', 'MAS 1–4 †',     '5'),
+        ('—',  'Control', 'MAS 0–1+',      '1'),
+        ('—',  'Control', 'MAS 0–1',       '7'),
+        ('—',  'Control', 'MAS 0–2',       '—'),
+        ('—', 'Control', 'MAS 0',         '5'),
     ]
     for ri, (pid, grp, mas, vs) in enumerate(rows):
         ry = In(1.62) + ri * In(0.34)
@@ -276,9 +276,9 @@ def s2_study_design(prs):
                fn='Courier New', fs=8.5, color=col)
         hline(slide, ry + In(0.3), col_l, col_w, color=PN)
 
-    tb(slide, '* P5 paradox: MS patient scores MAS 0 on 3D kinematics\n'
-              '† P6 has elevated muscle tone despite healthy classification\n'
-              'P0 excluded — calibration reference only',
+    tb(slide, '* one participant scores MAS 0 on 3D kinematics despite clinical tone\n'
+              '† one participant shows elevated tone\n'
+              'calibration reference participant excluded',
        col_l, In(4.85), col_w, In(0.55), fn='Calibri', fs=8, italic=True, color=T3)
 
     # Right column — protocol
@@ -513,7 +513,7 @@ def s5_pendulastic_algorithm(prs):
         (PV, PB, 'Popovic 4-Parameter Score',
          'Four biomechanical parameters are extracted from the waveform (see right column). These are combined into a single PT score that characterises how "freely" the leg swung.'),
         (PV, PB, 'Calibration → MAS Grade',
-         'The PT score is compared against the healthy reference (P0). Scores near P0 map to MAS 0. Increasing deviation maps to MAS 1, 1+, 2, 3, 4. The MAS grade is displayed in real-time during the clinical exam.'),
+         'The PT score is compared against the healthy reference. Scores near it map to MAS 0. Increasing deviation maps to MAS 1, 1+, 2, 3, 4. The MAS grade is displayed in real-time during the clinical exam.'),
     ]
     y = In(1.18)
     sh = (In(3.8)) / len(pipeline_steps)
@@ -578,8 +578,8 @@ def s5_pendulastic_algorithm(prs):
     rect(slide, rx, In(4.94), rw, In(0.55), fill=PN, line=BR)
     tb(slide, 'CALIBRATION', rx + In(0.12), In(4.98), rw - In(0.24), In(0.2),
        fn='Courier New', fs=7.5, bold=True, color=T3)
-    tb(slide, 'PT score is mapped to MAS using a lookup table calibrated against P0 '
-              '(healthy reference participant). P0\'s score sets the MAS 0 baseline; '
+    tb(slide, 'PT score is mapped to MAS using a lookup table calibrated against '
+              'a healthy reference participant, whose score sets the MAS 0 baseline; '
               'increasing deviation maps to MAS 1 → 1+ → 2 → 3 → 4.',
        rx + In(0.12), In(5.16), rw - In(0.24), In(0.3),
        fn='Calibri', fs=8.5, color=T2)
@@ -833,7 +833,7 @@ def s6_viewer_results(prs):
         '',
         'THE MS DETECTION GAP',
         'Only 53.3% of MS trials scored MAS ≥1 by the Viewer, vs 87.5% for MediaPipe Full.',
-        'P5 explains much of this: OptiTrack scores all P5 trials MAS 0 (no pendulum spasticity), while the Viewer and HPE models detect tone — likely reflecting real subclinical spasticity the 3D kinematics miss.',
+        'One participant explains much of this: OptiTrack scores all of their trials MAS 0 (no pendulum spasticity), while the Viewer and HPE models detect tone — likely reflecting real subclinical spasticity the 3D kinematics miss.',
     ]
     y_n = In(1.58)
     for note in notes:
@@ -941,13 +941,13 @@ def s8_per_participant(prs):
     hline(slide, In(1.42))
 
     rows = [
-        ('P2',  'Healthy', 'MAS 0',        1, 1, 1,  G,  GB, 'Single trial — perfect agreement on healthy knee.'),
-        ('P4',  'MS',      'MAS 0–1+',     1, 4, 5,  AM, AB, 'Spasticity detected in 4/5 trials (adj). 1 session scored MAS 0 vs OptiTrack 1+. Duplicate viewer sessions show within-session variability.'),
-        ('P5',  'MS',      'MAS 0 (all)',  5, 7, 11, AM, AB, 'P5 PARADOX: OptiTrack shows MAS 0 every trial, yet Viewer scores MAS 1-3 on 6 sessions. May reflect real clinical tone that pendulum kinematics miss. 3 non-adjacent misses.'),
-        ('P6',  'Healthy', 'MAS 1–4',      2, 4, 5,  BL, BB, 'Highest-tone healthy participant. 4/5 adjacent. One outlier: Viewer scored MAS 3 vs OptiTrack MAS 1 (right T2).'),
-        ('P7',  'Healthy', 'MAS 0–1+',     0, 1, 1,  BL, BB, 'Single trial — Viewer scored MAS 1 vs OptiTrack MAS 0. Adjacent, borderline case.'),
-        ('P8',  'Healthy', 'MAS 0–1',      5, 7, 7,  G,  GB, 'Best performing participant. All 7 trials adjacent, 5 exact. Cleanest pendulum data in the cohort.'),
-        ('P10', 'Healthy', 'MAS 0',        4, 5, 5,  G,  GB, 'Near-perfect. Viewer scored MAS 1 on one left-leg trial vs OptiTrack MAS 0. Single adjacent miss.'),
+        ('—',  'Healthy', 'MAS 0',        1, 1, 1,  G,  GB, 'Single trial — perfect agreement on healthy knee.'),
+        ('—',  'MS',      'MAS 0–1+',     1, 4, 5,  AM, AB, 'Spasticity detected in 4/5 trials (adj). 1 session scored MAS 0 vs OptiTrack 1+. Duplicate viewer sessions show within-session variability.'),
+        ('—',  'MS',      'MAS 0 (all)',  5, 7, 11, AM, AB, 'OptiTrack shows MAS 0 every trial, yet Viewer scores MAS 1-3 on 6 sessions. May reflect real clinical tone that pendulum kinematics miss. 3 non-adjacent misses.'),
+        ('—',  'Healthy', 'MAS 1–4',      2, 4, 5,  BL, BB, 'Highest-tone healthy participant. 4/5 adjacent. One outlier: Viewer scored MAS 3 vs OptiTrack MAS 1 (right T2).'),
+        ('—',  'Healthy', 'MAS 0–1+',     0, 1, 1,  BL, BB, 'Single trial — Viewer scored MAS 1 vs OptiTrack MAS 0. Adjacent, borderline case.'),
+        ('—',  'Healthy', 'MAS 0–1',      5, 7, 7,  G,  GB, 'Best performing participant. All 7 trials adjacent, 5 exact. Cleanest pendulum data in the cohort.'),
+        ('—', 'Healthy', 'MAS 0',        4, 5, 5,  G,  GB, 'Near-perfect. Viewer scored MAS 1 on one left-leg trial vs OptiTrack MAS 0. Single adjacent miss.'),
     ]
     ry = In(1.48)
     for pid, grp, mas, e, a, total, fc, bc, note in rows:
@@ -1066,11 +1066,11 @@ def s10_findings(prs):
          'Stronger PT correlation (r=0.394 vs 0.156). Delivers clinical-grade MAS estimation from an ordinary webcam.'),
         (AM, AB, '2', 'GAP',
          'Viewer underdetects MS spasticity — 53.3% vs 87.5% for MediaPipe Full',
-         'Only 8/15 MS sessions scored MAS ≥1. Partly explained by the P5 paradox. '
+         'Only 8/15 MS sessions scored MAS ≥1. Partly explained by one participant (below). '
          'Opportunity: MS-specific threshold calibration may close this gap.'),
         (AM, AB, '3', 'DISCOVERY',
-         'P5 paradox: 3D biomechanics and clinical assessment diverge',
-         'P5 is an MS patient, yet OptiTrack scores every trial MAS 0. Viewer scores MAS 1–3 on 6/11 sessions — '
+         '3D biomechanics and clinical assessment diverge',
+         'For one participant OptiTrack scores every trial MAS 0. Viewer scores MAS 1–3 on 6/11 sessions — '
          'possibly detecting real subclinical spasticity that pendulum kinematics miss. Warrants clinical review.'),
         (G,  GB, '4', 'BEST HPE',
          'Pose2Sim-Lightweight leads HPE at 92.3% adj — needs more coverage',
@@ -1115,7 +1115,7 @@ def make_waveform_figure():
     # ── Model parameters ────────────────────────────────────────────────────
     # Calibrated to match study medians: healthy N=7, phi_max=0.79, R2n=1.01
     A0_h, f_h, lam_h = 65.0, 0.90, 0.25
-    # MS: N≈2, phi_max≈0.19 (representative of P4-right severity)
+    # MS: N≈2, phi_max≈0.19 (representative severity)
     A0_m, f_m, lam_m = 57.0, 0.85, 1.50
     T_h, T_m = 1.0 / f_h, 1.0 / f_m
 

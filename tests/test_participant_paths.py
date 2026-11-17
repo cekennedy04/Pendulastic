@@ -77,7 +77,7 @@ def test_legacy_suffix_names_yield_the_same_id_they_always_did():
     leg/condition tail on. Callers still depend on that exact string, so the
     replacement must not quietly start trimming it."""
     assert pp.pid_from_dir_name("Participant_13_left_post") == "13_left_post"
-    assert pp.pid_from_dir_name("Participant_P001_msparticipant2") == "P001_msparticipant2"
+    assert pp.pid_from_dir_name("Participant_P901_pilot2") == "P901_pilot2"
 
 
 def test_strip_prefix_passes_unprefixed_values_through():
@@ -145,8 +145,8 @@ def test_legacy_sub_layout_is_still_found(tmp_path):
 def test_an_existing_folder_always_wins_over_the_diagnosis(tmp_path):
     """Never split a participant's data across two folders: if they already
     have one, new trials go there whatever the diagnosis field now says."""
-    (tmp_path / "Participant_7").mkdir()
-    assert pp.participant_dir_name("7", str(tmp_path), diagnosis="Stroke") == "Participant_7"
+    (tmp_path / "Participant_907").mkdir()
+    assert pp.participant_dir_name("907", str(tmp_path), diagnosis="Stroke") == "Participant_907"
 
 
 def test_a_new_participant_takes_their_study_prefix(tmp_path):
