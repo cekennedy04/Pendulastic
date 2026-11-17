@@ -22,6 +22,7 @@ namespace Pendulastic
         readonly string home = Path.GetDirectoryName(Application.ExecutablePath);
         string TrialsCsv { get { return Path.Combine(home, "trials.csv"); } }
         string UrlFile { get { return Path.Combine(home, "variable_url.txt"); } }
+        string EncFile { get { return Path.Combine(home, "encoder_url.txt"); } }
 
         // design
         RadioButton rbMas, rbParams, rbHand;
@@ -35,7 +36,8 @@ namespace Pendulastic
         PlotPanel plot;
         Label lTrial;
         // rig
-        TextBox tUrl, tLabel;
+        TextBox tUrl, tLabel, tEnc;
+        Button bPickEnc;
         NumericUpDown nMax;
         CheckBox cDry;
         Button bPick, bPlay, bStop;
@@ -69,6 +71,7 @@ namespace Pendulastic
             BuildUi();
             player.LogDir = Path.Combine(home, "sent");
             if (File.Exists(UrlFile)) tUrl.Text = File.ReadAllText(UrlFile).Trim();
+            if (File.Exists(EncFile)) tEnc.Text = File.ReadAllText(EncFile).Trim();
             LoadTrials();
             uiTimer = new Timer { Interval = 33 };
             uiTimer.Tick += delegate { OnUiTick(); };
@@ -134,11 +137,11 @@ namespace Pendulastic
             nThr = Knob(g2, "Reflex threshold (deg/s)", 0m, 400m, 60m, 0, 5m, ref y);
             nTone = Knob(g2, "Tone: settles above rest (deg)", 0m, 40m, 0m, 1, 1m, ref y);
             nDepth = Knob(g2, "Rest depth below extension (deg)", 20m, 80m, 55m, 1, 1m, ref y);
-            nScale = Knob(g2, "Rig amplitude scale", 0.2m, 1.5m, 0.75m, 2, 0.05m, ref y);
+            nScale = Knob(g2, "Rig amplitude scale", 0.2m, 1.5m, (decimal)Knobs.DefaultScale, 2, 0.05m, ref y);
             pendingKnobs = g2;
 
             // 3. rig
-            var g3 = Group("Play on the rig: type a trial label, then PLAY", 380, 175);
+            var g3 = Group("Play on the rig: type a trial label, then PLAY", 380, 205);
             g3.Controls.Add(new Label { Text = "Variable:", Left = 10, Top = 24, Width = 60 });
             tUrl = new TextBox { Left = 72, Top = 21, Width = 220 };
             bPick = new Button { Text = "Pick...", Left = 296, Top = 19, Width = 70 };
@@ -146,17 +149,27 @@ namespace Pendulastic
             g3.Controls.Add(new Label { Text = "Trial label:", Left = 10, Top = 54, Width = 62 });
             tLabel = new TextBox { Left = 72, Top = 51, Width = 294 };
             g3.Controls.Add(new Label { Text = "Max |angle|:", Left = 10, Top = 84, Width = 70 });
-            nMax = new NumericUpDown { Left = 82, Top = 81, Width = 60, Minimum = 5, Maximum = 90, Value = 45 };
+            // the operator can only LOWER the players' hard limit (RigGuard.HardLimitDeg, 40 deg)
+            nMax = new NumericUpDown { Left = 82, Top = 81, Width = 60, Minimum = 5, Maximum = (decimal)RigGuard.HardLimitDeg, Value = (decimal)RigGuard.HardLimitDeg, DecimalPlaces = 1 };
             cDry = new CheckBox { Text = "Dry run: no motion, no log", Left = 150, Top = 82, Width = 225 };
-            bPlay = new Button { Text = "PLAY", Left = 10, Top = 112, Width = 110, Height = 50, Font = new Font(Font.FontFamily, 14f, FontStyle.Bold), BackColor = Color.FromArgb(200, 235, 200) };
-            bStop = new Button { Text = "STOP", Left = 128, Top = 112, Width = 110, Height = 50, Font = new Font(Font.FontFamily, 14f, FontStyle.Bold), BackColor = Color.FromArgb(245, 200, 200), Enabled = false };
+            // optional: the arm's ACTUAL position variable, for the encoder watchdog (empty = watchdog OFF)
+            g3.Controls.Add(new Label { Text = "Encoder:", Left = 10, Top = 114, Width = 60 });
+            tEnc = new TextBox { Left = 72, Top = 111, Width = 220 };
+            bPickEnc = new Button { Text = "Pick...", Left = 296, Top = 109, Width = 70 };
+            bPickEnc.Click += delegate { PickEncoder(); };
+            g3.Controls.Add(tEnc); g3.Controls.Add(bPickEnc);
+            bPlay = new Button { Text = "PLAY", Left = 10, Top = 142, Width = 110, Height = 50, Font = new Font(Font.FontFamily, 14f, FontStyle.Bold), BackColor = Color.FromArgb(200, 235, 200) };
+            bStop = new Button { Text = "STOP", Left = 128, Top = 142, Width = 110, Height = 50, Font = new Font(Font.FontFamily, 14f, FontStyle.Bold), BackColor = Color.FromArgb(245, 200, 200), Enabled = false };
             bPlay.Click += delegate { Play(); };
             bStop.Click += delegate { player.Stop(); };
-            bOpen = new Button { Text = "Open file...", Left = 246, Top = 112, Width = 120 };
-            bSave = new Button { Text = "Save file...", Left = 246, Top = 138, Width = 120 };
+            bOpen = new Button { Text = "Open file...", Left = 246, Top = 142, Width = 120 };
+            bSave = new Button { Text = "Save file...", Left = 246, Top = 168, Width = 120 };
             bOpen.Click += delegate { OpenFile(); };
             bSave.Click += delegate { SaveFile(); };
             g3.Controls.AddRange(new Control[] { tUrl, bPick, tLabel, nMax, cDry, bPlay, bStop, bOpen, bSave });
+            var tip = new ToolTip();
+            tip.SetToolTip(tEnc, "Optional: the arm's ACTUAL position variable. Empty = encoder watchdog OFF. "
+                + "The watchdog runs in this program: it ramps the setpoint to 0, it is not a hardware cutoff.");
             left.Controls.Add(g3); left.Controls.Add(pendingDesign); left.Controls.Add(pendingKnobs);   // PLAY stays on screen
 
             // right: trial banner, plot, scores
@@ -301,7 +314,12 @@ namespace Pendulastic
             double peak = 0; foreach (double d in r.Movement.RigDeg) peak = Math.Max(peak, Math.Abs(d));
             sb.AppendLine();
             sb.AppendLine(string.Format(Inv, "Rig: peak {0:F1} deg, {1:F1} s long (release at {2:F2} s).", peak, r.Movement.RigT[r.Movement.RigT.Length - 1], r.Movement.ReleaseT));
-            if (peak > (double)nMax.Value) sb.AppendLine("  Beyond Max |angle|: lower the rig amplitude scale to play it.");
+            GuardReport g = RigGuard.Check(r.Movement.RigT, r.Movement.RigDeg, (double)nMax.Value);
+            if (!double.IsNaN(g.PredictedPeakDeg))
+                sb.AppendLine(string.Format(Inv, "     predicted delivered peak {0:F1} deg (rig overshoot; limit {1:F1} deg).", g.PredictedPeakDeg, (double)nMax.Value));
+            if (!g.Ok)
+                sb.AppendLine("  NOT PLAYABLE AS IS: " + g.Reason + "." + (g.Scalable && r.Knobs != null
+                    ? " PLAY will offer a smaller rig amplitude scale (scored again before it plays)." : ""));
             sb.AppendLine();
             sb.AppendLine("MAS here is the PT7-band the score falls in, by Popovic's 2018 table. This project's");
             sb.AppendLine("own data cannot support a grade-by-grade MAS (no leg above MAS 1+); the zone is the");
@@ -336,15 +354,17 @@ namespace Pendulastic
 
         void LoadMovementFile(string path, string design)
         {
-            var t = new List<double>(); var sp = new List<double>();
-            foreach (string line in File.ReadAllLines(path))
+            // read exactly as both players read it; a malformed file is not loaded at all (one over the limit is
+            // loaded to look at, and PLAY refuses it: a file is never scaled)
+            double[] t, sp;
+            GuardReport bad = RigGuard.Parse(File.ReadAllLines(path), out t, out sp);
+            if (bad == null)
             {
-                string s = line.Trim(); if (s.Length == 0) continue;
-                if (char.IsLetter(s[0])) { MessageBox.Show(this, "This file has a header row; use the player\\ file, not commands\\."); return; }
-                string[] p = s.Split(',');
-                t.Add(double.Parse(p[0], Inv)); sp.Add(double.Parse(p[1], Inv));
+                GuardReport g = RigGuard.Check(t, sp, RigGuard.HardLimitDeg);
+                if (!g.Ok && !g.Scalable) bad = g;
             }
-            var m = PendulumModel.FromRigFile(t.ToArray(), sp.ToArray());
+            if (bad != null) { MessageBox.Show(this, "Not loaded: " + bad.Reason + "."); return; }
+            var m = PendulumModel.FromRigFile(t, sp);
             current = new DesignResult { Movement = m, Metrics = Scoring.Score(m), Note = "Loaded " + path };
             currentDesign = design;
             Show(current);
@@ -361,27 +381,99 @@ namespace Pendulastic
             catch (Exception ex) { MessageBox.Show(this, ex.Message); }
         }
 
+        void PickEncoder()
+        {
+            try
+            {
+                string u = RigPlayer.PickUrl();
+                if (u != null) { tEnc.Text = u; File.WriteAllText(EncFile, u); }
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message); }
+        }
+
         void Play()
         {
             if (current == null || current.Movement == null || player.Running) return;
             bool dry = cDry.Checked;
             if (!dry && tUrl.Text.Trim().Length == 0) { MessageBox.Show(this, "Pick the setpoint variable first (Pick...)."); return; }
+            double limit = (double)nMax.Value;
+            player.LogDir = Path.Combine(home, "sent"); player.LogName = "";
+            GuardReport g = RigGuard.Check(current.Movement.RigT, current.Movement.RigDeg, limit);
+            if (!g.Ok)
+            {
+                // a live design over the limit may be offered a smaller scale; a file is refused (it is not a design:
+                // scaling it would scale its sync pulses and leave its session's intended scores behind)
+                if (!(g.Scalable && current.Knobs != null && !skipConfirm && OfferScaleDown(g, limit)))
+                {
+                    player.LogRefusal(g.Kind, g.Reason);
+                    lStatus.Text = "Not played: " + g.Reason + ".  (logged: " + player.LastLog + ")";
+                    MessageBox.Show(this, "Not played: " + g.Reason + ".", "Pendulum Designer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                g = RigGuard.Check(current.Movement.RigT, current.Movement.RigDeg, limit);
+                if (!g.Ok) { player.LogRefusal(g.Kind, g.Reason); MessageBox.Show(this, "Not played: " + g.Reason + "."); return; }
+            }
             var mv = current.Movement;
-            string why = RigPlayer.Check(mv.RigT, mv.RigDeg, (double)nMax.Value);
-            if (why != null) { MessageBox.Show(this, "Not played: " + why + "."); return; }
             if (!dry)
             {
-                if (!skipConfirm && MessageBox.Show(this, "Arm at 0?  Phone recording?  StretchExperiment log running?\n\nPlay trial " + NextTrialNumber() + " now?",
+                string wd = tEnc.Text.Trim().Length > 0 ? "Encoder watchdog ON (" + tEnc.Text.Trim() + ")"
+                    : "Encoder watchdog OFF (no encoder variable picked)";
+                if (!skipConfirm && MessageBox.Show(this, "Arm at 0?  Phone recording?  StretchExperiment log running?  Hand on the E-stop?\n\n"
+                                    + wd + ".  Limit " + limit.ToString("F1", Inv) + " deg.\n\nPlay trial " + NextTrialNumber() + " now?",
                                     "Pendulum Designer", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
                 File.WriteAllText(UrlFile, tUrl.Text.Trim());
                 playingRow = AddTrial(mv);
             }
-            player.Url = tUrl.Text.Trim(); player.MaxDeg = (double)nMax.Value; player.DryRun = dry;
+            player.Url = tUrl.Text.Trim(); player.MaxDeg = limit; player.DryRun = dry;
+            player.EncoderUrl = tEnc.Text.Trim();
+            try { if (player.EncoderUrl.Length > 0) File.WriteAllText(EncFile, player.EncoderUrl); else if (File.Exists(EncFile)) File.Delete(EncFile); } catch { }
             try { player.Start(mv.RigT, mv.RigDeg); }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message); return; }
+            catch (Exception ex)
+            {
+                if (playingRow >= 0) { grid.Rows[playingRow].Cells["notes"].Value = "NOT PLAYED: " + ex.Message; SaveTrials(); playingRow = -1; }
+                MessageBox.Show(this, ex.Message); return;
+            }
             bPlay.Enabled = false; bStop.Enabled = true; bDesign.Enabled = false;
             lTrial.BackColor = dry ? Color.FromArgb(255, 240, 200) : Color.FromArgb(190, 240, 190);
             lTrial.Text = dry ? "  DRY RUN  (not a trial)" : "  TRIAL " + grid.Rows[playingRow].Cells["trial"].Value + "  -  " + grid.Rows[playingRow].Cells["label"].Value;
+        }
+
+        static string ScoreLine(Metrics m)
+        {
+            if (m == null || !m.Scored) return "not scored" + (m != null ? " (" + m.Reason + ")" : "");
+            return "PT7 " + (m.Pt7.HasValue ? m.Pt7.Value.ToString("F3", Inv) : "-") + ", "
+                + (m.Interpretable ? m.Zone + ", MAS approx " + m.Mas : "not graded");
+        }
+
+        /// <summary>A live design over the limit: Designer.ScaledToLimit finds the largest rig amplitude scale whose
+        /// movement passes every guard rule with the predicted delivered peak at least RigGuard.ScaleMarginDeg under
+        /// the limit, rescored; ask. True only on an explicit Yes; current is then the scaled, rescored design.</summary>
+        bool OfferScaleDown(GuardReport g, double limit)
+        {
+            double s0 = current.Knobs.Scale;
+            DesignResult scaled = Designer.ScaledToLimit(current, limit, (double)nScale.Minimum);
+            if (scaled == null) return false;          // no scale down to the knob's minimum fits: refused by the caller
+            double s = scaled.Knobs.Scale;
+            GuardReport sg = RigGuard.Check(scaled.Movement.RigT, scaled.Movement.RigDeg, limit);
+            double raw = sg.RawPeakDeg;
+            string msg = string.Format(Inv,
+                "This design would take the arm past the {0:F1} deg limit:\n  {1}.\n\n"
+                + "It can be played SMALLER: rig amplitude scale {2:F2} -> {3:F2} (x{4:F3}).\n"
+                + "Scaled: commanded peak {5:F1} deg, predicted delivered peak {6:F1} deg.\n\n"
+                + "The scaled swing scores {7}\n(the design as shown scored {8}).\n"
+                + "The score shown and logged will be the scaled swing's.\n\n"
+                + "Play the SCALED swing?   (No = nothing is played)",
+                limit, g.Reason, s0, s, s / s0, raw, sg.PredictedPeakDeg, ScoreLine(scaled.Metrics), ScoreLine(current.Metrics));
+            if (MessageBox.Show(this, msg, "Pendulum Designer: over the limit", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return false;
+            scaled.Note = (current.Note.Length > 0 ? current.Note + " " : "") + string.Format(Inv,
+                "SCALED for the {0:F1} deg limit: rig amplitude scale {1:F2} -> {2:F2}; every score here is the scaled swing's.", limit, s0, s);
+            current = scaled;
+            currentDesign += string.Format(Inv, " [scaled {0:F2}->{1:F2} for the {2:F1} deg limit]", s0, s, limit);
+            KnobsToUi(scaled.Knobs);
+            Show(current);
+            return true;
         }
 
         void OnUiTick()
@@ -390,7 +482,8 @@ namespace Pendulastic
             {
                 double ft = player.FileTimeS;
                 plot.SetCursor(ft);
-                lStatus.Text = player.Status + (ft >= 0 ? string.Format(Inv, "   {0:F1} s   setpoint {1:F2} deg", ft, player.LastSentDeg) : "");
+                lStatus.Text = player.Status + (ft >= 0 ? string.Format(Inv, "   {0:F1} s   setpoint {1:F2} deg", ft, player.LastSentDeg) : "")
+                    + "   [" + player.WatchdogState + "]";
             }
             else if (!bPlay.Enabled)
             {
@@ -401,7 +494,7 @@ namespace Pendulastic
                 if (playingRow >= 0)
                 {
                     var c = grid.Rows[playingRow].Cells["notes"];
-                    if (player.Status.StartsWith("STOPPED") || player.Status.StartsWith("stopped"))
+                    if (player.Status.StartsWith("STOPPED") || player.Status.StartsWith("stopped") || player.Status.StartsWith("REFUSED"))
                         c.Value = (Convert.ToString(c.Value) + " " + player.Status).Trim();
                     SaveTrials();
                     playingRow = -1;

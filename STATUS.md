@@ -65,7 +65,16 @@ scores move. "Not verified" is stated, never implied.
 - **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
   session notes, to be added to `docs/plans/`):
   - *Before any session:* build the Player's own `Max |setpoint|` clamp (the Angle Limit
-    fields do not bound the Player). The dry run is 9/9 in band on main (the 7/9 reading
+    fields do not bound the Player). **Built 2026-11-17 (simulation/code-tested, not yet run
+    on the rig):** both players share `labview/player/RigGuard.cs` — ±40° hard limit (operator
+    can only lower), load-time refusal incl. 600 °/s and a predicted-delivered-peak check on the
+    identified plant, per-write backstop that stops the run, no start without a setpoint
+    reading; one writer at a time (named mutex); an optional same-process encoder watchdog (the
+    actual-position variable is unconfirmed, so it reports OFF until one is picked); a staged
+    first-run checklist with a hard-stop margin step (`designer/RIG_CHECKLIST.txt`);
+    Designer default scale 0.70 and a scale-down offer for bigger live designs. At ±40°
+    3 of 66 library scenarios are playable (the rest release from ≥ 55°). See
+    `neuromech/README.md` "Playback safety guard". The dry run is 9/9 in band on main (the 7/9 reading
     came from code without #96; see O5).
   - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with
     asymmetric limits and a margin to the hard stops at least the fault overshoot seen

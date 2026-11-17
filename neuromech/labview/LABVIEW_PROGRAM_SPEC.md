@@ -57,8 +57,32 @@ Guards, in the order they act:
 1. **`peak_deg` on the run sheet** — the furthest the run will command. Compare it with the arm's
    range before pressing run. The `Angle Limit CCW/CW` fields **do not bound the Player** (they bound
    the Stretch profile only; the arm has reached 63° and −81° with them at ±25).
-2. **In the Player** (add to the guide's build): a `Max |setpoint| (deg)` control; refuse to start if
-   the file's peak exceeds it, and clamp every write to it.
+2. **In the Player — built 2026-11-17 for both host players** (`play_setpoints.ps1` and the Pendulum
+   Designer; code- and simulation-tested, not yet run on the rig). One rule set, `player/RigGuard.cs`,
+   used by both (Python twin `neuromech/rig_guard.py`, cross-checked on shared fixtures):
+   - hard limit **±40°**, compiled in; the operator's `Max |angle|` / `-MaxDeg` can only lower it;
+   - **refuse to start** (whole file, never clipped; the message names the time and value) on a header,
+     non-number, NaN/Inf, bad start (t ≠ 0 or angle ≠ 0), non-increasing time, any |angle| over the
+     limit, any change over **6° per 10 ms write (600 °/s)** on the 10 ms stream actually sent, or a
+     **predicted delivered peak** over the limit: the 10 ms staircase + 2 s hold through the identified
+     closed loop of §4 (6.35 Hz, ζ 0.23) and five detuned copies (ωn ×0.9/×1.1, ζ 0.18), largest |angle|;
+   - **clamp every write** (backstop): no NaN/Inf, ±limit, ≤ 6° per write; if it ever engages during
+     play the run stops and ramps to 0 at 10 °/s and the event is logged (`guard` rows in `sent/`);
+   - **no blind start**: if the current setpoint cannot be read (or is NaN / beyond the limit) the
+     Player refuses to start instead of stepping to 0;
+   - every refusal leaves `sent/<file>_<time>_refused.csv`; `session check-log --sent` fails a run with
+     any guard event;
+   - the Designer offers a live design over the limit a smaller rig amplitude scale (predicted peak
+     ≤ limit − 1°, rescored), played only on an explicit Yes; opened files are refused, not scaled;
+   - one writer at a time (named mutex `PendulasticSetpointWriter`), held from ramp-in to return-to-0;
+   - optional encoder watchdog on an operator-picked actual-position variable (|actual| > limit + 3°,
+     or following error > 5° + 1.5 × the plant's predicted error over a 150 ms window → stop and ramp
+     the setpoint to 0). Whether StretchExperiment publishes the actual position as a network variable
+     is **not confirmed** in this repo; without one every run reports "encoder watchdog OFF". It runs
+     in the host process, so it is not an independent cutoff.
+   Not covered: 20 failed writes, or a Player killed mid-run, leave the rig **holding the last
+   setpoint** — guard 4 (the E-stop) is the protection there. A LabVIEW-built Player VI must implement
+   the same rules (port `RigGuard.cs`), or not be used.
 3. **Dry Run** switch on the Player: the whole file plays with nothing written. Use it for every new file.
 4. **The amplifier fault** (SET lamp flashing; E-Stop release → SET) — the only protection that has
    actually stopped the arm. Trips seen at speed 300, P 4.5 with I 0.5, D 0.1 unfiltered.
@@ -154,8 +178,8 @@ parameters against the **encoder-scored** ones, run by run.
 
 | # | Item | Why it blocks | Owner action |
 |---|---|---|---|
-| 1 | **Angle range.** Clinical geometry releases at +55° (rest depth) and swings to −35°…−52° below rest; 52 of 55 scenarios exceed today's ±45° software limits | Without it the ladder cannot be played at full scale | Confirm the arm's *mechanical* range; set limits to ±65° if safe. Fallback: render at 0.75× amplitude (A0 ≈ 41°, still above the 25° gate; every ratio parameter is amplitude-invariant) |
-| 2 | **Build the Pendulum Player** (host VI, no StretchExperiment edit) | Mode A does not exist without it | Follow the build guide; add the `Max abs setpoint` guard (§3); confirm the shared variable in DSM |
+| 1 | **Angle range.** Clinical geometry releases at +55° (rest depth) and swings to −35°…−52° below rest; 52 of 55 scenarios exceed today's ±45° software limits | Without it the ladder cannot be played at full scale | Confirm the arm's *mechanical* range; set limits to ±65° if safe. Fallback: render at 0.75× amplitude (A0 ≈ 41°, still above the 25° gate; every ratio parameter is amplitude-invariant). **Update 2026-11-17:** the players now enforce a ±40° hard limit (§3 guard 2), so 0.75× (41.25°) is refused; the Designer's default rig scale is 0.70 (38.5°) |
+| 2 | **Build the Pendulum Player** (host VI, no StretchExperiment edit) | Mode A does not exist without it | Follow the build guide; add the `Max abs setpoint` guard (§3; the host players `play_setpoints.ps1` and the Designer have it as of 2026-11-17 — a VI must port `RigGuard.cs`); confirm the shared variable in DSM |
 | 3 | **Logging under the Player** | No encoder log, no score | One bench check: `session check-log` (§3, last paragraph) |
 | 3b | **Re-tune + ILC** | 2× over-rendering above 4 Hz (§4); no feedforward path | Chirp run, gains on the front panel, ILC-corrected files |
 | 4 | **Motor torque rating and gearbox** | Mode C needs ≥ 4 N·m for MAS 0–3, 15 N·m for severe, 26 N·m for real-size clonus | Read the ServoDisc model's continuous/peak torque; size a gearbox |

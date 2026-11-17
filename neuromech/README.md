@@ -65,14 +65,82 @@ python -m neuromech.usb_kit --name <S> [--dest E:\]     # scripts + player files
 ```
 
 On the rig PC: `PICK_VARIABLE.bat` once, then drag a file onto `DRYRUN.bat` (moves nothing) or
-`PLAY.bat`. It refuses files over 45 deg, with a header, or not starting at 0; q/Esc ramps back to 0;
-each run leaves `sent/<run>_<time>.csv`, what it wrote and when. Logs and the run sheet come back on
-the stick. The kit's `README.txt` is the bench procedure. `key.csv` never goes on the stick.
+`PLAY.bat`. q/Esc ramps back to 0; each run leaves `sent/<run>_<time>.csv`, what it wrote and when.
+Logs and the run sheet come back on the stick. The kit's `README.txt` is the bench procedure.
+`key.csv` never goes on the stick.
+
+**Playback safety guard** (owner decisions 2026-11-17). Both players — `play_setpoints.ps1` and the
+Pendulum Designer — take their rules from one file, `labview/player/RigGuard.cs` (PLAY loads it with
+`Add-Type`, the Designer compiles it in; `neuromech/rig_guard.py` is the Python twin, and
+`tests/test_rig_guard.py` requires all three to give the same verdict on the same fixture files):
+
+- **Hard limit ±40° rig angle**, compiled in. `-MaxDeg` / the Designer's *Max |angle|* can only lower it
+  (`-MaxDeg 45` is refused; the Designer's control stops at 40).
+- **Refused at load, whole, never clipped** (the message names the time and value): a header, a
+  non-number, NaN/Inf, time not starting at 0 or not increasing, a first angle other than 0, any
+  |angle| over the limit, any change over **6° between consecutive 10 ms writes (600 °/s)** on the
+  stream the player actually sends (the file read at k·10 ms), or a **predicted delivered peak** over
+  the limit. The library's 5° sync pulses are 5° in one write (500 °/s) and pass.
+- **Predicted delivered peak**: the 10 ms staircase (plus the 2 s end hold) through the identified
+  closed loop (section 4 of the LabVIEW spec: 2nd order, 6.35 Hz, ζ 0.23; gain 1.26 at 3 Hz, ~2.0 at
+  5 Hz) and five detuned copies (ωn ×0.9 and ×1.1, ζ 0.18); the largest |angle| of the six. It is a
+  model of the rig as identified on 2026-10-26, not a guarantee: re-identify after any gain change.
+- **Designer, live designs only**: a design over the limit is offered the largest rig amplitude scale
+  (0.01 steps) that passes with the predicted peak ≤ limit − 1°, rescored at that scale; it plays only
+  on an explicit Yes, and the score shown and logged is the scaled swing's. The default scale is
+  `Knobs.DefaultScale` = **0.70** (owner, 2026-11-17), so the default MAS designs (55° release → 38.5°)
+  play without the prompt. An opened `.csv` over the limit is refused, not offered a scale (scaling a
+  file would scale its sync pulses and leave its session's intended scores behind).
+- **Per-write backstop** in both send paths: NaN/Inf never sent, clamp to ±limit, at most 6° per
+  write. If it ever engages while playing, the run stops and ramps to 0 at 10 °/s (PLAY exits 5,
+  the Designer shows "STOPPED by the guard"); a guard row is logged. On a fast file a Windows tick
+  late by tens of ms can trip it (the library's swings move at most 7° per write, typically ≤ 3°).
+- **Ramp-in**: if the current setpoint cannot be read (or reads NaN or beyond the limit) the player
+  refuses to start: no step to 0 from wherever the arm is.
+- **Logged**: every refusal leaves `sent/<file>_<time>_refused.csv`; backstop events are `guard` rows
+  in the sent log (`t_wall_s,t_file_s,phase,setpoint_deg,note`). `session check-log ... --sent <sent log>`
+  fails a run with any refusal, guard or error row. `session plan` writes `guard.csv` (each run's
+  verdict and predicted peak) and warns how many runs the players will refuse;
+  `python -m neuromech.rig_guard <files|dir> [--index out.csv]` / `--library` does the same anywhere.
+- **One writer at a time**: a machine-wide named mutex (`Global\PendulasticSetpointWriter`, or `Local\`
+  if the session may not create Global objects) is taken before the ramp-in and released after the
+  return to 0; a second player (Designer or PLAY) refuses to start. Tested in both directions.
+- **Optional encoder watchdog**: if the operator picks a variable holding the arm's ACTUAL position
+  (Designer *Encoder: Pick...*, or `PICK_ENCODER.bat` → `encoder_url.txt`), the player reads it every
+  5th write (50 ms, 20 ms read timeout) and stops the content and ramps the setpoint to 0 (PLAY exit 6)
+  when |actual| > limit + 3°, when the arm is further from every setpoint sent in the last 150 ms than
+  5° + 1.5 × the following error the identified plant (and its detuned copies) predicts for this file
+  (the 150 ms window absorbs network/read latency and the plant's lag; 5° covers encoder noise,
+  stiction and the 0.4–0.6° tracking RMSE measured on library swings), or after 10 failed reads in a row.
+  Before starting it refuses if the variable cannot be read or reads more than 5° from the setpoint
+  (wrong variable). Not picked: play proceeds and the console / status bar says **"encoder watchdog
+  OFF"**. **Unconfirmed:** nothing in this repo lists an actual-position network variable in
+  `variables - network - RT (separate)` (only the setpoint `M1JointAngleDesired`, fallback
+  `M1AngleSetPoint`); check in Distributed System Manager whether one exists before relying on it. The
+  watchdog runs in the same host process as the player: a second opinion that moves the setpoint, not
+  an independent hardware cutoff.
+- **Not covered — the E-stop is the answer**: after 20 failed writes the player stops and the rig
+  HOLDS the last value it received; a player killed mid-play also leaves the last setpoint held.
+
+**Staged first real playback** (owner, 2026-11-17; the kit's `RIG_CHECKLIST.txt`, from
+`designer/RIG_CHECKLIST.txt`, is the operator's copy):
+
+0. Before any playback, note the arm's mechanical hard-stop angles. Confirm that the ±40° limit plus
+   the expected overshoot (the predicted delivered peak each player shows; and faults have carried
+   the arm to +63°/−81° with the Angle Limits at ±25°) leaves a clear margin to both. If it does not,
+   lower the limit for the session (Designer *Max |angle|*, or `-MaxDeg`).
+1. Nobody inside the arm's swing envelope; a person with the E-stop in hand; StretchExperiment's
+   Controller Output Range set conservatively during playback; arm at 0.
+2. 5° smoke file (`smoke_5deg.csv`, DRYRUN first) → a default MAS design at rig amplitude scale 0.3 →
+   0.5 → 0.70 (the default). Stop at the first surprise and bring `sent\` back.
+
+At ±40° the built library (66 scenarios) has 3 playable files (C-A0-low, C-A0-small-ok, D-lowlift):
+every other scenario releases from 55° or more (the library writes rig angle 1:1).
 
 **Once, before the first session:** play any player file with the log running, then
 
 ```bash
-python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv
+python -m neuromech.session check-log --bin <the new .bin> --player sessions/<S>/player/R001.csv [--sent <its sent log>]
 ```
 
 PASS means the log recorded the Player's setpoint for the whole file (it also reports how often the
