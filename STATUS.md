@@ -23,11 +23,6 @@ scores move. "Not verified" is stated, never implied.
 
 1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
-2. **The A0 invariant in #105.** As written (A0 at most span × 1.27) it refuses a correct
-   settled-tail correction on a stiff, non-oscillating leg that sags against opposing
-   drift; it fired on no corpus curve. The reviewer's alternative bounds A0 by the raw span
-   plus the correction actually applied plus 2% of span, and flags rather than refuses a
-   correction above 25% of the raw span (workstream 3).
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -36,7 +31,15 @@ scores move. "Not verified" is stated, never implied.
   (8aa1055) the same day; #102 stops Vercel's git integration overwriting it.
 - **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
   as one versioned change. Implemented in draft PR #105 (`pt6rescaled-ref-2026-11-16`,
-  supersedes #94); its A0 rule waits on decision 2 above.
+  supersedes #94).
+- **No refusals from the drift or A0 bounds** (owner: refusals must not affect severe
+  legs; the app scores every kind of swing; take the most robust option). In #105, all
+  ports that have the logic (Python and Rust; C# has neither bound): A0 is bounded by
+  raw span + |applied slope| × duration + 2% of span, replacing span × 1.27. A drift
+  estimate out of bounds is skipped and the curve scored without it; an A0 past the
+  bound drops the correction and scores the uncorrected curve with a flag; a correction
+  over 25% of the raw span is applied and flagged. `AmplitudeExceedsCurveError` is
+  removed. Every score records which correction it used and its flags.
 - **Scoring footing:** move the app to the Python reference footing, together with
   counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
   one score-formula version bump (plan in progress on `feat/app-reference-footing`).
@@ -152,19 +155,19 @@ scores move. "Not verified" is stated, never implied.
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
 - **Drift-correction bound + re-derived `HEALTHY_REF` (PR #105, draft; supersedes #94,
-  which stays open):** the bound in Python and Rust, `AmplitudeExceedsCurveError`
-  reported (not swallowed) by the viewer, workbench, live view and broad handlers, and
+  which stays open):** the bound in Python and Rust, never a refusal (see decisions
+  taken), with the correction used and any quality flags shown in the viewer, workbench
+  and live view and stored on the app record (`scoring_quality`), and
   `HEALTHY_REF` re-derived with the bound (phi 0.6407→0.6264, omega_max_n
   6.4839→6.6702, area 0.1766→0.1678, f unchanged; 37 trials, 11 legs, 7 people) in
   Python, Rust, C# and `run_statistical_engine.py`. `SCORE_FORMULA_ID`
   `pt6rescaled-ref-2026-11-16`, core 0.3.0. Bound alone: `detrend=False` bit-identical;
   `detrend=True` moves 2 phone and 20 optical trials. Rust matches Python on 463 real
-  curves (both conventions). neuromech: no band changes, dry run 9 of 9. Open: the A0
-  invariant (span × 1.27) refuses a correct tail correction on a stiff, non-oscillating,
-  sagging leg (fired on no corpus curve); the rule waits on owner decision 2. Rust now
-  returns a typed reason, and a stored app record that falls back to the live
-  convention says why (`analysis_refusal`). Some research CLI scripts still raise on
-  the error.
+  curves (both conventions), including the correction used and the flags. neuromech:
+  no band changes, dry run 9 of 9. Corpus: no trial is refused by either bound at
+  either setting, the no-refusal rule moves no score, and 7 trials (6 phone, 1 optical,
+  `detrend=True`) carry the large-correction flag. A stored app record that falls back
+  to the live convention says why (`analysis_refusal`).
 - **`compare_pair` orientation (#95, merged 2026-11-16):** reworked in its own PR after the first
   port was found wrong. Marker-path references are mirrored only on release-side
   evidence; correlation alone can only confirm "as given" under a verified lag;
