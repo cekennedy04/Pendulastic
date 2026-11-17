@@ -22,10 +22,12 @@ app's fused/`abs()` output. Analyze with `python bench_dynamics.py` (below).
 
 ## Capture order — EVERY recording (the sync tap is new; it's what makes timing absolute)
 1. Arm at zero, dead still. **Start the phone raw recording.**
-2. **One sharp sync tap** on the arm (a single knuckle rap) — a spike both the phone gyro
-   and the encoder resolve. This bootstraps time alignment; without it, alignment is
-   cross-correlation only (shape, not absolute latency).
-3. **Start the LabVIEW encoder log — note the filename** (that's the join).
+2. **Start the LabVIEW encoder log — note the filename** (that's the join).
+3. **One sharp sync tap** on the arm (a single knuckle rap) — a spike both the phone gyro
+   and the encoder resolve, so tap only once BOTH are recording. This bootstraps time
+   alignment; without it, alignment is cross-correlation only (shape, not absolute
+   latency). (2026-11-18: not in scored app captures — a tap can trip the app's release
+   gate; see `2026-11-18-app-on-motor-session.md`.)
 4. Press **OK** to launch the Stretch trial; let it run to the auto-stop.
 5. **Stop the phone, then stop the encoder log.**
 6. Export the phone JSONL; write the tracker row (Rec #, encoder filename, block, config).
