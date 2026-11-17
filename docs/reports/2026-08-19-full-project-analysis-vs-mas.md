@@ -330,12 +330,8 @@ specific about what it measures: *"the pendulum test is commonly used to
 quantify **knee extensor spasticity**"* (Whelan et al., 2018, title and
 throughout) — it's an extensor-spasticity instrument by design.
 
-For the one participant with the granular breakdown recorded (P15):
-
-| Leg | `mas_grade` | `mas_flexion` | `mas_extension` |
-|---|---|---|---|
-| Left | 0 | 1+ | 0 |
-| Right | 1 | 1 | 0 |
+For the one participant with the granular breakdown recorded (per-leg
+grades withheld from this public copy):
 
 **`mas_extension` is 0 on both legs** — no variance at all — while
 `mas_grade` and `mas_flexion` both vary. Section 4's reported correlation

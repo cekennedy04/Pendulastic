@@ -118,8 +118,9 @@ trustworthy, no threshold derived from these A0 values is either.
 58 trials graded exactly as before. **2 refused** — one participant's left and right, both at
 A0 9.0 deg, both previously (wrongly) given a non-zero grade by the scorer.
 
-Those two trials are independently broken — P9's left and right exports are
-identical, and P9 is also named in the seed-window finding. The gate's first
+Those two trials are independently broken — that participant's left and right
+exports are identical, and the same participant is also named in the
+seed-window finding. The gate's first
 real catch is a trial that was already bad, which is the intended behaviour.
 Note this cuts both ways: because those same two trials set the control floor,
 the derivation had to be corrected (above).

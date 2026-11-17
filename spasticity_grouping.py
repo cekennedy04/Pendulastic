@@ -311,7 +311,7 @@ def load_mas_components_by_leg(path: str = None,
     Some legs have the flexion and extension components scored while the
     OVERALL grade is still PENDING_MAS_GRADE. That is real clinical evidence,
     and discarding it leaves a participant uncharacterised for no good reason
-    -- P17 is the live case, right leg flexion 1 with the overall pending.
+    -- there is a live case of a leg with its flexion scored and the overall pending.
     """
     path = path or MAS_CSV
     out = {}

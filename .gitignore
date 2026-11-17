@@ -149,3 +149,4 @@ ab_*.csv
 preamble_out.csv
 x.png
 excluded_trials.json.bak-*
+legacy_analysis_groups.json

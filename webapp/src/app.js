@@ -305,7 +305,7 @@ const ZONE_LABEL = {
 // it wrong. It claimed the control cohort scored WORSE than the MS cohort
 // (1.668 vs 0.626) and blamed three compromised control participants. That was
 // true of the tree on 2026-08-28 and is NOT true now: commits 9abe37c
-// (recovering the P2 trials Motive had exported in local rigid-body
+// (recovering trials Motive had exported in local rigid-body
 // coordinates) and a658c3f (estimating drift from the settled tail) removed
 // the inversion. Recomputed at this commit the controls score 0.155 against
 // the MS cohort's 0.475 -- separated, and in the right direction. Anyone
