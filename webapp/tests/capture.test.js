@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   encodeSample, neverStartedHandle, startCapture, createReplyRouter,
-  requestMotionPermission, MOTION_DENIED_MESSAGE,
+  requestMotionPermission, MOTION_DENIED_MESSAGE, stopAndExportRaw,
+  RAW_EXPORT_TIMEOUT_MESSAGE,
 } from '../src/capture.js';
 
 // encodeSample is the pure arithmetic core of capture.js: axis mapping and
@@ -234,4 +235,69 @@ test('a permission promise that rejects is reported, not thrown out of startCapt
 
 test('the denied message tells the operator what to do', () => {
   assert.match(MOTION_DENIED_MESSAGE, /Allow/);
+});
+// ---- worker crash, export timeout, empty recording (review of #116) --------
+test('a worker crash rejects every pending export and reports once', () => {
+  const { calls, router, pendingExport } = routerHarness();
+  const a = pendingExport();
+  const b = pendingExport();
+  let ref = 'pending';
+  router.awaitReference({ resolve: (v) => { ref = v; } });
+  router.failAll('capture worker crashed: boom');
+  router.failAll('capture worker crashed: again');
+  assert.deepEqual(a.settled, ['err', 'capture worker crashed: boom']);
+  assert.deepEqual(b.settled, ['err', 'capture worker crashed: boom']);
+  assert.equal(ref, null);
+  assert.deepEqual(calls.errors, ['capture worker crashed: boom'], 'one report, not one per call');
+  // A request made after the crash fails at once instead of hanging.
+  const c = pendingExport();
+  assert.deepEqual(c.settled, ['err', 'capture worker crashed: boom']);
+});
+
+test('startCapture wires worker.onerror and onmessageerror to fail pending requests', withDME(
+  class {},
+  async () => {
+    for (const fire of [(w) => w.onerror({ message: 'module failed', preventDefault() {} }),
+                        (w) => w.onmessageerror({})]) {
+      let worker = null;
+      const errors = [];
+      const handle = await startCapture({
+        onState() {}, onResult() {}, onError: (r) => errors.push(r),
+        createWorker: () => (worker = { postMessage() {}, terminate() {} }),
+        target: new EventTarget(),
+      });
+      const pending = handle.exportJsonl();
+      fire(worker);
+      await assert.rejects(() => pending, /capture worker/);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /capture worker/);
+      handle.close();
+    }
+  },
+));
+
+test('stopAndExportRaw times out with a loggable message instead of hanging', async () => {
+  let closed = false;
+  const handle = {
+    stop() {}, sampleCount: () => 10, close() { closed = true; },
+    exportJsonl: () => new Promise(() => {}), // a worker that never answers
+  };
+  await assert.rejects(() => stopAndExportRaw(handle, { timeoutMs: 20 }),
+    (err) => err.message === RAW_EXPORT_TIMEOUT_MESSAGE);
+  assert.match(RAW_EXPORT_TIMEOUT_MESSAGE, /timeout.*log as ERROR/);
+  assert.equal(closed, true, 'the worker is released even on timeout');
+});
+
+test('stopAndExportRaw skips an empty recording', async () => {
+  let exported = false;
+  let stoppedWith = null;
+  let closed = false;
+  const handle = {
+    stop(opts) { stoppedWith = opts; }, sampleCount: () => 0, close() { closed = true; },
+    exportJsonl: () => { exported = true; return Promise.resolve(''); },
+  };
+  assert.equal(await stopAndExportRaw(handle), null);
+  assert.deepEqual(stoppedWith, { finish: false });
+  assert.equal(exported, false);
+  assert.equal(closed, true);
 });

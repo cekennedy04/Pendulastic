@@ -1485,6 +1485,10 @@ if (typeof document !== 'undefined') {
   // True from the Start tap until startCapture settles (the iOS permission
   // prompt window), so the router refuses to navigate away mid-start.
   let researchStarting = false;
+  // Bumped by every Start tap. A start that resolves after a newer Start has
+  // begun (rapid Start -> Stop -> Start during the iOS prompt) sees a stale
+  // token and closes its own capture instead of orphaning it.
+  let researchGen = 0;
 
   function researchResetButtons() {
     el('research-stop').hidden = true;
@@ -1495,6 +1499,7 @@ if (typeof document !== 'undefined') {
     // FIRST, synchronously, inside the tap: iOS only grants motion access
     // within the user gesture (see requestMotionPermission).
     const permission = requestMotionPermission();
+    const gen = ++researchGen;
     resetResearchTrace();
     researchStartMs = Date.now();
     el('research-start').hidden = true;
@@ -1515,9 +1520,11 @@ if (typeof document !== 'undefined') {
         onResult: () => {},
         onError: (reason) => {
           if (!started) { startFailure = reason; return; }
+          if (gen !== researchGen) return;
           el('research-status').textContent = `ERROR while recording: ${reason}`;
         },
         onSamples: (buf) => {
+          if (gen !== researchGen) return;
           const { state, points } = foldGyroBatch(buf, researchWaveState);
           researchWaveState = state;
           researchSampleCount += points.length;
@@ -1529,9 +1536,14 @@ if (typeof document !== 'undefined') {
     } catch (err) {
       startFailure = err instanceof Error ? err.message : String(err);
     } finally {
-      researchStarting = false;
+      if (gen === researchGen) researchStarting = false;
     }
     started = true;
+    if (gen !== researchGen) {
+      // Superseded by a newer Start, which owns the UI now.
+      handle?.close?.();
+      return;
+    }
     if (startFailure !== null) {
       handle?.close?.();
       researchResetButtons();
@@ -1560,6 +1572,12 @@ if (typeof document !== 'undefined') {
       // still/unscorable log used to cost the recording (bench audit
       // 2026-11-17). See capture.js stopAndExportRaw / createReplyRouter.
       const raw = await stopAndExportRaw(handle);
+      if (raw === null) {
+        // Stop came before a single motion sample: nothing to keep, and an
+        // empty recording would only be noise in the export.
+        el('research-status').textContent = 'nothing recorded — no motion samples arrived; not saved';
+        return;
+      }
       await persistResearchRecording(raw);
       const durS = ((Date.now() - researchStartMs) / 1000).toFixed(1);
       el('research-status').textContent = `saved — ${researchSampleCount} samples, ${durS} s`;
@@ -2348,6 +2366,7 @@ if (typeof document !== 'undefined') {
     resetToIdle();
   }
 
+  let clinicalStartGen = 0;
   el('start').addEventListener('click', async () => {
     // Synchronous, and before every `await` below: iOS only permits an
     // AudioContext to start inside a user gesture, and the first await ends
@@ -2358,6 +2377,11 @@ if (typeof document !== 'undefined') {
     // startCapture. Requesting it after those awaits (as startCapture used to)
     // runs outside the gesture, where iOS may refuse or throw.
     const permission = requestMotionPermission();
+    // This tap's token. A rapid Start -> Stop -> Start while the iOS prompt
+    // is up leaves two starts in flight; only the newest may touch the UI or
+    // keep its capture, the older one closes its own handle on resolve.
+    const gen = ++clinicalStartGen;
+    const live = () => gen === clinicalStartGen;
     // Shown before the first await so a double tap cannot start two captures.
     el('start').hidden = true;
     el('stop').hidden = false;
@@ -2374,12 +2398,14 @@ if (typeof document !== 'undefined') {
         await applyParticipantAction({ type: 'select', patient });
       }
     } catch (err) {
+      if (!live()) return;
       const g = el('guide');
       g.className = 'fault';
       g.textContent = `ERROR\ncould not prepare the session: ${err instanceof Error ? err.message : String(err)}`;
       resetToIdle();
       return;
     }
+    if (!live() || el('stop').hidden) return; // superseded or stopped while preparing
     faulted = false; // fresh trial: the previous trial's latch must not carry over
     setResultVisible(false);
     el('waveform-wrap').hidden = true;
@@ -2396,21 +2422,35 @@ if (typeof document !== 'undefined') {
     // it were the one just started.
     session = null;
     let handle;
+    let adopted = false;
     try {
       // A refused permission is reported through onError (shown as ERROR,
       // UI reset to idle) and returns a never-started handle.
-      handle = await startCapture({ onState, onResult, onError, permission });
+      // Until this capture is adopted as `session`, its callbacks are gated on
+      // the token, so a superseded start (e.g. its own permission refusal)
+      // can never drive the newer trial's screen. Once adopted they always
+      // flow, exactly as before: a late result/unscorable for a trial the
+      // operator just stopped must still be persisted even if Start was
+      // tapped again in the meantime.
+      const ok = () => adopted || live();
+      handle = await startCapture({
+        onState: (m) => { if (ok()) onState(m); },
+        onResult: (...a) => { if (ok()) onResult(...a); },
+        onError: (r) => { if (ok()) onError(r); },
+        permission,
+      });
     } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
+      if (live()) onError(err instanceof Error ? err.message : String(err));
       return;
     }
-    if (el('stop').hidden) {
+    if (!live() || el('stop').hidden) {
       // Stop (or an onError) ended this trial while startCapture was still
       // pending -- e.g. during the iOS prompt. Do not let the capture run on
       // headless with no Stop button.
       handle.close?.();
       return;
     }
+    adopted = true;
     session = handle;
   });
 

@@ -60,6 +60,7 @@ export function neverStartedHandle(reason) {
     stop() {},
     exportJsonl: () => Promise.reject(new Error(reason)),
     requestReference: () => Promise.resolve(null),
+    sampleCount: () => 0,
     close() {},
   };
 }
@@ -131,6 +132,7 @@ export function createReplyRouter({ onState, onResult, onError }) {
       onError(m.reason);
     }
   }
+  let dead = null;
   return {
     route(m) {
       if (m.type === 'state') onState(m);
@@ -139,21 +141,54 @@ export function createReplyRouter({ onState, onResult, onError }) {
       else if (m.type === 'reference') referenceWaiters.shift()?.resolve(m.payload);
       else if (m.type === 'error') routeError(m);
     },
-    awaitExport(waiter) { exportWaiters.push(waiter); },
-    awaitReference(waiter) { referenceWaiters.push(waiter); },
+    // The worker itself died (worker.onerror / onmessageerror): no reply will
+    // ever come for anything in flight. Reject every pending export, settle
+    // every pending reference as "none", and report ONE trial-level error.
+    // Without this a research Stop sat on "saving…" forever and the recording
+    // was lost with no message. Idempotent: only the first call reports.
+    failAll(reason) {
+      if (dead !== null) return;
+      dead = reason;
+      while (exportWaiters.length) exportWaiters.shift().reject(new Error(reason));
+      while (referenceWaiters.length) referenceWaiters.shift().resolve(null);
+      onError(reason);
+    },
+    // After a crash, new requests fail at once instead of waiting forever.
+    awaitExport(waiter) {
+      if (dead !== null) waiter.reject(new Error(dead));
+      else exportWaiters.push(waiter);
+    },
+    awaitReference(waiter) {
+      if (dead !== null) waiter.resolve(null);
+      else referenceWaiters.push(waiter);
+    },
   };
 }
+
+export const RAW_EXPORT_TIMEOUT_MS = 10000;
+export const RAW_EXPORT_TIMEOUT_MESSAGE = 'timeout — log as ERROR';
 
 // The research raw recorder's Stop: flush the last batch WITHOUT asking the
 // worker to score, export the raw log, then release the worker. Scoring is
 // deliberately skipped -- a bench recording is often a still or partial log
 // that cannot score, and that must never cost the recording (see
 // createReplyRouter for the bug this replaced).
-export async function stopAndExportRaw(handle) {
+//
+// Resolves null when not a single motion sample arrived (an immediate Stop):
+// an empty recording is not saved. Rejects with RAW_EXPORT_TIMEOUT_MESSAGE if
+// the worker has not answered within `timeoutMs`, so the UI can never sit on
+// "saving…" forever.
+export async function stopAndExportRaw(handle, { timeoutMs = RAW_EXPORT_TIMEOUT_MS } = {}) {
   handle.stop({ finish: false });
+  let timer = null;
   try {
-    return await handle.exportJsonl();
+    if (typeof handle.sampleCount === 'function' && handle.sampleCount() === 0) return null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(RAW_EXPORT_TIMEOUT_MESSAGE)), timeoutMs);
+    });
+    return await Promise.race([handle.exportJsonl(), timeout]);
   } finally {
+    clearTimeout(timer);
     handle.close?.();
   }
 }
@@ -198,10 +233,21 @@ export async function startCapture({
   const router = createReplyRouter({ onState, onResult, onError });
   const worker = createWorker();
   worker.onmessage = (e) => router.route(e.data);
+  // A worker that fails to load (bad module, missing wasm) or throws outside
+  // its own try/catch fires `error` on the Worker object, not a message.
+  // Unhandled, every pending request waited forever.
+  worker.onerror = (e) => {
+    e?.preventDefault?.();
+    router.failAll(`capture worker crashed: ${e?.message || 'unknown error'}`);
+  };
+  worker.onmessageerror = () => {
+    router.failAll('capture worker sent a message that could not be read');
+  };
   worker.postMessage({ type: 'start', cfg: { beta: 0.041, emaAlpha: 0.5 } });
 
   let buf = new Float64Array(CAP * FLOATS_PER_SAMPLE);
   let n = 0;
+  let total = 0; // samples accepted over the whole capture
 
   const onMotion = (event) => {
     const a = event.accelerationIncludingGravity;
@@ -210,6 +256,7 @@ export async function startCapture({
     if (n >= CAP) return;                    // dropped rather than reallocating mid-handler
     encodeSample(buf, n * FLOATS_PER_SAMPLE, event);
     n++;
+    total++;
   };
 
   const flush = () => {
@@ -246,6 +293,8 @@ export async function startCapture({
 
   return {
     stop,
+    // Motion samples accepted so far (0 = nothing was recorded).
+    sampleCount: () => total,
     // Releases the worker (and its wasm memory). Only for callers that are
     // completely done with the handle -- after close(), exportJsonl() cannot
     // answer. The clinical path keeps its handle for a later export and does

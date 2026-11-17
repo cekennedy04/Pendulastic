@@ -112,3 +112,16 @@ test('even WITH finish, an unscorable reply can no longer swallow the export', w
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(errors, ['unscorable'], 'the unscorable reply is a trial outcome, routed to onError');
 }));
+
+test('an immediate Stop (no samples) saves nothing and still releases the worker', withMotionGlobals(async () => {
+  const log = [];
+  const target = new EventTarget();
+  const handle = await startCapture({
+    onState() {}, onResult() {}, onError() {},
+    createWorker: fakeWorkerFactory(log), target,
+  });
+  assert.equal(await stopAndExportRaw(handle), null);
+  assert.ok(!log.includes('export'), 'nothing to export, so nothing is asked of the worker');
+  assert.ok(!log.includes('finish'));
+  assert.equal(log.worker.terminated, true);
+}));
