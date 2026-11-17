@@ -552,6 +552,12 @@ HOLD_GAIN_LATE_MIN_DEG = 1.0
 # tried, at most 2 more in 66; clean and static-gain rigs, none.
 HOLD_LATE_MAX_DIFF = 0.025
 IDLE_OFFSET_S = 0.5                        # the idle log before the command, for the encoder's zero (_idle_offset)
+# ... and only if the arm was still there: its two halves' medians within IDLE_MAX_DRIFT_DEG and its rms about the
+# median within IDLE_MAX_RMS_DEG. A drifting idle, or one before the controller has the arm, is not a zero: the gains
+# are then taken through zero as before. (Not a peak-to-peak bound: on 0.02 deg of simulated noise the peak-to-peak
+# of 500 samples is already 0.13 deg, and on 0.1 deg of noise it is about 0.6.)
+IDLE_MAX_DRIFT_DEG = 0.1
+IDLE_MAX_RMS_DEG = 0.2
 # The session against the model (review 2026-11-14, section 3). measured / predicted is 1.0 when the identified
 # plant describes the runs. When the runs agree with each other on a ratio that is not 1, that is a statement
 # about the model (or about a fault every run shares), not about any one run: one MODEL MISMATCH FINDING, and
@@ -626,11 +632,15 @@ def _late_gain(t, t_rel, t_log, pos_log, sp_log, fit):
 def _idle_offset(pos_log, sp_log, k0, fs=FS):
     """Encoder zero against the setpoint's zero: the median of position - logged setpoint over the last
     IDLE_OFFSET_S of the log before the command starts (k0), where the logged setpoint does not move. NaN when
-    there is less than half of that. Both gains are taken about it: through zero, a constant offset c reads as a
-    gain error of c over the late window's motion (0.2 deg was 10 hold flags on 132 good runs, 0.5 deg 27)."""
+    there is less than half of that, or when the arm was not still there (IDLE_MAX_DRIFT_DEG, IDLE_MAX_RMS_DEG).
+    Both gains are taken about it: through zero, a constant offset c reads as a gain error of c over the late
+    window's motion (0.2 deg was 10 hold flags on 66 good runs, 0.5 deg 27)."""
     n = int(IDLE_OFFSET_S * fs); lo = max(0, int(k0) - n)
     p = np.asarray(pos_log, float)[lo:int(k0)]; s = np.asarray(sp_log, float)[lo:int(k0)]
     if len(p) < n // 2 or not np.ptp(s) <= 1e-6: return np.nan
+    h = len(p) // 2
+    if not abs(np.median(p[:h]) - np.median(p[h:])) <= IDLE_MAX_DRIFT_DEG: return np.nan
+    if not float(np.sqrt(np.mean((p - np.median(p)) ** 2))) <= IDLE_MAX_RMS_DEG: return np.nan
     return float(np.median(p - s))
 
 

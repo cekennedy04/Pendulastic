@@ -1284,8 +1284,23 @@ def test_the_hold_gain_in_numbers():
     # the encoder's zero, from the idle log before the command: the median of position - setpoint over its last 0.5 s
     assert SS.IDLE_OFFSET_S == 0.5
     idle = np.r_[np.full(1000, 3.0), np.full(500, 0.3)]; sp0 = np.zeros(1500)
-    assert SS._idle_offset(idle, sp0, 1500) == pytest.approx(0.3) and SS._idle_offset(idle, sp0, 1200) == pytest.approx(3.0)
+    assert SS._idle_offset(idle, sp0, 1500) == pytest.approx(0.3) and SS._idle_offset(idle, sp0, 1000) == pytest.approx(3.0)
     assert np.isnan(SS._idle_offset(idle, sp0, 200)) and np.isnan(SS._idle_offset(idle, np.r_[np.zeros(1400), np.ones(100)], 1500))
+    assert (SS.IDLE_MAX_DRIFT_DEG, SS.IDLE_MAX_RMS_DEG) == (0.1, 0.2)
+
+def test_the_encoder_zero_is_taken_only_from_a_still_idle():
+    """Re-review of 1ef9198: an idle that drifts, or one before the controller has the arm, is not a zero. There
+    _idle_offset gives NaN and the gains are taken through zero, as they were before it. Noise is not motion: 0.1 deg
+    rms (five times the dry run's) is still."""
+    sp0 = np.zeros(1500)
+    rng = np.random.default_rng(3); quiet = 0.3 + rng.normal(0, 0.1, 1500)                   # 0.1 deg rms noise is still
+    assert SS._idle_offset(quiet, sp0, 1500) == pytest.approx(0.3, abs=0.02)
+    drift = np.r_[np.full(1000, 0.3), 0.3 + np.linspace(0, 0.25, 500)]                         # creeping 0.25 deg in 0.5 s
+    assert np.isnan(SS._idle_offset(drift, sp0, 1500)) and not np.isnan(SS._idle_offset(drift - np.r_[np.zeros(1000), np.linspace(0, 0.15, 500)], sp0, 1500))
+    ring = np.r_[np.zeros(1000), 0.4 * np.sin(2 * np.pi * 8.0 * np.arange(500) / 1000.0)]      # still swinging (0.28 rms)
+    assert np.isnan(SS._idle_offset(ring, sp0, 1500)) and not np.isnan(SS._idle_offset(ring / 2, sp0, 1500))
+    late = np.r_[np.full(1250, 5.0), np.full(250, 0.3)]                                        # the controller takes the arm 0.25 s before the command
+    assert np.isnan(SS._idle_offset(late, sp0, 1500))
 
 
 @pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 12)])

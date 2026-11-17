@@ -1690,3 +1690,38 @@ Windows, project `.venv`, this worktree, `PYTHONIOENCODING=utf-8`, `OPENBLAS_NUM
 | `python neuromech/designer/parity/run_parity.py` | **PARITY OK**: 355 cases |
 | `python -m neuromech.dryrun --seed 11 --discard` | 9 of 9 in band, scored 9, release flagged 0, tracking flagged 0, exit status 0; tracking 1.00 of predicted (0.98 to 1.01), release +0.2 ms from predicted (-0.0 to +0.3) |
 | line endings | `git diff --stat` equals `git diff --stat --ignore-cr-at-eol` |
+
+### C.13 Review of 1ef9198 (2026-11-17)
+
+**The encoder's zero, only from a still idle.** `_idle_offset` now returns NaN, and the gains are taken through
+zero, when the arm was not still over its 0.5 s idle window. Two conditions:
+
+- the medians of the two halves must agree within 0.1 deg, which catches a drift or the controller taking the arm
+  late;
+- the rms about the median must be within 0.2 deg, which catches an arm still swinging.
+
+The review suggested a peak-to-peak bound of about 0.2 deg. A peak-to-peak bound cannot tell noise from motion:
+500 samples of the dry run's 0.02 deg noise already span 0.13 deg, and 0.1 deg of noise spans about 0.6.
+
+`test_the_encoder_zero_is_taken_only_from_a_still_idle` covers four idles:
+
+| idle | `_idle_offset` |
+|---|---|
+| 0.1 deg rms noise | still, reads the offset |
+| creep of 0.25 deg over the window | NaN |
+| creep of 0.10 deg | still |
+| 8 Hz ring of 0.28 rms | NaN |
+| ring of 0.14 rms | still |
+| arm 5 deg away until 0.25 s before the command | NaN |
+
+The offset probe of C.11 was re-run with the guard: unchanged. At 0.2 / 0.5 / 1.0 deg no run is hold-flagged and 8 / 43 / 57 of 66 are flagged in all, because the simulated idle is still and the guard does not fire.
+
+`origin/main` was merged into the branch with a merge commit, not a rebase. The only conflict was STATUS.md:
+main's content was kept, with this workstream's update.
+
+Gates: on the merged tree, after `python -m neuromech.build`:
+
+- `pytest neuromech/tests`: **277 passed, 9 skipped** (286 collected: main brought the phone-trial tests, which skip without a local wasm build).
+- Parity: PARITY OK, 355 cases.
+- Dry run, seed 11: 9 of 9 in band, 0 flagged, exit 0, tracking 1.00 of predicted.
+- Line endings: clean..

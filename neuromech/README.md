@@ -211,7 +211,9 @@ Apart from its first row, the table predates the late-gain gate and the hold che
 a 0.3 Hz dipole of −3 % (none before), 9 on a 0.1 Hz dipole of −5 % (53 to 62), 3 on a 1 Hz dipole of −5 %, at
 most 2 on each other rig tried, and none on a clean rig or a static gain. Both gains are taken about the
 encoder's zero as the idle log before the command shows it (`enc_idle_offset_deg`, the median of position minus
-setpoint over the last 0.5 s before the command). Without that, a constant encoder offset of 0.2° hold-flagged 10
+setpoint over the last 0.5 s before the command, taken only if the arm was still there: the medians of
+the two halves within 0.1° and the rms about the median within 0.2°. A drifting idle, or one before the controller
+has the arm, gives NaN, and the gains are then taken through zero). Without that, a constant encoder offset of 0.2° hold-flagged 10
 good runs of 66 and 0.5° hold-flagged 27. With it, none at 0.2, 0.5 or 1.0°.
 
 Not covered, in bold above: nonlinearity strong enough to move the release itself (the release check then
@@ -387,7 +389,7 @@ score sits about 0.05 above them on the same motion; that gap is printed, not ju
 ## Tests
 
 ```bash
-python -m pytest neuromech/tests                                    # 272 tests
+python -m pytest neuromech/tests                                    # 286 tests (9 skip without a local wasm build)
 node neuromech/labview/verify_formula_node.js                       # Formula Node vs Python, 1e-11
 ```
 
