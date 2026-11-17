@@ -117,8 +117,8 @@ def oscillation_metrics(t, x, prom_frac=0.05, floor_frac=0.05, floor_abs_deg=0.5
     ring = idx[start + 1:]                                 # oscillation after release
     if len(ring) < 3:
         return nan
-    tr = _refine_extrema_times(t, x, ring)
-    mr = np.abs(x[ring])
+    tr, yr = _refine_extrema(t, x, ring)
+    mr = np.abs(yr)
     half_T = np.median(np.diff(tr))
     f = 1.0 / (2.0 * half_T) if half_T > 0 else np.nan
     floor = max(floor_frac * mr[0], floor_abs_deg)
@@ -135,14 +135,16 @@ def oscillation_metrics(t, x, prom_frac=0.05, floor_frac=0.05, floor_abs_deg=0.5
     return dict(f=f, N=N, tau=tau, zeta=zeta, A0=float(mr[0]), n_ext=len(ring))
 
 
-def _refine_extrema_times(t, x, idx):
-    """Sub-sample extremum times by a 3-point parabola through each peak.
+def _refine_extrema(t, x, idx):
+    """Sub-sample extremum times AND heights from a 3-point parabola through each peak.
 
     The phone gyro arrives at ~60 Hz, so a 4-5 Hz ring has only 6-7 samples per
-    half-period and raw extremum times quantise f by several percent. The encoder
-    (1 kHz) is barely affected; both sides still go through the same code.
+    half-period: raw extremum times quantise f by several percent and raw heights
+    under-read the envelope. The encoder (1 kHz) is barely affected; both sides still
+    go through the same code.
     """
-    out = t[idx].astype(float)
+    tt = t[idx].astype(float)
+    yy = x[idx].astype(float)
     for k, i in enumerate(idx):
         if 0 < i < len(x) - 1:
             y0, y1, y2 = x[i - 1], x[i], x[i + 1]
@@ -150,8 +152,9 @@ def _refine_extrema_times(t, x, idx):
             if den != 0:
                 d = 0.5 * (y0 - y2) / den
                 if abs(d) <= 1:
-                    out[k] = t[i] + d * (t[i + 1] - t[i - 1]) / 2
-    return out
+                    tt[k] = t[i] + d * (t[i + 1] - t[i - 1]) / 2
+                    yy[k] = y1 - 0.25 * (y0 - y2) * d
+    return tt, yy
 
 
 def find_steps(t, pos, vel, min_step_deg=3.0, vel_frac=0.3, min_vel=20.0):
@@ -223,28 +226,56 @@ def trial_num(p):
     return int(runs[-1]) if runs else 0
 
 
-def xcorr_align(tp, ap, te, pe, dt=0.01):
-    """Align phone angle vs encoder position (both polarities).
+def release_time(te, pe):
+    """Encoder instant of the fastest motion (the release of a Fast Trial; the first
+    fast step of a staircase), from a lightly smoothed position derivative."""
+    dt = float(np.median(np.diff(te)))
+    k = max(1, int(0.02 / dt))
+    sm = np.convolve(pe, np.ones(k) / k, mode="same")
+    v = np.abs(np.gradient(sm, te))
+    v[:k] = 0
+    v[-k:] = 0
+    return float(te[int(np.argmax(v))])
+
+
+def xcorr_align(tp, ap, te, pe, dt=0.01, sign=None):
+    """Align phone angle vs encoder position.
 
     Returns (quality, lag, sign) where phone_time = encoder_time + lag and
     sign * phone ~ encoder. To draw the phone in the encoder frame use
-    (tp - lag, sign * ap).
+    (tp - lag, sign * ap). `sign` fixes the polarity (use one per session: a
+    staircase is nearly its own flipped, one-step-shifted copy, so a free per-trial
+    polarity can lock onto the wrong one); None tries both.
+
+    The lag comes from whole-trace cross-correlation. The returned QUALITY is the
+    Pearson correlation over the encoder's post-release segment only (release - 0.3 s
+    to the end of the overlap), so a Fast Trial's lift/hold plateau -- the same at
+    every P -- cannot make a wrong-P pair look good.
     """
     gp = np.arange(0, min(tp[-1], te[-1]), dt)
     A = np.interp(gp, tp, ap)
     B0 = np.interp(gp, te, pe)
     if len(A) < 10:
-        return -1.0, 0.0, 1
+        return -1.0, 0.0, sign or 1
     A = A - A.mean()
     best = None
-    for s in (1, -1):
+    for s in ((1, -1) if sign is None else (sign,)):
         B = s * B0 - (s * B0).mean()
         xc = np.correlate(A, B, mode="full")
         i = int(np.argmax(xc))
         q = float(xc[i] / (np.linalg.norm(A) * np.linalg.norm(B) + 1e-9))
         if best is None or q > best[0]:
             best = (q, (i - (len(B) - 1)) * dt, s)
-    return best
+    _, lag, s = best
+    t0 = release_time(te, pe) - 0.3
+    g = np.arange(max(t0, te[0], tp[0] - lag), min(te[-1], tp[-1] - lag), dt)
+    if len(g) < 20:
+        return -1.0, lag, s
+    e = np.interp(g, te, pe)
+    ph = s * np.interp(g + lag, tp, ap)
+    if np.std(e) < 1e-9 or np.std(ph) < 1e-9:
+        return -1.0, lag, s
+    return float(np.corrcoef(e, ph)[0, 1]), lag, s
 
 
 def list_encoders(enc_dir, glob_pat="*.bin", min_num=None, max_num=None):
@@ -257,18 +288,27 @@ def list_encoders(enc_dir, glob_pat="*.bin", min_num=None, max_num=None):
     return encs
 
 
-def pair_by_order(phones, encs, window=3, min_q=0.2, gap=0.15):
+def pair_by_order(phones, encs, window=3, min_q=0.2, gap_open=0.3, gap_ext=0.02, sign=None,
+                  unverified=-0.1):
     """One-to-one pairing of capture-ordered phone traces with trial-ordered encoders.
+
+    Use this only when there is NO rig log. With a log, pair from the log
+    (bench_session_report does) and let cross-correlation verify.
 
     phones: list of (key, (t, angle, rate) or None) in capture order.
     encs:   list of encoder paths in trial order.
-    Both lists are chronological, so the matching is a MONOTONE alignment (dynamic
-    programming, like sequence alignment): it maximises the summed cross-correlation
-    quality, may skip a trial on either side (a capture with no encoder log, an
-    encoder log with no phone export), never claims an encoder file twice, and
-    never crosses -- identical staircases cannot swap partners on a noisy score.
-    Candidates are encoders within +/-window of the same rank; pairs with quality
-    below `min_q` are not matched.
+    Both lists are chronological, so the matching is a MONOTONE alignment (sequence
+    alignment with affine gaps): it maximises the summed post-release correlation,
+    may skip a trial on either side, never claims an encoder file twice, and never
+    crosses. Every run of skips -- interior OR at either end -- costs `gap_open`
+    (+ `gap_ext` per extra trial), so a trial missing mid-session is skipped where
+    the correlation says rather than by sliding the rest of the run off the end, and
+    a contiguous encoder range is preferred over an interleaved one.
+    Candidates are encoders within +/-window of the same rank (widened by any count
+    mismatch). A pair with quality below `min_q` scores `unverified` instead of its
+    quality: it is kept only where skipping both sides would cost more, and comes back
+    with its real (low) quality so the caller can flag it. `sign` fixes the polarity
+    for every pair (see xcorr_align).
     Returns {phone_key: (enc_path, quality, lag, sign)}.
     """
     cache = {}
@@ -282,8 +322,6 @@ def pair_by_order(phones, encs, window=3, min_q=0.2, gap=0.15):
         return cache[j]
 
     n_p, n_e = len(phones), len(encs)
-    # a count mismatch (extra captures, a filtered encoder range) shifts the diagonal;
-    # widen the band by it -- the monotone constraint keeps the wider band safe
     window = window + abs(n_p - n_e)
     cand = {}
     for i, (key, pg) in enumerate(phones):
@@ -294,43 +332,66 @@ def pair_by_order(phones, encs, window=3, min_q=0.2, gap=0.15):
             e = _enc(j)
             if e is None:
                 continue
-            q, lag, sign = xcorr_align(tp, ap, e[0], e[1])
-            if q >= min_q:
-                cand[(i, j)] = (q, lag, sign)
-    # Semi-global alignment: S[i][j] = best score using phones[:i] and encs[:j].
-    # Leading/trailing skips are free (an encoder range that covers only part of the
-    # session); each interior skip costs `gap`, so a contiguous run of identical
-    # trials is preferred over an interleaved one.
-    S = np.zeros((n_p + 1, n_e + 1))
-    move = np.zeros((n_p + 1, n_e + 1), dtype=np.int8)     # 0 skip phone, 1 skip enc, 2 match
-    for i in range(1, n_p + 1):
-        for j in range(1, n_e + 1):
-            best, mv = S[i - 1, j] - gap, 0
-            if S[i, j - 1] - gap > best:
-                best, mv = S[i, j - 1] - gap, 1
-            c = cand.get((i - 1, j - 1))
-            if c is not None and S[i - 1, j - 1] + c[0] > best:
-                best, mv = S[i - 1, j - 1] + c[0], 2
-            S[i, j], move[i, j] = best, mv
-    # free trailing skips: start the traceback from the best cell on the last row/col
-    ends = [(S[n_p, j], n_p, j) for j in range(n_e + 1)] + [(S[i, n_e], i, n_e) for i in range(n_p + 1)]
-    _, i, j = max(ends, key=lambda e: (e[0], -abs(e[1] - e[2])))
-    out = {}
-    while i > 0 and j > 0:
-        mv = move[i, j]
-        if mv == 2:
-            q, lag, sign = cand[(i - 1, j - 1)]
-            out[phones[i - 1][0]] = (encs[j - 1], q, lag, sign)
+            q, lag, sg = xcorr_align(tp, ap, e[0], e[1], sign=sign)
+            cand[(i, j)] = (q, lag, sg)
+    NEG = -1e18
+    # three-state (Gotoh) DP: M ends in a match, P ends skipping a phone, E an encoder
+    M = np.full((n_p + 1, n_e + 1), NEG)
+    P = np.full((n_p + 1, n_e + 1), NEG)
+    E = np.full((n_p + 1, n_e + 1), NEG)
+    M[0, 0] = 0.0
+    bt = {}
+    for i in range(n_p + 1):
+        for j in range(n_e + 1):
+            if i and j:
+                c = cand.get((i - 1, j - 1))
+                if c is not None:
+                    prev = max((M[i - 1, j - 1], "M"), (P[i - 1, j - 1], "P"), (E[i - 1, j - 1], "E"))
+                    if prev[0] > NEG / 2:
+                        # a pair below min_q may still sit on the alignment (one cheap
+                        # unverified step beats a skip on each side); it is reported, and
+                        # the report flags it
+                        M[i, j] = prev[0] + (c[0] if c[0] >= min_q else unverified)
+                        bt[("M", i, j)] = prev[1]
+            if i:
+                v = max((M[i - 1, j] - gap_open, "M"), (E[i - 1, j] - gap_open, "E"),
+                        (P[i - 1, j] - gap_ext, "P"))
+                if v[0] > NEG / 2:
+                    P[i, j] = v[0]
+                    bt[("P", i, j)] = v[1]
+            if j:
+                v = max((M[i, j - 1] - gap_open, "M"), (P[i, j - 1] - gap_open, "P"),
+                        (E[i, j - 1] - gap_ext, "E"))
+                if v[0] > NEG / 2:
+                    E[i, j] = v[0]
+                    bt[("E", i, j)] = v[1]
+    state = max((M[n_p, n_e], "M"), (P[n_p, n_e], "P"), (E[n_p, n_e], "E"))[1]
+    out, i, j = {}, n_p, n_e
+    while i > 0 or j > 0:
+        prev = bt[(state, i, j)]
+        if state == "M":
+            q, lag, sg = cand[(i - 1, j - 1)]
+            out[phones[i - 1][0]] = (encs[j - 1], q, lag, sg)
             i, j = i - 1, j - 1
-        elif mv == 1:
-            j -= 1
-        else:
+        elif state == "P":
             i -= 1
+        else:
+            j -= 1
+        state = prev
     return out
 
 
+def session_polarity(pairs):
+    """One polarity for the whole session: quality-weighted majority of the per-pair
+    signs in {key: (enc, q, lag, sign)}. The phone sits the same way on the arm for
+    every trial, so a per-trial flip is an alignment error, not physics."""
+    w = sum(v[1] * v[3] for v in pairs.values() if np.isfinite(v[1]) and v[1] > 0)
+    return 1 if w >= 0 else -1
+
+
 def pair_trials(manifest, enc_dir, glob_pat="*.bin", window=3, num_range=None):
-    """Back-compatible entry point: [(phone_path, enc_path, quality, lag), ...]."""
+    """CLI entry point: [(phone_path, enc_path, quality, lag, sign), ...] by capture order
+    (no rig log), with one session polarity."""
     base = os.path.dirname(manifest)
     with open(manifest, encoding="utf-8") as fh:
         man = json.load(fh)
@@ -342,7 +403,9 @@ def pair_trials(manifest, enc_dir, glob_pat="*.bin", window=3, num_range=None):
         raise SystemExit(f"no encoder files matching {glob_pat!r} in {enc_dir}")
     phones = [(pf, phone_gyro(pf) if os.path.exists(pf) else None) for pf in phone_files]
     m = pair_by_order(phones, encs, window)
-    return [(pf, m[pf][0], m[pf][1], m[pf][2]) for pf, _ in phones if pf in m]
+    if m:                                    # second pass with one session polarity
+        m = pair_by_order(phones, encs, window, sign=session_polarity(m))
+    return [(pf, m[pf][0], m[pf][1], m[pf][2], m[pf][3]) for pf, _ in phones if pf in m]
 
 
 # ── modes ───────────────────────────────────────────────────────────────────
@@ -351,21 +414,34 @@ def level(t, x, lo, hi):
     return float(np.median(x[m])) if m.any() else np.nan
 
 
-def score_ringdown(pg, enc):
-    """Phone/encoder ring-down metrics for one paired trial."""
-    ph = oscillation_metrics(pg[0], pg[1])
-    en = oscillation_metrics(enc[0], enc[1])
+def score_ringdown(pg, enc, lag=None):
+    """Phone/encoder ring-down metrics for one paired trial.
+
+    With `lag` (phone_time = encoder_time + lag) both sides are cut to the window
+    they BOTH recorded, so a phone that stopped early (the app's 5 s-still
+    auto-stop) or an encoder log that ran on cannot score different stretches."""
+    tp, ap = np.asarray(pg[0]), np.asarray(pg[1])
+    te, pe = np.asarray(enc[0]), np.asarray(enc[1])
+    if lag is not None:
+        lo, hi = max(te[0], tp[0] - lag), min(te[-1], tp[-1] - lag)
+        mp = (tp - lag >= lo) & (tp - lag <= hi)
+        me = (te >= lo) & (te <= hi)
+        if mp.sum() >= 20 and me.sum() >= 20:
+            tp, ap, te, pe = tp[mp], ap[mp], te[me], pe[me]
+    ph = oscillation_metrics(tp, ap)
+    en = oscillation_metrics(te, pe)
     return dict(phone_f=ph["f"], enc_f=en["f"], df_pct=pct(ph["f"], en["f"]),
                 phone_N=ph["N"], enc_N=en["N"],
                 phone_tau=ph["tau"], enc_tau=en["tau"],
                 phone_zeta=ph["zeta"], enc_zeta=en["zeta"])
 
 
-def score_steps(pg, enc, lag):
+def score_steps(pg, enc, lag, sign=1):
     """Per-step rows. Steps are detected on the ENCODER (clean truth); the phone
     transient is evaluated at those same instants (phone t0 = enc t_start + lag), with
     the phone's own settled levels. This avoids false steps from integrated-gyro drift."""
     tpp, app, _ = pg
+    app = sign * np.asarray(app, float)                   # session polarity
     te, pe, ev = enc
     rows = []
     for k, es in enumerate(find_steps(te, pe, ev), 1):
@@ -374,9 +450,10 @@ def score_steps(pg, enc, lag):
         p_frm = level(tpp, app, p0 - 0.5, p0 - 0.1)
         p_to = level(tpp, app, p0 + 1.5, p0 + 2.8)        # settled part of the 3 s dwell
         pm = step_metrics(tpp, app, p_frm, p_to, p0)
-        # guard: if the phone step doesn't match the encoder's, the alignment failed
-        # for this step -- don't report a bogus transient (a sync tap prevents this).
-        if not (np.isfinite(pm["step"]) and abs(pm["step"]) > 0.5 * abs(em["step"])):
+        # guard: the phone step must have the encoder's sign and size (0.8-1.25x);
+        # otherwise the alignment failed for this step -- don't report a transient.
+        ratio = pm["step"] / em["step"] if em["step"] else np.nan
+        if not (np.isfinite(ratio) and 0.8 <= ratio <= 1.25):
             pm = dict(rise=np.nan, overshoot=np.nan, settle=np.nan, step=pm["step"])
         rows.append(dict(step=k, enc_step_deg=round(em["step"], 1),
                          phone_step_deg=round(pm["step"], 1) if np.isfinite(pm["step"]) else np.nan,
@@ -388,9 +465,9 @@ def score_steps(pg, enc, lag):
 
 def run_ringdown(pairs, out, plot):
     rows = []
-    for rank, (pf, ef, q, lag) in enumerate(pairs, 1):
+    for rank, (pf, ef, q, lag, _sign) in enumerate(pairs, 1):
         r = dict(rank=rank, enc_file=os.path.basename(ef), match_q=round(q, 3))
-        r.update(score_ringdown(phone_gyro(pf), encoder(ef)))
+        r.update(score_ringdown(phone_gyro(pf), encoder(ef), lag))
         rows.append(r)
     write_csv(out, rows)
     pf_, ef_ = paired(rows, "phone_f", "enc_f")
@@ -408,8 +485,8 @@ def run_ringdown(pairs, out, plot):
 
 def run_step(pairs, out, plot):
     rows = []
-    for rank, (pf, ef, q, lag) in enumerate(pairs, 1):
-        for r in score_steps(phone_gyro(pf), encoder(ef), lag):
+    for rank, (pf, ef, q, lag, sign) in enumerate(pairs, 1):
+        for r in score_steps(phone_gyro(pf), encoder(ef), lag, sign):
             rows.append(dict(rank=rank, enc_file=os.path.basename(ef), **r))
     write_csv(out, rows)
     print(f"\nStep dynamics: {len(rows)} steps over {len(pairs)} trials")
@@ -462,10 +539,9 @@ def _plot_grid(pairs, out, title, ringdown, n=6):
     import matplotlib.pyplot as plt
     pick = pairs[:: max(1, len(pairs) // n)][:n]
     fig, axes = plt.subplots(2, 3, figsize=(17, 8))
-    for ax, (pf, ef, q, lag) in zip(axes.ravel(), pick):
+    for ax, (pf, ef, q, lag, sign) in zip(axes.ravel(), pick):
         pg = phone_gyro(pf)
         te, pe, _ = encoder(ef)
-        _, _, sign = xcorr_align(pg[0], pg[1], te, pe)
         ax.plot(te, pe, color="#14212B", lw=1.4, label="encoder (truth)")
         ax.plot(pg[0] - lag, sign * pg[1], color="#00819C", lw=1.0, label="phone gyro (aligned)")
         label = os.path.basename(ef)
@@ -500,7 +576,7 @@ def main(argv=None):
     pairs = pair_trials(a.manifest, a.encoder_dir, a.glob, a.window, (a.min_num, a.max_num))
     lowq = sum(1 for p in pairs if p[2] < 0.5)
     print(f"paired {len(pairs)} phone<->encoder trials (verify enc_file in the CSV)"
-          + (f"; {lowq} with low match confidence (<0.5) -- check those rows / use the sync tap"
+          + (f"; {lowq} with low match confidence (<0.5) -- check those rows"
              if lowq else ""))
     (run_ringdown if a.mode == "ringdown" else run_step)(pairs, a.out, a.plot)
     return 0

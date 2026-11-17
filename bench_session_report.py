@@ -18,15 +18,25 @@ report the app's fused angle or PT score as an accuracy number: on a horizontal 
 gravity lies on the rotation axis and the fused angle is not assessable. The app's own
 f / N are carried in trials.csv as `app_fused_*` diagnostics only.
 
-Pairing: phone trials are ordered by manifest capture timestamp (export trial numbers
-can be scrambled), encoder files by their Trial<NN> number, then matched one-to-one
-within +/- --window by angle cross-correlation. Check `match_q` (>=0.5) and `enc_file`.
+Pairing. Phone trials are ordered by manifest capture timestamp (export trial numbers
+can be scrambled).
+  * With --rig-log (recommended): the log IS the pairing. Rows whose app_result starts
+    with ERROR (the app saved nothing) are dropped, the rest are taken in encoder-trial
+    order and paired in sequence with the exported phone trials. Cross-correlation
+    only measures the lag and verifies; a count mismatch is reported.
+  * Without a log: a monotone sequence alignment on post-release cross-correlation
+    (bench_dynamics.pair_by_order). It can tell different P values apart, but NOT
+    repeats of one condition, so a missing trial may be skipped at the wrong repeat.
+Either way one polarity is used for the whole session (majority vote, or
+--polarity). Rows are flagged when match_q < 0.5 or, for ring-downs, when phone and
+encoder f differ by more than 10 % (a likely mis-pair). Check the `flag` column.
 
-Block (ringdown vs step) comes from the rig log when given, else is inferred from the
-encoder trace (a ring-down crosses zero many times; the staircase only twice).
+Block (ringdown vs step) comes from --block, else the rig log (R/ring/ringdown,
+S/step), else is inferred from the encoder trace (two-sided holds = staircase).
 
-Rig log (optional CSV, one row per encoder file; extra columns are carried through):
-  encoder_trial,block,P,I,D,lift,release,step_speed,notes
+Rig log (CSV, one row per encoder file, ERROR trials included; extra columns are
+carried through):
+  encoder_trial,block,P,I,D,lift,release,step_speed,app_result,notes
 """
 from __future__ import annotations
 
@@ -86,11 +96,15 @@ def load_phone(spec, since=None):
             for p in sorted(glob.glob(os.path.join(spec, "*.jsonl")), key=bd.trial_num):
                 if not os.path.basename(p).startswith("_DUP_"):
                     trials.append(_trial_entry(p, {"timestamp": os.path.getmtime(p) * 1000}))
+    seen = set()
     for m in manifests:
         with open(m, encoding="utf-8") as fh:
             man = json.load(fh)
         base = os.path.dirname(m)
         for t in man.get("trials", []):
+            if t["file"] in seen:                          # same trial in two manifests
+                continue
+            seen.add(t["file"])
             trials.append(_trial_entry(os.path.join(base, t["file"]), t, man))
     if since:
         cut = dt.datetime.fromisoformat(since).timestamp() * 1000
@@ -104,19 +118,91 @@ def load_phone(spec, since=None):
 
 
 # ── rig log ────────────────────────────────────────────────────────────────────
+BLOCK_ALIASES = {"r": "ringdown", "ring": "ringdown", "ringdown": "ringdown",
+                 "ring-down": "ringdown", "s": "step", "step": "step", "steps": "step"}
+
+
+def normalize_block(v, where=""):
+    """'R'/'ring'/'ringdown' -> 'ringdown', 'S'/'step' -> 'step', '' -> None."""
+    v = (v or "").strip().lower()
+    if not v:
+        return None
+    if v not in BLOCK_ALIASES:
+        raise SystemExit(f"unknown block {v!r}{where}: use R/ring/ringdown or S/step")
+    return BLOCK_ALIASES[v]
+
+
+def pkey(v):
+    """'1', '1.0', ' 1 ' -> '1'; non-numbers pass through stripped."""
+    x = _num(v)
+    return f"{x:g}" if np.isfinite(x) else (v or "").strip()
+
+
 def load_rig_log(path):
-    """{encoder trial number: row dict}. `encoder_trial` may be a number or a filename."""
+    """Rig-log rows in encoder-trial order, each with `_trial` (int), `_block`,
+    `_error` (app_result starts with ERROR) and `_unscorable`. UTF-8 (with or without
+    BOM) first, then Windows cp1252 (Excel's "CSV" save)."""
     if not path:
-        return {}
-    out = {}
-    with open(path, newline="", encoding="utf-8-sig") as fh:
-        for row in csv.DictReader(fh):
-            key = (row.get("encoder_trial") or row.get("encoder_file") or "").strip()
-            if not key:
-                continue
-            n = int(key) if key.isdigit() else bd.trial_num(key)
-            out[n] = {k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
-    return out
+        return []
+    text = None
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            with open(path, newline="", encoding=enc) as fh:
+                text = fh.read()
+            break
+        except UnicodeDecodeError:
+            continue
+    rows = []
+    for i, row in enumerate(csv.DictReader(text.splitlines()), 2):
+        row = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+        key = row.get("encoder_trial") or row.get("encoder_file") or ""
+        if not key:
+            continue
+        row["_trial"] = int(key) if key.isdigit() else bd.trial_num(key)
+        row["_block"] = normalize_block(row.get("block"), f" on {os.path.basename(path)} line {i}")
+        res = (row.get("app_result") or "").strip().upper()
+        row["_error"] = res.startswith("ERROR")
+        row["_unscorable"] = "NOT SCORABLE" in res or res == "UNSCORABLE"
+        for k in ("P", "step_speed"):
+            if k in row:
+                row[k] = pkey(row[k])
+        rows.append(row)
+    rows.sort(key=lambda r: r["_trial"])
+    return rows
+
+
+def pair_from_log(trials, gyro, encs, log_rows, polarity=None):
+    """Pair exported phone trials (capture order) with the logged, non-ERROR encoder
+    trials (trial order) in sequence. Cross-correlation measures lag and verifies only.
+    Returns (pairs {phone_path: (enc, q, lag, sign)}, notes [str])."""
+    by_num = {bd.trial_num(e): e for e in encs}
+    notes = []
+    usable = [r for r in log_rows if not r["_error"]]
+    absent = [r["_trial"] for r in usable if r["_trial"] not in by_num]
+    if absent:
+        notes.append(f"logged encoder trials with no .bin found: {absent}")
+    usable = [r for r in usable if r["_trial"] in by_num]
+    phones = [t for t in trials if gyro.get(t["path"]) is not None]
+    if len(phones) != len(usable):
+        notes.append(f"COUNT MISMATCH: {len(phones)} exported phone trials vs {len(usable)} "
+                     f"logged non-ERROR encoder trials -- pairing stops at the shorter list; "
+                     f"fix the log (missing row? ERROR not marked?) before trusting it")
+    seq = list(zip(phones, usable))
+
+    def _align(sign):
+        out = {}
+        for t, r in seq:
+            pg = gyro[t["path"]]
+            ef = by_num[r["_trial"]]
+            te, pe, _ = bd.encoder(ef)
+            q, lag, sg = bd.xcorr_align(pg[0], pg[1], te, pe, sign=sign)
+            out[t["path"]] = (ef, q, lag, sg)
+        return out
+
+    pairs = _align(polarity)
+    if polarity is None and pairs:
+        pairs = _align(bd.session_polarity(pairs))
+    return pairs, notes
 
 
 def infer_block(enc, hold_s=0.5, still_deg=1.0, far_frac=0.3):
@@ -145,20 +231,37 @@ def _num(v):
 
 # ── analysis ───────────────────────────────────────────────────────────────────
 def analyze(phone, enc_dir, out, glob_pat="*.bin", min_num=None, max_num=None,
-            rig_log=None, window=3, since=None, block=None):
+            rig_log=None, window=3, since=None, block=None, polarity=None):
     os.makedirs(out, exist_ok=True)
+    block = normalize_block(block, " (--block)")
     trials = load_phone(phone, since)
     if not trials:
         raise SystemExit(f"no phone trials found in {phone}")
     encs = bd.list_encoders(enc_dir, glob_pat, min_num, max_num)
     if not encs:
         raise SystemExit(f"no non-empty encoder files matching {glob_pat!r} in {enc_dir}")
-    log = load_rig_log(rig_log)
+    log_rows = load_rig_log(rig_log)
+    log = {r["_trial"]: r for r in log_rows}
 
     gyro = {}
     for t in trials:
         gyro[t["path"]] = bd.phone_gyro(t["path"]) if t["exported"] else None
-    pairs = bd.pair_by_order([(t["path"], gyro[t["path"]]) for t in trials], encs, window)
+    if log_rows:
+        pairs, notes = pair_from_log(trials, gyro, encs, log_rows, polarity)
+        method = "rig log (sequence; cross-correlation verifies)"
+    else:
+        phones = [(t["path"], gyro[t["path"]]) for t in trials]
+        pairs = bd.pair_by_order(phones, encs, window, sign=polarity)
+        if polarity is None and pairs:
+            pairs = bd.pair_by_order(phones, encs, window, sign=bd.session_polarity(pairs))
+        method = "capture order + post-release cross-correlation (no rig log)"
+        notes = []
+        if len(pairs) != len(encs) or len(pairs) != len([t for t in trials if gyro[t["path"]]]):
+            notes.append("phone and encoder counts differ: without a rig log a missing trial "
+                         "cannot be placed among repeats of one condition -- pass --rig-log")
+    signs = {v[3] for v in pairs.values()}
+    session = dict(method=method, notes=notes,
+                   polarity=(signs.pop() if len(signs) == 1 else "mixed") if signs else "-")
 
     rows, step_rows, keep = [], [], {}
     for t in trials:
@@ -175,27 +278,32 @@ def analyze(phone, enc_dir, out, glob_pat="*.bin", min_num=None, max_num=None,
         enc = bd.encoder(ef)
         n = bd.trial_num(ef)
         lr = log.get(n, {})
-        blk = block or (lr.get("block") or "").lower() or infer_block(enc)
-        if blk.startswith("ring"):
-            blk = "ringdown"
+        blk = block or lr.get("_block") or infer_block(enc)
         r.update(enc_file=os.path.basename(ef), enc_trial=n, match_q=round(q, 3),
                  lag_s=round(lag, 3), polarity=sign, block=blk)
-        for k in ("P", "I", "D", "lift", "release", "step_speed", "notes"):
+        for k in ("P", "I", "D", "lift", "release", "step_speed", "app_result", "notes"):
             if k in lr:
                 r[k] = lr[k]
         pg = gyro[t["path"]]
+        flags = []
+        if q < 0.5:
+            flags.append("low match_q")
         if blk == "ringdown":
-            r.update(bd.score_ringdown(pg, enc))
+            r.update(bd.score_ringdown(pg, enc, lag))
+            if np.isfinite(r["df_pct"]) and abs(r["df_pct"]) > 10:
+                flags.append("f differs >10% (likely mis-pair)")
         else:
-            srows = bd.score_steps(pg, enc, lag)
-            for s in srows:
+            srows = bd.score_steps(pg, enc, lag, sign)
+            for st in srows:
                 step_rows.append(dict(capture_rank=t["capture_rank"], enc_file=r["enc_file"],
-                                      step_speed=lr.get("step_speed", ""), **s))
+                                      step_speed=lr.get("step_speed", ""), **st))
             r["n_steps"] = len(srows)
+            r["n_steps_rejected"] = int(np.sum(~np.isfinite(bd.col(srows, "phone_over"))))
             for a in ("phone_over", "enc_over", "phone_rise", "enc_rise",
                       "phone_settle", "enc_settle"):
                 v = bd.col(srows, a)
                 r[a] = float(np.nanmedian(v)) if np.isfinite(v).any() else np.nan
+        r["flag"] = "; ".join(flags)
         keep[t["path"]] = (pg, enc, q, lag, sign, r)
         rows.append(r)
 
@@ -203,7 +311,7 @@ def analyze(phone, enc_dir, out, glob_pat="*.bin", min_num=None, max_num=None,
     if step_rows:
         bd.write_csv(os.path.join(out, "steps.csv"), step_rows)
     figs = make_figures(rows, keep, out)
-    md = summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir)
+    md = summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir, log_rows, session)
     with open(os.path.join(out, "summary.md"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(md)
     print(md)
@@ -214,7 +322,8 @@ def _fmt(v, nd=2):
     return "-" if v is None or not np.isfinite(v) else f"{v:.{nd}f}"
 
 
-def summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir):
+def summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir,
+                     log_rows=(), session=None):
     L = ["# Bench session: phone app vs encoder", ""]
     L.append(f"- Phone export: `{phone}`  ({len(trials)} trials)")
     L.append(f"- Encoder: `{enc_dir}`  ({len(encs)} non-empty .bin files)")
@@ -239,17 +348,42 @@ def summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir):
         L.append("capture_quality: " + ", ".join(f"{k} x{v}" for k, v in cq.items()))
     if ar:
         L.append("analysis_refusal: " + ", ".join(f"{k} x{v}" for k, v in ar.items()))
-    L += ["", "App faults (ERROR screen) are not saved or exported: count them from the run log.",
-          "Research-mode recordings are never scored, so they are not counted as refusals."]
+    L += ["", "Research-mode recordings are never scored, so they are not counted as refusals."]
+    if log_rows:
+        by_trial = {r.get("enc_trial"): r for r in rows if r.get("enc_trial") is not None}
+        groups = {}
+        for lr in log_rows:
+            cond = (f"ring-down P={lr.get('P', '?')}" if lr["_block"] == "ringdown"
+                    else f"step speed={lr.get('step_speed', '?')}" if lr["_block"] == "step"
+                    else "(block not logged)")
+            groups.setdefault(cond, []).append(lr)
+        L += ["", "From the rig log (ERROR trials are not saved or exported, so the log is "
+                  "their only record):", "",
+              "| condition | logged | ERROR | NOT SCORABLE (log) | not scored (export) |",
+              "|---|---|---|---|---|"]
+        for cond, g in groups.items():
+            exp_ns = sum(1 for lr in g if by_trial.get(lr["_trial"], {}).get("scored") is False
+                         and not by_trial.get(lr["_trial"], {}).get("research"))
+            L.append(f"| {cond} | {len(g)} | {sum(lr['_error'] for lr in g)} | "
+                     f"{sum(lr['_unscorable'] for lr in g)} | {exp_ns} |")
+    else:
+        L += ["App faults (ERROR screen) are not saved or exported: pass --rig-log with an "
+              "app_result column to count them."]
 
     paired = [r for r in rows if r.get("enc_file")]
-    lowq = [r for r in paired if r["match_q"] < 0.5]
+    flagged = [r for r in paired if r.get("flag")]
+    session = session or {}
     L += ["", "## Pairing", "",
+          f"Method: {session.get('method', '-')}. Session polarity: {session.get('polarity', '-')}.",
+          "",
           f"{len(paired)} of {len(trials)} phone trials paired to an encoder file; "
-          f"{len(encs) - len(paired)} encoder files unpaired; "
-          f"{len(lowq)} pairs with match_q < 0.5"
-          + (" (check: " + ", ".join(f"rank {r['capture_rank']}" for r in lowq) + ")" if lowq else "")
-          + "."]
+          f"{len(encs) - len(paired)} encoder files unpaired; {len(flagged)} flagged."]
+    for n in session.get("notes", []):
+        L += ["", f"**{n}**"]
+    if flagged:
+        L += ["", "| capture rank | encoder trial | match_q | flag |", "|---|---|---|---|"]
+        L += [f"| {r['capture_rank']} | {r['enc_trial']} | {r['match_q']} | {r['flag']} |"
+              for r in flagged]
 
     ring = [r for r in rows if r.get("block") == "ringdown"]
     if ring:
@@ -259,7 +393,7 @@ def summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir):
               "|---|---|---|---|---|---|---|---|---|---|"]
         groups = {}
         for r in ring:
-            groups.setdefault(r.get("P", "") or "(no log)", []).append(r)
+            groups.setdefault(pkey(r.get("P", "")) or "(no log)", []).append(r)
 
         def _key(k):
             return (_num(k) if np.isfinite(_num(k)) else 1e9, str(k))
@@ -279,20 +413,28 @@ def summary_markdown(trials, encs, rows, step_rows, figs, phone, enc_dir):
                       f"intercept {b:+.3f} Hz, R2 {r2:.4f}."]
     if step_rows:
         L += ["", "## Step response: phone gyro vs encoder (steps detected on encoder)", "",
-              "| step speed | steps | overshoot phone % | overshoot enc % | median abs d overshoot % "
+              "| step speed | steps (scored / detected) | overshoot phone % | overshoot enc % "
+              "| median abs d overshoot % "
               "| median abs d rise (s) | median abs d settle (s) |",
               "|---|---|---|---|---|---|---|"]
         groups = {}
         for s in step_rows:
             groups.setdefault(s.get("step_speed") or "(no log)", []).append(s)
-        for sp, g in sorted(groups.items(), key=lambda kv: str(kv[0])):
-            L.append(f"| {sp} | {len(g)} | {_fmt(np.nanmedian(bd.col(g, 'phone_over')), 1)} | "
+        for sp, g0 in sorted(groups.items(), key=lambda kv: str(kv[0])):
+            # only steps the phone side scored (sign and size matched the encoder), so
+            # both medians describe the same steps
+            g = [x for x in g0 if np.isfinite(x.get("phone_over", np.nan))]
+            L.append(f"| {sp} | {len(g)} / {len(g0)} | {_fmt(np.nanmedian(bd.col(g, 'phone_over')), 1)} | "
                      f"{_fmt(np.nanmedian(bd.col(g, 'enc_over')), 1)} | "
                      f"{_fmt(bd.med_abs_diff(g, 'phone_over', 'enc_over'), 1)} | "
                      f"{_fmt(bd.med_abs_diff(g, 'phone_rise', 'enc_rise'), 3)} | "
                      f"{_fmt(bd.med_abs_diff(g, 'phone_settle', 'enc_settle'), 3)} |")
     if figs:
         L += ["", "## Figures", ""] + [f"- `{f}`" for f in figs]
+    if step_rows:
+        L += ["", "A detected step is not scored when the phone step differs in sign or by more "
+                  "than 0.8-1.25x in size from the encoder step (misalignment, or a small "
+                  "ring the encoder segmenter counted as a step)."]
     L += ["", "## Scope", "",
           "Horizontal rig: these are SENSOR-CHANNEL numbers (phone gyro vs encoder). "
           "The app's fused angle and PT score are not assessable on this geometry "
@@ -321,7 +463,8 @@ def make_figures(rows, keep, out):
 
     if ring:   # 1. one representative ring-down overlay
         def _score(r):
-            return (abs(_num(r.get("P")) - 1.0) if np.isfinite(_num(r.get("P"))) else 0.0) - r["match_q"]
+            return ((abs(_num(r.get("P")) - 1.0) if np.isfinite(_num(r.get("P"))) else 0.0)
+                    - r["match_q"] + (10.0 if r.get("flag") else 0.0))
         best = min(ring, key=_score)
         path = next(p for p, v in keep.items() if v[5] is best)
         pg, enc, q, lag, sign, r = keep[path]
@@ -439,10 +582,12 @@ def main(argv=None):
     ap.add_argument("--max-num", type=int, help="keep encoder files with trial number <= this")
     ap.add_argument("--since", help="keep phone trials captured on/after this ISO date/time")
     ap.add_argument("--window", type=int, default=3, help="+/- capture-order pairing window")
-    ap.add_argument("--block", choices=["ringdown", "step"], help="force every trial to one block")
+    ap.add_argument("--block", help="force every trial to one block (R/ringdown or S/step)")
+    ap.add_argument("--polarity", choices=["auto", "1", "-1"], default="auto",
+                    help="phone-vs-encoder sign for the whole session (default: majority vote)")
     a = ap.parse_args(argv)
     analyze(a.phone, a.encoder, a.out, a.glob, a.min_num, a.max_num, a.rig_log,
-            a.window, a.since, a.block)
+            a.window, a.since, a.block, None if a.polarity == "auto" else int(a.polarity))
     return 0
 
 

@@ -33,19 +33,23 @@ Background: `DYNAMIC_CHARACTERIZATION_RUN_SHEET.md` (same folder).
 ## Per-trial routine
 1. Arm at zero and still. Start the phone (see the block for which mode).
 2. Start the LabVIEW encoder log and note the trial number.
-3. Press **OK** in LabVIEW. Wait for the app to auto-stop (scored mode) or for the profile to end (raw mode).
-4. Stop the phone (raw mode), then stop the encoder log.
-5. Fill one log row: encoder trial number, P/I/D, speeds, and `app_result`
-   (`scored` / `NOT SCORABLE` / `ERROR: <text>`).
+3. Block S only: one sharp knuckle tap on the arm, now that both are recording.
+4. Press **OK** in LabVIEW. Wait for the app to auto-stop (scored mode) or for the profile to end (raw mode).
+5. Stop the phone (raw mode). Stop the encoder log **last**, after the phone has stopped.
+   The analyzer scores only the stretch both recorded.
+6. Fill one log row: encoder trial number, block (`R` or `S`), P/I/D, speeds, and
+   `app_result` (`scored` / `NOT SCORABLE` / `ERROR: <text>`).
 
 `ERROR` trials are not saved or exported, so this log is the only record of them.
-Keep a row for every trial, including bad ones. The analyzer pairs trials by
-capture order, and a gap breaks the order.
+**Keep a row for every trial, including bad ones.** The analyzer pairs trials from the
+log. It drops the `ERROR` rows and matches the remaining rows, in trial order, to the
+exported phone trials in capture order. Cross-correlation then only checks each pair.
+An unmarked ERROR or a missing row shows up as a COUNT MISMATCH in the report.
 
 ## Block R: ring-down P sweep, scored app capture (~25 min, 12 trials)
 Phone mode: **Quick Test → Start** (the normal scored capture). **Do not tap the arm**
 in this block. A sharp tap exceeds the app's release gate and can end the trial early.
-Pairing uses cross-correlation instead.
+The rig log does the pairing.
 
 | Setting | Value |
 |---|---|
@@ -68,8 +72,9 @@ Stay at P ≤ 2. If the SET lamp flashes, drop one notch. A `NOT SCORABLE` resul
 a data point, not a failure: log it and move on.
 
 ## Block S: step response, raw recorder (~15 min, 5 trials)
-Phone mode: home tile **Record (raw)** → Start. **Do one sharp knuckle tap on the arm
-right after starting the phone**, then start the encoder log.
+Phone mode: home tile **Record (raw)** → Start. Then start the encoder log, then **one
+sharp knuckle tap on the arm**, then press OK. Tap only once both are recording, so
+the tap shows up in both traces.
 
 | Setting | Value |
 |---|---|
@@ -92,27 +97,28 @@ To export from the app: Session → Export, then AirDrop or save every file, inc
 the manifest. That folder is gitignored, so nothing there is committed.
 
 ## Analyze (one command, ~10 s)
+Run in PowerShell from the repo root, with `feat/bench-session-kit` (or main, once
+merged) checked out:
+```powershell
+.venv\Scripts\python.exe bench_session_report.py --phone Pendulastic_Mobile_App_Trial\2026-11-18\phone --encoder Pendulastic_Mobile_App_Trial\2026-11-18\encoder --glob "bench1118*Stretch*.bin" --rig-log Pendulastic_Mobile_App_Trial\2026-11-18\rig_log.csv --since 2026-11-18 --out Pendulastic_Mobile_App_Trial\2026-11-18\report
 ```
-.venv\Scripts\python.exe bench_session_report.py ^
-  --phone   Pendulastic_Mobile_App_Trial\2026-11-18\phone ^
-  --encoder Pendulastic_Mobile_App_Trial\2026-11-18\encoder ^
-  --rig-log Pendulastic_Mobile_App_Trial\2026-11-18\rig_log.csv ^
-  --since 2026-11-18 ^
-  --out     Pendulastic_Mobile_App_Trial\2026-11-18\report
-```
+- `--glob` keeps only the stretch trials. LabVIEW also writes GT/MVC/SP `.bin` files.
 - `--since` drops any older Quick Test trials that come along in the same export.
-- Output: `trials.csv`, `steps.csv`, `summary.md` (slide-ready tables, app
-  exported/scored/refused counts, ALGORITHM_VERSION), and figures
-  `fig_ringdown_overlay.png`, `fig_f_scatter.png`, `fig_decay_scatter.png`, `fig_step_overlay.png`.
-- **Check the pairing first.** Every row in `trials.csv` should show `match_q ≥ 0.5`,
-  and `enc_trial` should match your log. If it is off, restrict the encoder range with
-  `--min-num/--max-num`, or delete the stray `.bin` from the copy (not the original).
+- Output: `trials.csv`, `steps.csv`, `summary.md`, and figures `fig_ringdown_overlay.png`,
+  `fig_f_scatter.png`, `fig_decay_scatter.png`, `fig_step_overlay.png`. The summary has
+  slide-ready tables, app exported/scored counts, ERROR and NOT SCORABLE counts per P
+  from the log, and ALGORITHM_VERSION.
+- **Check the Pairing section first.** It must not say COUNT MISMATCH. Any flagged row
+  (`match_q < 0.5`, or phone f more than 10 % off the encoder, which usually means a
+  mis-pair) needs a look: usually an ERROR not marked in the log, or a missing row.
+  Fix the log and rerun.
 
 ## Pass targets
 - Phone f within ~2 % of the encoder across P. N equal within ±1. Tau within ~10 %.
 - Step overshoot within ~1.5 points. Rise and settle within ~0.02 s.
 - App: every trial exported, no `ERROR`. Report the `NOT SCORABLE` count per P.
 
-On 2026-09-15 data, the same analyzer gave a median |Δf| of 0.6 %, equal N, a median
-|Δtau| of 0.24 s, and a median |Δovershoot| of 1.1 points with |Δrise| 0.007 s over
-201 steps.
+On 2026-09-15 data, the same analyzer gave a median |Δf| of 0.6 %, equal N, and a
+median |Δtau| of 0.24 s on 20 end-of-staircase rings. On steps it gave a median
+|Δovershoot| of 1.0 point and |Δrise| of 0.006 s over 176 scored steps (out of 201
+detected), with one polarity across all 46 trials.
