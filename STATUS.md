@@ -30,7 +30,7 @@ scores move. "Not verified" is stated, never implied.
   phone-IMU number measured before it is stale. The live app was redeployed from main
   (8aa1055) the same day; #102 stops Vercel's git integration overwriting it.
 - **Drift bound and `HEALTHY_REF`:** finish #94 and re-derive `HEALTHY_REF` with the bound,
-  as one versioned change. Implemented in draft PR #105 (`pt6rescaled-ref-2026-11-16`,
+  as one versioned change. Merged 2026-11-17 as #105 (`pt6rescaled-ref-2026-11-16`,
   supersedes #94).
 - **No refusals from the drift or A0 bounds** (owner: refusals must not affect severe
   legs; the app scores every kind of swing; take the most robust option). In #105, all
@@ -42,9 +42,9 @@ scores move. "Not verified" is stated, never implied.
   removed. Every score records which correction it used and its flags.
 - **Scoring footing:** move the app to the Python reference footing, together with
   counting oscillations from the first trough and dropping `omega_max_n` (#76 / #83), under
-  one score-formula version bump. Implemented in draft PR `feat/app-reference-footing`
-  (core 0.4.0, `pt5trough-ref-2026-11-16`); the owner wants it landed before the
-  2026-11-18 status meeting if independent review passes. Step 2 change approved: the
+  one score-formula version bump. Merged 2026-11-17 as #110 after independent review
+  (core 0.4.0, `pt5trough-ref-2026-11-16`); the live app was redeployed at 0.4.0 (aeb3f76)
+  the same day. Step 2 change approved: the
   first-trough drop runs after the active-oscillation window bound.
 - **Release detector:** deferred; no problems seen in use. Revisit only if a problem
   turns up that is too big to ignore.
@@ -57,7 +57,9 @@ scores move. "Not verified" is stated, never implied.
 - **Footing plan Q1–Q6:** the recommended options (tracked reference-footing constant;
   trends break at the footing change, 0.4.0 since #105 took 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
   unification after #94; this change may move `HEALTHY_REF["f"]` by about 0.001).
-- **Custom domain:** `pendulastic.com`, bought by the owner, pointed at the Vercel project.
+- **Hosting and domain (2026-11-17):** `pendulastic.com` was not bought and will not be; the
+  owner is leaving Vercel. The app stays at `pendulastic-app.vercel.app` through the
+  2026-11-18 meeting; choosing the new host is a follow-up.
 - **Scorable-length gate (footing plan Q7):** the 40-sample minimum becomes 2.0 s of finite
   signal in all three ports, after checking it drops no `HEALTHY_REF` control curve.
 - **Rig O1–O5** (literature review, second opinion and a contrarian review; memo in the
@@ -110,8 +112,8 @@ scores move. "Not verified" is stated, never implied.
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** #107 (chirp-derived tracking limit, draft).
-- **Chirp-derived tracking limit (draft PR #107, `neuromech/chirp-tracking-limit-v2`):** each
+- **Open PRs:** none.
+- **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
   gain gated by the gain after the swing, and a flag for a hold the arm does not settle
@@ -129,7 +131,7 @@ scores move. "Not verified" is stated, never implied.
   PT7 higher than the 100 Hz score. Rig scores must not be described as what the app
   would report. The generator simulates a vertical swing; a horizontal rig with the
   phone flat is untested.
-- **Next actions:** land the chirp-derived tracking limit (#107); then the first rig session, read as a
+- **Next actions:** the first rig session, read as a
   measurement of the limits. On its first log measure `enc_hold_rms_deg`, the idle position against the
   setpoint (`enc_idle_offset_deg`) and `enc_hold_gain` / `enc_late_gain` on runs believed good.
 
@@ -162,8 +164,7 @@ scores move. "Not verified" is stated, never implied.
 - **Lineage comparison** (`docs/scorer-lineage-comparison`): test-retest under
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
-- **Drift-correction bound + re-derived `HEALTHY_REF` (PR #105, draft; supersedes #94,
-  which stays open):** the bound in Python and Rust, never a refusal (see decisions
+- **Drift-correction bound + re-derived `HEALTHY_REF` (#105, merged 2026-11-17; supersedes #94):** the bound in Python and Rust, never a refusal (see decisions
   taken), with the correction used and any quality flags shown in the viewer, workbench
   and live view and stored on the app record (`scoring_quality`), and
   `HEALTHY_REF` re-derived with the bound (phi 0.6407→0.6264, omega_max_n
@@ -201,7 +202,7 @@ scores move. "Not verified" is stated, never implied.
   the first trough, bundled with the app footing change.
 - **Held until a bench session can back them:** frequency cap and `f_out_of_range`
   (`c2dfe67`), Rust flex-projection tier (`f429356`).
-- **App reference footing (draft PR, `feat/app-reference-footing`; core 0.4.0,
+- **App reference footing (#110, merged 2026-11-17; core 0.4.0,
   `pt5trough-ref-2026-11-16`):** five terms (`omega_max_n` shown, not scored), N counted
   from the first trough, `HEALTHY_REF["f"]` 0.9511 to 0.9501, a 2.0 s scorable span in all
   three ports, and the app scored on the reference footing (`ReplayConfig::reference()`:
@@ -211,7 +212,9 @@ scores move. "Not verified" is stated, never implied.
   stored verdicts change, PT a median 0.074 lower; the app and the reference now agree on
   every trial. Reference before to after: 17 verdicts, N -0.5 on 59 trials. neuromech: 11
   intended bands move, no preset refitted; 14 scenarios sit within 0.03 PT7 of an edge.
-  When it merges, #76 and #83 are closed as superseded.
+  #76 and #83 closed as superseded. `derive_healthy_ref.py` runs without
+  `--allow-unloadable` since #108 (seven unloadable optical baseline takes keyed in
+  `excluded_trials.json`).
 - **Do not:** remove `abs()` from clinical swing-angle extraction.
 
 ### 4. Rust AHRS / phone replay — SEED FIX MERGED
@@ -242,13 +245,17 @@ scores move. "Not verified" is stated, never implied.
   `fix/swing-angle-signed-abs-fold`, `feat/rust-abs-flex-projection`,
   `fix/optitrack-trial-quality` (local only, not on origin). About 110 to 130 commits
   that never reached `main`. #68 closed as moot for main.
-- **Rescued 2026-11-16 (draft PR):** the instrument-validation plan, tilted-rig protocol and run
+- **Rescued 2026-11-16 (#101):** the instrument-validation plan, tilted-rig protocol and run
   sheets and dynamic-characterization run sheet (now in `docs/bench/`), `regenerating-figures.md`
   and the September reports. Redacted for the public repo; each carries a banner saying it may
   predate the seed fix. Not rescued: the three September `docs/superpowers/` plans and specs and
   the root-level `DEPLOYMENT_PLAN`-era notes (still on the branches and the `archive/*` tags).
 - **Next action:** each branch is tagged `archive/<name>`; retire the branches once the owner
   approves. Do not start new work on them.
+- **Bench session kit (#109):** `docs/bench/2026-11-18-app-on-motor-session.md`, rig-log
+  template and `bench_session_report.py` (phone gyro vs encoder: f, N, tau, step response;
+  pairs trials from the rig log). First app-on-motor session 2026-11-18 on the horizontal
+  rig: grades the sensor channel and capture, not the app's angle or PT score.
 - **Canonical bench number:** phone static accuracy 0.58° (the 0.92° in the Notion SOP
   is stale). Measured before the seed fix.
 
@@ -260,21 +267,22 @@ scores move. "Not verified" is stated, never implied.
 - **Gap to the reference:** closed by the reference-footing PR (workstream 3): from core
   0.4.0 the app scores on the reference footing and agrees with Python on every corpus
   trial. Records carry `score_formula_id` and `scoring_footing`; the trends view breaks a
-  series where the footing changes. Until it merges, the app reads a median 0.057 higher
-  than the reference and disagrees on 56 of 179 on-screen verdicts.
-- **Offline + custom domain (draft PR #104, `feat/offline-usb-build`):** the primary
+  series where the footing changes. Before it merged, the app read a median 0.057 higher
+  than the reference and disagreed on 56 of 179 on-screen verdicts. Live at 0.4.0 since
+  2026-11-17.
+- **Offline (#104):** the primary
   offline route is the existing install-once PWA. It is the only route on iOS, and was
   checked offline in desktop Chromium. `npm run build:usb` adds a single-file
   `webapp/dist-usb/` copy for Android and laptops, not yet tried on a real phone. See
-  `docs/reference/offline-usb.md`. `docs/reference/custom-domain.md` covers moving to
-  `pendulastic.com` (GoDaddy registrar, Vercel host). **Owner:** buy the domain, set
-  the DNS records, try the USB file on one Android phone.
+  `docs/reference/offline-usb.md`. The custom-domain plan in `docs/reference/custom-domain.md`
+  is dropped (domain not bought; leaving Vercel). **Owner:** try the USB file on one
+  Android phone.
 - **Backlog:** scripted deploy; eviction soak test; zone recalibration (blocked: only 2
   legs with MAS ≥ 1); app bugs in `TODOS.md`.
 
 ### 8. Video / pose estimation, desktop apps, `web/`, `mobile/` — TO ARCHIVE
 - Idle since August. Owner decision: archive.
-- **First pass (draft PR, pending merge):** `web/`, `mobile/`, `Evaluate Models Py/` and 13 root
+- **First pass (#103, merged 2026-11-16):** `web/`, `mobile/`, `Evaluate Models Py/` and 13 root
   scripts with no importers and no CI test moved to `archive/` (see `archive/README.md`).
   Root scripts with no importers that were NOT moved because they feed current IMU or paper
   work: `compute_metrics.py`, `evaluate_settled_tail_gyro_bias.py`,
