@@ -344,3 +344,10 @@ test('the wasm names the formula and footing it scores with, for the stored reco
   // A wasm that predates the exports reads as not reported, never guessed.
   assert.deepEqual(scoringProvenance({}), { scoreFormulaId: null, scoringFooting: null });
 });
+
+test('a provenance export that throws reads as not reported, never as a lost result', async () => {
+  const { scoringProvenance } = await import('../src/worker.js');
+  const boom = () => { throw new Error('stale wasm'); };
+  assert.deepEqual(scoringProvenance({ score_formula_id: boom, scoring_footing: boom }),
+    { scoreFormulaId: null, scoringFooting: null });
+});

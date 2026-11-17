@@ -628,6 +628,21 @@ re-pinned on the end-state scorer.
 and after (step 5); a tracked corpus script replacing the scratch drivers; the horizontal-bench
 recordings `f429356` used (step 4).
 
+**Independent review (2026-11-17): pass with fixes.** Fixed in this PR: a NUL byte in the trends
+grouping key (git read the file as binary); the export manifest now carries `score_formula_id`
+and `scoring_footing` (schema v7) so imported sessions keep the footings apart; the provenance
+read survives a stale cached wasm. Left open, for the owner:
+- The first-trough gate picks its trough before the window filter. If the window ended before
+  the first gated trough, in-window peaks would all be dropped and N would read 0 rather than
+  keep a lone peak (Q3). The three ports agree, and limiting the gate to the window changes N
+  on none of 643 corpus curves (both footings, both conventions); proposed as a follow-up with
+  a synthetic test.
+- `lateral_motion` still learns its own axis from the whole log, not the replay's axis, so the
+  capture-quality figure is measured against an axis the scored angle no longer uses. This is
+  the Q4 change (moves later, in its own PR).
+- `REFERENCE_REPLAY_CONFIG` is not yet asserted against the gitignored config the corpus
+  scripts load.
+
 ## Not verified
 
 - Sections 2, 5 and 6 are the pre-implementation Python spike; the implemented numbers are in

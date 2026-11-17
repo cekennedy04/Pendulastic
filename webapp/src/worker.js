@@ -24,7 +24,11 @@ let ready = null;
 // a JS copy. null for a wasm build that predates the exports (crate < 0.4.0):
 // such a build scored on the old app footing, and a reader must not guess.
 export function scoringProvenance(exports = wasmExports) {
-  const read = (name) => (typeof exports[name] === 'function' ? exports[name]() : null);
+  // try/catch too: new glue over a stale cached .wasm binary throws on the
+  // call, and that must cost the provenance, never the trial's result.
+  const read = (name) => {
+    try { return typeof exports[name] === 'function' ? exports[name]() : null; } catch { return null; }
+  };
   return { scoreFormulaId: read('score_formula_id'), scoringFooting: read('scoring_footing') };
 }
 
