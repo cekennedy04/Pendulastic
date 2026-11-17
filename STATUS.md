@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; reference-footing PR 2026-11-17.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; merges, 0.4.0 live and hosting decision recorded 2026-11-17.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -56,7 +56,7 @@ scores move. "Not verified" is stated, never implied.
 - **Nightly hygiene agent:** retired.
 - **Footing plan Q1–Q6:** the recommended options (tracked reference-footing constant;
   trends break at the footing change, 0.4.0 since #105 took 0.3.0; keep a lone early peak; `lateral_motion` later; detrend
-  unification after #94; this change may move `HEALTHY_REF["f"]` by about 0.001).
+  unification after #105; this change may move `HEALTHY_REF["f"]` by about 0.001).
 - **Hosting and domain (2026-11-17):** `pendulastic.com` was not bought and will not be; the
   owner is leaving Vercel. The app stays at `pendulastic-app.vercel.app` through the
   2026-11-18 meeting; choosing the new host is a follow-up.
@@ -164,7 +164,7 @@ scores move. "Not verified" is stated, never implied.
 - **Lineage comparison** (`docs/scorer-lineage-comparison`): test-retest under
   `detrend=False` is a tie between `main` and the September lineage. `9a555de` is
   already on main. `61d5723` (signed swing angle) must stay out.
-- **Drift-correction bound + re-derived `HEALTHY_REF` (#105, merged 2026-11-17; supersedes #94):** the bound in Python and Rust, never a refusal (see decisions
+- **Drift-correction bound + re-derived `HEALTHY_REF` (#105, merged 2026-11-17; supersedes #94, which is still open and conflicting: close it):** the bound in Python and Rust, never a refusal (see decisions
   taken), with the correction used and any quality flags shown in the viewer, workbench
   and live view and stored on the app record (`scoring_quality`), and
   `HEALTHY_REF` re-derived with the bound (phi 0.6407→0.6264, omega_max_n
