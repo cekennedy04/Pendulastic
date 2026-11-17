@@ -12,14 +12,15 @@ import {
   selectionRows,
 } from '../src/param-select.js';
 
-test('all seven are offered and the canonical six are a strict subset', () => {
+test('all seven are offered and the canonical five are a strict subset', () => {
   assert.equal(ALL_PT_KEYS.length, 7);
-  assert.equal(CANONICAL_KEYS.length, 6);
+  assert.equal(CANONICAL_KEYS.length, 5);
   for (const k of CANONICAL_KEYS) assert.ok(ALL_PT_KEYS.includes(k), k);
   // omega_min_n is selectable but not scored -- that is the whole point of
   // having two lists rather than one.
   assert.ok(ALL_PT_KEYS.includes('omega_min_n'));
   assert.ok(!CANONICAL_KEYS.includes('omega_min_n'));
+  assert.ok(!CANONICAL_KEYS.includes('omega_max_n'));
 });
 
 test('the app starts with everything visible', () => {

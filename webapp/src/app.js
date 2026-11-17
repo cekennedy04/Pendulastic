@@ -355,9 +355,9 @@ const PARAM_PLAIN_NAME = {
 //
 // This exists because the arithmetic is actively misleading without it. An
 // unmeasured parameter sits at 0.0, and the score penalises `r2n`,
-// `phi_max_ratio`, `n` and `omega_max_n` for being BELOW the healthy
+// `phi_max_ratio` and `n` for being BELOW the healthy
 // reference -- so a value that is 0.0 because nothing could be computed
-// contributes the largest penalty that parameter can produce, exactly 1/7 of
+// contributes the largest penalty that parameter can produce, a full share of
 // the scale each. The score therefore reads MORE impaired the less was
 // measurable, which is backwards, and nothing on screen said so.
 //
@@ -383,8 +383,16 @@ export function excursionNotice(reason) {
   return { text: reason, impossible: /^Impossible excursion/.test(reason) };
 }
 
-export function unmeasuredNotice(unmeasured) {
+// `nScored` is the score's own divisor (the ptScore payload's `n_scored`):
+// each unmeasured term can cost at most 1/nScored of the scale. Read from the
+// score rather than hard-coded, so a change to the canonical set (7 terms, then
+// 6, then 5 on 2026-11-16) cannot leave this sentence quoting a stale share.
+// Falls back to the canonical count when a payload predates the field.
+const CANONICAL_TERM_COUNT = 5;
+
+export function unmeasuredNotice(unmeasured, nScored) {
   if (!Array.isArray(unmeasured) || unmeasured.length === 0) return null;
+  const divisor = Number.isInteger(nScored) && nScored > 0 ? nScored : CANONICAL_TERM_COUNT;
   const names = unmeasured.map((k) => PARAM_PLAIN_NAME[k] || k);
   const list = names.length === 1
     ? names[0]
@@ -396,7 +404,7 @@ export function unmeasuredNotice(unmeasured) {
       + (noReturn ? ' — the leg did not swing back past neutral' : '')
       + `. ${unmeasured.length === 1 ? 'It counts' : 'They count'} as fully impaired`
       + ' in the score below, so the score overstates impairment by up to '
-      + `${(unmeasured.length / 7 * 100).toFixed(0)}% of the scale.`,
+      + `${(Math.min(unmeasured.length / divisor, 1) * 100).toFixed(0)}% of the scale.`,
   };
 }
 
@@ -2007,7 +2015,7 @@ if (typeof document !== 'undefined') {
       refusalEl.textContent = refusal ? refusal.text : '';
       refusalEl.className = refusal && refusal.impossible ? 'excursion-impossible' : '';
     }
-    const notice = unmeasuredNotice(ptScore.unmeasured);
+    const notice = unmeasuredNotice(ptScore.unmeasured, ptScore.n_scored);
     const noticeEl = el('pt-score-unmeasured');
     if (noticeEl) {
       noticeEl.hidden = notice === null;

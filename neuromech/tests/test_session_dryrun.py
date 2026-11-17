@@ -92,15 +92,19 @@ def test_every_run_delivers_its_intended_band(report):
 def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_their_edge(tmp_path):
     """Was test_default_session_misses_exactly_the_two_edge_scenarios (7 of 9, pinned by #89).
 
-    B-claspknife and M-catch_release_high (one scenario built twice) intend PT7 0.139, 0.02 above the 0/1
-    edge, and were delivered at ~0.116, band 0. More than half of that undershoot was the session's own:
-    it scored the delivered trace from the COMMANDED release, the hold left inside the record was counted
-    as a half-oscillation (N 6.0 -> 6.5), and that alone cost 0.013. Scored from the delivered release N
-    is the intended 6.0 and both runs are in band at ~0.128.
+    Re-pinned 2026-11-16 for the five-term scorer (pt5trough-ref-2026-11-16, omega_max_n out of the
+    canonical score). No preset was refit; the presets are a follow-up on the new scorer.
 
-    Pinned both ways, so neither half can drift unnoticed: every default run is in its band, AND the two
-    catch runs still undershoot by the plant's real share and still sit within 0.012 of the edge. A change
-    that takes them back out of band, or one that makes them look comfortably mid-band, fails here."""
+    The edge moved. B-claspknife and M-catch_release_high (one scenario built twice) intended PT7 0.139,
+    0.02 above the 0/1 edge, on the six-term scorer; on five terms they intend 0.082, mid band 0, and are
+    no longer edge runs. C-f-high is the new one: it intends 0.2819, 0.002 above the 1/1+ edge, and the
+    plant's undershoot (0.0006 to 0.0023 at seeds 1, 3, 7, 11; 42 overshoots by 0.004 through an extra
+    half-cycle) delivers it in band 1 on three of five seeds. So "every run in band" now excludes exactly
+    C-f-high, which is pinned as an edge run instead: it must still intend within 0.005 above the edge and
+    be delivered within 0.01 of it, in either band.
+
+    The catch runs are still pinned on their undershoot, which the drop made smaller: the plant's share
+    came through peak velocity (its resonance raises it), and peak velocity is no longer scored."""
     old = SS.SESS
     try:
         SS.SESS = str(tmp_path)
@@ -109,17 +113,21 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
         SS.SESS = old
     sc = rep[rep.sid != "R-chirp"]
     assert (sc.status == "scored").all(), sc.status.tolist()
-    assert sc.delivered_band_ok.astype(bool).all(), sc[["sid", "int_band", "enc_band"]].values.tolist()
-    edge = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
-    assert len(edge) == 2 and (edge.enc_N == edge.int_N).all(), edge[["sid", "int_N", "enc_N"]].values.tolist()
-    # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share
-    # (its resonance raises peak velocity), measured at 0.010 to 0.012 at seeds 1, 3, 7, 11 and 42 after the
-    # delivered release took the session's share (0.013) out. 0.008 to 0.014 is that measurement +-0.003. It
-    # pins "still an edge run": below 0.008 something is flattering the delivery, above 0.014 the session is
-    # adding undershoot of its own again. (Being in band, asserted above, is the 0.12 edge; the old
-    # `< 0.132` was the same pin written as an absolute number.) Re-baseline it if the scorer or plant changes.
-    under = edge.int_pt7 - edge.enc_pt7
-    assert ((under > 0.008) & (under < 0.014)).all(), edge[["sid", "int_pt7", "enc_pt7"]].values.tolist()
+    on_edge = sc[sc.sid == "C-f-high"]
+    rest = sc[sc.sid != "C-f-high"]
+    assert rest.delivered_band_ok.astype(bool).all(), rest[["sid", "int_band", "enc_band"]].values.tolist()
+    assert len(on_edge) == 1
+    assert ((on_edge.int_pt7 > 0.28) & (on_edge.int_pt7 < 0.285)).all(), on_edge.int_pt7.tolist()
+    assert ((on_edge.enc_pt7 - 0.28).abs() < 0.01).all(), on_edge.enc_pt7.tolist()
+    catch = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
+    assert len(catch) == 2 and (catch.enc_N == catch.int_N).all(), catch[["sid", "int_N", "enc_N"]].values.tolist()
+    # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share,
+    # measured at 0.0045 to 0.0050 at seeds 1, 3, 7, 11 and 42 on the five-term scorer (0.010 to 0.012 on six
+    # terms, where peak velocity was scored). 0.0015 to 0.008 is that measurement +-0.003: below it something
+    # is flattering the delivery, above it the session is adding undershoot of its own again.
+    # Re-baseline it if the scorer or plant changes.
+    under = catch.int_pt7 - catch.enc_pt7
+    assert ((under > 0.0015) & (under < 0.008)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
     # The METHOD, pinned on this plant: the onset-matched release is 27.4 ms after the commanded one here
     # (22.6 to 28.5 by scenario). An onset of 10 deg instead of 2 gives 19.7 ms and passed every test in this
     # file before this assertion existed; a whole-drop cross-correlation gives 14.5 to 19.
@@ -475,8 +483,10 @@ def test_the_onset_method_is_pinned_across_the_whole_library():
     assert 26.9 < med < 27.9, med                                         # measured 27.4
     assert v.min() > 21.5 and v.max() < 29.5, (v.min(), v.max())          # measured 22.6 to 28.4
     assert np.abs(v - med).max() < SS.SESSION_LAG_TOL_S * 1e3             # so no good run is far from its session
-    assert wrong_band == [], wrong_band                                   # measured 0 of 66
-    assert len(wrong_N) <= 10, wrong_N                                    # measured 10 of 66 (44 from the commanded release)
+    # measured 1 of 66 on the five-term scorer: C-f-high intends 0.2819, 0.002 above the 1/1+ edge, and the
+    # plant's undershoot crosses it (0 of 66 on six terms; see the default-session test above)
+    assert wrong_band in ([], ["C-f-high"]), wrong_band
+    assert len(wrong_N) <= 10, wrong_N                                    # measured 9 of 66 on five terms, 10 on six (44 from the commanded release)
 
 
 # ── an ambiguous onset must fail (review 2026-11-11, required change 1) ───────────────────────────────
