@@ -74,7 +74,9 @@ Designer, then writes `neuromech/out/rig_bundle/` and `neuromech/out/rig_bundle_
 Designer exes (built with .NET 3.5, with an `.exe.config` that also allows CLR 4, so nothing needs installing),
 the plain player, every library scenario that passes `neuromech.rig_guard` as player files (or, without
 the guard, |angle| <= 40 deg and <= 600 deg/s per 10 ms write), `START_HERE.txt` and a SHA256 `MANIFEST`.
-A bundle built without the guard is stamped NOT FOR MOTOR USE.
+A bundle built without the guard is stamped NOT FOR MOTOR USE. `library_x0.70/` holds the labelled scaled
+render (everything after the sync pulses x0.70, so the 55 deg release fits under 40): an invariance probe
+only, whose expected scores differ from the 1:1 library.
 
 **Once, before the first session:** play any player file with the log running, then
 
