@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 64 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -22,7 +22,7 @@ python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manif
 | C | each of the 7 parameters and the A0 gate pushed out of range | De Groote core + kinematic transforms |
 | D | release artefacts: push, wobble, short record, low lift | De Groote core |
 | M | severity AND kind of severity: tone ladder, catch-and-hold, no-ringdown fall, end-stop (the catch-release copy of `B-claspknife` was dropped, O5) | De Groote core, via `profiles.py` |
-| R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel | De Groote core |
+| R | the four mechanisms B9 ported, one at a time: bearing friction, anthropometry, tonic arrest, reflex channel (the force channel is `S-lam1`) | De Groote core |
 | H | HESS's four haptic models (Park et al. 2012, Table III), elbow values unscaled: the three-phase catch on a pendulum | De Groote core + `hess_*` module |
 | K | HESS HM#1–2 on the knee: H alone refitted so each holds its intended MAS 1 / 1+ (HM#3's MAS 2 and HM#4's MAS 3 exist only in a sliver below the arrest jump) | De Groote core + `hess_*` module |
 
@@ -37,8 +37,39 @@ built); the library is still written. Presets meant to sit in a band are refitte
 `build.fit_param` (the ladder's bisection, on one other parameter) and listed in `scenarios.BAND_MIDDLE`;
 scenarios whose purpose is the edge or an out-of-range parameter (S axis, C, R, HESS's unscaled values) are
 allowlisted, each with its reason. `--allow-near-edge` builds anyway. On `pt5trough-ref-2026-11-16`
-(2026-11-17): nothing flagged, 10 allowlisted (`S-lam1`, `S-lam6`, `C-wmax-low`, `C-f-low`, `C-f-high`,
-`R-friction`, `R-reflex-force`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
+(2026-11-17, 64 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
+`R-friction`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
+
+**Duplicate check (owner decision, 2026-11-17).** The build also **exits 1** if two scenarios render the same
+swing under different names: identical Params, release and kinematic transforms (`scenarios.definition_key`;
+Params alone would not do, since the C and D probes share the default Params on purpose and differ only by
+their transform or release). `C-wmax-low` (= `C-f-low`) and `R-reflex-force` (= `S-lam1`, the published
+force-feedback channel `severity(1)`) were dropped this way, so the library went from 66 to 64. The probe-group
+originals were kept: `C-f-low` now probes both f and omega_max (one 2x-slower swing), and `S-lam1` is the R
+group's force channel that `R-reflex-vel` and `R-reflex-len` compare against. Sets that are one swing on
+purpose are listed in `scenarios.DUPLICATE_ALLOWED` with the reason, matched as exact sets: `A-P1` =
+`B-extensor` = `B-habit1` (B's band-2 rung falls back to the mid rung while band 2 is unreachable),
+`B-leadpipe` = `M-fall_no_ringdown` and `B-contracture` = `M-contracture_stop` (the M profiles are defined
+independently in `profiles.py`).
+
+**Intent report (owner decision, 2026-11-17; report only).** For every scenario with a severity intent
+(`Scenario.intent`, from `profiles.SEVERITY_INTENT`, whole MAS grades) the build prints the intended band and
+the band its PT7 lands in, and lists each mismatch. It never changes the exit status. The known mismatches are
+**accepted** (`scenarios.INTENT_MISMATCH_ACCEPTED`), and anything else prints as `MISMATCH`. On
+`pt5trough-ref-2026-11-16`: `M-tone_L1` band 0 (intent 1, PT7 0.076), `M-tone_L2` band 1 (intent 2, 0.190),
+`M-tone_L3` and `M-tone_L4` band 1+ (intents 3 and 4, 0.344 and 0.404). The tone ladder is not refitted: its
+lambdas are literal on purpose (`profiles._LADDER_LAMBDA`, a fixed library for testing recalibrations), and
+intents 2 to 4 are above the axis's peak (0.4035). `M-catch_and_hold_140` and `_127` (intents 3 and 2) are
+refused (no oscillation), which is the refusal path they probe.
+
+### Findings
+
+- **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core
+  0.4.0).** `R-friction` (the rig's own dry bearing friction, `rig_params()`, no simulated spasticity) scores
+  PT7 0.1144, 0.0056 below the 0/1 edge (0.12); `R-friction-heavy` (0.4 N.m) scores 0.1748, band 1.
+  Implication: on a real rig with friction, healthy-ish presets could be pushed toward MAS 1 by the hardware
+  alone. To be checked on the real rig. `R-friction` stays in `NEAR_EDGE_ALLOWED`, recorded there as a finding,
+  not a preset to refit.
 
 ## 2. Plan a session
 
