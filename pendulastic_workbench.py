@@ -666,6 +666,9 @@ class WorkbenchView(tk.Frame):
             if full_params is not None:
                 params["pt_score"] = pendulastic_pt_score.compute_pt_score(full_params)
                 params["mas"] = pendulastic_pt_score.pt_to_mas(params["pt_score"])
+                # How the score was reached; never a reason to drop the trace.
+                params["pt_flags"] = list(full_params.get("quality_flags") or [])
+                params["drift_correction"] = full_params.get("drift_correction")
             else:
                 params["pt_score"] = None
                 params["mas"] = None
@@ -1101,7 +1104,8 @@ class WorkbenchView(tk.Frame):
 
         raw_diag = self._raw_diagnostics or {}
         opti_trace = self._traces.get("optitrack")
-        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False}
+        opti_signals = {"optitrack_dropout_frac": 0.0, "optitrack_area_ratio_warn": False,
+                        "optitrack_scoring_flags": ""}
         if opti_trace is not None:
             ref_t, ref_angle = opti_trace
             try:
@@ -1124,7 +1128,8 @@ class WorkbenchView(tk.Frame):
             f"Hold gravity on Z: {f'{hold_z * 100:.0f}%' if hold_z is not None else 'unavailable'}\n"
             f"Hold stillness gate: {'n/a' if hold_ok is None else ('passed' if hold_ok else 'FAILED')}\n"
             f"OptiTrack dropout: {opti_signals['optitrack_dropout_frac'] * 100:.0f}%\n"
-            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}"
+            f"OptiTrack area-ratio warning: {'yes' if opti_signals['optitrack_area_ratio_warn'] else 'no'}\n"
+            f"OptiTrack scoring: {opti_signals.get('optitrack_scoring_flags') or 'no flags'}"
         )
         tk.Label(dialog, text=signals_text, justify="left", anchor="w").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))

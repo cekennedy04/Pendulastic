@@ -77,6 +77,17 @@ pub enum TrialError {
     ReleaseNeverDetected,
 }
 
+impl TrialError {
+    /// Stable machine-readable code, for the wasm boundary and stored records.
+    /// These strings are a persisted contract: do not rename them.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TrialError::InsufficientSamples => "insufficient_samples",
+            TrialError::ReleaseNeverDetected => "release_never_detected",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TrialResult {
     /// Tick times, relative to the first sample.

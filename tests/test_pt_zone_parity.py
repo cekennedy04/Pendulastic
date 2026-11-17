@@ -358,3 +358,34 @@ def test_deselecting_a_term_redistributes_its_share():
         assert v == pytest.approx(six[k] * 6.0 / 5.0, abs=1e-15), k
     alone = pt.compute_pt_score_breakdown(params, keys=["N"])
     assert alone["N"] == pytest.approx(six["N"] * 6.0, abs=1e-15)
+
+
+def test_healthy_ref_is_identical_in_every_copy():
+    """HEALTHY_REF exists in the Python reference, the Rust core, the C#
+    designer port and run_statistical_engine.py. Every reported score is
+    measured against it, so a copy that lags a re-derivation scores the same
+    trial differently and nothing else would say so. The 2026-11-16
+    re-derivation (with the drift-correction bound) found the fourth copy
+    still holding values no scorer used."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    keys = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"]
+
+    src = open(RUST, encoding="utf-8").read()
+    body = re.search(r"pub const HEALTHY_REF: HealthyRef = HealthyRef \{(.*?)\n\};", src, re.S)
+    assert body, "HEALTHY_REF not found in the Rust"
+    rust = {k: float(v) for k, v in re.findall(r"^\s*([a-z0-9_]+):\s*(-?[0-9.]+),",
+                                                  body.group(1), re.M)}
+    assert {k.lower(): pt.HEALTHY_REF[k] for k in keys} == rust
+
+    cs = open(os.path.join(root, "neuromech", "designer", "PtScore.cs"), encoding="utf-8").read()
+    csharp = {k: float(v) for k, v in re.findall(r'd\["([A-Za-z0-9_]+)"\] = (-?[0-9.]+);', cs)}
+    assert {k: pt.HEALTHY_REF[k] for k in keys} == csharp
+
+    se = open(os.path.join(root, "run_statistical_engine.py"), encoding="utf-8").read()
+    assert "from pendulastic_pt_score import HEALTHY_REF" in se, (
+        "run_statistical_engine.py must read the scorer's HEALTHY_REF, not copy it")
+    assert not re.search(r'\("(phi_max_ratio|omega_max_n|area_ratio|N)",[^)]*\b\d+\.\d+\)', se), (
+        "run_statistical_engine.py hard-codes a HEALTHY_REF value again")
+
+    cs_id = re.search(r'SCORE_FORMULA_ID = "([^"]+)"', cs).group(1)
+    assert cs_id == pt.SCORE_FORMULA_ID

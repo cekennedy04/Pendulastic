@@ -154,7 +154,21 @@ HEALTHY_REF = {
 
     # ---- DATA-DERIVED, no published value exists ----
     #
-    # RE-DERIVED 2026-10-27 by derive_healthy_ref.py: 39 INTERPRETABLE
+    # RE-DERIVED 2026-11-16 with the drift-correction bound in place
+    # (_baseline_drift_slope / _credible_drift_slope; SCORE_FORMULA_ID
+    # "pt6rescaled-ref-2026-11-16"): 37 interpretable baseline control trials,
+    # 11 legs, 7 people, same script and cohort rules as below. The bound
+    # refuses the pre-release fallback fit on a few control curves whose hold
+    # was short or sloping, so their A0 is now the undetrended one. Of the
+    # 39 trials below, one becomes unscorable and two fall under the
+    # excursion gate; one trial the gate refused before now passes. The
+    # A0-normalised ratios move: phi_max_ratio -2.2%, omega_max_n +2.9%,
+    # omega_min_n 1.9% larger in magnitude, area_ratio -5.0%; f unchanged
+    # (N and R2n stay literature-anchored). Each value below is the new
+    # median; the 2026-10-27 value is noted beside it. Leave-one-person-out
+    # ranges are in derive_healthy_ref.py's docstring.
+    #
+    # Previously RE-DERIVED 2026-10-27 by derive_healthy_ref.py: 39 INTERPRETABLE
     # baseline control trials, 12 legs, 7 people, on the reconstruction and
     # release detection that ship (seed-window, lift-and-hold and drift-fit
     # fixes). The 2026-09-09 values below each entry came from 46 trials
@@ -180,7 +194,7 @@ HEALTHY_REF = {
     # Popovic's phi-max is the first goniogram maximum in RADIANS (published
     # healthy 0.34-0.61 rad). Ours is A2/A0, a dimensionless ratio. Different
     # quantity; the published range cannot be used.
-    "phi_max_ratio": 0.6407,   # was 0.6667 (2026-09-09)
+    "phi_max_ratio": 0.6264,   # 0.6407 (2026-10-27); 0.6667 (2026-09-09)
 
     # Popovic's omega-max is unnormalised rad/s (published healthy 11-17).
     # Ours is divided by A0. Different quantity.
@@ -192,7 +206,7 @@ HEALTHY_REF = {
     # velocity is roughly fixed by the release height while A0 varies, so it
     # is largely 1/A0 -- and a below-reference-only penalty therefore never
     # charges a small-A0 spastic leg for it.
-    "omega_max_n":   6.4839,
+    "omega_max_n":   6.6702,   # 6.4839 (2026-10-27)
 
     # NOW Popovic's omega-min: the SIGNED minimum angular velocity, i.e. peak
     # velocity in the return direction. Until 2026-09-09 this module computed
@@ -200,26 +214,27 @@ HEALTHY_REF = {
     # value sat at ~0.001 for every trial and one of the seven parameters was
     # a static zero-offset in the sum.
     #
-    # Median of the 39 interpretable control trials, and it mirrors
-    # omega_max_n almost exactly, which is what a pendulum should do:
-    # -6.3624 against +6.4839 (leave-one-person-out -6.689 to -6.289). Was
-    # -9.4152 against +9.5672 on the superseded 46-trial set.
+    # Median of the 37 interpretable control trials, and it mirrors
+    # omega_max_n closely, which is what a pendulum should do: -6.4839
+    # against +6.6702 (leave-one-person-out -6.701 to -6.356). Was -6.3624
+    # against +6.4839 before the drift bound (2026-10-27), and -9.4152
+    # against +9.5672 on the superseded 46-trial set.
     #
     # Popovic's published healthy range is -12 to -9 rad/s. The superseded
     # value happened to land inside it; this one does not, and neither claim
     # means much: ours is normalised by A0 (units 1/s) and theirs is not, so
     # the two are not like-for-like. Diagnostic only -- not scored.
-    "omega_min_n":   -6.3624,
+    "omega_min_n":   -6.4839,   # -6.3624 (2026-10-27)
 
     # Popovic-Maneski introduced f themselves ("We introduced two additional
     # parameters in this study"), and published no healthy value for it.
-    "f":             0.9511,   # was 0.8839 (2026-09-09)
+    "f":             0.9511,   # unchanged 2026-11-16; was 0.8839 (2026-09-09)
 
     # Same: introduced in that study, no published healthy value. ALSO the
     # least trustworthy entry here -- V0.4 found it moves 0.082 to 0.156, a
     # 90% swing, depending purely on which controls are included. This cohort
     # cannot pin it, and it is the parameter the swing-centred frame changed.
-    "area_ratio":    0.1766,   # was 0.0945; LOO 0.154-0.213, still least stable
+    "area_ratio":    0.1678,   # 0.1766 (2026-10-27), 0.0945 before; LOO 0.151-0.204
 }
 
 # ── PT score zones (data-driven) ──────────────────────────────────────────────
@@ -755,7 +770,7 @@ def mas_estimate(params: Optional[dict], ref: dict = None) -> dict:
     to prevent.
 
     `pt7` IS A LEGACY KEY NAME. It carries whatever the current scored set
-    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-10-27",
+    sums, which is six terms under SCORE_FORMULA_ID "pt6rescaled-ref-2026-11-16",
     not seven: omega_min_n left on 2026-10-26. The name is deliberately NOT
     renamed. It is a column name in generated CSVs and in the neuromech
     manifests that session.py and dryrun.py read back (`man.loc[sid, "pt7"]`,
@@ -961,13 +976,17 @@ _DIAGNOSTIC_KEYS = ["omega_min_n"]
 #: the false-negative direction. tests/test_pt_zone_parity.py fails if the
 #: thresholds' recorded id does not match this one while zone classification
 #: is switched on.
-SCORE_FORMULA_ID = "pt6rescaled-ref-2026-10-27"   # 6-term set, divisor = terms
+SCORE_FORMULA_ID = "pt6rescaled-ref-2026-11-16"   # 6-term set, divisor = terms
 #                                                 actually scored; see the
 #                                                 n_scored note in
 #                                                 compute_pt_score_breakdown.
 #                                                 "-ref-": HEALTHY_REF
-#                                                 re-derived 2026-10-27
+#                                                 re-derived 2026-11-16 with
+#                                                 the drift-correction bound
 #                                                 (derive_healthy_ref.py).
+#                                                 Bump the date whenever
+#                                                 HEALTHY_REF moves, because
+#                                                 every reported score does.
 
 OMEGA_SIGNED_PAIR_NOTE = """\
 The upgrade this drop makes room for, measured but not landed.
@@ -2444,6 +2463,34 @@ _MAX_DRIFT_DEG_S = 4.0
 # than this share of the trial's own swing range, it is tracking motion.
 _TAIL_MAX_DISPLACEMENT_FRAC = 0.15
 
+# The pre-release baseline fallback needs the same discipline as the tail fit,
+# and used to have none of it. It is fitted over the HOLD -- a window of well
+# under a second on many trials -- and then extrapolated across the entire
+# recording, so a slope that is merely noisy becomes an enormous displacement.
+# Measured on the phone corpus at 75109c5 (2026-11-10): with detrend=True the
+# unguarded fallback removed 0.7 to 6.3 times the curve's whole range on four
+# trials and reported A0 of 139.8 to 234.8 deg where the same trials read 27.6
+# to 115.5 deg undetrended.
+#
+# A held leg is not moving, so spread in that window is noise, and a line
+# through noise has no slope worth extrapolating. Require the same minimum
+# window the tail requires before believing one.
+_BASELINE_MIN_SECONDS = _TAIL_MIN_SECONDS
+
+# ...and bound what the fallback's finished correction may do. The slope is
+# applied across the whole trial, so a bound on the fit window alone does not
+# constrain what actually happens to the curve. Real drift is small next to the
+# swing it sits on: the measured median is 0.833 deg/s, which over a 10 s trial
+# moves a ~60 deg swing by 8.3 deg, or 14%. A "correction" that moves the curve
+# by more than a quarter of its own range is not removing a bias from the
+# signal, it is rewriting the signal.
+_MAX_TOTAL_CORRECTION_FRAC = 0.25
+
+# Fewest baseline samples worth fitting a line through. Module level because
+# _baseline_drift_slope enforces it; it used to be a local in compute_pt_params,
+# where the fallback that needed it lived inline.
+_MIN_BASELINE = 10
+
 
 def _dominant_frequency_hz(t: np.ndarray, ang: np.ndarray,
                            rel_i: int) -> Optional[float]:
@@ -2937,6 +2984,147 @@ def _active_oscillation_window_end(t_r: np.ndarray, ang_r: np.ndarray,
     return float(t_r[settle_idx])
 
 
+def _baseline_drift_slope(t: np.ndarray, ang: np.ndarray,
+                          baseline_end: int,
+                          baseline_start: int = 0) -> Optional[float]:
+    """Sensor drift in deg/s from the pre-release hold, or None.
+
+    The historical fallback, used when the settled tail cannot be trusted. It
+    had no guards at all, which meant it was least restrained on exactly the
+    trials where the tail estimator had already refused to guess -- the ones
+    with the worst data.
+
+    The window is [baseline_start, baseline_end): the caller trims the lift
+    ramp off the front (see _lift_hold_end) so only the still hold is fitted.
+
+    A held leg is at rest, so spread in this window is noise rather than
+    drift, and a least-squares line through noise has a slope that means
+    nothing once it is extrapolated across a recording many times longer than
+    the window it came from.
+
+    Returns None -- do not correct -- rather than a doubtful number, for the
+    same reason the tail estimator does: no correction leaves the curve as
+    measured, while a wrong one rewrites it.
+    """
+    baseline_start = max(0, int(baseline_start))
+    if baseline_end - baseline_start < _MIN_BASELINE:
+        return None
+    seg_t = np.asarray(t[baseline_start:baseline_end], dtype=float)
+    seg_a = np.asarray(ang[baseline_start:baseline_end], dtype=float)
+    ok = np.isfinite(seg_t) & np.isfinite(seg_a)
+    seg_t, seg_a = seg_t[ok], seg_a[ok]
+    if len(seg_t) < _MIN_BASELINE:
+        return None
+    if float(seg_t[-1] - seg_t[0]) < _BASELINE_MIN_SECONDS:
+        # Too short a lever arm. Extrapolating it across the trial multiplies
+        # whatever noise it fitted by the ratio of the two durations.
+        return None
+    slope = float(np.polyfit(seg_t, seg_a, 1)[0])
+    if not np.isfinite(slope) or abs(slope) > _MAX_DRIFT_DEG_S:
+        return None
+    return slope
+
+
+def _credible_drift_slope(slope: Optional[float], t: np.ndarray,
+                          ang: np.ndarray) -> Optional[float]:
+    """The slope, or None if applying it across the trial would rewrite it.
+
+    Guards the BASELINE fallback specifically. That estimator bounds the slope
+    within the hold it was fitted on, but the correction is applied to the
+    whole recording, so that bound does not constrain what finally happens to
+    the curve. This checks the thing that actually matters: the total
+    displacement the correction imposes, against the range of the signal it is
+    imposed on.
+
+    Deliberately NOT applied to the settled-tail estimator, which was tuned on
+    93 IMU trials against measured accuracy and needs the headroom -- see the
+    call site.
+
+    This is what A0 depends on. `neutral` is the tail median, so a correction
+    that drags the tail drags the reference the amplitude is measured from, and
+    A0 = phi[0] = release - neutral inherits the whole displacement.
+    """
+    if slope is None or not np.isfinite(slope):
+        return None
+    t = np.asarray(t, dtype=float)
+    ang = np.asarray(ang, dtype=float)
+    if len(t) < 2:
+        return None
+    duration = float(t[-1] - t[0])
+    finite = ang[np.isfinite(ang)]
+    if duration <= 0 or len(finite) < 2:
+        return None
+    ang_range = float(np.nanmax(finite) - np.nanmin(finite))
+    if ang_range <= 0:
+        return None
+    if abs(slope) * duration > _MAX_TOTAL_CORRECTION_FRAC * ang_range:
+        return None
+    return slope
+
+
+# Smoothing can overshoot a sharp release by a little, so the A0 bound below is
+# not exact. 2% of the range is far below the scale of any real defect and
+# comfortably above Savitzky-Golay ringing.
+_AMPLITUDE_SLACK_FRAC = 0.02
+
+# Quality flags compute_pt_params attaches to a scored trial. None of them stops
+# a trial being scored (owner decision 2026-11-16: the app scores every kind of
+# swing, and no bound may refuse a severe leg); each says how the score was
+# reached so a reader can weigh it.
+FLAG_LARGE_DRIFT_CORRECTION = "large_drift_correction"
+FLAG_A0_EXCEEDS_CURVE_UNCORRECTED = "a0_exceeds_curve_scored_uncorrected"
+FLAG_A0_EXCEEDS_CURVE = "a0_exceeds_curve"
+
+
+def scoring_flag_text(params: Optional[dict]) -> str:
+    """One line describing how a trial's score was reached, for a status bar
+    or table cell: '' when nothing is flagged. Callers show this rather than
+    re-deriving it, so every tool says the same thing."""
+    if not params:
+        return ""
+    flags = list(params.get("quality_flags") or [])
+    if not flags:
+        return ""
+    text = f"scored with flags: {', '.join(flags)} (drift correction: " \
+           f"{params.get('drift_correction', 'none')}"
+    rejected = params.get("drift_correction_rejected")
+    if rejected:
+        text += f"; {rejected} correction dropped"
+    return text + ")"
+
+
+def _raw_span(angle_raw: np.ndarray) -> Optional[float]:
+    """Range of the finite raw samples, or None for a degenerate curve."""
+    finite = np.asarray(angle_raw, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if len(finite) < 2:
+        return None
+    span = float(np.nanmax(finite) - np.nanmin(finite))
+    return span if span > 0 else None
+
+
+def _a0_limit(angle_raw: np.ndarray, slope: Optional[float],
+              duration: float) -> Optional[float]:
+    """Largest A0 the raw curve plus the correction actually applied allows.
+
+    A0 is measured from a reference inside the curve (`neutral` is a median of
+    a window of it), so after a linear correction of |slope| * duration it
+    cannot exceed the raw span by more than that displacement, plus smoothing
+    slack. A sanctioned correction therefore can never cross this bound; only
+    a computation that moved the reference some other way can.
+
+    Correction-aware rather than a fixed multiple of the span: the earlier
+    span * 1.27 refused correct settled-tail corrections on stiff, sagging
+    legs that drift against their own sag, which are exactly the severe legs
+    the score must not drop. None when the curve is degenerate (not judged).
+    """
+    span = _raw_span(angle_raw)
+    if span is None:
+        return None
+    applied = abs(slope) * duration if slope is not None and np.isfinite(duration) else 0.0
+    return span + applied + _AMPLITUDE_SLACK_FRAC * span
+
+
 def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
                       release_idx: Optional[int] = None,
                       detrend: bool = True) -> Optional[dict]:
@@ -3017,12 +3205,14 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # the region that can actually show the problem. OptiTrack tails measure
     # +0.009 deg/s, so this is a no-op on optical curves and only bites where
     # there is real drift.
-    _MIN_BASELINE = 10
     _LAG_MARGIN_SEC = 0.05
     baseline_end = int(np.searchsorted(t_c[:rel_i], t_c[rel_i] - _LAG_MARGIN_SEC)) if rel_i > 0 else 0
     slope = None
+    drift_source = "none"
     if detrend:
         slope = _settled_tail_drift_slope(t_c, ang_c_raw, rel_i)
+        if slope is not None:
+            drift_source = "tail"
         # Only the still hold is baseline. A trial that opens at rest has a
         # lift before it (see _lift_hold_end), and fitting through that ramp
         # read A0 as 134-352 deg on real Control_6/7/8 trials. A trial held
@@ -3034,11 +3224,37 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
             ref = ang_s_raw[baseline_end - 1]
             while baseline_start > 0 and abs(ang_s_raw[baseline_start - 1] - ref) <= band:
                 baseline_start -= 1
-        if slope is None and baseline_end - baseline_start >= _MIN_BASELINE:
+        if slope is None:
             # Tail unusable (trial ended mid-swing, too short, still ringing).
-            # Fall back to the historical baseline fit rather than to nothing.
-            slope = float(np.polyfit(t_c[baseline_start:baseline_end],
-                                     ang_c_raw[baseline_start:baseline_end], 1)[0])
+            # Fall back to the historical baseline fit rather than to nothing --
+            # but guarded now, because unguarded it was worst exactly where the
+            # tail estimator had already declined to guess.
+            #
+            # The bound applies HERE and not to the tail estimator above. That
+            # one was tuned against 93 IMU trials by measured accuracy rather
+            # than by taste, and it legitimately corrects more than a quarter
+            # of a curve's range on the trials that drift most -- a synthetic
+            # with 6 deg of true drift over a 27.7 deg swing fits 0.97 deg/s
+            # and needs 35% of the range to remove it. Bounding that path would
+            # switch the correction off on exactly the trials it exists for.
+            #
+            # A fallback that fails these bounds is SKIPPED, never a refusal:
+            # the trial is scored uncorrected and `drift_correction` says so.
+            slope = _credible_drift_slope(
+                _baseline_drift_slope(t_c, ang_c_raw, baseline_end,
+                                      baseline_start),
+                t_c, ang_c_raw)
+            if slope is not None:
+                drift_source = "baseline"
+    quality_flags = []
+    duration = float(t_c[-1] - t_c[0])
+    raw_span = _raw_span(ang_c_raw)
+    if (slope is not None and raw_span is not None
+            and abs(slope) * duration > _MAX_TOTAL_CORRECTION_FRAC * raw_span):
+        # Only the settled-tail estimator can get here (the fallback is bounded
+        # above). It is applied, because it was tuned for exactly the trials
+        # that drift most, and flagged so the size of the correction is visible.
+        quality_flags.append(FLAG_LARGE_DRIFT_CORRECTION)
     if slope is not None:
         ang_c = ang_c_raw - slope * (t_c - t_c[0])
     else:
@@ -3107,6 +3323,32 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
     # Floor at A0_raw so detrend never pulls A0 below the first post-release sample.
     first_n = max(5, int(0.20 * len(phi)))
     A0 = max(float(np.nanmax(phi_s[:first_n])), A0_raw)
+
+    # A0 is an amplitude measured from a reference that lies INSIDE the curve
+    # (neutral is a median of a window of it), so it cannot exceed the raw
+    # curve's span by more than the correction actually applied (_a0_limit).
+    # Crossing that means the reference was moved by something other than the
+    # correction -- a computation fault, and A0 is the variable
+    # spasticity_grouping.classify_leg thresholds, so an inflated one would
+    # move the grouping. It is never a refusal (owner decision 2026-11-16):
+    # the curve is scored WITHOUT the correction instead, and flagged.
+    a0_limit = _a0_limit(ang_c_raw, slope, duration)
+    if a0_limit is not None and np.isfinite(A0) and A0 > a0_limit:
+        if slope is not None:
+            fallback = compute_pt_params(t, angle_raw, release_idx=release_idx,
+                                         detrend=False)
+            if fallback is not None:
+                # The corrected pass's flags describe a correction that was
+                # thrown away (e.g. large_drift_correction), so they are
+                # dropped: only the reason and the uncorrected pass's own
+                # flags describe the curve that was actually scored.
+                fallback["quality_flags"] = ([FLAG_A0_EXCEEDS_CURVE_UNCORRECTED]
+                                             + list(fallback["quality_flags"]))
+                fallback["drift_correction_rejected"] = drift_source
+            return fallback
+        # Uncorrected and still over: only a computation bug can do this.
+        # Scored as computed, flagged.
+        quality_flags.append(FLAG_A0_EXCEEDS_CURVE)
 
     # Re-detect peaks on phi with amplitude threshold. prominence=min_amp
     # (not just height=min_amp) is required: height alone only checks a
@@ -3289,6 +3531,14 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
         P_plus=P_plus, P_minus=P_minus, P_total=P_total,
         pk_i=pk_i2, tr_i=tr_i2,
         spasticity_type=spasticity_type,
+        # How the curve was corrected, and anything a reader should weigh.
+        # "tail", "baseline" or "none"; the slope is 0.0 when none was applied.
+        drift_correction=drift_source,
+        drift_slope_deg_s=float(slope) if slope is not None else 0.0,
+        # The correction that was tried and dropped because A0 crossed its
+        # bound, or None.
+        drift_correction_rejected=None,
+        quality_flags=quality_flags,
     )
 
 
@@ -4375,6 +4625,9 @@ def main() -> None:
                 mdl["pt"]  = None
                 mdl["mas"] = None
 
+        if params["quality_flags"]:
+            print(f"  [FLAG] {', '.join(params['quality_flags'])} "
+                  f"(drift correction: {params['drift_correction']})")
         print(f"  A0={params['A0_deg']:.1f}°  A1_pp={params['A1_deg']:.1f}°  "
               f"neutral={params['neutral_deg']:.1f}°  type={stype}")
         print(f"  R2n={params['R2n']:.3f}  N={params['N']:.1f}  "
