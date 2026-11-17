@@ -12,8 +12,8 @@
 mod golden;
 
 use mobile_imu_core::scoring::{
-    a0_limit, baseline_drift_slope, compute_pt_params, credible_drift_slope, score_waveform,
-    DriftCorrection, QualityFlag, SpasticityType,
+    a0_limit, baseline_drift_slope, compute_pt_params, compute_pt_params_with_limit,
+    credible_drift_slope, score_waveform, DriftCorrection, QualityFlag, SpasticityType,
 };
 
 fn close(got: f64, want: f64, tol: f64, what: &str) {
@@ -835,6 +835,36 @@ fn a_stiff_sagging_leg_is_scored_and_flagged_not_refused() {
     close(plain.a0_deg, golden::TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG, 1e-6, "A0 (plain)");
     assert_eq!(plain.drift_correction, DriftCorrection::None);
     assert!(plain.quality_flags.is_empty());
+}
+
+#[test]
+fn a0_past_the_bound_drops_the_correction_and_its_flags() {
+    // Mirrors the reference's forced test: the bound is pushed below A0
+    // whenever a correction is applied, so the corrected pass (which carries
+    // LargeDriftCorrection) is thrown away and the curve scored uncorrected.
+    // The discarded correction's flags go with it -- a trial must never read
+    // LargeDriftCorrection while drift_correction is None.
+    fn forced(ang: &[f64], slope: Option<f64>, duration: f64) -> Option<f64> {
+        if slope.is_some() {
+            Some(1.0)
+        } else {
+            a0_limit(ang, slope, duration)
+        }
+    }
+    let (t, ang) = (golden::TRIAL_A0_OVER_CURVE_T, golden::TRIAL_A0_OVER_CURVE_ANG);
+    let corrected = compute_pt_params(t, ang, None, true).expect("scored");
+    assert!(
+        corrected.quality_flags.contains(&QualityFlag::LargeDriftCorrection),
+        "fixture must flag its correction, or the flag-drop below proves nothing"
+    );
+
+    let p = compute_pt_params_with_limit(t, ang, None, true, forced).expect("scored, never refused");
+    let plain = compute_pt_params(t, ang, None, false).expect("scorable undetrended");
+    close(p.a0_deg, plain.a0_deg, 0.0, "A0 equals the uncorrected A0");
+    close(p.a0_deg, golden::TRIAL_A0_OVER_CURVE_PLAIN_A0_DEG, 1e-6, "A0 (plain)");
+    assert_eq!(p.drift_correction, DriftCorrection::None);
+    assert_eq!(p.drift_correction_rejected, Some(DriftCorrection::Tail));
+    assert_eq!(p.quality_flags, vec![QualityFlag::A0ExceedsCurveScoredUncorrected]);
 }
 
 #[test]

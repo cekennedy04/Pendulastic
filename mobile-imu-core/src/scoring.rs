@@ -824,6 +824,24 @@ pub fn compute_pt_params(
     release_idx: Option<usize>,
     detrend: bool,
 ) -> Option<PtParams> {
+    compute_pt_params_with_limit(t, angle_raw, release_idx, detrend, a0_limit)
+}
+
+/// Signature of the A0 bound, so a test can force the rescore branch.
+#[doc(hidden)]
+pub type A0LimitFn = fn(&[f64], Option<f64>, f64) -> Option<f64>;
+
+/// Test seam: [`compute_pt_params`] with the A0 bound supplied by the caller
+/// (the reference test monkeypatches `_a0_limit` the same way). The bound is
+/// used for the uncorrected rescore too. Not part of the supported API.
+#[doc(hidden)]
+pub fn compute_pt_params_with_limit(
+    t: &[f64],
+    angle_raw: &[f64],
+    release_idx: Option<usize>,
+    detrend: bool,
+    limit_fn: A0LimitFn,
+) -> Option<PtParams> {
     assert_eq!(
         t.len(),
         angle_raw.len(),
@@ -1009,13 +1027,18 @@ pub fn compute_pt_params(
     // fault, and A0 is the variable spasticity grouping thresholds. Never a
     // refusal: the curve is scored WITHOUT the correction instead, and
     // flagged. Mirrors the reference exactly, including the recursion.
-    if let Some(limit) = a0_limit(&ang_c_raw, slope, duration) {
+    if let Some(limit) = limit_fn(&ang_c_raw, slope, duration) {
         if a0.is_finite() && a0 > limit {
             if slope.is_some() {
                 let rejected = drift_source;
-                return compute_pt_params(t, angle_raw, release_idx, false).map(|mut p| {
-                    let mut flags = quality_flags.clone();
-                    flags.push(QualityFlag::A0ExceedsCurveScoredUncorrected);
+                // The corrected pass's flags describe a correction that was
+                // thrown away (e.g. LargeDriftCorrection), so they are
+                // dropped: only the reason and the uncorrected pass's own
+                // flags describe the curve that was actually scored.
+                let fallback =
+                    compute_pt_params_with_limit(t, angle_raw, release_idx, false, limit_fn);
+                return fallback.map(|mut p| {
+                    let mut flags = vec![QualityFlag::A0ExceedsCurveScoredUncorrected];
                     flags.extend(p.quality_flags.iter().copied());
                     p.quality_flags = flags;
                     p.drift_correction_rejected = Some(rejected);

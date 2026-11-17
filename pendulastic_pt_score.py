@@ -3338,8 +3338,11 @@ def compute_pt_params(t: np.ndarray, angle_raw: np.ndarray,
             fallback = compute_pt_params(t, angle_raw, release_idx=release_idx,
                                          detrend=False)
             if fallback is not None:
-                fallback["quality_flags"] = (quality_flags
-                                             + [FLAG_A0_EXCEEDS_CURVE_UNCORRECTED]
+                # The corrected pass's flags describe a correction that was
+                # thrown away (e.g. large_drift_correction), so they are
+                # dropped: only the reason and the uncorrected pass's own
+                # flags describe the curve that was actually scored.
+                fallback["quality_flags"] = ([FLAG_A0_EXCEEDS_CURVE_UNCORRECTED]
                                              + list(fallback["quality_flags"]))
                 fallback["drift_correction_rejected"] = drift_source
             return fallback

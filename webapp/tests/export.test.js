@@ -92,6 +92,34 @@ test('a scored trial reads as scorable and keeps its params block', () => {
   assert.equal(manifest.trials[0].params.f, params.f);
 });
 
+test('the manifest carries analysis_refusal and scoring_quality verbatim, null when absent', () => {
+  // How a score was reached travels with it: a reader of the export must be
+  // able to tell a corrected score from an uncorrected rescore, and a stored
+  // live-convention score from one the analysis convention could not produce.
+  const quality = {
+    drift_correction: 'none', drift_slope_deg_s: 0,
+    drift_correction_rejected: 'tail',
+    quality_flags: ['a0_exceeds_curve_scored_uncorrected'],
+  };
+  const files = buildExportFiles({
+    session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },
+    patient: { id: 'p1', clinic_patient_id: 'ANON-7', created_at: 1 },
+    trials: [
+      { ...trial('t1', 'a\n'), drift_correction: 'live',
+        analysis_refusal: 'release_never_detected', scoring_quality: quality },
+      trial('t2', 'b\n'),
+    ],
+  });
+  const manifest = JSON.parse(files.find((f) => f.name.endsWith('manifest.json')).text);
+  const [flagged, older] = manifest.trials;
+  assert.equal(flagged.analysis_refusal, 'release_never_detected');
+  assert.deepEqual(flagged.scoring_quality, quality);
+  assert.ok('analysis_refusal' in older && 'scoring_quality' in older,
+    'the fields are always present, so a reader can tell "not reported" from "missing"');
+  assert.equal(older.analysis_refusal, null);
+  assert.equal(older.scoring_quality, null, 'null means not reported, never "clean"');
+});
+
 test('the manifest carries params but no composite score', () => {
   const files = buildExportFiles({
     session: { id: 's1', patient_id: 'p1', timestamp: 1, exported_at: null },

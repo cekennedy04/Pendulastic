@@ -57,18 +57,29 @@ def test_baseline_filter_accepts_pre_and_any_case_of_default(world):
     assert len(rows) == 3 and unloadable == []
 
 
-def test_a_listed_non_control_is_excluded_even_under_the_control_prefix(monkeypatch, tmp_path):
-    """NOT_CONTROL_PIDS wins over the folder prefix: a participant filed under
-    the control prefix on disk must not enter the reference. Checked by
-    participant ID, with the folder lookup stubbed to claim every ID is a
-    control."""
+def test_the_recorded_diagnosis_must_agree_with_the_control_prefix(monkeypatch, tmp_path):
+    """A folder under the control prefix is not enough: the participant's
+    recorded diagnosis must map to the control group too. A misfiled
+    participant, or one with no diagnosis on record, stays out."""
     monkeypatch.setattr(dhr.pp, "find_participant_dir",
                         lambda root, pid: str(tmp_path / f"{dhr.pp.CONTROL_PREFIX}_{pid}"))
-    assert dhr.NOT_CONTROL_PIDS, "the exclusion list must not be empty"
-    for pid in dhr.NOT_CONTROL_PIDS:
-        assert dhr._is_control(pid) is False
-        assert dhr._is_control(f"{dhr.pp.CONTROL_PREFIX}_{pid}") is False
+    diagnoses = {"6": "Unaffected Control", "7": "control", "20": "MS",
+                 "21": "Stroke", "22": "Other Motor Impairment", "23": None}
+    monkeypatch.setattr(dhr.pp, "diagnosis_from_metadata",
+                        lambda root, pid: diagnoses.get(pid))
     assert dhr._is_control("6") is True
+    assert dhr._is_control(f"{dhr.pp.CONTROL_PREFIX}_7") is True
+    for pid in ("20", "21", "22", "23"):
+        assert dhr._is_control(pid) is False, pid
+
+
+def test_a_control_diagnosis_does_not_admit_a_folder_outside_the_control_prefix(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(dhr.pp, "find_participant_dir",
+                        lambda root, pid: str(tmp_path / f"{dhr.pp.MS_PREFIX}_{pid}"))
+    monkeypatch.setattr(dhr.pp, "diagnosis_from_metadata",
+                        lambda root, pid: "Unaffected Control")
+    assert dhr._is_control("6") is False
 
 
 def test_only_interpretable_trials_enter(world, monkeypatch):

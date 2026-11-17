@@ -177,6 +177,8 @@ def test_a0_past_the_bound_drops_the_correction_and_scores_uncorrected(monkeypat
     """Force the bound below A0 when a correction is applied: the trial is
     scored as detrend=False would score it, with the reason attached."""
     t, a = _sag_masked_by_drift()
+    corrected = compute_pt_params(t, a, detrend=True)
+    assert pts.FLAG_LARGE_DRIFT_CORRECTION in corrected["quality_flags"],         "fixture must flag its correction, or the flag-drop below proves nothing"
     real = pts._a0_limit
     monkeypatch.setattr(pts, "_a0_limit",
                         lambda ang, slope, dur: 1.0 if slope is not None else real(ang, slope, dur))
@@ -186,7 +188,9 @@ def test_a0_past_the_bound_drops_the_correction_and_scores_uncorrected(monkeypat
     assert p["A0_deg"] == plain["A0_deg"]
     assert p["drift_correction"] == "none"
     assert p["drift_correction_rejected"] == "tail"
-    assert pts.FLAG_A0_EXCEEDS_CURVE_UNCORRECTED in p["quality_flags"]
+    # The discarded correction's flags go with it: a trial must never read
+    # large_drift_correction while drift_correction is "none".
+    assert p["quality_flags"] == [pts.FLAG_A0_EXCEEDS_CURVE_UNCORRECTED]
 
 
 def test_a0_past_the_bound_with_nothing_to_drop_is_still_scored(monkeypatch):
