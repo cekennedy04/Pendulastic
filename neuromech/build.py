@@ -14,6 +14,9 @@ Outputs (neuromech/out/):
                              cached provenance differs from the code recalibrates instead of reusing
                              ladder.json, and a rig session refuses to mix the two.
 
+Edge check (owner decision O5): after writing, the build lists every scenario within EDGE_MARGIN_PT7 of a
+PT7 band edge and exits 1 if one is not in scenarios.NEAR_EDGE_ALLOWED (--allow-near-edge to build anyway).
+
 Rig angle convention: 0 = where a PASSIVE leg of this geometry hangs; + = toward extension.
 So a leg released from full extension starts at +(rest depth) and a toned leg settles at a
 non-zero rig angle -- the clinically meaningful non-vertical rest is kept, not re-zeroed.
@@ -44,6 +47,66 @@ FS_RIG = 1000.0        # the RT loop
 HOLD_S = 3.0
 RIG_LIMIT_DEG = 45.0   # current software angle limits; flagged, not enforced
 PARAMS7 = ["R2n", "N", "phi_max_ratio", "omega_max_n", "omega_min_n", "f", "area_ratio"]
+
+#: The PT7 band edges, from the scorer's own table (0/1, 1/1+, 1+/2, 2/3, 3/4).
+BAND_EDGES = tuple(th for th, _ in P._MAS)
+#: A preset this close to a band edge is one rig's tracking error, or one scorer revision, from the
+#: next band (owner decision O5, 2026-11-16: the clasp-knife pair delivered 0.007 above the 0/1 edge).
+EDGE_MARGIN_PT7 = 0.03
+
+
+def edge_distance(pt7: float):
+    """(signed distance to the nearest band edge, that edge): positive above the edge, negative below."""
+    e = min(BAND_EDGES, key=lambda x: abs(pt7 - x))
+    return pt7 - e, e
+
+
+def edge_check(rows, allowed=None, margin: float = EDGE_MARGIN_PT7):
+    """Which built scenarios sit within `margin` PT7 of a band edge, judged against an allowlist.
+
+    Every row with a finite PT7 is checked, refused or not: a refusal by a gate (A0) is one excursion
+    away from being scored, and then its PT7 is the verdict. Returns a dict:
+      flagged      [(sid, pt7, edge, dist)] near an edge and not allowlisted -- the build fails on these
+      allowed      [(sid, pt7, edge, dist)] near an edge and allowlisted
+      not_near     allowlisted sids that are no longer near an edge (the entry can go)
+      unknown      allowlisted sids the library does not build (a stale entry -- the build fails on these)
+    """
+    allowed = S.NEAR_EDGE_ALLOWED if allowed is None else allowed
+    out = dict(flagged=[], allowed=[], not_near=[], unknown=sorted(set(allowed) - {r["sid"] for r in rows}))
+    for r in rows:
+        pt = r.get("pt7")
+        if pt is None or not np.isfinite(pt):
+            continue
+        d, e = edge_distance(float(pt))
+        near = abs(d) < margin
+        if near:
+            out["allowed" if r["sid"] in allowed else "flagged"].append((r["sid"], float(pt), e, d))
+        elif r["sid"] in allowed:
+            out["not_near"].append(r["sid"])
+    return out
+
+
+def report_edge_check(res, margin: float = EDGE_MARGIN_PT7) -> bool:
+    """Print the edge check; True when it passes (nothing flagged, no stale allowlist entry)."""
+    def line(tag, sid, pt, e, d):
+        return f"  {tag:11s} {sid:16s} PT7 {pt:.4f}  {abs(d):.4f} {'above' if d >= 0 else 'below'} the {e:g} edge"
+    print(f"edge check: PT7 within {margin:g} of a band edge -- {len(res['flagged'])} flagged, "
+          f"{len(res['allowed'])} allowlisted (scenarios.NEAR_EDGE_ALLOWED)")
+    for sid, pt, e, d in res["allowed"]:
+        print(line("allowlisted", sid, pt, e, d))
+    for sid in res["not_near"]:
+        print(f"  note        {sid} is allowlisted but no longer within {margin:g} of an edge; the entry can go")
+    ok = not res["flagged"] and not res["unknown"]
+    if not ok:
+        print("!" * 100)
+        for sid, pt, e, d in res["flagged"]:
+            print(line("NEAR EDGE", sid, pt, e, d))
+        for sid in res["unknown"]:
+            print(f"  STALE       {sid} is in NEAR_EDGE_ALLOWED but is not built")
+        print("  Refit the preset to its band middle (build.fit_param; scenarios.BAND_MIDDLE), or, if sitting near")
+        print("  the edge is its purpose, add it to scenarios.NEAR_EDGE_ALLOWED with the reason.")
+        print("!" * 100)
+    return ok
 
 
 def _render_source(sc: S.Scenario):
@@ -121,12 +184,40 @@ def rig_setpoint(t, theta_model_deg, rest, sc: S.Scenario):
     return ts, sp, vel, acc, phase, len(pre) / FS_RIG
 
 
-def pt7_at(lam: float):
-    """PT7 the production scorer gives the severity axis at this lambda."""
-    sc = S.Scenario("cal", "A", "", S.severity(lam))
+def pt7_of(sc: S.Scenario):
+    """PT7 the production scorer gives one scenario, rendered and scored as the library is."""
     t, th, _, _ = render(sc)
     _, est = score(t, th, sc)
     return est["pt7"]
+
+
+def pt7_at(lam: float):
+    """PT7 the production scorer gives the severity axis at this lambda."""
+    return pt7_of(S.Scenario("cal", "A", "", S.severity(lam)))
+
+
+def fit_param(sc: S.Scenario, field_name: str, lo: float, hi: float, target: float, iters: int = 22):
+    """The bisection calibrate_ladder runs on lambda, on ONE other Params field of a preset: the value of
+    `field_name` in [lo, hi] at which the production scorer gives `target` PT7, the rest of the preset held.
+
+    PT7 must be monotone over the bracket; the direction is taken from its ends. PT7 is a step function of
+    most fields (N counts whole swings), so the answer can be the edge of a step: the presets fitted with it
+    (scenarios.BAND_MIDDLE) carry a value rounded onto the plateau nearest the target, and
+    tests/test_build_edge_check.py holds each within MID_BAND_TOL of its band middle and in band at +-5 %."""
+    from dataclasses import replace as _replace
+
+    def at(v):
+        return pt7_of(_replace(sc, params=_replace(sc.params, **{field_name: v})))
+
+    rising = (at(hi) or 0.0) > (at(lo) or 0.0)
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        v = at(mid)
+        if (v is None or v < target) == rising:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 def rising_branch_peak(hi: float = 2.0, step: float = 0.05):
@@ -276,12 +367,22 @@ def main():
         for f in os.listdir(os.path.join(OUT, sub_dir)):
             if f.endswith(ext) and f[: -len(ext)] not in built:
                 os.remove(os.path.join(OUT, sub_dir, f)); print(f"  removed stale {sub_dir}/{f}")
+    edges = edge_check(rows)
+    near = {sid: tag for tag in ("flagged", "allowed") for sid, *_ in edges[tag]}
+    for r in rows:
+        if r.get("pt7") is not None:
+            r["edge_dist_pt7"] = round(edge_distance(r["pt7"])[0], 4)
+            r["near_edge"] = {"flagged": "FLAGGED", "allowed": "allowlisted"}.get(near.get(r["sid"]), "")
     keys = list(dict.fromkeys(k for r in rows for k in r))
     with open(os.path.join(OUT, "scenario_manifest.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(rows)
     # written last, so a build that dies part-way leaves the old provenance and the next build starts over
     json.dump(prov, open(os.path.join(OUT, "provenance.json"), "w", encoding="utf-8"), indent=1)
     print(f"wrote {len(rows)} scenarios -> {OUT}  ({prov['score_formula_id']}, model {prov['model_hash']})")
+    # The library is written either way (it is what the code builds); the exit status says it is not fit to play.
+    if not report_edge_check(edges) and "--allow-near-edge" not in sys.argv:
+        raise SystemExit("edge check failed: a preset sits within "
+                         f"{EDGE_MARGIN_PT7:g} PT7 of a band edge (--allow-near-edge to build anyway)")
 
 
 if __name__ == "__main__":

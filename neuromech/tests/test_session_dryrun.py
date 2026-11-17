@@ -20,10 +20,9 @@ pytestmark = pytest.mark.skipif(not os.path.exists(os.path.join(SS.OUT, "scenari
 @pytest.fixture(scope="module")
 def session(tmp_path_factory):
     SS.SESS = str(tmp_path_factory.mktemp("sessions"))
-    # The catch run is K-HM1, not M-catch_release_high: on the scorer with #79's HEALTHY_REF the latter
-    # sits at PT7 0.139, 0.02 above the 0/1 edge, and the plant delivers it at 0.128 -- in band since the
-    # delivered release is used (0.117, band 0, before), but 0.008 from the edge. K-HM1's H was fitted to
-    # the middle of its band and holds it through the plant with room to spare (0.175 -> 0.169).
+    # The catch run is K-HM1: its H is fitted to the middle of band 1 (PT7 0.193 on the five-term scorer,
+    # refit 2026-11-17, decision O5) and holds it through the plant with room to spare. The clasp-knife
+    # (B-claspknife) was the edge case it replaced here, and was refit to the middle of band 1 the same day.
     return DR.run(["A-P0", "A-P1p", "K-HM1"], seed=3, keep=True)
 
 
@@ -93,19 +92,19 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
     """Was test_default_session_misses_exactly_the_two_edge_scenarios (7 of 9, pinned by #89).
 
     Re-pinned 2026-11-16 for the five-term scorer (pt5trough-ref-2026-11-16, omega_max_n out of the
-    canonical score). No preset was refit; the presets are a follow-up on the new scorer.
+    canonical score).
 
     The edge moved. B-claspknife and M-catch_release_high (one scenario built twice) intended PT7 0.139,
-    0.02 above the 0/1 edge, on the six-term scorer; on five terms (with #105's HEALTHY_REF) they intend 0.078,
-    mid band 0, and are
-    no longer edge runs. C-f-high is the new one: it intends 0.2813, 0.0013 above the 1/1+ edge, and the
-    plant's undershoot (0.0000 to 0.0017 at seeds 1, 3, 7, 11; 42 overshoots by 0.0045 through an extra
-    half-cycle) delivers it in band 1 on three of five seeds. So "every run in band" now excludes exactly
-    C-f-high, which is pinned as an edge run instead: it must still intend within 0.005 above the edge and
-    be delivered within 0.01 of it, in either band.
+    0.02 above the 0/1 edge, on the six-term scorer; on five terms (with #105's HEALTHY_REF) they intended
+    0.078, band 0. Decision O5 (refit 2026-11-17) put the clasp-knife in the middle of band 1 (0.200),
+    dropped the M copy, and put K-HM1 (refit to 0.193, band 1) in its slot. C-f-high is the edge run: it
+    intends 0.2818, 0.0018 above the 1/1+ edge, and is allowlisted as near-edge on purpose
+    (scenarios.NEAR_EDGE_ALLOWED). After the refit it was delivered at 0.2801 to 0.2818, band 1+, at seeds
+    1, 3, 7, 11 and 42, but that is 0.0001 from the edge, so it is still pinned as an edge run rather than
+    held to its band: it must intend within 0.005 above the edge and be delivered within 0.01 of it.
 
-    The catch runs are still pinned on their undershoot, which the drop made smaller: the plant's share
-    came through peak velocity (its resonance raises it), and peak velocity is no longer scored."""
+    The catch runs are pinned on their undershoot, which the drop of peak velocity made smaller: the
+    plant's share came through peak velocity (its resonance raises it)."""
     old = SS.SESS
     try:
         SS.SESS = str(tmp_path)
@@ -120,15 +119,16 @@ def test_default_session_delivers_every_band_and_the_edge_scenarios_stay_on_thei
     assert len(on_edge) == 1
     assert ((on_edge.int_pt7 > 0.28) & (on_edge.int_pt7 < 0.285)).all(), on_edge.int_pt7.tolist()
     assert ((on_edge.enc_pt7 - 0.28).abs() < 0.01).all(), on_edge.enc_pt7.tolist()
-    catch = sc[sc.sid.isin(["B-claspknife", "M-catch_release_high"])]
+    catch = sc[sc.sid.isin(["B-claspknife", "K-HM1"])]
     assert len(catch) == 2 and (catch.enc_N == catch.int_N).all(), catch[["sid", "int_N", "enc_N"]].values.tolist()
     # REGRESSION PIN, not a principle: the catch runs undershoot their intended PT7 by the plant's own share,
-    # measured at 0.0045 to 0.0051 at seeds 1, 3, 7, 11 and 42 on the five-term scorer (0.010 to 0.012 on six
-    # terms, where peak velocity was scored). 0.0015 to 0.008 is that measurement +-0.003: below it something
-    # is flattering the delivery, above it the session is adding undershoot of its own again.
-    # Re-baseline it if the scorer or plant changes.
+    # measured after the O5 refit at 0.0025 to 0.0029 (B-claspknife, release 36 deg) and 0.0016 to 0.0018
+    # (K-HM1) at seeds 1, 3, 7, 11 and 42 (the 25 deg clasp-knife gave 0.0045 to 0.0051; 0.010 to 0.012 on
+    # six terms, where peak velocity was scored). 0.0005 to 0.006 is that measurement with ~0.001 below and
+    # 0.003 above: below it something is flattering the delivery, above it the session is adding undershoot
+    # of its own again. Re-baseline it if the scorer, the plant or these presets change.
     under = catch.int_pt7 - catch.enc_pt7
-    assert ((under > 0.0015) & (under < 0.008)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
+    assert ((under > 0.0005) & (under < 0.006)).all(), catch[["sid", "int_pt7", "enc_pt7"]].values.tolist()
     # The METHOD, pinned on this plant: the onset-matched release is 27.4 ms after the commanded one here
     # (22.6 to 28.5 by scenario). An onset of 10 deg instead of 2 gives 19.7 ms and passed every test in this
     # file before this assertion existed; a whole-drop cross-correlation gives 14.5 to 19.
@@ -596,7 +596,7 @@ def test_the_ambiguity_checks_pass_a_clean_delivery_with_room_to_spare(plant):
     """The other half: the checks must not flag a good run. These are the scenarios nearest each limit (D-push
     and C-f-high have the largest hold rms, S-lam2 and D-push the weakest minimum), on the identified plant
     and at both ends of +-30 % bandwidth."""
-    for sid in ("A-P0", "D-push", "S-lam2", "C-f-high", "C-wmax-high", "M-catch_release_high"):
+    for sid in ("A-P0", "D-push", "S-lam2", "C-f-high", "C-wmax-high", "B-claspknife"):
         rel = _release(_deliver(sid, plant=plant))
         assert rel["flag"] == "", (sid, rel)
         assert rel["hold_rms_deg"] < 0.5 * SS.RELEASE_HOLD_STILL_MAX_DEG, (sid, rel)
@@ -1320,7 +1320,9 @@ def test_the_encoder_zero_is_taken_only_from_a_still_idle():
     assert np.isnan(SS._idle_offset(late, sp0, 1500))
 
 
-@pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 12)])
+# `alone` (flagged without the hold gain) is a measurement on PLANT_SIDS: at 0.97 it was 12 until the O5 refit
+# (2026-11-17) changed B-claspknife, B-flexor and B-clonus, and is 16 since; 0.98 and 1.02 did not move.
+@pytest.mark.parametrize("gain, alone", [(0.98, 10), (1.02, 5), (0.97, 16)])
 def test_an_arm_that_settles_a_few_percent_off_the_setpoint_is_not_a_tracking_fault(gain, alone):
     """The review's first mismatch: a static gain of 0.98 had 36 % of good runs flagged. 14 scenarios x 2 seeds on the
     identified plant times `gain`, against the plant as the chirp identifies it (the fit has no gain term, so the
@@ -1605,18 +1607,19 @@ def test_the_chirp_suspect_rule_in_numbers():
 
 def test_a_chirp_the_drive_only_just_followed_is_said_once_and_about_the_chirp(chirped, capsys):
     """A drive limited to 250 deg/s. The chirp asks for up to 500, the fit is still trusted (R2 0.98, misfit 8 %),
-    and it identifies 3.6 ms of delay the rig does not have: good runs are then 3.9 to 4.8 ms "early" and flagged as
-    lurches. The gate is not redesigned; the session says where to look. In memory the same rig at 300 deg/s (misfit
+    and it identifies 3.6 ms of delay the rig does not have: good runs are then 4.0 to 4.8 ms "early" and flagged as
+    lurches (all four since the O5 refit of B-claspknife, 2026-11-17; three of four before it, the fourth at -3.9). The gate is not redesigned; the session says where to look. In memory the same rig at 300 deg/s (misfit
     4.5 %, runs 2.8 to 3.4 ms early, none flagged) says nothing."""
     capsys.readouterr(); rep = _score_chirped(chirped, "sat250"); out = capsys.readouterr().out
     early = rep[rep.status.str.contains("early: a lurch", regex=False)]
-    assert len(early) == 3 and (rep.enc_lag_minus_pred_ms < -3.9).all() and (rep.enc_lag_minus_pred_ms > -4.9).all(), rep.status.tolist()
+    assert len(early) == 4 and (rep.enc_lag_minus_pred_ms < -3.9).all() and (rep.enc_lag_minus_pred_ms > -4.9).all(), rep.status.tolist()
     s = rep.chirp_suspect.iloc[0]
     assert (rep.chirp_suspect == s).all() and out.count("SUSPECT THE CHIRP, NOT THE RUNS") == 1 and s in out
     assert "the release is -4.1 ms from where the plant identified from R000 puts it (median of 4 runs" in s and "leaves 8.0 % of the chirp unexplained" in s, s
     assert _score_chirped(chirped, "sat250", "cli") == 1                                   # the flags stand; the sentence is where to look
     # runs whose release failed the check say nothing about the model: the session ratio is not taken from them
-    assert (rep.tracking_session_ratio_runs == 1).all() and (rep.model_mismatch_finding.fillna("") == "").all()
+    # (all four fail it since the O5 refit, so none is used; one was before it)
+    assert (rep.tracking_session_ratio_runs == 0).all() and (rep.model_mismatch_finding.fillna("") == "").all()
     rig = lambda u: _slew_limited(u, 300.0)                                                               # noqa: E731
     fit, why, misfit = _chirp_fit(respond=rig)
     res = [_judge(sid, fit, respond=rig) for sid in SLOW_SIDS]
