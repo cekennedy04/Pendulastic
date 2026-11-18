@@ -1,3 +1,5 @@
+> **Superseded 2026-11-18 as the route to validating the app's own angle** by `docs/plans/2026-11-18-001-plan-free-pendulum-encoder-weight-validation.md` (a free-swinging gravity pendulum with an encoder; run sheet `docs/bench/FREE_PENDULUM_ENCODER_RUN_SHEET.md`). This document was never run.
+
 > **Rescued from `bench/retest-abs` on 2026-11-16; may predate later fixes (notably the 2026-11-16 AHRS seed fix, #98).** Every phone-IMU number in it was measured with the mirrored gravity seed. Originally at the repository root as `TILTED_RIG_RUN_SHEET.md`. Participant folder names were reduced to participant numbers and home-directory paths to `<home>` for this public copy; per-participant clinical detail was withheld.
 
 # Tilted-Rig Run Sheet — app angle-accuracy validation
