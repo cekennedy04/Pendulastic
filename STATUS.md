@@ -159,14 +159,15 @@ scores move. "Not verified" is stated, never implied.
   and Gemini contrarian passes; details under Rig O1–O5 above. **First motor use 2026-11-18,
   staged per `neuromech/designer/RIG_CHECKLIST.txt`.** Not covered by software: closing the
   window, Ctrl+Break or a crash leaves the rig holding; no independent hardware cutoff.
-- **USB bundle for the rig PC (#114):** `python -m neuromech.rig_bundle` builds the Designer
+- **USB bundle for the rig PC (#114, merged 2026-11-17, reviewed):** `python -m neuromech.rig_bundle` builds the Designer
   (.NET 2/4 dual config, no install), the guarded kit and `library/` (1:1, 3 of 64 + chirp) and
-  `library_x0.70/` (labelled 0.70× render, 55 of 64), each file re-checked by the guard.
+  `library_x0.70/` (labelled 0.70× render, 55 of 64), each file re-checked by the guard;
+  `R-chirp` left out (owner, 2026-11-17: predicted 22° and ~970°/s at the arm).
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** #114 (rig USB bundle) until merged.
+- **Open PRs:** none for this workstream.
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
