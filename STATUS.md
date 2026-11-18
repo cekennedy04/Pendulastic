@@ -2,7 +2,7 @@
 
 **This is the single source of truth for what is being worked on.** Read it before
 starting; update it in the same PR that changes a workstream's state. Dated notes in
-`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; merges, 0.4.0 live and hosting decision recorded 2026-11-17; #112 merged 2026-11-17.
+`docs/reports/` are history, not status. Last full review: 2026-11-11; merges and owner decisions recorded 2026-11-16; merges, 0.4.0 live and hosting decision recorded 2026-11-17; #112, #115, #116, #117 merged and build 522923b0ba75 deployed 2026-11-17.
 
 ## Priorities (owner, 2026-11-10)
 
@@ -122,7 +122,8 @@ scores move. "Not verified" is stated, never implied.
   reference file holds only person, A0 and peak; see decision 6).
 - **Current numbers (2026-11-17, core 0.4.0 / `pt5trough-ref-2026-11-16`, with #112):**
   `python -m neuromech.build` writes 64 scenarios (`M-catch_release_high`
-  dropped by #112; `C-wmax-low` and `R-reflex-force` dropped as duplicates, decision c). The A-P2 and A-P3 presets are unreachable on the current scorer. The
+  dropped by #112; `C-wmax-low` and `R-reflex-force` dropped as duplicates, decision c, #115
+  merged 2026-11-17). The A-P2 and A-P3 presets are unreachable on the current scorer. The
   simulated dry run delivers 9 of 9 runs in their intended band at seeds 11, 1, 3, 7
   and 42 (7 of 9 before #96).
 - **O5 preset refit (#112, merged 2026-11-17, reviewed and re-reviewed):** presets refitted to their band middles on
@@ -133,7 +134,7 @@ scores move. "Not verified" is stated, never implied.
   band edge. The `M-tone_L*` ladder is deliberately not moved (see the PR).
   Owner merged it as is (B-claspknife in band 1, release 25 -> 36 deg; the
   `catch_release_high` profile now uses 36 deg). **Review decisions a-c: decided (owner,
-  2026-11-17, "go with whatever you recommend"), implemented in the `neuromech/refit-decisions` PR:**
+  2026-11-17, "go with whatever you recommend"), implemented in #115 (merged 2026-11-17, reviewed):**
   (a) the `M-tone_L*` ladder stays as is (accepted: L1 band 0, L2 band 1, L3/L4 band 1+);
   `python -m neuromech.build` now prints an intent-mismatch report (report only, exit status
   unchanged) with the known mismatches marked accepted (`scenarios.INTENT_MISMATCH_ACCEPTED`);
@@ -146,11 +147,26 @@ scores move. "Not verified" is stated, never implied.
   `B-leadpipe`/`M-fall_no_ringdown`, `B-contracture`/`M-contracture_stop`; dropping those is
   open for the owner). Smaller follow-ups: the edge check does not stop `session.plan` from
   playing a flagged library.
+- **After the 2026-11-18 meeting (from the #115 review):** `B-mixed` renders the same swing as
+  `A-P1p` (its flexor reflex never fires: return swing 0.57 rad/s < `flex_vth` 0.8): refit or
+  drop it, and make the duplicate check also compare rendered setpoints/traces; owner to keep or
+  drop the allowlisted look-alike sets; the `A-P1`/`B-extensor`/`B-habit1` allowlist entry will
+  fail the build once band 2 becomes reachable after a recalibration (say so in its reason);
+  stale detection for `INTENT_MISMATCH_ACCEPTED`; seed synthetic session logs by scenario, not
+  slot; `test_model_rt_ports::test_importing_profiles_does_not_build_them` is a wall-time test
+  that flakes under load (also on main).
+- **Motor playback safety guard (#117, merged 2026-11-17):** three review rounds plus Codex
+  and Gemini contrarian passes; details under Rig O1–O5 above. **First motor use 2026-11-18,
+  staged per `neuromech/designer/RIG_CHECKLIST.txt`.** Not covered by software: closing the
+  window, Ctrl+Break or a crash leaves the rig holding; no independent hardware cutoff.
+- **USB bundle for the rig PC (#114):** `python -m neuromech.rig_bundle` builds the Designer
+  (.NET 2/4 dual config, no install), the guarded kit and `library/` (1:1, 3 of 64 + chirp) and
+  `library_x0.70/` (labelled 0.70× render, 55 of 64), each file re-checked by the guard.
 - **Release alignment (#96, merged):** rig sessions are scored from the delivered release
   (the arm leaves the hold 18 to 30 ms after the command) and runs where it cannot be
   found are flagged. Reviewed twice. Simulation only. **Do not report scores from a real
   rig session yet:** the fixed 25 ms tracking limit suits only the simulated plant.
-- **Open PRs:** none for this workstream.
+- **Open PRs:** #114 (rig USB bundle) until merged.
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
   with a release check against that plant, a session-level MODEL MISMATCH FINDING, a hold
@@ -303,7 +319,7 @@ scores move. "Not verified" is stated, never implied.
 - **Canonical branch:** `main`. `integrate-webapp` (local only, not on origin) and
   `feat/webapp-workbench-restyle` are stale; do not build or deploy from them.
 - **Entry points:** `webapp/` (vanilla ES modules, wasm from `mobile-imu-core`);
-  deploy is a manual Vercel upload of `webapp/dist` to project `pendulastic-app`.
+  deploy with `npm run deploy` in `webapp/` (scripted Vercel upload to project `pendulastic-app`).
 - **Gap to the reference:** closed by the reference-footing PR (workstream 3): from core
   0.4.0 the app scores on the reference footing and agrees with Python on every corpus
   trial. Records carry `score_formula_id` and `scoring_footing`; the trends view breaks a
@@ -317,7 +333,15 @@ scores move. "Not verified" is stated, never implied.
   `docs/reference/offline-usb.md`. The custom-domain plan in `docs/reference/custom-domain.md`
   is dropped (domain not bought; leaving Vercel). **Owner:** try the USB file on one
   Android phone.
-- **Backlog:** scripted deploy; eviction soak test; zone recalibration (blocked: only 2
+- **Bench-readiness release (#116, merged and deployed 2026-11-17, build `522923b0ba75`,
+  algorithm `0.4.0+777e57ce0933`; scorer unchanged):** research raw recorder no longer discards
+  unscorable recordings; worker errors are routed to the request they answer; crash/timeout
+  shows NOT saved instead of hanging; iOS motion permission requested inside the tap; Stop
+  pinned during capture; parameter panel opens on the scored five (owner); scripted deploy
+  `npm run deploy` (clean origin/main only, tests, `--project pendulastic-app`, verifies the live
+  BUILD_ID). Local `.vercel/` link to the wrong project deleted (owner, 2026-11-17). After a
+  deploy, iPhones must close and reopen the app (cache-first service worker).
+- **Backlog:** eviction soak test; zone recalibration (blocked: only 2
   legs with MAS ≥ 1); app bugs in `TODOS.md`.
 
 ### 8. Video / pose estimation, desktop apps, `web/`, `mobile/` — TO ARCHIVE
