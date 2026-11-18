@@ -84,6 +84,21 @@ def test_plate_rotation_keeps_gaps_as_nan_and_starts_at_the_first_tracked_frame(
     assert np.isfinite(got[400])
 
 
+def test_plate_rotation_survives_a_gap_the_shank_swung_more_than_90_degrees_through():
+    """Seen on the corpus: the examiner's hands hide the plate through the
+    first fall, and a frame whose long edge is carried by continuity comes
+    back reversed, reading +/-180."""
+    n = 400
+    ang = np.concatenate([np.zeros(100), np.linspace(0, 120, 100), np.full(200, 120.0)])
+    mk = np.empty((3, n, 3))
+    for i in range(n):
+        mk[:, i, :] = _BASE @ _rot([0, 0, 1], ang[i]).T
+    mk[:, 95:205, :] = np.nan
+    got = lc.plate_rotation_deg(_noisy(mk))
+    assert np.nanmax(np.abs(got[:95])) < 3.0
+    assert np.nanmedian(got[205:]) == pytest.approx(120.0, abs=2.0)
+
+
 def test_bar_rotation_measures_how_far_the_thigh_line_turned():
     n = 200
     bar = np.empty((3, n, 3))

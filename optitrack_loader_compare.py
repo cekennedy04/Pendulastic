@@ -138,9 +138,21 @@ def plate_frames(triangle: np.ndarray) -> np.ndarray:
     """(n, 3, 3) orthonormal frame of a marker triangle, NaN where untracked.
 
     Built only from quantities that do not depend on which marker Motive
-    called 1, 2 or 3: the longest edge (as a line) and the plate normal (as a
-    line), each made sign-continuous in time. So a re-labelled frame cannot
-    turn into a jump, and nothing about the limb's pose is assumed.
+    called 1, 2 or 3, so a re-labelled frame cannot turn into a jump, and
+    nothing about the limb's pose is assumed:
+
+      e3  the plate normal. Its sign is not determined by the shape, so it is
+          carried by continuity in time. The normal is close to the swing
+          axis, which barely moves in a pendulum test, so continuity holds
+          across a tracking gap however far the shank swung meanwhile.
+      e1  along the longest edge (the best-conditioned direction on the
+          plate), pointing so that e1 x (midpoint of that edge -> the third
+          marker) is along e3. Given e3, that is determined by the shape.
+      e2  e3 x e1.
+
+    Carrying the long edge's own sign by continuity instead does not survive
+    a gap: the shank can turn more than 90 degrees while unseen, and the edge
+    then comes back reversed.
     """
     n = triangle.shape[1]
     frames = np.full((n, 3, 3), np.nan)
@@ -148,20 +160,24 @@ def plate_frames(triangle: np.ndarray) -> np.ndarray:
     if ok.sum() < 3:
         return frames
     a, b, c = triangle[0], triangle[1], triangle[2]
-    edges = np.stack([b - a, c - b, a - c])                    # (3, n, 3)
+    # Edge i is opposite marker i.
+    edges = np.stack([c - b, a - c, b - a])                    # (3, n, 3)
     lengths = np.linalg.norm(edges, axis=2)                    # (3, n)
-    with np.errstate(invalid="ignore"):
-        longest = np.where(ok, np.nanargmax(np.where(np.isfinite(lengths),
-                                                     lengths, -1.0), axis=0), 0)
-    e1 = edges[longest, np.arange(n)]
-    normal = np.cross(b - a, c - a)
+    lengths = np.where(np.isfinite(lengths), lengths, -1.0)
+    apex_i = np.argmax(lengths, axis=0)                        # marker off the long edge
+    rows = np.arange(n)
+    apex = triangle[apex_i, rows]
+    mid = (triangle.sum(axis=0) - apex) / 2.0
+    long_edge = edges[apex_i, rows]
     with np.errstate(invalid="ignore", divide="ignore"):
-        e1 = e1 / np.linalg.norm(e1, axis=1, keepdims=True)
+        long_edge = long_edge / np.linalg.norm(long_edge, axis=1, keepdims=True)
+        normal = np.cross(long_edge, apex - mid)
         normal = normal / np.linalg.norm(normal, axis=1, keepdims=True)
-    e1[~ok] = np.nan
+    long_edge[~ok] = np.nan
     normal[~ok] = np.nan
-    e1 = _continuous(e1)
     e3 = _continuous(normal)
+    with np.errstate(invalid="ignore"):
+        e1 = long_edge * np.sign(np.sum(normal * e3, axis=1, keepdims=True))
     e2 = np.cross(e3, e1)
     frames[:, :, 0], frames[:, :, 1], frames[:, :, 2] = e1, e2, e3
     return frames

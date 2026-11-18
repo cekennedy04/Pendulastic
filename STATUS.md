@@ -289,8 +289,20 @@ scores move. "Not verified" is stated, never implied.
   is stale. Records made after the live app is redeployed carry `ALGORITHM_VERSION`
   `0.2.0+...`. Independent review of the split: `docs/seed-fix-split-review`.
 
-### 5. OptiTrack / RMSE validation — STABLE
-- **Canonical branch:** `main` (#81, #88 merged).
+### 5. OptiTrack / RMSE validation — IN REVIEW (validation report)
+- **Canonical branch:** `main` (#81, #88 merged). Open: `claude/optitrack-vs-imu-0130a7`
+  (IMU against OptiTrack on the human recordings; analysis code and report only, no loader or
+  scorer change).
+- **Report:** `docs/reports/2026-11-18-imu-vs-optitrack-validation.md`. On 159 paired trials the
+  sensor tracks the shank plate (RMSE median 3.9 deg, gain 1.00); the app's angle loses amplitude
+  (gain 0.85) through its captured flexion axis; the PT score does not yet match (verdict kappa
+  0.49); the current OptiTrack loader's hinge axis is wrong on 130 of 159 trials.
+- **Reference (owner, 2026-11-18):** shank-plate rotation for tracking, refit knee angle for the
+  knee. The refit lives in `optitrack_loader_compare.py` / `imu_optitrack_validation.py` as
+  analysis code.
+- **Proposed, not started:** loader fix PR for `optitrack_knee_axis.hinge_axis`; app
+  flexion-axis capture; why A0, R2n and area ratio differ between curves that agree; whether
+  low-coverage takes are excluded (owner).
 - **Entry points:** `batch_imu_vs_optitrack_rmse.py`, `rmse_pipeline_common.py`.
 - **Gaps:** the RMSE gate compares only the active swing window, so it could not see the seed bug;
   do not treat it as a sufficient gate for filter changes. The result "AHRS floor has zero effect on
