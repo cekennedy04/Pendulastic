@@ -136,38 +136,101 @@ def test_passive_rest_solver_matches_simulation_with_spring(start):
     assert np.median(r["q_deg"][-2000:]) == pytest.approx(rest, abs=0.05)
 
 
+def _damped_arm(zeta, q0, *, K=2.5, kref=None, walls=False):
+    """Flexion-start elbow, horizontal humerus (gravity zero at q = 90 deg).
+    Returns (t, q_deg, J, m*g*l_c, B, total K at the rest, tissue K)."""
+    kw = dict(start="flexion", rest_q_deg=90.0, k_passive=K, use_limit=walls)
+    if kref is not None:
+        kw["k_passive_ref_q_deg"] = kref
+    p = ul.elbow_params(B=1.0, **kw)
+    lc, m, J = rt.inertia(p)
+    kg = m * rt.ref.G * lc
+    kg_lin = kg * math.cos(math.radians(ul.passive_rest_q_deg(p, start="flexion") - 90.0))
+    B = zeta * 2 * math.sqrt((K + kg_lin) * J)
+    r = ul.simulate_elbow(ul.elbow_params(B=B, **kw), start="flexion", release_q_deg=q0, duration=15.0)
+    return r["t"], r["q_deg"], J, kg, B, K + kg_lin, K
+
+
 @pytest.mark.parametrize("zeta_target", [0.9, 1.5, 2.0])
 @pytest.mark.parametrize("q0", [100.0, 115.0, 130.0])
 def test_heavily_damped_elbow_scores_from_any_release_with_gravity_known(zeta_target, q0):
     """The patient end (high zeta) must not be scored or refused by release angle.
-    Gravity known -> fit over the large-amplitude start, where the fast mode lives.
+    Gravity mode fits over the large-amplitude start, where the fast mode lives.
     Walls off, so the truth is exactly the spring and the damping: this tests the
-    scorer, not the (open) wall model, whose stiffening near 145 deg would read
-    as extra K on a large release."""
+    scorer, not the (open) wall model."""
     from neuromech.elbow_score import score_elbow
-    K = 2.5
-    p0 = ul.elbow_params(start="flexion", rest_q_deg=90.0, k_passive=K, use_limit=False)
-    lc, m, J = rt.inertia(p0)
-    kg = m * rt.ref.G * lc
-    B = zeta_target * 2 * math.sqrt((K + kg) * J)
-    p = ul.elbow_params(start="flexion", rest_q_deg=90.0, k_passive=K, B=B, use_limit=False)
-    r = ul.simulate_elbow(p, start="flexion", release_q_deg=q0, duration=15.0)
-    s = score_elbow(r["t"], r["q_deg"], J=J, k_gravity=kg)
-    assert s.fit_mode == "gravity", s.refusals
+    t, q, J, kg, B, Ktot, K = _damped_arm(zeta_target, q0)
+    s = score_elbow(t, q, J=J, k_gravity=kg, gravity_zero_deg=90.0)
+    assert s.fit_mode == "gravity"
     assert s.B_fit == pytest.approx(B, rel=0.03), s.refusals
+    assert s.K_fit == pytest.approx(Ktot, rel=0.03)
     assert s.K_tissue_fit == pytest.approx(K, rel=0.05)
 
 
-def test_large_release_reads_wall_stiffening_as_extra_k():
-    """Documents the open wall question's effect on the scorer: with the reference
-    wall on, a release 40 deg out reads tissue K well above the spring."""
+@pytest.mark.parametrize("zeta_target", [1.5, 2.0])
+@pytest.mark.parametrize("q0", [115.0, 130.0])
+def test_linear_mode_refuses_heavily_damped_arm_released_far_out(zeta_target, q0):
+    """Review round 4: without gravity mode this read B -47..-73%, K -54..-79% at
+    R^2 > 0.9999 and passed every gate. Only the slow mode reaches the 15 deg
+    window, so B and K are not separable: refuse."""
     from neuromech.elbow_score import score_elbow
-    K = 2.5
-    p = ul.elbow_params(start="flexion", rest_q_deg=90.0, k_passive=K, B=1.5)
+    t, q, J, kg, B, Ktot, K = _damped_arm(zeta_target, q0)
+    s = score_elbow(t, q, J=J)
+    assert s.B_fit is None and s.K_fit is None
+    assert "slow mode" in s.refusals["fit"]
+
+
+def test_gravity_mode_handles_a_rest_off_the_vertical():
+    """Spring reference at 40 deg pulls the rest to ~66 deg, off the vertical.
+    Gravity's static torque there is balanced by the spring; gravity mode must
+    still recover B, total K (with gravity's cos-reduced share) and tissue K."""
+    from neuromech.elbow_score import score_elbow
+    t, q, J, kg, B, Ktot, K = _damped_arm(0.3, 115.0, kref=40.0)
+    s = score_elbow(t, q, J=J, k_gravity=kg, gravity_zero_deg=90.0)
+    assert s.rest_deg == pytest.approx(65.6, abs=0.5)
+    assert s.B_fit == pytest.approx(B, rel=0.03), s.refusals
+    assert s.K_fit == pytest.approx(Ktot, rel=0.03)
+    assert s.K_tissue_fit == pytest.approx(K, rel=0.03)
+
+
+def test_wall_stiffening_is_refused_not_read_as_extra_k():
+    """With the reference wall on, a heavily damped arm released toward 145 deg
+    sees a stiffness that changes with amplitude (read K +17%, tissue K +35%
+    before this check). The window's halves disagree, so the fit is refused."""
+    from neuromech.elbow_score import score_elbow
+    t, q, J, kg, B, Ktot, K = _damped_arm(1.5, 130.0, walls=True)
+    s = score_elbow(t, q, J=J, k_gravity=kg, gravity_zero_deg=90.0)
+    assert s.K_fit is None and s.K_tissue_fit is None
+    assert "halves disagree" in s.refusals["fit"]
+    assert s.fit_split_dev > 0.5
+
+
+def test_rest_held_by_the_wall_is_refused():
+    """de Lima posture: the rest is pinned near the extension wall, where no
+    linear model holds. Every mode must refuse, not report a negative K_tissue."""
+    from neuromech.elbow_score import score_elbow
+    p, q0 = ul.de_lima_bare(B=1.0)
     lc, m, J = rt.inertia(p)
-    r = ul.simulate_elbow(p, start="flexion", release_q_deg=130.0, duration=15.0)
-    s = score_elbow(r["t"], r["q_deg"], J=J, k_gravity=m * rt.ref.G * lc)
-    assert s.K_tissue_fit > 1.2 * K
+    r = ul.simulate_elbow(p, start="flexion", release_q_deg=q0, duration=15.0)
+    for kw in (dict(), dict(k_gravity=m * rt.ref.G * lc, gravity_zero_deg=0.0)):
+        s = score_elbow(r["t"], r["q_deg"], J=J, **kw)
+        assert s.B_fit is None and s.K_fit is None and s.K_tissue_fit is None
+        assert "fit" in s.refusals
+
+
+@pytest.mark.parametrize("gz", [90.0, None])
+def test_overstated_gravity_refuses_tissue_k_but_keeps_total(gz):
+    """k_gravity x2: total K and B do not depend on it, tissue K would go
+    negative, so tissue K alone is refused. (k_gravity is an input: an error
+    small enough to keep tissue K positive cannot be detected and passes
+    straight into it -- x1.5 reads 1.13 for a true 2.5.)"""
+    from neuromech.elbow_score import score_elbow
+    t, q, J, kg, B, Ktot, K = _damped_arm(0.3, 115.0)
+    kw = dict(k_gravity=2 * kg) | ({} if gz is None else dict(gravity_zero_deg=gz))
+    s = score_elbow(t, q, J=J, **kw)
+    assert s.B_fit == pytest.approx(B, rel=0.03)
+    assert s.K_fit == pytest.approx(Ktot, rel=0.03)
+    assert s.K_tissue_fit is None and "K_tissue" in s.refusals
 
 
 def test_absolute_angle_modules_are_refused():

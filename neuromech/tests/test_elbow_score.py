@@ -34,12 +34,20 @@ def test_both_estimators_recover_zeta_and_k():
     assert not s.refusals
 
 
-def test_mildly_overdamped_refuses_logdec_but_fits():
-    t, q, zeta, _ = linear_trace(B=2 * math.sqrt(K * J) * 1.2)
+def test_mildly_overdamped_refuses_logdec_but_fits_when_released_in_range():
+    t, q, zeta, _ = linear_trace(B=2 * math.sqrt(K * J) * 1.2, x0=12.0)
     s = score_elbow(t, q, J=J)
     assert "logdec" in s.refusals and s.zeta_logdec is None
     assert s.zeta_fit >= 1.0
     assert s.zeta_fit == pytest.approx(zeta, rel=0.05)
+
+
+def test_overdamped_released_beyond_the_fit_range_is_refused():
+    """No swing past the rest and released outside the window: only the slow
+    mode is left in range, whatever R^2 says."""
+    t, q, _, _ = linear_trace(B=2 * math.sqrt(K * J) * 1.2, x0=40.0)
+    s = score_elbow(t, q, J=J)
+    assert s.zeta_fit is None and "slow mode" in s.refusals["fit"]
 
 
 def test_heavily_overdamped_refuses_both():
