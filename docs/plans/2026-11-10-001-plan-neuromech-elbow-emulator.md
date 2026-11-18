@@ -235,3 +235,31 @@ Lin's C is 2–7× other elbow studies (0.1–0.3, MacKay 1986); the authors att
 **Lindberg 2011 (the wrist source; file `Biomech_model_spasticity.pdf`).** Wrist extension on a motor platform, about 20° flexion to 30° extension, 5 (slow) and 71, 142, 236 °/s, 400 Hz; 31 stroke, 13 controls. Not an ODE: a force decomposition from three time points, F = elastic + viscous + neural + inertial, with IC = m·a (hand mass 0.6 % body weight), EC at 1 s after the slow stretch (includes the non-linear end-range stiffness), VC at P1 = total − IC and at P2 = 0.2 × that, NC = total at P2 − (EC + VC); gravity corrected for hand and platform. NC falls under nerve block, tracks EMG (r .58–.86), rises with speed in patients only, and with total force correlates with MAS (r > .6); EC and VC do not. Enough to start W1–W3.
 
 **Still open.** Elbow range-wall stiffness (no source gives a relaxed resting angle or end-range stiffness for the elbow); Lin's apparatus mass and inertia; individual-subject traces (only plotted).
+
+### 11.7 U5 result: the Lin-rig gate (2026-11-18)
+
+Owner decisions (2026-11-18): model Lin's rig with the unprinted inertia **bracketed**; damping **split** into tissue (0.2, non-pendulum literature) and a rig term (`LIN_RIG_B` 0.45, sized to Lin's healthy C); **per-start** tissue scale for the extension start (`EXTENSOR_SCALE_HUANG` 1.5, Huang 2016's controls); after the result below, **accept with the limits recorded** and go on to U6.
+
+Built: `upper_limb.lin_apparatus` (inverted forearm + counterweight below the pivot, gravity = counterweight minus forearm, inertia forearm + `rig_j`, releases 130° / 50°), `lin_k_tissue` (Lin 2005's weight regression), `elbow_params(extensor_scale=...)` (default 1: the knee-style mirror model is unchanged), `ElbowScore.eta_lin` (Lin 2003 eq 4, tissue K only), `neuromech/elbow_validation.py` (`python -m neuromech.elbow_validation` prints the table) and its tests.
+
+`LIN_RIG_J_BRACKET` = 0.55–1.15 kg·m², from Lin 2003 fig 4 (η ≈ 0.15 with C ≈ 0.45, K ≈ 2.6 gives I ≈ 0.87) and the plotted healthy traces (first trough ≈ 1.0–1.4 s). 64 kg, 1.65 m subject:
+
+| case | rig J | swings (3°) | RI | first turn s | C fit | K tissue fit | ζ | η (Lin) | refused |
+|---|---|---|---|---|---|---|---|---|---|
+| healthy, flexion start | 0.55 | 4 | 1.60 | 0.98 | 0.63 | 2.74 | 0.16 | 0.25 | – |
+| healthy, flexion start | 1.15 | 7 | 1.70 | 1.37 | 0.63 | 2.75 | 0.11 | 0.17 | – |
+| healthy, extension start | 0.55 | 4 | 1.57 | 0.90 | 0.75 | 4.04 | 0.17 | 0.24 | – |
+| healthy, extension start | 1.15 | 6 | 1.67 | 1.26 | 0.75 | 4.05 | 0.12 | 0.17 | – |
+| k_v 0.2, flexion start | 0.55 | 4 | 1.50 | 0.98 | – | – | – | – | logdec, fit |
+| k_v 0.2, flexion start | 1.15 | 6 | 1.62 | 1.37 | 0.77 | 2.80 | 0.14 | 0.21 | – |
+| k_v 0.5, flexion start | 0.55 | 3 | 1.38 | 0.98 | 1.08 | 3.02 | 0.27 | 0.40 | logdec |
+| k_v 0.5, flexion start | 1.15 | 4 | 1.52 | 1.37 | 1.01 | 2.87 | 0.18 | 0.27 | – |
+| k_v 1.0, flexion start | 0.55 | 2 | 1.22 | 1.01 | 1.70 | 3.56 | 0.41 | 0.58 | logdec |
+| k_v 1.0, flexion start | 1.15 | 3 | 1.37 | 1.39 | – | – | – | – | logdec, fit |
+
+What each row tests: K is an input (read back 0.17 high, the range wall's leak), C is calibrated, the first-turn time fixed the bracket; **swings and RI are the predictions**, and the k_v ladder tests Lin 2003's central finding.
+
+- **Passes:** healthy swings 4–7 at a 3° count (Lin 4.1–5.7, SD ≈ 2; Lin counted plotted peaks with no printed threshold, our default 1° counts 7–9); η and C below Lin's cut-offs when healthy and above them with a velocity drive (k_v 0.5: C 1.0–1.1 > 0.9; k_v 1.0: η 0.58 > 0.4) while fitted K moves 5–10 % (Lin: K not significant, SD ≈ 40 %); swings and RI fall with the drive; the extension start fits higher K and C (an input, Huang).
+- **Mismatch, recorded (strict xfail):** healthy RI 1.57–1.70 vs Lin 1.43–1.51 (SD ≈ 0.2), inside 1.5 SD. Lin's averages cannot all hold in a linear model: RI 1.45 needs a total damping ratio ≈ 0.25, η ≈ 0.15 (tissue K only, so ≥ the total ratio) needs ≤ 0.15, and the trace timing sits between. Rig dry friction (probed, `coulomb_nm` 0.1–0.3) fixes swings but barely moves RI, and the scorer correctly refuses those traces as non-linear. Options left open: amplitude-dependent tissue damping, or raw traces (ours or Lin's).
+- **De Groote tone + reflex ladder** (tone scaled 0.25 of the knee's): swings 7 → 2 and RI 1.60 → 1.09 in the right direction, but the fit is refused (the rest shifts and the motion is non-linear), so it gives no K or C to compare with Lin. U6 must decide which drive represents elbow spasticity.
+- **Still open:** elbow range-wall stiffness; Lin's real rig inertia; whether the elbow's spastic drive is velocity (k_v) or De Groote force feedback.

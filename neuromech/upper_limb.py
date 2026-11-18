@@ -47,6 +47,7 @@ with `neuromech.elbow_score`.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 
@@ -81,6 +82,42 @@ WINTER_HAND_KPROX_FRAC = 0.587
 ELBOW_RANGE_DEG = (0.0, 145.0)
 
 STARTS = ("extension", "flexion")
+
+#: Extension-start tissue scale. Huang 2016 (controls, n = 22, fig 2, read from
+#: the bar chart): the 50 deg (extension) start fits K ~4.6 vs ~2.9 and C ~1.2 vs
+#: ~0.8 for the 130 deg start, in every group. Applied per START, the way Huang
+#: fitted it (one K, C per trajectory), to the tissue spring and tissue damping.
+EXTENSOR_SCALE_HUANG = 1.5
+
+# ── Lin apparatus (Lin 2003 pp. 70-71; same rig in 2005, 2007, Huang 2016) ──
+#: Counterweight on the shaft's lower end, kg, and its distance below the pivot,
+#: m (the 107.5 cm shaft pivots at its midpoint on the elbow axis).
+LIN_COUNTERWEIGHT_KG = 1.13
+LIN_COUNTERWEIGHT_M = 1.075 / 2
+#: Releases: 130 deg (Lin 2003 onward) and its mirror, 50 deg (Huang 2016).
+LIN_RELEASE_Q_DEG = {"flexion": 130.0, "extension": 50.0}
+#: Apparatus inertia about the elbow, kg.m^2, NOT PRINTED in any paper ("Chen's
+#: method"). Bracketed from Lin's own numbers instead of guessed:
+#:  * Lin 2003 fig 4 (normal group, read from the chart): eta ~0.15 with
+#:    C ~0.45 and K ~2.6, and eta = C / (2 sqrt(K I)) gives I ~0.87;
+#:  * the healthy example traces (Lin 2003 fig 3 N4, Lin 2005 fig 1) reach the
+#:    first trough ~1.0-1.4 s after release, which with gravity ~3.7 and K ~2.6
+#:    N.m/rad needs I ~0.6-1.2.
+#: The counterweight alone is 1.13 * 0.5375^2 = 0.33; the shaft, the wrist
+#: plate and its slide make up the rest. Every Lin check runs at both ends.
+LIN_RIG_J_BRACKET = (0.55, 1.15)
+#: Damping the rig adds under load, N.m.s/rad. Lin's healthy C (0.53-0.78) is
+#: 2-7x other elbow studies (0.1-0.3, MacKay 1986); Lin 2003 attributes part to
+#: the rig (misalignment, friction under the forearm's weight; empty rig 0.008).
+#: Tissue keeps the literature's 0.2; this term carries the rest, sized so a
+#: 64 kg healthy subject fits C ~0.67 (Lin 2005's weight regression,
+#: 0.0089 W + 0.1013). So C in the Lin scenario is CALIBRATED, not validated.
+LIN_RIG_B = 0.45
+
+
+def lin_k_tissue(mass_kg: float) -> float:
+    """Lin 2005's healthy elbow stiffness regression on body weight, N.m/rad (n = 192)."""
+    return 0.0373 * mass_kg + 0.1796
 
 #: Active-module parameters given as an ABSOLUTE model-convention angle. They
 #: would not follow the frame mirroring, so elbow_params refuses them rather
@@ -139,16 +176,24 @@ def elbow_params(*, start: str, mass_kg: float = 72.0, height_m: float = 1.75,
                  rest_q_deg: float = 90.0, accessory_kg: float | None = None,
                  accessory_m: float | None = None, B: float = rt.ref.D_NOMINAL,
                  k_passive: float = 0.0, k_passive_ref_q_deg: float | None = None,
-                 **active) -> rt.Params:
+                 extensor_scale: float = 1.0, **active) -> rt.Params:
     """Params for an elbow drop in the frame of the muscle `start` stretches.
 
     `rest_q_deg` is the gravity rest (see POSTURE in the module note). `active`
     passes the core's active terms (tone, k_f, k_df, k_v, ...) through
     unchanged; they act on the stretched muscle. `k_passive` is a linear spring
     about `k_passive_ref_q_deg` (default: the gravity rest), the K the elbow
-    literature fits. B defaults to the knee reference's 0.2 N.m.s/rad, a
-    placeholder for the forearm until the literature gate (plan U5) sets it.
+    literature fits. B is the TISSUE damping; it defaults to 0.2 N.m.s/rad,
+    inside the 0.1-0.3 non-pendulum elbow range (MacKay 1986, via Lin 2003).
+    `extensor_scale` multiplies the tissue spring and damping on an extension
+    start (Huang 2016's controls: about EXTENSOR_SCALE_HUANG); default 1, the
+    mirror-symmetric model.
     """
+    if extensor_scale <= 0:
+        raise ValueError(f"extensor_scale must be positive, got {extensor_scale}")
+    if start == "extension":
+        k_passive *= extensor_scale
+        B *= extensor_scale
     sign = _frame(start)
     if not ELBOW_RANGE_DEG[0] <= rest_q_deg <= ELBOW_RANGE_DEG[1]:
         raise ValueError(f"rest_q_deg {rest_q_deg} is outside the elbow's range {ELBOW_RANGE_DEG}")
@@ -236,6 +281,40 @@ def de_lima_bare(**kw) -> tuple[rt.Params, float]:
     return elbow_params(start="flexion", rest_q_deg=0.0, **kw), 90.0
 
 
+def lin_apparatus(*, start: str, rig_j: float, mass_kg: float = 64.0, height_m: float = 1.65,
+                  k_tissue: float | None = None, B_tissue: float = rt.ref.D_NOMINAL,
+                  rig_B: float = LIN_RIG_B, extensor_scale: float = EXTENSOR_SCALE_HUANG,
+                  **active) -> tuple[rt.Params, float, dict]:
+    """Lin's clock-pendulum rig: supine, upper arm on the bed, forearm pointing UP.
+
+    The forearm is an inverted pendulum about 90 deg flexion (gravity pushes it
+    away), the counterweight below the pivot a hanging one; net gravity
+    stiffness is m_cw*g*L_cw - m_f*g*l_f (Lin 2003 eq 3), positive here.
+    Inertia is forearm + `rig_j` (unprinted: pass LIN_RIG_J_BRACKET's ends).
+    Damping is tissue + rig. K_tissue defaults to Lin 2005's weight regression.
+
+    Returns (params, release_q_deg, info) with info = J, k_gravity (m*g*l_c of
+    the net gravity, about gravity_zero_deg = 90) and the parts, for scoring.
+    """
+    if rig_j <= 0:
+        raise ValueError(f"rig_j must be positive, got {rig_j}")
+    lf, mf, jf = forearm_from_anthropometry(mass_kg, height_m)
+    g = rt.ref.G
+    mgl = LIN_COUNTERWEIGHT_KG * g * LIN_COUNTERWEIGHT_M - mf * g * lf
+    if mgl <= 0:
+        raise ValueError(f"forearm outweighs the counterweight (net m*g*l {mgl:.2f} N.m): the rig would tip")
+    k_t = lin_k_tissue(mass_kg) if k_tissue is None else k_tissue
+    p = elbow_params(start=start, mass_kg=mass_kg, height_m=height_m, rest_q_deg=90.0,
+                     B=B_tissue, k_passive=k_t, extensor_scale=extensor_scale, **active)
+    J = jf + rig_j
+    m_eff = mf + LIN_COUNTERWEIGHT_KG          # only m*l_c enters gravity; J is set directly
+    p = replace(p, lc_m=mgl / (m_eff * g), m_kg=m_eff, j_kgm2=J, B=p.B + rig_B)
+    info = dict(J=J, k_gravity=mgl, gravity_zero_deg=90.0, forearm_J=jf, rig_j=rig_j,
+                k_tissue=p.k_passive, B_tissue=p.B - rig_B, B_rig=rig_B)
+    return p, LIN_RELEASE_Q_DEG[start], info
+
+
 __all__ = ["forearm_from_anthropometry", "hand_from_anthropometry", "hang_frequency_hz",
            "elbow_params", "passive_rest_q_deg", "simulate_elbow", "de_lima_bare",
+           "lin_apparatus", "lin_k_tissue", "LIN_RIG_J_BRACKET", "LIN_RIG_B", "EXTENSOR_SCALE_HUANG",
            "STARTS", "ELBOW_RANGE_DEG"]
