@@ -301,7 +301,8 @@ class _RoleState:
         self.accel_bias = mean_accel - gravity
 
 
-def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
+def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S,
+                 capture: Optional[dict] = None):
     """
     Re-simulate the AHRS + flex-axis + zero-referencing + EMA pipeline over a
     raw trial log, mirroring pendulastic_imu_server.py's on_accel/on_mag/
@@ -317,6 +318,15 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
     cadence the live app displays and saves. Returns two empty arrays if the
     log is empty or no motion above the flex-axis threshold is ever detected
     (the trial never "zeroes" and can't be scored).
+
+    capture: optional dict, filled in place for analysis that needs more than
+    the swing angle (lateral motion). Never changes what is returned. On a
+    trial that zeroes it receives, for the role the swing angle is read from
+    (distal, else the solo phone): "t" (tick times, s), "quats" (n, 4) the
+    filter's orientation at each tick with NaN rows before that role's first
+    sample, "q_zero" its orientation at the zero pose, "flex_axis" the
+    captured flexion axis or None, and "g_zero" gravity in the phone's frame
+    at zero or None.
 
     Contract: angle_deg[0] is always NaN — the very first tick is always
     emitted before any raw sample has been processed (tick_times[0] always
@@ -646,6 +656,19 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
         return _swing_from_quats(quats)
 
     t_arr = tick_times - t0
+    if capture is not None:
+        role = ROLE_DISTAL if ROLE_DISTAL in q_zero else (
+            ROLE_PROXIMAL if ROLE_PROXIMAL in q_zero else None)
+        if role is not None:
+            capture["t"] = t_arr.copy()
+            capture["quats"] = np.array(
+                [q[role] if role in q else [np.nan] * 4 for q in tick_quats],
+                dtype=float)
+            capture["q_zero"] = np.asarray(q_zero[role], dtype=float).copy()
+            capture["flex_axis"] = (None if flex_axis is None
+                                    else np.asarray(flex_axis, dtype=float).copy())
+            capture["g_zero"] = (None if g_zero.get(role) is None
+                                 else np.asarray(g_zero[role], dtype=float).copy())
     method = params.get("method", "relative")
     if method == "relative":
         angle_raw = np.array([180.0 - _swing_from_quats(q) for q in tick_quats])
