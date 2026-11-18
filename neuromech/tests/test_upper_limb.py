@@ -296,3 +296,14 @@ def test_bad_start_and_posture_raise():
         ul.elbow_params(start="sideways")
     with pytest.raises(ValueError):
         ul.elbow_params(start="flexion", rest_q_deg=170.0)
+
+
+def test_release_rule_also_covers_a_rest_off_the_vertical():
+    """Why the linear-mode gate is 'no reversal + released out of range' and not a
+    fitted-zeta threshold: with the rest held off the vertical, wrong fits read
+    their own zeta anywhere from 0.89 to 1.04 (this arm: B -67% at zeta_fit 1.03),
+    so a zeta_fit > 1.05 gate would pass them. The reversal rule refuses it."""
+    from neuromech.elbow_score import score_elbow
+    t, q, J, kg, B, Ktot, K = _damped_arm(1.5, 130.0, kref=40.0)
+    s = score_elbow(t, q, J=J)
+    assert s.B_fit is None and "slow mode" in s.refusals["fit"]
