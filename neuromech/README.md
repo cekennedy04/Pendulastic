@@ -30,6 +30,15 @@ python -m neuromech.build                # 64 scenarios -> neuromech/out/ (manif
 the rig range and speed it needs, the peak active muscle torque (for Mode C), and its distance to the nearest
 PT7 band edge (`edge_dist_pt7`, `near_edge`).
 
+**Group E (elbow, `neuromech/elbow_library.py`)** is written by the same build to its own
+`out/elbow_manifest.csv` and never touches the knee rows: healthy (both starts, bare and with a 1 kg
+accessory), two parallel spastic-drive ladders (V: velocity drive `k_v`; G: the De Groote ladder; neither is
+primary), low damping and rigidity. Each row has model-free measures (swings, relaxation index, first excursion,
+peak fall speed) and, where the elbow scorer accepts the fit, C / K / ζ / η. No PT score, MAS or band: no elbow
+grade exists. Most spastic drops are refused by the scorer, which is the expected value. No setpoints yet
+(elbow rig playback is deferred). Lin's own free-rest-angle fit is available as a diagnostic,
+`elbow_validation.fit_free_rest` (plan 11.8).
+
 **Edge check (owner decision O5).** A preset within 0.03 PT7 of a band edge (`build.EDGE_MARGIN_PT7`) is one
 rig's tracking error or one scorer revision from the next band. The build prints every such scenario and
 **exits 1** if any is not in `scenarios.NEAR_EDGE_ALLOWED` (or an allowlist entry names a scenario that is not

@@ -23,6 +23,8 @@ Never a grade: these are model-versus-paper numbers.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from . import upper_limb as ul
@@ -56,6 +58,37 @@ def run_lin(start: str, rig_j: float, *, duration: float = 25.0, swing_thr_deg: 
     return dict(start=start, rig_j=rig_j, info=info, score=s, first_turn_s=first_turn_s)
 
 
+def fit_free_rest(t, q_deg, *, J: float, k_gravity: float, gravity_zero_deg: float = 90.0,
+                  t_max: float = 10.0) -> dict:
+    """DIAGNOSTIC, not the scorer (owner decision 2026-11-18, plan 11.8).
+
+    Lin 2003's own fit: J q'' = -k_gravity sin(q - gz) - K (q - q_e) - C q' over the
+    whole trajectory from release (at rest), with the rest angle q_e FREE. Our
+    scorer holds the rest to the settled angle and refuses a window one linear
+    model does not cover; this fit does neither, so it scores traces the scorer
+    refuses (De Groote's tone shifts q_e). Use it to compare with Lin's numbers,
+    never to grade. Returns K, C, q_e (deg), R^2, RMS (deg) and eta (Lin).
+    """
+    from scipy.integrate import solve_ivp
+    from scipy.optimize import least_squares
+    keep = np.asarray(t) <= t_max
+    tt, q = np.asarray(t)[keep], np.radians(np.asarray(q_deg)[keep])
+    gz = math.radians(gravity_zero_deg)
+
+    def sim(x):
+        K, C, qe = x
+        s = solve_ivp(lambda _t, y: [y[1], (-k_gravity * math.sin(y[0] - gz) - K * (y[0] - qe) - C * y[1]) / J],
+                      (tt[0], tt[-1]), [q[0], 0.0], t_eval=tt, rtol=1e-8, atol=1e-10)
+        return s.y[0] if s.success and s.y.shape[1] == len(tt) else np.full_like(tt, 1e3)
+
+    res = least_squares(lambda x: sim(x) - q, x0=[2.5, 0.6, q[-1]], bounds=([0.0, 0.0, -1.0], [50.0, 20.0, 4.0]))
+    K, C, qe = res.x
+    r2 = 1.0 - float(np.sum(res.fun ** 2) / np.sum((q - q.mean()) ** 2))
+    return dict(K=float(K), C=float(C), q_e_deg=math.degrees(qe), r2=r2,
+                rms_deg=math.degrees(float(np.sqrt(np.mean(res.fun ** 2)))),
+                eta=float(C / (2.0 * math.sqrt(max(K, 1e-12) * J))))
+
+
 def report() -> str:
     """Markdown table: healthy at both bracket ends and both starts, then the k_v ladder."""
     rows = ["| case | rig J | swings (3°) | RI | first turn s | C fit | K tissue fit | ζ | η (Lin) | refused |",
@@ -74,7 +107,7 @@ def report() -> str:
     return "\n".join(rows)
 
 
-__all__ = ["LIN_HEALTHY", "LIN_CUT_C", "LIN_CUT_ETA", "LIN_SWING_THR_DEG", "run_lin", "report"]
+__all__ = ["LIN_HEALTHY", "LIN_CUT_C", "LIN_CUT_ETA", "LIN_SWING_THR_DEG", "run_lin", "fit_free_rest", "report"]
 
 if __name__ == "__main__":
     print(report())
