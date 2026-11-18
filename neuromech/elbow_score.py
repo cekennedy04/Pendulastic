@@ -70,6 +70,7 @@ class ElbowScore:
     K_fit: float | None = None
     K_tissue_logdec: float | None = None
     K_tissue_fit: float | None = None
+    eta_lin: float | None = None              # Lin 2003 eq 4: B / (2 sqrt(K_tissue J)), tissue K only
     refusals: dict = field(default_factory=dict)
 
     def as_dict(self):
@@ -350,6 +351,10 @@ def score_elbow(t: np.ndarray, q_deg: np.ndarray, *, J: float | None = None,
                     sc.K_tissue_fit = sc.K_fit - kg_lin
                 else:
                     sc.refusals["K_tissue"] = "K minus gravity is not positive: k_gravity too large for this trace"
+    if J is not None and sc.B_fit is not None and sc.K_tissue_fit is not None and sc.K_tissue_fit > 0:
+        # Lin's damping ratio leaves gravity's stiffness out (Lin 2003 eq 4); our
+        # zeta keeps it in. Report both: Lin's cut-off (0.4) is on this one.
+        sc.eta_lin = sc.B_fit / (2 * math.sqrt(sc.K_tissue_fit * J))
     return sc
 
 
