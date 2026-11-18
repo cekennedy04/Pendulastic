@@ -21,7 +21,7 @@ What goes in, and why:
   RIG_CHECKLIST.txt     the operator procedure (neuromech/designer/RIG_CHECKLIST.txt, CRLF)
   library/<sid>.csv     every built scenario that passes neuromech.rig_guard.check_trajectory(limit_deg=40), the
                         same rules the players apply (40 deg, 6 deg per 10 ms write, predicted delivered peak,
-                        NaN), as player files (t_s, setpoint_deg, no header, starting at 0), plus R-chirp.
+                        NaN), as player files (t_s, setpoint_deg, no header, starting at 0). R-chirp is listed, not shipped.
                         Every file is read back from the bundle with rig_guard.check_file before it ships.
                         Without the guard: a raw 40 deg / 600 deg/s check and a NOT FOR MOTOR USE stamp.
   library/INDEX.csv     per file: peak, step per write, predicted delivered peak, scale_needed, and the reason
@@ -80,7 +80,8 @@ EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
   </startup>
 </configuration>
 """
-BENCH_LOG_COLS = ["order", "file", "label", "pc_time", "peak_deg", "encoder_file", "phone_trial",
+BENCH_LOG_COLS = ["order", "file", "label", "pc_time", "P", "I", "D", "output_range", "peak_deg", "encoder_file",
+                  "phone_trial",
                   "phone_started", "app_auto_stopped", "notes"]
 # Text that must never ship: personal paths, participant folder names, credentials.
 FORBIDDEN = [r"[A-Za-z]:\\Users\\", r"/Users/", r"/home/", r"\b(Control|CHAT|MINT|DOSA|Participant)_\d",
@@ -207,6 +208,24 @@ def scaled_render(t, sp, scale):
     return out
 
 
+def predicted_arm_speed(t, sp):
+    """Informational: the fastest arm speed (deg/s) the guard's plant simulation predicts for the on-time write
+    stream, over the nominal plant and its detuned variants. None without the guard. Changes no include rule."""
+    try:
+        from neuromech import rig_guard as G
+    except ImportError:
+        return None
+    st = G.stream(t, sp, 0)
+    return max(float(np.max(np.abs(np.diff(G.sim_response(st, wn, z))))) / G.SIM_STEP_S
+               for wn in G.VARIANT_WN_HZ for z in G.VARIANT_ZETA)
+
+
+# Owner decision 2026-11-17: never ship the identification chirp. It commands 8 deg, but the guard's plant
+# rings it up at the 6.35 Hz resonance (about 2.75x) and fast; listed in INDEX.csv with the numbers.
+LEFT_OUT_BY_OWNER = {"R-chirp": "owner 2026-11-17: left out; commands {peak:.0f} deg but the guard predicts "
+                                "{pred:.0f} deg at the arm (resonance at 6.35 Hz) and {speed:.0f} deg/s predicted arm speed"}
+
+
 def export_library(out_lib, guard=None, scale=1.0):
     """Player files for every built scenario the guard (or the raw fallback) passes, and an index of all.
     scale != 1: the labelled scaled render (an invariance probe), file names <sid>_x<scale>.csv, no chirp."""
@@ -223,6 +242,10 @@ def export_library(out_lib, guard=None, scale=1.0):
         peak = float(np.max(np.abs(sp)))
         info = {}
         why = guard_verdict(guard, t, sp, info) if guard is not None else raw_verdict(t, sp)
+        speed = predicted_arm_speed(t, sp)
+        if sid in LEFT_OUT_BY_OWNER:
+            why = LEFT_OUT_BY_OWNER[sid].format(peak=peak, pred=info.get("predicted_peak_deg", float("nan")),
+                                                speed=speed if speed is not None else float("nan"))
         name = sid + tag + ".csv"
         if why is None:
             ilc.write_player(os.path.join(out_lib, name), t, sp)
@@ -230,13 +253,14 @@ def export_library(out_lib, guard=None, scale=1.0):
                          duration_s=round(float(t[-1]), 1), peak_deg=round(peak, 1),
                          max_step_per_write_deg=round(per_write_rate(t, sp) * WRITE_MS / 1000.0, 2),
                          predicted_peak_deg=info.get("predicted_peak_deg", ""),
+                         predicted_arm_speed_deg_s="" if speed is None else round(speed, 0),
                          scale_needed=info.get("scale_needed", ""),
                          checked_by="rig_guard" if guard is not None else "raw fallback",
                          included="yes" if why is None else "NO: " + why))
 
     if scale == 1.0:
         t, sp, _, _, _ = SS.chirp_command()
-        add("R-chirp", "R0", "identification chirp 0.2-10 Hz, 8 deg (play first in a session)", t, sp)
+        add("R-chirp", "R0", "identification chirp 0.2-10 Hz, 8 deg", t, sp)
     for _, r in man.iterrows():
         a = np.genfromtxt(os.path.join(B.OUT, "setpoints", f"{r.sid}.csv"), delimiter=",", names=True)
         add(r.sid, r.group, r.title, a["t_s"], a["setpoint_deg"])
@@ -391,7 +415,7 @@ This file says what is here and what the limits are; the checklist says what to 
                             {scale:.2f}. SCALED RENDER: an invariance probe only. Label such trials "x{scale:.2f}".
                             INDEX.csv columns: peak, largest step per 10 ms write, predicted delivered
                             peak, and the reason for anything left out.
-   bench_log.csv            blank run log for files played with PLAY.bat
+   bench_log.csv            the run sheet: one row per play, with the P, I, D and output range used
    logs\                    copy StretchExperiment's .bin logs here
    MANIFEST.txt             every file with its SHA256, the commit, and the guard status
 
@@ -414,6 +438,9 @@ This file says what is here and what the limits are; the checklist says what to 
      40 deg plus overshoot to BOTH. If not, LOWER the limit for the session (Designer "Max |angle|" only
      goes down; PLAY.bat file -MaxDeg 25). The limit cannot be raised above 40.
    * Nobody in the arm's swing envelope. One person whose only job is the E-stop.
+   * Write the P, I, D and Controller Output Range you use in bench_log.csv; the overshoot prediction
+     assumes the loop the 6.35 Hz plant was identified on -- if your P/D differ from that session's, stop
+     after the 0.30 stage and compare the arm against the setpoint before going further.
    * Staged first run, do not skip a stage, stop at the first surprise:
        a. DRYRUN.bat smoke_5deg.csv (moves nothing)    b. PLAY.bat smoke_5deg.csv (+/-5 deg, 20 s)
        c. Designer default MAS design at "Rig amplitude scale" 0.30    d. the same at 0.50
@@ -475,7 +502,8 @@ This file says what is here and what the limits are; the checklist says what to 
 
 8. BRING BACK  (on the stick, in this folder)
    sent\ (every write, refusal, guard event and HOLDING.flag), trials.csv, trial_files\, logs\ with every
-   StretchExperiment .bin, bench_log.csv if PLAY.bat was used, the phone export and its -manifest.json,
+   StretchExperiment .bin, bench_log.csv (this bundle's run sheet: RIG_CHECKLIST's "runsheet.csv"
+   means this file; it also holds the P/I/D/output range used), the phone export and its -manifest.json,
    the ticked RIG_CHECKLIST (hard-stop angles, limit used), and the StretchExperiment settings
    (P, I, D, filter, output range, speeds, limits). On the analysis PC:
        python -m neuromech.match_trials --kit <this folder> --phone-manifest <export>-manifest.json --encoder-dir <this folder>\logs

@@ -135,3 +135,23 @@ def test_manifest_lists_every_file_with_its_hash(tmp_path):
     assert [f["path"] for f in files] == ["sub/x.csv"]
     assert files[0]["sha256"] == RB.sha256(str(tmp_path / "sub" / "x.csv"))
     assert "abc" in (tmp_path / "MANIFEST.txt").read_text()
+
+
+def test_the_chirp_is_left_out_with_the_guards_numbers():
+    from neuromech import session as SS
+    t, sp, _, _, _ = SS.chirp_command()
+    speed = RB.predicted_arm_speed(t, sp)
+    assert speed > 900                                    # rings up at the 6.35 Hz resonance
+    info = {}
+    RB.guard_verdict(RB.guard_status()[0], t, sp, info)
+    why = RB.LEFT_OUT_BY_OWNER["R-chirp"].format(peak=float(np.abs(sp).max()), pred=info["predicted_peak_deg"], speed=speed)
+    assert why.startswith("owner 2026-11-17: left out; commands 8 deg") and "deg/s predicted arm speed" in why
+
+
+def test_predicted_arm_speed_is_small_for_a_slow_file():
+    t = np.arange(0, 20.0005, 0.001); sp = 5 * np.sin(2 * np.pi * 0.2 * t) * np.sin(np.pi * t / 20) ** 2
+    assert RB.predicted_arm_speed(t, sp) < 20
+
+
+def test_bench_log_records_the_loop_settings():
+    assert {"P", "I", "D", "output_range", "encoder_file"} <= set(RB.BENCH_LOG_COLS)
