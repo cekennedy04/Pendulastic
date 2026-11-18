@@ -443,7 +443,7 @@ def main():
                 w.writerow(row)
         np.savez_compressed(os.path.join(OUT, "traces", f"{sc.sid}.npz"), t=t, theta=th, rest=rest, **{f"tq_{k}": v for k, v in tq.items()})
         swing = sp[phase == 2]
-        active = [v for k, v in tq.items() if k not in ("grav", "damp")]
+        active = [v for k, v in tq.items() if k not in ("grav", "damp", "spring")]
         peak_tq = float(np.abs(np.sum(active, axis=0)).max()) if active else 0.0
         row = dict(sid=sc.sid, group=sc.group, title=sc.title, probes=sc.probes, source=sc.source, intent=sc.intent,
                    rest_model_deg=round(float(rest), 4),
