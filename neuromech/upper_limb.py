@@ -86,7 +86,7 @@ STARTS = ("extension", "flexion")
 #: Elbow range-wall steepness, 1/rad (Params.lim_k). The reference knee wall
 #: (K_LIM 3) reaches ~55 deg into the range and leaked ~0.17 N.m/rad into the
 #: fitted mid-range K. At 20 (e-folding ~3 deg) the wall engages only in the
-#: last ~10-15 deg; fitted K reads back within ~1.5 % of the input, and any
+#: last ~10-15 deg; fitted K reads back 1.1-1.6 % low, and any
 #: value 10-30 gives the same fits (plan 11.8), so the exact value is not load-bearing.
 ELBOW_WALL_K = 20.0
 

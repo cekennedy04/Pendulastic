@@ -5,7 +5,7 @@ Run:  python -m neuromech.elbow_validation      (prints the comparison table)
 What is compared, and how much of it is a real test:
 
   K tissue   INPUT (Lin 2005's weight regression); the fit reads it back
-             within ~1.5 % (the elbow's hard-onset wall, plan 11.8).
+             1.1-1.6 % low (the elbow's hard-onset wall, plan 11.8).
   C          CALIBRATED: tissue 0.2 (non-pendulum literature) + LIN_RIG_B.
   period     the rig inertia bracket was derived from it (upper_limb notes).
   swings     PREDICTED. Counted at a 3 deg threshold for this comparison: Lin
@@ -67,7 +67,8 @@ def fit_free_rest(t, q_deg, *, J: float, k_gravity: float, gravity_zero_deg: flo
     scorer holds the rest to the settled angle and refuses a window one linear
     model does not cover; this fit does neither, so it scores traces the scorer
     refuses (De Groote's tone shifts q_e). Use it to compare with Lin's numbers,
-    never to grade. Returns K, C, q_e (deg), R^2, RMS (deg) and eta (Lin).
+    never to grade. Returns K, C, q_e (deg), R^2, RMS (deg), eta (Lin) and `ok`
+    (optimiser converged and R^2 >= 0.9); read nothing from a fit with ok False.
     """
     from scipy.integrate import solve_ivp
     from scipy.optimize import least_squares
@@ -86,7 +87,8 @@ def fit_free_rest(t, q_deg, *, J: float, k_gravity: float, gravity_zero_deg: flo
     r2 = 1.0 - float(np.sum(res.fun ** 2) / np.sum((q - q.mean()) ** 2))
     return dict(K=float(K), C=float(C), q_e_deg=math.degrees(qe), r2=r2,
                 rms_deg=math.degrees(float(np.sqrt(np.mean(res.fun ** 2)))),
-                eta=float(C / (2.0 * math.sqrt(max(K, 1e-12) * J))))
+                eta=float(C / (2.0 * math.sqrt(max(K, 1e-12) * J))),
+                success=bool(res.success), ok=bool(res.success and r2 >= 0.9))
 
 
 def report() -> str:

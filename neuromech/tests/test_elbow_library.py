@@ -1,6 +1,7 @@
 """Elbow scenario library, group E (plan U6) and the free-rest-angle diagnostic."""
 from functools import lru_cache
 
+import numpy as np
 import pytest
 
 from neuromech import elbow_library as el
@@ -41,6 +42,7 @@ def test_every_row_has_elbow_measures_and_no_knee_grade(sid):
     # a fitted measure is either all there or refused, never half
     fitted = [r[k] is None for k in ("C_fit", "K_tissue_fit", "zeta_fit")]
     assert all(fitted) or not any(fitted)
+    assert r["settled_q_deg"] is not None
     if r["C_fit"] is None:
         assert "fit" in r["refusals"] or "ri" in r["refusals"] or "logdec" in r["refusals"]
 
@@ -56,6 +58,25 @@ def test_each_drive_ladder_is_monotonic_in_model_free_measures(family):
     assert all(a > b for a, b in zip(vpk, vpk[1:])), vpk
     assert all(a >= b for a, b in zip(sw, sw[1:])), sw
     assert all(a > b for a, b in zip(ri, ri[1:])), ri
+
+
+def test_first_swing_skips_a_flat_hold_and_handles_no_turn():
+    t = np.linspace(0, 2, 2001)
+    q = np.where(t < 0.5, 130.0, 90.0 + 40.0 * np.cos(4.0 * (t - 0.5)))
+    t1, exc, vpk = el.first_swing(t, q)
+    assert t1 == pytest.approx(0.5 + np.pi / 4.0, abs=0.01) and exc == pytest.approx(80.0, abs=0.5)
+    t1, exc, _ = el.first_swing(t, 130.0 - 10.0 * t)          # falls, never turns
+    assert t1 == t[-1] and exc == pytest.approx(20.0)
+    with pytest.raises(ValueError):
+        el.first_swing(t, np.full_like(t, 130.0))
+
+
+def test_de_groote_tone_moves_the_settled_rest_toward_the_stretched_muscle():
+    """The passive rest is 90 on every row; the settled rest is where tone puts it."""
+    g = [_row(sc.sid)["settled_q_deg"] for sc in _ladder("G")]
+    assert all(a < b for a, b in zip(g, g[1:])) and g[-1] > 93.0
+    assert _row("E-G3-ext")["settled_q_deg"] < 89.0
+    assert _row("E-H-flex")["settled_q_deg"] == pytest.approx(90.0, abs=0.1)
 
 
 def test_healthy_reads_back_its_inputs():
@@ -86,6 +107,7 @@ def test_free_rest_fit_scores_what_the_scorer_refuses():
         r = el.render_elbow(sc)
         return ev.fit_free_rest(r["t"], r["q_deg"], J=J, k_gravity=m * ev.ul.rt.ref.G * lc)
     h, g = fr("E-H-flex"), fr("E-G3")
+    assert h["ok"] and g["ok"]
     assert h["r2"] > 0.999 and abs(h["q_e_deg"] - 90.0) < 0.5
     assert g["r2"] > 0.95 and g["q_e_deg"] > 92.0
     assert g["C"] > 1.5 * h["C"]

@@ -106,10 +106,20 @@ def render_elbow(sc: ElbowScenario) -> dict:
     return ul.simulate_elbow(p, start=sc.start, release_q_deg=sc.release_q_deg, duration=sc.duration)
 
 
-def first_swing(t, q):
-    """(first-turn time s, first excursion deg, peak fall speed deg/s) of the first swing."""
-    d = np.sign(np.diff(q))
-    i1 = int(np.argmax(d != d[0]))
+def first_swing(t, q, onset_deg: float = 0.5):
+    """(first-turn time s, first excursion deg, peak fall speed deg/s) of the first swing.
+
+    The swing starts where q first leaves its release value by `onset_deg` (a flat
+    hold before the fall is skipped); it ends at the first reversal after that, or
+    at the end of the trace if it never turns. Raises if q never moves."""
+    t, q = np.asarray(t), np.asarray(q)
+    moved = np.flatnonzero(np.abs(q - q[0]) > onset_deg)
+    if not len(moved):
+        raise ValueError("trace never leaves its release angle")
+    i0 = int(moved[0])
+    d = np.sign(np.diff(q[i0:]))
+    turns = np.flatnonzero(d != d[0])
+    i1 = i0 + (int(turns[0]) if len(turns) else len(d))
     v = np.gradient(q, t)
     return float(t[i1]), float(abs(q[i1] - q[0])), float(np.abs(v[: i1 + 1]).max())
 
@@ -121,12 +131,14 @@ def score_row(sc: ElbowScenario) -> dict:
     t, q = r["t"], r["q_deg"]
     s = score_elbow(t, q, J=J, k_gravity=m * rt.ref.G * lc, gravity_zero_deg=90.0, swing_thr_deg=SWING_THR_DEG)
     t1, exc, vpk = first_swing(t, q)
+    settled = float(np.median(q[t >= t[-1] - 2.0]))
 
     def rd(x, n=4):
         return None if x is None else round(float(x), n)
 
     return dict(sid=sc.sid, group="E", title=sc.title, family=sc.family, level=sc.level, start=sc.start,
                 release_q_deg=sc.release_q_deg, probes=sc.probes, J_kgm2=rd(J), passive_rest_q_deg=rd(r["rest_q_deg"], 3),
+                settled_q_deg=rd(settled, 3),
                 swings=s.swings, ri=rd(s.ri), first_turn_s=rd(t1, 3), first_excursion_deg=rd(exc, 2),
                 peak_fall_dps=rd(vpk, 1), C_fit=rd(s.B_fit), K_tissue_fit=rd(s.K_tissue_fit), zeta_fit=rd(s.zeta_fit),
                 eta_lin=rd(s.eta_lin), refusals=";".join(f"{k}: {v}" for k, v in s.refusals.items()),
