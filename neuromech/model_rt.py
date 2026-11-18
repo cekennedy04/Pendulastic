@@ -645,6 +645,11 @@ def passive_rest_deg(p: Params) -> float:
     would only split the cache. catch_and_hold relies on this to find the
     passive rest of a limb whose friction it has not yet decided.
     """
+    if p.lim_lo_deg is not None or p.lim_hi_deg is not None or p.k_passive:
+        # The cache key below knows only the knee's geometry. An upper-limb
+        # Params would get the rest of a knee with its incline -- wrong, and
+        # silently. Upper-limb callers use upper_limb.passive_rest_q_deg.
+        raise ValueError("passive_rest_deg is knee-only; use neuromech.upper_limb.passive_rest_q_deg")
     return _passive_rest_cached(p.s, p.B, p.incline_deg, p.use_limit)
 
 
