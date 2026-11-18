@@ -1,20 +1,20 @@
 # Pendulastic
 
-A markerless computer vision framework for quantifying lower-limb spasticity in people with Multiple Sclerosis (MS) via automated Wartenberg pendulum test analysis.
+Pendulastic measures lower-limb spasticity with the Wartenberg pendulum test, using a phone's motion
+sensors (IMU). The study covers three groups: unaffected controls, stroke and MS.
 
-> **Current status and priorities live in [`STATUS.md`](STATUS.md).** As of 2026-11-10 the active work is the
-> phone-IMU web app (`webapp/`, Rust core in `mobile-imu-core/`) and the knee-spasticity emulator and motor rig
-> (`neuromech/`, the top priority). The study now covers three cohorts: unaffected controls, stroke (CHAT) and
-> MS (MINT). The markerless-video pipeline described below is the project's origin and is no longer under
-> active development; parts of this README describe it and are out of date.
+The repository holds **three programs**. Each has its own folder and its own instructions:
 
----
+| Program | What it does | Where it is | How to start it |
+|---|---|---|---|
+| **1. Pendulastic phone app** | Records the pendulum test with the phone's IMU and scores it on the phone | [`webapp/`](webapp/) (scoring engine in Rust: [`mobile-imu-core/`](mobile-imu-core/)) | Open https://pendulastic-app.vercel.app in Safari on an iPhone → *Share* → *Add to Home Screen*. Details: [`webapp/README.md`](webapp/README.md) |
+| **2. Motor rig (knee emulator)** | Plays simulated pendulum swings on the motor rig with a 1 kHz encoder, so the phone can be checked against a known movement | [`neuromech/`](neuromech/): model [`model_rt.py`](neuromech/model_rt.py), Pendulum Designer [`designer/`](neuromech/designer/), plain player [`labview/player/`](neuromech/labview/player/) | `python -m neuromech.rig_bundle` builds the folder that goes on the rig PC; there, open `START_HERE.txt` and follow `RIG_CHECKLIST.txt`. Details: [`neuromech/README.md`](neuromech/README.md) |
+| **3. Sync recorder** | Records the phone IMU, OptiTrack (Motive) and the camera at the same time for participant sessions | Repo root: [`pendulastic_app.py`](pendulastic_app.py), with [`pendulastic_imu_server.py`](pendulastic_imu_server.py) (phone) and [`motive_sync.py`](motive_sync.py) (OptiTrack) | `.venv\Scripts\python.exe pendulastic_app.py` (setup under [Installation](#installation)) |
 
-## Overview
+What is being worked on, and what is decided, is in [`STATUS.md`](STATUS.md).
 
-Spasticity assessment in MS currently relies on subjective clinical scales (Modified Ashworth Scale, Tardieu Scale), which are observer-dependent and impractical for remote or longitudinal monitoring. The Wartenberg pendulum test offers a biomechanically grounded alternative, but traditional implementations require expensive motion capture systems or inertial measurement units (IMUs).
-
-**Pendulastic** automates the pendulum test using standard smartphone or computer cameras and markerless pose estimation, producing quantitative, clinically interpretable spasticity metrics from ordinary video recordings. A second, actively-developed track (`pendulastic_imu_server.py`, `imu_calibration_tuner.py`) derives the same metrics from a phone/wearable IMU instead of video, for direct comparison against the markerless pipeline.
+**Status:** none of these programs is clinically validated. The phone app shows a "not validated" banner, and rig
+results are not reported as PT scores.
 
 ---
 
@@ -22,13 +22,20 @@ Spasticity assessment in MS currently relies on subjective clinical scales (Modi
 
 | Aim | Description |
 |-----|-------------|
-| **Aim 1** | Develop a markerless video-based pendulum test analysis framework |
-| **Aim 2** | Establish reliability and agreement with existing measurement systems (IMUs, motion capture) |
-| **Aim 3** | Evaluate clinical validity by comparing derived metrics with MAS and Tardieu Scale scores |
+| **Aim 1: Sensor characterization** | Measure how accurately the phone's gyroscope and accelerometer track angle against the motor rig's encoder (static and dynamic) |
+| **Aim 2: Open-source Pendulastic** | An open-source, easy-to-use app for the pendulum test, tried with physical therapists and participants |
+| **Aim 3: Neuro-mechanical model** | Test the app against a model of the spastic knee played on the motor rig |
+| **Aim 4: IMU vs markerless** | Compare the IMU and markerless motion capture at measuring the pendulum-test parameters in MS, stroke and control participants |
 
 ---
 
-## Key Features
+## Origin: the markerless-video pipeline (no longer developed)
+
+The project started as a markerless video pipeline: MediaPipe pose estimation on ordinary video, producing the same
+pendulum-test metrics. That code is still here (`src/pendulastic`, the HPE scripts at the repo root) and is used for
+the Aim 4 comparison, but it is not under active development. The sections below describe it and may be out of date.
+
+### Key features of the video pipeline
 
 - **Markerless pose estimation** — tracks hip, knee, and ankle landmarks using MediaPipe; no wearable sensors or reflective markers required
 - **Automated knee angle trajectory extraction** — computes continuous joint angles from raw landmark coordinates
