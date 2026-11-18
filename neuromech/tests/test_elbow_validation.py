@@ -106,10 +106,20 @@ def test_velocity_drive_raises_damping_past_lin_cutoff_while_k_moves_little(rig_
     assert s.swings < h.swings and s.ri < h.ri
 
 
-def test_strong_velocity_drive_crosses_lin_eta_cutoff():
-    """J 0.55 only: at 1.15 the fit is refused (logdec, fit), see the report table."""
-    s = _run("flexion", BOUNDS[0], k_v=1.0)["score"]
-    assert s.eta_lin > ev.LIN_CUT_ETA and s.B_fit > ev.LIN_CUT_C
+GRID_J = (BOUNDS[0], 0.8, BOUNDS[1])
+
+
+def test_strong_velocity_drive_crosses_lin_cutoffs_where_scored():
+    """k_v 0.5-1.0 over three rig inertias. The drive is delayed and rectified,
+    so the scorer refuses some of these fits, erratically in J (split check
+    0.02-0.36, plan 11.8). Every ACCEPTED fit must be above Lin's C cut-off,
+    and the eta cut-off must be crossed somewhere; the refusals are recorded,
+    not tuned away."""
+    scored = [s for kv in (0.5, 0.7, 1.0) for rj in GRID_J
+              if (s := _run("flexion", rj, k_v=kv)["score"]).B_fit is not None]
+    assert len(scored) >= 3
+    assert all(s.B_fit > ev.LIN_CUT_C for s in scored)
+    assert any(s.eta_lin > ev.LIN_CUT_ETA for s in scored)
 
 
 def test_report_renders():

@@ -4,8 +4,8 @@ Run:  python -m neuromech.elbow_validation      (prints the comparison table)
 
 What is compared, and how much of it is a real test:
 
-  K tissue   INPUT (Lin 2005's weight regression); the fit reads it back about
-             0.17 N.m/rad high, the reference range wall's leak (plan 11.2).
+  K tissue   INPUT (Lin 2005's weight regression); the fit reads it back
+             within ~1.5 % (the elbow's hard-onset wall, plan 11.8).
   C          CALIBRATED: tissue 0.2 (non-pendulum literature) + LIN_RIG_B.
   period     the rig inertia bracket was derived from it (upper_limb notes).
   swings     PREDICTED. Counted at a 3 deg threshold for this comparison: Lin

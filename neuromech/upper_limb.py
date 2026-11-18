@@ -83,6 +83,13 @@ ELBOW_RANGE_DEG = (0.0, 145.0)
 
 STARTS = ("extension", "flexion")
 
+#: Elbow range-wall steepness, 1/rad (Params.lim_k). The reference knee wall
+#: (K_LIM 3) reaches ~55 deg into the range and leaked ~0.17 N.m/rad into the
+#: fitted mid-range K. At 20 (e-folding ~3 deg) the wall engages only in the
+#: last ~10-15 deg; fitted K reads back within ~1.5 % of the input, and any
+#: value 10-30 gives the same fits (plan 11.8), so the exact value is not load-bearing.
+ELBOW_WALL_K = 20.0
+
 #: Extension-start tissue scale. Huang 2016 (controls, n = 22, fig 2, read from
 #: the bar chart): the 50 deg (extension) start fits K ~4.6 vs ~2.9 and C ~1.2 vs
 #: ~0.8 for the 130 deg start, in every group. Applied per START, the way Huang
@@ -177,7 +184,8 @@ def elbow_params(*, start: str, mass_kg: float = 72.0, height_m: float = 1.75,
                  rest_q_deg: float = 90.0, accessory_kg: float | None = None,
                  accessory_m: float | None = None, B: float = rt.ref.D_NOMINAL,
                  k_passive: float = 0.0, k_passive_ref_q_deg: float | None = None,
-                 extensor_scale: float = 1.0, **active) -> rt.Params:
+                 extensor_scale: float = 1.0, wall_k: float | None = ELBOW_WALL_K,
+                 **active) -> rt.Params:
     """Params for an elbow drop in the frame of the muscle `start` stretches.
 
     `rest_q_deg` is the gravity rest (see POSTURE in the module note). `active`
@@ -188,7 +196,8 @@ def elbow_params(*, start: str, mass_kg: float = 72.0, height_m: float = 1.75,
     inside the 0.1-0.3 non-pendulum elbow range (MacKay 1986, via Lin 2003).
     `extensor_scale` multiplies the tissue spring and damping on an extension
     start (Huang 2016's controls: about EXTENSOR_SCALE_HUANG); default 1, the
-    mirror-symmetric model.
+    mirror-symmetric model. `wall_k` is the range-wall steepness (None = the
+    reference knee wall, K_LIM 3, kept for scorer-safety tests).
     """
     if extensor_scale <= 0:
         raise ValueError(f"extensor_scale must be positive, got {extensor_scale}")
@@ -206,7 +215,7 @@ def elbow_params(*, start: str, mass_kg: float = 72.0, height_m: float = 1.75,
     lo, hi = sorted(sign * q for q in ELBOW_RANGE_DEG)
     k_ref_q = rest_q_deg if k_passive_ref_q_deg is None else k_passive_ref_q_deg
     return rt.Params(lc_m=lc, m_kg=m, j_kgm2=J, B=B, incline_deg=incline,
-                     lim_lo_deg=lo, lim_hi_deg=hi,
+                     lim_lo_deg=lo, lim_hi_deg=hi, lim_k=wall_k,
                      k_passive=k_passive, k_passive_ref_deg=sign * k_ref_q, **active)
 
 
@@ -218,7 +227,8 @@ def _passive_torque_theta(p: rt.Params, th: float) -> float:
         tau -= p.k_passive * (th - math.radians(p.k_passive_ref_deg))
     if p.use_limit:
         lo, hi = math.radians(p.lim_lo_deg), math.radians(p.lim_hi_deg)
-        tau += -math.exp(rt.ref.K_LIM * (th - hi)) + math.exp(rt.ref.K_LIM * (lo - th))
+        k = rt.ref.K_LIM if p.lim_k is None else p.lim_k
+        tau += -math.exp(k * (th - hi)) + math.exp(k * (lo - th))
     return tau
 
 
