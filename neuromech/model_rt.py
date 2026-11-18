@@ -108,6 +108,10 @@ class Params:
     # form and stiffness as the reference wall, only the end points move.
     lim_lo_deg: float | None = None
     lim_hi_deg: float | None = None
+    # Steepness of the per-limb walls, 1/rad. None = the reference's K_LIM (3),
+    # whose torque reaches ~55 deg into the range and leaks ~0.17 N.m/rad into a
+    # mid-range stiffness fit. Only read with lim_lo_deg/lim_hi_deg set.
+    lim_k: float | None = None
     # Linear passive spring about k_passive_ref_deg, N.m/rad. The knee model has
     # none (gravity centres it); the elbow literature fits a linear K of the
     # same size as the forearm's gravity stiffness, so it cannot be left out
@@ -402,6 +406,9 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
         raise ValueError(f"lim_lo_deg {p.lim_lo_deg} must be below lim_hi_deg {p.lim_hi_deg}")
     lim_lo = math.radians(p.lim_lo_deg) if custom_wall else 0.0
     lim_hi = math.radians(p.lim_hi_deg) if custom_wall else 0.0
+    if p.lim_k is not None and (not custom_wall or p.lim_k <= 0):
+        raise ValueError("lim_k needs lim_lo_deg/lim_hi_deg and must be positive")
+    lim_k = ref.K_LIM if p.lim_k is None else p.lim_k
     k_ref = math.radians(p.k_passive_ref_deg)
     clonus_nm =math.radians(p.clonus_deg) * J * (2 * math.pi * p.clonus_hz) ** 2
 
@@ -439,7 +446,7 @@ def simulate(p: Params, *, theta0_deg: float = 0.0, omega0: float = 0.0,
         if not p.use_limit:
             wall = 0.0
         elif custom_wall:
-            wall = -math.exp(ref.K_LIM * (th - lim_hi)) + math.exp(ref.K_LIM * (lim_lo - th))
+            wall = -math.exp(lim_k * (th - lim_hi)) + math.exp(lim_k * (lim_lo - th))
         else:
             wall = ref.coordinate_limit_torque(th)
         spring = -p.k_passive * (th - k_ref) if p.k_passive else 0.0
@@ -645,7 +652,7 @@ def passive_rest_deg(p: Params) -> float:
     would only split the cache. catch_and_hold relies on this to find the
     passive rest of a limb whose friction it has not yet decided.
     """
-    if p.lim_lo_deg is not None or p.lim_hi_deg is not None or p.k_passive:
+    if p.lim_lo_deg is not None or p.lim_hi_deg is not None or p.lim_k is not None or p.k_passive:
         # The cache key below knows only the knee's geometry. An upper-limb
         # Params would get the rest of a knee with its incline -- wrong, and
         # silently. Upper-limb callers use upper_limb.passive_rest_q_deg.

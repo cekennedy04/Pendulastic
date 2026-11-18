@@ -113,15 +113,15 @@ def test_arm_at_side_has_no_mid_range_rest():
     assert r["rest_q_deg"] == pytest.approx(np.median(r["q_deg"][-1000:]), abs=0.2)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN (plan U5): the reference wall puts ~1 N.m at the range end, sized for a "
-    "leg. A forearm hanging at the extension end overshoots ~17 deg into "
-    "hyperextension and rests ~12 deg flexed. Wall stiffness for the elbow needs "
-    "a relaxed-hang angle from the literature or our own data."))
 def test_arm_at_side_stays_within_physiological_hyperextension():
+    """Was a strict xfail with the reference wall (K_LIM 3: overshoot ~17 deg, rest
+    ~12 deg flexed). The elbow's hard-onset wall (ELBOW_WALL_K, plan 11.8) gives
+    an overshoot of ~8 deg and a rest ~4.5 deg flexed. Still unmeasured: a
+    relaxed-hang angle from our own data would pin the wall's value."""
     p, q0 = ul.de_lima_bare()
-    q = ul.simulate_elbow(p, start="flexion", release_q_deg=q0, duration=10.0)["q_deg"]
-    assert q.min() > -10.0
+    r = ul.simulate_elbow(p, start="flexion", release_q_deg=q0, duration=10.0)
+    assert r["q_deg"].min() > -10.0
+    assert 0.0 < r["rest_q_deg"] < 10.0
 
 
 def test_upper_arm_horizontal_rests_mid_range():
@@ -147,10 +147,10 @@ def test_passive_rest_solver_matches_simulation_with_spring(start):
     assert np.median(r["q_deg"][-2000:]) == pytest.approx(rest, abs=0.05)
 
 
-def _damped_arm(zeta, q0, *, K=2.5, kref=None, walls=False):
+def _damped_arm(zeta, q0, *, K=2.5, kref=None, walls=False, wall_k=ul.ELBOW_WALL_K):
     """Flexion-start elbow, horizontal humerus (gravity zero at q = 90 deg).
     Returns (t, q_deg, J, m*g*l_c, B, total K at the rest, tissue K)."""
-    kw = dict(start="flexion", rest_q_deg=90.0, k_passive=K, use_limit=walls)
+    kw = dict(start="flexion", rest_q_deg=90.0, k_passive=K, use_limit=walls, wall_k=wall_k)
     if kref is not None:
         kw["k_passive_ref_q_deg"] = kref
     p = ul.elbow_params(B=1.0, **kw)
@@ -205,15 +205,28 @@ def test_gravity_mode_handles_a_rest_off_the_vertical():
 
 
 def test_wall_stiffening_is_refused_not_read_as_extra_k():
-    """With the reference wall on, a heavily damped arm released toward 145 deg
-    sees a stiffness that changes with amplitude (read K +17%, tissue K +35%
-    before this check). The window's halves disagree, so the fit is refused."""
+    """SCORER safety, so it keeps the soft reference wall (wall_k None): a heavily
+    damped arm released toward 145 deg sees a stiffness that changes with
+    amplitude (read K +17%, tissue K +35% before this check). The window's
+    halves disagree, so the fit is refused."""
     from neuromech.elbow_score import score_elbow
-    t, q, J, kg, B, Ktot, K = _damped_arm(1.5, 130.0, walls=True)
+    t, q, J, kg, B, Ktot, K = _damped_arm(1.5, 130.0, walls=True, wall_k=None)
     s = score_elbow(t, q, J=J, k_gravity=kg, gravity_zero_deg=90.0)
     assert s.K_fit is None and s.K_tissue_fit is None
     assert "halves disagree" in s.refusals["fit"]
     assert s.fit_split_dev > 0.5
+
+
+def test_elbow_wall_does_not_stiffen_the_same_drop():
+    """The same drop with the elbow's hard-onset wall: the wall stays out of the
+    swing, so the fit is accepted and reads the true K and B."""
+    from neuromech.elbow_score import score_elbow
+    t, q, J, kg, B, Ktot, K = _damped_arm(1.5, 130.0, walls=True)
+    s = score_elbow(t, q, J=J, k_gravity=kg, gravity_zero_deg=90.0)
+    assert not s.refusals.get("fit"), s.refusals
+    assert s.K_fit == pytest.approx(Ktot, rel=0.02)
+    assert s.K_tissue_fit == pytest.approx(K, rel=0.04)
+    assert s.B_fit == pytest.approx(B, rel=0.02)
 
 
 def test_rest_held_by_the_wall_is_refused():
@@ -251,9 +264,9 @@ def test_absolute_angle_modules_are_refused():
 
 @pytest.mark.parametrize("start,q0", [("extension", 70.0), ("flexion", 110.0)])
 def test_scorer_recovers_simulated_passive_elbow_stiffness(start, q0):
-    """Score an emulator trace. The model's stiffness at rest is spring + gravity +
-    the reference range wall, which still contributes ~0.17 N.m/rad at mid-range
-    (part of the open wall question); the scorer must recover that total."""
+    """Score an emulator trace. The model's stiffness at rest is spring + gravity;
+    the elbow's hard-onset wall adds nothing measurable at mid-range (the
+    reference wall added ~0.17 N.m/rad). The scorer must recover the total."""
     from neuromech.elbow_score import score_elbow
     K = 2.5
     p = ul.elbow_params(start=start, rest_q_deg=90.0, k_passive=K)
@@ -261,7 +274,7 @@ def test_scorer_recovers_simulated_passive_elbow_stiffness(start, q0):
     sign = -1.0 if start == "extension" else 1.0
     th = math.radians(sign * ul.passive_rest_q_deg(p, start=start)); h = 1e-6
     k_model = -(ul._passive_torque_theta(p, th + h) - ul._passive_torque_theta(p, th - h)) / (2 * h)
-    assert 0.1 < k_model - K - m * rt.ref.G * lc < 0.25          # the wall's share
+    assert abs(k_model - K - m * rt.ref.G * lc) < 0.01              # the wall's share
     r = ul.simulate_elbow(p, start=start, release_q_deg=q0, duration=15.0)
     s = score_elbow(r["t"], r["q_deg"], J=J)
     assert s.K_fit == pytest.approx(k_model, rel=0.015)

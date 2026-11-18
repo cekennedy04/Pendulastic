@@ -479,9 +479,14 @@ def main():
     keys = list(dict.fromkeys(k for r in rows for k in r))
     with open(os.path.join(OUT, "scenario_manifest.csv"), "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(rows)
+    # Group E (elbow) goes to its own manifest and never touches the knee rows (plan U6). Before the
+    # provenance stamp, so an elbow failure leaves the old provenance and the next build starts over.
+    from neuromech import elbow_library
+    erows = elbow_library.write_manifest(OUT)
     # written last, so a build that dies part-way leaves the old provenance and the next build starts over
     json.dump(prov, open(os.path.join(OUT, "provenance.json"), "w", encoding="utf-8"), indent=1)
     print(f"wrote {len(rows)} scenarios -> {OUT}  ({prov['score_formula_id']}, model {prov['model_hash']})")
+    print(f"wrote {len(erows)} elbow scenarios -> {os.path.join(OUT, 'elbow_manifest.csv')}")
     # The intent report is information only: it is printed and never changes the exit status (decision a).
     report_intent_mismatch(intent_mismatch(rows))
     # The library is written either way (it is what the code builds); the exit status says it is not fit to play.
