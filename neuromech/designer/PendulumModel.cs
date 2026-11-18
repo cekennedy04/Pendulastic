@@ -23,7 +23,12 @@ namespace Pendulastic
         public double ReflexDelayMs = 40;      // stretch-reflex latency
         public double ToneDeg = 0.0;           // where the leg settles, above the passive rest
         public double DepthDeg = 55.0;         // passive rest below full extension (rest knee 125)
-        public double Scale = 0.75;            // rig amplitude / leg amplitude (rig range is +/-45)
+        // rig amplitude / leg amplitude. THE default for every new design (the Designer's knob starts here).
+        // Owner decision 2026-11-17: 0.70, so a 55 deg release commands 38.5 deg and the default MAS designs play
+        // inside the players' 40 deg hard limit (RigGuard.cs) without the scale-down prompt (0.75 gave 41.25).
+        // Bigger designs still get the prompt. Change the default here only.
+        public const double DefaultScale = 0.70;
+        public double Scale = DefaultScale;
         public double SwingS = 15.0;           // record length after release
 
         public Knobs Clone() { return (Knobs)MemberwiseClone(); }

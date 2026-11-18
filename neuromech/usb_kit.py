@@ -10,6 +10,8 @@ PowerShell + NI DataSocket, which LabVIEW installs). Logs come back on the same 
       PendulumDesigner.exe    design a movement (MAS grade / target parameters / by hand), see its scores
       PendulumDesigner64.exe  and the waveform, play it, keep the trial log (trials.csv) -- the main tool
       PLAY.bat  DRYRUN.bat  PICK_VARIABLE.bat  _run.bat  play_setpoints.ps1   play a ready-made file
+      RigGuard.cs             the safety rules both players use (PLAY loads it; never delete it)
+      RIG_CHECKLIST.txt       READ FIRST: hard stops, margin, the staged first run, the E-stop
       smoke_5deg.csv          a slow 5 deg sine: first contact with the rig, and the check-log file
       player/<run>.csv        the session's runs
       runsheet.csv            fill in encoder_file at the bench, bring it back
@@ -31,12 +33,18 @@ from neuromech import ilc  # noqa: E402
 from neuromech import session  # noqa: E402
 
 PLAYER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labview", "player")
-SCRIPTS = ("PLAY.bat", "DRYRUN.bat", "PICK_VARIABLE.bat", "_run.bat", "play_setpoints.ps1")
+SCRIPTS = ("PLAY.bat", "DRYRUN.bat", "PICK_VARIABLE.bat", "PICK_ENCODER.bat", "_run.bat", "play_setpoints.ps1")
+# the safety rules play_setpoints.ps1 loads with Add-Type (and the Designer compiles in); PLAY refuses to run without it
+GUARD_SRC = "RigGuard.cs"
+# the operator's staged first-run checklist (hard stops, margin, 5 deg smoke -> 0.3 -> 0.5 -> 0.70)
+CHECKLIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer", "RIG_CHECKLIST.txt")
 DEFAULT_DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "usb")
 
 README = """\
 PENDULUM PLAYER KIT  -  session {name}
 ====================================
+
+READ RIG_CHECKLIST.txt FIRST: the hard stops, the margin, and the staged first run.
 
 THE DESIGNER (PendulumDesigner.exe)  -  start here
   Copy this folder to the rig PC's desktop and double-click PendulumDesigner.exe (if it says DataSocket is
@@ -83,12 +91,31 @@ EVERY RUN (in runsheet.csv order)
   * Write the log's file name into runsheet.csv's encoder_file column. That is the only thing that
     pairs a log with its run. Copy the .bin into logs\\.
 
-SAFETY
-  * PLAY refuses any file that goes beyond 45 deg, has a header, or does not start at 0.
-    (Change the limit only after the arm's mechanical range is confirmed: PLAY.bat file -MaxDeg 60)
-  * q or Esc during a run stops it and ramps the setpoint back to 0 at 10 deg/s.
-  * At the end it holds the last angle 2 s, then ramps to 0. The E-stop is still the real guard;
-    the Angle Limit fields on the front panel do NOT bound this player.
+SAFETY  (the rules are in RigGuard.cs; keep it beside play_setpoints.ps1 or nothing plays)
+  * Hard limit 40 deg, built in. -MaxDeg and the Designer's Max |angle| can only LOWER it.
+  * PLAY refuses a whole file (never clips it) that: goes beyond the limit; changes faster than
+    6 deg within 10 ms (600 deg/s); is PREDICTED to carry the arm past the limit (the rig
+    overshoots fast content, about 2x at 5 Hz); has a header, a NaN, a row without exactly two
+    columns, or does not start at 0.
+    Every refusal leaves sent\\<file>_<time>_refused.csv. The Designer offers a smaller scale
+    for its own designs (plays only if you say Yes; the score shown is the scaled one).
+  * If the current setpoint cannot be read, it does not play (no jump to 0). PLAY reads it again
+    after Enter and refuses if it moved: no Manual Control or Stretch profile while PLAY waits.
+  * Every write is checked again; if that check ever fires during a run, the run stops and
+    ramps to 0 (exit 5, "STOPPED BY THE GUARD"). Do not repeat that run; bring sent\\ back.
+  * Only one player (PLAY.bat or the Designer) can drive the rig at a time.
+  * Optional encoder watchdog: PICK_ENCODER.bat, if the rig publishes the arm's ACTUAL position.
+    It stops a run whose arm goes past 43 deg or stops following (exit 6). Without it every run
+    says "encoder watchdog OFF". It is software in the same program, not a hardware cutoff.
+  * q or Esc during a run stops it and ramps the setpoint back to 0 at 10 deg/s (Ctrl+C is
+    caught and does the same). NEVER close the window or press Ctrl+Break mid-run.
+  * At the end it holds the last angle 2 s, then ramps to 0.
+  * If a write fails or something breaks, the run ends and it first tries to ramp the setpoint
+    to 0 (exit 4). "RIG HOLDING LAST SETPOINT -- USE THE E-STOP" means it could not; the next
+    start then asks you to type YES once the arm is at rest and the link is checked.
+  * NOT covered: if writes cannot get through, or the window is closed mid-run, the rig HOLDS
+    the last setpoint. The E-stop is the real guard; the Angle Limit fields on the front panel
+    do NOT bound this player.
   * "Updates ... 95th pct" over 25 ms: close other programs and play the run again.
 
 BRING BACK on the stick: runsheet.csv, logs\\, and sent\\ (what the player wrote, for checking).
@@ -114,13 +141,15 @@ def build(name, dest=DEFAULT_DEST):
     if os.path.exists(out):
         raise SystemExit(f"{out} exists; delete it or pick another --dest")
     os.makedirs(os.path.join(out, "logs"))
-    for f in SCRIPTS:
+    for f in SCRIPTS + (GUARD_SRC,):
         shutil.copy(os.path.join(PLAYER, f), out)
     from neuromech.designer.build_designer import build as build_designer
     build_designer(out)
     shutil.copytree(os.path.join(src, "player"), os.path.join(out, "player"))
     shutil.copy(os.path.join(src, "runsheet.csv"), out)
     smoke_file(os.path.join(out, "smoke_5deg.csv"))
+    with open(CHECKLIST) as src, open(os.path.join(out, "RIG_CHECKLIST.txt"), "w", newline="\r\n") as fh:
+        fh.write(src.read())                        # CRLF: Windows 7 Notepad shows LF files as one line
     with open(os.path.join(out, "README.txt"), "w", newline="\r\n") as fh:
         fh.write(README.format(name=name))
     assert not os.path.exists(os.path.join(out, "key.csv"))

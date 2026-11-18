@@ -29,7 +29,7 @@ def run(tmp_path_factory):
     out = tmp_path_factory.mktemp("designer")
     exe = str(out / "selftest.exe")
     src = [os.path.join(D, f) for f in ("PendulumModel.cs", "Designer.cs", "Scoring.cs", "PtScore.cs")] + \
-          [os.path.join(D, "selftest", "SelfTest.cs")]
+          [os.path.join(D, "selftest", "SelfTest.cs"), os.path.join(D, "..", "labview", "player", "RigGuard.cs")]
     r = subprocess.run([CSC, "-nologo", "-optimize+", "-out:" + exe, "-r:System.Core.dll"] + src, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     r = subprocess.run([exe, str(out / "st")], capture_output=True, text=True, timeout=600)

@@ -28,7 +28,7 @@ def kit(tmp_path_factory):
 
 def test_kit_has_what_the_bench_needs_and_not_the_key(kit):
     have = set(os.listdir(kit))
-    assert set(UK.SCRIPTS) | {"README.txt", "smoke_5deg.csv", "runsheet.csv", "player", "logs"} <= have
+    assert set(UK.SCRIPTS) | {UK.GUARD_SRC, "RIG_CHECKLIST.txt", "README.txt", "smoke_5deg.csv", "runsheet.csv", "player", "logs"} <= have
     assert "key.csv" not in have                     # the bench grades blind (R3)
     assert sorted(os.listdir(os.path.join(kit, "player"))) == ["R000.csv", "R001.csv"]
 
@@ -46,6 +46,7 @@ def test_scripts_survive_an_old_windows(kit):
         b = open(os.path.join(kit, f), "rb").read()
         assert all(c < 128 for c in b), f
         assert b.count(b"\n") == b.count(b"\r\n"), f
+    assert all(c < 128 for c in open(os.path.join(kit, UK.GUARD_SRC), "rb").read())   # Add-Type reads it as ANSI too
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="needs Windows PowerShell")
@@ -67,4 +68,5 @@ def test_player_dry_run_sends_the_file_on_its_clock_and_refuses_a_bad_one(kit, t
 
     big = tmp_path / "big.csv"; big.write_text("0,0\n0.001,50\n")
     r = run(str(big))
-    assert r.returncode == 1 and "limit is 45.0" in r.stdout
+    assert r.returncode == 1 and "limit is 40.0" in r.stdout
+    assert any(f.endswith("_refused.csv") for f in os.listdir(os.path.join(kit, "sent")))

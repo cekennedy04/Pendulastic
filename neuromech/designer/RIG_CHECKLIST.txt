@@ -1,0 +1,57 @@
+PENDULUM RIG - OPERATOR CHECKLIST (first real playback, staged)
+================================================================
+
+The players (PendulumDesigner.exe and PLAY.bat) refuse anything over the 40 deg hard limit, anything
+faster than 600 deg/s, and anything the identified rig response predicts would overshoot past the
+limit; they check every write again and stop + ramp to 0 if that check fires. They are software in
+one Windows process. The E-stop is the protection. Stop at the first surprise.
+
+0. BEFORE ANY PLAYBACK - hard stops and margin
+   [ ] Note the arm's mechanical hard-stop angles, in StretchExperiment's degrees:
+       CCW ______ deg     CW ______ deg
+   [ ] The players allow up to +/-40 deg commanded. The screen shows the PREDICTED delivered peak
+       for each movement (the arm overshoots fast content, about 2x at 5 Hz), and a FAULT can
+       carry it much further: the arm has reached +63 and -81 deg with the Angle Limits at +/-25.
+   [ ] Is there a clear margin from (40 deg + overshoot) to BOTH hard stops? If not, lower the
+       limit for this session: Designer "Max |angle|" (it only goes down), or PLAY.bat file -MaxDeg 25.
+
+1. THE ROOM AND THE RIG
+   [ ] Nobody inside the arm's swing envelope, at any point, for every run.
+   [ ] E-stop in hand (a person whose only job is the E-stop).
+   [ ] Controller Output Range set conservatively (low) during playback. Note: this changes how the
+       arm responds (saturation and windup are NOT in the overshoot prediction).
+   [ ] P, I and D at the identified values. The predicted peak is only valid for that loop; if the
+       gains were changed, re-identify before playing anything fast.
+   [ ] Arm at 0 (Manual Control -> Speed 10 -> Goto Position 0). Then leave Manual Control alone and
+       do not run a Stretch profile while a player waits or plays: the players' lock does not cover
+       LabVIEW's own writers. (PLAY re-reads the setpoint after Enter and refuses if it moved.)
+   [ ] PICK_VARIABLE.bat done once (setpoint variable). Optional: PICK_ENCODER.bat if the rig
+       publishes the arm's ACTUAL position; otherwise every run says "encoder watchdog OFF".
+
+2. STAGES - do not skip one; stop at the first surprise
+   [ ] a. DRYRUN.bat smoke_5deg.csv (moves nothing): checks the file and the PC's timing.
+   [ ] b. PLAY.bat smoke_5deg.csv: the arm sways +/-5 deg for 20 s. Check-log it if a log ran.
+   [ ] c. Designer, a default MAS design (e.g. MAS 2), "Rig amplitude scale" set to 0.30. PLAY.
+          (At 0.30 the app may refuse to score it: the release is below its 25 deg gate. This
+          stage is about the motion, not the score.)
+   [ ] d. The same design at 0.50. PLAY.
+   [ ] e. The same design at 0.70 (the default). PLAY.
+   After each: did the arm do what the plot showed, and stop at 0? If anything looked wrong,
+   STOP here and bring the sent\ folder back.
+
+3. DURING A RUN
+   * STOP (Designer) or q / Esc (PLAY.bat): the setpoint ramps back to 0 at 10 deg/s.
+     Never stop by closing the window or with Ctrl+Break: the rig would hold the last setpoint.
+     (Ctrl+C in PLAY is caught and works like q, but use q.)
+   * "ERROR ... Trying to ramp the setpoint to 0": a write failed or something broke; the player tries
+     to bring the setpoint to 0. "RIG HOLDING LAST SETPOINT -- USE THE E-STOP": it could not. E-stop.
+     The next start of either player then shows "RIG HOLDING" and asks you to acknowledge it (PLAY:
+     type YES; Designer: Yes). Do that only once the arm is at rest and the link is checked.
+   * "STOPPED BY THE GUARD" or "STOPPED BY THE ENCODER WATCHDOG": the file passed every check and
+     something still went wrong. Do not repeat that run. Bring sent\ back.
+   * NOT COVERED BY SOFTWARE: if writes keep failing, or the program is closed or crashes mid-run,
+     the rig HOLDS the last setpoint. Use the E-stop.
+   * Only one player can drive the rig at a time; a second one refuses to start.
+
+4. BRING BACK
+   sent\ (every write, refusal and guard event), trials.csv, runsheet.csv, the StretchExperiment logs.

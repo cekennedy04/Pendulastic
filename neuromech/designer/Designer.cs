@@ -173,6 +173,29 @@ namespace Pendulastic
             return fin;
         }
 
+        /// <summary>For a live design over the playback limit: the largest rig amplitude scale (0.01 steps, from the
+        /// guard's own estimate down to minScale) at which the movement passes every RigGuard rule with its predicted
+        /// delivered peak at least RigGuard.ScaleMarginDeg under the limit, RESCORED at that scale (only the swing
+        /// scales; the 5 deg sync pulses do not). Null if no scale does, or the design has no knobs (a file).</summary>
+        public static DesignResult ScaledToLimit(DesignResult d, double limit, double minScale)
+        {
+            if (d == null || d.Knobs == null || d.Movement == null) return null;
+            GuardReport g = RigGuard.Check(d.Movement.RigT, d.Movement.RigDeg, limit);
+            if (!g.Ok && !g.Scalable) return null;
+            double s0 = d.Knobs.Scale, target = limit - RigGuard.ScaleMarginDeg, s = s0;
+            if (g.PredictedPeakDeg > 0) s = Math.Min(s, s0 * target / g.PredictedPeakDeg);
+            if (!double.IsNaN(g.ScaleToFit)) s = Math.Min(s, s0 * g.ScaleToFit);
+            s = Math.Floor(s * 100.0 + 1e-9) / 100.0;
+            for (; s >= minScale - 1e-9; s = Math.Round(s - 0.01, 2))
+            {
+                Knobs k = d.Knobs.Clone(); k.Scale = s;
+                DesignResult r = Evaluate(k);
+                GuardReport sg = RigGuard.Check(r.Movement.RigT, r.Movement.RigDeg, limit);
+                if (sg.Ok && sg.PredictedPeakDeg <= target + 1e-9) return r;
+            }
+            return null;
+        }
+
         public delegate double Fn(double[] u);
 
         public static double[] NelderMead(Fn f, double[] x0, double[] step, int maxEval)
