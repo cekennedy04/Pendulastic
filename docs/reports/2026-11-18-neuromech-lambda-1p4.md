@@ -17,6 +17,10 @@ on is on the falling branch: a stiffer leg, graded milder.
 - **At 0.70 the scorer refuses it.** The excursion A0 drops from 36.1° to 25.3°, under the scorer's 30° floor
   ("Insufficient excursion"). The same happens at lambda 1.0 and 1.2. Grading lambda 1.4 needs a scale of
   0.84, a 46° release, which the guard refuses. The guard and the floor are both unchanged.
+- **Re-centred, it plays at full size and is graded (owner decision, 2026-11-18).** Shifting the hold and
+  the swing down by 28° puts the lambda 1.4 swing at +27.0° to −27.1° of rig angle (predicted delivered peak
+  27.6°), inside the unchanged ±40° guard, and the score does not depend on the offset: PT7 0.170, band 1, A0
+  36.1°, the 1:1 library's expected values. See "The re-centred render" below.
 - **The app never finds the release at lambda 1.4**, at either scale, with or without sensor noise. The leg
   catches 6° into the drop after 0.2 s, having reached only 55°/s; the app sees the hold being disturbed,
   not a release, and returns "unscorable". At lambda 1.0 and 1.2 played 1:1 the app agrees with the
@@ -100,19 +104,47 @@ sensor. The app shows zones, not bands.
 - Had the release been found at lambda 1.4, the scorer at the app's 60 Hz smoothed rate gives 0.199 for the
   true motion against 0.170 at 100 Hz (`truth.json`): a further 0.03.
 
-## What this means for a rig test at lambda 1.4
+## The re-centred render (owner decision, 2026-11-18)
 
-As things stand the rig can play `S-lam1.4_x0.70.csv` safely, the encoder can be compared with the command,
-and neither scorer will grade it: the reference refuses for excursion and the app does not find the release.
-Getting a graded lambda 1.4 swing on the rig needs one of these, each an owner decision and none taken here:
+At 0.70 the rig can play `S-lam1.4_x0.70.csv` safely and neither scorer will grade it. Three ways out were put
+to the owner (re-centre the swing, a shallower limb geometry, or use lambda ≥ 1.0 as a tracking probe only);
+the owner chose **re-centre the swing**.
 
-1. Re-zero the rig command so the swing is centred. The 1:1 swing spans +55° to +0.9° of rig angle and never
-   goes below zero; shifted by about −27° it would span +28° to −26°, inside ±40° with the guard unchanged.
-   This changes the rig convention (0 = passive rest) and where the arm hangs relative to gravity.
-2. A different limb geometry (shallower rest), which re-specifies the whole library (`Params.incline_deg`).
-3. Accept that lambda ≥ 1.0 is an encoder-tracking probe only at 0.70.
+The 1:1 swing at lambda 1.4 spans +55° to +0.9° of rig angle and never goes below zero, so it is 54° wide and
+only its position is the problem. `rig_bundle.recentred_render` subtracts a constant from the hold and the
+swing; the offset comes in along the min-jerk lift, so the file still starts at 0, nothing steps, and the three
+5° sync pulses are untouched. The offset is the whole degree that centres the hold and swing about 0, per file.
 
-The release-detection miss is independent of the rig: it is in the app, and it appears 1:1 too.
+| file (`library_recentred/`) | offset | hold | lowest | predicted delivered peak | guard at ±40° | score re-centred | 1:1 expected |
+|---|---|---|---|---|---|---|---|
+| `S-lam1_recentred.csv` | 30° | +25.0° | −25.0° | 25.2° | passes | 0.257, band 1, A0 41.5° | 0.257, band 1 |
+| `S-lam1.2_recentred.csv` | 28° | +27.0° | −27.2° | 27.6° | passes | 0.224, band 1, A0 38.8° | 0.224, band 1 |
+| `S-lam1.4_recentred.csv` | 28° | +27.0° | −27.1° | 27.6° | passes | 0.170, band 1, A0 36.1° | 0.170, band 1 |
+
+- **The guard is unchanged.** The same `rig_guard.check_trajectory(limit_deg=40)` passes these files, and the
+  bundle reads each back with `rig_guard.check_file` like every other library file.
+- **The score is offset-invariant, so nothing has to be undone.** Scoring the re-centred rig trace as it is
+  (`session._score_trace`), with the offset undone (`rig_bundle.undo_recentre`), and through the bench path for a
+  played file (`match_trials.delivered`, and the Designer's *Open file*) all give the 1:1 expected PT7, band and
+  A0; the first two agree to 1e-9. `undo_recentre` exists for anything that needs the absolute rig angle.
+- **Labelling.** The folder has its own `README.txt` ("RE-CENTRED RENDER ... the rig's zero is NOT the passive
+  rest"), `INDEX.csv` records `offset_deg`, hold, lowest angle and predicted peak per scenario, and
+  `MANIFEST` records the offsets. `START_HERE.txt` names the folder and says to label such trials "recentred".
+- **What it changes at the bench.** The arm's zero is no longer where the leg hangs: the hold is at +27°, the
+  swing ends near −8° (lambda 1.4 settles 19° above the passive rest), and the player then returns to 0.
+  On a vertical-plane rig the arm is therefore not hanging plumb at the model's rest; the commanded trajectory
+  is position-controlled either way, but the phone's gravity reference sees the shifted angles.
+
+**Other scenarios.** Of the 63 scenarios the guard refuses 1:1, 34 would pass it re-centred: A-P1, A-P1p,
+S-lam1, S-lam1.2, S-lam1.4, S-lam1.5, S-lam2, S-lam3, S-lam6, B-extensor, B-mixed, B-claspknife, B-spasm,
+B-habit1 to 5, C-R2n-low, C-N-zero, M-tone_L2, L3, L4, both M-catch_and_hold, R-reflex-vel, -len, -sat,
+H-HM1 to 4, K-HM1, K-HM2. The 29 that do not are the passive and lightly damped swings, which go as far below
+the rest as they start above it (A-P0 spans 84°). Only the three lambda files ship; `library_recentred/INDEX.csv`
+lists the rest as "fits re-centred, not shipped", and adding any is one tuple (`rig_bundle.RECENTRED_SIDS`)
+and an owner decision.
+
+The release-detection miss is independent of the rig and of this render: it is in the app, it appears 1:1 too,
+and a separate session has it.
 
 ## What changed in the code
 
@@ -124,7 +156,10 @@ The release-detection miss is independent of the rig: it is in the app, and it a
   amplitude scale and says which side of the PT7 peak the lambda is on. `test_designer.py` holds the C# trace
   to Python's within 1e-6° and its PT7, band, R2n and N to the library's at lambda 1.0, 1.2 and 1.4, the PT7
   peak to `build.rising_branch_peak`, and the 0.70 refusal and guard verdict to Python's.
-- `rig_bundle.py` is unchanged: `library_x0.70/` picks the two new files up (57 of 66 pass the guard).
+- `rig_bundle.py`: `library_x0.70/` picks the two new files up (57 of 66 pass the guard), and a third folder,
+  `library_recentred/`, holds the re-centred render of `S-lam1`, `S-lam1.2` and `S-lam1.4`. `library/` and
+  `library_x0.70/` are otherwise unchanged. `test_rig_bundle.py` and `test_designer.py` hold the guard verdict
+  and the offset-invariance of the score.
 
 ## How to reproduce
 

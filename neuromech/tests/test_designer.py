@@ -138,3 +138,23 @@ def test_lambda_1p4_plays_at_the_default_scale_and_not_at_1_to_1(run):
     assert abs(prm["A0_deg"] - 0.70 * 36.0823) < 0.01 and abs(est["pt7"] - r.pt7) < 1e-9
     one = pd.read_csv(d / "axis.csv").set_index("name").loc["axis_1.4"]
     assert one.interpretable == 1 and abs(one.pt7 - r.pt7) < 1e-6          # scaling moves A0, not the ratios
+
+
+def test_the_designer_grades_a_recentred_lambda_1p4_file_at_the_1_to_1_value(run, tmp_path):
+    """Open file... on the re-centred render (rig_bundle.recentred_render, owner decision 2026-11-18): the C#
+    guard passes it at the 40 deg limit and the Designer scores it as the 1:1 library expects (band 1, PT7 0.170),
+    because the knee angle it scores is taken relative to the hold, whatever the hold's rig angle is."""
+    from neuromech import ilc, rig_bundle as RB
+    d, _ = run
+    sc = _axis_scenario(1.4)
+    t, th, rest, _ = B.render(sc)
+    prm, est = B.score(t, th, sc)
+    ts, sp, *_ = B.rig_setpoint(t, th, rest, sc)
+    f = tmp_path / "S-lam1.4_recentred.csv"
+    ilc.write_player(str(f), ts, RB.recentred_render(ts, sp, RB.recentre_offset(ts, sp)))
+    r = subprocess.run([str(d.parent / "selftest.exe"), str(tmp_path), str(f)], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    got = pd.read_csv(tmp_path / "file.csv", dtype={"mas": str}).iloc[0]
+    assert got.guard_ok == 1 and got.predicted_peak_deg < 30.0
+    assert got.interpretable == 1 and got.mas == est["mas"] == "1"
+    assert abs(got.pt7 - est["pt7"]) < 5e-3 and abs(got.A0_deg - prm["A0_deg"]) < 0.1          # 4-decimal file rounding

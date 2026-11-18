@@ -106,7 +106,7 @@ def test_verify_library_reads_back_and_refuses_a_bad_file(tmp_path):
 def test_start_here_formats_both_ways():
     for motor_ok in (True, False):
         txt = RB.START_HERE.format(date="d", sha="s" * 40, sha7="s" * 7, score_id="x", model_hash="m", n_lib=1,
-                                   n_out=2, n_sc=3, n_sc_out=4, scale=0.70, guard="g",
+                                   n_out=2, n_sc=3, n_sc_out=4, scale=0.70, n_rc=3, guard="g",
                                    guard_banner=RB.GUARD_TEXT[motor_ok][0].format(scale=0.70),
                                    unvalidated_guard=RB.GUARD_TEXT[motor_ok][1])
         assert "RIG_CHECKLIST.txt" in txt and "Ctrl+Break" in txt and "HOLDING.flag" in txt
@@ -155,3 +155,88 @@ def test_predicted_arm_speed_is_small_for_a_slow_file():
 
 def test_bench_log_records_the_loop_settings():
     assert {"P", "I", "D", "output_range", "encoder_file"} <= set(RB.BENCH_LOG_COLS)
+
+
+# ── the re-centred 1:1 render (owner decision 2026-11-18) ─────────────────────────────────────────────
+def _axis_file(lam):
+    """(t, sp, rest, release_s, expected prm, expected est) of the severity axis at lam, as the library builds it."""
+    from neuromech import build as B, scenarios as S
+    sc = S.Scenario(f"S-lam{lam:g}", "S", "", S.severity(lam))
+    t, th, rest, _ = B.render(sc)
+    prm, est = B.score(t, th, sc)
+    ts, sp, _, _, _, rel = B.rig_setpoint(t, th, rest, sc)
+    return ts, sp, rest, rel, prm, est
+
+
+def test_recentred_render_keeps_the_pulses_and_shifts_the_hold_and_swing_by_a_constant():
+    import motor_reference as mr
+    t, sp = _preamble_file()
+    i = RB.sync_end_index(); n_pre = len(mr.preamble(a0_deg=55.0)[1]); lift_end = n_pre - int(mr.PRE_ROLL_S * 1000)
+    out = RB.recentred_render(t, sp, 28.0)
+    assert np.array_equal(out[:i], sp[:i]) and np.abs(out[:i]).max() == 5.0 and out[0] == 0     # pulses, zero start
+    assert np.allclose(out[lift_end:], sp[lift_end:] - 28.0, atol=1e-12)                        # a constant after the lift
+    assert out[n_pre - 1] == pytest.approx(27.0)                                                # the hold: 55 - 28
+    assert np.abs(np.diff(out)[i:]).max() <= np.abs(np.diff(sp)[i:]).max() + 1e-9               # the offset adds no step
+    assert np.allclose(RB.undo_recentre(t, out, 28.0), sp, atol=1e-12)
+    with pytest.raises(ValueError):
+        RB.recentred_render(*_file(np.r_[0, np.full(12000, 10.0)]), 28.0)
+
+
+@pytest.mark.parametrize("lam, offset", [(1.0, 30.0), (1.2, 28.0), (1.4, 28.0)])
+def test_recentred_severity_axis_passes_the_unchanged_guard_and_scores_the_1_to_1_value(lam, offset, tmp_path):
+    """Lambda 1.0, 1.2 and 1.4 at FULL SIZE: refused 1:1 (55 deg release), inside the same 40 deg guard once the
+    hold and swing are shifted by the whole-degree offset that centres them. The score does not depend on the
+    offset: scored as a rig trace WITHOUT undoing it, with it undone, and through match_trials.delivered (a
+    perfect encoder), the PT7, band and A0 are the 1:1 library's expected values -- graded, where the 0.70 render
+    is refused for excursion."""
+    from neuromech import match_trials as MT, rig_guard as G, session as SS
+    t, sp, rest, rel, prm, est = _axis_file(lam)
+    fn, _ = RB.guard_status()
+    assert RB.guard_verdict(fn, t, sp) is not None
+    assert RB.recentre_offset(t, sp) == offset
+    rc = RB.recentred_render(t, sp, offset)
+    info = {}
+    assert RB.guard_verdict(fn, t, rc, info) is None and info["predicted_peak_deg"] < 30.0
+    assert G.HARD_LIMIT_DEG == 40.0 and RB.LIMIT_DEG == 40.0                                    # the guard is the same guard
+    body = rc[RB.recentre_shape(len(rc)) == 1.0]
+    assert abs(body.max() + body.min()) <= 1.0 and 24.0 < body.max() < 28.0                     # centred, about +/-27
+    assert est["interpretable"] and est["mas"] == "1"
+    for trace in (rc, RB.undo_recentre(t, rc, offset), sp):
+        p, e = SS._score_trace(t, trace, rest, rel, 3.0)
+        assert e["interpretable"] and e["mas"] == est["mas"]
+        assert abs(e["pt7"] - est["pt7"]) < 2e-3 and abs(p["A0_deg"] - prm["A0_deg"]) < 0.05
+    p0, e0 = SS._score_trace(t, sp, rest, rel, 3.0); p1, e1 = SS._score_trace(t, rc, rest, rel, 3.0)
+    assert abs(e0["pt7"] - e1["pt7"]) < 1e-9 and abs(p0["A0_deg"] - p1["A0_deg"]) < 1e-9        # offset-invariant
+    # the bench path for a library file: the player file as written, a log whose position IS the command
+    from neuromech import ilc
+    os.makedirs(tmp_path / "trial_files")
+    ilc.write_player(str(tmp_path / "trial_files" / "T.csv"), t, rc)
+    rig = np.loadtxt(tmp_path / "trial_files" / "T.csv", delimiter=",")
+    z = np.zeros(len(rig))
+    np.vstack([rig[:, 1], z, rig[:, 1], z, z, z, z]).T.astype(">f8").tofile(tmp_path / "log.bin")
+    got = MT.delivered(str(tmp_path), os.path.join("trial_files", "T.csv"), str(tmp_path / "log.bin"))
+    assert abs(got["enc_pt7"] - est["pt7"]) < 5e-3 and abs(got["enc_A0_deg"] - prm["A0_deg"]) < 0.1
+    assert G.check_file(str(tmp_path / "trial_files" / "T.csv"), limit_deg=40.0)["ok"]
+
+
+def _library_built():
+    from neuromech import build as B
+    return (os.path.exists(os.path.join(B.OUT, "scenario_manifest.csv"))
+            and not B.provenance_mismatch(B.library_provenance(), B.provenance()))
+
+
+@pytest.mark.skipif(not _library_built(), reason="neuromech/out not built for this code (python -m neuromech.build)")
+def test_export_recentred_ships_only_the_owners_three_and_lists_what_else_would_fit(tmp_path):
+    fn, _ = RB.guard_status()
+    rows = RB.export_recentred(str(tmp_path / RB.RECENTRED_DIR), fn)
+    by = {r["sid"]: r for r in rows}
+    shipped = sorted(r["sid"] for r in rows if r["included"] == "yes")
+    assert shipped == sorted(RB.RECENTRED_SIDS) == ["S-lam1", "S-lam1.2", "S-lam1.4"]
+    files = sorted(f for f in os.listdir(tmp_path / RB.RECENTRED_DIR) if f not in ("INDEX.csv", "README.txt"))
+    assert files == sorted(s + "_recentred.csv" for s in RB.RECENTRED_SIDS)
+    assert [by[s]["offset_deg"] for s in ("S-lam1", "S-lam1.2", "S-lam1.4")] == ["30.0", "28.0", "28.0"]
+    assert RB.verify_library(str(tmp_path)) == 3                                                # read back as the players do
+    assert by["A-P0"]["fits_recentred"] == "no" and by["A-P0"]["included"].startswith("NO: ")   # a passive swing spans 84 deg
+    assert by["A-P1p"]["fits_recentred"] == "yes" and "not shipped" in by["A-P1p"]["included"]
+    label = open(tmp_path / RB.RECENTRED_DIR / "README.txt").read()
+    assert "RE-CENTRED RENDER" in label and "offset_deg" in label and all(ord(c) < 128 for c in label)

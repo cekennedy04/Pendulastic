@@ -1,5 +1,5 @@
 // Headless check of the designer: every MAS preset and one parameter target, each movement written out so
-// test_designer.py can rescore it with the Python scorer. Usage: SelfTest.exe <out dir>
+// test_designer.py can rescore it with the Python scorer. Usage: SelfTest.exe <out dir> [player file to score]
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -31,6 +31,21 @@ namespace Pendulastic
         static int Main(string[] args)
         {
             string dir = args[0]; Directory.CreateDirectory(dir);
+            if (args.Length > 1)
+            {
+                // file mode: score a player file the way Open file... does (PendulumModel.FromRigFile) and stop
+                double[] ft, fsp;
+                GuardReport bad = RigGuard.Parse(File.ReadAllLines(args[1]), out ft, out fsp);
+                if (bad != null) { Console.WriteLine("not loaded: " + bad.Reason); return 2; }
+                GuardReport fg = RigGuard.Check(ft, fsp, RigGuard.HardLimitDeg);
+                Metrics fm = Scoring.Score(PendulumModel.FromRigFile(ft, fsp));
+                double a0;
+                File.WriteAllText(Path.Combine(dir, "file.csv"), "pt7,interpretable,mas,A0_deg,guard_ok,predicted_peak_deg\n"
+                    + string.Join(",", new[] { fm.Pt7.HasValue ? fm.Pt7.Value.ToString("R", Inv) : "", fm.Interpretable ? "1" : "0", fm.Mas,
+                        fm.Values.TryGetValue("A0_deg", out a0) ? a0.ToString("R", Inv) : "", fg.Ok ? "1" : "0",
+                        fg.PredictedPeakDeg.ToString("R", Inv) }) + "\n");
+                return 0;
+            }
             var summary = new StringBuilder("name,pt7,interpretable,zone,mas,R2n,N,peak_rig_deg,release_t,damping\n");
             var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (string g in Designer.Grades) Write(dir, "mas_" + g.Replace("+", "p"), Designer.ForGrade(g, new Knobs()), summary);

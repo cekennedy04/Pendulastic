@@ -29,6 +29,10 @@ What goes in, and why:
   library_x0.70/        the labelled scaled render (owner, 2026-11-17): everything after the 5 deg sync pulses
                         x0.70, so a 55 deg release becomes 38.5. An invariance probe only: its expected scores
                         differ from the 1:1 library. Same guard check, own INDEX.csv and README.txt.
+  library_recentred/    the RE-CENTRED 1:1 render (owner, 2026-11-18) of RECENTRED_SIDS only: the swing at full size,
+                        shifted by a constant so it sits about the rig's zero (a 55 deg release is commanded as
+                        about +27, the bottom of the drop about -27) and passes the same guard. Pulses unchanged.
+                        The offset is in INDEX.csv; scores are offset-invariant, so the 1:1 expected values apply.
   smoke_5deg.csv        a slow 5 deg sine for first contact and the check-log test
   bench_log.csv         a blank run log for library files played with PLAY.bat
   logs/                 where StretchExperiment's .bin logs go
@@ -72,6 +76,16 @@ LIB_SCALE = 0.70               # owner decision 2026-11-17: the labelled scaled 
 SCALED_LABEL = ("SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the 1:1 library.\n"
                 "Everything after the 5 deg sync pulses is multiplied by {scale:.2f} (pulses unchanged). Never compare a\n"
                 "score from these files with the 1:1 library's expected values; INDEX.csv lists what was left out and why.")
+# Owner decision 2026-11-18 ("re-centre the swing"): the severity-axis swings past the PT7 peak cannot be graded
+# at 0.70 (excursion under the scorer's 30 deg floor), so they also ship at full size, shifted. Only these ship;
+# INDEX.csv lists every other scenario that would fit. Widening this tuple is an owner decision.
+RECENTRED_SIDS = ("S-lam1", "S-lam1.2", "S-lam1.4")
+RECENTRED_DIR = "library_recentred"
+RECENTRED_LABEL = ("RE-CENTRED RENDER (1:1 size, constant offset) - the rig's zero is NOT the passive rest in these files.\n"
+                   "The lift, the hold and the swing are the 1:1 library's minus offset_deg (INDEX.csv), so the swing sits\n"
+                   "about 0 and inside the 40 deg limit; the 5 deg sync pulses are unchanged. Label such trials \"recentred\".\n"
+                   "Scores do not depend on the offset: the 1:1 library's expected values apply to these files.\n"
+                   "To get the 1:1 rig angle back: add offset_deg to everything after the lift (rig_bundle.undo_recentre).")
 EXE_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup>
@@ -208,6 +222,43 @@ def scaled_render(t, sp, scale):
     return out
 
 
+def recentre_shape(n, fs=1000.0):
+    """0 through the sync pulses, the min-jerk lift from 0 to 1, then 1: what a constant offset of the hold and the
+    swing looks like in a file that must start at 0. The offset rides in on the lift, so nothing steps."""
+    import motor_reference as mr
+    _, unit = mr.preamble(a0_deg=1.0, fs_hz=fs)
+    if n < len(unit):
+        raise ValueError("the file is shorter than the motor_reference preamble")
+    shape = np.ones(n)
+    shape[:len(unit)] = unit
+    shape[:sync_end_index(fs)] = 0.0
+    return shape
+
+
+def recentre_offset(t, sp):
+    """The whole-degree offset that centres the hold and the swing (everything after the lift) about 0."""
+    fs = 1.0 / float(t[1] - t[0])
+    body = np.asarray(sp, float)[recentre_shape(len(sp), fs) == 1.0]
+    return float(np.round(0.5 * (float(body.max()) + float(body.min()))))
+
+
+def recentred_render(t, sp, offset):
+    """The file at full size with the hold and the swing shifted down by offset (deg): the lift ends at
+    a0 - offset. The 5 deg pulses and the zero start are unchanged, so alignment works as on any other file."""
+    fs = 1.0 / float(t[1] - t[0])
+    i = sync_end_index(fs)
+    if abs(float(sp[i - 1])) > 1e-9 or abs(float(sp[i])) > 1e-9:
+        raise ValueError("the file is not at 0 after the sync pulses; not a motor_reference preamble")
+    return np.asarray(sp, float) - offset * recentre_shape(len(sp), fs)
+
+
+def undo_recentre(t, rig_deg, offset):
+    """A re-centred command, or what the encoder logged while it played (on the file's clock), back in the 1:1
+    library's rig angle (0 = passive rest), for anything that needs the absolute angle. The scorer does not."""
+    fs = 1.0 / float(t[1] - t[0])
+    return np.asarray(rig_deg, float) + offset * recentre_shape(len(rig_deg), fs)
+
+
 def predicted_arm_speed(t, sp):
     """Informational: the fastest arm speed (deg/s) the guard's plant simulation predicts for the on-time write
     stream, over the nominal plant and its detuned variants. None without the guard. Changes no include rule."""
@@ -270,6 +321,51 @@ def export_library(out_lib, guard=None, scale=1.0):
     if scale != 1.0:
         with open(os.path.join(out_lib, "README.txt"), "w", newline="\r\n", encoding="ascii") as fh:
             fh.write(SCALED_LABEL.format(scale=scale) + "\n")
+    return rows
+
+
+def export_recentred(out_lib, guard=None, sids=RECENTRED_SIDS):
+    """The re-centred 1:1 render: player files <sid>_recentred.csv for `sids`, and an INDEX.csv row for EVERY
+    built scenario saying whether it would pass the guard re-centred (and its offset), so the owner can see what
+    else could ship. Scenarios the 1:1 library already plays are listed as not needing it."""
+    import pandas as pd
+    man = pd.read_csv(os.path.join(B.OUT, "scenario_manifest.csv"))
+    missing = sorted(set(sids) - set(man.sid))
+    if missing:
+        raise SystemExit(f"RECENTRED_SIDS names scenarios the library does not build: {', '.join(missing)}")
+    os.makedirs(out_lib)
+    rows = []
+    for _, r in man.iterrows():
+        a = np.genfromtxt(os.path.join(B.OUT, "setpoints", f"{r.sid}.csv"), delimiter=",", names=True)
+        t, sp = a["t_s"], a["setpoint_deg"]
+        plays_1to1 = (guard_verdict(guard, t, sp) if guard is not None else raw_verdict(t, sp)) is None
+        off = recentre_offset(t, sp)
+        rc = recentred_render(t, sp, off)
+        info = {}
+        why = guard_verdict(guard, t, rc, info) if guard is not None else raw_verdict(t, rc)
+        ship = why is None and r.sid in sids
+        if r.sid in sids and why is not None:
+            raise SystemExit(f"{r.sid} is in RECENTRED_SIDS but fails the guard re-centred: {why}")
+        name = r.sid + "_recentred.csv"
+        if ship:
+            ilc.write_player(os.path.join(out_lib, name), t, rc)
+        body = rc[recentre_shape(len(rc)) == 1.0]
+        rows.append(dict(file=name if ship else "", sid=r.sid, offset_deg=f"{off:.1f}", group=r.group, title=r.title,
+                         duration_s=round(float(t[-1]), 1), hold_deg=round(float(body[0]), 1),
+                         min_deg=round(float(body.min()), 1), peak_deg=round(float(np.max(np.abs(rc))), 1),
+                         max_step_per_write_deg=round(per_write_rate(t, rc) * WRITE_MS / 1000.0, 2),
+                         predicted_peak_deg=info.get("predicted_peak_deg", ""),
+                         fits_recentred="yes" if why is None else "no",
+                         plays_1to1="yes" if plays_1to1 else "no",
+                         checked_by="rig_guard" if guard is not None else "raw fallback",
+                         included="yes" if ship else ("NO: " + why if why is not None else
+                                                      "NO: fits re-centred, not shipped (owner 2026-11-18: "
+                                                      + ", ".join(sids) + " only)")))
+    with open(os.path.join(out_lib, "INDEX.csv"), "w", newline="", encoding="ascii", errors="replace") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\r\n")
+        w.writeheader(); w.writerows(rows)
+    with open(os.path.join(out_lib, "README.txt"), "w", newline="\r\n", encoding="ascii") as fh:
+        fh.write(RECENTRED_LABEL + "\n")
     return rows
 
 
@@ -372,8 +468,8 @@ checked by the rules the players apply. Use DRY RUN only, or get a bundle whose 
 """),
     True: ("""The players refuse anything over the 40 deg hard limit, any change over 6 deg in one 10 ms write
 (600 deg/s), anything the identified rig response predicts would overshoot past the limit, and NaN.
-They re-check every write and stop + ramp to 0 if that check fires. Every file in library\\ and
-library_x{scale:.2f}\\ passed that check when this bundle was built. It is software in one Windows
+They re-check every write and stop + ramp to 0 if that check fires. Every file in library\\,
+library_x{scale:.2f}\\ and library_recentred\\ passed that check when this bundle was built. It is software in one Windows
 process: THE E-STOP IS THE PROTECTION. Stop at the first surprise.""",
            """   * The playback guard is new; this is its first use on the real motor. Watch the first play of every
      file with a hand on the E-stop.
@@ -385,6 +481,7 @@ START_HERE = r"""PENDULUM RIG BUNDLE  -  START HERE
 Built {date} from commit {sha7} ({sha}).
 Scorer {score_id}, model {model_hash}.
 {n_lib} files in library\ (1:1; {n_out} left out) and {n_sc} in library_x{scale:.2f}\ ({n_sc_out} left out).
+{n_rc} files in library_recentred\: RE-CENTRED RENDER, full size, shifted by the offset in its INDEX.csv.
 library_x{scale:.2f}\ is a SCALED RENDER ({scale:.2f}x) - INVARIANCE PROBE ONLY; expected scores differ from the
 1:1 library. Each folder's INDEX.csv lists every scenario and why any was left out.
 Everything here was made on the analysis PC; this PC needs no Python and nothing installed.
@@ -415,6 +512,10 @@ This file says what is here and what the limits are; the checklist says what to 
                             {scale:.2f}. SCALED RENDER: an invariance probe only. Label such trials "x{scale:.2f}".
                             INDEX.csv columns: peak, largest step per 10 ms write, predicted delivered
                             peak, and the reason for anything left out.
+   library_recentred\       {n_rc} severity-axis swings at FULL SIZE, shifted by a constant (offset_deg in its
+                            INDEX.csv) so the hold is near +27 deg and the bottom of the drop near -27.
+                            THE RIG'S ZERO IS NOT THE LEG'S REST in these files: the arm ends the swing
+                            below 0 and returns to 0 at the end. Label such trials "recentred".
    bench_log.csv            the run sheet: one row per play, with the P, I, D and output range used
    logs\                    copy StretchExperiment's .bin logs here
    MANIFEST.txt             every file with its SHA256, the commit, and the guard status
@@ -480,7 +581,8 @@ This file says what is here and what the limits are; the checklist says what to 
    a. "Aim at a MAS grade" -> Design it (or targets, or the knobs). The text shows the PT7 score, the
       seven parameters, the commanded peak AND the predicted delivered peak. Over the limit, it offers
       to scale the movement down: say yes or change the design.
-   b. Or Open file... -> library\<name>.csv or library_x{scale:.2f}\<name>_x{scale:.2f}.csv.
+   b. Or Open file... -> library\<name>.csv, library_x{scale:.2f}\<name>_x{scale:.2f}.csv or
+      library_recentred\<name>_recentred.csv.
    c. Dry run first ("Dry run: no motion, no log"), then the real play: label, arm at 0, phone, log, PLAY.
    d. Fill encoder_file (and phone_trial) in the trial log; it saves trials.csv on every change.
 
@@ -549,9 +651,11 @@ def main(argv=None):
     rows = export_library(os.path.join(out, "library"), guard)
     srows = export_library(os.path.join(out, f"library_x{LIB_SCALE:.2f}"), guard, LIB_SCALE)
     n_sc = sum(r["included"] == "yes" for r in srows)
+    rrows = export_recentred(os.path.join(out, RECENTRED_DIR), guard)
+    n_rc = sum(r["included"] == "yes" for r in rrows)
     rechecked = verify_library(out) if guard is not None else 0
-    motor_ok = (guard is not None and all(r["checked_by"] == "rig_guard" for r in rows + srows)
-                and rechecked == sum(r["included"] == "yes" for r in rows + srows))
+    motor_ok = (guard is not None and all(r["checked_by"] == "rig_guard" for r in rows + srows + rrows)
+                and rechecked == sum(r["included"] == "yes" for r in rows + srows + rrows))
     os.makedirs(os.path.join(out, "logs"))
     with open(os.path.join(out, "logs", "PUT_STRETCHEXPERIMENT_LOGS_HERE.txt"), "w", newline="\r\n") as fh:
         fh.write("Copy every StretchExperiment .bin log from this session into this folder.\n")
@@ -564,7 +668,7 @@ def main(argv=None):
         fh.write(START_HERE.format(date=now.strftime("%Y-%m-%d %H:%M UTC"), sha=sha, sha7=sha[:7],
                                    score_id=prov["score_formula_id"], model_hash=prov["model_hash"],
                                    n_lib=n_lib, n_out=len(rows) - n_lib, guard=guard_line,
-                                   n_sc=n_sc, n_sc_out=len(srows) - n_sc, scale=LIB_SCALE,
+                                   n_sc=n_sc, n_sc_out=len(srows) - n_sc, scale=LIB_SCALE, n_rc=n_rc,
                                    guard_banner=GUARD_TEXT[motor_ok][0].format(scale=LIB_SCALE),
                                    unvalidated_guard=GUARD_TEXT[motor_ok][1]))
     privacy_scan(out)
@@ -581,7 +685,13 @@ def main(argv=None):
                 limit_deg=LIMIT_DEG, rate_limit_dps_per_write=RATE_DPS,
                 library_files=n_lib, library_left_out=len(rows) - n_lib,
                 scaled_library=f"library_x{LIB_SCALE:.2f}: scaled render {LIB_SCALE:.2f}x after the sync pulses, invariance probe only",
-                scaled_library_files=n_sc, scaled_library_left_out=len(srows) - n_sc)
+                scaled_library_files=n_sc, scaled_library_left_out=len(srows) - n_sc,
+                recentred_library=f"{RECENTRED_DIR}: 1:1 size, hold and swing shifted by a constant so they pass the "
+                                  "guard; scores are offset-invariant (the 1:1 expected values apply)",
+                recentred_library_files=n_rc,
+                recentred_offsets_deg="; ".join(f"{r['sid']} {r['offset_deg']}" for r in rrows if r["included"] == "yes"),
+                recentred_would_also_fit=[r["sid"] for r in rrows if r["fits_recentred"] == "yes"
+                                          and r["included"] != "yes" and r["plays_1to1"] == "no"])
     if meta["designer_score_formula_id"] != meta["score_formula_id"]:
         raise SystemExit(f"the Designer's scorer ({meta['designer_score_formula_id']}) is not the library's "
                          f"({meta['score_formula_id']}); port the scorer change to PtScore.cs first")
@@ -597,7 +707,7 @@ def main(argv=None):
                 p = os.path.join(dp, f)
                 z.write(p, stem + "/" + os.path.relpath(p, out).replace(os.sep, "/"))
     print(f"bundle -> {out}  ({len(files) + 2} files, {n_lib} library files, {len(rows) - n_lib} left out; "
-          f"library_x{LIB_SCALE:.2f}: {n_sc} files, {len(srows) - n_sc} left out)")
+          f"library_x{LIB_SCALE:.2f}: {n_sc} files, {len(srows) - n_sc} left out; {RECENTRED_DIR}: {n_rc} files)")
     print(f"guard  -> {guard_line}")
     print(f"zip    -> {zpath}  ({os.path.getsize(zpath) / 1e6:.1f} MB)")
     if dirty:

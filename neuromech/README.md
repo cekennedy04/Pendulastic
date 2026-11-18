@@ -78,7 +78,18 @@ refused (no oscillation), which is the refusal path they probe.
   The guard passes them only at 0.70 (55° release), and at 0.70 the excursion (27.2°, 25.3°) is under the
   scorer's 30° floor, so both are refused; `S-lam1` is too (29.1°). In the synthetic phone replay the app
   finds no release at lambda 1.4 at either scale: the leg catches 6° into the drop at 55°/s, under the app's
-  1.0 rad/s capture threshold. Table and options: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  1.0 rad/s capture threshold. Table: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  **Re-centred, they play at full size (owner decision, 2026-11-18):** `library_recentred/` holds the three
+  swings shifted by a constant so they sit about the rig's zero and pass the unchanged ±40° guard, and the
+  score does not depend on the offset:
+
+  | file | offset | hold / lowest | predicted peak | score re-centred = 1:1 expected |
+  |---|---|---|---|---|
+  | `S-lam1_recentred.csv` | 30° | +25.0° / −25.0° | 25.2° | PT7 0.257, band 1 |
+  | `S-lam1.2_recentred.csv` | 28° | +27.0° / −27.2° | 27.6° | PT7 0.224, band 1 |
+  | `S-lam1.4_recentred.csv` | 28° | +27.0° / −27.1° | 27.6° | PT7 0.170, band 1 |
+
+  34 of the 63 scenarios refused 1:1 would fit re-centred; only these three ship (`rig_bundle.RECENTRED_SIDS`).
   The Pendulum Designer reaches this axis through its *Severity axis (De Groote), lambda* mode
   (`designer/DeGroote.cs`, a port of `model_rt` held to it by `tests/test_designer.py`).
 - **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core

@@ -23,12 +23,9 @@ scores move. "Not verified" is stated, never implied.
 
 1. **Contacting GitHub to purge `refs/pull/90`**, which still holds commits with clinical
    fields. The owner will decide later; both branches that carried them are deleted.
-2. **How to get a graded lambda 1.4 swing on the rig** (2026-11-18). At the 0.70 scale the guard
-   needs, the swing is under the scorer's 30° excursion floor, and the app misses the release at
-   either scale. Options (re-zero the rig command so the 1:1 swing is centred inside ±40°, a
-   shallower limb geometry, or tracking probe only) and the numbers are in
-   `docs/reports/2026-11-18-neuromech-lambda-1p4.md`. Nothing was changed in the guard, the scorer
-   or the app.
+2. **Whether to ship more re-centred files** (2026-11-18). The owner chose to re-centre the
+   lambda 1.0, 1.2 and 1.4 swings (see workstream 1). 31 more scenarios that are refused at 1:1 would
+   pass the guard re-centred; they are listed in `library_recentred/INDEX.csv` and not shipped.
 
 ## Decisions taken (owner, 2026-11-16)
 
@@ -178,9 +175,12 @@ scores move. "Not verified" is stated, never implied.
   in the Designer (`designer/DeGroote.cs`, a C# port of `model_rt` held to Python by `test_designer.py`).
   Simulation only. Findings: lambda 1.4 passes the guard only at 0.70, where its 25.3° excursion is under
   the scorer's 30° floor (refused); and the app does not find the release at lambda 1.4 at either scale
-  (early catch at 55°/s, under the 1.0 rad/s capture threshold). Getting a graded lambda 1.4 swing on the
-  rig is an owner decision (re-zero the rig command, change the limb geometry, or use it as a tracking
-  probe only): `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  (early catch at 55°/s, under the 1.0 rad/s capture threshold; a separate session has the app side).
+  **Owner decision 2026-11-18: re-centre the swing.** `python -m neuromech.rig_bundle` now also writes
+  `library_recentred/` with `S-lam1`, `S-lam1.2` and `S-lam1.4` at full size, the hold and swing shifted by
+  30°, 28° and 28° so they run about ±27° and pass the unchanged ±40° guard; the score is offset-invariant,
+  so they are graded at the 1:1 expected values (PT7 0.257, 0.224, 0.170, band 1). In these files the rig's
+  zero is not the passive rest. Note: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
 - **Open PRs:** the lambda 1.4 PR above.
 - **Chirp-derived tracking limit (#107, merged 2026-11-17):** each
   run is held to what the plant identified from the session's chirp (R000) predicts,
