@@ -327,6 +327,14 @@ scores move. "Not verified" is stated, never implied.
   template and `bench_session_report.py` (phone gyro vs encoder: f, N, tau, step response;
   pairs trials from the rig log). First app-on-motor session 2026-11-18 on the horizontal
   rig: grades the sensor channel and capture, not the app's angle or PT score.
+- **Free-pendulum encoder test (plan only, 2026-11-18):**
+  `docs/plans/2026-11-18-001-plan-free-pendulum-encoder-weight-validation.md` and
+  `docs/bench/FREE_PENDULUM_ENCODER_RUN_SHEET.md`. The supervisor's first stages: the app's own
+  angle against an encoder on a new gravity pendulum (phone off the axis, five weights, three
+  release angles, iPhone and Android), then a leg phantom on the same fixture. Supersedes the
+  tilted-rig protocol and run sheet. Fixture not built; encoder model, resolution and log format
+  still to be filled in; acceptance limits are proposed and need the owner's and supervisor's
+  confirmation before the first session. No MAS claims.
 - **Canonical bench number:** phone static accuracy 0.58° (the 0.92° in the Notion SOP
   is stale). Measured before the seed fix.
 
