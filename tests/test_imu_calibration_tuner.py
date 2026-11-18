@@ -1292,3 +1292,61 @@ def test_handling_excursion_still_revokes_zero_capture(exc_mag, exc_n):
     samples = _hold_excursion_gap_then_release_samples(exc_mag, exc_n)
     t, angle = tuner.replay_trial(samples, _GATE_PARAMS)
     assert len(t) == 0
+
+
+def _stalled_release_samples(stall_n, swing):
+    """2.5 s calm hold, a first drop of 0.2 s at 0.8 rad/s (9 deg, under the
+    capture threshold), a stall of stall_n samples, then the swing and rest:
+    a leg with an early catch."""
+    samples = []
+    k = 0
+    for n, gyro in ((250, (0.0, 0.0, 0.0)), (20, (0.8, 0.0, 0.0)), (stall_n, (0.0, 0.0, 0.0)),
+                    (50, swing), (100, (0.0, 0.0, 0.0))):
+        for _ in range(n):
+            for sensor, v in (("accel", [0.0, 0.0, 9.81]), ("gyro", list(gyro))):
+                samples.append({"t": k * 0.01, "role": "distal", "sensor": sensor,
+                                "v": v, "phone_ts_ms": k * 10})
+            k += 1
+    return samples
+
+
+def test_release_that_stalls_and_resumes_is_zeroed_where_it_began():
+    """An early catch: the first drop stalls under the capture threshold and the
+    swing follows 0.1 s later. It is one release, zeroed on the hold pose, so
+    the hold reads 180 and the rest angle carries BOTH rotations."""
+    params = {"beta": 0.0, "ema_alpha": 1.0, "flex_axis_capture": False, "gravity_seed": True}
+    t, angle = tuner.replay_trial(_stalled_release_samples(10, (2.0, 0.0, 0.0)), params)
+    assert len(t) > 0
+    hold = angle[(t - t[0] > 1.0) & (t - t[0] < 2.4)]
+    assert np.allclose(hold, 180.0, atol=0.5)
+    whole = np.degrees(0.8 * 0.2 + 2.0 * 0.5)
+    assert abs((180.0 - angle[-1]) - whole) < 1.5
+
+
+@pytest.mark.parametrize("stall_n,swing", [
+    (60, (2.0, 0.0, 0.0)),      # past _STALL_MAX_S, short of a fresh calm second
+    (10, (-2.0, 0.0, 0.0)),     # back the other way
+    (10, (0.0, 2.0, 0.0)),      # about another axis
+])
+def test_a_stall_that_is_handling_still_revokes_zero_capture(stall_n, swing):
+    t, _ = tuner.replay_trial(_stalled_release_samples(stall_n, swing), _GATE_PARAMS)
+    assert len(t) == 0
+
+
+def test_stalled_release_refused_before_the_fix(monkeypatch):
+    """Guards the tests above: with the stall window closed the same trial is
+    refused, so they are exercising the new branch."""
+    monkeypatch.setattr(tuner, "_STALL_MAX_S", -1.0)
+    t, _ = tuner.replay_trial(_stalled_release_samples(10, (2.0, 0.0, 0.0)), _GATE_PARAMS)
+    assert len(t) == 0
+
+
+def test_stall_constants_match_the_rust_core():
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "..", "mobile-imu-core", "src", "calibration.rs"), encoding="utf-8").read()
+    for py, rs in (("_STALL_MAX_S", "STALL_MAX_S"), ("_STALL_MIN_ROTATION_DEG", "STALL_MIN_ROTATION_DEG"),
+                   ("_STALL_RESUME_MIN_COS", "STALL_RESUME_MIN_COS")):
+        m = re.search(rf"pub const {rs}: f64 = ([0-9.]+);", src)
+        assert m and float(m.group(1)) == getattr(tuner, py), rs
+

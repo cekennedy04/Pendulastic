@@ -135,6 +135,34 @@ def _is_noise_excursion(peak_rad_s: float, duration_s: float) -> bool:
             and duration_s < _NOISE_EXCURSION_MAX_S)
 
 
+# A departure that settles below the guard before reaching the capture
+# threshold is not always handling. A leg with an early catch falls a few
+# degrees, is arrested for a moment, and then swings: its first drop peaks
+# under _FLEX_CAPTURE_THRESHOLD and stalls, and the swing that follows a tenth
+# of a second later had no qualified hold behind it, so no zero was captured
+# (synthetic severity axis, lambda 1.2 to 1.5, 2026-11-18). The same shape is
+# a slow release whose rate dips under the guard for one sample on its way up.
+#
+# Such a departure is held open instead of revoked when it has already turned
+# the segment by at least _STALL_MIN_ROTATION_DEG: for up to _STALL_MAX_S the
+# hold stays qualified, and motion that resumes in the same direction (cosine
+# of at least _STALL_RESUME_MIN_COS between the new rate and the rotation so
+# far) continues the same departure. Motion the other way, or none in time,
+# revokes the hold exactly as before. A release that resumed is zeroed on the
+# pose snapshotted when its departure began, because by the time it fires the
+# leg is already several degrees into its fall.
+#
+# Swept on 179 corpus phone trials and the synthetic defects: every trial that
+# fired before fires on the same sample, one slow release that never fired now
+# does, and a hold that was handled or released early is still refused. The
+# result is the same for 0.3 to 0.8 s and 0.5 to 2 degrees. Mirrored by
+# mobile-imu-core/src/calibration.rs STALL_*.
+_STALL_MAX_S = 0.5
+_STALL_MIN_ROTATION_DEG = 2.0
+_STALL_RESUME_MIN_COS = 0.7
+_STALL_MAX_DT_S = 0.5
+
+
 TUNING_GRID = [
     {"beta": beta, "ema_alpha": alpha,
      "flex_axis_capture": fac, "gravity_seed": gs, "method": method}
@@ -263,6 +291,17 @@ class _RoleState:
         # so one that settles can be told apart as noise or handling.
         self.excursion_t0 = 0.0
         self.excursion_peak = 0.0
+        # Stalled-departure state (see _STALL_MAX_S). excursion_rot: rotation
+        # vector (rad) integrated over the current departure. stalled: it
+        # settled after real rotation and may still resume. resumed: it has
+        # resumed at least once. departure_zero: the (q, g) snapshots taken
+        # when it began, which a resumed release is zeroed on.
+        self.excursion_rot = np.zeros(3)
+        self.stalled = False
+        self.stall_t0 = 0.0
+        self.resumed = False
+        self.departure_zero = None
+        self.last_gyro_t = None
 
     def calibrate_accel_bias(self) -> None:
         """Estimate accel bias from the current accel_hold_buf during a
@@ -441,15 +480,42 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
             omega_mag = float(np.linalg.norm(v))
             is_calm_sample = omega_mag < _ZERO_CAPTURE_GUARD_RAD_S
 
+            rot_dt = 0.0
+            if st.last_gyro_t is not None:
+                rot_dt = min(max(samp["t"] - st.last_gyro_t, 0.0), _STALL_MAX_DT_S)
+            st.last_gyro_t = samp["t"]
+
+            # A stalled departure that did not resume in time was handling
+            # after all: revoke, as an excursion that settles always did.
+            if st.stalled and samp["t"] - st.stall_t0 > _STALL_MAX_S:
+                st.stalled = False
+                st.resumed = False
+                st.calm_qualified = False
+
             # Earn eligibility only while not already mid-departure: read
             # from gyro_hold_buf before this sample is appended to it
             # further below, so it reflects the window as of just before
             # now (avoids the chicken-and-egg where a real release's own
             # ramp-up would poison the very check gating it).
-            if not st.pending_departure and _recently_calm(st.gyro_hold_buf, samp["t"]):
+            if (not st.pending_departure and not st.stalled
+                    and _recently_calm(st.gyro_hold_buf, samp["t"])):
                 st.calm_qualified = True
 
-            if st.calm_qualified and not st.pending_departure and not is_calm_sample:
+            if st.stalled and not is_calm_sample:
+                # Motion again within the stall window: the same departure if
+                # it turns the way the segment was already going, handling if
+                # not.
+                st.stalled = False
+                cos = float(np.dot(v, st.excursion_rot)) / (
+                    omega_mag * float(np.linalg.norm(st.excursion_rot)) + 1e-12)
+                if cos >= _STALL_RESUME_MIN_COS:
+                    st.pending_departure = True
+                    st.resumed = True
+                    st.excursion_peak = max(st.excursion_peak, omega_mag)
+                else:
+                    st.resumed = False
+                    st.calm_qualified = False
+            elif st.calm_qualified and not st.pending_departure and not is_calm_sample:
                 # First above-guard sample after a qualified calm period:
                 # a candidate release ramp begins. Eligibility is not
                 # revoked yet -- a genuine gradual release must be
@@ -458,8 +524,15 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                 st.pending_departure = True
                 st.excursion_t0 = samp["t"]
                 st.excursion_peak = omega_mag
+                st.excursion_rot = np.zeros(3)
+                st.resumed = False
+                # The hold pose, before this sample is integrated.
+                st.departure_zero = (_snapshot(), _gravity_snapshot())
             elif st.pending_departure and not is_calm_sample:
                 st.excursion_peak = max(st.excursion_peak, omega_mag)
+
+            if st.pending_departure and not is_calm_sample:
+                st.excursion_rot = st.excursion_rot + v * rot_dt
 
             if st.pending_departure and is_calm_sample:
                 # The above-guard episode settled back down without ever
@@ -468,10 +541,18 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                 # the next excursion can be trusted. If it was too small and
                 # brief to be handling, it is sensor noise grazing the guard
                 # and the hold stays qualified (see _NOISE_EXCURSION_*).
+                # Real rotation is held open in case it resumes (see
+                # _STALL_MAX_S).
                 st.pending_departure = False
                 if not _is_noise_excursion(st.excursion_peak,
                                            samp["t"] - st.excursion_t0):
-                    st.calm_qualified = False
+                    if (math.degrees(float(np.linalg.norm(st.excursion_rot)))
+                            >= _STALL_MIN_ROTATION_DEG):
+                        st.stalled = True
+                        st.stall_t0 = samp["t"]
+                    else:
+                        st.resumed = False
+                        st.calm_qualified = False
 
             # Only a qualifying role's burst may arm/capture — a
             # non-qualifying role's motion is ignored entirely
@@ -491,8 +572,13 @@ def replay_trial(raw_samples: list, params: dict, tick_s: float = TICK_S):
                     (st.pending_departure or flex_est.n_samples):
                 if omega_mag >= _FLEX_CAPTURE_THRESHOLD:
                     if not zero_captured:
-                        q_zero = _snapshot()
-                        g_zero = _gravity_snapshot()
+                        if st.resumed and st.departure_zero is not None:
+                            # Stalled and resumed: the leg has already left
+                            # the hold pose, so zero on the departure's start.
+                            q_zero, g_zero = st.departure_zero
+                        else:
+                            q_zero = _snapshot()
+                            g_zero = _gravity_snapshot()
                         zero_captured = True
                     if params["flex_axis_capture"]:
                         # Accumulate across the opening of the swing rather

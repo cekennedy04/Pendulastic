@@ -154,6 +154,69 @@ fn release_detector_treats_a_settled_excursion_as_handling_not_release() {
     assert!(detector.is_armed());
 }
 
+/// Feed constant-rate segments at 50 Hz after a 1 s calm hold; returns the
+/// time the detector fired (if it did), whether the departure had resumed
+/// after a stall, and when it began.
+fn run_detector(segs: &[(usize, [f64; 3])]) -> (Option<f64>, bool, Option<f64>) {
+    let mut detector = ReleaseDetector::new();
+    let mut hold_buf: SampleBuf = Vec::new();
+    let mut i = 0usize;
+    let mut began_at = None;
+    let all: Vec<(usize, [f64; 3])> =
+        std::iter::once((50, [0.05, 0.0, 0.0])).chain(segs.iter().copied()).collect();
+    for (n, v) in all {
+        for _ in 0..n {
+            let t = i as f64 * 0.02;
+            let fired = detector.on_gyro_sample(v, &hold_buf, t);
+            if detector.departure_began() {
+                began_at = Some(t);
+            }
+            if fired {
+                return (Some(t), detector.resumed(), began_at);
+            }
+            hold_buf.push((t, v));
+            hold_buf.retain(|(tt, _)| *tt >= t - 1.0);
+            i += 1;
+        }
+    }
+    (None, detector.resumed(), began_at)
+}
+
+#[test]
+fn release_detector_follows_a_departure_through_a_stall() {
+    // An early catch: 0.2 s at 0.8 rad/s (9 deg), 0.1 s near rest, then the swing.
+    let (fired, resumed, began) =
+        run_detector(&[(10, [0.8, 0.0, 0.0]), (5, [0.02, 0.0, 0.0]), (10, [2.0, 0.0, 0.0])]);
+    assert_eq!(fired, Some(65.0 * 0.02), "fires on the first swing sample");
+    assert!(resumed, "and reports that the departure stalled on the way");
+    assert_eq!(began, Some(50.0 * 0.02), "the hold pose is the one before the first drop");
+}
+
+#[test]
+fn release_detector_reports_a_direct_release_as_not_resumed() {
+    let (fired, resumed, began) = run_detector(&[(1, [0.5, 0.0, 0.0]), (5, [1.5, 0.0, 0.0])]);
+    assert_eq!(fired, Some(51.0 * 0.02));
+    assert!(!resumed);
+    assert_eq!(began, Some(50.0 * 0.02));
+}
+
+#[test]
+fn release_detector_does_not_resume_a_stall_that_is_handling() {
+    let drop = (10, [0.8, 0.0, 0.0]);
+    let rest = (5, [0.02, 0.0, 0.0]);
+    // Past STALL_MAX_S (0.6 s); back the other way; about another axis; and a
+    // first excursion too small to hold open (one sample at 0.7 rad/s).
+    let cases: [Vec<(usize, [f64; 3])>; 4] = [
+        vec![drop, (30, [0.02, 0.0, 0.0]), (10, [2.0, 0.0, 0.0])],
+        vec![drop, rest, (10, [-2.0, 0.0, 0.0])],
+        vec![drop, rest, (10, [0.0, 2.0, 0.0])],
+        vec![(1, [0.7, 0.0, 0.0]), rest, (10, [2.0, 0.0, 0.0])],
+    ];
+    for (k, segs) in cases.iter().enumerate() {
+        assert_eq!(run_detector(segs).0, None, "case {k}");
+    }
+}
+
 // ---- MadgwickAhrs -------------------------------------------------------
 
 /// A still, TILTED sensor seeded from its accel must stay where the seed put

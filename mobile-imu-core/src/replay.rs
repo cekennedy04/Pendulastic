@@ -259,6 +259,9 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
     let mut seeded = false;
     let mut calib_was_stable = false;
     let mut zero: Option<(Quat, usize, Option<Vec3>)> = None;
+    // The hold pose as of the start of the departure in progress, kept for a
+    // release that stalls and resumes (see `calibration::STALL_MAX_S`).
+    let mut departure_zero: Option<(Quat, usize, Option<Vec3>)> = None;
     let mut flex = FlexAxisEstimator::default();
 
     let mut sample_t: Vec<f64> = Vec::with_capacity(samples.len());
@@ -297,6 +300,9 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                 // so its internal latching state stays correct regardless of
                 // which path actually captures the zero pose.
                 let fired = detector.on_gyro_sample(s.v, &gyro_hold, s.t);
+                if detector.departure_began() {
+                    departure_zero = Some((ahrs.q, i, gravity_dir_from_hold(&accel_hold)));
+                }
                 let capture = match cfg.release_override {
                     Some(idx) => i == idx,
                     None => fired,
@@ -308,7 +314,17 @@ pub fn replay(samples: &[RawSample], cfg: &ReplayConfig) -> Result<TrialResult, 
                     // `_gravity_snapshot()` inside the capture branch. Taking
                     // it later would read a buffer the swing has already
                     // polluted, and gravity would no longer be the mean.
-                    zero = Some((ahrs.q, i, gravity_dir_from_hold(&accel_hold)));
+                    //
+                    // A release that stalled and resumed fires with the leg
+                    // already several degrees into its fall and the accel
+                    // buffer already disturbed, so its zero is the pose and
+                    // gravity snapshotted when that departure began. A direct
+                    // release is zeroed here, as it always was.
+                    let here = (ahrs.q, i, gravity_dir_from_hold(&accel_hold));
+                    zero = Some(match departure_zero {
+                        Some(z) if cfg.release_override.is_none() && detector.resumed() => z,
+                        _ => here,
+                    });
                 }
 
                 // The flexion axis is learnt from the zero-capture sample
