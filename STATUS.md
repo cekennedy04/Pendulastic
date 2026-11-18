@@ -76,7 +76,10 @@ scores move. "Not verified" is stated, never implied.
     3 of 64 library scenarios are playable at 1:1 (the rest release from ≥ 55°). After the PR #117
     review: speed and predicted peak checked on every 1 ms phase (not just the 10 ms grid), Ctrl+C and
     error paths return to 0, PLAY re-reads the setpoint after Enter, no `-PeriodMs`/`-NoReturn`,
-    return speed 1–60 °/s, no `Local\` lock fallback, 2-column rows only. See
+    return speed 1–60 °/s, no `Local\` lock fallback, 2-column rows only. Re-review: the backstop
+    and every ramp step from the last value the rig actually took, any failed write ends the play,
+    a RIG HOLDING end leaves `sent/HOLDING.flag` that the next start must acknowledge, watchdog stops
+    after 5 missed reads. Follow-up: asynchronous encoder reads. See
     `neuromech/README.md` "Playback safety guard". The dry run is 9/9 in band on main (the 7/9 reading
     came from code without #96; see O5).
   - *O1 arm range:* widen to the scenarios' range only after the clamp exists, with

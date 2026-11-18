@@ -110,8 +110,9 @@ SAFETY  (the rules are in RigGuard.cs; keep it beside play_setpoints.ps1 or noth
   * q or Esc during a run stops it and ramps the setpoint back to 0 at 10 deg/s (Ctrl+C is
     caught and does the same). NEVER close the window or press Ctrl+Break mid-run.
   * At the end it holds the last angle 2 s, then ramps to 0.
-  * If writes fail or something breaks, it first tries to ramp the setpoint to 0 (exit 4).
-    "RIG HOLDING LAST SETPOINT -- USE THE E-STOP" means it could not.
+  * If a write fails or something breaks, the run ends and it first tries to ramp the setpoint
+    to 0 (exit 4). "RIG HOLDING LAST SETPOINT -- USE THE E-STOP" means it could not; the next
+    start then asks you to type YES once the arm is at rest and the link is checked.
   * NOT covered: if writes cannot get through, or the window is closed mid-run, the rig HOLDS
     the last setpoint. The E-stop is the real guard; the Angle Limit fields on the front panel
     do NOT bound this player.

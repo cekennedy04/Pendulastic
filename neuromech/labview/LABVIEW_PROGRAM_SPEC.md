@@ -68,15 +68,18 @@ Guards, in the order they act:
      10 ms grid alone is not enough), or a **predicted delivered peak** over the limit: the 10 ms
      staircase + 2 s hold, on all ten 1 ms phases, through the identified closed loop of §4 (6.35 Hz,
      ζ 0.23) and five detuned copies (ωn ×0.9/×1.1, ζ 0.18), largest |angle|;
-   - **clamp every write** (backstop): no NaN/Inf, ±limit, ≤ 6° per write; if it ever engages during
+   - **clamp every write** (backstop): no NaN/Inf, ±limit, ≤ 6° from the last value the rig took
+     (write returned true) and from the last value tried; if it ever engages during
      play the run stops and ramps to 0 at 10 °/s and the event is logged (`guard` rows in `sent/`);
    - **no blind start**: if the current setpoint cannot be read (or is NaN / beyond the limit) the
      Player refuses to start instead of stepping to 0; PLAY reads it again after Enter and refuses if it
      moved more than 0.5°;
-   - every ramp to 0 (stop, end, guard/watchdog stop) runs until the value sent is 0 and acknowledged
-     (time-bounded); Ctrl+C in PLAY is a stop; any error after the first write first tries a guarded
-     ramp to 0 and otherwise reports RIG HOLDING LAST SETPOINT; the write period is fixed at 10 ms and
-     the return speed is limited to 1–60 °/s;
+   - every ramp to 0 (stop, end, guard/watchdog stop) is write-indexed from the last value the rig
+     took and runs until 0 is acknowledged (time-bounded); Ctrl+C in PLAY is a stop; any failed write
+     during play or the end hold, and any error after the first write, ends the play and first tries a
+     guarded ramp to 0, otherwise reports RIG HOLDING LAST SETPOINT and leaves `sent/HOLDING.flag`,
+     which the next start must acknowledge; the write period is fixed at 10 ms and the return speed is
+     limited to 1–60 °/s;
    - every refusal leaves `sent/<file>_<time>_refused.csv`; `session check-log --sent` fails a run with
      any guard event;
    - the Designer offers a live design over the limit a smaller rig amplitude scale (predicted peak

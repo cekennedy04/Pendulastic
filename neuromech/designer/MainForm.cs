@@ -416,8 +416,24 @@ namespace Pendulastic
                 if (!g.Ok) { player.LogRefusal(g.Kind, g.Reason); MessageBox.Show(this, "Not played: " + g.Reason + "."); return; }
             }
             var mv = current.Movement;
+            player.AckHolding = false;
             if (!dry)
             {
+                string flag = RigGuard.ReadHoldingFlag(player.LogDir);
+                if (flag != null)
+                {
+                    // a previous run (either player) ended with the rig holding a setpoint: acknowledged here or not played
+                    if (MessageBox.Show(this, "A PREVIOUS RUN ENDED WITH THE RIG HOLDING A SETPOINT (sent\\HOLDING.flag):\n\n" + flag
+                                        + "\n\nIs the arm at rest, do the variable and the network work, and is that run's sent log saved?"
+                                        + "\n\nYes acknowledges it (the flag is deleted) and goes on; No does not play.",
+                                        "RIG HOLDING -- acknowledge", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                                        MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    {
+                        lStatus.Text = "Not played: the previous RIG HOLDING event (sent\\HOLDING.flag) was not acknowledged.";
+                        return;
+                    }
+                    player.AckHolding = true;
+                }
                 string wd = tEnc.Text.Trim().Length > 0 ? "Encoder watchdog ON (" + tEnc.Text.Trim() + ")"
                     : "Encoder watchdog OFF (no encoder variable picked)";
                 if (!skipConfirm && MessageBox.Show(this, "Arm at 0?  Phone recording?  StretchExperiment log running?  Hand on the E-stop?\n\n"

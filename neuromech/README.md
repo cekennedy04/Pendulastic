@@ -128,8 +128,9 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
   `Knobs.DefaultScale` = **0.70** (owner, 2026-11-17), so the default MAS designs (55° release → 38.5°)
   play without the prompt. An opened `.csv` over the limit is refused, not offered a scale (scaling a
   file would scale its sync pulses and leave its session's intended scores behind).
-- **Per-write backstop** in both send paths: NaN/Inf never sent, clamp to ±limit, at most 6° per
-  write. If it ever engages while playing, the run stops and ramps to 0 at 10 °/s (PLAY exits 5,
+- **Per-write backstop** in both send paths: NaN/Inf never sent, clamp to ±limit, at most 6° from the
+  last value the rig **took** (a write that returned true) and from the last value tried, so a run of
+  failed writes followed by a success can never jump the rig. If it ever engages while playing, the run stops and ramps to 0 at 10 °/s (PLAY exits 5,
   the Designer shows "STOPPED by the guard"); a guard row is logged. On a fast file a Windows tick
   late by tens of ms can trip it (the library's swings move at most 7° per write, typically ≤ 3°).
 - **Ramp-in**: if the current setpoint cannot be read (or reads NaN or beyond the limit) the player
@@ -137,17 +138,27 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
   refuses if that fails or it moved more than 0.5° while the prompt waited; it ramps from the fresh
   value. The Designer reads it after its confirm box, when the play starts.
 - **Returns to 0**: STOP / q / Esc / Ctrl+C, a guard or watchdog stop, and the end of a run all ramp the
-  setpoint to 0 at the return speed (10 °/s; PLAY's `-ReturnDps` takes 1–60). Every ramp keeps writing
-  until the value sent is the target and the write went through, for at most its time + 5 s. STOP or
+  setpoint to 0 at the return speed (10 °/s; PLAY's `-ReturnDps` takes 1–60). Every ramp is
+  write-indexed: each write is one step (return speed × 10 ms) from the last value the rig took, so a
+  failed or late write is retried, never jumped over; it runs until the rig has taken the target, for at
+  most twice its nominal time + 5 s. After the warm-up write (the value already held) the player waits one
+  tick before the first play write. STOP or
   q during the ramp-in cancels the play that would follow. PLAY catches Ctrl+C (as a keystroke and as
-  a console signal) from its Enter prompt to the end and treats it like q; **Ctrl+Break and closing the
+  a console signal; the signal path is tested with Ctrl+C-as-input off, the case its handler is for) from
+  its Enter prompt to the end and treats it like q; **Ctrl+Break and closing the
   window are not caught**. The write period is fixed at 10 ms (no `-PeriodMs`), and there is no
   `-NoReturn`: PLAY refuses any option it does not know.
-- **Errors return to 0 first**: after the first write, 20 failed writes in a row or any exception start
-  a guarded ramp to 0 (through the backstop, tolerating failed writes, bounded in time) before the lock
-  is released; the outcome is logged (`error` rows, sent log `*_error.csv`, PLAY exit 4). If the writes
+- **Errors return to 0 first**: **any** failed write during play or the end hold ends the play at once
+  (the rig did not get that value); so does any exception after the first write. Each starts a guarded
+  ramp to 0 (through the backstop, from the last value the rig took, tolerating failed writes, bounded
+  in time) before the lock is released; the outcome is logged (failed writes carry `write failed: ...`
+  in the note, `error` rows, sent log `*_error.csv`, PLAY exit 4). Tested with writes 60–79 failing
+  mid-rise of a 35° swing: the largest step between values the rig took stays ≤ 6°. If the writes
   cannot get through, both players say **RIG HOLDING LAST SETPOINT -- USE THE E-STOP** (the Designer in
-  a message box).
+  a message box) and leave `sent/HOLDING.flag`. The next start of either player shows it and plays only
+  after an explicit acknowledgement (PLAY: type `YES`; the Designer: a Yes/No box, default No), which
+  deletes it; a dry run ignores it. (The writer lock itself needs no clean-up: Windows releases it when
+  the process exits.)
 - **Logged**: every refusal leaves `sent/<file>_<time>_refused.csv`; backstop events are `guard` rows
   in the sent log (`t_wall_s,t_file_s,phase,setpoint_deg,note`). `session check-log ... --sent <sent log>`
   fails a run with any refusal, guard or error row. `session plan` writes `guard.csv` (each run's
@@ -165,12 +176,14 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
   when |actual| > limit + 3°, when the arm is further from every setpoint sent in the last 150 ms than
   5° + 1.5 × the following error the identified plant (and its detuned copies) predicts for this file
   (the 150 ms window absorbs network/read latency and the plant's lag; 5° covers encoder noise,
-  stiction and the 0.4–0.6° tracking RMSE measured on library swings), or after 10 failed reads in a row.
+  stiction and the 0.4–0.6° tracking RMSE measured on library swings), or after 5 failed reads in a row
+  (≈ 250 ms).
   Before starting it refuses if the variable cannot be read, reads more than 5° from the setpoint
   (wrong variable), or is the setpoint variable itself. The +3° is a software stop at 43° actual, not a
   cutoff; it is there to avoid false stops (the mechanical hard stops are the last line). Each look is
   a synchronous read of up to 20 ms inside the write loop, so a slow read delays that tick's write
-  (and a fast file then steps further, which the backstop may stop). Not picked: play proceeds and the
+  (and a fast file then steps further, which the backstop may stop). **Follow-up, not done:** read the
+  encoder asynchronously (its own thread) so a slow read never delays a write. Not picked: play proceeds and the
   console / status bar says **"encoder watchdog OFF"**. **Unconfirmed:** nothing in this repo lists an actual-position network variable in
   `variables - network - RT (separate)` (only the setpoint `M1JointAngleDesired`, fallback
   `M1AngleSetPoint`); check in Distributed System Manager whether one exists before relying on it. The

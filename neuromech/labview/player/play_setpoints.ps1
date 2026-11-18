@@ -21,16 +21,19 @@ loaded with Add-Type at start-up; without it nothing plays. In order:
     is). It reads it AGAIN after Enter and refuses if that fails or the setpoint moved more than 0.5 deg
     meanwhile (Manual Control or a Stretch profile is driving it); if the setpoint is not at 0 it ramps
     there at -ReturnDps (1-60 deg/s) before starting
-  * every write passes the backstop: NaN/Inf never sent, clamped to the limit, at most 6 deg per write.
+  * every write passes the backstop: NaN/Inf never sent, clamped to the limit, at most 6 deg from the
+    last value the rig TOOK (a write that returned true) and from the last value tried.
     If the backstop ever engages while playing, playback stops and ramps to 0 (exit 5): the file passed
     the checks, so something is wrong. The event is in the sent log (phase "guard")
   * q, Esc or Ctrl+C during playback stops it and ramps the setpoint back to 0 at -ReturnDps (Ctrl+C is
     caught while this window waits and plays; Ctrl+Break and closing the window are NOT: never use them)
-  * at the end it holds the last angle 2 s, then ramps back to 0. Every ramp keeps writing until the
-    value sent is the target (or its time + 5 s has passed)
-  * any error after the first write (writes failing 20 times in a row, an exception) first tries a
-    guarded ramp of the setpoint to 0 that tolerates failed writes; if that cannot get through it says
-    RIG HOLDING LAST SETPOINT -- USE THE E-STOP (exit 4)
+  * at the end it holds the last angle 2 s, then ramps back to 0. Every ramp is write-indexed: each write
+    is one step (-ReturnDps x 10 ms) from the last value the rig took, so a failed or late write is
+    retried, never jumped over; it runs until the rig has taken the target (or twice its time + 5 s)
+  * ANY failed write during play or the end hold ends the play at once (exit 4); so does any error after
+    the first write (an exception). Each first tries that guarded ramp of the setpoint to 0, tolerating
+    failed writes; if it cannot get through it says RIG HOLDING LAST SETPOINT -- USE THE E-STOP and
+    leaves sent\HOLDING.flag: the next start (PLAY or the Designer) shows it and plays only after YES
   * only one player writes at a time: a machine-wide lock (shared with the Pendulum Designer) is taken
     before the ramp-in and released after the return to 0; a second player refuses to start. The lock
     does not cover LabVIEW's own writers (Manual Control, a Stretch profile): do not use them while PLAY
@@ -52,9 +55,10 @@ Exit codes: 0 played, 1 refused/cancelled/stopped by key, 3 DataSocket not insta
 0, or with RIG HOLDING LAST SETPOINT if that failed), 5 stopped by the backstop, 6 stopped by the
 encoder watchdog.
 Test-only switches (never needed at the bench): -TestFakeDataSocket "read=0|read=12.5|read=nan|read=fail,
-write=fail" stands a fake variable in for NI DataSocket; -TestFakeEncoder "track|<deg>|fail|failafter"
+write=fail|write=fail@60-79" (all writes, or writes number 60..79, fail) stands a fake variable in for NI DataSocket; -TestFakeEncoder "track|<deg>|fail|failafter"
 a fake encoder; -TestBypassLoadChecks skips the load checks to exercise the backstop; -TestCtrlC
-"signal@<s>|key@<s>" presses Ctrl+C (as a console signal, or as a keystroke) <s> seconds into play;
+"signal@<s>|key@<s>" presses Ctrl+C <s> seconds into play: key@ as a keystroke (the bench setting, Ctrl+C
+read as input), signal@ as a console signal with Ctrl+C-as-input left off (the case the handler is for);
 -TestSetpointAfterEnter <deg> makes the fake variable read <deg> after Enter. All are refused unless
 -DryRun or -TestFakeDataSocket is given.
 #>
@@ -130,8 +134,12 @@ public static class PlayerConsole {
     public static void Hook() {
         if (hooked) return;
         hooked = true;
+        // a parent that ignores Ctrl+C (SetConsoleCtrlHandler(NULL, TRUE)) passes that on to its children, and
+        // then the signal never reaches the handler below: turn the default processing back on first
+        SetConsoleCtrlHandler(IntPtr.Zero, false);
         Console.CancelKeyPress += new ConsoleCancelEventHandler(OnCancel);
     }
+    [DllImport("kernel32.dll")] static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
     static void OnCancel(object sender, ConsoleCancelEventArgs e) {
         if (e.SpecialKey == ConsoleSpecialKey.ControlC) { e.Cancel = true; CtrlC = true; }
     }
@@ -174,7 +182,8 @@ function Refuse([string]$kind, [string]$msg) {
 
 function NewFakeSocket([string]$spec) {
     # test stand-in for CWDSLib.CWDataSocket: the members this script uses, nothing reaches a rig
-    $readOk = $true; $writeOk = $true; $val = 0.0
+    # write=fail: every write fails; write=fail@60-79: writes number 60..79 (1-based) fail, the rest succeed
+    $readOk = $true; $writeOk = $true; $val = 0.0; $failFrom = 0; $failTo = -1
     foreach ($part in $spec.Split(",")) {
         $kv = $part.Trim().Split("=")
         if ($kv.Length -ne 2) { continue }
@@ -184,6 +193,9 @@ function NewFakeSocket([string]$spec) {
             else { $val = [double]::Parse($kv[1], $inv) }
         }
         if ($kv[0] -eq "write" -and $kv[1] -eq "fail") { $writeOk = $false }
+        if ($kv[0] -eq "write" -and $kv[1].StartsWith("fail@")) {
+            $r = $kv[1].Substring(5).Split("-"); $failFrom = [int]$r[0]; $failTo = [int]$r[1]
+        }
     }
     $data = New-Object PSObject
     Add-Member -InputObject $data -MemberType NoteProperty -Name Value -Value $val
@@ -195,7 +207,14 @@ function NewFakeSocket([string]$spec) {
     Add-Member -InputObject $o -MemberType NoteProperty -Name WriteOk -Value $writeOk
     Add-Member -InputObject $o -MemberType ScriptMethod -Name SyncConnectTo -Value { param($u, $m, $to) return $true }
     Add-Member -InputObject $o -MemberType ScriptMethod -Name SyncRead -Value { param($to) return $this.ReadOk }
-    Add-Member -InputObject $o -MemberType ScriptMethod -Name SyncWrite -Value { param($v, $to) return $this.WriteOk }
+    Add-Member -InputObject $o -MemberType NoteProperty -Name Writes -Value 0
+    Add-Member -InputObject $o -MemberType NoteProperty -Name FailFrom -Value $failFrom
+    Add-Member -InputObject $o -MemberType NoteProperty -Name FailTo -Value $failTo
+    Add-Member -InputObject $o -MemberType ScriptMethod -Name SyncWrite -Value {
+        param($v, $to)
+        $this.Writes++
+        return ($this.WriteOk -and -not ($this.Writes -ge $this.FailFrom -and $this.Writes -le $this.FailTo))
+    }
     Add-Member -InputObject $o -MemberType ScriptMethod -Name SyncDisconnect -Value { param($to) return $true }
     Add-Member -InputObject $o -MemberType ScriptMethod -Name SelectURL -Value { param($a, $b, $c, $d) return $false }
     return $o
@@ -279,6 +298,24 @@ elseif (-not $EncoderUrl -and (Test-Path $encUrlFile)) { $EncoderUrl = ([string]
 if ($TestFakeEncoder -and -not $EncoderUrl) { $EncoderUrl = "fake://encoder" }
 if ($DryRun) { $EncoderUrl = "" }
 
+# -- a previous run that ended with the rig holding a setpoint must be acknowledged first --
+if (-not $DryRun) {
+    $flag = [Pendulastic.RigGuard]::ReadHoldingFlag($logDir)
+    if ($flag -ne $null) {
+        Write-Host ""
+        Write-Host "A PREVIOUS RUN ENDED WITH THE RIG HOLDING A SETPOINT (sent\HOLDING.flag):" -ForegroundColor Red
+        Write-Host $flag -ForegroundColor Red
+        Write-Host "Check the arm is at rest, the variable and the network work, and the sent log of that run is saved."
+        Write-Host -NoNewline "Type YES and Enter to acknowledge and continue (anything else stops): "
+        $ans = $null
+        try { $ans = [Console]::In.ReadLine() } catch { $ans = $null }
+        if ($ans -eq $null -or $ans.Trim() -cne "YES") { Refuse "holding_unacknowledged" "the previous RIG HOLDING event (sent\HOLDING.flag) was not acknowledged" }
+        $why = [Pendulastic.RigGuard]::ClearHoldingFlag($logDir)
+        if ($why) { Refuse "holding_unacknowledged" ("acknowledged, but sent\HOLDING.flag could not be deleted ({0})" -f $why) }
+        Say "Acknowledged; sent\HOLDING.flag deleted."
+    }
+}
+
 # -- one writer at a time (the Pendulum Designer takes the same lock) --
 if (-not $DryRun) {
     $lockWhy = $null
@@ -360,7 +397,11 @@ if (-not $DryRun) {
 }
 
 [PlayerConsole]::Hook()
-try { $script:origCtrlC = [Console]::TreatControlCAsInput; [Console]::TreatControlCAsInput = $true } catch { $script:origCtrlC = $null }
+# -TestCtrlC signal@<s> tests the handler in the case it exists for (the console does not deliver the signal
+# while TreatControlCAsInput is on), so that test leaves the setting off
+if (-not ($TestCtrlC -like "signal@*")) {
+    try { $script:origCtrlC = [Console]::TreatControlCAsInput; [Console]::TreatControlCAsInput = $true } catch { $script:origCtrlC = $null }
+}
 
 Say ""
 Say "Start the phone, then StretchExperiment's log. Then press Enter to play  (q = cancel)."
@@ -390,8 +431,8 @@ if (-not $DryRun) {
 $sent = New-Object System.Text.StringBuilder
 [void]$sent.AppendLine([Pendulastic.RigGuard]::SentHeader)   # t_file_s: where in the file (-1 off the file)
 $sw = New-Object System.Diagnostics.Stopwatch
-$script:failures = 0
-$script:last = $current
+$script:last = $current          # the last value tried
+$script:acked = $current         # the last value the rig TOOK (a write that returned true): it holds this now
 $script:guardEvent = ""
 $script:guardStop = ""
 $script:wdStop = ""
@@ -406,8 +447,10 @@ function LogRow([string]$phase, [double]$tf, [double]$v, [string]$note) {
 }
 
 function Send([double]$v, [string]$phase, [double]$tf = -1) {
+    # through the backstop against the last value the rig TOOK and the last value tried; logged after the
+    # write, with "write failed" in the note when SyncWrite did not return true (the rig did not take it)
     $evt = $null
-    $g = [Pendulastic.RigGuard]::Backstop($v, $script:last, $MaxDeg, [ref]$evt)
+    $g = [Pendulastic.RigGuard]::Backstop($v, $script:acked, $script:last, $MaxDeg, [ref]$evt)
     if ($evt) {
         LogRow "guard" $tf $g ("{0}: {1}" -f $phase, $evt)
         if (-not $script:guardEvent) { $script:guardEvent = [string]::Format($inv, "{0} at {1:F2} s: {2}", $phase, $tf, $evt) }
@@ -417,34 +460,39 @@ function Send([double]$v, [string]$phase, [double]$tf = -1) {
     $script:recent[$script:recentHead] = $g
     $script:recentHead = ($script:recentHead + 1) % $script:recent.Length
     if ($script:recentN -lt $script:recent.Length) { $script:recentN++ }
-    LogRow $phase $tf $g ""
-    if ($DryRun) { $script:lastWriteOk = $true; return }
+    if ($DryRun) { $script:lastWriteOk = $true; $script:acked = $g; LogRow $phase $tf $g ""; return }
     $ok = $false; $why = ""
     try { $ok = [bool]$writer.SyncWrite([double]$g, 100); if (-not $ok) { $why = [string]$writer.LastMessage } } catch { $why = $_.Exception.Message }
     $script:lastWriteOk = $ok
-    if ($ok) { $script:failures = 0; return }
-    $script:failures++
-    if ($script:failures -ge 20 -and -not $script:safeMode) {
-        # leaves the play/hold/ramp loop for the guarded return in the catch below
-        throw ("20 writes in a row failed ({0})" -f $why)
+    if ($ok) { $script:acked = $g; LogRow $phase $tf $g "" }
+    else { $script:lastWriteWhy = $why; LogRow $phase $tf $g ("write failed: " + $why) }
+}
+
+function EndOnFailedWrite([string]$where) {
+    # play and the end hold stop at the FIRST failed write: the rig did not take it, and carrying on with
+    # the file would make it jump when the link comes back. The guarded return steps from what it took.
+    if (-not $script:lastWriteOk) {
+        throw ([string]::Format($inv, "a write failed during {0} ({1}); the rig holds {2:F2} deg", $where, $script:lastWriteWhy, $script:acked))
     }
 }
 
 function SafeReturn([string]$why) {
-    # best effort after an error: ramp the setpoint to 0 through the backstop, tolerating failed writes,
-    # for at most the ramp's own time + RampExtraS. Says loudly when it could not get through.
-    $script:safeMode = $true; $script:failures = 0
+    # best effort after an error: ramp the setpoint to 0 through the backstop from the last value the rig
+    # took, tolerating failed writes, within the ramp's budget. Says loudly when it could not get through,
+    # and leaves sent\HOLDING.flag so the next start has to acknowledge it.
     $script:errorWhy = $why
     Write-Host ""; Write-Host ("ERROR: {0}. Trying to ramp the setpoint to 0..." -f $why) -ForegroundColor Red
-    LogRow "error" -1 $script:last $why
-    try { $reached = Ramp $script:last 0.0 "abort_return" $false } catch { $reached = $false; LogRow "error" -1 $script:last ("the error return failed: " + $_.Exception.Message) }
+    LogRow "error" -1 $script:acked $why
+    try { $reached = Ramp $script:acked 0.0 "abort_return" $false } catch { $reached = $false; LogRow "error" -1 $script:acked ("the error return failed: " + $_.Exception.Message) }
     if ($reached) {
         LogRow "error" -1 0 "error return reached 0"
         Write-Host "The setpoint was ramped back to 0." -ForegroundColor Yellow
     } else {
         $script:holding = $true
-        LogRow "error" -1 $script:last "RIG HOLDING LAST SETPOINT -- USE THE E-STOP"
-        Write-Host ([string]::Format($inv, "RIG HOLDING LAST SETPOINT ({0:F2} deg last sent) -- USE THE E-STOP if the arm is not at rest.", $script:last)) -ForegroundColor Red
+        $msg = [string]::Format($inv, "RIG HOLDING LAST SETPOINT -- USE THE E-STOP (last value the rig took {0:F2} deg, last tried {1:F2} deg)", $script:acked, $script:last)
+        LogRow "error" -1 $script:acked $msg
+        Write-Host ($msg + " if the arm is not at rest.") -ForegroundColor Red
+        if (-not $DryRun) { [Pendulastic.RigGuard]::WriteHoldingFlag($logDir, ("PLAY " + $File), ($msg + "`r`nerror: " + $why)) }
     }
 }
 
@@ -480,16 +528,15 @@ function NextTick([long]$t0) {
 }
 
 function Ramp([double]$from, [double]$to, [string]$phase, [bool]$keysAbort = $true) {
-    # writes until the value SENT (through the backstop) is $to and the rig took it, or until the ramp's
-    # time + RampExtraS. Returns whether it got there. q/Esc/Ctrl+C during the ramp-in cancels the play
-    # that would follow (the ramp to 0 itself always finishes).
-    $secs = [math]::Abs($to - $from) / $ReturnDps; $t0 = $sw.ElapsedMilliseconds
-    $deadline = $t0 + [long](1000.0 * ($secs + [Pendulastic.RigGuard]::RampExtraS))
+    # write-indexed: each write is one step (ReturnDps x 10 ms) from the last value the rig TOOK, so a failed
+    # or late write is retried from where the rig is, never jumped over. Runs until the rig has taken $to,
+    # or until RampBudgetMs. Returns whether it got there. q/Esc/Ctrl+C during the ramp-in cancels the play
+    # that would follow (the ramp to 0 itself always finishes). $from is where the caller expects it to start.
+    $t0 = $sw.ElapsedMilliseconds
+    $deadline = $t0 + [Pendulastic.RigGuard]::RampBudgetMs($to - $script:acked, $ReturnDps)
     while ($true) {
-        $e = ($sw.ElapsedMilliseconds - $t0) / 1000.0
-        if ($e -ge $secs) { $v = $to } else { $v = $from + ($to - $from) * $e / $secs }
-        Send $v $phase
-        if ($e -ge $secs -and [math]::Abs($script:last - $to) -lt 1e-9 -and $script:lastWriteOk) { return $true }
+        Send ([Pendulastic.RigGuard]::RampStep($script:acked, $to, $ReturnDps)) $phase
+        if ($script:lastWriteOk -and [math]::Abs($script:acked - $to) -lt 1e-9) { return $true }
         if ($sw.ElapsedMilliseconds -ge $deadline) { return $false }
         if ($keysAbort -and $phase -eq "ramp_in" -and (AbortKey)) { $script:aborted = $true }
         WaitTick (NextTick $t0)
@@ -527,7 +574,6 @@ try { (Get-Process -Id $PID).PriorityClass = "High" } catch { }   # fewer late t
 $stamps = New-Object 'System.Collections.Generic.List[System.Int64]'
 $aborted = $false
 $script:ctrlC = $false
-$script:safeMode = $false
 $script:holding = $false
 $script:errorWhy = ""
 $script:lastWriteOk = $true
@@ -542,6 +588,7 @@ try {
     # the file. Re-sending the value the rig already holds moves nothing.
     [void][Pendulastic.RigGuard]::At($t, $sp, 0.0)
     Send $script:last "ramp_in"
+    EndOnFailedWrite "the first write"
     if ($encoder -ne $null) { Watch -1 }
     [void](NextTick $sw.ElapsedMilliseconds)
     if (AbortKey) { $aborted = $true }
@@ -551,6 +598,7 @@ try {
         if (-not $aborted) { WaitTick ($sw.ElapsedMilliseconds + 1000) }
     }
     if ($aborted) { throw "CANCELLED_IN_RAMP" }
+    WaitTick ($sw.ElapsedMilliseconds + $PeriodMs)   # one tick between the last held write and the first play write
     Say "Playing. q or Esc stops and returns to 0 (never Ctrl+Break or closing this window)."
     $t0 = $sw.ElapsedMilliseconds; $lastShown = -1; $tick = 0
     while ($true) {
@@ -558,6 +606,7 @@ try {
         $e = ($now - $t0) / 1000.0
         $stamps.Add($now)
         Send ([Pendulastic.RigGuard]::At($t, $sp, $e)) "play" $e
+        EndOnFailedWrite "play"
         if ($script:guardStop) { break }
         $tick++; if (($tick % [Pendulastic.RigGuard]::WatchdogEveryTicks) -eq 0) { Watch $e }
         if ($script:wdStop) { break }
@@ -572,29 +621,30 @@ try {
     if ($script:guardStop) {
         Write-Host ("STOPPED BY THE GUARD: {0}. Returning to 0." -f $script:guardStop) -ForegroundColor Red
         LogRow "guard" -1 $script:last ("playback stopped by the backstop: " + $script:guardStop)
-        $returnShort = -not (Ramp $script:last 0.0 "abort_return")
+        $returnShort = -not (Ramp $script:acked 0.0 "abort_return")
         $tag = $tag + "_guard"
     } elseif ($script:wdStop) {
         Write-Host ("STOPPED BY THE ENCODER WATCHDOG: {0}. Ramping the setpoint to 0; check the arm, E-stop if it is not following." -f $script:wdStop) -ForegroundColor Red
-        $returnShort = -not (Ramp $script:last 0.0 "abort_return")
+        $returnShort = -not (Ramp $script:acked 0.0 "abort_return")
         $tag = $tag + "_watchdog"
     } elseif ($aborted) {
         $how = "q/Esc"; if ($script:ctrlC) { $how = "Ctrl+C" }
         LogRow "stop" -1 $script:last ("stopped by " + $how)
         Say ("Stopped by {0} at {1:F1} s. Returning to 0." -f $how, (($sw.ElapsedMilliseconds - $t0) / 1000.0))
-        $returnShort = -not (Ramp $script:last 0.0 "abort_return")
+        $returnShort = -not (Ramp $script:acked 0.0 "abort_return")
     } else {
         $hold = $sw.ElapsedMilliseconds + 2000
         $ht = 0
         while ($sw.ElapsedMilliseconds -lt $hold -and -not $script:wdStop) {
             Send $sp[$n - 1] "hold"
+            EndOnFailedWrite "the end hold"
             $ht++; if (($ht % [Pendulastic.RigGuard]::WatchdogEveryTicks) -eq 0) { Watch -1 }
             if (AbortKey) { $aborted = $true; break }
             WaitTick ($sw.ElapsedMilliseconds + $PeriodMs)
         }
         if ($script:wdStop) { Write-Host ("STOPPED BY THE ENCODER WATCHDOG: {0}. Returning to 0." -f $script:wdStop) -ForegroundColor Red; $tag = $tag + "_watchdog" }
         if ([math]::Abs($script:last) -gt 0.5) { Say ([string]::Format($inv, "Returning from {0:F1} to 0 deg at {1:F0} deg/s.", $script:last, $ReturnDps)) }
-        $returnShort = -not (Ramp $script:last 0.0 "return")
+        $returnShort = -not (Ramp $script:acked 0.0 "return")
     }
     if ($returnShort) { throw "the return to 0 did not complete in time" }
   } catch {

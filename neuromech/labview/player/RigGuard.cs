@@ -29,8 +29,11 @@
 // not a guarantee: a rig whose resonance moved more than 10 % or lost more damping than that is outside it.
 //
 // Per-write backstop (Backstop): a NaN/Inf is never sent (the last value is held), a value beyond the limit
-// is clamped to it, and the change from the last value sent is limited to 6 deg. Any engagement during
-// play means a file that passed the load checks is being sent wrong: the players stop and ramp to 0.
+// is clamped to it, and the change is limited to 6 deg from the last value the rig TOOK (a write that
+// returned true) and from the last value tried. Any engagement during play means a file that passed the load
+// checks is being sent wrong: the players stop and ramp to 0. Any failed write during play or the end hold
+// also ends the play (the rig did not get that value) and starts the guarded return to 0, which steps from
+// the last value the rig took, so a late success never jumps it.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -68,10 +71,58 @@ namespace Pendulastic
         public const double StartTol = 1e-6, StartAngleTol = 0.01, Eps = 1e-9;
 
         // returns to 0 (STOP, q/Esc, guard/watchdog stop, end of a run, error paths): the speed is an operator
-        // setting within [1, 60] deg/s; every ramp keeps writing until the value SENT equals the target, or
-        // until its planned time plus RampExtraS has passed (then the caller reports the rig holding)
+        // setting within [1, 60] deg/s; every ramp keeps writing until the rig has TAKEN the target, or until
+        // its budget (RampBudgetMs) has passed (then the caller reports the rig holding)
         public const double DefaultReturnDps = 10.0, MinReturnDps = 1.0, MaxReturnDps = 60.0;
         public const double RampExtraS = 5.0;
+
+        /// <summary>A ramp's next value: from the last value the rig TOOK, one write's worth (returnDps x 10 ms)
+        /// toward the target. Write-indexed, not clock-indexed: a failed or late write is retried from where the
+        /// rig is, never jumped over.</summary>
+        public static double RampStep(double lastAcked, double target, double returnDps)
+        {
+            double step = returnDps * PeriodMs / 1000.0, d = target - lastAcked;
+            return Math.Abs(d) <= step ? target : lastAcked + (d > 0 ? step : -step);
+        }
+
+        /// <summary>How long a ramp may take before the player gives up on it: twice its nominal time (late ticks
+        /// stretch a write-indexed ramp) plus RampExtraS.</summary>
+        public static long RampBudgetMs(double distDeg, double returnDps)
+        {
+            return (long)(1000.0 * (2.0 * Math.Abs(distDeg) / returnDps + RampExtraS));
+        }
+
+        /// <summary>Written to sent\HOLDING.flag when a run ends with the rig holding a setpoint the player could
+        /// not bring to 0. The next start of either player shows it and needs an explicit acknowledgement.</summary>
+        public const string HoldingFlagName = "HOLDING.flag";
+
+        /// <summary>Leave the holding flag in logDir (best effort; never throws).</summary>
+        public static void WriteHoldingFlag(string logDir, string who, string what)
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(logDir);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(logDir, HoldingFlagName),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "  " + who + "\r\n" + what + "\r\n");
+            }
+            catch { }
+        }
+
+        /// <summary>The holding flag's text, or null when there is none.</summary>
+        public static string ReadHoldingFlag(string logDir)
+        {
+            string p = System.IO.Path.Combine(logDir, HoldingFlagName);
+            if (!System.IO.File.Exists(p)) return null;
+            try { return System.IO.File.ReadAllText(p).Trim(); }
+            catch (Exception ex) { return "(the flag could not be read: " + ex.Message + ")"; }
+        }
+
+        /// <summary>Delete the holding flag once the operator acknowledged it. Returns null, or why it could not.</summary>
+        public static string ClearHoldingFlag(string logDir)
+        {
+            try { System.IO.File.Delete(System.IO.Path.Combine(logDir, HoldingFlagName)); return null; }
+            catch (Exception ex) { return ex.Message; }
+        }
 
         static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -309,7 +360,31 @@ namespace Pendulastic
             return Math.Floor(s * 100.0 + 1e-9) / 100.0;
         }
 
-        /// <summary>The per-write backstop. Returns the value to send; evt is null when nothing was changed.</summary>
+        /// <summary>The per-write backstop against the last value the rig TOOK (lastAcked: a write that returned true)
+        /// and the last value tried (lastAttempt: a failed write may still have arrived). The change is limited to
+        /// 6 deg from both, so a burst of failed writes followed by a success can never jump the rig. The players
+        /// keep every attempt within 6 deg of lastAcked, so the two windows always overlap.</summary>
+        public static double Backstop(double v, double lastAcked, double lastAttempt, double limitDeg, out string evt)
+        {
+            if (double.IsNaN(lastAcked) || double.IsInfinity(lastAcked)) lastAcked = 0;
+            if (double.IsNaN(lastAttempt) || double.IsInfinity(lastAttempt)) lastAttempt = lastAcked;
+            double g = Backstop(v, lastAttempt, limitDeg, out evt);
+            double lo = Math.Max(lastAcked, lastAttempt) - MaxStepDeg, hi = Math.Min(lastAcked, lastAttempt) + MaxStepDeg;
+            if (lo > hi) { lo = lastAcked - MaxStepDeg; hi = lastAcked + MaxStepDeg; }
+            if (g > hi + Eps || g < lo - Eps)
+            {
+                double c = g > hi ? hi : lo;
+                evt = Join(evt, "change of " + F(g - lastAcked, 3) + " deg from the last value the rig took (" + F(lastAcked, 4)
+                    + "); limited to " + F(c - lastAcked, 3));
+                g = c;
+            }
+            double lim = Math.Min(limitDeg, HardLimitDeg);
+            if (double.IsNaN(lim) || lim <= 0) lim = HardLimitDeg;
+            if (g > lim) g = lim; else if (g < -lim) g = -lim;
+            return g;
+        }
+
+        /// <summary>The per-write backstop against one previous value. Returns the value to send; evt is null when nothing was changed.</summary>
         public static double Backstop(double v, double last, double limitDeg, out string evt)
         {
             evt = null;
@@ -375,7 +450,7 @@ namespace Pendulastic
         public const int FollowWindowWrites = 15;             // compare with any setpoint sent in the last 150 ms
         public const int WatchdogEveryTicks = 5;              // read the encoder every 5th write (50 ms)
         public const int WatchdogReadTimeoutMs = 20;
-        public const int WatchdogMaxMissed = 10;              // 10 failed reads in a row (~0.5 s) abort
+        public const int WatchdogMaxMissed = 5;               // 5 failed reads in a row (~250 ms) abort
 
         /// <summary>The largest following error the identified plant (and its detuned copies) produces on this
         /// stream, measured as the watchdog measures it: |arm - nearest setpoint sent in the last 150 ms|.</summary>

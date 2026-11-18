@@ -43,8 +43,10 @@ one Windows process. The E-stop is the protection. Stop at the first surprise.
    * STOP (Designer) or q / Esc (PLAY.bat): the setpoint ramps back to 0 at 10 deg/s.
      Never stop by closing the window or with Ctrl+Break: the rig would hold the last setpoint.
      (Ctrl+C in PLAY is caught and works like q, but use q.)
-   * "ERROR ... Trying to ramp the setpoint to 0": writes failed or something broke; the player tries
+   * "ERROR ... Trying to ramp the setpoint to 0": a write failed or something broke; the player tries
      to bring the setpoint to 0. "RIG HOLDING LAST SETPOINT -- USE THE E-STOP": it could not. E-stop.
+     The next start of either player then shows "RIG HOLDING" and asks you to acknowledge it (PLAY:
+     type YES; Designer: Yes). Do that only once the arm is at rest and the link is checked.
    * "STOPPED BY THE GUARD" or "STOPPED BY THE ENCODER WATCHDOG": the file passed every check and
      something still went wrong. Do not repeat that run. Bring sent\ back.
    * NOT COVERED BY SOFTWARE: if writes keep failing, or the program is closed or crashes mid-run,

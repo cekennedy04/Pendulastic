@@ -10,9 +10,13 @@
 // the content and ramps the setpoint to 0 if the arm is past the limit + 3 deg or further from every recent
 // setpoint than the following-error bound. It runs in this process: a second opinion, not a hardware cutoff.
 //
-// Every ramp keeps writing until the value sent is the target and the rig took it (or its time + 5 s has
-// passed). Any error after the first write (20 failed writes in a row, an exception) first tries a guarded
-// ramp to 0 that tolerates failed writes; if that cannot get through, Status says RIG HOLDING LAST SETPOINT.
+// The backstop limits every write to 6 deg from the last value the rig TOOK (SyncWrite returned true) and from
+// the last value tried. Any failed write during play or the end hold ends the play at once and starts the
+// guarded return to 0. Every ramp is write-indexed: each write is one step from the last value the rig took,
+// so a failed or late write is retried, never jumped over; it runs until the rig has taken the target (or
+// RigGuard.RampBudgetMs has passed). Any error after the first write first tries that guarded ramp to 0; if it
+// cannot get through, Status says RIG HOLDING LAST SETPOINT and sent\HOLDING.flag is left for the next start.
+// Start refuses while that flag exists unless AckHolding is set (the UI asks the operator first).
 //
 // What this cannot do: if writes stop getting through, the rig HOLDS the last value it received; if this
 // program is killed mid-play the rig also holds the last setpoint. The E-stop is the answer to both.
@@ -66,10 +70,15 @@ namespace Pendulastic
         volatile bool stopAsked;
         Thread thread;
         object writer, reader;
-        int failures;
-        bool lastWriteOk = true, safeMode;
+        bool lastWriteOk = true;
+        string lastWriteWhy = "";
+        /// <summary>The last value the rig TOOK (a write that returned true): what it holds now.</summary>
+        public double LastAckedDeg;
         /// <summary>True after an error whose guarded return to 0 could not get through.</summary>
         public bool Holding;
+        /// <summary>The operator acknowledged a previous RIG HOLDING event (sent\HOLDING.flag); Start then deletes
+        /// the flag. Without it Start refuses while the flag exists.</summary>
+        public bool AckHolding;
         StringBuilder sent;
         System.Diagnostics.Stopwatch sw;
         double limit;
@@ -136,6 +145,25 @@ namespace Pendulastic
             if (rd != null) { LogRefusal("return_speed", rd); throw new InvalidOperationException(rd); }
             string eu = DryRun ? null : RigGuard.EncoderUrlProblem(EncoderUrl, Url);
             if (eu != null) { LogRefusal("encoder", eu); throw new InvalidOperationException(eu); }
+            if (!DryRun)
+            {
+                string flag = RigGuard.ReadHoldingFlag(LogDir);
+                if (flag != null)
+                {
+                    if (!AckHolding)
+                    {
+                        string m = "a previous run ended with the rig holding a setpoint (sent\\HOLDING.flag: " + flag + "); acknowledge it first";
+                        LogRefusal("holding_unacknowledged", m); throw new InvalidOperationException(m);
+                    }
+                    string cw = RigGuard.ClearHoldingFlag(LogDir);
+                    if (cw != null)
+                    {
+                        string m = "acknowledged, but sent\\HOLDING.flag could not be deleted (" + cw + ")";
+                        LogRefusal("holding_unacknowledged", m); throw new InvalidOperationException(m);
+                    }
+                }
+                AckHolding = false;
+            }
             if (TestBypassLoadChecks && !IsTest)
                 throw new InvalidOperationException("the load checks can only be bypassed in a dry run or against a fake socket");
             if (!TestBypassLoadChecks)
@@ -147,7 +175,7 @@ namespace Pendulastic
             followBound = RigGuard.FollowBoundDeg(RigGuard.PredictedFollowingError(RigGuard.Stream(t, sp)));
             recentN = 0; recentHead = 0; encMissed = 0;
             stopAsked = false; Running = true; Status = "starting"; GuardEvent = ""; guardStop = null; watchdogStop = null;
-            Holding = false; safeMode = false; lastWriteOk = true; failures = 0;
+            Holding = false; lastWriteOk = true; lastWriteWhy = "";
             WatchdogState = EncoderUrl.Trim().Length > 0 && !DryRun ? "encoder watchdog ON" : "encoder watchdog OFF";
             thread = new Thread(delegate() { Run(t, sp); });
             thread.SetApartmentState(ApartmentState.STA);         // ActiveX control: single-threaded apartment
@@ -169,7 +197,7 @@ namespace Pendulastic
         void Send(double v, string phase, double tf)
         {
             string evt;
-            double g = RigGuard.Backstop(v, LastSentDeg, limit, out evt);
+            double g = RigGuard.Backstop(v, LastAckedDeg, LastSentDeg, limit, out evt);
             if (evt != null)
             {
                 Note("guard", tf, g, phase + ": " + evt);
@@ -178,26 +206,33 @@ namespace Pendulastic
             }
             LastSentDeg = g;
             recent[recentHead] = g; recentHead = (recentHead + 1) % recent.Length; if (recentN < recent.Length) recentN++;
-            Note(phase, tf, g, "");
-            if (DryRun) { lastWriteOk = true; return; }
-            bool ok;
-            try { ok = (bool)Call(writer, "SyncWrite", (object)g, 100); } catch { ok = false; }
+            if (DryRun) { lastWriteOk = true; LastAckedDeg = g; Note(phase, tf, g, ""); return; }
+            bool ok; string why = "";
+            try { ok = (bool)Call(writer, "SyncWrite", (object)g, 100); if (!ok) why = SafeMsg(writer); }
+            catch (Exception ex) { ok = false; why = ex.Message; }
             lastWriteOk = ok;
-            if (ok) failures = 0;
-            else if (++failures >= 20 && !safeMode)
-                throw new IOException("20 writes in a row failed (" + SafeMsg(writer) + ")");
+            if (ok) { LastAckedDeg = g; Note(phase, tf, g, ""); }
+            else { lastWriteWhy = why; Note(phase, tf, g, "write failed: " + why); }
+        }
+
+        /// <summary>Play and the end hold stop at the FIRST failed write: the rig did not take it, and carrying on
+        /// with the file would jump it when the link comes back. The guarded return steps from what it took.</summary>
+        void EndOnFailedWrite(string where)
+        {
+            if (!lastWriteOk)
+                throw new IOException(string.Format(CultureInfo.InvariantCulture, "a write failed during {0} ({1}); the rig holds {2:F2} deg",
+                    where, lastWriteWhy, LastAckedDeg));
         }
 
         /// <summary>Best effort after an error: ramp to 0 through the backstop, tolerating failed writes, for at most
         /// the ramp's time + RampExtraS. Sets Holding when it could not get through.</summary>
         void SafeReturn(string why)
         {
-            safeMode = true; failures = 0;
-            Note("error", -1, LastSentDeg, why);
+            Note("error", -1, LastAckedDeg, why);
             Status = "ERROR (" + why + "): ramping the setpoint to 0";
             bool reached;
-            try { reached = writer != null || DryRun ? Ramp(LastSentDeg, 0.0, "abort_return") : false; }
-            catch (Exception ex) { reached = false; Note("error", -1, LastSentDeg, "the error return failed: " + ex.Message); }
+            try { reached = writer != null || DryRun ? Ramp(0.0, "abort_return") : false; }
+            catch (Exception ex) { reached = false; Note("error", -1, LastAckedDeg, "the error return failed: " + ex.Message); }
             if (reached)
             {
                 Note("error", -1, 0, "error return reached 0");
@@ -206,9 +241,11 @@ namespace Pendulastic
             else
             {
                 Holding = true;
-                Note("error", -1, LastSentDeg, "RIG HOLDING LAST SETPOINT -- USE THE E-STOP");
-                Status = string.Format(CultureInfo.InvariantCulture,
-                    "RIG HOLDING LAST SETPOINT ({0:F2} deg last sent) -- USE THE E-STOP if the arm is not at rest. Error: {1}", LastSentDeg, why);
+                string msg = string.Format(CultureInfo.InvariantCulture,
+                    "RIG HOLDING LAST SETPOINT -- USE THE E-STOP (last value the rig took {0:F2} deg, last tried {1:F2} deg)", LastAckedDeg, LastSentDeg);
+                Note("error", -1, LastAckedDeg, msg);
+                Status = msg + " if the arm is not at rest. Error: " + why;
+                if (!DryRun) RigGuard.WriteHoldingFlag(LogDir, "Pendulum Designer " + LogName, msg + "\r\nerror: " + why);
             }
         }
 
@@ -222,17 +259,17 @@ namespace Pendulastic
 
         long NextTick(long t0) { return t0 + ((sw.ElapsedMilliseconds - t0) / PeriodMs + 1) * PeriodMs; }
 
-        /// <summary>Writes until the value SENT (through the backstop) is the target and the rig took it, or until the
-        /// ramp's time + RampExtraS. Returns whether it got there. STOP during the ramp-in cancels the play.</summary>
-        bool Ramp(double from, double to, string phase)
+        /// <summary>Write-indexed: each write is one step (ReturnDps x 10 ms) from the last value the rig TOOK, so a
+        /// failed or late write is retried from where the rig is, never jumped over. Runs until the rig has taken the
+        /// target, or until RigGuard.RampBudgetMs. Returns whether it got there. STOP during the ramp-in cancels the play.</summary>
+        bool Ramp(double to, string phase)
         {
-            double secs = Math.Abs(to - from) / ReturnDps; long t0 = sw.ElapsedMilliseconds;
-            long deadline = t0 + (long)(1000.0 * (secs + RigGuard.RampExtraS));
+            long t0 = sw.ElapsedMilliseconds;
+            long deadline = t0 + RigGuard.RampBudgetMs(to - LastAckedDeg, ReturnDps);
             while (true)
             {
-                double e = (sw.ElapsedMilliseconds - t0) / 1000.0;
-                Send(e >= secs ? to : from + (to - from) * e / secs, phase, -1);
-                if (e >= secs && Math.Abs(LastSentDeg - to) < 1e-9 && lastWriteOk) return true;
+                Send(RigGuard.RampStep(LastAckedDeg, to, ReturnDps), phase, -1);
+                if (lastWriteOk && Math.Abs(LastAckedDeg - to) < 1e-9) return true;
                 if (sw.ElapsedMilliseconds >= deadline) return false;
                 WaitUntil(NextTick(t0));
             }
@@ -349,21 +386,23 @@ namespace Pendulastic
                     if (EncoderUrl.Trim().Length > 0) ConnectEncoder(current);
                     else Note("encoder", -1, double.NaN, "encoder watchdog OFF (no encoder variable picked)");
                 }
-                LastSentDeg = current;
+                LastSentDeg = current; LastAckedDeg = current;
                 recentN = 0; recentHead = 0;
                 started = true;
                 // warm up before any clock-indexed ramp or play (first COM write, first JIT): a slow first write
                 // would make the next one jump along the ramp or into the file. Re-sends the held value.
                 RigGuard.At(t, sp, 0.0);
                 Send(LastSentDeg, "ramp_in", -1);
+                EndOnFailedWrite("the first write");
                 if (Math.Abs(current) > 0.5)
                 {
                     Status = string.Format(CultureInfo.InvariantCulture, "ramping from {0:F1} to 0 first", current);
-                    if (!Ramp(current, 0.0, "ramp_in")) throw new IOException("the ramp-in did not reach 0");
+                    if (!Ramp(0.0, "ramp_in")) throw new IOException("the ramp-in did not reach 0");
                     if (stopAsked) throw new CancelledInRamp();
                     WaitUntil(sw.ElapsedMilliseconds + 1000);
                     if (stopAsked) throw new CancelledInRamp();
                 }
+                WaitUntil(sw.ElapsedMilliseconds + PeriodMs);   // one tick between the last held write and the first play write
                 double dur = t[t.Length - 1];
                 Status = DryRun ? "dry run (nothing sent)" : "playing";
                 long t0 = sw.ElapsedMilliseconds;
@@ -375,6 +414,7 @@ namespace Pendulastic
                     stamps.Add(now);
                     FileTimeS = Math.Min(e, dur);
                     Send(RigGuard.At(t, sp, e), "play", e);
+                    EndOnFailedWrite("play");
                     if (guardStop != null) { aborted = true; break; }
                     if (++tick % RigGuard.WatchdogEveryTicks == 0) Watch(e);
                     if (watchdogStop != null) { aborted = true; break; }
@@ -389,21 +429,21 @@ namespace Pendulastic
                     Status = "STOPPED by the guard: returning to 0";
                     Note("guard", -1, LastSentDeg, "playback stopped by the backstop: " + guardStop);
                     tag += "_guard";
-                    back = Ramp(LastSentDeg, 0.0, "abort_return");
+                    back = Ramp(0.0, "abort_return");
                     Status = "STOPPED by the guard (" + guardStop + "); back at 0";
                 }
                 else if (watchdogStop != null)
                 {
                     Status = "STOPPED by the encoder watchdog: returning to 0";
                     tag += "_watchdog";
-                    back = Ramp(LastSentDeg, 0.0, "abort_return");
+                    back = Ramp(0.0, "abort_return");
                     Status = "STOPPED by the encoder watchdog (" + watchdogStop + "); setpoint back at 0. Check the arm; use the E-stop if it is not following";
                 }
                 else if (aborted)
                 {
                     Status = "stopped: returning to 0";
                     Note("stop", -1, LastSentDeg, "stopped by STOP");
-                    back = Ramp(LastSentDeg, 0.0, "abort_return");
+                    back = Ramp(0.0, "abort_return");
                     Status = "stopped by you; back at 0";
                 }
                 else
@@ -412,12 +452,13 @@ namespace Pendulastic
                     while (sw.ElapsedMilliseconds < hold && watchdogStop == null && !stopAsked)
                     {
                         Send(sp[sp.Length - 1], "hold", -1);
+                        EndOnFailedWrite("the end hold");
                         if (++ht % RigGuard.WatchdogEveryTicks == 0) Watch(-1);
                         WaitUntil(sw.ElapsedMilliseconds + PeriodMs);
                     }
                     if (watchdogStop != null) { Status = "STOPPED by the encoder watchdog (" + watchdogStop + "); returning to 0"; tag += "_watchdog"; }
                     if (watchdogStop == null) Status = "returning to 0";
-                    back = Ramp(LastSentDeg, 0.0, "return");
+                    back = Ramp(0.0, "return");
                     Status = watchdogStop == null ? "done" : "STOPPED by the encoder watchdog (" + watchdogStop + "); setpoint back at 0";
                 }
                 if (!back) throw new IOException("the return to 0 did not complete in time");

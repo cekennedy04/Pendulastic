@@ -32,10 +32,21 @@ namespace Pendulastic
         public int Reads, ReadOkFor = int.MaxValue;
         public bool SyncRead(int timeoutMs) { Reads++; return ReadOk && Reads <= ReadOkFor; }
         public int FailWritesFrom = int.MaxValue, FailWritesTo = int.MaxValue;     // writes number From..To (1-based) fail
+        public List<double> Taken = new List<double>();                              // the writes that returned true
         public bool SyncWrite(object v, int timeoutMs)
         {
-            Writes++; Written.Add(Convert.ToDouble(v, CultureInfo.InvariantCulture));
-            return WriteOk && !(Writes >= FailWritesFrom && Writes <= FailWritesTo);
+            Writes++; double d = Convert.ToDouble(v, CultureInfo.InvariantCulture); Written.Add(d);
+            bool ok = WriteOk && !(Writes >= FailWritesFrom && Writes <= FailWritesTo);
+            if (ok) Taken.Add(d);
+            return ok;
+        }
+
+        /// <summary>The largest change between two successive values the rig TOOK.</summary>
+        public double MaxTakenStep()
+        {
+            double m = 0;
+            for (int i = 1; i < Taken.Count; i++) m = Math.Max(m, Math.Abs(Taken[i] - Taken[i - 1]));
+            return m;
         }
         public bool SyncDisconnect(int timeoutMs) { return true; }
     }
@@ -212,15 +223,40 @@ namespace Pendulastic
             Report("backstop_limits_step_and_stops", p.Status.Contains("guard") && st <= 6 + 1e-9 && lv == 0, p.Status + " step=" + st.ToString(Inv));
 
             // 5. failed writes: a guarded return to 0 first; RIG HOLDING only when that cannot get through
+            string flagDir = Path.Combine(work, "sent");
+            RigGuard.ClearHoldingFlag(flagDir);
             f = new FakeSocket(); f.WriteOk = false;
             p = Player(f, "writefail"); p.Start(t, sp); p.Join(); rows = Rows(p);
             Report("write_failures_try_to_return_then_say_the_rig_holds", p.Holding && p.Status.StartsWith("RIG HOLDING") && f.Writes > 20
-                   && Has(rows, "abort_return") && p.LastLog.Contains("_error"), p.Status + " writes=" + f.Writes);
-            f = new FakeSocket(); f.FailWritesFrom = 80; f.FailWritesTo = 99;     // 20 failures mid-swing, then the link recovers
-            p = Player(f, "writeblip"); p.Start(t, sp); p.Join(); rows = Rows(p);
-            Sent(rows, out pk, out st, out lv, out cnt);
-            Report("write_failures_mid_swing_return_to_0", !p.Holding && p.Status.Contains("ramped back to 0") && f.Written[f.Written.Count - 1] == 0
-                   && st <= 6 + 1e-9 && Has(rows, "error"), p.Status + " last=" + f.Written[f.Written.Count - 1].ToString(Inv));
+                   && Has(rows, "abort_return") && p.LastLog.Contains("_error") && string.Join("\n", rows).Contains("write failed"),
+                   p.Status + " writes=" + f.Writes);
+            Report("rig_holding_leaves_the_flag", RigGuard.ReadHoldingFlag(flagDir) != null && RigGuard.ReadHoldingFlag(flagDir).Contains("RIG HOLDING"), "");
+            f = new FakeSocket();
+            p = Player(f, "flag_noack");
+            Report("holding_flag_unacknowledged_refuses", Throws(p, t, sp, out msg) && msg.Contains("HOLDING.flag") && f.Writes == 0
+                   && p.LastLog.Contains("_refused") && RigGuard.ReadHoldingFlag(flagDir) != null, msg);
+            p = Player(null, "flag_dry");                                          // a dry run sends nothing: not asked
+            Report("holding_flag_ignored_by_a_dry_run", !Throws(p, t, sp, out msg) && p.Status == "done" && RigGuard.ReadHoldingFlag(flagDir) != null, p.Status + msg);
+            f = new FakeSocket();
+            p = Player(f, "flag_ack"); p.AckHolding = true;
+            Report("holding_flag_acknowledged_plays_and_is_deleted", !Throws(p, t, sp, out msg) && p.Status == "done" && f.Writes > 0
+                   && RigGuard.ReadHoldingFlag(flagDir) == null && !p.AckHolding, p.Status + msg);
+            // 5b. the rig took writes 1..59, missed 60..79 (mid-rise of a 35 deg swing), takes them again from 80:
+            //     play ends at the first failure, and the return steps from what the rig took (no jump on recovery)
+            double[] t35, sp35; Slow(35, out t35, out sp35);
+            f = new FakeSocket(); f.FailWritesFrom = 60; f.FailWritesTo = 79;
+            p = Player(f, "intermittent"); p.Start(t35, sp35); p.Join(); rows = Rows(p);
+            int firstFail = -1, playAfter = 0;
+            for (int i = 1; i < rows.Length; i++)
+            {
+                string[] c = rows[i].Split(',');
+                if (firstFail < 0 && rows[i].Contains("write failed")) firstFail = i;
+                else if (firstFail >= 0 && c.Length > 2 && c[2] == "play") playAfter++;
+            }
+            Report("intermittent_write_failures_never_jump_the_rig", !p.Holding && p.Status.Contains("ramped back to 0") && f.MaxTakenStep() <= 6 + 1e-9
+                   && f.Taken[f.Taken.Count - 1] == 0 && firstFail > 0 && rows[firstFail].Split(',')[2] == "play" && playAfter == 0
+                   && p.LastLog.Contains("_error") && RigGuard.ReadHoldingFlag(flagDir) == null,
+                   p.Status + " max taken step=" + f.MaxTakenStep().ToString(Inv) + " play rows after the failure=" + playAfter);
 
             // 6. one writer at a time (both directions with PowerShell are in test_rig_guard.py)
             string lockWhy;
@@ -257,7 +293,7 @@ namespace Pendulastic
             enc.Data.Source = delegate() { return w.Written.Count > 0 ? w.Written[w.Written.Count - 1] : 0.0; };
             p = Player(w, "wd_lost"); p.EncoderUrl = "fake://encoder"; p.MakeEncoderSocket = delegate() { return enc; };
             p.Start(t, sp); p.Join();
-            Report("watchdog_stops_when_the_encoder_goes_silent", p.Status.Contains("could not be read 10 times"), p.Status);
+            Report("watchdog_stops_when_the_encoder_goes_silent", p.Status.Contains("could not be read 5 times"), p.Status);
             w = new FakeSocket(); enc = new FakeSocket(); enc.ReadOk = false;
             p = Player(w, "wd_noread"); p.EncoderUrl = "fake://encoder"; p.MakeEncoderSocket = delegate() { return enc; };
             p.Start(t, sp); p.Join();
@@ -280,6 +316,11 @@ namespace Pendulastic
             Report("unit_backstop_neg_step", RigGuard.Backstop(-20, 0, 40, out evt) == -6 && evt != null, evt);
             Report("unit_backstop_quiet", RigGuard.Backstop(5, 0, 40, out evt) == 5 && evt == null, "");
             Report("unit_backstop_operator_above_hard", RigGuard.Backstop(45, 39.5, 45, out evt) == 40 && evt != null, evt);
+            // against the last value the rig TOOK and the last one tried: within 6 deg of both
+            Report("unit_backstop_acked_limits_a_recovery_jump", RigGuard.Backstop(12, 2, 5, 40, out evt) == 8 && evt != null, evt);
+            Report("unit_backstop_attempt_limits_too", RigGuard.Backstop(-5, 2, 5, 40, out evt) == -1 && evt != null, evt);
+            Report("unit_backstop_two_quiet", RigGuard.Backstop(4, 2, 5, 40, out evt) == 4 && evt == null, "");
+            Report("unit_ramp_step_from_acked", RigGuard.RampStep(10, 0, 50) == 9.5 && RigGuard.RampStep(0.3, 0, 50) == 0 && Math.Abs(RigGuard.RampStep(-10, 0, 10) + 9.9) < 1e-12, "");
             return failed == 0 ? 0 : 1;
         }
 

@@ -286,7 +286,10 @@ def test_csharp_player_refusals_and_backstop(guardtest, tmp_path):
                  "refuse_bad_start_angle", "refuse_setpoint_read_failure", "ramp_in_from_current",
                  "backstop_clamps_and_stops_at_the_limit", "backstop_never_sends_nan", "backstop_limits_step_and_stops",
                  "bypass_refused_against_the_rig", "write_failures_try_to_return_then_say_the_rig_holds",
-                 "write_failures_mid_swing_return_to_0", "refuse_alias_between_grid_points", "refuse_1ms_spike_off_grid",
+                 "intermittent_write_failures_never_jump_the_rig", "rig_holding_leaves_the_flag",
+                 "holding_flag_unacknowledged_refuses", "holding_flag_ignored_by_a_dry_run",
+                 "holding_flag_acknowledged_plays_and_is_deleted", "unit_backstop_acked_limits_a_recovery_jump",
+                 "unit_ramp_step_from_acked", "refuse_alias_between_grid_points", "refuse_1ms_spike_off_grid",
                  "refuse_return_speed_0", "refuse_return_speed_1000", "period_is_not_settable",
                  "refuse_encoder_equal_to_setpoint", "refuse_three_columns", "stop_during_ramp_in_cancels_the_play",
                  "lock_refuses_a_second_player", "lock_released_plays", "watchdog_off_is_said_and_logged",
@@ -345,9 +348,10 @@ def ps(tmp_path):
     for f in ("play_setpoints.ps1", "RigGuard.cs"):
         shutil.copy(os.path.join(PLAYER, f), d)
 
-    def run(f, *extra, timeout=180):
+    def run(f, *extra, timeout=180, input=None):
         return subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(d / "play_setpoints.ps1"),
-                               "-File", str(f), "-NoPrompt", *extra], capture_output=True, text=True, timeout=timeout)
+                               "-File", str(f), "-NoPrompt", *extra], capture_output=True, text=True, timeout=timeout,
+                              input=input)
     run.dir = d
     return run
 
@@ -438,6 +442,44 @@ def test_powershell_failed_writes_try_a_return_then_say_the_rig_holds(ps, tmp_pa
     assert r.returncode == 4 and "Trying to ramp the setpoint to 0" in r.stdout and "RIG HOLDING LAST SETPOINT" in r.stdout, r.stdout
     rows = list(csv.DictReader(open(_sent(ps.dir, "*_error.csv")[-1], newline="")))
     assert any(x["phase"] == "abort_return" for x in rows) and any("USE THE E-STOP" in x["note"] for x in rows)
+    assert all("write failed" in x["note"] for x in rows if x["phase"] in WRITE_PHASES)
+    assert (ps.dir / "sent" / "HOLDING.flag").exists()
+
+
+@need_ps
+def test_powershell_intermittent_write_failures_never_jump_the_rig(ps, tmp_path):
+    # the rig takes writes 1..59, misses 60..79 mid-rise of a 35 deg swing, takes them again from 80. The play
+    # ends at the first failure and the return steps from the last value the rig TOOK: no jump when it recovers
+    f = tmp_path / "rise35.csv"; f.write_text(_rows(*_slow(35.0)))
+    r = ps(f, "-TestFakeDataSocket", "read=0,write=fail@60-79")
+    assert r.returncode == 4 and "RIG HOLDING" not in r.stdout and "ramped back to 0" in r.stdout, r.stdout + r.stderr
+    rows = list(csv.DictReader(open(_sent(ps.dir, "rise35_*_error.csv")[-1], newline="")))
+    w = [x for x in rows if x["phase"] in WRITE_PHASES]
+    taken = [float(x["setpoint_deg"]) for x in w if "write failed" not in x["note"]]
+    failed = [i for i, x in enumerate(w) if "write failed" in x["note"]]
+    assert len(failed) == 20 and w[failed[0]]["phase"] == "play", [x["phase"] for x in w[55:62]]
+    assert not [x for x in w[failed[0] + 1:] if x["phase"] == "play"]          # play stopped at the first failure
+    assert max(abs(np.diff(taken))) <= 6 + 1e-9 and taken[-1] == 0
+    assert max(abs(v) for v in taken) < 35
+    assert not (ps.dir / "sent" / "HOLDING.flag").exists()
+
+
+@need_ps
+def test_powershell_rig_holding_must_be_acknowledged(ps, tmp_path):
+    write_fixtures(str(tmp_path))
+    flag = ps.dir / "sent" / "HOLDING.flag"
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0,write=fail")
+    assert r.returncode == 4 and flag.exists() and "RIG HOLDING" in flag.read_text()
+    for answer in ("no\n", "yes\n", ""):                                  # anything but YES, or no input at all
+        r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", input=answer)
+        assert r.returncode == 1 and "HOLDING" in r.stdout and "not acknowledged" in r.stdout and "Playing." not in r.stdout, (answer, r.stdout)
+        assert flag.exists()
+    log = _sent(ps.dir, "*_refused.csv")[-1]
+    assert list(csv.DictReader(open(log, newline="")))[0]["note"].startswith("holding_unacknowledged:")
+    r = ps(tmp_path / "ok_small.csv", "-DryRun")                              # a dry run sends nothing: not asked
+    assert r.returncode == 0 and flag.exists()
+    r = ps(tmp_path / "ok_small.csv", "-TestFakeDataSocket", "read=0", input="YES\n")
+    assert r.returncode == 0 and "Acknowledged" in r.stdout and not flag.exists(), r.stdout
 
 
 @need_ps
@@ -485,7 +527,9 @@ def test_powershell_refuses_the_setpoint_as_its_own_encoder(ps, tmp_path):
 @need_ps
 @pytest.mark.parametrize("how", ["signal", "key"])
 def test_powershell_ctrl_c_stops_through_the_return_to_zero(ps, tmp_path, how):
-    # in its own console (the Ctrl+C must not reach pytest): a console signal, and a keystroke in its input
+    # in its own console (the Ctrl+C must not reach pytest): a console signal, and a keystroke in its input.
+    # signal@ runs with TreatControlCAsInput left off (the console only delivers the signal then): the case
+    # the CancelKeyPress handler exists for; key@ is the normal bench setting
     f = tmp_path / "slow.csv"; f.write_text(_rows(*_slow(10.0)))
     r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps.dir / "play_setpoints.ps1"),
                         "-File", str(f), "-NoPrompt", "-TestFakeDataSocket", "read=0", "-TestCtrlC", f"{how}@0.6"],
@@ -514,7 +558,7 @@ def test_powershell_encoder_watchdog(ps, tmp_path):
     sent = _writes(rows)
     assert any(x["phase"] == "watchdog" for x in rows) and sent[-1] == 0 and max(sent) < 10
     r = ps(f, "-TestFakeDataSocket", "read=0", "-TestFakeEncoder", "failafter")
-    assert r.returncode == 6 and "could not be read 10 times" in r.stdout
+    assert r.returncode == 6 and "could not be read 5 times" in r.stdout
     r = ps(f, "-TestFakeDataSocket", "read=0", "-TestFakeEncoder", "fail")
     assert r.returncode == 1 and "cannot read it" in r.stdout
     r = ps(f, "-TestFakeDataSocket", "read=0", "-TestFakeEncoder", "12")
