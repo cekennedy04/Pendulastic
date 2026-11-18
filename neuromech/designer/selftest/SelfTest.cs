@@ -37,6 +37,26 @@ namespace Pendulastic
             var t = new Dictionary<string, double> { { "R2n", 0.6 }, { "N", 3.0 } };
             Write(dir, "params_R2n0.6_N3", Designer.ForParams(t, new Knobs()), summary);
             Write(dir, "healthy_default", Designer.Evaluate(new Knobs()), summary);
+            // the published severity axis by lambda (DeGroote.cs), to axis.csv: played 1:1 (axis_*), where
+            // test_designer.py holds the trace and its score to neuromech.model_rt and the library's expected
+            // values, and lambda 1.4 at the default 0.70 scale (lam_1.4), the swing the rig can actually play
+            var axis = new StringBuilder("name,pt7,interpretable,zone,mas,R2n,N,peak_rig_deg,release_t,damping\n");
+            foreach (double lam in new[] { 1.0, 1.2, 1.4 })
+                Write(dir, "axis_" + lam.ToString("F1", Inv), Designer.ForLambda(lam, new Knobs { Scale = 1.0 }), axis);
+            Write(dir, "lam_1.4", Designer.ForLambda(1.4, new Knobs()), axis);
+            File.WriteAllText(Path.Combine(dir, "axis.csv"), axis.ToString());
+            double pl, pp; Designer.RisingBranchPeak(out pl, out pp);
+            var d14 = Designer.ForLambda(1.4, new Knobs());
+            GuardReport g14 = RigGuard.Check(d14.Movement.RigT, d14.Movement.RigDeg, RigGuard.HardLimitDeg);
+            GuardReport g11 = RigGuard.Check(Designer.ForLambda(1.4, new Knobs { Scale = 1.0 }).Movement.RigT,
+                                             Designer.ForLambda(1.4, new Knobs { Scale = 1.0 }).Movement.RigDeg, RigGuard.HardLimitDeg);
+            var scaled = Designer.ScaledToLimit(Designer.ForLambda(1.4, new Knobs { Scale = 1.0 }), RigGuard.HardLimitDeg, 0.2);
+            File.WriteAllText(Path.Combine(dir, "axis_facts.csv"),
+                "peak_lam,peak_pt7,rest_deg,ok_x070,pred_x070,ok_x1,scaled_to\n" + string.Join(",", new[] {
+                    pl.ToString("R", Inv), pp.ToString("R", Inv), DeGroote.PassiveRestDeg.ToString("R", Inv),
+                    g14.Ok ? "1" : "0", g14.PredictedPeakDeg.ToString("R", Inv), g11.Ok ? "1" : "0",
+                    scaled == null ? "" : scaled.Knobs.Scale.ToString("R", Inv) }) + "\n");
+            Console.WriteLine(d14.Note);
             File.WriteAllText(Path.Combine(dir, "summary.csv"), summary.ToString());
             Console.WriteLine(summary.ToString());
             Console.WriteLine("seconds " + sw.Elapsed.TotalSeconds.ToString("F1", Inv));

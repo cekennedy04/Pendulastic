@@ -69,6 +69,11 @@ def severity(lam: float, **kw) -> Params:
 #: PT7 targets: the centre of each MAS band in pendulastic_pt_score._MAS (<= .12/.28/.44/.60/.78).
 MAS_TARGETS = {"0": 0.06, "1": 0.20, "1+": 0.36, "2": 0.52, "3": 0.69}
 
+#: Severity-axis lambdas added 2026-11-18, labelled in their titles as past the PT7 peak (falling branch).
+#: Expected on pt5trough-ref-2026-11-16: lambda 1.2 PT7 0.224, lambda 1.4 PT7 0.170, both band 1, both more
+#: than build.EDGE_MARGIN_PT7 from a band edge (docs/reports/2026-11-18-neuromech-lambda-1p4.md).
+FALLING_BRANCH_ADDED = (1.2, 1.4)
+
 #: The clasp-knife's release stretch, deg. Refit 2026-11-17 (decision O5) from 25 to 36 so the catch
 #: grades in the middle of band 1 on the five-term scorer (PT7 0.200; build.fit_param gave 36.13).
 #: At 25 it scored 0.078, band 0, and a releasing catch is a mid-severity sign (profiles.SEVERITY_INTENT
@@ -169,11 +174,19 @@ def build(mas_lambda: dict[str, float]) -> list[Scenario]:
         sc.append(Scenario(f"A-P{g.replace('+', 'p')}", "A", f"PT7-band preset {g} (PT7 {MAS_TARGETS[g]}, lambda {L[g]:.3f})",
                            severity(L[g]), probes=f"phone vs encoder at a programmed PT7 of {MAS_TARGETS[g]}"))
     # ── S: severity axis incl. the inverting branch ───────────────────────
-    for lam in (1.0, 1.5, 2.0, 3.0, 6.0):
-        sc.append(Scenario(f"S-lam{lam:g}", "S", f"Published severity axis, lambda {lam:g}", severity(lam),
+    # Every lambda here is PAST the PT7 peak (build.rising_branch_peak: 0.80), on the falling branch: the leg
+    # is stiffer than the 1+ preset and the composite grades it milder. 1.2 and 1.4 were added 2026-11-18
+    # (supervisor: a trajectory near lambda 1.4 for the phone and the scorer) and say so in their titles;
+    # the five older ids keep their titles.
+    for lam in (1.0, 1.2, 1.4, 1.5, 2.0, 3.0, 6.0):
+        new = lam in FALLING_BRANCH_ADDED
+        sc.append(Scenario(f"S-lam{lam:g}", "S", f"Published severity axis, lambda {lam:g}"
+                           + (" (past the PT7 peak at lambda 0.80: falling branch)" if new else ""), severity(lam),
                            probes="severe leg that the composite may grade milder or refuse (U-shape)"
                            + ("; also the R group's force-feedback channel: first- vs second-swing ordering, "
-                              "De Groote's own discriminator" if lam == 1.0 else "")))
+                              "De Groote's own discriminator" if lam == 1.0 else "")
+                           + ("; falling branch: stiffer than A-P1p yet graded band 1, an early catch then a "
+                              "full drop, settling 16-19 deg above the passive rest" if new else "")))
     # ── B: behaviours ─────────────────────────────────────────────────────
     sc += [
         Scenario("B-extensor", "B", "Extensor-dominant (quadriceps reflex only)", m2, probes="area_ratio direction, phi_max"),

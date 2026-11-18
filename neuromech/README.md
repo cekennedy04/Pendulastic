@@ -11,7 +11,7 @@ Run everything from the repo root with the project venv (`.venv/Scripts/python.e
 ## 1. Build the scenario library (once, or after a model change)
 
 ```bash
-python -m neuromech.build                # 64 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
+python -m neuromech.build                # 66 scenarios -> neuromech/out/ (manifest + 1 kHz setpoints)
 ```
 
 | Group | What | Source |
@@ -46,7 +46,7 @@ built); the library is still written. Presets meant to sit in a band are refitte
 `build.fit_param` (the ladder's bisection, on one other parameter) and listed in `scenarios.BAND_MIDDLE`;
 scenarios whose purpose is the edge or an out-of-range parameter (S axis, C, R, HESS's unscaled values) are
 allowlisted, each with its reason. `--allow-near-edge` builds anyway. On `pt5trough-ref-2026-11-16`
-(2026-11-17, 64 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
+(2026-11-18, 66 scenarios): nothing flagged, 8 allowlisted (`S-lam1`, `S-lam6`, `C-f-low`, `C-f-high`,
 `R-friction`, `R-reflex-vel`, `R-reflex-len`, `H-HM3`).
 
 **Duplicate check (owner decision, 2026-11-17).** The build also **exits 1** if two scenarios render the same
@@ -73,6 +73,14 @@ refused (no oscillation), which is the refusal path they probe.
 
 ### Findings
 
+- **Past the PT7 peak the playable swing is not gradable, and the app misses the release (2026-11-18).**
+  `S-lam1.2` and `S-lam1.4` (added 2026-11-18, falling branch) score PT7 0.224 and 0.170, band 1, played 1:1.
+  The guard passes them only at 0.70 (55° release), and at 0.70 the excursion (27.2°, 25.3°) is under the
+  scorer's 30° floor, so both are refused; `S-lam1` is too (29.1°). In the synthetic phone replay the app
+  finds no release at lambda 1.4 at either scale: the leg catches 6° into the drop at 55°/s, under the app's
+  1.0 rad/s capture threshold. Table and options: `docs/reports/2026-11-18-neuromech-lambda-1p4.md`.
+  The Pendulum Designer reaches this axis through its *Severity axis (De Groote), lambda* mode
+  (`designer/DeGroote.cs`, a port of `model_rt` held to it by `tests/test_designer.py`).
 - **Rig bearing friction alone sits just under MAS 1 (2026-11-17, scorer `pt5trough-ref-2026-11-16`, core
   0.4.0).** `R-friction` (the rig's own dry bearing friction, `rig_params()`, no simulated spasticity) scores
   PT7 0.1144, 0.0056 below the 0/1 edge (0.12); `R-friction-heavy` (0.4 N.m) scores 0.1748, band 1.
@@ -217,7 +225,7 @@ Pendulum Designer — take their rules from one file, `labview/player/RigGuard.c
 2. 5° smoke file (`smoke_5deg.csv`, DRYRUN first) → a default MAS design at rig amplitude scale 0.3 →
    0.5 → 0.70 (the default). Stop at the first surprise and bring `sent\` back.
 
-At ±40° the built library (64 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
+At ±40° the built library (66 scenarios) has 3 playable files at 1:1 (C-A0-low, C-A0-small-ok,
 D-lowlift): every other scenario releases from 55° or more (the library writes rig angle 1:1).
 
 For the rig PC as a whole (not one session): `python -m neuromech.rig_bundle` rebuilds the library and the
